@@ -1,0 +1,11 @@
+[submodule "3rdparty/wails"]
+	path = 3rdparty/wails
+	url = git@github.com:juggler-ai/wails.git
+	branch = juggler-changes
+	# Depth-1 submodule clone: CI (and a fresh `submodule update --init`) only
+	# ever needs the pinned commit's tree to build, never the fork's history.
+	# git fetches the recorded gitlink SHA directly at depth 1 (GitHub allows
+	# fetch-by-reachable-SHA), so this holds even when the pin isn't the branch
+	# tip. Cuts the wails clone from a multi-minute full-history transfer — the
+	# step that was timing out over HTTP/2 — to seconds.
+	shallow = true

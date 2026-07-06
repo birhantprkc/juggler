@@ -1,0 +1,210 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+// Native claudecode implementation of provider.Conversation.
+//
+// PER-THREAD SESSIONS: a conversation runs many threads (root + sub-threads),
+// and each thread gets its OWN claude session — its own --resume UUID, warm
+// prompt cache, and live CLI subprocess — so switching threads never thrashes a
+// shared session's cache. The handle therefore owns a registry of per-thread
+// *Client sessions keyed by the turn's MessageRequest.ThreadID ("" = root). A
+// single goroutine owns that map (no mutex, per the project concurrency rule)
+// and also runs the idle reaper that bounds live subprocesses. All of this is
+// internal to the provider: the only thread-awareness that crosses the boundary
+// is MessageRequest.ThreadID, the natural sibling of ConversationID.
+
+package claudecode
+
+import (
+	"context"
+	"os"
+	"strconv"
+	"time"
+
+	provider "juggler/cmd/juggler/providers/registry"
+)
+
+// cliReapSweepInterval is how often a conversation sweeps its per-thread
+// sessions for idle CLIs. defaultCLIReapIdleTimeout is how long a session must
+// be idle before its live subprocess is freed (the resumable record survives,
+// so a reopened thread --resumes warm). Generous by default ("don't be too
+// eager" — threads are often reopened); override via JUGGLER_CLI_IDLE_MS.
+const (
+	cliReapSweepInterval      = 60 * time.Second
+	defaultCLIReapIdleTimeout = 10 * time.Minute
+)
+
+func cliReapIdleTimeout() time.Duration {
+	if v := os.Getenv("JUGGLER_CLI_IDLE_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return defaultCLIReapIdleTimeout
+}
+
+// conversation is the per-conversation handle returned by OpenConversation. It
+// owns a registry of per-thread sessions (see file header) behind a single
+// goroutine.
+type conversation struct {
+	base   *Client // config template; also serves as the root-thread ("") session
+	convID string
+	ops    chan convOp
+}
+
+type convOpKind int
+
+const (
+	convGetSession convOpKind = iota
+	convCancelAll
+	convCloseAll
+)
+
+type convOp struct {
+	kind     convOpKind
+	threadID string
+	resp     chan *Client
+	done     chan struct{}
+}
+
+func newConversation(base *Client, convID string) *conversation {
+	cv := &conversation{base: base, convID: convID, ops: make(chan convOp)}
+	go cv.run()
+	return cv
+}
+
+// run owns the per-thread session map and the idle-reaper ticker, so neither
+// needs a mutex. A lookup returns the session's *Client to the caller, which
+// then streams on its own goroutine — only the (fast) map access is serialised
+// here; the slow teardown in cancel/close runs here too, but per-conversation,
+// so it only ever delays this conversation's own ops (matching prior behaviour).
+func (cv *conversation) run() {
+	sessions := map[string]*Client{"": cv.base} // root thread is the base Client
+	reap := time.NewTicker(cliReapSweepInterval)
+	defer reap.Stop()
+	for {
+		select {
+		case op := <-cv.ops:
+			switch op.kind {
+			case convGetSession:
+				s := sessions[op.threadID]
+				if s == nil {
+					s = cv.base.newThreadSession(op.threadID)
+					sessions[op.threadID] = s
+				}
+				op.resp <- s
+			case convCancelAll:
+				for _, s := range sessions {
+					s.cancelSession()
+				}
+				op.done <- struct{}{}
+			case convCloseAll:
+				for _, s := range sessions {
+					s.closeSession()
+				}
+				op.done <- struct{}{}
+				return
+			}
+		case <-reap.C:
+			// Free idle live CLIs across this conversation's threads; the
+			// resumable record survives so a reopened thread --resumes warm.
+			for _, s := range sessions {
+				s.reapIdleCLI(cliReapIdleTimeout())
+			}
+		}
+	}
+}
+
+// session returns (creating on first use) the per-thread session for threadID.
+func (cv *conversation) session(threadID string) *Client {
+	resp := make(chan *Client, 1)
+	cv.ops <- convOp{kind: convGetSession, threadID: threadID, resp: resp}
+	return <-resp
+}
+
+// Submit drives one solicited LLM turn on the request's thread. The thread's
+// session classifier picks fresh-start vs resume-with-delta vs continueSession
+// from req.Messages. Autonomous turns surface via the Subscribe sink, not here.
+func (cv *conversation) Submit(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+	if req.ConversationID == "" {
+		req.ConversationID = cv.convID
+	}
+	return cv.session(req.ThreadID).streamMessage(ctx, req, callback)
+}
+
+// Subscribe registers the worker's sink for autonomous turns (scheduled wake /
+// monitor turns the persistent CLI emits with no Submit in flight). These are a
+// root-thread concern, so the sink attaches to the root session only. Passing
+// nil detaches.
+func (cv *conversation) Subscribe(sink provider.TurnSink) {
+	cv.base.subscribeTurns(sink)
+}
+
+// CacheTTL reports how long the CLI's saved session keeps prompt cache warm.
+func (cv *conversation) CacheTTL() time.Duration {
+	return upstreamCacheTTL
+}
+
+// Cancel releases in-flight/parked work across ALL of the conversation's thread
+// sessions: it tears down each live/parked CLI but preserves the resume anchors
+// (sessionUUID/sentCount/sentHash and the on-disk sidecar) so the next turn
+// resumes cache-warm. A cancel is an interrupt, not a session invalidation.
+func (cv *conversation) Cancel() {
+	done := make(chan struct{}, 1)
+	cv.ops <- convOp{kind: convCancelAll, done: done}
+	<-done
+}
+
+// Close releases the handle: tears down every thread's live CLI and drops the
+// in-memory sessions, but KEEPS the on-disk sidecar (root thread) so a later
+// reopen --resumes warm. Eviction/shutdown ≠ conversation deletion. After Close
+// the handle isn't used again.
+func (cv *conversation) Close() error {
+	done := make(chan struct{}, 1)
+	cv.ops <- convOp{kind: convCloseAll, done: done}
+	<-done
+	return nil
+}
+
+// cancelSession tears down in-flight/parked work for ONE thread session as the
+// SOLE owner of its activeSession. It may run while a turn streams on another
+// goroutine, so it must not touch activeSession concurrently: it (1) interrupts
+// any in-flight turn so the owning goroutine unwinds and releases the ownership
+// token, then (2) takes the token itself before tearing down. With no turn in
+// flight the token is already free and step 2 is immediate.
+//
+// The teardown keeps the resume anchor (sessionUUID/sentCount/sentHash and the
+// on-disk sidecar) — a cancel is an interrupt, not a session drop. The anchor is
+// already honest at this point: a parked turn advanced it to the committed
+// prefix when it emitted tool_use, and a mid-stream cancel advances it in
+// finalizeTurn (which owns the in-flight session) before releasing the token to
+// us. So cancel just drops the live CLI and clears pendingTools; the next turn
+// resumes warm if history extends the committed prefix, or starts fresh if it
+// diverged (canResumeWithDelta decides). tearDownLiveCLI is a no-op if the
+// interrupted turn already tore the live CLI down. Dropping a session is
+// reserved for the provider's own detect-corruption paths (dropSession), never
+// for a cancel.
+func (c *Client) cancelSession() {
+	if f := c.turnInterrupt.Load(); f != nil {
+		(*f)() // make the owning turn unwind and release `own`
+	}
+	release := c.acquireOwnership()
+	defer release()
+	if s := c.activeSession; s != nil {
+		s.tearDownLiveCLI()
+		s.pendingTools = nil
+	}
+}
+
+// closeSession is the per-thread teardown for handle release: interrupt any
+// in-flight turn so it releases the ownership token, then take the token and
+// release the session — KEEPING the sidecar (root thread) for warm resume.
+func (c *Client) closeSession() {
+	if f := c.turnInterrupt.Load(); f != nil {
+		(*f)()
+	}
+	release := c.acquireOwnership()
+	defer release()
+	c.releaseSession()
+}

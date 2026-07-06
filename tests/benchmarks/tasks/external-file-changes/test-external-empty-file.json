@@ -1,0 +1,18 @@
+{
+  "id": "test-external-empty-file",
+  "category": "external-file-changes",
+  "description": "Edge case: Empty file becomes non-empty externally",
+  "fixture": "external-change-fixture",
+  "prompt": "1. Read an empty file:\n<context-item use=\"read-file\">\n{\"path\": \"src/empty.js\"}\n</context-item>\n\n2. Try to add content:\n<action execute=\"write-file\">\n{\"path\": \"src/empty.js\", \"content\": \"export const ADDED = 'by-llm';\"}\n</action>\n\nNOTE: The empty file will have content added externally. System should detect the change.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/empty.js",
+    "contains_strings": [
+      "by-llm"
+    ]
+  },
+  "externalModification": {
+    "file": "src/empty.js",
+    "newContent": "// External addition"
+  }
+}

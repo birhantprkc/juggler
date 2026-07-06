@@ -1,0 +1,5 @@
+Line 1: This is a small file
+Line 2: It has only a few lines
+Line 3: Perfect for testing line ranges
+Line 4: And around mode
+Line 5: Last line

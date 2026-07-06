@@ -1,0 +1,6 @@
+{
+  "//": "Editor config for web/js. Extends the authoritative CI config so editor",
+  "//": "diagnostics match `make lint-types` exactly. Do not add settings here —",
+  "//": "change tooling/jsconfig.json so the editor and CI never diverge.",
+  "extends": "../../tooling/jsconfig.json"
+}

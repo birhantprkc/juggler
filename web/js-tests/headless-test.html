@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Juggler Integration Test Runner</title>
+
+    <!-- Earliest-possible error trap. A module that fails to parse or throws
+         at top level (e.g. a half-saved file embedded by go:embed during a
+         concurrent edit) otherwise degrades into custom elements silently not
+         rendering, and every test fails with a misleading "DOM element count
+         mismatch". Captured here, those errors fail tests fast with the real
+         cause (see runOneTest) and are spliced into failure blocks. -->
+    <script nonce="{{.CSPNonce}}">
+        window.__earlyErrors = [];
+        window.addEventListener('error', (e) => {
+            const msg = e.message || (e.error && e.error.message) || 'script error';
+            // Benign browser chatter, not a JS failure: WebKit fires this when
+            // layout shifts faster than ResizeObserver can deliver. Recording
+            // it would mislabel every busy test as "likely the real cause".
+            if (msg.indexOf('ResizeObserver loop') !== -1) return;
+            const where = e.filename ? ' (' + e.filename + ':' + e.lineno + ')' : '';
+            window.__earlyErrors.push(msg + where);
+        });
+        window.addEventListener('unhandledrejection', (e) => {
+            window.__earlyErrors.push('unhandled rejection: ' + (e.reason && e.reason.message || e.reason));
+        });
+    </script>
+
+    <!-- Fonts (self-hosted; see web/css/fonts.css) -->
+    <link rel="stylesheet" href="/v{{.StaticVersion}}/css/fonts.css">
+
+    <!-- Styles (same as index.html — needed for real component rendering) -->
+    <link rel="stylesheet" href="/v{{.StaticVersion}}/css/styles.css">
+    <link rel="stylesheet" href="/v{{.StaticVersion}}/css/utilities.css">
+    <link rel="stylesheet" href="/v{{.StaticVersion}}/css/components.css">
+    <link rel="stylesheet" href="/v{{.StaticVersion}}/css/context-items.css">
+    <link rel="stylesheet" href="/v{{.StaticVersion}}/css/plugin-catalog.css">
+    <link rel="stylesheet" href="/v{{.StaticVersion}}/css/prism-theme.css">
+
+    <!-- Vendor scripts -->
+    <script src="/v{{.StaticVersion}}/js/vendor/marked.min.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-core.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-markup.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-css.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-javascript.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-typescript.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-python.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-go.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-bash.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-json.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-markdown.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
+
+    <!-- Import map for user/project plugins to import base classes via bare specifiers -->
+    <script type="importmap" nonce="{{.CSPNonce}}">
+    {
+        "imports": {
+            "juggler/context-item": "/v{{.StaticVersion}}/sdk/context-item.js",
+            "juggler/strategy-type": "/v{{.StaticVersion}}/sdk/strategy-type.js",
+            "juggler/command-type": "/v{{.StaticVersion}}/sdk/command-type.js",
+            "juggler/ops": "/v{{.StaticVersion}}/sdk/ops.js",
+            "juggler/sandbox": "/v{{.StaticVersion}}/sdk/sandbox.js",
+            "juggler/ui": "/v{{.StaticVersion}}/sdk/ui.js",
+            "juggler/model": "/v{{.StaticVersion}}/sdk/model.js",
+            "juggler/item-utils": "/v{{.StaticVersion}}/sdk/item-utils.js",
+            "juggler/registry": "/v{{.StaticVersion}}/sdk/registry.js",
+            "juggler/version": "/v{{.StaticVersion}}/sdk/version.js",
+            "juggler/utils/html": "/v{{.StaticVersion}}/sdk/lib/html.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <script nonce="{{.CSPNonce}}">
+        window.__assetPrefix = '/v{{.StaticVersion}}';
+    </script>
+
+    <!-- Load utilities -->
+    <script type="module" src="/v{{.StaticVersion}}/sdk/lib/html.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/utils/theme-manager.js"></script>
+
+    <!-- Load services -->
+    <script type="module" src="/v{{.StaticVersion}}/js/services/api.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/services/websocket.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/services/action-executor.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/services/llm-state.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/services/animation-service.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/services/response-handler.js"></script>
+
+    <!-- Load model -->
+    <script type="module" src="/v{{.StaticVersion}}/js/model/conversation.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/model/session.js"></script>
+
+    <!-- Load components (all needed for real UI rendering) -->
+    <script type="module" src="/v{{.StaticVersion}}/js/components/modal-dialog.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/context-preview-modal.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/settings-panel.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/diff-viewer.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/action-confirmation.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/token-display.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/model-selector.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/strategy-selector.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/user-message.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/assistant-message.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/thinking-message.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/context-item-message.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/error-message.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/code-block.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/input-box.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/thinking-block.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/conversation-bar.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/conversation-tab.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/properties-panel.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/conversation-area.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/plugin-catalog.js"></script>
+
+    <!-- Plugin base class and registry -->
+    <script type="module" src="/v{{.StaticVersion}}/sdk/context-item.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/registries/context-item-registry.js"></script>
+
+    <!-- NOTE: app.js is NOT loaded — tests manage their own initialization -->
+
+    <!-- Test entry point -->
+    <script type="module" nonce="{{.CSPNonce}}">
+        import TestOrchestrator from '/v{{.StaticVersion}}/js-tests/utilities/test-orchestrator.js';
+        import { listTests, listPolluters, runTestByName } from '/v{{.StaticVersion}}/js-tests/utilities/integration-test-executor.js';
+
+        const urlParams = new URLSearchParams(window.location.search);
+
+        async function postJSON(url, body) {
+            await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        }
+
+        // Poll /api/test/pending for the next entry. Resolves when an entry is available.
+        async function waitForNextEntry() {
+            while (true) {
+                try {
+                    const resp = await fetch('/api/test/pending');
+                    if (resp.status === 200) {
+                        return await resp.json();
+                    }
+                } catch (_) { /* ignore transient fetch errors */ }
+                await new Promise(r => setTimeout(r, 200));
+            }
+        }
+
+        // Errors recorded before any test runs are page-load module failures:
+        // every component this lane renders is suspect, so every test in it
+        // would fail with misleading DOM mismatches. Snapshot them once all
+        // module scripts have executed (this entry module runs last) so
+        // runOneTest can refuse to run and report the true cause instead.
+        const pageLoadErrors = window.__earlyErrors.slice();
+
+        // Run a single integration/unit test in-page and POST its result.
+        async function runOneTest(name, projectPath) {
+            if (pageLoadErrors.length > 0) {
+                await postJSON('/api/test/result', {
+                    name,
+                    passed: false,
+                    details: 'PAGE BROKEN — JS failed during page load, before any test ran ' +
+                        '(stale/half-saved embed? syntax error?):\n' + pageLoadErrors.join('\n'),
+                    errors: pageLoadErrors,
+                });
+                return;
+            }
+            let passed = false, details = '', errors = [];
+            try {
+                const result = await runTestByName(name, { fixtureDir: projectPath });
+                passed = result.failed === 0;
+                errors = result.errors || [];
+                details = errors.length > 0 ? errors.join('\n') : 'OK';
+            } catch (err) {
+                errors = [String(err)];
+                details = String(err);
+            }
+            await postJSON('/api/test/result', { name, passed, details, errors });
+        }
+
+        if (urlParams.has('list') || urlParams.has('test') || urlParams.has('lane')) {
+            // Single in-page loop: handle the URL-supplied entry first (list or test),
+            // then keep the page loaded and pull subsequent entries from
+            // /api/test/pending until the suite ends. Avoids per-test page navigation,
+            // which used to cause WebSocket/engine reconnect storms and races with
+            // fixture cleanup.
+            //
+            // `lane=N` mode (set by /test-pool iframes) skips the URL-supplied
+            // entry and drops straight into the polling loop — multiple lanes
+            // race for entries on the shared /api/test/pending queue.
+            if (urlParams.has('list')) {
+                await postJSON('/api/test/names', { names: listTests(), polluters: listPolluters() });
+            } else if (urlParams.has('test')) {
+                await runOneTest(urlParams.get('test'), urlParams.get('projectPath'));
+            }
+
+            while (true) {
+                const entry = await waitForNextEntry();
+                if (entry.name === '__list__') {
+                    await postJSON('/api/test/names', { names: listTests(), polluters: listPolluters() });
+                    continue;
+                }
+                if (entry.taskId) {
+                    // Benchmark/task mode runs via a separate orchestrator path.
+                    // Hand off via navigation (rare; happens at most once per process).
+                    let url = `/headless-test?task=${encodeURIComponent(entry.taskId)}&projectPath=${encodeURIComponent(entry.projectPath)}&quiet=true`;
+                    if (entry.model) url += `&model=${encodeURIComponent(entry.model)}`;
+                    if (entry.provider) url += `&provider=${encodeURIComponent(entry.provider)}`;
+                    window.location.href = url;
+                    break;
+                }
+                await runOneTest(entry.name, entry.projectPath);
+            }
+        } else {
+            // Task mode (real-LLM benchmark tasks) — run via TestOrchestrator
+            window.quietMode = urlParams.get('quiet') === 'true';
+            const orchestrator = new TestOrchestrator();
+            window.orchestrator = orchestrator;
+
+            const taskId = urlParams.get('task');
+            console.log('Starting headless test run...');
+            try {
+                await orchestrator.runAllTests();
+                if (taskId) {
+                    const result = orchestrator.results[0] || {};
+                    await postJSON('/api/test/result', {
+                        name: taskId,
+                        passed: result.passed || false,
+                        details: result.details || '',
+                        errors: result.errors || [],
+                    });
+                    window.location.href = '/';
+                }
+            } catch (err) {
+                console.error('Test orchestrator error:', err);
+                if (taskId) {
+                    await postJSON('/api/test/result', {
+                        name: taskId,
+                        passed: false,
+                        details: err.message,
+                        errors: [err.message],
+                    });
+                    window.location.href = '/';
+                } else {
+                    window.testComplete = true;
+                    window.testError = err.message;
+                }
+            }
+        }
+    </script>
+</body>
+</html>

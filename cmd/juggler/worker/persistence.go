@@ -1,0 +1,218 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package worker
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"juggler/internal/logpaths"
+)
+
+// loadStateFromDisk loads the Yjs state from the per-conversation folder.
+// When mustExist is true (loading an existing conversation), a missing file
+// is an error; when false (new conversation) it's expected.
+func (w *ConversationWorker) loadStateFromDisk(mustExist bool) error {
+	if w.projectPath == "" {
+		return nil // New conversation, no state to load
+	}
+
+	statePath, err := w.docPathFor(w.conversationID)
+	if err != nil {
+		if mustExist {
+			return err
+		}
+		return nil // unknown conv = brand-new
+	}
+
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if mustExist {
+				return fmt.Errorf("conversation state file not found: %s", statePath)
+			}
+			return nil
+		}
+		return fmt.Errorf("failed to read state file: %w", err)
+	}
+
+	if len(data) > 0 {
+		if err := w.doc.ApplySyncUpdate(data); err != nil {
+			return fmt.Errorf("failed to apply state: %w", err)
+		}
+	}
+	return nil
+}
+
+// docPathFor resolves a conversation id to its <dir>/doc.yjs path. Returns
+// an error if no path provider is set or the conversation is unknown.
+func (w *ConversationWorker) docPathFor(convID string) (string, error) {
+	if w.pathProvider == nil {
+		return "", fmt.Errorf("no path provider set")
+	}
+	dir, ok := w.pathProvider(convID)
+	if !ok {
+		return "", fmt.Errorf("conversation folder not found: %s", convID)
+	}
+	return filepath.Join(dir, "doc.yjs"), nil
+}
+
+// repairDuplicateItemIds scans items for duplicate itemIds and assigns new unique IDs.
+// Returns the number of duplicates repaired. This handles corruption from undo/redo bugs.
+func (w *ConversationWorker) repairDuplicateItemIds() int {
+	items := w.doc.GetItems()
+	seen := make(map[string]int) // itemId -> first index
+	var toRepair []int
+
+	// Find duplicates (keeping first occurrence)
+	for i, item := range items {
+		if item.ItemID == "" {
+			continue
+		}
+		if _, exists := seen[item.ItemID]; exists {
+			toRepair = append(toRepair, i)
+		} else {
+			seen[item.ItemID] = i
+		}
+	}
+
+	if len(toRepair) == 0 {
+		return 0
+	}
+
+	// Log details for debugging
+	w.log.Info("REPAIR: Found %d duplicate itemIds, repairing...", len(toRepair))
+	for _, idx := range toRepair {
+		oldID := items[idx].ItemID
+		w.log.Info("REPAIR: Item[%d] has duplicate itemId: %s", idx, oldID)
+	}
+
+	// Repair duplicates with new unique IDs
+	for _, idx := range toRepair {
+		newID := generateItemID()
+		if err := w.doc.UpdateItemID(idx, newID); err != nil {
+			w.log.Error("REPAIR: Failed to update itemId at index %d: %v", idx, err)
+		} else {
+			w.log.Info("REPAIR: Assigned new itemId %s to item[%d]", newID, idx)
+		}
+	}
+
+	return len(toRepair)
+}
+
+// saveStateToDisk writes the Yjs document via the saveBinary callback,
+// which handles folder creation and atomic write inside the session store.
+//
+// After a successful save, the transaction blob store is swept: any blob
+// whose id is no longer referenced by either the live items tree OR any
+// undoLog entry is deleted. Piggy-backing on the debounced save keeps GC
+// off the hot path while ensuring it runs whenever the doc actually changes.
+func (w *ConversationWorker) saveStateToDisk() error {
+	if w.projectPath == "" || w.saveBinary == nil {
+		return nil // Can't save without store wiring
+	}
+
+	state := w.doc.ToState()
+	if len(state) == 0 {
+		return nil // Nothing to save
+	}
+
+	if err := w.saveBinary(w.conversationID, state); err != nil {
+		return fmt.Errorf("save conversation binary: %w", err)
+	}
+
+	w.dirty.Store(false)
+
+	if err := w.sweepTransactions(); err != nil {
+		w.log.Error("Failed to sweep transaction blobs: %v", err)
+	}
+
+	if err := w.sweepAssets(); err != nil {
+		w.log.Error("Failed to sweep assets: %v", err)
+	}
+
+	return nil
+}
+
+func (w *ConversationWorker) scheduleSave() {
+	w.dirty.Store(true)
+	if w.saveTimer != nil {
+		w.saveTimer.Stop()
+	}
+	w.saveTimer = time.AfterFunc(SaveDebounceTime, func() {
+		// Signal the run loop to save — never call saveStateToDisk from the
+		// timer goroutine, as that races with the run loop accessing the doc.
+		select {
+		case w.saveChan <- struct{}{}:
+		default: // save already pending
+		}
+	})
+}
+
+func (w *ConversationWorker) onShutdown() {
+	defer w.callbacks.stop()
+	// Deferred LIFO: w.log.Close() (registered last) runs first to release the
+	// file, THEN maybePurgeLogs() removes it — an open file can't be deleted on
+	// Windows, so the ordering matters.
+	defer w.maybePurgeLogs()
+	// Close this conversation's per-conversation log sink (nil-safe).
+	defer w.log.Close()
+
+	// Stop every task-output delivery pump and kill its background task so a
+	// delivering command doesn't outlive the conversation worker.
+	w.stopAllDeliveryPumps()
+
+	// Flush any pending Yjs sync updates
+	w.batcher.Flush()
+
+	// Cancel any pending save timer
+	if w.saveTimer != nil {
+		w.saveTimer.Stop()
+		w.saveTimer = nil
+	}
+	// Stop the silent-ack watchdog so no timer outlives the worker.
+	w.disarmAckWatchdog()
+	// Drain any pending save signal (timer may have fired before Stop)
+	select {
+	case <-w.saveChan:
+	default:
+	}
+	// Skip final save when the worker is being removed for deletion —
+	// otherwise SaveConversationBinary's ensureConvDir would recreate the
+	// just-deleted folder as "Untitled--<id>".
+	if w.deleting.Load() {
+		return
+	}
+	// Skip if no changes since last successful save.
+	if !w.dirty.Load() {
+		return
+	}
+	w.log.Info("💾 Saving conversation %s...", w.conversationID)
+	if err := w.saveStateToDisk(); err != nil {
+		w.log.Error("Failed to save state on shutdown: %v", err)
+	}
+}
+
+// maybePurgeLogs removes this conversation's per-conversation log file(s) when
+// the worker is shutting down for a PERMANENT deletion (set via the Manager's
+// RemoveAndPurgeLogs). Runs after w.log.Close() so the file is no longer open.
+// No-op for a reversible bin or a plain eviction; those logs age out via the
+// retention sweep instead.
+func (w *ConversationWorker) maybePurgeLogs() {
+	if !w.purgeLogs.Load() {
+		return
+	}
+	logpaths.RemoveConversationLogs(w.projectPath, w.conversationID)
+}
+
+// broadcastFullState sends the full Yjs document state to the frontend.
+func (w *ConversationWorker) broadcastFullState() {
+	state := w.doc.ToState()
+	if len(state) > 0 {
+		w.sendYjsSync(state)
+	}
+}

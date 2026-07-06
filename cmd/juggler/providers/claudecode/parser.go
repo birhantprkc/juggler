@@ -1,0 +1,630 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+// Stream-parser state machine for the claude CLI's stream-json output. The
+// CLI is always spawned with --include-partial-messages, so stream_event
+// envelopes are the sole content path; assistant envelopes are ignored.
+// Wire-format types live in protocol.go.
+
+package claudecode
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/internal/jlog"
+)
+
+// transientCLIError marks a turn failure caused by the CLI's infrastructure
+// (the process died without a terminal stop reason, or its stream stalled)
+// rather than a definitive API result. These are safe to re-attempt: the
+// turn-level retry in dispatchTurnWithRetry re-runs the dispatch when it sees
+// one (and nothing has streamed yet). A clean API error — rate-limit
+// exhaustion the CLI reported in-band, a 400 — is a plain error and is never
+// retried.
+type transientCLIError struct {
+	msg string
+	// processExited is true when the CLI process has terminated (the
+	// "exited unexpectedly" case), so finalizeTurn may enrich the message
+	// with the captured process exit status. False for a stall, where the
+	// process is still up (and teardown, not the CLI, would end it).
+	processExited bool
+	// diag is an optional exit-status annotation ("exit status 1",
+	// "signal: killed") filled in by finalizeTurn once the dead CLI is reaped.
+	diag string
+}
+
+func (e *transientCLIError) Error() string {
+	if e.diag != "" {
+		return e.msg + " (" + e.diag + ")"
+	}
+	return e.msg
+}
+
+// isTransientCLIError reports whether err (or anything it wraps) is a
+// transientCLIError — the retry predicate.
+func isTransientCLIError(err error) bool {
+	var t *transientCLIError
+	return errors.As(err, &t)
+}
+
+// annotateExit attaches an exit-status diagnostic (e.g. "exit status 1",
+// "signal: killed") to err when err is a process-exit transientCLIError.
+// Returns err unchanged for any other error or an empty diag.
+func annotateExit(err error, diag string) error {
+	if diag == "" {
+		return err
+	}
+	var te *transientCLIError
+	if errors.As(err, &te) && te.processExited {
+		te.diag = diag
+	}
+	return err
+}
+
+// streamIdleTimeout bounds how long readUntilPauseOrComplete will wait for
+// the next line of CLI output before declaring the stream stalled. The CLI
+// streams incrementally under --include-partial-messages (content deltas,
+// and api_retry events during rate-limit backoff), so a long stretch of
+// total silence means the upstream connection is dead — most commonly
+// because the machine slept mid-request and the TCP connection dropped.
+// Failing here (rather than blocking until the worker's 5-minute LLMTimeout)
+// lets the turn surface a clear error and be retried. Generous so it never
+// trips on first-token latency; a package var so tests can shrink it.
+var streamIdleTimeout = 120 * time.Second
+
+// turnResult holds the results from a single CLI invocation.
+type turnResult struct {
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	StopReason       string
+	SessionID        string // captured from system/init; used for --resume
+	Blocks           []provider.ContentBlock
+
+	// usageFromStream is set the first time a stream_event (message_start
+	// or message_delta) reports usage for the current API call. The
+	// trailing `result` / `system/result` envelopes can carry usage that
+	// is cumulative across all API calls the persistent CLI process has
+	// served in the session — overwriting the per-call number with that
+	// would make `anchoredTokens` grow without bound across a long
+	// tool-use loop (we observed 8754k after a long LLM loop, ~40× the
+	// real context window). When this flag is true, we keep the
+	// stream-event numbers and ignore the result-envelope ones.
+	usageFromStream bool
+
+	// Per-block accumulators for the stream-event parser; the CLI is always
+	// spawned with --include-partial-messages so this is the sole content
+	// path. Lazily initialised on the first stream_event.
+	partialBlocks map[int]*partialBlock
+
+	// progress tracks running output-token estimate during the stream so
+	// the UI's "Receiving..." spinner can show a live count. Owned by a
+	// single goroutine for the duration of one stream.
+	progress *provider.ProgressEmitter
+}
+
+// partialBlock accumulates a single content block's incremental data as
+// stream_event deltas arrive. Finalised on content_block_stop.
+type partialBlock struct {
+	kind      string // "text" | "thinking" | "tool_use"
+	text      string // accumulated text or thinking text
+	signature string // for thinking blocks
+	toolID    string
+	toolName  string
+	toolJSON  strings.Builder // accumulated input_json_delta payload
+}
+
+// readUntilPauseOrComplete reads from the active session until we see one of:
+//   - tool_use     (early return, CLI is paused inside MCP awaiting our results)
+//   - end_turn     (the LLM turn finished; CLI may still be alive idling on stdin)
+//   - empty_response
+//   - the CLI exits (one-shot -p mode, or unexpected death)
+//
+// Detecting end_turn from the stream itself (rather than waiting for stdout to
+// close) is what lets persistent CLI processes survive across juggler turns.
+func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider.StructuredStreamCallback) (*turnResult, int, error) {
+	if c.activeSession == nil {
+		return nil, 0, fmt.Errorf("no active session")
+	}
+
+	// Capture the live-CLI stream channels up front. Every caller reaches here
+	// with a live CLI; if there is none, content stays nil and the select
+	// below blocks on it exactly as the old zero-value field did.
+	var content chan string
+	var scanErr <-chan error
+	if lc := c.activeSession.live; lc != nil {
+		content = lc.content
+		scanErr = lc.scanErr
+	}
+
+	result := &turnResult{progress: provider.NewProgressEmitter(callback)}
+	toolUseCount := 0
+
+	// Idle watchdog: reset on every line. If it fires, the CLI has gone
+	// silent without completing the turn — treat it as a dropped connection
+	// (e.g. the machine slept mid-request) rather than blocking forever.
+	idle := time.NewTimer(streamIdleTimeout)
+	defer idle.Stop()
+	resetIdle := func() {
+		if !idle.Stop() {
+			select {
+			case <-idle.C:
+			default:
+			}
+		}
+		idle.Reset(streamIdleTimeout)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return result, toolUseCount, ctx.Err()
+
+		case <-idle.C:
+			stderr := ""
+			if c.activeSession != nil {
+				stderr = strings.TrimSpace(c.activeSession.drainStderr())
+			}
+			if stderr != "" {
+				return result, toolUseCount, &transientCLIError{msg: fmt.Sprintf(
+					"claude CLI stream stalled: no output for %s (connection may have dropped, e.g. across system sleep): %s",
+					streamIdleTimeout, stderr)}
+			}
+			return result, toolUseCount, &transientCLIError{msg: fmt.Sprintf(
+				"claude CLI stream stalled: no output for %s (connection may have dropped, e.g. across system sleep)",
+				streamIdleTimeout)}
+
+		case line, ok := <-content:
+			resetIdle()
+			if !ok {
+				// Reader closed content (CLI exited / reader stopped). Surface scan errors.
+				select {
+				case err := <-scanErr:
+					return result, toolUseCount, fmt.Errorf("scanner error: %w", err)
+				default:
+				}
+				// CLI exited without emitting a terminal stop reason. This is
+				// not a clean end-of-turn — it happens when the CLI dies for
+				// an external reason (usage-limit / quota exhaustion, auth
+				// failure, crash). Surface as an error so the worker shows it
+				// in the UI instead of silently completing the turn.
+				if result.StopReason == "" {
+					stderr := ""
+					if c.activeSession != nil {
+						stderr = strings.TrimSpace(c.activeSession.drainStderr())
+					}
+					if stderr != "" {
+						return result, toolUseCount, &transientCLIError{
+							msg:           fmt.Sprintf("claude CLI exited unexpectedly: %s", stderr),
+							processExited: true,
+						}
+					}
+					return result, toolUseCount, &transientCLIError{
+						msg:           "claude CLI exited unexpectedly without completing the turn (possible usage-limit / quota exhaustion — check `claude` directly)",
+						processExited: true,
+					}
+				}
+				return result, toolUseCount, nil
+			}
+			if line == "" {
+				continue
+			}
+
+			pause, count, err := c.processStreamLineWithEarlyReturn(line, result, callback)
+			if err != nil {
+				return result, toolUseCount, err
+			}
+			toolUseCount += count
+
+			if pause {
+				result.StopReason = "tool_use"
+				return result, toolUseCount, nil
+			}
+
+			// End-of-turn detected from the stream (persistent CLI keeps running).
+			switch result.StopReason {
+			case "end_turn", "empty_response":
+				return result, toolUseCount, nil
+			}
+		}
+	}
+}
+
+// processStreamLineWithEarlyReturn processes a line but returns early on tool_use.
+// Returns (shouldPause, toolUseCount, error).
+func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResult, callback provider.StructuredStreamCallback) (bool, int, error) {
+	var msg StreamMessage
+	if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		return false, 0, nil // Skip malformed lines
+	}
+
+	// Capture session id from any event that carries one — system/init is the
+	// canonical source on a fresh spawn, but we also accept it from result
+	// events as a safety net.
+	if msg.SessionID != "" && result.SessionID == "" {
+		result.SessionID = msg.SessionID
+	}
+
+	switch msg.Type {
+	case "system":
+		if msg.Subtype == "api_retry" {
+			// CLI is retrying due to rate limit (HTTP 529) — surface to UI
+			var retry struct {
+				Attempt      int     `json:"attempt"`
+				MaxRetries   int     `json:"max_retries"`
+				RetryDelayMs float64 `json:"retry_delay_ms"`
+				ErrorStatus  int     `json:"error_status"`
+				Error        string  `json:"error"`
+			}
+			if json.Unmarshal([]byte(line), &retry) == nil {
+				delaySec := int(retry.RetryDelayMs/1000 + 0.5)
+				statusMsg := fmt.Sprintf("Rate limited (HTTP %d) — retrying (%d/%d, waiting %ds)",
+					retry.ErrorStatus, retry.Attempt, retry.MaxRetries, delaySec)
+				_, _ = callback(provider.StreamChunk{
+					Type:    provider.ContentBlockTypeStatus,
+					Content: statusMsg,
+				})
+			}
+		} else if msg.Subtype == "result" && len(msg.Result) > 0 {
+			var resultContent ResultContent
+			if err := json.Unmarshal(msg.Result, &resultContent); err == nil {
+				jlog.Debug("claudecode usage[system/result]: input=%d cacheRead=%d cacheWrite=%d output=%d total=%d (usageFromStream=%v)",
+					resultContent.InputTokens, resultContent.CacheReadInputTokens,
+					resultContent.CacheCreationInputTokens, resultContent.OutputTokens,
+					resultContent.InputTokens+resultContent.CacheReadInputTokens+resultContent.CacheCreationInputTokens,
+					result.usageFromStream)
+				// Only trust the result-envelope usage when no stream_event
+				// has reported per-call numbers; see the comment on
+				// turnResult.usageFromStream.
+				if !result.usageFromStream {
+					result.InputTokens = resultContent.InputTokens
+					result.OutputTokens = resultContent.OutputTokens
+					result.CacheReadTokens = resultContent.CacheReadInputTokens
+					result.CacheWriteTokens = resultContent.CacheCreationInputTokens
+				}
+				result.StopReason = resultContent.StopReason
+			}
+		} else if msg.Subtype == "init" {
+			// The CLI has booted and loaded the session — the slow spawn/resume
+			// phase is over and we now wait on the model. Flip the spinner from
+			// "Starting"/"Reconnecting" to the per-turn waiting label (a plain
+			// "Waiting for response", or "Processing conversation history" on a
+			// cold start with prior history) as a liveness beat that proves the
+			// cold start made progress.
+			waiting := c.turnWaitingPhase
+			if waiting == "" {
+				waiting = phaseWaiting
+			}
+			emitPhase(callback, waiting)
+		}
+
+	case "result":
+		if msg.Usage != nil {
+			jlog.Debug("claudecode usage[result]: input=%d cacheRead=%d cacheWrite=%d output=%d total=%d (usageFromStream=%v)",
+				msg.Usage.InputTokens, msg.Usage.CacheReadInputTokens,
+				msg.Usage.CacheCreationInputTokens, msg.Usage.OutputTokens,
+				msg.Usage.InputTokens+msg.Usage.CacheReadInputTokens+msg.Usage.CacheCreationInputTokens,
+				result.usageFromStream)
+			if !result.usageFromStream {
+				// Only trust the result-envelope usage when no stream_event has
+				// reported per-call numbers; see turnResult.usageFromStream.
+				result.InputTokens = msg.Usage.InputTokens
+				result.OutputTokens = msg.Usage.OutputTokens
+				result.CacheReadTokens = msg.Usage.CacheReadInputTokens
+				result.CacheWriteTokens = msg.Usage.CacheCreationInputTokens
+			}
+		}
+		// Self-update model spec cache from the CLI's modelUsage report so
+		// ListModelsWithInfo serves the model's true context window / max output
+		// without us tracking Anthropic's release notes. Key by the canonical
+		// alias (matching ListModelsWithInfo's base IDs and the CLI --model arg),
+		// not the raw configured string, or the warm value lands under a key the
+		// list never reads.
+		for _, mu := range msg.ModelUsage {
+			if mu == nil {
+				continue
+			}
+			updateCachedModelInfo(c.modelAlias(), mu.ContextWindow, mu.MaxOutputTokens)
+		}
+		switch msg.Subtype {
+		case "success":
+			// "success" means the CLI ran without crashing — NOT that the
+			// underlying API call succeeded. The CLI signals API failures
+			// via top-level is_error / api_error_status while keeping
+			// subtype="success", and stuffs the error text into Result.
+			// Without surfacing this, the worker would see an empty
+			// end_turn and treat it as a normal (silent) completion.
+			if msg.IsError {
+				var errStr string
+				_ = json.Unmarshal(msg.Result, &errStr)
+				if errStr == "" {
+					errStr = fmt.Sprintf("claude CLI API call failed (HTTP %d)", msg.APIErrorStatus)
+				}
+				return false, 0, fmt.Errorf("%s", errStr)
+			}
+			var resultStr string
+			if json.Unmarshal(msg.Result, &resultStr) == nil && resultStr == "" {
+				result.StopReason = "empty_response"
+			} else {
+				result.StopReason = "end_turn"
+			}
+		case "error":
+			// CLI exhausted retries or hit a fatal error — return as a proper error
+			var errStr string
+			if json.Unmarshal(msg.Result, &errStr) == nil && errStr != "" {
+				return false, 0, fmt.Errorf("%s", errStr)
+			}
+			return false, 0, fmt.Errorf("claude CLI returned an error")
+		}
+
+	case "stream_event":
+		return c.handleStreamEvent(msg.Event, result, callback)
+
+	case "control_request":
+		// CLI asking us to do something (typically: invoke an MCP tool
+		// via mcp_message). Dispatch through the stdio control protocol;
+		// tools/call responses are emitted later when the worker hands
+		// us the result via the next StreamMessage call.
+		if c.activeSession != nil && c.activeSession.live != nil && c.activeSession.live.control != nil {
+			if err := c.activeSession.live.control.handleControlRequest(&msg); err != nil {
+				return false, 0, fmt.Errorf("control_request: %w", err)
+			}
+		}
+
+	case "control_response":
+		// CLI replying to an outbound control_request we sent (today
+		// only initialize). Match by request_id and unblock the parked
+		// sender.
+		if c.activeSession != nil && c.activeSession.live != nil && c.activeSession.live.control != nil {
+			c.activeSession.live.control.handleControlResponse(&msg)
+		}
+
+	case "control_cancel_request":
+		// CLI cancelling a pending outbound control_request. We don't
+		// emit cancellable outbound requests today; logged for forensics
+		// if it ever fires.
+		jlog.Debug("CLI sent control_cancel_request for id=%s — no-op", msg.RequestID)
+	}
+	// Note: the CLI also emits a final `assistant` envelope after the
+	// stream_event sequence with the fully-assembled message. It is ignored
+	// here — the stream-event parser already finalised blocks at each
+	// content_block_stop, usage at message_delta, and stop_reason at
+	// message_delta — re-feeding it would only re-emit content to the UI.
+
+	return false, 0, nil
+}
+
+// handleStreamEvent dispatches Anthropic API events that the CLI passes
+// through verbatim when --include-partial-messages is enabled. Per-block
+// accumulators carry text/JSON across deltas; tool_use chunks are emitted
+// to the callback only at content_block_stop so the callback never sees a
+// partial tool input.
+func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, callback provider.StructuredStreamCallback) (bool, int, error) {
+	if ev == nil {
+		return false, 0, nil
+	}
+	if result.partialBlocks == nil {
+		result.partialBlocks = make(map[int]*partialBlock)
+	}
+
+	switch ev.Type {
+	case "message_start":
+		// The API has accepted the prompt and begun generating — the silent
+		// ingestion wait (system/init → here, the long cache-miss segment on a
+		// cold start) is over. Emit the mid-wait beat so the spinner flips off
+		// "Waiting"/"Processing conversation history" to "Generating
+		// response" the moment work starts, instead of looking stuck right up
+		// until the first token. Harmless on the later message_start of a
+		// multi-call turn: by then output tokens have streamed, so the frontend
+		// shows "Receiving" and ignores the phase label.
+		emitPhase(callback, phaseGenerating)
+
+		// A juggler "turn" can contain multiple Anthropic API calls (the LLM
+		// internally chains tool-use round-trips). The claudecode CLI emits
+		// usage that appears to *accumulate* across those calls within one
+		// turn — we observed `cache_read_input_tokens` of 223k on plain
+		// Opus (200k window) and 8754k after a long loop. Resetting at
+		// every message_start makes only the final API call's usage
+		// survive into `turnResult`, which matches what the footer wants
+		// to display (the prompt size the *next* turn will cache against).
+		// Trade-off: we lose per-call totals across the chain, but better
+		// no info than wildly wrong info.
+		result.InputTokens = 0
+		result.CacheReadTokens = 0
+		result.CacheWriteTokens = 0
+		// OutputTokens reset too — message_delta of the final call will
+		// set the authoritative value.
+		result.OutputTokens = 0
+		if ev.Message != nil && ev.Message.Usage != nil {
+			result.InputTokens = ev.Message.Usage.InputTokens
+			result.OutputTokens = ev.Message.Usage.OutputTokens
+			result.CacheReadTokens = ev.Message.Usage.CacheReadInputTokens
+			result.CacheWriteTokens = ev.Message.Usage.CacheCreationInputTokens
+			result.usageFromStream = true
+			jlog.Debug("claudecode usage[message_start]: input=%d cacheRead=%d cacheWrite=%d output=%d total=%d",
+				ev.Message.Usage.InputTokens, ev.Message.Usage.CacheReadInputTokens,
+				ev.Message.Usage.CacheCreationInputTokens, ev.Message.Usage.OutputTokens,
+				ev.Message.Usage.InputTokens+ev.Message.Usage.CacheReadInputTokens+ev.Message.Usage.CacheCreationInputTokens)
+			// We deliberately do NOT emit a transient `usage` chunk here.
+			// The CLI reports message_start usage cumulatively across all
+			// API calls in one juggler turn — emitting it mid-stream
+			// would flash a wrong number in the footer (10× too high on
+			// long tool-use loops). The footer keeps showing the previous
+			// turn's correct anchor until end-of-turn writes the new one.
+		}
+
+	case "content_block_start":
+		if ev.ContentBlock == nil {
+			return false, 0, nil
+		}
+		pb := &partialBlock{kind: ev.ContentBlock.Type}
+		if pb.kind == "tool_use" {
+			pb.toolID = ev.ContentBlock.ID
+			pb.toolName = ev.ContentBlock.Name
+		}
+		result.partialBlocks[ev.Index] = pb
+
+	case "content_block_delta":
+		pb := result.partialBlocks[ev.Index]
+		if pb == nil || ev.Delta == nil {
+			return false, 0, nil
+		}
+		switch ev.Delta.Type {
+		case "text_delta":
+			pb.text += ev.Delta.Text
+			if ev.Delta.Text != "" {
+				result.progress.Add(ev.Delta.Text)
+				if _, err := callback(provider.StreamChunk{
+					Type:    provider.ContentBlockTypeText,
+					Content: ev.Delta.Text,
+				}); err != nil {
+					return false, 0, err
+				}
+			}
+		case "thinking_delta":
+			pb.text += ev.Delta.Thinking
+			if ev.Delta.Thinking != "" {
+				result.progress.Add(ev.Delta.Thinking)
+				if _, err := callback(provider.StreamChunk{
+					Type:    provider.ContentBlockTypeThinking,
+					Content: ev.Delta.Thinking,
+				}); err != nil {
+					return false, 0, err
+				}
+			}
+		case "signature_delta":
+			pb.signature += ev.Delta.Signature
+		case "input_json_delta":
+			pb.toolJSON.WriteString(ev.Delta.PartialJSON)
+			result.progress.Add(ev.Delta.PartialJSON)
+		}
+
+	case "content_block_stop":
+		pb := result.partialBlocks[ev.Index]
+		if pb == nil {
+			return false, 0, nil
+		}
+		delete(result.partialBlocks, ev.Index)
+
+		switch pb.kind {
+		case "text":
+			result.Blocks = append(result.Blocks, provider.ContentBlock{
+				Type:    provider.ContentBlockTypeText,
+				Content: pb.text,
+			})
+		case "thinking":
+			block := provider.ContentBlock{
+				Type:    provider.ContentBlockTypeThinking,
+				Content: pb.text,
+			}
+			if pb.signature != "" {
+				block.Metadata = map[string]any{"signature": pb.signature}
+			}
+			result.Blocks = append(result.Blocks, block)
+		case "tool_use":
+			// Tool input arrives as JSON fragments via input_json_delta.
+			// Parse the accumulated payload now and emit a single complete
+			// tool_use chunk to the callback.
+			toolName := canonicalToolName(pb.toolName)
+			input := map[string]any{}
+			if raw := pb.toolJSON.String(); raw != "" {
+				if err := json.Unmarshal([]byte(raw), &input); err != nil {
+					// A non-empty payload that won't parse is a CORRUPT tool block
+					// (observed in the wild as a stray quote: `"offset": 142"` from a
+					// torn/interrupted pre-resume stream segment). DO NOT fall through
+					// to empty args: dispatching a {}-args tool_use makes the worker
+					// execute a phantom call (e.g. read with no file_path) and feed its
+					// error result into the control-protocol (name+args) FIFO, where it
+					// matches no CLI park — permanently shifting every later result by
+					// one and cross-delivering wrong file contents (the "tool/request
+					// divergence" cascade seen in juggler-1017f191's 16:52 read run).
+					// Fail the turn instead, as a transient error: dispatchTurnWithRetry
+					// warm-resumes when nothing has streamed yet, and surfaces it loudly
+					// (no silent corruption, and no re-execution of already-streamed
+					// sibling tools, which would be gated out by `streamed`) when it has.
+					jlog.Error("claudecode: malformed tool input JSON for %s — failing turn to avoid a phantom empty-args dispatch desyncing tool-result delivery: %v (raw=%s)", toolName, err, raw)
+					return false, 0, &transientCLIError{msg: fmt.Sprintf("malformed tool input JSON for %s: %v", toolName, err)}
+				}
+			}
+			toolName, input = convertClaudeNativeTool(toolName, input)
+			chunk := provider.StreamChunk{
+				Type:      provider.ContentBlockTypeToolUse,
+				ToolUseID: pb.toolID,
+				ToolName:  toolName,
+				ToolInput: input,
+			}
+			if _, err := callback(chunk); err != nil {
+				return false, 0, err
+			}
+			result.Blocks = append(result.Blocks, provider.ContentBlock(chunk))
+		}
+
+	case "message_delta":
+		if ev.Delta != nil && ev.Delta.StopReason != "" {
+			// Map Anthropic stop_reason to our stop reasons. tool_use causes a
+			// pause; end_turn lets readUntilPauseOrComplete exit cleanly.
+			switch ev.Delta.StopReason {
+			case "tool_use":
+				result.StopReason = "tool_use"
+				// Count emitted tool_use blocks for the caller's tally.
+				count := 0
+				for _, b := range result.Blocks {
+					if b.Type == provider.ContentBlockTypeToolUse {
+						count++
+					}
+				}
+				return true, count, nil
+			case "end_turn", "stop_sequence", "max_tokens":
+				result.StopReason = "end_turn"
+			default:
+				result.StopReason = ev.Delta.StopReason
+			}
+		}
+		if ev.Usage != nil {
+			result.InputTokens = ev.Usage.InputTokens
+			result.OutputTokens = ev.Usage.OutputTokens
+			result.CacheReadTokens = ev.Usage.CacheReadInputTokens
+			result.CacheWriteTokens = ev.Usage.CacheCreationInputTokens
+			result.usageFromStream = true
+			jlog.Debug("claudecode usage[message_delta]: input=%d cacheRead=%d cacheWrite=%d output=%d total=%d",
+				ev.Usage.InputTokens, ev.Usage.CacheReadInputTokens,
+				ev.Usage.CacheCreationInputTokens, ev.Usage.OutputTokens,
+				ev.Usage.InputTokens+ev.Usage.CacheReadInputTokens+ev.Usage.CacheCreationInputTokens)
+			// Emit a transient `usage` chunk so the UI footer can flip to
+			// a real input-token anchor as soon as this API call finishes
+			// (rather than waiting for the worker's end-of-turn write).
+			// We use message_delta — NOT message_start — because the CLI
+			// reports message_start.usage cumulatively across API calls
+			// in the session (we observed 10×–40× wrong values there).
+			// message_delta.usage is per-call and authoritative; it's
+			// what produces the correct end-of-turn anchor.
+			uncachedInput := ev.Usage.InputTokens
+			cacheRead := ev.Usage.CacheReadInputTokens
+			cacheWrite := ev.Usage.CacheCreationInputTokens
+			if total := uncachedInput + cacheRead + cacheWrite; total > 0 {
+				if _, err := callback(provider.StreamChunk{
+					Type: provider.ContentBlockTypeUsage,
+					Metadata: map[string]any{
+						"inputTokens":  total,
+						"cachedTokens": cacheRead,
+					},
+				}); err != nil {
+					return false, 0, err
+				}
+			}
+		}
+
+	case "message_stop":
+		// No-op; we already finalised via message_delta above.
+	}
+
+	return false, 0, nil
+}

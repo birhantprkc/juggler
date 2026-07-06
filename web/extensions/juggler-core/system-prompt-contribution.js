@@ -1,0 +1,116 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Juggler Core's system-prompt contribution.
+ *
+ * Scope: ONLY per-tool usage guidance, each section gated on the plugin that
+ * provides the tool (`has(id)`), so the prompt never advertises a tool the user
+ * has disabled. This is factual "how to drive these specific tools" text — not
+ * persona, tone, or general working style. Tool-independent, opinion-free
+ * guidance (identity, working loop, code quality, code references) lives in the
+ * editable system-prompt presets instead, where the user can see and change it.
+ *
+ * The default export is a PURE function of the enabled-plugin set, so its output
+ * is cache-stable across turns and strategy changes — it belongs in the cached
+ * system-prompt anchor, not the per-turn message stream. Keep additions terse:
+ * this text is a permanent resident of every turn's context, billed at the
+ * cache-read rate.
+ * @module juggler-core/system-prompt-contribution
+ */
+
+/**
+ * Build Juggler Core's contribution to the system prompt.
+ * @param {object} args
+ * @param {string[]} args.enabledPluginIds - Capability ids currently enabled
+ *   (catalog minus the disabled set). Sections gate on membership.
+ * @returns {string} Guidance text (possibly empty), sections separated by blank lines
+ */
+export default function systemPromptContribution({ enabledPluginIds }) {
+  const ids = Array.isArray(enabledPluginIds) ? enabledPluginIds : [];
+  const has = (/** @type {string} */ id) => ids.includes(id);
+
+  // Tool Usage — one parent section; each subsection gates on its plugin so
+  // the prompt never advertises a tool the user has disabled. Everything here
+  // is per-tool guidance; general working style lives in the prompt presets.
+  /** @type {string[]} */
+  const toolUsage = [];
+
+  // Prefer specialized tools over shelling out to bash.
+  /** @type {string[]} */
+  const preferLines = [];
+  if (has('read-file')) preferLines.push('- **read** for reading files (not cat/head/tail)');
+  if (has('write-file')) preferLines.push('- **write** for creating files (not echo/cat)');
+  if (has('replace-text')) preferLines.push('- **edit** for editing files (not sed/awk)');
+  if (has('search')) preferLines.push('- **grep** for searching file contents (not grep/rg in bash)');
+  if (has('glob')) preferLines.push('- **glob** for finding files by name (not find/ls)');
+  if (preferLines.length > 0) {
+    const lead = has('execute')
+      ? '### Prefer specialized tools over bash\nUse the dedicated tool instead of shelling out for the same job:'
+      : '### Specialized tools';
+    toolUsage.push(lead + '\n' + preferLines.join('\n'));
+  }
+
+  // Batching — only meaningful when more than one tool can run; describes how to
+  // issue tool calls, so it is per-tool guidance rather than general style.
+  /** @type {string[]} */
+  const batchLines = [
+    '- Call multiple independent tools in parallel',
+    '- Read files before editing to understand current state'
+  ];
+  if (has('batch')) {
+    batchLines.push('- Prefer batch_read / batch_grep when reading or searching several files at once');
+  }
+  toolUsage.push('### Tool Batching\n' + batchLines.join('\n'));
+
+  if (has('explore-code')) {
+    toolUsage.push(
+      '### Exploring across files — prefer explore_code\n' +
+			'When you need to understand something that spans several files — trace a call chain, find ' +
+			'every usage of a symbol, map how a module fits together — reach for `explore_code` instead of a ' +
+			'sequence of individual read/grep/glob calls. It runs all of your reads, greps, and globs together ' +
+			'inside one sandboxed JavaScript call and returns only the value you compute. The dozen ' +
+			'intermediate file dumps never enter the conversation, so you stay oriented and your context stays ' +
+			'clean. Rule of thumb: if exploring would otherwise take three or more separate read-only calls, ' +
+			'write one `explore_code` script instead.'
+    );
+  }
+
+  if (has('thread')) {
+    toolUsage.push(
+      '### Delegating sub-tasks — use create_thread\n' +
+				'Spawn a `create_thread` for a self-contained sub-task whose intermediate steps would only clutter ' +
+				'this conversation; it runs in isolation and only its final summary returns, keeping its tool calls ' +
+				'out of your context. Because it cannot see this conversation, the `prompt` must carry every fact it ' +
+				'needs (paths, names, decisions) and state exactly what to return and how to shape it. Give each ' +
+				'thread one task — never a task list, and never tell it to spawn further threads; run multiple tasks ' +
+				'as separate threads yourself, one at a time.'
+    );
+  }
+
+  /** @type {string[]} */
+  const sections = [];
+
+  if (toolUsage.length > 0) {
+    sections.push('## Tool Usage\n\n' + toolUsage.join('\n\n'));
+  }
+
+  // Memory — durable, cross-session project facts. Gated on the memory plugin.
+  // The tool only gets used if the prompt tells the model when to reach for it;
+  // without this, project memory stays empty.
+  if (has('memory')) {
+    sections.push(
+      '## Memory\n' +
+				'The `memory` tool keeps durable project facts in `.juggler/MEMORY.md`, already shown at the top ' +
+				'of your context every turn (never re-read it).\n' +
+				'- `remember` a durable, cross-session fact worth recalling — a build/test command, a convention, ' +
+				'a user correction, a non-obvious constraint. One concise fact per call.\n' +
+				'- `forget` (substring match) to drop a stale fact; to revise, forget then remember.\n' +
+				'- Not for ephemeral within-task state — only what stays true across sessions.'
+    );
+  }
+
+  return sections.join('\n\n');
+}

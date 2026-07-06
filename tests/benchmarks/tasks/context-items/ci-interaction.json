@@ -1,0 +1,19 @@
+{
+  "id": "ci-interaction",
+  "category": "context-items",
+  "description": "Test multi-context-item workflows: tree->read, grep->read, read->python analysis",
+  "fixture": "ci-grep-fixture",
+  "prompt": "Test complex multi-context-item workflows:\n\n1. WORKFLOW 1: Tree -> Read\n   - Generate a tree to see the project structure\n   - Based on the tree, read 2-3 specific files\n\n2. WORKFLOW 2: Grep -> Read\n   - Search for all TODO comments using grep\n   - Read the files that contain TODOs to see their full context\n\n3. WORKFLOW 3: Complex analysis\n   - Use grep to find all TODO comments\n   - Count how many TODOs are in each file\n   - Create a summary report\n\nCreate a file called WORKFLOW_TEST_RESULTS.md that documents:\n- The tree you generated and which files you chose to read\n- The grep results and which files you read for context\n- A complete summary of all TODOs found, organized by file\n- Proof that you used multiple context items in sequence",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "WORKFLOW_TEST_RESULTS.md",
+    "contains_strings": [
+      "tree",
+      "grep",
+      "TODO",
+      "src/auth.js",
+      "src/api.js",
+      "workflow"
+    ]
+  }
+}

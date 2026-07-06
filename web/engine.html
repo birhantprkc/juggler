@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Juggler Engine</title>
+
+    <!-- diff-match-patch for proper diff algorithm -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
+
+    <!-- Public Extension SDK: the ONLY juggler/* specifiers an extension may import.
+         Each maps to a curated re-export façade in web/sdk/ (decoupled from internal
+         file layout). See docs/extension_guide.md. -->
+    <script type="importmap" nonce="{{.CSPNonce}}">
+    {
+        "imports": {
+            "juggler/context-item": "/v{{.StaticVersion}}/sdk/context-item.js",
+            "juggler/strategy-type": "/v{{.StaticVersion}}/sdk/strategy-type.js",
+            "juggler/command-type": "/v{{.StaticVersion}}/sdk/command-type.js",
+            "juggler/ops": "/v{{.StaticVersion}}/sdk/ops.js",
+            "juggler/sandbox": "/v{{.StaticVersion}}/sdk/sandbox.js",
+            "juggler/ui": "/v{{.StaticVersion}}/sdk/ui.js",
+            "juggler/model": "/v{{.StaticVersion}}/sdk/model.js",
+            "juggler/item-utils": "/v{{.StaticVersion}}/sdk/item-utils.js",
+            "juggler/registry": "/v{{.StaticVersion}}/sdk/registry.js",
+            "juggler/version": "/v{{.StaticVersion}}/sdk/version.js",
+            "juggler/utils/html": "/v{{.StaticVersion}}/sdk/lib/html.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <!-- Asset prefix for versioned static paths -->
+    <script nonce="{{.CSPNonce}}">
+        window.__assetPrefix = '/v{{.StaticVersion}}';
+        // Per-instance session token. The engine runs its real runtime inside a
+        // module worker; engine-worker-main passes this value through so any
+        // worker-side /api fallback calls (including bash's blocking fallback and
+        // background shell ops) satisfy the same production auth gate as viewers.
+        window.__jugglerToken = '{{.APIToken}}';
+        window.JUGGLER_ENGINE = true;
+    </script>
+
+    <!-- Engine entry point: boots the worker-backed runtime. The engine's
+         WebSocket + Yjs sync + tool execution run in a module worker, off the
+         WebView's main thread, so WebKit can't throttle them when hidden. -->
+    <script type="module" src="/v{{.StaticVersion}}/js/engine-worker-main.js"></script>
+</body>
+</html>

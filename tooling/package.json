@@ -1,0 +1,34 @@
+{
+  "name": "juggler",
+  "version": "0.2.0",
+  "description": "Production-ready AI code agent CLI with integrated web interface",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "lint": "cd .. && eslint --config tooling/eslint.config.js --max-warnings 0 --ignore-pattern 'web/js/vendor/**' 'web/js/**/*.js'",
+    "lint:fix": "cd .. && eslint --config tooling/eslint.config.js --max-warnings 0 --fix --ignore-pattern 'web/js/vendor/**' 'web/js/**/*.js'",
+    "lint:css": "cd .. && stylelint --config tooling/.stylelintrc.json 'web/css/**/*.css'",
+    "lint:css:fix": "cd .. && stylelint --config tooling/.stylelintrc.json --fix 'web/css/**/*.css'"
+  },
+  "keywords": [
+    "ai",
+    "code-agent",
+    "llm",
+    "cli"
+  ],
+  "author": "Juggler Team",
+  "license": "AGPL-3.0-or-later",
+  "dependencies": {
+    "yjs": "^13.6.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "eslint": "^9.39.2",
+    "eslint-plugin-jsdoc": "^61.1.11",
+    "stylelint": "^17.3.0",
+    "stylelint-config-standard": "^40.0.0",
+    "stylelint-rem-over-px": "^1.0.2",
+    "typescript": "^5.7.2"
+  }
+}

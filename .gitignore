@@ -1,0 +1,115 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace file
+go.work
+
+# Dependency directories (root only, not web/js/vendor/)
+/vendor/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Juggler configuration and runtime
+.juggler/
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# API keys and secrets
+*.key
+*.pem
+secrets/
+credentials.json
+
+# Node modules (for JavaScript linting)
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build artifacts
+*.wasm
+*.js.map
+cmd/*/rsrc_*.syso
+cmd/juggler/app/icon.png
+
+# Web UI build output (Svelte)
+web/dist/
+web/build/
+web/.svelte-kit/
+web/package/
+.output/
+.vercel/
+.netlify/
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+
+# Debug files
+__debug_bin
+
+# Air live reload (if used)
+tmp/
+
+# Testing
+*.test
+testdata/
+.test/
+tests/benchmarks/results/
+
+# Profiling
+*.prof
+*.trace
+cpu.prof
+mem.prof
+
+# Documentation builds
+docs/_build/
+site/
+
+# Local development
+local/
+scratch/
+playground/
+txn_*.json
+.claude/
+
+demo_project/

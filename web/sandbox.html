@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Juggler Sandbox</title>
+</head>
+<body>
+    <script nonce="{{.CSPNonce}}">
+        // This page is loaded by the host into an iframe with `sandbox=
+        // "allow-scripts"` (no allow-same-origin), so it has an OPAQUE ORIGIN:
+        // no DOM/storage/cookie access to the host page and no same-origin
+        // network access. It does NOT run untrusted code itself — it spawns a
+        // NESTED worker (which inherits this opaque origin, so it gains no
+        // privileges) and relays the host's MessagePort to it. The untrusted
+        // code runs in that worker, off every main thread. That is the whole
+        // point: nothing untrusted touches a main thread, and the worker stays
+        // as isolated as this frame.
+        //
+        // The worker MUST be created from a blob: URL whose source is inlined
+        // below. A worker script must be same-origin with its creating context;
+        // this opaque-origin frame has no same-origin http URL, but a blob: URL
+        // it mints IS same-origin to it. (A cross-origin *served* module worker
+        // does not load in WebKit even with CORS; a blob worker does.) The
+        // source is inlined rather than fetched because this opaque frame cannot
+        // fetch it (connect-src) and cannot load it as a cross-origin worker.
+
+        // projectRoot is exposed to sandboxed code as a built-in binding so
+        // callers can build absolute paths matching the user's mental model.
+        const PROJECT_ROOT = "{{.ProjectRoot}}";
+
+        // The server's own http origin. location.href is the real http URL even
+        // though the security origin is opaque, so it yields the origin. The
+        // worker needs it to turn user code's absolute-path import() specifiers
+        // into fully-qualified URLs (a blob worker's module base is the opaque
+        // blob: URL, against which a bare "/abs/path" cannot resolve; a
+        // fully-qualified "http://host/abs/path" can, and the server serves
+        // "<projectRoot>/web/..." from the static tree).
+        const ORIGIN = new URL(self.location.href).origin;
+
+        // Source of the nested sandbox worker, run via a blob: URL. Self-
+        // contained (no imports) so the blob worker has no cross-origin imports
+        // of its own — WebKit blocks those from a worker even with CORS.
+        const SANDBOX_WORKER_SRC = `
+// POSIX path module (mirrors web/js/services/path.js).
+const sep = '/';
+const delimiter = ':';
+function normalise(p) {
+  if (!p) return '.';
+  const isAbs = p.startsWith(sep);
+  const parts = p.split(sep);
+  const resolved = [];
+  for (const part of parts) {
+    if (part === '.' || part === '') continue;
+    if (part === '..') {
+      if (resolved.length > 0 && resolved[resolved.length - 1] !== '..') resolved.pop();
+      else if (!isAbs) resolved.push('..');
+    } else { resolved.push(part); }
+  }
+  let result = resolved.join(sep);
+  if (isAbs) result = sep + result;
+  return result || (isAbs ? sep : '.');
+}
+function join(...segments) { return normalise(segments.filter(Boolean).join(sep)); }
+function resolvePath(...segments) {
+  let r = '';
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const seg = segments[i];
+    if (!seg) continue;
+    r = r ? seg + sep + r : seg;
+    if (seg.startsWith(sep)) break;
+  }
+  if (!r.startsWith(sep)) r = sep + r;
+  return normalise(r);
+}
+function dirname(p) {
+  if (!p) return '.';
+  const idx = p.lastIndexOf(sep);
+  if (idx === -1) return '.';
+  if (idx === 0) return sep;
+  return p.slice(0, idx);
+}
+function basename(p, ext) {
+  if (!p) return '';
+  let base = p;
+  if (base.endsWith(sep)) base = base.slice(0, -1);
+  const idx = base.lastIndexOf(sep);
+  if (idx !== -1) base = base.slice(idx + 1);
+  if (ext && base.endsWith(ext)) base = base.slice(0, -ext.length);
+  return base;
+}
+function extname(p) {
+  const base = basename(p);
+  const dotIdx = base.lastIndexOf('.');
+  if (dotIdx <= 0) return '';
+  return base.slice(dotIdx);
+}
+function relative(from, to) {
+  const fromParts = normalise(from).split(sep).filter(Boolean);
+  const toParts = normalise(to).split(sep).filter(Boolean);
+  let common = 0;
+  while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) common++;
+  const ups = fromParts.length - common;
+  const remainder = toParts.slice(common);
+  const parts = [];
+  for (let i = 0; i < ups; i++) parts.push('..');
+  parts.push(...remainder);
+  return parts.join(sep) || '.';
+}
+function isAbsolute(p) { return typeof p === 'string' && p.startsWith(sep); }
+const path = { sep, delimiter, join, resolve: resolvePath, dirname, basename, extname, relative, isAbsolute, normalise, normalize: normalise };
+
+function errMsg(e) {
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'string') return e;
+  try { return JSON.stringify(e); } catch (_) { return 'sandbox error'; }
+}
+
+// The iframe posts {type:'init', code, timeoutMs, capabilities, projectRoot,
+// origin} plus a MessagePort on the worker's first 'message'. All further
+// traffic is on the port: capability calls go out as {kind, method, args, id};
+// the host's {kind:'reply', id, ...} comes back; the final {kind:'result', ...}
+// carries the script's value. This is the exact protocol the host
+// (sandbox-runner.js) services — the iframe is a transparent relay between this
+// port and the host.
+self.addEventListener('message', (event) => {
+  const data = event.data || {};
+  if (data.type !== 'init') return;
+  const port = event.ports[0];
+  if (!port) return;
+  const rawCode = data.code;
+  const timeoutMs = data.timeoutMs;
+  const projectRoot = data.projectRoot;
+  const origin = data.origin;
+  const capabilities = data.capabilities;
+
+  let nextId = 0;
+  const pending = new Map();
+  port.onmessage = (e) => {
+    const m = e.data || {};
+    if (m.kind !== 'reply') return;
+    const p = pending.get(m.id);
+    if (!p) return;
+    pending.delete(m.id);
+    if (m.ok) p.resolve(m.value);
+    else p.reject(new Error(m.error || 'rpc error'));
+  };
+
+  function rpc(kind, method, args) {
+    const id = ++nextId;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      port.postMessage({ kind, method, args, id });
+    });
+  }
+
+  // import() resolver for user code. A blob worker's module base is the opaque
+  // blob: URL, so a bare absolute path ("/Users/.../web/x.js") cannot resolve.
+  // We rewrite every import(...) in the user code to sandboxImport(...) and
+  // resolve absolute paths against the server's http origin, which it CAN
+  // fetch cross-origin (CORS) and serve from the static tree. Already-qualified
+  // URLs (http:, blob:, data:) pass through unchanged.
+  function sandboxImport(spec) {
+    let url = spec;
+    if (typeof spec === 'string') {
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(spec)) url = spec;
+      else if (spec.startsWith('/')) url = origin + spec;
+      else url = origin + '/' + spec.replace(/^\\.\\//, '');
+    }
+    return import(url);
+  }
+
+  // Bindings injected into user code: caller-supplied capabilities (RPC'd back
+  // to the host) plus built-ins path (pure), projectRoot, and the sandboxImport
+  // resolver. A callable capability is invoked directly (grep(...)); otherwise
+  // its method calls are forwarded (fs.readFile(...)).
+  const bindings = { path, projectRoot, sandboxImport };
+  for (const d of (capabilities || [])) {
+    bindings[d.name] = d.callable
+      ? (...args) => rpc(d.name, '', args)
+      : new Proxy({}, { get: (_t, method) => (...args) => rpc(d.name, method, args) });
+  }
+  const names = Object.keys(bindings);
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+  // Route user import() through the resolver. Workers have no import map, so
+  // this is the runtime analog of the static import rewrite the server already
+  // does for module workers (worker_module.go).
+  const code = String(rawCode).replace(/\\bimport\\s*\\(/g, 'sandboxImport(');
+
+  // Compile up front to surface SyntaxErrors synchronously instead of hanging
+  // until the timeout (e.g. an LLM redeclaring an injected binding).
+  let fn;
+  try {
+    fn = new AsyncFunction(...names, code);
+  } catch (err) {
+    port.postMessage({ kind: 'result', ok: false, error: errMsg(err) });
+    return;
+  }
+
+  const run = Promise.resolve().then(() => fn(...names.map((n) => bindings[n])));
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Script timed out after ' + timeoutMs + 'ms')), timeoutMs)
+  );
+
+  Promise.race([run, timeout]).then(
+    (result) => port.postMessage({ kind: 'result', ok: true, result: result === undefined ? null : result }),
+    (err) => port.postMessage({ kind: 'result', ok: false, error: errMsg(err) })
+  );
+});
+`;
+
+        const SANDBOX_WORKER_BLOB = URL.createObjectURL(new Blob([SANDBOX_WORKER_SRC], { type: 'text/javascript' }));
+
+        // The host (juggler/sandbox, sandbox-runner.js) posts {type:
+        // 'sandbox-execute', code, timeoutMs, capabilities} plus a MessagePort
+        // on this iframe's first 'message'. We spawn the worker, hand it the
+        // request + a private channel, and relay that channel to/from the host
+        // port verbatim — capability RPCs and the final result flow worker →
+        // iframe → host, and the host's replies flow back. The host services
+        // every capability call; we only relay.
+        window.addEventListener('message', (event) => {
+            if (!event.data || event.data.type !== 'sandbox-execute') return;
+            const hostPort = event.ports[0];
+            if (!hostPort) return;
+            const { code, timeoutMs, capabilities } = event.data;
+
+            let worker;
+            try {
+                worker = new Worker(SANDBOX_WORKER_BLOB, { type: 'module' });
+            } catch (err) {
+                hostPort.postMessage({ kind: 'result', ok: false, error: (err && err.message) || String(err) });
+                return;
+            }
+
+            const channel = new MessageChannel();
+            let settled = false;
+            const cleanup = () => {
+                try { worker.terminate(); } catch (_) { /* already gone */ }
+                try { channel.port1.close(); } catch (_) { /* already closed */ }
+            };
+
+            // Backstop timeout: a synchronously-hanging script never lets the
+            // worker's own timer fire, so terminate it from here. (The host has
+            // its own timer too, but only the iframe holds the Worker handle.)
+            const killTimer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                hostPort.postMessage({ kind: 'result', ok: false, error: `Script timed out after ${timeoutMs}ms` });
+            }, timeoutMs);
+
+            // Relay worker → host. On the final result, tear the worker down.
+            channel.port1.onmessage = (e) => {
+                const m = e.data || {};
+                if (settled) return;
+                hostPort.postMessage(m);
+                if (m.kind === 'result') {
+                    settled = true;
+                    clearTimeout(killTimer);
+                    cleanup();
+                }
+            };
+
+            // Relay host → worker (capability replies).
+            hostPort.onmessage = (e) => {
+                if (settled) return;
+                channel.port1.postMessage(e.data);
+            };
+
+            worker.onerror = (e) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(killTimer);
+                cleanup();
+                hostPort.postMessage({ kind: 'result', ok: false, error: (e && e.message) || 'sandbox worker error' });
+            };
+
+            worker.postMessage(
+                { type: 'init', code, timeoutMs, capabilities, projectRoot: PROJECT_ROOT, origin: ORIGIN },
+                [channel.port2]
+            );
+        });
+
+        // Signal readiness so the host doesn't have to poll on iframe load
+        // before posting work. The host listens for {type:'sandbox-ready'}.
+        if (window.parent) {
+            try { window.parent.postMessage({ type: 'sandbox-ready' }, '*'); } catch (_) { /* opaque-origin parents are fine */ }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Ensure consistent line endings across all platforms
+* text=auto
+
+# Go files must use LF line endings for gofmt compatibility
+*.go text eol=lf
+
+# Shell scripts use LF
+*.sh text eol=lf
+
+# Makefiles use LF
+Makefile text eol=lf
+
+# Keep Windows batch files with CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf

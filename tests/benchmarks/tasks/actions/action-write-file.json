@@ -1,0 +1,20 @@
+{
+  "id": "action-write-file",
+  "category": "actions",
+  "description": "Test write-file action for creating new files and overwriting existing ones",
+  "fixture": "action-edit-fixture",
+  "prompt": "Test the write-file action:\n\n1. Create a new file called src/config.js with some configuration settings:\n   ```javascript\n   export const config = {\n     apiUrl: 'https://api.example.com',\n     timeout: 5000,\n     retries: 3\n   };\n   ```\n\n2. Overwrite the existing file src/validator.js with improved validation:\n   ```javascript\n   export function validateEmail(email) {\n     const re = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n     if (!email) return false;\n     return re.test(email);\n   }\n\n   export function validatePassword(password) {\n     return password && password.length >= 12;  // Improved: 12 chars minimum\n   }\n\n   export function validateUsername(username) {\n     const re = /^[a-zA-Z0-9_]{3,20}$/;\n     if (!username) return false;\n     return re.test(username);\n   }\n   ```\n\n3. Verify both files were created/updated correctly",
+  "scoring": {
+    "type": "multi_file_consistency",
+    "files": [
+      {
+        "path": "src/config.js",
+        "contains_strings": ["apiUrl", "timeout", "retries"]
+      },
+      {
+        "path": "src/validator.js",
+        "contains_strings": ["length >= 12", "Improved"]
+      }
+    ]
+  }
+}

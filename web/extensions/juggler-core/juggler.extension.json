@@ -1,0 +1,21 @@
+{
+  "id": "@juggler/core",
+  "name": "Juggler Core",
+  "version": "1.0.0",
+  "author": "Juggler Team",
+  "homepage": "https://juggler.studio",
+  "license": "Apache-2.0",
+  "engineApi": "^1.0.0",
+  "permissions": [
+    "filesystem.read",
+    "filesystem.write",
+    "shell.exec",
+    "web.fetch"
+  ],
+  "provides": {
+    "contextItems": ["context-items/*-context-item.js"],
+    "strategies": ["strategies/*-strategy-type.js"],
+    "commands": ["commands/*-command-type.js"],
+    "systemPrompt": "system-prompt-contribution.js"
+  }
+}

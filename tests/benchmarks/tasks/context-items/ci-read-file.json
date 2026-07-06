@@ -1,0 +1,20 @@
+{
+  "id": "ci-read-file",
+  "category": "context-items",
+  "description": "Test read-file context item with different read modes: full, lineRange, tail, head, around",
+  "fixture": "ci-read-fixture",
+  "prompt": "Test the read-file context item's different read modes:\n\n1. Read the full content of small.txt\n2. Read lines 2-4 of small.txt using lineRange mode\n3. Read the last 5 lines of logfile.log using tail mode\n4. Read the first 10 lines of medium.py using head mode\n5. Read around line 15 of medium.py (with context) using around mode\n\nCreate a file called READ_TEST_RESULTS.md that documents:\n- Each read operation performed\n- The mode used for each operation\n- Confirmation that each mode returned the expected content\n- Specific quotes from the content to prove you read it correctly",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "READ_TEST_RESULTS.md",
+    "contains_strings": [
+      "full content",
+      "lineRange",
+      "tail mode",
+      "head mode",
+      "around mode",
+      "Line 2",
+      "logfile.log"
+    ]
+  }
+}

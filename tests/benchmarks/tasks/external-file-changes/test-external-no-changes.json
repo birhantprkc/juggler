@@ -1,0 +1,14 @@
+{
+  "id": "test-external-no-changes",
+  "category": "external-file-changes",
+  "description": "Control test: No external changes, edit proceeds normally without retry",
+  "fixture": "external-change-fixture",
+  "prompt": "1. Read src/config.js:\n<context-item use=\"read-file\">\n{\"path\": \"src/config.js\"}\n</context-item>\n\n2. Edit it using replace-text:\n<action execute=\"replace-text\">\n{\"path\": \"src/config.js\", \"old_str\": \"export const API_URL = 'https://api.example.com';\", \"new_str\": \"export const API_URL = 'https://no-retry-needed.com';\"}\n</action>\n\nNOTE: No external modification will occur. The edit should succeed on first try with NO retry message.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/config.js",
+    "contains_strings": [
+      "no-retry-needed.com"
+    ]
+  }
+}

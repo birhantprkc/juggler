@@ -1,0 +1,18 @@
+{
+  "id": "test-external-basic",
+  "category": "external-file-changes",
+  "description": "Basic test: File modified externally between read and edit, system retries",
+  "fixture": "external-change-fixture",
+  "prompt": "1. Read src/config.js to see the current content:\n<context-item use=\"read-file\">\n{\"path\": \"src/config.js\"}\n</context-item>\n\n2. Edit the file using replace-text to change RETRY_COUNT:\n<action execute=\"replace-text\">\n{\"path\": \"src/config.js\", \"old_str\": \"export const RETRY_COUNT = 3;\", \"new_str\": \"export const RETRY_COUNT = 5;\"}\n</action>\n\nNOTE: The test framework will modify src/config.js externally AFTER you read it but BEFORE your edit executes. The system should detect this, show a retry message, and succeed with fresh content.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/config.js",
+    "contains_strings": [
+      "RETRY_COUNT = 5"
+    ]
+  },
+  "externalModification": {
+    "file": "src/config.js",
+    "newContent": "export const API_URL = 'https://api.example.com';\nexport const TIMEOUT = 3000;\nexport const RETRY_COUNT = 3;"
+  }
+}

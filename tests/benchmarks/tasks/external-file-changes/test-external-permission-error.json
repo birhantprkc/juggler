@@ -1,0 +1,20 @@
+{
+  "id": "test-external-permission-error",
+  "category": "external-file-changes",
+  "description": "Edge case: Hash check fails due to permission error, system treats as potential change",
+  "fixture": "external-change-fixture",
+  "prompt": "1. Read a file:\n<context-item use=\"read-file\">\n{\"path\": \"src/restricted.js\"}\n</context-item>\n\n2. Try to edit using replace-text:\n<action execute=\"replace-text\">\n{\"path\": \"src/restricted.js\", \"old_str\": \"export const DATA\", \"new_str\": \"export const DATA = 'modified'; // was\"}\n</action>\n\nNOTE: The file permissions will be changed externally making it unreadable. Hash check will fail. System should treat error as potential change and retry.\n\n3. After observing the behavior, write your findings to TEST_LOG.md. Document whether the system detected the permission error and how it handled the situation.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "TEST_LOG.md",
+    "contains_strings": [
+      "permission",
+      "error"
+    ]
+  },
+  "externalModification": {
+    "file": "src/restricted.js",
+    "action": "chmod",
+    "mode": "000"
+  }
+}

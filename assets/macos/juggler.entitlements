@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements applied when signing Juggler.app with a real Developer ID
+  identity under the hardened runtime (see the Makefile's mac-codesign target).
+  Ad-hoc dev builds do NOT use this file.
+
+  Kept intentionally minimal — the hardened runtime is not the App Sandbox, so a
+  non-sandboxed Developer ID app can open network sockets (the local server) and
+  spawn tool subprocesses (bash/git/…) with no entitlement. WKWebView runs its
+  JavaScript JIT inside Apple's own signed WebContent XPC process, so the host
+  needs no com.apple.security.cs.allow-jit. Only com.apple.security.network.client
+  is declared, matching the Wails v3 production preset. Deliberately absent:
+  com.apple.security.get-task-allow (would fail notarization) and the
+  allow-jit / allow-unsigned-executable-memory / disable-library-validation
+  entitlements (weaken the hardened runtime; the app needs none of them).
+  Add a key here only if a notarization or runtime failure proves it necessary.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

@@ -1,0 +1,19 @@
+{
+  "id": "test-external-non-ascii",
+  "category": "external-file-changes",
+  "description": "Edge case: File with unicode/emoji modified externally, hash handles correctly",
+  "fixture": "external-change-fixture",
+  "prompt": "1. Read file with unicode:\n<context-item use=\"read-file\">\n{\"path\": \"src/unicode.js\"}\n</context-item>\n\n2. Edit it using replace-text:\n<action execute=\"replace-text\">\n{\"path\": \"src/unicode.js\", \"old_str\": \"export const GREETING = \", \"new_str\": \"export const GREETING = '你好 世界 🌍'; // was \"}\n</action>\n\nNOTE: File contains emoji/unicode and will be modified externally. Hash should handle non-ASCII correctly.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/unicode.js",
+    "contains_strings": [
+      "你好",
+      "🌍"
+    ]
+  },
+  "externalModification": {
+    "file": "src/unicode.js",
+    "newContent": "export const GREETING = 'Привет мир 🌏';"
+  }
+}

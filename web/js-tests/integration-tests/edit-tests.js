@@ -1,0 +1,805 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+/**
+ * Integration Tests: Edit (Replace Text) Operations
+ *
+ * Tests edit through the full pipeline: sendMessage -> worker -> mock LLM -> tool execution -> Yjs sync
+ * @module integration-tests/edit-tests
+ *
+ * Each test uses testDirFor(name) so paths are isolated from sibling tests in the iframe pool.
+ */
+
+import { textResponse, toolUseResponse } from '../utilities/integration-test-runner.js';
+import { testDirFor } from '../utilities/integration-test-runner.js';
+import { isToolActionMessage } from '../../sdk/lib/message.js';
+
+// ============================================================================
+// TEST DEFINITIONS
+// ============================================================================
+
+const TD_editBasic = testDirFor('edit-basic');
+/**
+ * Basic edit: create a file then edit it with search/replace.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editBasicTest = {
+  name: 'edit-basic',
+  description: 'Create a file then edit with search/replace',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    // Turn 1: Create the file
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editBasic}/file.txt`, content: 'Hello foo world' },
+      'Creating file.'
+    ),
+    // Turn 2: Edit the file
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editBasic}/file.txt`, old_string: 'foo', new_string: 'bar' },
+      'Editing file.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: `Create ${TD_editBasic}/file.txt then replace foo with bar` }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: `Create ${TD_editBasic}/file.txt then replace foo with bar` },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'Hello foo world', file_path: `${TD_editBasic}/file.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editBasic}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Editing file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editBasic}/file.txt`, new_string: 'bar', old_string: 'foo' },
+        state: 'completed',
+
+        result: {
+          content: `Edited file: ${TD_editBasic}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Done.' }
+    ]
+  },
+
+  fileAssertions: [
+    { path: `${TD_editBasic}/file.txt`, content: 'Hello bar world' }
+  ]
+};
+
+const TD_editMultiline = testDirFor('edit-multiline');
+/**
+ * Multi-line edit on existing fixture file.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editMultilineTest = {
+  name: 'edit-multiline',
+  description: 'Multi-line search/replace on existing Go file',
+  fixture: 'unit-test-fixture',
+  // Seed our own file under the test dir so the edit doesn't mutate the shared
+  // fixture's src/main.go (sibling read-file-* tests would race on the
+  // modified content).
+  setupFiles: {
+    [`${TD_editMultiline}/main.go`]: 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Hello, World!")\n}\n\nfunc add(a, b int) int {\n\treturn a + b\n}\n'
+  },
+
+  llmResponses: [
+    toolUseResponse(
+      'call_1',
+      'edit',
+      {
+        file_path: `${TD_editMultiline}/main.go`,
+        old_string: 'func add(a, b int) int {\n\treturn a + b\n}',
+        new_string: 'func add(a, b int) int {\n\treturn a + b // addition\n}'
+      },
+      'Editing function.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Add comment to add function' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Add comment to add function' },
+      { type: 'assistant', content: 'Editing function.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'edit',
+        toolInput: {
+          file_path: `${TD_editMultiline}/main.go`,
+          new_string: 'func add(a, b int) int {\n\treturn a + b // addition\n}',
+          old_string: 'func add(a, b int) int {\n\treturn a + b\n}'
+        },
+        state: 'completed',
+
+        result: {
+          content: `Edited file: ${TD_editMultiline}/main.go`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Done.' }
+    ]
+  },
+
+  fileAssertions: [
+    { path: `${TD_editMultiline}/main.go`, content: 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Hello, World!")\n}\n\nfunc add(a, b int) int {\n\treturn a + b // addition\n}\n' }
+  ]
+};
+
+const TD_editNotFound = testDirFor('edit-not-found');
+/**
+ * Edit not found: search string doesn't exist in file.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editNotFoundTest = {
+  name: 'edit-not-found',
+  description: 'Edit with non-existent search string returns structured error',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    // Turn 1: Create file
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editNotFound}/file.txt`, content: 'some content here' },
+      'Creating file.'
+    ),
+    // Turn 2: Try to edit with non-existent string
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editNotFound}/file.txt`, old_string: 'NONEXISTENT', new_string: 'replacement' },
+      'Editing file.'
+    ),
+    textResponse('Edit failed, sorry.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Create file then try bad edit' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Create file then try bad edit' },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'some content here', file_path: `${TD_editNotFound}/file.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editNotFound}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Editing file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editNotFound}/file.txt`, new_string: 'replacement', old_string: 'NONEXISTENT' },
+        state: 'completed',
+
+        // Validation rejects mismatched old_string before approval/execute,
+        // so the error is the raw LLM-feedback message — no duplicate
+        // "Replace text failed: …" wrapper from the post-execute summary.
+        result: {
+          content: `Search failed in '${TD_editNotFound}/file.txt'. Re-read file and use exact text including whitespace.`,
+          isError: true
+        }
+      },
+      { type: 'assistant', content: 'Edit failed, sorry.' }
+    ]
+  },
+
+  fileAssertions: [
+    // File should be unchanged
+    { path: `${TD_editNotFound}/file.txt`, content: 'some content here' }
+  ]
+};
+
+const TD_editAmbiguous = testDirFor('edit-ambiguous');
+/**
+ * Ambiguous edit: search string matches multiple locations.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editAmbiguousTest = {
+  name: 'edit-ambiguous',
+  description: 'Edit with ambiguous search string (multiple matches) returns validation error',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    // Turn 1: Create file with repeated content
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editAmbiguous}/file.txt`, content: 'foo and foo and foo' },
+      'Creating file.'
+    ),
+    // Turn 2: Try ambiguous edit
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editAmbiguous}/file.txt`, old_string: 'foo', new_string: 'bar' },
+      'Editing file.'
+    ),
+    textResponse('Edit failed.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Create file then try ambiguous edit' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Create file then try ambiguous edit' },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'foo and foo and foo', file_path: `${TD_editAmbiguous}/file.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editAmbiguous}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Editing file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editAmbiguous}/file.txt`, new_string: 'bar', old_string: 'foo' },
+        state: 'completed',
+        result: {
+          content: `Error: search string appears 3 times in file '${TD_editAmbiguous}/file.txt'. The old_str is ambiguous - it matches multiple locations in the file. Please provide a longer, unique search string that matches only the specific section you want to replace, or set replace_all to true to replace every occurrence`,
+          isError: true
+        }
+      },
+      { type: 'assistant', content: 'Edit failed.' }
+    ]
+  },
+
+  fileAssertions: [
+    // File should be unchanged
+    { path: `${TD_editAmbiguous}/file.txt`, content: 'foo and foo and foo' }
+  ]
+};
+
+const TD_editSpecialChars = testDirFor('edit-special-chars');
+/**
+ * Special characters: regex metacharacters treated as literal.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editSpecialCharsTest = {
+  name: 'edit-special-chars',
+  description: 'Edit with regex metacharacters treated as literal text',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editSpecialChars}/file.txt`, content: 'const x = arr[0];' },
+      'Creating file.'
+    ),
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editSpecialChars}/file.txt`, old_string: 'arr[0]', new_string: 'arr[1]' },
+      'Editing file.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Edit special chars' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Edit special chars' },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'const x = arr[0];', file_path: `${TD_editSpecialChars}/file.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editSpecialChars}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Editing file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editSpecialChars}/file.txt`, new_string: 'arr[1]', old_string: 'arr[0]' },
+        state: 'completed',
+
+        result: {
+          content: `Edited file: ${TD_editSpecialChars}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Done.' }
+    ]
+  },
+
+  fileAssertions: [
+    { path: `${TD_editSpecialChars}/file.txt`, content: 'const x = arr[1];' }
+  ]
+};
+
+const TD_editUnicode = testDirFor('edit-unicode');
+/**
+ * Unicode content handling.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editUnicodeTest = {
+  name: 'edit-unicode',
+  description: 'Edit unicode content',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editUnicode}/file.txt`, content: 'Hello 世界 old world' },
+      'Creating file.'
+    ),
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editUnicode}/file.txt`, old_string: '世界 old', new_string: '世界 new' },
+      'Editing file.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Edit unicode' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Edit unicode' },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'Hello 世界 old world', file_path: `${TD_editUnicode}/file.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editUnicode}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Editing file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editUnicode}/file.txt`, new_string: '世界 new', old_string: '世界 old' },
+        state: 'completed',
+
+        result: {
+          content: `Edited file: ${TD_editUnicode}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Done.' }
+    ]
+  },
+
+  fileAssertions: [
+    { path: `${TD_editUnicode}/file.txt`, content: 'Hello 世界 new world' }
+  ]
+};
+
+const TD_editEmptyReplacement = testDirFor('edit-empty-replacement');
+/**
+ * Empty replacement (deletion).
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editEmptyReplacementTest = {
+  name: 'edit-empty-replacement',
+  description: 'Delete text by replacing with empty string',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editEmptyReplacement}/file.txt`, content: 'keep DELETE keep' },
+      'Creating file.'
+    ),
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editEmptyReplacement}/file.txt`, old_string: 'DELETE ', new_string: '' },
+      'Deleting text.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Delete text from file' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Delete text from file' },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'keep DELETE keep', file_path: `${TD_editEmptyReplacement}/file.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editEmptyReplacement}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Deleting text.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editEmptyReplacement}/file.txt`, new_string: '', old_string: 'DELETE ' },
+        state: 'completed',
+
+        result: {
+          content: `Edited file: ${TD_editEmptyReplacement}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Done.' }
+    ]
+  },
+
+  fileAssertions: [
+    { path: `${TD_editEmptyReplacement}/file.txt`, content: 'keep keep' }
+  ]
+};
+
+const TD_editSequential = testDirFor('edit-sequential');
+/**
+ * Sequential edits: multiple edits on the same file across LLM turns.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editSequentialTest = {
+  name: 'edit-sequential',
+  description: 'Multiple sequential edits on the same file',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editSequential}/file.txt`, content: 'aaa bbb ccc' },
+      'Creating file.'
+    ),
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editSequential}/file.txt`, old_string: 'aaa', new_string: 'AAA' },
+      'First edit.'
+    ),
+    toolUseResponse(
+      'call_3',
+      'edit',
+      { file_path: `${TD_editSequential}/file.txt`, old_string: 'ccc', new_string: 'CCC' },
+      'Second edit.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Create file then edit twice' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Create file then edit twice' },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'aaa bbb ccc', file_path: `${TD_editSequential}/file.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editSequential}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'First edit.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editSequential}/file.txt`, new_string: 'AAA', old_string: 'aaa' },
+        state: 'completed',
+
+        result: {
+          content: `Edited file: ${TD_editSequential}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Second edit.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_3',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editSequential}/file.txt`, new_string: 'CCC', old_string: 'ccc' },
+        state: 'completed',
+
+        result: {
+          content: `Edited file: ${TD_editSequential}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Done.' }
+    ]
+  },
+
+  fileAssertions: [
+    { path: `${TD_editSequential}/file.txt`, content: 'AAA bbb CCC' }
+  ]
+};
+
+const TD_editWhitespace = testDirFor('edit-whitespace');
+/**
+ * Edit whitespace-sensitive content.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editWhitespaceTest = {
+  name: 'edit-whitespace',
+  description: 'Edit with whitespace-sensitive search/replace',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editWhitespace}/file.txt`, content: 'before   foo   after' },
+      'Creating file.'
+    ),
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editWhitespace}/file.txt`, old_string: '   foo   ', new_string: ' bar ' },
+      'Editing file.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Edit whitespace' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Edit whitespace' },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'before   foo   after', file_path: `${TD_editWhitespace}/file.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editWhitespace}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Editing file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editWhitespace}/file.txt`, new_string: ' bar ', old_string: '   foo   ' },
+        state: 'completed',
+
+        result: {
+          content: `Edited file: ${TD_editWhitespace}/file.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Done.' }
+    ]
+  },
+
+  fileAssertions: [
+    { path: `${TD_editWhitespace}/file.txt`, content: 'before bar after' }
+  ]
+};
+
+const TD_editDisplayData = testDirFor('edit-display-data');
+/**
+ * Verify that auto-approved edits store displayData.diffData on the tool-action YMap.
+ * Without this, the properties panel can't render a diff for pre-approved edits.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editDisplayDataTest = {
+  name: 'edit-display-data',
+  description: 'Auto-approved edit stores diffData on tool-action YMap for properties panel',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editDisplayData}/file.txt`, content: 'Hello foo world' },
+      'Creating file.'
+    ),
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editDisplayData}/file.txt`, old_string: 'foo', new_string: 'bar' },
+      'Editing file.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: `Create then edit ${TD_editDisplayData}/file.txt` }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: `Create then edit ${TD_editDisplayData}/file.txt` },
+      { type: 'assistant', content: 'Creating file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'Hello foo world', file_path: `${TD_editDisplayData}/file.txt` },
+        state: 'completed',
+        result: { content: `Created file: ${TD_editDisplayData}/file.txt`, isError: false }
+      },
+      { type: 'assistant', content: 'Editing file.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
+        toolName: 'edit',
+        toolInput: { file_path: `${TD_editDisplayData}/file.txt`, new_string: 'bar', old_string: 'foo' },
+        state: 'completed',
+        result: { content: `Edited file: ${TD_editDisplayData}/file.txt`, isError: false }
+      },
+      { type: 'assistant', content: 'Done.' }
+    ]
+  },
+
+  customAssertions(conversation) {
+    const items = [...conversation.rootItems];
+    const editAction = items.find(
+      item => isToolActionMessage(/** @type {any} */ (item)) &&
+      /** @type {any} */ (item).get('toolName') === 'edit'
+    );
+    if (!editAction) {
+      throw new Error('edit tool-action not found in items');
+    }
+    const raw = editAction.get('displayData');
+    const dd = raw?.toJSON ? raw.toJSON() : raw;
+    if (!dd?.diffData) {
+      throw new Error('displayData.diffData missing on edit tool-action YMap — properties panel cannot show diff');
+    }
+    if (!dd.diffData.oldContent || !dd.diffData.newContent) {
+      throw new Error(`diffData has empty content: oldContent=${!!dd.diffData.oldContent}, newContent=${!!dd.diffData.newContent}`);
+    }
+    if (dd.diffData.oldContent === dd.diffData.newContent) {
+      throw new Error('diffData.oldContent === newContent — diff would be empty');
+    }
+  }
+};
+
+const TD_editNoDouble = testDirFor('edit-no-double-execution');
+/**
+ * "Insert before" edit executes exactly once (no observer double-dispatch).
+ *
+ * Regression test for a race condition where two concurrent handleNewToolAction
+ * calls (one from _handleToolActionChanges, one from _reconcileNestedTools) could
+ * both write APPROVED — with the second arriving after the first had already
+ * transitioned to RUNNING — resetting state backward and allowing _claimRunning
+ * to succeed a second time.
+ *
+ * The "insert before" pattern (new_string ends with old_string) makes the bug
+ * observable: after the first execution old_string is still present at the end
+ * of the inserted block, so a second execution finds it and inserts again,
+ * doubling the content.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const editNoDoubleExecutionTest = {
+  name: 'edit-no-double-execution',
+  description: 'Insert-before edit executes exactly once (no observer race condition)',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    // Turn 1: create the file
+    toolUseResponse(
+      'call_1',
+      'write',
+      { file_path: `${TD_editNoDouble}/file.txt`, content: 'AAA MARKER BBB' },
+      'Creating file.'
+    ),
+    // Turn 2: "insert before" edit — new_string ends with old_string.
+    // If the tool-action executes twice, file ends up with PREFIX twice.
+    toolUseResponse(
+      'call_2',
+      'edit',
+      { file_path: `${TD_editNoDouble}/file.txt`, old_string: 'MARKER', new_string: 'PREFIX MARKER' },
+      'Editing file.'
+    ),
+    textResponse('Done.')
+  ],
+
+  operations: [
+    { type: 'start-tool-exec-counter', toolUseId: 'call_2' },
+    { type: 'send-message', message: `Create ${TD_editNoDouble}/file.txt then insert PREFIX before MARKER` },
+    // Must have executed exactly once — not twice (which would insert PREFIX twice)
+    { type: 'assert-tool-exec-count', toolUseId: 'call_2', expectedCount: 1 }
+  ],
+
+  fileAssertions: [
+    // Correct: PREFIX inserted once. If double-executed: 'AAA PREFIX PREFIX MARKER BBB'
+    { path: `${TD_editNoDouble}/file.txt`, content: 'AAA PREFIX MARKER BBB' }
+  ]
+};
+
+// Export all tests
+export const tests = [
+  editBasicTest,
+  editMultilineTest,
+  editNotFoundTest,
+  editAmbiguousTest,
+  editSpecialCharsTest,
+  editUnicodeTest,
+  editEmptyReplacementTest,
+  editSequentialTest,
+  editWhitespaceTest,
+  editDisplayDataTest,
+  editNoDoubleExecutionTest
+];

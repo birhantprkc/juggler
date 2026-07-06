@@ -1,0 +1,18 @@
+{
+  "id": "error-validation",
+  "category": "errors",
+  "description": "Test input validation and error handling for plugins and actions",
+  "fixture": "error-handling-fixture",
+  "prompt": "Test various validation and error scenarios:\n\n1. INVALID REGEX TEST:\n   Try to use grep with an invalid regex pattern like `[invalid(regex`\n   Document how the error is handled\n\n2. LINE NUMBERS OUT OF RANGE:\n   Try to read lines 100-200 of src/utils.js (which only has ~20 lines)\n   Document how this is handled\n\n3. NON-EXISTENT FILE:\n   Try to read a file that doesn't exist: src/nonexistent.js\n   Document the error\n\n4. EDIT VALIDATION FAILURE:\n   - Read src/utils.js\n   - Try to edit with replace-text using a search string that doesn't match\n   - Document how validation failure is detected\n\nCreate VALIDATION_TEST_RESULTS.md documenting:\n- Each error scenario tested\n- The error messages received\n- How each error was handled gracefully\n- Proof that validation protects against incorrect edits",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "VALIDATION_TEST_RESULTS.md",
+    "contains_strings": [
+      "invalid regex",
+      "line numbers out of range",
+      "nonexistent",
+      "validation",
+      "error"
+    ]
+  }
+}

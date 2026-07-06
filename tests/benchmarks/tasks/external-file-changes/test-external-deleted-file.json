@@ -1,0 +1,19 @@
+{
+  "id": "test-external-deleted-file",
+  "category": "external-file-changes",
+  "description": "Edge case: File deleted externally after read, system detects and retries",
+  "fixture": "external-change-fixture",
+  "prompt": "1. Read src/temp.js:\n<context-item use=\"read-file\">\n{\"path\": \"src/temp.js\"}\n</context-item>\n\n2. Try to edit it using replace-text:\n<action execute=\"replace-text\">\n{\"path\": \"src/temp.js\", \"old_str\": \"export const TEMP\", \"new_str\": \"export const TEMP = 'modified'; // was\"}\n</action>\n\nNOTE: The file will be deleted externally. System should detect this as an external change and retry. On retry, the file won't exist and the edit should fail gracefully with a clear error.\n\n3. After observing the behavior, write your findings to ERROR_LOG.md. Document whether the system detected the external file deletion and how it handled the error.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "ERROR_LOG.md",
+    "contains_strings": [
+      "File deleted",
+      "external"
+    ]
+  },
+  "externalModification": {
+    "file": "src/temp.js",
+    "action": "delete"
+  }
+}

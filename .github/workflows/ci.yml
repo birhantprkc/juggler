@@ -1,0 +1,149 @@
+name: CI
+
+# Sanity CI only: does the tree lint, build, and pass tests?
+#
+# SECURITY INVARIANTS — this repo is public and PR code is untrusted:
+#   * No secrets are referenced anywhere in this workflow, ever.
+#   * GitHub-hosted runners ONLY — never self-hosted. (The old workflow's
+#     self-hosted Mac has been re-registered with the private release repo.)
+#   * No packaging, no releases, no artifact publishing. Official binaries are
+#     built and published by the maintainer's private release pipeline.
+on:
+  # PRs get green/red feedback on hosted (ephemeral) runners; pushes to main
+  # re-verify the merged tree. There is deliberately nothing else — no tags,
+  # no releases.
+  pull_request:
+  push:
+    branches:
+      - main
+
+# Supersede an in-flight run when a newer commit lands on the same ref/PR, so
+# a rapid push sequence doesn't pile up parallel matrix runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: this workflow only reads the tree.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    # Generous over the 15m browser-suite timeout to leave room for the
+    # checkout (large wails submodule) and build.
+    timeout-minutes: 30
+    # The macOS leg is advisory (see the matrix entry below): its failure is
+    # reported but doesn't fail the run.
+    continue-on-error: ${{ matrix.advisory == true }}
+    strategy:
+      # Don't cancel sibling matrix legs on first failure — Linux, macOS, and
+      # Windows surface different issues (build-tag drift, line endings, cgo
+      # specifics) and seeing all three at once is more useful than seeing one.
+      fail-fast: false
+      matrix:
+        include:
+          # The Linux leg is the full behavioural gate: lint, build, Go package
+          # tests, and the complete browser test suite.
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+          # ADVISORY: the test suite was only ever run on a self-hosted Mac;
+          # hosted-runner WebView behaviour is unverified. Until this leg has
+          # proven stable on GitHub-hosted macOS, its result is informational
+          # and doesn't gate the run. Flip `advisory` off once trusted.
+          - name: darwin
+            os: macos-latest
+            advisory: true
+
+    steps:
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          # The 3rdparty/wails submodule is a large fork; cloning its full
+          # history over HTTP/2 intermittently dies mid-transfer with
+          # "curl 92 HTTP/2 stream not closed cleanly: CANCEL (err 8)" →
+          # early EOF / index-pack failed. actions/checkout retries and
+          # eventually succeeds, but it burns ~10min/attempt and raises scary
+          # annotations on a green run. HTTP/1.1 + a large transfer buffer is
+          # the documented workaround for these large-pack fetch cancellations.
+          git config --global http.version HTTP/1.1
+          git config --global http.postBuffer 524288000
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          # Module/build caching is on by default and always wanted here: every
+          # runner is an ephemeral hosted VM whose caches vanish with it.
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Install npm dependencies
+        run: npm install
+        working-directory: tooling
+
+      # WebKitGTK/GTK4/libsoup dev headers for the cgo Wails v3 Linux backend.
+      # The server (hidden engine WebView) and the desktop app both link
+      # against these.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev
+
+      # Single lint entry point: identical to `make lint` locally, so a
+      # contributor who passes lint at their terminal also passes CI lint.
+      - name: Run linters
+        shell: bash
+        run: make lint
+
+      # Plain unstamped builds: this workflow ships nothing, so the release
+      # pipeline's version/commit ldflags stamping is deliberately absent.
+      - name: Build binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          # Regenerate the go:embed source files from their assets/ sources
+          # (cmd/juggler/icon.png is gitignored, so absent on a fresh checkout).
+          # `make lint` above also does this as a side effect, but the build is
+          # what actually depends on it — keep it explicit here.
+          make app-icon-embed wails-runtime-embed
+          # bin/juggler is what the browser test suite spawns, so the tests
+          # below exercise the very binary we just built.
+          go build -o bin/juggler ./cmd/juggler
+          go build -o bin/juggler-test ./cmd/juggler-test
+
+      # The Linux desktop app (GTK), built on every run as a continuous
+      # compile-regression guard: juggler-app's Linux build is new, so a break
+      # should surface on the first offending push.
+      - name: Build Linux desktop app
+        if: runner.os == 'Linux'
+        shell: bash
+        run: go build -o bin/juggler-app ./cmd/juggler-app
+
+      # Go package unit tests (claudecode provider, worker, etc.) — ~75s under
+      # -race. Kept a separate step from the browser suite so the CI log names
+      # which layer broke.
+      - name: Run Go package tests
+        shell: bash
+        run: go test -short -race -timeout 5m ./cmd/...
+
+      # Browser test suite: drives Google Chrome against a spawned bin/juggler.
+      # Full output lands in the step log; nothing is uploaded.
+      - name: Run tests
+        shell: bash
+        run: go test -short -race -timeout 15m ./tests/integration/...

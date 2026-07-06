@@ -1,0 +1,19 @@
+{
+  "id": "test-external-large-file",
+  "category": "external-file-changes",
+  "description": "Performance test: Large file (10KB) modified externally, hash check should be efficient",
+  "fixture": "external-change-fixture",
+  "prompt": "1. Read the large file:\n<context-item use=\"read-file\">\n{\"path\": \"src/large.js\"}\n</context-item>\n\n2. Edit the first line using replace-text:\n<action execute=\"replace-text\">\n{\"path\": \"src/large.js\", \"old_str\": \"export const LARGE_CONFIG = {\", \"new_str\": \"export const LARGE_CONFIG = { modified: true,\"}\n</action>\n\nNOTE: The 10KB file will be modified externally. Hash computation should be fast (under 50ms).",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/large.js",
+    "contains_strings": [
+      "modified: true"
+    ]
+  },
+  "externalModification": {
+    "file": "src/large.js",
+    "action": "append",
+    "content": "\n// External modification"
+  }
+}

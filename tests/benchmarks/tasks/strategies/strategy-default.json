@@ -1,0 +1,17 @@
+{
+  "id": "strategy-default",
+  "category": "strategies",
+  "description": "Test default strategy completes a simple read-modify-write workflow",
+  "fixture": "action-edit-fixture",
+  "strategy": "default",
+  "prompt": "Using the default strategy, complete this task:\n\n1. Read the file src/calculator.js to understand its current implementation.\n\n2. Add a new function called 'power' that takes two numbers (base and exponent) and returns base raised to the power of exponent using Math.pow().\n\n3. The function should be added after the existing functions.\n\nWrite the result to src/calculator.js.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/calculator.js",
+    "contains_strings": ["function power", "Math.pow"]
+  },
+  "metadata": {
+    "difficulty": "easy",
+    "tags": ["strategy", "default", "read-modify-write"]
+  }
+}

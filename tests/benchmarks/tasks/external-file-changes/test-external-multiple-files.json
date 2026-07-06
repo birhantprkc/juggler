@@ -1,0 +1,24 @@
+{
+  "id": "test-external-multiple-files",
+  "category": "external-file-changes",
+  "description": "Multiple files: Two files read, one modified externally, system retries entire turn",
+  "fixture": "external-change-fixture",
+  "prompt": "1. Read TWO files:\n<context-item use=\"read-file\">\n{\"path\": \"src/config.js\"}\n</context-item>\n\n<context-item use=\"read-file\">\n{\"path\": \"src/utils.js\"}\n</context-item>\n\n2. After both context items are created, edit config.js using replace-text:\n<action execute=\"replace-text\">\n{\"path\": \"src/config.js\", \"old_str\": \"export const API_URL = 'https://api.example.com';\", \"new_str\": \"export const API_URL = 'https://updated.com';\"}\n</action>\n\nNOTE: utils.js will be modified externally. Even though you're only editing config.js, the system should detect utils.js changed and retry the entire turn.\n\n3. After observing the behavior, write your findings to TEST_RESULTS.md. Document that a Retry occurred due to external file changes.",
+  "scoring": {
+    "type": "multi_file_consistency",
+    "files": [
+      {
+        "path": "src/config.js",
+        "contains_strings": ["updated.com"]
+      },
+      {
+        "path": "TEST_RESULTS.md",
+        "contains_strings": ["Retry", "external"]
+      }
+    ]
+  },
+  "externalModification": {
+    "file": "src/utils.js",
+    "newContent": "export function helper() { return 'externally modified'; }"
+  }
+}

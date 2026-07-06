@@ -1,0 +1,16 @@
+{
+  "id": "ci-rule",
+  "category": "context-items",
+  "description": "Test context rules context item with built-in and custom rules",
+  "fixture": "ci-tree-fixture",
+  "prompt": "Test the context rules context item:\n\n1. Load a built-in rule (choose any from the available rules, e.g., Python, JavaScript, Go, React, etc.)\n2. Create a custom rule with your own content (e.g., 'Always use const instead of var in JavaScript')\n3. Verify that rules appear in your context\n\nCreate a file called RULE_TEST_RESULTS.md that documents:\n- Which built-in rule you loaded and its content\n- The custom rule you created\n- Confirmation that rules are included in context\n- How rules affect the conversation context",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "RULE_TEST_RESULTS.md",
+    "contains_strings": [
+      "built-in rule",
+      "custom rule",
+      "context"
+    ]
+  }
+}

@@ -1,0 +1,215 @@
+/*
+ * Copyright (c) 2026 Julian Storer / AGPL-3.0-or-later - see LICENSE
+ * Derived from the PrismJS "Tomorrow Night" theme (MIT):
+ * https://github.com/PrismJS/prism-themes
+ */
+
+/* PrismJS Tomorrow Night Theme */
+/* Based on https://github.com/PrismJS/prism-themes */
+
+code[class*="language-"],
+pre[class*="language-"] {
+  color: var(--text-primary);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 1em;
+  text-align: left;
+  white-space: pre;
+  word-spacing: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+  line-height: 1.5;
+  tab-size: 4;
+  hyphens: none;
+}
+
+pre[class*="language-"] {
+  padding: 0;
+  margin: 0;
+  overflow: visible;
+  background: transparent;
+}
+
+/* Inline code styling */
+:not(pre) > code[class*="language-"] {
+  white-space: normal;
+}
+
+.token.block-comment,
+.token.cdata,
+.token.comment,
+.token.doctype,
+.token.prolog {
+  color: var(--syntax-comment);
+}
+
+.token.punctuation {
+  color: var(--syntax-punctuation);
+}
+
+.token.attr-name,
+.token.deleted,
+.token.namespace,
+.token.tag {
+  color: var(--syntax-tag);
+}
+
+.token.function-name {
+  color: var(--syntax-function);
+}
+
+.token.boolean,
+.token.function,
+.token.number {
+  color: var(--syntax-number);
+}
+
+.token.class-name,
+.token.constant,
+.token.property,
+.token.symbol {
+  color: var(--syntax-property);
+}
+
+.token.atrule,
+.token.builtin,
+.token.important,
+.token.keyword,
+.token.selector {
+  color: var(--syntax-keyword);
+}
+
+.token.attr-value,
+.token.char,
+.token.regex,
+.token.string,
+.token.variable {
+  color: var(--syntax-string);
+}
+
+.token.entity,
+.token.operator,
+.token.url {
+  color: var(--syntax-operator);
+}
+
+.token.bold,
+.token.important {
+  font-weight: 700;
+}
+
+.token.italic {
+  font-style: italic;
+}
+
+.token.entity {
+  cursor: help;
+}
+
+.token.inserted {
+  color: green;
+}
+
+.token.bash-command-operator {
+  color: var(--text-tertiary);
+  font-weight: 700;
+}
+
+.token.bash-command-redirect-operator {
+  color: var(--text-tertiary);
+}
+
+.token.bash-command-segment {
+  font-weight: 500;
+}
+
+.bash-command-head {
+  color: var(--bash-command-head, var(--syntax-function));
+  font-weight: 750;
+}
+
+.bash-command-arg {
+  color: var(--bash-command-arg, var(--syntax-property));
+}
+
+.bash-command-assignment {
+  color: color-mix(in srgb, var(--bash-command-arg, var(--syntax-property)) 68%, var(--text-muted));
+  font-style: italic;
+}
+
+.bash-command-redirect-target {
+  color: color-mix(in srgb, var(--syntax-string) 72%, var(--text-primary));
+  font-weight: 600;
+}
+
+.bash-command-string {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.14em;
+}
+
+.bash-command-segment-0 {
+  --bash-command-head: var(--bash-segment-0-head);
+  --bash-command-arg: var(--bash-segment-0-arg);
+}
+
+.bash-command-segment-1 {
+  --bash-command-head: var(--bash-segment-1-head);
+  --bash-command-arg: var(--bash-segment-1-arg);
+}
+
+.bash-command-segment-2 {
+  --bash-command-head: var(--bash-segment-2-head);
+  --bash-command-arg: var(--bash-segment-2-arg);
+}
+
+.bash-command-segment-3 {
+  --bash-command-head: var(--bash-segment-3-head);
+  --bash-command-arg: var(--bash-segment-3-arg);
+}
+
+.bash-command-segment-4 {
+  --bash-command-head: var(--bash-segment-4-head);
+  --bash-command-arg: var(--bash-segment-4-arg);
+}
+
+.bash-command-segment-5 {
+  --bash-command-head: var(--bash-segment-5-head);
+  --bash-command-arg: var(--bash-segment-5-arg);
+}
+
+/*
+ * Integration overrides for highlighted code embedded in app chrome (not a
+ * standalone code block). The base `code[class*="language-"]` rule above forces
+ * `font-size: 1em` and `white-space: pre`; inside a tile summary or a property
+ * subsection we want the surrounding layout's sizing and wrapping to win.
+ */
+
+/* Highlighted inline snippets embedded in app chrome should keep the host
+   component's spacing. Plain markdown inline code is styled by `.markdown code`
+   below instead. */
+:not(pre) > code.syntax-highlight {
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+  font-size: inherit;
+  white-space: inherit;
+  background: transparent;
+}
+
+/* Properties panel: a highlighted <pre> must keep its host class's box — Prism's
+   `pre[class*="language-"]` otherwise clobbers padding, background, and forces
+   `white-space: pre`. The extra `.syntax-highlight` class raises specificity so
+   the panel's own layout (wrapping, padding, result-section background) wins. */
+.properties-panel-code.syntax-highlight {
+  white-space: pre-wrap;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+}
+
+.properties-panel-result.syntax-highlight {
+  white-space: pre-wrap;
+  font-size: 0.8125rem;
+  padding: 0.1rem 0.5rem;
+  background: var(--bg-primary);
+}

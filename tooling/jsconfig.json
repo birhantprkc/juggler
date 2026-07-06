@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "noEmit": true,
+    "allowJs": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "baseUrl": "..",
+    "paths": {
+      "/js/*": ["web/js/*"],
+      "/extensions/*": ["web/extensions/*"],
+      "yjs": ["tooling/node_modules/yjs"],
+      "juggler/context-item": ["web/sdk/context-item.js"],
+      "juggler/strategy-type": ["web/sdk/strategy-type.js"],
+      "juggler/command-type": ["web/sdk/command-type.js"],
+      "juggler/ops": ["web/sdk/ops.js"],
+      "juggler/sandbox": ["web/sdk/sandbox.js"],
+      "juggler/ui": ["web/sdk/ui.js"],
+      "juggler/model": ["web/sdk/model.js"],
+      "juggler/item-utils": ["web/sdk/item-utils.js"],
+      "juggler/registry": ["web/sdk/registry.js"],
+      "juggler/version": ["web/sdk/version.js"],
+      "juggler/utils/html": ["web/js/utils/html.js"]
+    }
+  },
+  "include": [
+    "../web/js/**/*.js",
+    "../web/js/types/**/*.d.ts",
+    "../web/sdk/**/*.js",
+    "../web/extensions/**/*.js"
+  ],
+  "exclude": [
+    "../web/js/vendor/**",
+    "node_modules"
+  ]
+}

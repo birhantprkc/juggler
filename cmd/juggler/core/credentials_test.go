@@ -1,0 +1,237 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package core
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/internal/userpaths/userpathstest"
+)
+
+func TestLoadCodexCLIAccessTokenReadsCodexHome(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	token := testJWT(t, time.Now().Add(time.Hour))
+	writeCodexAuth(t, dir, map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"access_token": token,
+			"account_id":   "acct_123",
+		},
+	})
+
+	got, accountID, err := loadCodexCLIAccessToken()
+	if err != nil {
+		t.Fatalf("loadCodexCLIAccessToken: %v", err)
+	}
+	if got != token {
+		t.Fatalf("token mismatch")
+	}
+	if accountID != "acct_123" {
+		t.Fatalf("accountID = %q, want acct_123", accountID)
+	}
+}
+
+func TestLoadCodexCLIAccessTokenFallsBackToHome(t *testing.T) {
+	// Isolate the home dir (HOME and USERPROFILE, the latter being what
+	// os.UserHomeDir resolves on Windows) so the codex auth lands where the
+	// loader looks.
+	home := userpathstest.Isolate(t)
+	t.Setenv("CODEX_HOME", "")
+	token := testJWT(t, time.Now().Add(time.Hour))
+	writeCodexAuth(t, filepath.Join(home, ".codex"), map[string]any{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]any{
+			"access_token": token,
+		},
+	})
+
+	got, _, err := loadCodexCLIAccessToken()
+	if err != nil {
+		t.Fatalf("loadCodexCLIAccessToken: %v", err)
+	}
+	if got != token {
+		t.Fatalf("token mismatch")
+	}
+}
+
+func TestLoadCodexCLIAccessTokenRejectsInvalidAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing file"},
+		{name: "malformed json", body: `{`},
+		{name: "wrong auth mode", body: `{"auth_mode":"api_key","tokens":{"access_token":"` + testJWT(t, time.Now().Add(time.Hour)) + `"}}`},
+		{name: "missing token", body: `{"auth_mode":"chatgpt","tokens":{}}`},
+		{name: "expired token", body: `{"auth_mode":"chatgpt","tokens":{"access_token":"` + testJWT(t, time.Now().Add(-time.Hour)) + `"}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CODEX_HOME", dir)
+			if tt.body != "" {
+				if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(tt.body), 0600); err != nil {
+					t.Fatalf("write auth: %v", err)
+				}
+			}
+
+			_, _, err := loadCodexCLIAccessToken()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "codex login") {
+				t.Fatalf("error should mention codex login, got %q", err.Error())
+			}
+		})
+	}
+}
+
+// A corrupt credentials file must not permanently lock the user out: the next
+// write quarantines the bad file and starts fresh. This reproduces the reported
+// "failed to parse credentials file: invalid character 'e' after top-level
+// value" — a valid JSON object followed by trailing garbage.
+func TestSetRawKeyRecoversFromCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	corrupt := []byte(`{ "onboarding_complete": "true" }enabled_claudecode": "true" }`)
+	if err := os.WriteFile(path, corrupt, 0600); err != nil {
+		t.Fatalf("seed corrupt file: %v", err)
+	}
+	store := &CredentialsStore{filePath: path}
+
+	// Sanity: the strict Load path rejects it (this is what bricked the user).
+	if _, err := store.Load(); err == nil {
+		t.Fatalf("expected Load to reject corrupt file")
+	}
+
+	if err := store.SetRawKey("anthropic_api_key", "sk-test"); err != nil {
+		t.Fatalf("SetRawKey on corrupt file: %v", err)
+	}
+
+	creds, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load after recovery: %v", err)
+	}
+	if got := creds["anthropic_api_key"]; got != "sk-test" {
+		t.Fatalf("anthropic_api_key = %q, want sk-test", got)
+	}
+	if len(creds) != 1 {
+		t.Fatalf("creds = %v, want only the new key", creds)
+	}
+
+	// The original bytes are preserved for manual recovery.
+	quarantined, err := os.ReadFile(path + ".corrupt")
+	if err != nil {
+		t.Fatalf("read quarantine: %v", err)
+	}
+	if string(quarantined) != string(corrupt) {
+		t.Fatalf("quarantine bytes = %q, want original corrupt content", quarantined)
+	}
+}
+
+// The reported failure was "Failed to save anthropic API key: ... invalid
+// character 'e' after top-level value". Lock the exact entry point from the
+// screenshot (SetAPIKey, not just the sibling SetRawKey): a corrupt file must
+// not block saving a provider key from the settings UI.
+func TestSetAPIKeyRecoversFromCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	corrupt := []byte(`{ "onboarding_complete": "true" }enabled_claudecode": "true" }`)
+	if err := os.WriteFile(path, corrupt, 0600); err != nil {
+		t.Fatalf("seed corrupt file: %v", err)
+	}
+	store := &CredentialsStore{filePath: path}
+
+	// SetAPIKey resolves the provider through the registry, which providers
+	// populate via blank import at package-init; the core test binary pulls in
+	// none of them, so register the anthropic metadata directly. Initializer is
+	// nil because the key read/write path never constructs a provider instance.
+	if _, ok := provider.GetProviderInfo("anthropic"); !ok {
+		provider.RegisterProvider(provider.ProviderInfo{
+			Name:          "anthropic",
+			ConfigKeyName: "anthropic_api_key",
+			AuthType:      provider.AuthTypeAPIKey,
+		}, nil)
+	}
+
+	if err := store.SetAPIKey("anthropic", "sk-ant-test"); err != nil {
+		t.Fatalf("SetAPIKey on corrupt file: %v", err)
+	}
+
+	got, err := store.GetAPIKey("anthropic")
+	if err != nil {
+		t.Fatalf("GetAPIKey after recovery: %v", err)
+	}
+	if got != "sk-ant-test" {
+		t.Fatalf("anthropic key = %q, want sk-ant-test", got)
+	}
+	if _, err := os.Stat(path + ".corrupt"); err != nil {
+		t.Fatalf("expected quarantined file: %v", err)
+	}
+}
+
+// Concurrent saves must never produce a torn/corrupt file. With the old
+// truncate-then-write os.WriteFile, interleaved writers left trailing bytes;
+// atomic temp+rename makes every observable state a complete, valid file.
+func TestSaveAtomicUnderConcurrentWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	store := &CredentialsStore{filePath: path}
+
+	const writers = 24
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// Mix long and short payloads so a non-atomic write would leave a tail.
+			key := fmt.Sprintf("key_%02d", n)
+			val := strings.Repeat("v", (n%7)*16)
+			if err := store.SetRawKey(key, val); err != nil {
+				t.Errorf("SetRawKey(%s): %v", key, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if _, err := store.Load(); err != nil {
+		t.Fatalf("file corrupt after concurrent writes: %v", err)
+	}
+}
+
+func writeCodexAuth(t *testing.T, dir string, body map[string]any) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal auth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), data, 0600); err != nil {
+		t.Fatalf("write auth: %v", err)
+	}
+}
+
+func testJWT(t *testing.T, exp time.Time) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload, err := json.Marshal(map[string]any{"exp": exp.Unix()})
+	if err != nil {
+		t.Fatalf("marshal jwt payload: %v", err)
+	}
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}

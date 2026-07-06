@@ -1,0 +1,19 @@
+{
+  "id": "ci-python",
+  "category": "context-items",
+  "description": "Test python context item execution with successful and error scenarios",
+  "fixture": "ci-python-fixture",
+  "prompt": "Test the python context item's execution capabilities:\n\n1. Execute analyze.py successfully and capture the output\n2. Execute error_script.py and capture the error (ZeroDivisionError)\n3. Try executing a Python file that doesn't exist and handle the error gracefully\n\nCreate a file called PYTHON_TEST_RESULTS.md that documents:\n- Output from successful execution of analyze.py\n- Error message from error_script.py (stderr and exit code)\n- How the non-existent file error was handled\n- Confirmation that stdout and stderr are captured separately\n- Exit codes for each execution",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "PYTHON_TEST_RESULTS.md",
+    "contains_strings": [
+      "analyze.py",
+      "error_script.py",
+      "ZeroDivisionError",
+      "exit code",
+      "stdout",
+      "stderr"
+    ]
+  }
+}

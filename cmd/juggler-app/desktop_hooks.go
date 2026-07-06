@@ -1,0 +1,61 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package main
+
+import (
+	"errors"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
+)
+
+// Build-injection seams for the desktop app.
+//
+// These are the two extension points a packaged build can attach behaviour to
+// without the stock source carrying the implementation. The stock build leaves
+// them at the inert defaults below — it builds and runs exactly as written. A
+// packaged build may overlay a single file into this package that reassigns
+// them in an init() (its files depend only on this module), so the added
+// behaviour is compiled in for that build alone and the stock source stays
+// free of it. Keeping the seams as swappable vars is what makes the source
+// carry the call sites but none of the injected code.
+
+// afterAppInit runs once, immediately after the Wails App is constructed (so
+// a.app is live), from initApplication. Default: no-op.
+var afterAppInit = func(*appState) {}
+
+// buildAppMenu installs the application-menu role onto the root menu, from
+// installAppMenu. Default: the stock platform application menu, no extra items.
+var buildAppMenu = func(_ *appState, menu *application.Menu) {
+	menu.AddRole(application.AppMenu)
+}
+
+// UpdaterSnapshot is the in-app updater's current state, marshalled to the page
+// (over the loopback control endpoint and pushed via broadcastJS). Present=false
+// means this build has no in-app updater — a from-source, free, or non-macOS
+// build — in which case the page relies on the server-side version notice alone
+// (see cmd/juggler/server/update_status.go). The overlay that fills these seams
+// keeps the struct up to date from the updater's own events.
+type UpdaterSnapshot struct {
+	Present    bool   `json:"present"`
+	State      string `json:"state"`                // updater.State value, e.g. "downloading"
+	Version    string `json:"version,omitempty"`    // target release version
+	AppVersion string `json:"appVersion,omitempty"` // this app bundle's core.Version (for skew detection vs the viewed server)
+	Written    int64  `json:"written,omitempty"`
+	Total      int64  `json:"total,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// updaterSnapshot returns the current updater state. Default: not present, so a
+// stock build reports "no in-app updater" and the page hides all progress UI.
+var updaterSnapshot = func() UpdaterSnapshot { return UpdaterSnapshot{Present: false} }
+
+// updaterInstall starts (or no-ops if already running) the download+stage flow.
+// Default: no-op — there is nothing to install without an overlay.
+var updaterInstall = func() {}
+
+// updaterRestart relaunches into the staged update. Synchronous; returns an
+// error when no update is staged or the swap helper failed to spawn (the
+// control handler turns that into a 409/500 and un-authorises the pending quit).
+var updaterRestart = func() error { return errors.New("no in-app updater in this build") }

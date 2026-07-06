@@ -1,0 +1,22 @@
+{
+  "id": "action-edit-from-ci",
+  "category": "actions",
+  "description": "Test the read-then-edit workflow: first read file as a context item, then edit it",
+  "fixture": "action-edit-fixture",
+  "prompt": "Follow the recommended edit workflow:\n\n1. First, read src/calculator.js as a context item to load it into context.\n\n2. Review the code and find the FIXME comment about handling negative numbers in the modulo function.\n\n3. Fix the modulo function to handle negative numbers properly. The fix should:\n   - Check if either argument is negative\n   - Use Math.abs() to ensure positive result matching JavaScript's behavior, OR\n   - Handle the sign explicitly\n\n4. Remove or update the FIXME comment since you've addressed it.\n\nUse the edit tool (replace-text) to make the change after reading the file.",
+  "scoring": {
+    "type": "multi_file_consistency",
+    "files": [
+      {
+        "path": "src/calculator.js",
+        "contains_strings": ["modulo"],
+        "not_contains": ["FIXME: Handle negative numbers"]
+      }
+    ]
+  },
+  "metadata": {
+    "difficulty": "medium",
+    "tags": ["action", "edit", "context-item-first", "workflow"],
+    "expected_files_changed": ["src/calculator.js"]
+  }
+}

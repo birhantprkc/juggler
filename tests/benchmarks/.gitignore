@@ -1,0 +1,5 @@
+# Test result cache
+.test-cache.json
+
+# Test results
+results/

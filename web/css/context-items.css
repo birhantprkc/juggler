@@ -1,0 +1,716 @@
+/*
+ *     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+ *     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+ *   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+ */
+
+/* ===================================================================
+   PLUGIN TIER CSS — context-items.css
+   Styles plugin-provided content: the rendered output of context item
+   plugins. Not app chrome. Changes here affect what plugins display,
+   not the surrounding app UI.
+
+   Compare:
+     styles.css / components.css — app chrome (header, bars, modals)
+     context-items.css           — plugin content rendering  ← this file
+     plugin-catalog.css          — plugin catalog UI
+   ================================================================== */
+
+/* ===================================================================
+   Context Item Content Containers - Direct rendering without card wrapper
+   ================================================================== */
+
+/*
+ * These classes are used when rendering context item content directly in
+ * properties-panel and plugin-catalog.
+ */
+
+/* Context item content containers */
+.ci-expanded-content,
+.ci-collapsed-content {
+    padding: var(--spacing-lg);
+    border-radius: var(--radius-xl);
+    font-size: var(--font-size-sm);
+    color: var(--ci-text);
+    box-shadow: var(--shadow-md);
+}
+
+.ci-collapsed-content {
+    padding: 0.625rem;
+    font-size: var(--font-size-xs);
+}
+
+/* Context item color presets - uses unified color-* classes from styles.css */
+.ci-collapsed-content[class*="color-"],
+.ci-expanded-content[class*="color-"] {
+    background: var(--preset-bg);
+}
+
+/* Context item buttons within content views */
+.ci-btn {
+    background: transparent;
+    border: none;
+    color: var(--ci-text);
+    cursor: pointer;
+    padding: 0.125rem 0.2rem;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition-base), opacity var(--transition-base);
+    opacity: 0.7;
+}
+
+.ci-btn:hover {
+    background: rgb(0 0 0 / 10%);
+    opacity: 1;
+}
+
+.ci-remove-btn {
+    color: var(--accent-red);
+    opacity: 0.8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ci-remove-btn:hover {
+    opacity: 1;
+}
+
+/* ===================================================================
+   Context Item Content Utilities - Shared styles for all context items
+   ================================================================== */
+
+/*
+ * This section provides common utilities for context item content areas.
+ * Content formatting, metadata display, and common patterns.
+ */
+
+/* ===================================================================
+   File Path Display
+   ================================================================== */
+
+.ci-file-path {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    color: var(--accent-blue);
+    word-break: break-all;
+    line-height: 1.4;
+}
+
+.ci-file-path-header {
+    padding: 0.75rem 0;
+    border-bottom: 0.0625rem solid var(--overlay-light-10);
+    margin-bottom: 0.75rem;
+}
+
+/* ===================================================================
+   Metadata Badges and Stats
+   ================================================================== */
+
+.ci-metadata {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    margin: var(--spacing-sm) 0;
+    font-size: var(--font-size-xs);
+}
+
+.ci-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    padding: var(--radius-sm) var(--spacing-sm);
+    background: rgb(255 255 255 / 8%);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+    color: var(--ci-text-secondary);
+    white-space: nowrap;
+}
+
+.ci-badge-label {
+    opacity: 0.7;
+}
+
+.ci-badge-value {
+    color: var(--ci-text);
+}
+
+/* Specific badge types */
+.ci-badge.badge-language {
+    background: rgb(88 166 255 / 15%);
+    color: var(--accent-blue);
+}
+
+.ci-badge.badge-size {
+    background: rgb(121 192 255 / 12%);
+}
+
+.ci-badge.badge-lines {
+    background: rgb(163 140 255 / 12%);
+}
+
+.ci-badge.badge-count {
+    background: rgb(201 209 217 / 12%);
+}
+
+/* ===================================================================
+   Content Sections
+   ================================================================== */
+
+.ci-section {
+    margin-bottom: 1.25rem;
+}
+
+.ci-section:last-child {
+    margin-bottom: 0;
+}
+
+.ci-section-title {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.0313rem;
+    margin-bottom: var(--spacing-sm);
+}
+
+.ci-section-content {
+    font-size: var(--font-size-base);
+    line-height: var(--leading-normal);
+    color: var(--ci-text);
+}
+
+/* ===================================================================
+   Text/Markdown Display in Context Items
+   ================================================================== */
+
+.ci-text-block {
+    user-select: text;
+    font-size: 0.8125rem;
+}
+
+/* ===================================================================
+   Code Display in Context Items
+   ================================================================== */
+
+.ci-code-block {
+    background: var(--bg-secondary);
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.375rem;
+    overflow: hidden;
+    user-select: text;
+}
+
+.ci-code-block-borderless {
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    overflow: visible;
+}
+
+.ci-code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-raised);
+    border-bottom: 0.0625rem solid var(--border-divider);
+    font-size: 0.6875rem;
+}
+
+.ci-code-language {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+}
+
+.ci-code-range {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    font-size: 0.625rem;
+}
+
+.ci-code-content {
+    padding: 0.5rem;
+    margin: 0;
+    overflow-x: auto;
+    background: var(--bg-secondary);
+}
+
+.ci-code-content pre {
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    color: var(--text-primary);
+    white-space: pre;
+    overflow-x: auto;
+}
+
+/* Override Prism theme to use app's standard font and size
+   Note: !important needed to override Prism's inline styles */
+.ci-code-content pre[class*="language-"],
+.ci-code-content code[class*="language-"] {
+    font-family: var(--font-mono) !important;
+    font-size: inherit !important;
+}
+
+/* Line numbers for code (CSS Grid + CSS Counters) */
+.ci-code-grid {
+    display: grid;
+    grid-template-columns: min-content 1fr;
+    counter-reset: line-num var(--line-start, 0);
+}
+
+.ci-line-num {
+    counter-increment: line-num;
+    text-align: right;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    padding-left: 0.75rem;
+    padding-right: 0.5rem;
+    margin-right: 0.5rem;
+    border-right: 0.0625rem solid var(--border-divider);
+    user-select: none;
+    white-space: nowrap;
+}
+
+.ci-line-num::before {
+    content: counter(line-num);
+}
+
+.ci-line {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    white-space: pre;
+}
+
+/* ===================================================================
+   List Display
+   ================================================================== */
+
+.ci-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.ci-list-item {
+    padding: 0.5rem 0;
+    border-bottom: 0.0625rem solid var(--overlay-light-5);
+    font-size: 0.8125rem;
+    line-height: 1.4;
+}
+
+.ci-list-item:last-child {
+    border-bottom: none;
+}
+
+/* ===================================================================
+   State Indicators
+   ================================================================== */
+
+.ci-empty {
+    padding: 2rem 1rem;
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.ci-empty-icon {
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+    opacity: 0.3;
+}
+
+.ci-error {
+    padding: 1rem;
+    background: rgb(248 81 73 / 10%);
+    border-left: 0.1875rem solid var(--accent-red);
+    border-radius: 0.1875rem;
+    color: var(--diff-removed-text);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.ci-error-title {
+    color: var(--accent-red);
+    margin-bottom: 0.375rem;
+}
+
+.ci-error-message {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+.ci-warning {
+    padding: 1rem;
+    background: rgb(187 128 9 / 10%);
+    border-left: 0.1875rem solid var(--accent-yellow);
+    border-radius: 0.1875rem;
+    color: var(--accent-orange);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.ci-success {
+    padding: 1rem;
+    background: rgb(63 185 80 / 10%);
+    border-left: 0.1875rem solid var(--accent-green);
+    border-radius: 0.1875rem;
+    color: var(--diff-added-text);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+/* ===================================================================
+   Loading States
+   ================================================================== */
+
+.ci-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    color: var(--text-tertiary);
+    font-size: 0.8125rem;
+}
+
+/* ===================================================================
+   Collapsed View Common Elements
+   ================================================================== */
+
+/* These are used in collapsed (square) context item views */
+
+.collapsed-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    justify-content: center;
+}
+
+.collapsed-main {
+    flex: 1;
+    overflow: hidden;
+}
+
+.collapsed-title {
+    font-size: 0.75rem;
+    color: var(--ci-text);
+    margin-bottom: 0.25rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.collapsed-subtitle {
+    font-size: 0.625rem;
+    color: var(--ci-text-secondary);
+    margin-bottom: 0.375rem;
+}
+
+.collapsed-preview {
+    font-size: 0.6875rem;
+    color: var(--ci-text-secondary);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+}
+
+.collapsed-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin-top: 0.375rem;
+    font-size: 0.625rem;
+    color: var(--ci-text-secondary);
+}
+
+.collapsed-badge {
+    display: inline-block;
+    padding: 0.125rem 0.375rem;
+    background: var(--overlay-light-10);
+    border-radius: 0.1875rem;
+    font-family: var(--font-mono);
+    font-size: 0.5625rem;
+    white-space: nowrap;
+}
+
+/* ===================================================================
+   Expanded View Common Layouts
+   ================================================================== */
+
+/* Common container for all expanded context items */
+.ci-expanded {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.expanded-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+}
+
+.expanded-header-left {
+    flex: 1;
+    min-width: 0;
+}
+
+.expanded-header-right {
+    flex-shrink: 0;
+    margin-left: 1rem;
+}
+
+.expanded-title {
+    font-size: 1rem;
+    color: var(--ci-text);
+    margin-bottom: 0.5rem;
+}
+
+.expanded-subtitle {
+    font-size: 0.8125rem;
+    color: var(--ci-text-secondary);
+}
+
+/* ===================================================================
+   Search Results Styling
+   ================================================================== */
+
+.ci-search-results {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    max-height: 30rem;
+    overflow-y: auto;
+    background: var(--bg-primary);
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.375rem;
+    padding: 0.75rem;
+}
+
+.ci-search-file {
+    margin-bottom: 1rem;
+}
+
+.ci-search-file:last-child {
+    margin-bottom: 0;
+}
+
+.ci-search-file-header {
+    color: var(--accent-blue);
+    margin-bottom: 0.375rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 0.0625rem solid rgb(255 255 255 / 8%);
+    font-size: 0.8125rem;
+}
+
+.ci-search-match {
+    padding: 0.125rem 0;
+    line-height: 1.5;
+    color: var(--diff-neutral-text);
+}
+
+.ci-search-line-num {
+    display: inline-block;
+    min-width: 2.5rem;
+    color: var(--text-tertiary);
+    margin-right: 0.625rem;
+    text-align: right;
+    font-size: 0.6875rem;
+}
+
+.ci-search-highlight {
+    background: rgb(187 128 9 / 40%);
+    color: var(--diff-warning-text);
+    font-weight: 600;
+}
+
+/* ===================================================================
+   Stat Displays
+   ================================================================== */
+
+.ci-stats {
+    display: flex;
+    gap: 1.25rem;
+    margin: 0.75rem 0;
+}
+
+.ci-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.ci-stat-value {
+    font-size: 1.5rem;
+    color: var(--accent-blue);
+    line-height: 1;
+}
+
+.ci-stat-label {
+    font-size: 0.6875rem;
+    color: var(--text-tertiary);
+    margin-top: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.0313rem;
+}
+
+/* ===================================================================
+   Question & Answer Context Item
+   ================================================================== */
+
+.question-answer-ci .qa-section {
+    margin-bottom: 1rem;
+}
+
+.question-answer-ci .qa-section:last-child {
+    margin-bottom: 0;
+}
+
+.question-answer-ci .qa-label {
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.0313rem;
+    margin-bottom: 0.375rem;
+}
+
+.question-answer-ci .qa-text {
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--ci-text);
+    padding: 0.75rem;
+    background: var(--overlay-light-5);
+    border-left: 0.1875rem solid var(--overlay-light-20);
+    border-radius: 0.25rem;
+}
+
+.question-answer-ci .question-text {
+    border-left-color: var(--accent-blue);
+}
+
+.question-answer-ci .answer-text {
+    border-left-color: var(--accent-green);
+}
+
+.question-answer-ci .ci-preview .question-text {
+    font-size: 0.75rem;
+    padding: 0.5rem 0;
+    background: none;
+    border-left: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+/* ===================================================================
+   System Context Items (Special styling for system prompt and tool instructions)
+   ================================================================== */
+
+.system-ci .collapsed-title {
+    font-weight: 600;
+    font-style: italic;
+}
+
+/* Output label for context items (compact spacing) */
+.ci-output-label {
+  margin-top: 0.4rem;
+  margin-bottom: 0;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.05rem;
+}
+
+/* ========================================
+   Thinking Block Component
+   ======================================== */
+
+.thinking-block {
+    margin: 1rem 0;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    overflow: hidden;
+}
+
+.thinking-block-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.75rem 1rem;
+    background: var(--bg-secondary);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    text-align: left;
+    transition: background 0.2s;
+}
+
+.thinking-block-header:hover {
+    background: var(--bg-raised);
+}
+
+.thinking-block-icon {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.thinking-block-title {
+    font-weight: 600;
+    flex: 1;
+}
+
+.thinking-block-signature {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+
+.thinking-block-content {
+    border-top: 1px solid var(--border-divider);
+    padding: 1rem;
+    background: var(--bg-primary);
+}
+
+.thinking-block-text {
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+}
+
+/* Transaction Detail - Response JSON */
+.response-json {
+    margin: 0 0 1.5rem;
+    padding: 1rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    color: var(--text-primary);
+    overflow: auto;
+    white-space: pre;
+    max-height: 37.5rem;
+}

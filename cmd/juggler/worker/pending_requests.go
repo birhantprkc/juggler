@@ -1,0 +1,461 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+// Worker-side orchestrator for the per-thread `pendingRequests` Y.Array.
+// Strategies (running on any client) write request entries; the worker observes
+// the array via the normal doc-update hook and drives each entry through
+// requested → claimed → completed/error/cancelled.
+//
+// Storage is PER-THREAD, modelled on pending_items.go: the array hangs off the
+// submitting thread's own parent Y.Map (the doc root for the root thread, the
+// thread Y.Map for a sub-thread) via pendingParentMapLocked, keyed by
+// threadItemID. So two threads' pending requests live in separate arrays and can
+// never collide or cross-drive, and a deleted thread's queue is removed with it
+// rather than lingering on conversation metadata. The JS submitter
+// (thread-orchestrator.js) writes into the same per-thread container.
+//
+// The worker is the right orchestrator location because:
+//   * It is single per-conversation, so claiming needs no CAS dance.
+//   * It already holds the doc as the source of truth; clients observe the
+//     same doc, so the round-trip latency that an engine-JS orchestrator
+//     introduces (viewer cancel → engine writes the cancelled result → viewer
+//     observes) collapses to zero hops.
+//   * It already owns the create-thread / send-message dispatch paths
+//     internally; the orchestrator reuses dispatchCreateThread directly
+//     instead of round-tripping through a WS message to itself.
+
+package worker
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	ycrdt "github.com/skyterra/y-crdt"
+
+	"juggler/cmd/juggler/ops"
+)
+
+const (
+	pendingRequestsKey  = "pendingRequests"
+	pendingRequestsGCMs = 30000
+
+	// cancelledThreadResult is the shared sentinel a cancelled sub-thread
+	// carries as its result. It must match what the JS cancel path writes
+	// (conversation.js cancelThread), so a sub-thread cancelled by either writer
+	// (worker orchestrator or viewer/engine) is recognised as cancelled here —
+	// making the pending-request outcome (and a plan driver's per-step result)
+	// deterministic rather than racing two writers that disagree on the string.
+	cancelledThreadResult = "Cancelled"
+)
+
+// pendingEntrySnapshot is a read-only copy of one Y.Map entry, taken under
+// the y-crdt mutex so the scan loop can iterate without holding the lock.
+type pendingEntrySnapshot struct {
+	index            int
+	ownerThreadID    string // thread whose own queue holds this entry ("" = root)
+	id               string
+	kind             string
+	status           string
+	cancelRequested  bool
+	completedAt      float64
+	threadItemID     string // set after createThread dispatch so we can find the thread Y.Map
+	itemsBefore      int    // set after continue dispatch so we can detect items growth
+	goal             string
+	prompt           string
+	parentThreadID   string
+	isContinuation   bool
+	continueThreadID string
+	deliverTaskID    string // deliverTaskOutput: background task whose output to stream
+	deliverLabel     string // deliverTaskOutput: display label shown with each batch
+}
+
+// scanPendingRequests is invoked from handleItemsChange. Walks the
+// pendingRequests Y.Array and drives every entry one step forward. Runs on
+// the worker's run() goroutine; Yjs reads/writes acquire ycrdtMu.
+func (w *ConversationWorker) scanPendingRequests() {
+	snapshot := w.snapshotPendingEntries()
+	if len(snapshot) == 0 {
+		return
+	}
+	nowMs := time.Now().UnixMilli()
+	for _, e := range snapshot {
+		if e.cancelRequested && (e.status == "requested" || e.status == "claimed") {
+			w.cancelPendingEntry(e)
+			continue
+		}
+		switch e.status {
+		case "requested":
+			w.claimAndDispatchPendingEntry(e)
+		case "claimed":
+			w.advanceClaimedPendingEntry(e)
+		case "completed", "error", "cancelled":
+			if e.completedAt > 0 && nowMs-int64(e.completedAt) > pendingRequestsGCMs {
+				w.gcPendingEntry(e.ownerThreadID, e.id)
+			}
+		}
+	}
+}
+
+// pendingRequestThreadIDsLocked returns the owner threads to scan: root ("")
+// plus every sub-thread. MUST be called with ycrdtMu held.
+func (w *ConversationWorker) pendingRequestThreadIDsLocked() []string {
+	ids := []string{""}
+	walkThreads(w.doc.getItems(), func(m *ycrdt.YMap, _ *ycrdt.YArray, _ string) bool {
+		if id, _ := m.Get("itemId").(string); id != "" {
+			ids = append(ids, id)
+		}
+		return false
+	})
+	return ids
+}
+
+// snapshotPendingEntries copies the current state of every thread's
+// pendingRequests array under the y-crdt lock. The scan loop iterates this
+// snapshot rather than the live Y.Arrays so it can re-enter Yjs without nested
+// locking. Each entry is tagged with its owner thread so the per-entry writers
+// re-resolve it in the correct thread's array.
+func (w *ConversationWorker) snapshotPendingEntries() []pendingEntrySnapshot {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	var out []pendingEntrySnapshot
+	for _, threadID := range w.pendingRequestThreadIDsLocked() {
+		arr := w.pendingRequestsArrayLocked(threadID)
+		if arr == nil {
+			continue
+		}
+		n := int(arr.GetLength())
+		for i := 0; i < n; i++ {
+			ymap, ok := arr.Get(ycrdt.Number(i)).(*ycrdt.YMap)
+			if !ok || ymap == nil {
+				continue
+			}
+			snap := pendingEntrySnapshot{index: i, ownerThreadID: threadID}
+			snap.id, _ = ymap.Get("id").(string)
+			snap.kind, _ = ymap.Get("kind").(string)
+			snap.status, _ = ymap.Get("status").(string)
+			snap.cancelRequested, _ = ymap.Get("cancelRequested").(bool)
+			if v, ok := ymap.Get("completedAt").(ycrdt.Number); ok {
+				snap.completedAt = float64(v)
+			}
+			snap.threadItemID, _ = ymap.Get("threadItemId").(string)
+			if v, ok := ymap.Get("itemsBefore").(ycrdt.Number); ok {
+				snap.itemsBefore = int(v)
+			}
+			if req, ok := ymap.Get("request").(*ycrdt.YMap); ok {
+				snap.goal, _ = req.Get("goal").(string)
+				snap.prompt, _ = req.Get("prompt").(string)
+				snap.parentThreadID, _ = req.Get("parentThreadItemId").(string)
+				snap.isContinuation, _ = req.Get("isContinuation").(bool)
+				snap.continueThreadID, _ = req.Get("threadItemId").(string)
+				snap.deliverTaskID, _ = req.Get("taskId").(string)
+				snap.deliverLabel, _ = req.Get("label").(string)
+			}
+			out = append(out, snap)
+		}
+	}
+	return out
+}
+
+// pendingRequestsArrayLocked returns the pendingRequests Y.Array hanging off the
+// given thread's own parent map ("" = root → doc root). MUST be called with
+// ycrdtMu held. Returns nil if the array has not been lazily-created by any
+// client yet — strategies create it on first write (mirrors pending_items.go).
+func (w *ConversationWorker) pendingRequestsArrayLocked(threadItemID string) *ycrdt.YArray {
+	parent := w.doc.pendingParentMapLocked(threadItemID)
+	if parent == nil {
+		return nil
+	}
+	arr, _ := parent.Get(pendingRequestsKey).(*ycrdt.YArray)
+	return arr
+}
+
+// ensurePendingRequestsArrayLocked get-or-creates the pendingRequests array on
+// the thread's own parent map. MUST be called with ycrdtMu held. Returns nil if
+// the thread is gone.
+func (w *ConversationWorker) ensurePendingRequestsArrayLocked(threadItemID string) *ycrdt.YArray {
+	parent := w.doc.pendingParentMapLocked(threadItemID)
+	if parent == nil {
+		return nil
+	}
+	if arr, ok := parent.Get(pendingRequestsKey).(*ycrdt.YArray); ok {
+		return arr
+	}
+	arr := ycrdt.NewYArray()
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		parent.Set(pendingRequestsKey, arr)
+	}, w.doc.txOrigin())
+	return arr
+}
+
+// pendingEntryByIDLocked finds an entry by its stable id field within the owner
+// thread's array, returning (index, ymap, true) or (0, nil, false). MUST be
+// called with ycrdtMu held. Used to re-resolve entries from the snapshot since
+// the index may have shifted between snapshot and write (GC, peer inserts).
+func (w *ConversationWorker) pendingEntryByIDLocked(ownerThreadID, id string) (int, *ycrdt.YMap, bool) {
+	arr := w.pendingRequestsArrayLocked(ownerThreadID)
+	if arr == nil {
+		return 0, nil, false
+	}
+	n := int(arr.GetLength())
+	for i := 0; i < n; i++ {
+		ymap, ok := arr.Get(ycrdt.Number(i)).(*ycrdt.YMap)
+		if !ok || ymap == nil {
+			continue
+		}
+		if v, _ := ymap.Get("id").(string); v == id {
+			return i, ymap, true
+		}
+	}
+	return 0, nil, false
+}
+
+// claimAndDispatchPendingEntry marks the entry as claimed and triggers
+// the kind-specific dispatch. The dispatch may complete synchronously
+// (createThread returns a threadItemId immediately; the actual thread runs
+// async on the worker and is detected by advanceClaimedPendingEntry on
+// subsequent scans).
+func (w *ConversationWorker) claimAndDispatchPendingEntry(e pendingEntrySnapshot) {
+	if e.kind == "createThread" || e.kind == "continue" {
+		if w.loadState() != StateIdle {
+			// Worker is busy with something else; leave entry in 'requested'
+			// for a later scan to re-attempt. Don't claim — claiming locks
+			// the entry to this worker boot, and we don't yet know we can
+			// service it.
+			return
+		}
+	}
+
+	ycrdtMu.Lock()
+	_, ymap, ok := w.pendingEntryByIDLocked(e.ownerThreadID, e.id)
+	if !ok {
+		ycrdtMu.Unlock()
+		return
+	}
+	if v, _ := ymap.Get("status").(string); v != "requested" {
+		ycrdtMu.Unlock()
+		return
+	}
+	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+		ymap.Set("status", "claimed")
+		ymap.Set("claimedBy", "worker")
+	}, w.doc.authorID)
+	ycrdtMu.Unlock()
+
+	switch e.kind {
+	case "createThread":
+		threadItemID, err := w.dispatchCreateThread(e.goal, e.prompt, e.parentThreadID, e.isContinuation)
+		if err != nil {
+			w.writePendingEntryError(e.ownerThreadID, e.id, err.Error())
+			return
+		}
+		w.setPendingEntryThreadID(e.ownerThreadID, e.id, threadItemID)
+	case "continue":
+		w.dispatchPendingContinue(e)
+	case "deliverTaskOutput":
+		// Long-lived: the entry stays "claimed" while the pump streams the
+		// task's output; the pump completes the entry when the task exits.
+		w.startTaskDeliveryPump(e.id, e.ownerThreadID, e.deliverTaskID, e.deliverLabel)
+	default:
+		w.writePendingEntryError(e.ownerThreadID, e.id, fmt.Sprintf("unknown kind: %s", e.kind))
+	}
+}
+
+// dispatchPendingContinue triggers a continuation turn. Captures items
+// length before so advanceClaimedPendingEntry can detect when the response
+// starts streaming.
+func (w *ConversationWorker) dispatchPendingContinue(e pendingEntrySnapshot) {
+	itemsLen := w.getTargetItemsLength()
+	w.setPendingEntryItemsBefore(e.ownerThreadID, e.id, itemsLen)
+
+	// Build a synthetic send-message payload and enqueue it on the worker's
+	// own inbound channel. Going through the normal message path keeps the
+	// state machine consistent.
+	sm := SendMessageMessage{
+		Type:           "send-message",
+		Text:           "",
+		IsContinuation: true,
+		ThreadItemID:   e.continueThreadID,
+	}
+	payload, err := json.Marshal(sm)
+	if err != nil {
+		w.writePendingEntryError(e.ownerThreadID, e.id, err.Error())
+		return
+	}
+	w.Send("send-message", payload)
+}
+
+// advanceClaimedPendingEntry drives a claimed entry toward completion by
+// inspecting its underlying side effect: for createThread, look at the
+// thread Y.Map's result field; for continue, watch the items length.
+func (w *ConversationWorker) advanceClaimedPendingEntry(e pendingEntrySnapshot) {
+	switch e.kind {
+	case "createThread":
+		if e.threadItemID == "" {
+			return // dispatch hasn't recorded the threadItemId yet
+		}
+		ycrdtMu.Lock()
+		threadYMap := findThreadYMap(w.doc.getItems(), e.threadItemID)
+		if threadYMap == nil {
+			ycrdtMu.Unlock()
+			return
+		}
+		result, _ := threadYMap.Get("result").(string)
+		ycrdtMu.Unlock()
+		if result == "" || result == "null" {
+			return
+		}
+		if result == cancelledThreadResult {
+			w.writePendingEntryCancelled(e.ownerThreadID, e.id, result)
+		} else {
+			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, e.threadItemID, result)
+		}
+	case "continue":
+		curLen := w.getTargetItemsLength()
+		if curLen > e.itemsBefore {
+			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
+		}
+	case "deliverTaskOutput":
+		if _, running := w.deliveryPumps[e.id]; running {
+			return // the pump owns this entry's lifecycle
+		}
+		// Claimed but no pump — e.g. the worker was recreated mid-delivery.
+		// Restart the pump if the task is still alive; otherwise the task is
+		// gone (a server restart drops in-process tasks), so complete the entry.
+		if snap := ops.TaskState(e.deliverTaskID); snap.Found && snap.Status == "running" {
+			w.startTaskDeliveryPump(e.id, e.ownerThreadID, e.deliverTaskID, e.deliverLabel)
+		} else {
+			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
+		}
+	}
+}
+
+// cancelPendingEntry transitions a requested/claimed entry to cancelled
+// when its cancelRequested flag flips. For createThread, also writes
+// 'Cancelled by user' to the thread Y.Map if one exists and hasn't been
+// resolved.
+func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
+	if e.kind == "deliverTaskOutput" {
+		// Stop the pump and kill the task; do NOT forward to handleCancel (a
+		// delivery cancel must not abort an unrelated in-flight turn).
+		w.stopDeliveryPump(e.id)
+		w.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
+		return
+	}
+	if e.kind == "createThread" && e.threadItemID != "" {
+		ycrdtMu.Lock()
+		threadYMap := findThreadYMap(w.doc.getItems(), e.threadItemID)
+		if threadYMap != nil {
+			if r, _ := threadYMap.Get("result").(string); r == "" || r == "null" {
+				w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+					threadYMap.Set("result", cancelledThreadResult)
+				}, w.doc.authorID)
+			}
+		}
+		ycrdtMu.Unlock()
+	}
+	// Forward to the worker's cancel path so any in-flight LLM call stops.
+	if w.loadState() == StateProcessing {
+		w.handleCancel()
+	}
+	w.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
+}
+
+// setPendingEntryThreadID records the threadItemId on a claimed entry so
+// advanceClaimedPendingEntry can find the thread Y.Map on the next scan.
+func (w *ConversationWorker) setPendingEntryThreadID(ownerThreadID, id, threadItemID string) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
+	if !ok {
+		return
+	}
+	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+		ymap.Set("threadItemId", threadItemID)
+	}, w.doc.authorID)
+}
+
+// setPendingEntryItemsBefore records the items length at dispatch time
+// for continue requests.
+func (w *ConversationWorker) setPendingEntryItemsBefore(ownerThreadID, id string, itemsBefore int) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
+	if !ok {
+		return
+	}
+	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+		ymap.Set("itemsBefore", ycrdt.Number(itemsBefore))
+	}, w.doc.authorID)
+}
+
+func (w *ConversationWorker) writePendingEntryError(ownerThreadID, id, errMsg string) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
+	if !ok {
+		return
+	}
+	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+		ymap.Set("error", errMsg)
+		ymap.Set("status", "error")
+		ymap.Set("completedAt", ycrdt.Number(time.Now().UnixMilli()))
+	}, w.doc.authorID)
+}
+
+func (w *ConversationWorker) writePendingEntryCancelled(ownerThreadID, id, errMsg string) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
+	if !ok {
+		return
+	}
+	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+		if errMsg != "" {
+			ymap.Set("error", errMsg)
+		}
+		ymap.Set("status", "cancelled")
+		ymap.Set("completedAt", ycrdt.Number(time.Now().UnixMilli()))
+	}, w.doc.authorID)
+}
+
+func (w *ConversationWorker) writePendingEntryCompletedThread(ownerThreadID, id, threadItemID, result string) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
+	if !ok {
+		return
+	}
+	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+		resultMap := ycrdt.NewYMap(nil)
+		if threadItemID != "" {
+			resultMap.Set("threadItemId", threadItemID)
+		}
+		if result != "" {
+			resultMap.Set("result", result)
+		}
+		ymap.Set("result", resultMap)
+		ymap.Set("status", "completed")
+		ymap.Set("completedAt", ycrdt.Number(time.Now().UnixMilli()))
+	}, w.doc.authorID)
+}
+
+// gcPendingEntry removes a terminal entry from the Y.Array. The index is
+// re-resolved by id since GC of an earlier entry may have shifted it.
+func (w *ConversationWorker) gcPendingEntry(ownerThreadID, id string) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	idx, _, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
+	if !ok {
+		return
+	}
+	arr := w.pendingRequestsArrayLocked(ownerThreadID)
+	if arr == nil {
+		return
+	}
+	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+		arr.Delete(ycrdt.Number(idx), ycrdt.Number(1))
+	}, w.doc.authorID)
+	w.log.Debug("[orchestrator] GC'd entry %s", id)
+}

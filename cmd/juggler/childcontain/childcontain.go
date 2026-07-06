@@ -1,0 +1,103 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+// Package childcontain provides cross-platform best-effort OS-level containment
+// for child processes. It has two jobs:
+//
+//   - parent-death containment where the OS supports it, so children do not
+//     survive a crashed/killed parent;
+//   - process-tree termination, so explicit shutdown/cancel kills the whole
+//     child subtree rather than only the direct child process.
+//
+// Preferred usage:
+//
+//	cmd := exec.Command(...)
+//	child, err := childcontain.Start(cmd)
+//	if err != nil { ... }
+//	defer child.Cleanup() // after Wait/child exit, releases OS resources
+//	...
+//	_ = child.Terminate() // on cancellation/escalation, kills contained tree
+//
+// Lower-level usage is available for call sites that need custom Start wiring:
+//
+//	childcontain.Prepare(cmd)          // before cmd.Start()
+//	if err := cmd.Start(); err != nil { ... }
+//	child, err := childcontain.Adopt(cmd) // after cmd.Start()
+//	defer child.Cleanup()
+//	...
+//	_ = child.Terminate()
+//
+// Platform behaviour:
+//
+//	Linux:   Pdeathsig SIGTERM handles parent death; Setpgid creates a child
+//	         process group; Terminate signals the whole process group.
+//
+//	macOS:   Setpgid creates a child process group; Terminate signals the whole
+//	         process group. There is no kernel parent-death primitive, so hard
+//	         kills of the parent may still orphan children until explicit
+//	         shutdown/cancel runs.
+//
+//	Windows: Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE contains the
+//	         child process tree. Terminate closes the job handle, killing all job
+//	         members. Cleanup closes the handle after natural child exit.
+//
+//	Other:   best-effort direct process kill only.
+package childcontain
+
+import "os/exec"
+
+// Child is a contained child process. It wraps the original exec.Cmd with the
+// platform resources needed to kill/release its process tree.
+type Child struct {
+	cmd     *exec.Cmd
+	cleanup func()
+}
+
+// Start prepares, starts, and adopts cmd into child containment.
+func Start(cmd *exec.Cmd) (*Child, error) {
+	Prepare(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return Adopt(cmd)
+}
+
+// Prepare sets pre-fork OS-level attributes on cmd to enable containment where
+// the kernel supports it. Must be called before cmd.Start().
+func Prepare(cmd *exec.Cmd) {
+	prepare(cmd)
+}
+
+// Adopt completes OS-level containment after the child has been started. Must
+// be called after a successful cmd.Start().
+//
+// Errors from Adopt are non-fatal for many call sites: explicit Terminate still
+// falls back as far as the platform allows, and exec.CommandContext still covers
+// direct-child cancellation. Callers should log and proceed if the process has
+// already started.
+func Adopt(cmd *exec.Cmd) (*Child, error) {
+	cleanup, err := adopt(cmd)
+	if cleanup == nil {
+		cleanup = func() {}
+	}
+	return &Child{cmd: cmd, cleanup: cleanup}, err
+}
+
+// Cleanup releases OS containment resources after the child has exited. On
+// Windows, calling Cleanup while the child is still running kills the job.
+func (c *Child) Cleanup() {
+	if c == nil || c.cleanup == nil {
+		return
+	}
+	c.cleanup()
+	c.cleanup = nil
+}
+
+// Terminate kills the contained child process tree best-effort.
+func (c *Child) Terminate() error {
+	if c == nil || c.cmd == nil {
+		return nil
+	}
+	return terminate(c.cmd, c)
+}

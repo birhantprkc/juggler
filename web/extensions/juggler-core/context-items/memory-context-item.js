@@ -1,0 +1,625 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
+
+import ContextItem from 'juggler/context-item';
+import { readFile, writeFile, stat } from 'juggler/ops';
+import { createElement } from 'juggler/ui';
+import { parseMemory, appendEntry, removeMatching } from './memory/memory-format.js';
+
+/**
+ * Last-known-good memory content per path. A transient read failure on an
+ * existing file serves this instead of '', so the cached system prefix stays
+ * byte-stable (see `_read`). Keyed by path because a global memory instance can
+ * point at an alternate file.
+ * @type {Map<string, string>}
+ */
+const lastGoodMemory = new Map();
+
+/**
+ * Project memory — agent-writable, user-visible durable facts.
+ *
+ * SEMANTICS (mirrors `file-content`: the FILE is the source of truth):
+ *  - Persisted to `.juggler/MEMORY.md` (private, gitignored, hand-editable).
+ *  - The item stores only a path pointer in Yjs; entries are read live at send
+ *    time (`createContextText`) and in the panel — never round-tripped through
+ *    the conversation document (which would bust the prompt cache across tabs).
+ *  - Injected at the `system` position, so it rides the cached system prefix and
+ *    is cache-stable by construction: the file changes only when the model (or
+ *    user) remembers/forgets something — a rare, config-frequency event — never
+ *    per turn.
+ *
+ * The single `memory` tool exposes two actions, `remember` and `forget`
+ * (revise = forget + remember). Following the `plan` plugin's idiom, the
+ * operations are a single tool keyed on an `action` enum rather than two
+ * separately-named tools: the framework routes tool execution by MANIFEST id
+ * (response-handler resolves `actionId = ActionClass.MANIFEST.id`), so the tool
+ * name is not available inside `execute()` to discriminate two tools on one
+ * class.
+ * @class
+ * @augments ContextItem
+ */
+class MemoryContextItem extends ContextItem {
+  /** @type {import('juggler/context-item').ContextItemManifest} */
+  static MANIFEST = {
+    id: 'memory',
+    name: 'Project Memory',
+    version: '1.0.0',
+    description: 'Durable, user-visible project memory the assistant maintains across conversations',
+    author: 'Juggler Team',
+    idPrefix: 'MEM',
+    requiresApproval: false,
+    userAddable: false,
+    preventUserDeletion: true,
+    autoInstantiate: true,
+    watchesFileChanges: true,
+    syntheticToolName: 'memory',
+    contextPosition: /** @type {const} */ ('system'),
+    exampleData: { path: '.juggler/MEMORY.md' }
+  };
+
+  /** Default on-disk location for project memory (relative to project root). */
+  static DEFAULT_PATH = '.juggler/MEMORY.md';
+
+  /**
+   * Badge for the remember/forget tool-ACTION (the write event). The standing
+   * store card overrides the instance method below with the library glyph, so
+   * the event and the store it feeds read as visually distinct items rather
+   * than two identical "memory" rows.
+   * @returns {{color: string, icon?: string}} Badge options
+   */
+  static getBadgeOptions() {
+    return { color: 'memory', icon: 'icon-edit-file' };
+  }
+
+  /**
+   * Badge for the standing memory STORE card — the persistent library of facts.
+   * Distinct glyph from the action's edit badge (see static override above).
+   * @returns {{color: string, icon?: string}} Badge options
+   */
+  getBadgeOptions() {
+    return { color: 'memory', icon: 'icon-book' };
+  }
+
+  /**
+   * Single `memory` tool with a remember/forget action (see class doc for why
+   * a single action-keyed tool rather than two tools).
+   * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
+   */
+  static getToolDefinitions() {
+    return [
+      {
+        name: 'memory',
+        category: 'meta', // internal durable state, not a project-source mutation
+        description:
+					'Record or remove a durable project fact in long-term memory. Memory persists across ' +
+					'all conversations and is injected into every future turn. Use action "remember" to ' +
+					'store a concise, durable fact (a build/test command, a convention, a correction the user ' +
+					'made); use action "forget" to remove a fact that is now stale or wrong. Do NOT use memory ' +
+					'for ephemeral within-task state.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['remember', 'forget'],
+              description: 'Whether to add a fact ("remember") or remove matching facts ("forget")'
+            },
+            fact: {
+              type: 'string',
+              description: 'The durable one-line fact to record (required for "remember")'
+            },
+            match: {
+              type: 'string',
+              description: 'Case-insensitive substring identifying the entry/entries to remove (required for "forget")'
+            }
+          },
+          required: ['action']
+        }
+      }
+    ];
+  }
+
+  /**
+   * Singleton: one memory item per thread. Reuse the existing instance.
+   * @static
+   * @param {Record<string, any>} _newParams - Parameters for the new request
+   * @param {ContextItem[]} existingItems - All existing items of this type
+   * @returns {import('juggler/context-item').MergeOrReplaceResult|null} Merge result or null to create
+   */
+  static mergeOrReplace(_newParams, existingItems) {
+    if (existingItems.length > 0) {
+      return { action: 'reuse', item: /** @type {ContextItem} */ (existingItems[0]) }; // bounded: length>0
+    }
+    return null;
+  }
+
+  /** @returns {string} Item title */
+  getTitle() {
+    return 'Project Memory';
+  }
+
+  /**
+   * On-disk path for this memory instance. Defaults to the project's
+   * `.juggler/MEMORY.md`; an alternate path (e.g. a global `~/.juggler/MEMORY.md`)
+   * can be pinned via `data.path`, which is what makes a second, global-scope
+   * instance a trivial registration later.
+   * @returns {string} Resolved memory file path
+   * @private
+   */
+  _memoryPath() {
+    return (this.data && this.data.path) || MemoryContextItem.DEFAULT_PATH;
+  }
+
+  /** @returns {string} Today's date as `YYYY-MM-DD` */
+  _today() {
+    return /** @type {string} */ (new Date().toISOString().split('T')[0]); // bounded: ISO string always contains 'T'
+  }
+
+  /**
+   * Determine authoritatively whether a file is genuinely absent. `stat` is
+   * called WITHOUT the abort signal so existence stays checkable even when the
+   * read was aborted; it returns `{exists:false}` for a missing file and does
+   * not throw. If stat itself fails, existence cannot be confirmed — treat the
+   * file as present (transient), not absent.
+   * @param {string} path - File path
+   * @returns {Promise<boolean>} True only when the file is confirmed missing
+   * @private
+   */
+  async _fileAbsent(path) {
+    try {
+      const s = await stat({ path });
+      return !!s && s.exists === false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Read the memory file, treating a genuinely absent file as empty. A
+   * transient IO failure on an EXISTING file is not a state change: serving the
+   * cached last-known-good content keeps the cached system prefix byte-stable
+   * (a dropped memory block would diverge the prompt and cold-start the cache).
+   * @param {string} path - File path
+   * @returns {Promise<string>} File content, last-known-good, or ''
+   * @private
+   */
+  async _read(path) {
+    try {
+      const r = await readFile({ path }, this.signal);
+      const content = r && typeof r.content === 'string' ? r.content : '';
+      lastGoodMemory.set(path, content);
+      return content;
+    } catch {
+      // Genuine absence (ENOENT) returns '' — and any stale cache is dropped.
+      if (await this._fileAbsent(path)) {
+        lastGoodMemory.delete(path);
+        return '';
+      }
+      // Existing-but-unreadable (or existence unconfirmable): serve last-good.
+      return lastGoodMemory.get(path) ?? '';
+    }
+  }
+
+  /**
+   * Write the memory file. The backend `writeFile` creates parent directories
+   * as needed, so a brand-new `.juggler/MEMORY.md` is created on first write.
+   * @param {string} path - File path
+   * @param {string} content - Canonical content to write
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _write(path, content) {
+    await writeFile({ path, content });
+    // A successful write is the new last-known-good for transient-failure reads.
+    lastGoodMemory.set(path, content);
+  }
+
+  /**
+   * Gate for auto-instantiation: only seed a memory item when the file already
+   * exists, so empty projects gain no item (and unrelated conversations stay
+   * unchanged). A first `remember` creates the file and seeds the item onto its
+   * own thread (see `_ensureSeeded`); from then on new conversations seed it
+   * here. Mirrors how CLAUDE.md is auto-added only when present.
+   * @param {string} [path] - Path to probe (defaults to the project memory file)
+   * @returns {Promise<boolean>} True if the memory file exists
+   */
+  static async shouldAutoInstantiate(path = MemoryContextItem.DEFAULT_PATH) {
+    try {
+      const s = await stat({ path });
+      return !!(s && s.exists);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * No-op: creating a memory item needs no parameters — the file is the source
+   * of truth, so the auto-instantiate / seeding path just adds the item. The
+   * remember/forget tool runs through `execute()`, not this path.
+   * @param {string} _toolName - Tool name (unused)
+   * @param {Record<string, any>} _params - Tool parameters (unused)
+   * @returns {Promise<void>}
+   */
+  async onToolCall(_toolName, _params) {}
+
+  /**
+   * Ensure a persistent memory item exists on this thread so memory injects
+   * immediately after a write, even in a conversation created before the file
+   * existed. Idempotent via mergeOrReplace (singleton).
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _ensureSeeded() {
+    try {
+      if (this.messageThread && this._memoryPath() === MemoryContextItem.DEFAULT_PATH) {
+        await this.messageThread.executeContextItem('memory', {});
+      }
+    } catch {
+      // Best-effort: a failed seed must never fail the remember/forget tool.
+    }
+  }
+
+  /**
+   * Validate tool parameters.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Raw parameters from LLM
+   * @returns {Promise<import('juggler/context-item').ValidationResult>} Validation result
+   */
+  async validate(toolInput) {
+    const action = toolInput.action;
+    if (action !== 'remember' && action !== 'forget') {
+      return { valid: false, error: 'Parameter "action" must be "remember" or "forget"' };
+    }
+    if (action === 'remember') {
+      const fact = toolInput.fact;
+      if (typeof fact !== 'string' || fact.trim() === '') {
+        return { valid: false, error: 'remember requires a non-empty "fact"' };
+      }
+    } else {
+      const match = toolInput.match;
+      if (typeof match !== 'string' || match === '') {
+        return { valid: false, error: 'forget requires a "match" string' };
+      }
+    }
+    return { valid: true, params: toolInput };
+  }
+
+  /**
+   * Memory writes are frictionless — never gated behind approval.
+   * @override
+   * @param {Record<string, unknown>} _toolInput - Tool input parameters
+   * @returns {boolean} Always true
+   */
+  isPermitted(_toolInput) {
+    return true;
+  }
+
+  /**
+   * Execute a remember/forget action against the on-disk memory file.
+   * @param {Record<string, any>} params - Validated params
+   * @returns {Promise<{action: string, fact?: string, match?: string, removed?: string[], entryCount: number}>} Result
+   */
+  async execute(params) {
+    const path = this._memoryPath();
+    const existing = await this._read(path);
+
+    if (params.action === 'remember') {
+      const fact = String(params.fact || '').trim();
+      const updated = appendEntry(existing, fact, this._today());
+      await this._write(path, updated);
+      await this._ensureSeeded();
+      return { action: 'remember', fact, entryCount: parseMemory(updated).entries.length };
+    }
+
+    if (params.action === 'forget') {
+      const match = String(params.match || '');
+      const { content, removed } = removeMatching(existing, match);
+      await this._write(path, content);
+      await this._ensureSeeded();
+      return { action: 'forget', match, removed, entryCount: parseMemory(content).entries.length };
+    }
+
+    throw new Error(`Unknown memory action: ${params.action}`);
+  }
+
+  /**
+   * Format the outcome for the LLM tool_result and simple display.
+   * @override
+   * @param {import('juggler/context-item').Outcome} outcome - Action outcome
+   * @returns {import('juggler/context-item').ItemSummary} Formatted result
+   */
+  getSummary(outcome) {
+    if (!outcome.success) {
+      return { summary: `Memory update failed: ${outcome.error}`, details: '', success: false, icon: '✗' };
+    }
+    const r = /** @type {{action?: string, fact?: string, match?: string, removed?: string[]}} */ (outcome.result || {});
+    if (r.action === 'forget') {
+      if (!r.removed || r.removed.length === 0) {
+        return { summary: `No memory entry matched "${r.match}"`, details: '', success: true, icon: '✓' };
+      }
+      const noun = r.removed.length === 1 ? 'entry' : 'entries';
+      return { summary: `Forgot ${r.removed.length} memory ${noun}: ${r.removed.join('; ')}`, details: '', success: true, icon: '✓' };
+    }
+    return { summary: `Remembered: ${r.fact}`, details: '', success: true, icon: '✓' };
+  }
+
+  /**
+   * Render the live memory block for the system prompt. Empty/absent memory
+   * contributes nothing. Read live so a remember in any conversation is
+   * reflected on the next send everywhere.
+   * @override
+   * @param {object} _contextParams - Runtime execution context (unused)
+   * @returns {Promise<string>} Context text, or '' when there are no entries
+   */
+  async createContextText(_contextParams) {
+    const content = await this._read(this._memoryPath());
+    const { entries } = parseMemory(content);
+    if (entries.length === 0) {
+      return '';
+    }
+    const lines = entries.map((e) => (e.date ? `- [${e.date}] ${e.text}` : `- ${e.text}`));
+    return (
+      '=== Project Memory ===\n' +
+			'Durable facts you have recorded for this project (maintained via the memory tool):\n\n' +
+			lines.join('\n')
+    );
+  }
+
+  /**
+   * Status UI. With no actionStatus this is the persistent item card; with one
+   * it is a remember/forget tool-action.
+   * @override
+   * @param {import('../../../js/services/action-executor.js').ActionStatus|null} [actionStatus] - Execution status
+   * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
+   */
+  getStatusUI(actionStatus) {
+    // Standing store card: state, not an event. Names what it is and that it
+    // reaches the model, so it never reads as a duplicate of the action below.
+    if (!actionStatus) {
+      return { typeName: 'Project Memory', summary: 'Durable facts — injected into every turn' };
+    }
+    // Tool-action row: the write event. A verb typeName ('Remember'/'Forget')
+    // plus the edit badge distinguishes it from the 'Project Memory' store.
+    if (actionStatus.success) {
+      const r = /** @type {{action?: string, fact?: string, match?: string, removed?: string[]}} */ (actionStatus.result || {});
+      if (r.action === 'forget') {
+        const summary = r.removed && r.removed.length ? r.removed.join('; ') : `No match for “${r.match}”`;
+        return { typeName: 'Forget', summary, status: /** @type {const} */ ('success') };
+      }
+      return { typeName: 'Remember', summary: `${r.fact}`, status: /** @type {const} */ ('success') };
+    }
+    if (actionStatus.error) {
+      return { typeName: 'Memory', summary: actionStatus.error, status: /** @type {const} */ ('error') };
+    }
+    return { typeName: 'Memory', summary: 'Memory' };
+  }
+
+  /**
+   * Properties panel for a remember/forget tool-ACTION (the write event).
+   * Renders a purpose-built view of what was remembered/forgotten — never the
+   * raw JSON request that the default `renderToolActionDetails` dumps, and
+   * never the current-memory list (that lives on the standing 'Project Memory'
+   * store card). Owns its whole display, so the generic Result section is
+   * suppressed.
+   * @override
+   * @param {HTMLElement} wrapper - Section wrapper to append into
+   * @param {import('juggler/context-item').ToolActionRenderContext} ctx - Render context
+   * @returns {{skipResultSection: boolean}} Always suppresses the generic result section
+   */
+  renderToolActionDetails(wrapper, ctx) {
+    const { toolAction, input } = ctx;
+    const raw = toolAction.get('result');
+    const result = raw?.toJSON ? raw.toJSON() : (raw || {});
+    const fullResult = result.fullResult || {};
+    const data = fullResult.result || {};
+    const action = input.action || data.action;
+
+    const panel = createElement('div', 'memory-action');
+
+    /**
+     * @param {string} label - Chip text
+     * @param {string} kind - 'add' | 'remove' for accent colour
+     * @returns {HTMLElement} Verb chip element
+     */
+    const verbChip = (label, kind) => createElement('div', `memory-action-verb memory-action-verb--${kind}`, label);
+    /**
+     * @param {string} text - Fact / message text
+     * @param {string} [extra] - Optional extra class (e.g. 'muted')
+     * @returns {HTMLElement} Fact block element
+     */
+    const factBlock = (text, extra) => createElement('div', `memory-action-fact${extra ? ' ' + extra : ''}`, text);
+
+    // Terminal failure / cancellation — show the outcome, nothing else.
+    if (result.isError || result.cancelled) {
+      const banner = createElement(
+        'div',
+        `memory-action-banner ${result.cancelled ? 'cancelled' : 'error'}`,
+        result.cancelled ? 'Cancelled' : (fullResult.error || result.content || 'Memory update failed')
+      );
+      panel.appendChild(banner);
+      wrapper.appendChild(panel);
+      return { skipResultSection: true };
+    }
+
+    if (action === 'forget') {
+      const match = input.match ?? data.match ?? '';
+      const removed = Array.isArray(data.removed) ? data.removed : null;
+      const removedCount = removed ? removed.length
+        : (typeof data.removedCount === 'number' ? data.removedCount : null);
+
+      if (removedCount === 0) {
+        panel.appendChild(verbChip('No change', 'remove'));
+        panel.appendChild(factBlock(`No memory entry matched “${match}”.`, 'muted'));
+      } else {
+        panel.appendChild(verbChip('Forgot', 'remove'));
+        if (removed) {
+          const ul = createElement('ul', 'memory-action-removed');
+          for (const text of removed) ul.appendChild(createElement('li', '', text));
+          panel.appendChild(ul);
+        } else {
+          const n = removedCount ?? 0;
+          panel.appendChild(factBlock(`Removed ${n} ${n === 1 ? 'entry' : 'entries'} matching “${match}”.`));
+        }
+      }
+    } else {
+      // remember (default)
+      panel.appendChild(verbChip('Remembered', 'add'));
+      panel.appendChild(factBlock(input.fact ?? data.fact ?? ''));
+    }
+
+    const entryCount = typeof data.entryCount === 'number' ? data.entryCount : null;
+    const note = entryCount === null
+      ? 'Project memory is injected into every future turn.'
+      : `Project memory now holds ${entryCount} ${entryCount === 1 ? 'fact' : 'facts'}, injected into every future turn.`;
+    panel.appendChild(createElement('div', 'memory-action-note', note));
+
+    wrapper.appendChild(panel);
+    return { skipResultSection: true };
+  }
+
+  /**
+   * Properties panel: the user-facing view of exactly what is in memory, with
+   * per-entry delete. Reads the file live and re-renders after edits.
+   * @override
+   * @returns {HTMLElement} Panel element
+   */
+  createPropertiesPanelElement() {
+    const container = createElement('div', 'memory-ci-expanded');
+    // Fire-and-forget async populate (sync signature, like file-content).
+    this._renderPanel(container);
+    return container;
+  }
+
+  /**
+   * Populate (or refresh) the panel from the live file.
+   * @param {HTMLElement} container - Panel container to fill
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _renderPanel(container) {
+    const content = await this._read(this._memoryPath());
+    const { entries } = parseMemory(content);
+    container.textContent = '';
+
+    container.appendChild(
+      createElement('div', 'memory-panel-note', 'Durable facts the assistant maintains across conversations. Injected into the system prompt of every turn. Edit by deleting entries here, or by hand in .juggler/MEMORY.md.')
+    );
+
+    if (entries.length === 0) {
+      container.appendChild(
+        createElement('div', 'memory-empty', 'No facts recorded yet.')
+      );
+      return;
+    }
+
+    const list = createElement('ul', 'memory-list');
+    for (const entry of entries) {
+      const li = createElement('li', 'memory-entry');
+      if (entry.date) {
+        li.appendChild(createElement('span', 'memory-date', entry.date));
+      }
+      li.appendChild(createElement('span', 'memory-text', entry.text));
+
+      const del = document.createElement('button');
+      del.className = 'memory-delete icon-btn';
+      del.title = 'Forget this';
+      del.innerHTML = '<span class="icon-trashcan"></span>';
+      del.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const cur = await this._read(this._memoryPath());
+        const { content: next } = removeMatching(cur, entry.text);
+        await this._write(this._memoryPath(), next);
+        this._renderPanel(container);
+      });
+      li.appendChild(del);
+
+      list.appendChild(li);
+    }
+    container.appendChild(list);
+  }
+
+  /**
+   * React to an external change of the memory file (e.g. a remember in another
+   * tab, or a hand edit) by asking the host to re-render this item.
+   * @param {string} changedPath - Path that changed
+   */
+  onFileChange(changedPath) {
+    if (typeof changedPath === 'string' && changedPath.replace(/\\/g, '/').endsWith('MEMORY.md')) {
+      if (typeof this.onContentChange === 'function') {
+        this.onContentChange();
+      }
+    }
+  }
+}
+
+const MEMORY_STYLES = `
+.memory-ci-expanded { display: flex; flex-direction: column; gap: 0.5rem; }
+.memory-panel-note {
+  font-size: 0.75rem; line-height: 1.5;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+.memory-empty {
+  padding: 1rem; font-size: 0.8125rem;
+  color: var(--context-item-text-secondary, var(--text-secondary));
+}
+
+/* Remember/forget tool-action properties panel */
+.memory-action { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0; }
+.memory-action-verb {
+  align-self: flex-start;
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 0.125rem 0.5rem; border-radius: 999px;
+  background: var(--bg-raised, rgba(127, 127, 127, 0.15));
+  color: var(--text-secondary);
+}
+.memory-action-verb--add { color: var(--accent-green); }
+.memory-action-verb--remove { color: var(--accent-red); }
+.memory-action-fact {
+  font-size: 0.875rem; line-height: 1.5;
+  color: var(--context-item-text, var(--text-primary));
+  padding: 0.5rem 0.75rem; border-radius: 6px;
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.08));
+  border-left: 2px solid var(--ci-family-memory, #c2410c);
+  white-space: pre-wrap; word-break: break-word;
+}
+.memory-action-fact.muted {
+  color: var(--text-tertiary, var(--text-secondary));
+  font-style: italic; border-left-color: transparent;
+}
+.memory-action-removed { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+.memory-action-removed li {
+  font-size: 0.8125rem; line-height: 1.5;
+  color: var(--text-secondary);
+  padding: 0.375rem 0.625rem; border-radius: 6px;
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.08));
+  text-decoration: line-through; text-decoration-color: var(--accent-red);
+}
+.memory-action-note { font-size: 0.75rem; color: var(--text-tertiary, var(--text-secondary)); }
+.memory-action-banner { font-size: 0.8125rem; line-height: 1.5; padding: 0.5rem 0.75rem; border-radius: 6px; }
+.memory-action-banner.error { color: var(--accent-red); background: rgba(248, 81, 73, 0.1); }
+.memory-action-banner.cancelled { color: var(--text-secondary); background: var(--bg-secondary, rgba(127, 127, 127, 0.08)); }
+.memory-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.375rem; }
+.memory-entry {
+  display: flex; align-items: baseline; gap: 0.5rem;
+  font-size: 0.8125rem; line-height: 1.5;
+  color: var(--context-item-text, var(--text-primary));
+}
+.memory-date {
+  flex-shrink: 0; font-family: var(--font-mono); font-size: 0.6875rem;
+  opacity: 0.6; white-space: nowrap;
+}
+.memory-text { flex: 1; min-width: 0; }
+.memory-delete { flex-shrink: 0; opacity: 0.5; transition: opacity 0.15s; }
+.memory-delete:hover { opacity: 1; }
+`;
+
+if (typeof document !== 'undefined' && !document.getElementById('memory-styles')) {
+  const style = document.createElement('style');
+  style.id = 'memory-styles';
+  style.textContent = MEMORY_STYLES;
+  document.head.appendChild(style);
+}
+
+export default MemoryContextItem;

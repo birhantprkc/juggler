@@ -1,0 +1,17 @@
+{
+  "id": "strategy-plan",
+  "category": "strategies",
+  "description": "Test plan strategy creates and submits a plan then executes via sub-threads",
+  "fixture": "action-edit-fixture",
+  "strategy": "plan",
+  "prompt": "Plan how to add input validation to the calculator:\n\n1. Analyze src/calculator.js to understand the current functions.\n\n2. Create a plan to add input validation that checks if arguments are numbers.\n\n3. Submit the plan using submit-plan.\n\n4. After plan approval, implement the validation.\n\nThe validation should throw an error if non-numeric values are passed.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/calculator.js",
+    "contains_strings": ["typeof", "number", "throw"]
+  },
+  "metadata": {
+    "difficulty": "medium",
+    "tags": ["strategy", "plan", "plan-then-execute"]
+  }
+}

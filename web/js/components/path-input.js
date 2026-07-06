@@ -1,0 +1,344 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+/**
+ * <path-input> — a text input with filesystem path autocomplete.
+ *
+ * Shows a completion dropdown (reusing .dropdown-menu.completions-menu styles)
+ * as the user types. Directories drill in on selection; files accept.
+ *
+ * Attributes:
+ *   placeholder  — forwarded to the inner <input>
+ *   dirs-only    — if present, only directory completions are shown
+ *   value        — initial value (also readable/writable as a property)
+ *
+ * Events:
+ *   path-change  — fired whenever the input value changes
+ *                  detail: { value: string }
+ */
+
+import { fetchPathCompletions } from '../services/completions-api.js';
+
+/**
+ * Matching quote pairs that can wrap a copied path. macOS Finder's "Copy as
+ * Pathname" and a number of apps wrap a filename in quotes when it is pasted as
+ * text; both straight and curly (smart-quote) variants show up depending on the
+ * source app.
+ * @type {ReadonlyArray<readonly [string, string]>}
+ */
+const QUOTE_PAIRS = [
+  ['"', '"'],
+  ["'", "'"],
+  ['\u201c', '\u201d'], // “ ”
+  ['\u2018', '\u2019'], // ‘ ’
+];
+
+/**
+ * Strip a single matching pair of surrounding quotes (straight or curly, single
+ * or double), along with surrounding whitespace, from a pasted path. Quotes in
+ * the interior are left untouched, and unquoted text is only whitespace-trimmed.
+ * @param {string} text - Raw pasted text
+ * @returns {string} The path with any wrapping quotes removed
+ */
+export function stripSurroundingQuotes(text) {
+  const trimmed = text.trim();
+  for (const [open, close] of QUOTE_PAIRS) {
+    if (trimmed.length >= open.length + close.length
+        && trimmed.startsWith(open) && trimmed.endsWith(close)) {
+      return trimmed.slice(open.length, trimmed.length - close.length).trim();
+    }
+  }
+  return trimmed;
+}
+
+class PathInput extends HTMLElement {
+  constructor() {
+    super();
+    /** @type {HTMLInputElement|null} @private */
+    this._input = null;
+    /** @type {HTMLUListElement|null} @private */
+    this._menu = null;
+    /** @type {string[]} @private */
+    this._items = [];
+    /** @type {number} @private */
+    this._index = -1;
+    /** @type {ReturnType<typeof setTimeout>|null} @private */
+    this._debounce = null;
+    /** @type {(() => void)|null} @private */
+    this._reposition = null;
+  }
+
+  connectedCallback() {
+    const placeholder = this.getAttribute('placeholder') || '';
+    const initial = this.getAttribute('value') || '';
+
+    this.innerHTML = `<input class="path-input-field" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">`;
+    this._input = /** @type {HTMLInputElement} */ (this.querySelector('.path-input-field'));
+    this._input.placeholder = placeholder;
+    this._input.value = initial;
+
+    this._input.addEventListener('input', () => this._onInput());
+    this._input.addEventListener('paste', (e) => this._onPaste(e));
+    this.addEventListener('keydown', (e) => this._onKeydown(e), { capture: true });
+    this._input.addEventListener('blur', () => {
+      // Small delay so mousedown on a menu item fires first.
+      setTimeout(() => this._closeMenu(), 150);
+    });
+    this._input.addEventListener('focus', () => this._onInput());
+  }
+
+  disconnectedCallback() {
+    this._closeMenu();
+  }
+
+  /** @returns {string} Current path value */
+  get value() {
+    return this._input ? this._input.value : '';
+  }
+
+  /** @param {string} v */
+  set value(v) {
+    if (this._input) this._input.value = v;
+  }
+
+  /** @returns {void} */
+  focus() {
+    this._input?.focus();
+  }
+
+  /**
+   * Intercept paste so a path copied from Finder (or anywhere) that arrives
+   * wrapped in quotes lands in the field unquoted. Only the pasted fragment is
+   * dequoted, and only when it actually changes — otherwise the browser's
+   * default paste runs untouched and we just refresh completions afterwards.
+   * @param {ClipboardEvent} e
+   * @private
+   */
+  _onPaste(e) {
+    if (!this._input || !e.clipboardData) {
+      setTimeout(() => this._onInput(), 0);
+      return;
+    }
+    const raw = e.clipboardData.getData('text');
+    const cleaned = stripSurroundingQuotes(raw);
+    if (cleaned === raw) {
+      setTimeout(() => this._onInput(), 0);
+      return;
+    }
+    e.preventDefault();
+    const input = this._input;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.setRangeText(cleaned, start, end, 'end');
+    this._onInput();
+  }
+
+  /** @private */
+  _onInput() {
+    this._emitChange();
+    const val = this._input?.value || '';
+    if (this._debounce !== null) clearTimeout(this._debounce);
+    this._debounce = setTimeout(() => this._fetch(val), 80);
+  }
+
+  /**
+   * @param {string} query
+   * @private
+   */
+  async _fetch(query) {
+    const dirsOnly = this.hasAttribute('dirs-only');
+    let results = await fetchPathCompletions(query);
+    if (results === null) return; // aborted — a newer fetch is already in flight
+    if (dirsOnly) {
+      results = results.filter((p) => p.endsWith('/'));
+    }
+    if (!this._input) return;
+    this._openMenu(results);
+  }
+
+  /**
+   * @param {string[]} items
+   * @private
+   */
+  _openMenu(items) {
+    this._closeMenuDOM();
+    if (items.length === 0) return;
+
+    this._items = items;
+    this._index = -1;
+
+    const menu = document.createElement('ul');
+    menu.className = 'dropdown-menu completions-menu path-input-menu show';
+
+    for (let i = 0; i < items.length; i++) {
+      const path = /** @type {string} */ (items[i]); // bounded by i < items.length
+      const li = document.createElement('li');
+      li.className = 'menu-item' + (path.endsWith('/') ? ' dir' : '');
+      li.dataset.index = String(i);
+
+      const icon = document.createElement('span');
+      icon.className = path.endsWith('/') ? 'menu-item-icon icon-folder' : 'menu-item-icon icon-file';
+      li.appendChild(icon);
+
+      const label = document.createElement('span');
+      label.className = 'menu-item-path';
+      label.textContent = path;
+      li.appendChild(label);
+
+      li.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        this._accept(path);
+      });
+      li.addEventListener('pointerover', () => this._highlight(i));
+
+      menu.appendChild(li);
+    }
+
+    // Portal to <body> with fixed positioning so the menu escapes every
+    // ancestor `overflow: hidden|auto|scroll` clipping context (the
+    // permissions popup wraps the input in `overflow-y: auto` scroll
+    // containers). Position is computed from the input's viewport rect and
+    // refreshed on scroll/resize so the menu tracks the input.
+    document.body.appendChild(menu);
+    menu.classList.add('path-input-menu--portaled');
+    this._menu = menu;
+
+    if (!this._input) return;
+
+    this._positionMenu();
+
+    // Track viewport changes while open. `scroll` with capture catches
+    // scrolling in any ancestor (including the popup body); `resize` catches
+    // window changes. Listeners are removed in `_closeMenuDOM`.
+    this._reposition = () => this._positionMenu();
+    window.addEventListener('scroll', this._reposition, true);
+    window.addEventListener('resize', this._reposition);
+  }
+
+  /**
+   * Place the portaled menu under (or above) the input using fixed
+   * coordinates derived from the input's viewport rect.
+   * @private
+   */
+  _positionMenu() {
+    if (!this._menu || !this._input) return;
+    const rect = this._input.getBoundingClientRect();
+    const gap = 4;
+    const spaceBelow = window.innerHeight - rect.bottom - gap;
+    const spaceAbove = rect.top - gap;
+    const openAbove = !(spaceBelow >= spaceAbove || spaceBelow >= 120);
+
+    this._menu.style.position = 'fixed';
+    this._menu.style.left = `${Math.round(rect.left)}px`;
+    this._menu.style.minWidth = `${Math.round(rect.width)}px`;
+    if (openAbove) {
+      this._menu.classList.add('path-input-menu--above');
+      this._menu.style.top = 'auto';
+      this._menu.style.bottom = `${Math.round(window.innerHeight - rect.top + gap)}px`;
+      this._menu.style.maxHeight = `${Math.max(spaceAbove, 80)}px`;
+    } else {
+      this._menu.classList.remove('path-input-menu--above');
+      this._menu.style.bottom = 'auto';
+      this._menu.style.top = `${Math.round(rect.bottom + gap)}px`;
+      this._menu.style.maxHeight = `${Math.max(spaceBelow, 80)}px`;
+    }
+  }
+
+  /**
+   * Remove the dropdown from the DOM without touching the debounce timer.
+   * @private */
+  _closeMenuDOM() {
+    if (this._reposition) {
+      window.removeEventListener('scroll', this._reposition, true);
+      window.removeEventListener('resize', this._reposition);
+      this._reposition = null;
+    }
+    if (this._menu) {
+      this._menu.remove();
+      this._menu = null;
+    }
+    this._items = [];
+    this._index = -1;
+  }
+
+  /**
+   * Close the dropdown and cancel any pending fetch debounce.
+   * @private */
+  _closeMenu() {
+    if (this._debounce !== null) {
+      clearTimeout(this._debounce);
+      this._debounce = null;
+    }
+    this._closeMenuDOM();
+  }
+
+  /**
+   * @param {number} idx
+   * @private
+   */
+  _highlight(idx) {
+    if (!this._menu) return;
+    const items = this._menu.querySelectorAll('.menu-item');
+    items.forEach((el, i) => el.classList.toggle('highlighted', i === idx));
+    this._index = idx;
+  }
+
+  /**
+   * @param {string} path
+   * @private
+   */
+  _accept(path) {
+    if (!this._input) return;
+    if (this._debounce !== null) { clearTimeout(this._debounce); this._debounce = null; }
+    this._input.value = path;
+    this._emitChange();
+    if (path.endsWith('/')) {
+      // Directory: drill in immediately.
+      this._fetch(path);
+    } else {
+      this._closeMenu();
+    }
+  }
+
+  /**
+   * @param {KeyboardEvent} e
+   * @private
+   */
+  _onKeydown(e) {
+    if (!this._menu) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      this._highlight(Math.min(this._index + 1, this._items.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      this._highlight(Math.max(this._index - 1, 0));
+    } else if (e.key === 'Tab' || e.key === 'Enter') {
+      if (this._index >= 0 && this._index < this._items.length) {
+        e.preventDefault();
+        this._accept(/** @type {string} */ (this._items[this._index]));
+      } else if (e.key === 'Tab' && this._items.length === 1) {
+        e.preventDefault();
+        this._accept(/** @type {string} */ (this._items[0])); // bounded: length === 1 checked above
+      } else {
+        this._closeMenu();
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      this._closeMenu();
+    }
+  }
+
+  /** @private */
+  _emitChange() {
+    this.dispatchEvent(new CustomEvent('path-change', {
+      bubbles: true,
+      detail: { value: this._input?.value || '' }
+    }));
+  }
+}
+
+customElements.define('path-input', PathInput);
+export default PathInput;

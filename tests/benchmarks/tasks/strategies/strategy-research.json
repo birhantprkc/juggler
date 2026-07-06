@@ -1,0 +1,18 @@
+{
+  "id": "strategy-research",
+  "category": "strategies",
+  "description": "Test research strategy blocks writes - file should remain unchanged",
+  "fixture": "ci-grep-fixture",
+  "strategy": "research",
+  "prompt": "Explore this codebase and then try to add documentation:\n\n1. Use grep to find all TODO comments in the codebase.\n\n2. Read src/api.js to understand its functions.\n\n3. Now try to add a header comment to src/api.js using write-file or edit tools. The comment should say: /* MODIFIED BY LLM */\n\n4. When done, call research_complete with your findings.\n\nNote: You are in research mode where write operations may be restricted. Try anyway and report what happens.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/api.js",
+    "contains_strings": ["TODO: Add error handling", "function fetchData"]
+  },
+  "metadata": {
+    "difficulty": "medium",
+    "tags": ["strategy", "research", "read-only"],
+    "notes": "Verifies research mode blocks writes. The file should retain original content (TODO comments). If writes worked, '/* MODIFIED BY LLM */' would appear and original content might be changed."
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "error-filesystem",
+  "category": "errors",
+  "description": "Test filesystem edge cases and special scenarios",
+  "fixture": "error-handling-fixture",
+  "prompt": "Test filesystem edge cases:\n\n1. EMPTY FILE HANDLING:\n   - Create an empty file: touch empty.txt\n   - Try to read it (should handle gracefully)\n   - Write content to it\n   - Verify it now has content\n\n2. SPECIAL CHARACTERS IN FILENAME:\n   - Create a file with spaces: 'my file with spaces.txt'\n   - Write some content to it\n   - Read it back\n   - Verify it works correctly\n\n3. NESTED DIRECTORY CREATION:\n   - Try to write to a file in a nested path that doesn't exist:\n     deep/nested/path/file.txt\n   - Document whether this fails or if directories are created automatically\n\n4. OVERWRITE PROTECTION:\n   - Write a file src/important.js with some content\n   - Try to overwrite it with different content\n   - Verify the overwrite behavior\n\nCreate FILESYSTEM_TEST_RESULTS.md documenting:\n- Each edge case tested\n- How empty files are handled\n- How special characters work\n- Whether nested directories are auto-created\n- Overwrite behavior and safeguards",
+  "scoring": {
+    "type": "multi_file_consistency",
+    "files": [
+      {
+        "path": "FILESYSTEM_TEST_RESULTS.md",
+        "contains_strings": ["empty file", "special characters", "nested", "overwrite"]
+      },
+      {
+        "path": "my file with spaces.txt",
+        "contains_strings": ["content"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,289 @@
+//go:build darwin
+
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package app
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"reflect"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// --- crash-loop guard (pure) ---
+
+func TestRelaunchDecision(t *testing.T) {
+	cases := []struct {
+		name         string
+		gen          int
+		uptime       time.Duration
+		wantNextGen  int
+		wantRelaunch bool
+	}{
+		{"first wedge, fast", 0, 5 * time.Second, 1, true},
+		{"second wedge, fast", 1, 5 * time.Second, 2, true},
+		{"third wedge, fast", 2, 5 * time.Second, 3, true},
+		{"cap reached, fast", 3, 5 * time.Second, 3, false},
+		{"over cap, fast", 9, 5 * time.Second, 9, false},
+		{"healthy uptime resets streak", 3, 90 * time.Second, 0, true},
+		{"healthy uptime at boundary", 0, relaunchHealthyUptime, 0, true},
+		{"just under healthy boundary", 0, relaunchHealthyUptime - time.Millisecond, 1, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotGen, gotRelaunch := relaunchDecision(c.gen, c.uptime)
+			if gotGen != c.wantNextGen || gotRelaunch != c.wantRelaunch {
+				t.Fatalf("relaunchDecision(%d, %v) = (%d, %v); want (%d, %v)",
+					c.gen, c.uptime, gotGen, gotRelaunch, c.wantNextGen, c.wantRelaunch)
+			}
+		})
+	}
+}
+
+// --- argv / env / addr helpers (pure) ---
+
+func TestRelaunchArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		port string
+		want []string
+	}{
+		{
+			"no existing port",
+			[]string{"juggler", "--window=false", "--project", "/p"},
+			"7777",
+			[]string{"juggler", "--window=false", "--project", "/p", "--port", "7777"},
+		},
+		{
+			"strips --port N form",
+			[]string{"juggler", "--port", "0", "--project", "/p"},
+			"7777",
+			[]string{"juggler", "--project", "/p", "--port", "7777"},
+		},
+		{
+			"strips --port=N form",
+			[]string{"juggler", "--port=0", "--window=false"},
+			"7777",
+			[]string{"juggler", "--window=false", "--port", "7777"},
+		},
+		{
+			"empty port appends nothing",
+			[]string{"juggler", "--window=false"},
+			"",
+			[]string{"juggler", "--window=false"},
+		},
+		{
+			"preserves argv0 even if it looks like a flag value",
+			[]string{"juggler"},
+			"9000",
+			[]string{"juggler", "--port", "9000"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := relaunchArgs(c.args, c.port)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("relaunchArgs(%v, %q) = %v; want %v", c.args, c.port, got, c.want)
+			}
+		})
+	}
+}
+
+func TestEnvWith(t *testing.T) {
+	// Replaces an existing key (no duplicates) and appends a new one.
+	in := []string{"FOO=1", "JUGGLER_RELAUNCH_GEN=2", "BAR=3"}
+	got := envWith(in, "JUGGLER_RELAUNCH_GEN", "5")
+	want := []string{"FOO=1", "BAR=3", "JUGGLER_RELAUNCH_GEN=5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("envWith replace = %v; want %v", got, want)
+	}
+
+	got2 := envWith([]string{"FOO=1"}, "JUGGLER_RELAUNCH_GEN", "1")
+	want2 := []string{"FOO=1", "JUGGLER_RELAUNCH_GEN=1"}
+	if !reflect.DeepEqual(got2, want2) {
+		t.Fatalf("envWith append = %v; want %v", got2, want2)
+	}
+
+	// No accumulation across repeated calls.
+	g := envWith(envWith(in, "JUGGLER_RELAUNCH_GEN", "5"), "JUGGLER_RELAUNCH_GEN", "6")
+	n := 0
+	for _, e := range g {
+		if strings.HasPrefix(e, "JUGGLER_RELAUNCH_GEN=") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("envWith should keep exactly one JUGGLER_RELAUNCH_GEN entry, got %d", n)
+	}
+}
+
+func TestPortFromAddr(t *testing.T) {
+	cases := map[string]string{
+		"127.0.0.1:7777": "7777",
+		"[::1]:8888":     "8888",
+		"0.0.0.0:0":      "0",
+		"garbage":        "",
+	}
+	for addr, want := range cases {
+		if got := portFromAddr(addr); got != want {
+			t.Fatalf("portFromAddr(%q) = %q; want %q", addr, got, want)
+		}
+	}
+}
+
+// --- real syscall.Exec round-trip ---
+//
+// Proves the mechanism relaunchInPlace depends on: a same-PID syscall.Exec
+// (built from juggler's relaunchArgs/envWith) frees a CLOEXEC-bound listener so
+// the re-exec'd image re-binds the SAME port, with the relaunch generation
+// incremented. The flock the server holds uses the identical CLOEXEC release,
+// so this covers the lock handoff too. No production test-hook involved — the
+// child is the test binary itself, routed by execRoundtripChild via TestMain.
+
+const (
+	envExecChild = "JUGGLER_EXEC_ROUNDTRIP_CHILD"
+	envExecOut   = "JUGGLER_EXEC_ROUNDTRIP_OUT"
+)
+
+func TestMain(m *testing.M) {
+	if os.Getenv(envExecChild) != "" {
+		execRoundtripChild() // never returns
+	}
+	os.Exit(m.Run())
+}
+
+// execRoundtripChild runs in the spawned child (and again after it re-execs
+// itself). Phase gen=0: bind the --port, record pid+port, then re-exec via
+// juggler's helpers (CLOEXEC closes the listener on exec, freeing the port).
+// Phase gen=1: same PID, re-bind the same port (proving the handoff), append a
+// result line, exit.
+func execRoundtripChild() {
+	out := os.Getenv(envExecOut)
+	port := portFromArgs(os.Args)
+	gen, _ := strconv.Atoi(os.Getenv(relaunchGenEnv))
+
+	if gen == 0 {
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+		if err != nil {
+			appendLine(out, fmt.Sprintf("ERR phase0 bind: %v", err))
+			os.Exit(2)
+		}
+		_ = ln // keep open across exec; CLOEXEC frees it on execve
+		appendLine(out, fmt.Sprintf("pid0=%d port=%s", os.Getpid(), port))
+
+		exe, err := os.Executable()
+		if err != nil {
+			appendLine(out, fmt.Sprintf("ERR phase0 exe: %v", err))
+			os.Exit(2)
+		}
+		argv := relaunchArgs(os.Args, port)
+		env := envWith(os.Environ(), relaunchGenEnv, "1")
+		if err := syscall.Exec(exe, argv, env); err != nil {
+			appendLine(out, fmt.Sprintf("ERR phase0 exec: %v", err))
+			os.Exit(2)
+		}
+		return // unreachable
+	}
+
+	// gen >= 1: re-exec'd image. Re-bind the same port to prove the handoff.
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		appendLine(out, fmt.Sprintf("ERR phase1 rebind: %v", err))
+		os.Exit(3)
+	}
+	_ = ln.Close()
+	appendLine(out, fmt.Sprintf("pid1=%d gen=%d rebound=ok", os.Getpid(), gen))
+	os.Exit(0)
+}
+
+func portFromArgs(args []string) string {
+	for i, a := range args {
+		if a == "--port" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if v, ok := strings.CutPrefix(a, "--port="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+func appendLine(path, line string) {
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(line + "\n")
+}
+
+func TestRelaunchExecRoundTrip(t *testing.T) {
+	// Pick a free port, then release it so the child can bind it.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen: %v", err)
+	}
+	port := portFromAddr(probe.Addr().String())
+	_ = probe.Close()
+
+	out := t.TempDir() + "/roundtrip.txt"
+
+	cmd := exec.Command(os.Args[0], "--port", port)
+	cmd.Env = append(os.Environ(),
+		envExecChild+"=1",
+		envExecOut+"="+out,
+		relaunchGenEnv+"=", // start clean: gen 0
+	)
+	if outBytes, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("child exec round-trip failed: %v\noutput:\n%s\nresult file:\n%s",
+			err, outBytes, readFileBestEffort(out))
+	}
+
+	data := readFileBestEffort(out)
+	pid0 := fieldValue(data, "pid0=")
+	pid1 := fieldValue(data, "pid1=")
+	if pid0 == "" || pid1 == "" {
+		t.Fatalf("missing phase markers; result file:\n%s", data)
+	}
+	if pid0 != pid1 {
+		t.Fatalf("same-PID re-exec violated: pid0=%s pid1=%s\n%s", pid0, pid1, data)
+	}
+	if !strings.Contains(data, "rebound=ok") {
+		t.Fatalf("port was not re-bound after exec (CLOEXEC handoff failed):\n%s", data)
+	}
+	if !strings.Contains(data, "gen=1") {
+		t.Fatalf("relaunch generation did not increment to 1:\n%s", data)
+	}
+}
+
+func readFileBestEffort(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// fieldValue returns the token following the first occurrence of key in a
+// whitespace-separated dump (e.g. fieldValue("pid0=12 port=7", "pid0=") → "12").
+func fieldValue(data, key string) string {
+	for _, tok := range strings.Fields(data) {
+		if v, ok := strings.CutPrefix(tok, key); ok {
+			return v
+		}
+	}
+	return ""
+}

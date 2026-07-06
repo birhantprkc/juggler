@@ -1,0 +1,159 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+/**
+ * Shared icon rendering utilities for conversation items.
+ * Used by message components (assistant-message, thinking-message, etc.) and tool-action-message.
+ * @module icon-message-renderer
+ */
+
+/**
+ * SVG icons for each message type
+ * @type {Record<string, string>}
+ */
+export const TYPE_ICONS = {
+  context: '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M479.92-689.74q-27.18 0-46.11-19.02-18.94-19.01-18.94-46.19 0-27.18 19.02-46.11Q452.9-820 480.08-820q27.18 0 46.11 19.02 18.94 19.01 18.94 46.19 0 27.18-19.02 46.11-19.01 18.94-46.19 18.94ZM434.87-140v-444.61h90.26V-140h-90.26Z"/></svg>',
+  action: '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M720-142 452-410q-23 11-47 17.5t-51 6.5q-89 0-151.5-62.5T140-600q0-23 4.5-44.5T158-686l140 138 108-108-136-138q20-9 40.5-14.5T354-814q89 0 151.5 62.5T568-600q0 29-6 53t-18 45l268 268q8 8 8 20t-8 20l-54 54q-8 8-19 7t-19-9Z"/></svg>',
+  error: '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M74.62-140 480-840l405.38 700H74.62Zm86.87-50.26h637.02L480-739.49 161.49-190.26Zm320.53-55.95q11.71 0 19.51-7.92 7.8-7.92 7.8-19.63 0-11.71-7.92-19.52-7.92-7.8-19.63-7.8-11.72 0-19.52 7.93-7.8 7.92-7.8 19.63 0 11.71 7.92 19.51 7.93 7.8 19.64 7.8Zm-25.25-100.15h50.25v-211.9h-50.25v211.9ZM480-464.87Z"/></svg>',
+  drop: '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>',
+  status: '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M440-280h80v-240h-80v240Zm40-320q17 0 28.5-11.5T520-640q0-17-11.5-28.5T480-680q-17 0-28.5 11.5T440-640q0 17 11.5 28.5T480-600Zm0 520q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q134 0 227-93t93-227q0-134-93-227t-227-93q-134 0-227 93t-93 227q0 134 93 227t227 93Zm0-320Z"/></svg>',
+  assistant: '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M367-527q-47-47-47-113t47-113q47-47 113-47t113 47q47 47 47 113t-47 113q-47 47-113 47t-113-47ZM160-160v-112q0-34 17.5-62.5T224-378q62-31 126-46.5T480-440q66 0 130 15.5T736-378q29 15 46.5 43.5T800-272v112H160Z"/></svg>',
+  thinking: '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M480-80q-26 0-47-12.5T400-126q-33 0-56.5-23.5T320-206v-142q-59-39-94.5-103T190-590q0-121 84.5-205.5T480-880q121 0 205.5 84.5T770-590q0 77-35.5 140T640-348v142q0 33-23.5 56.5T560-126q-12 21-33 33.5T480-80Zm-80-126h160v-36H400v36Zm0-76h160v-38H400v38Zm-8-118h48v-100l-70-70 34-34 76 76 76-76 34 34-70 70v100h48q42-29 67-71.5t25-97.5q0-97-66.5-163.5T480-800q-97 0-163.5 66.5T250-570q0 55 25 97.5t67 71.5Z"/></svg>',
+};
+
+/**
+ * Default color presets for each message type
+ * @type {Record<string, string>}
+ */
+export const TYPE_COLORS = {
+  context: 'blue',
+  action: 'blue',
+  error: 'red',
+  drop: 'red',
+  status: 'yellow',
+  assistant: 'indigo',
+  thinking: 'yellow',
+};
+
+/**
+ * @typedef {object} IconBoxOptions
+ * @property {string} color - Color preset or semantic family name (applied as color-{name} CSS class)
+ * @property {string} [iconClass] - CSS class for custom icon (from plugin MANIFEST)
+ * @property {string} [iconSvg] - SVG markup (fallback if no iconClass)
+ * @property {string} [badge] - Type-label text rendered as a lozenge beside the
+ *   icon. Use this when the badge isn't already present in the wrapped content
+ *   (e.g. thread tiles). When the content was built by renderResultStatusMessage
+ *   the badge it rendered is hoisted automatically, so this is not needed there.
+ */
+
+/**
+ * Create icon box element
+ * @param {IconBoxOptions} options - Icon box configuration
+ * @returns {HTMLDivElement} The icon box element
+ */
+export function createIconBox(options) {
+  const iconBox = document.createElement('div');
+  iconBox.className = `message-icon-box color-${options.color}`;
+
+  if (options.iconClass) {
+    const iconSpan = document.createElement('span');
+    iconSpan.className = options.iconClass;
+    iconBox.appendChild(iconSpan);
+  } else if (options.iconSvg) {
+    iconBox.innerHTML = options.iconSvg;
+  }
+
+  return iconBox;
+}
+
+/**
+ * Create a type-name lozenge — the small uppercase badge shown beside an icon
+ * (e.g. "Read", "Thread", "Error").
+ * @param {string} text - Type label to display
+ * @returns {HTMLSpanElement} The lozenge element
+ */
+export function createTypeBadge(text) {
+  const badge = document.createElement('span');
+  badge.className = 'context-item-type-badge';
+  badge.textContent = text;
+  return badge;
+}
+
+/**
+ * Build the circular icon + type-name lozenge as one `.message-icon-badge`
+ * group. The icon and lozenge share this parent so they keep a fixed layout
+ * relative to each other regardless of what else sits alongside. Shared by the
+ * conversation-row layout (wrapWithIcon) and the properties-panel header so
+ * both render an identical badge. The color preset is applied to the group
+ * itself so the lozenge background resolves even when no ancestor carries the
+ * color class (as in the panel header).
+ * @param {IconBoxOptions} options - Icon box configuration
+ * @param {HTMLElement|null} [badgeEl] - Pre-built lozenge to place beside the icon
+ * @returns {HTMLDivElement} The `.message-icon-badge` group
+ */
+export function createIconBadge(options, badgeEl = null) {
+  const iconBadge = document.createElement('div');
+  iconBadge.className = `message-icon-badge color-${options.color}`;
+  iconBadge.appendChild(createIconBox(options));
+  if (badgeEl) iconBadge.appendChild(badgeEl);
+  return iconBadge;
+}
+
+/**
+ * Wrap content element with icon layout
+ * @param {HTMLElement} content - Content element to wrap
+ * @param {IconBoxOptions} iconOptions - Options for createIconBox
+ * @returns {HTMLDivElement} Wrapper with icon and content
+ */
+export function wrapWithIcon(content, iconOptions) {
+  const wrapper = document.createElement('div');
+  wrapper.className = `message-with-icon color-${iconOptions.color}`;
+
+  // The badge lozenge is either passed explicitly (iconOptions.badge) or already
+  // rendered inside `content` by renderResultStatusMessage — in which case we
+  // hoist it out (createIconBadge's append moves the node) so it sits beside the
+  // icon, not buried at a different depth in the content box.
+  /** @type {HTMLElement|null} */
+  let badge = null;
+  if (iconOptions.badge) {
+    badge = createTypeBadge(iconOptions.badge);
+  } else {
+    badge = /** @type {HTMLElement|null} */ (content.querySelector?.('.context-item-type-badge') ?? null);
+  }
+
+  if (badge) {
+    wrapper.appendChild(createIconBadge(iconOptions, badge));
+  } else {
+    wrapper.appendChild(createIconBox(iconOptions));
+  }
+
+  const contentBox = document.createElement('div');
+  contentBox.className = 'message-content-box';
+  contentBox.appendChild(content);
+  wrapper.appendChild(contentBox);
+
+  return wrapper;
+}
+
+/**
+ * Create a standard error article element (red icon + message text).
+ * Used by error-message and tool-action-message for consistent error rendering.
+ * @param {string} message - Error message text
+ * @returns {HTMLElement} An <article class="error"> with icon-wrapped message
+ */
+export function createErrorArticle(message) {
+  const article = document.createElement('article');
+  article.className = 'error';
+
+  const textSpan = document.createElement('span');
+  textSpan.className = 'message-text';
+  textSpan.textContent = message;
+
+  article.appendChild(wrapWithIcon(textSpan, {
+    color: /** @type {string} */ (TYPE_COLORS.error),
+    iconSvg: TYPE_ICONS.error
+  }));
+
+  return article;
+}

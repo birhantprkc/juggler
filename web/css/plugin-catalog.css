@@ -1,0 +1,1321 @@
+/*
+ *     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+ *     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+ *   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+ */
+
+/**
+ * PLUGIN TIER CSS — plugin-catalog.css
+ * Styles the plugin catalog UI: the browser that shows available plugins,
+ * their capabilities, tool definitions, and configuration. Not app chrome.
+ *
+ * Compare:
+ *   styles.css / components.css — app chrome (header, bars, modals)
+ *   context-items.css           — plugin content rendering
+ *   plugin-catalog.css          — plugin catalog UI  ← this file
+ *
+ * Plugin Catalog Styles - Clean, Readable Design
+ */
+
+/* ==========================================================================
+   Catalog Container
+   ========================================================================== */
+
+plugin-catalog {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   Header
+   ========================================================================== */
+
+.catalog-header {
+  padding: 0 1rem 1rem;
+  border-bottom: 0.0625rem solid var(--border-divider);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+}
+
+.catalog-header-left {
+  flex-shrink: 0;
+}
+
+.catalog-header-right {
+  flex: 1;
+  text-align: right;
+}
+
+.catalog-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.0125rem;
+}
+
+.catalog-subtitle {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.catalog-explanation {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-weight: 400;
+  line-height: 1.5;
+  font-style: italic;
+}
+
+/* ==========================================================================
+   Main Two-Column Layout
+   ========================================================================== */
+
+.catalog-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Left Sidebar - Plugin List */
+.catalog-sidebar {
+  width: 16rem;
+  border-right: 0.0625rem solid var(--border-divider);
+  overflow-y: auto;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+}
+
+/* Right Panel - Plugin Details */
+.catalog-detail-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 2rem 2.5rem;
+  min-width: 0;
+}
+
+/* Phones: the fixed 16rem sidebar beside the detail panel leaves the detail
+   almost no room on a ~320px viewport. Stack them — sidebar (capped, scrolls)
+   on top, detail beneath — and trim the detail padding to claw back width. */
+@media (width <= 36rem) {
+  .catalog-main {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .catalog-sidebar {
+    width: 100%;
+    max-height: 40%;
+    border-right: none;
+    border-bottom: 0.0625rem solid var(--border-divider);
+  }
+
+  .catalog-detail-panel {
+    padding: 1rem;
+  }
+}
+
+.catalog-empty {
+  padding: 4rem 2rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.9375rem;
+}
+
+/* ==========================================================================
+   Extension Tree Sidebar
+   Each extension is a top-level node; its capabilities nest beneath under
+   per-type sub-headings, revealed while the node is expanded.
+   ========================================================================== */
+
+.plugin-tree {
+  padding: 0.5rem 0;
+}
+
+.plugin-tree-node {
+  border-bottom: 0.0625rem solid var(--border-divider);
+}
+
+.plugin-tree-node:last-child {
+  border-bottom: none;
+}
+
+/* A selectable row (extension or capability). */
+.plugin-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.plugin-tree-row:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.plugin-tree-row.selected {
+  color: var(--text-primary);
+  font-weight: 600;
+  background: var(--bg-tertiary);
+  box-shadow: inset 0.1875rem 0 0 var(--accent-blue);
+}
+
+.plugin-tree-ext {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Capabilities sit indented beneath their type sub-heading. */
+.plugin-tree-leaf {
+  padding-left: 1.25rem;
+  font-weight: 400;
+}
+
+.plugin-tree-row-off .plugin-tree-label,
+.plugin-tree-row-failed .plugin-tree-label {
+  opacity: 0.62;
+}
+
+/* Expand/collapse caret — its own click target, separate from selection. */
+.plugin-tree-caret {
+  flex-shrink: 0;
+  width: 0.875rem;
+  text-align: center;
+  font-size: 0.625rem;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.plugin-tree-caret:hover {
+  color: var(--text-primary);
+}
+
+.plugin-tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Per-type sub-heading inside an expanded extension. */
+.plugin-tree-section {
+  padding: 0.5rem 1rem 0.25rem 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--accent-blue);
+  text-transform: uppercase;
+  letter-spacing: 0.0625rem;
+}
+
+.plugin-tree-empty {
+  padding: 0.375rem 1rem 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--text-tertiary);
+}
+
+/* Children are indented under their extension and share a vertical rail, so the
+   containment (these items live inside this extension) reads at a glance. */
+.plugin-tree-children {
+  margin-left: 1.75rem;
+  border-left: 0.0625rem solid var(--border-divider);
+  padding-bottom: 0.5rem;
+}
+
+/* On/off toggle on a tree row — reads as a status pill, acts as a button. It is
+   the primary enable/disable control (the detail pane has no toggle). */
+.plugin-tree-toggle {
+  flex-shrink: 0;
+  margin-left: 0.5rem;
+  font-family: inherit;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.0313rem;
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 0.625rem;
+  border: 0.0625rem solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.plugin-tree-toggle-on {
+  background: rgb(63 185 80 / 15%);
+  color: var(--accent-green);
+  border-color: rgb(63 185 80 / 35%);
+}
+
+.plugin-tree-toggle-on:hover:not(:disabled) {
+  background: rgb(63 185 80 / 25%);
+}
+
+.plugin-tree-toggle-off {
+  background: rgb(136 136 136 / 18%);
+  color: var(--text-tertiary);
+  border-color: var(--border-color);
+}
+
+.plugin-tree-toggle-off:hover:not(:disabled) {
+  color: var(--text-secondary);
+  border-color: var(--text-tertiary);
+}
+
+.plugin-tree-toggle-failed {
+  background: rgb(248 81 73 / 15%);
+  color: var(--accent-red);
+  cursor: default;
+}
+
+.plugin-tree-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* ==========================================================================
+   Plugin Detail Panel
+   ========================================================================== */
+
+.plugin-detail-container {
+  width: 100%;
+  max-width: 56rem;
+}
+
+.plugin-detail-header {
+  margin-bottom: 2.5rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 0.0625rem solid var(--border-divider);
+}
+
+.plugin-title-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.plugin-detail-name {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.0125rem;
+}
+
+.plugin-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.plugin-badge {
+  padding: 0.3125rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.plugin-version {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.plugin-category {
+  background: rgb(139 92 246 / 15%);
+  color: #a78bfa;
+}
+
+.plugin-author {
+  background: rgb(88 166 255 / 15%);
+  color: var(--accent-blue);
+}
+
+.plugin-description {
+  margin: 0.75rem 0;
+  color: var(--text-secondary);
+}
+
+.plugin-id-container {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+}
+
+.plugin-id-label {
+  font-weight: 600;
+}
+
+.plugin-id-value {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--accent-blue);
+  background: var(--bg-tertiary);
+  padding: 0.1875rem 0.5rem;
+  border-radius: 0.25rem;
+  font-weight: 600;
+}
+
+.plugin-id-help {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.plugin-module-url {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+}
+
+.plugin-module-url-label {
+  font-weight: 600;
+}
+
+.plugin-module-url-link {
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.plugin-module-url-link:hover {
+  opacity: 0.8;
+}
+
+.plugin-module-url-link:hover .plugin-module-url-value {
+  text-decoration: underline;
+}
+
+.plugin-module-url-value {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--accent-blue);
+  background: var(--bg-tertiary);
+  padding: 0.125rem 0.4375rem;
+  border-radius: 0.25rem;
+}
+
+.plugin-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+/* ==========================================================================
+   Content Sections
+   ========================================================================== */
+
+.plugin-section-header {
+  margin-bottom: 1rem;
+}
+
+.plugin-section-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.05rem;
+}
+
+.plugin-section-explanation {
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-style: italic;
+}
+
+/* ==========================================================================
+   LLM Instructions Box
+   ========================================================================== */
+
+.llm-instructions-box {
+  margin: 0;
+  padding: 1rem;
+  background: var(--bg-primary);
+  border: 0.0625rem solid var(--border-color);
+  border-radius: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-height: 20rem;
+  overflow-y: auto;
+}
+
+/* ==========================================================================
+   Preview Section - Uses Standard Context Item Card Structure (base styles in context-items.css)
+   ========================================================================== */
+
+.preview-section-header {
+  margin-bottom: 1rem;
+}
+
+.preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Preview-specific sizing for context item content */
+.preview-container .ci-collapsed-content {
+  width: 8.75rem;
+  height: 8.75rem;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.1s, width 200ms ease, height 200ms ease;
+  overflow: hidden;
+}
+
+.preview-container .ci-expanded-content {
+  width: 100%;
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.1s;
+}
+
+.preview-container .ci-expanded-content,
+.preview-container .ci-collapsed-content {
+  cursor: pointer;
+}
+
+.preview-container .ci-expanded-content:hover,
+.preview-container .ci-collapsed-content:hover {
+  box-shadow: 0 0.25rem 0.75rem rgb(0 0 0 / 20%);
+  transform: translateY(-0.0625rem);
+}
+
+.preview-container .ci-expanded-content:active,
+.preview-container .ci-collapsed-content:active {
+  transform: translateY(0);
+}
+
+.preview-error {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.875rem;
+  font-style: italic;
+}
+
+/* ==========================================================================
+   Capability Badges
+   ========================================================================== */
+
+.capability-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.capability-badge {
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  display: inline-flex;
+  align-items: center;
+}
+
+.capability-watches-files {
+  background: rgb(88 166 255 / 15%);
+  color: var(--accent-blue);
+}
+
+.capability-user-addable {
+  background: rgb(63 185 80 / 15%);
+  color: var(--accent-green);
+}
+
+.capability-system-ci {
+  background: rgb(136 136 136 / 15%);
+  color: var(--text-tertiary);
+}
+
+.capability-requires-approval {
+  background: rgb(240 136 62 / 15%);
+  color: #f0883e;
+}
+
+.capability-supports-streaming {
+  background: rgb(167 139 250 / 15%);
+  color: #a78bfa;
+}
+
+.capability-supports-recovery {
+  background: rgb(86 212 221 / 15%);
+  color: #56d4dd;
+}
+
+/* ==========================================================================
+   Permissions
+   ========================================================================== */
+
+.permission-badge {
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  background: rgb(248 81 73 / 15%);
+  color: var(--accent-red);
+}
+
+/* ==========================================================================
+   Backend Integration
+   ========================================================================== */
+
+.backend-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.backend-detail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.backend-detail-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 7.5rem;
+}
+
+.backend-detail-value {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--accent-blue);
+  background: var(--bg-tertiary);
+  padding: 0.1875rem 0.5rem;
+  border-radius: 0.25rem;
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Tool Definitions
+   ========================================================================== */
+
+.tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.tool-item {
+  padding: 1rem;
+  background: var(--bg-tertiary);
+  border-radius: 0.5rem;
+  border: 0.0625rem solid var(--border-color);
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.tool-name {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--accent-blue);
+  background: var(--bg-primary);
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.25rem;
+}
+
+.tool-category {
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.0313rem;
+}
+
+.tool-category-read {
+  background: rgb(63 185 80 / 15%);
+  color: var(--accent-green);
+}
+
+.tool-category-write {
+  background: rgb(240 136 62 / 15%);
+  color: #f0883e;
+}
+
+.tool-description {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 0.75rem;
+}
+
+.tool-schema-header {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.375rem;
+  margin-top: 0.75rem;
+}
+
+.tool-params-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.tool-param {
+  padding: 0.75rem;
+  background: var(--bg-primary);
+  border: 0.0625rem solid var(--border-color);
+  border-radius: 0.375rem;
+}
+
+.tool-param-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+}
+
+.tool-param-name {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--accent-blue);
+}
+
+.tool-param-type {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.tool-param-required {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  background: rgb(240 136 62 / 15%);
+  color: #f0883e;
+}
+
+.tool-param-optional {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  background: rgb(136 136 136 / 15%);
+  color: var(--text-tertiary);
+}
+
+.tool-param-description {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-line;
+}
+
+.tool-schema {
+  margin: 0;
+  padding: 0.75rem;
+  background: var(--bg-primary);
+  border: 0.0625rem solid var(--border-color);
+  border-radius: 0.375rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* ==========================================================================
+   Operations (Backend)
+   ========================================================================== */
+
+.operations-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.operations-empty {
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.875rem;
+  font-style: italic;
+  background: var(--bg-tertiary);
+  border-radius: 0.5rem;
+  margin-top: 1rem;
+}
+
+.operation-item {
+  padding: 1rem;
+  background: var(--bg-tertiary);
+  border-radius: 0.5rem;
+  border: 0.0625rem solid var(--border-color);
+}
+
+.operation-header {
+  margin-bottom: 0.5rem;
+}
+
+.operation-name {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--accent-blue);
+  background: var(--bg-primary);
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.25rem;
+}
+
+.operation-description {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 0.75rem;
+}
+
+.operation-params-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 0.75rem;
+  margin-bottom: 0.375rem;
+}
+
+.operation-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.operation-param {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.operation-param-required {
+  background: rgb(240 136 62 / 15%);
+  color: #f0883e;
+}
+
+.operation-param-optional {
+  background: rgb(136 136 136 / 15%);
+  color: var(--text-tertiary);
+}
+
+/* ==========================================================================
+   Usage Documentation & LLM Guidance (Markdown Content)
+   ========================================================================== */
+
+.usage-content,
+.llm-guidance-content {
+  margin-top: 1rem;
+  padding: 1.5rem;
+  background: var(--bg-tertiary);
+  border-radius: 0.5rem;
+  border: 0.0625rem solid var(--border-color);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.usage-content h1,
+.usage-content h2,
+.usage-content h3,
+.usage-content h4,
+.llm-guidance-content h1,
+.llm-guidance-content h2,
+.llm-guidance-content h3,
+.llm-guidance-content h4 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.usage-content h1,
+.llm-guidance-content h1 {
+  font-size: 1.25rem;
+}
+
+.usage-content h2,
+.llm-guidance-content h2 {
+  font-size: 1.125rem;
+}
+
+.usage-content h3,
+.llm-guidance-content h3 {
+  font-size: 1rem;
+}
+
+.usage-content p,
+.llm-guidance-content p {
+  margin: 0.75rem 0;
+}
+
+.usage-content ul,
+.usage-content ol,
+.llm-guidance-content ul,
+.llm-guidance-content ol {
+  margin: 0.75rem 0;
+  padding-left: 1.5rem;
+}
+
+.usage-content li,
+.llm-guidance-content li {
+  margin: 0.375rem 0;
+}
+
+.usage-content code,
+.llm-guidance-content code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  background: var(--bg-primary);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.1875rem;
+  color: var(--accent-blue);
+}
+
+.usage-content pre,
+.llm-guidance-content pre {
+  margin: 0.75rem 0;
+  padding: 1rem;
+  background: rgb(0 0 0 / 20%);
+  border: 0.0625rem solid var(--border-color);
+  border-radius: 0.375rem;
+  overflow-x: auto;
+}
+
+.usage-content pre code,
+.llm-guidance-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.usage-content strong,
+.llm-guidance-content strong {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* ==========================================================================
+   Strategy-Specific Styles
+   ========================================================================== */
+
+/* Strategy capability badge */
+.capability-sub-conversations {
+  background: rgb(167 139 250 / 15%);
+  color: #a78bfa;
+}
+
+/* Strategy recommendations section */
+.strategy-recommendations {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.recommendation-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.recommendation-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.recommendation-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.recommendation-badge {
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 0.0625rem solid var(--border-color);
+}
+
+.trigger-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.trigger-example {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  background: var(--bg-tertiary);
+  color: var(--accent-blue);
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-style: italic;
+}
+
+.approach-text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.tradeoffs-group {
+  margin-top: 0.5rem;
+}
+
+.tradeoffs-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-top: 0.75rem;
+  padding: 1rem;
+  background: var(--bg-tertiary);
+  border-radius: 0.5rem;
+  border: 0.0625rem solid var(--border-color);
+}
+
+.tradeoffs-heading {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.0313rem;
+}
+
+.tradeoffs-pros .tradeoffs-heading {
+  color: var(--accent-green);
+}
+
+.tradeoffs-cons .tradeoffs-heading {
+  color: #f0883e;
+}
+
+.tradeoffs-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.tradeoff-item {
+  margin-bottom: 0.375rem;
+}
+
+/* Failed plugins banner */
+.catalog-failed-banner {
+  margin: 0.75rem 1rem;
+  padding: 0.75rem 1rem;
+  background: rgb(255 80 80 / 10%);
+  border: 1px solid rgb(255 80 80 / 30%);
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+}
+
+.catalog-failed-title {
+  font-weight: 600;
+  color: #ff5050;
+  margin-bottom: 0.375rem;
+}
+
+.catalog-failed-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  margin-top: 0.375rem;
+  padding-top: 0.375rem;
+  border-top: 1px solid rgb(255 80 80 / 15%);
+}
+
+.catalog-failed-path {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.catalog-failed-error {
+  font-size: 0.75rem;
+  color: #ff5050;
+}
+
+/* Disabled plugins banner */
+.catalog-disabled-banner {
+  margin: 0.75rem 1rem;
+  padding: 0.75rem 1rem;
+  background: rgb(150 150 150 / 10%);
+  border: 1px solid rgb(150 150 150 / 30%);
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+}
+
+.catalog-disabled-title {
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 0.375rem;
+}
+
+.catalog-disabled-entry {
+  color: var(--text-tertiary);
+  margin-top: 0.25rem;
+}
+
+/* Plugin directory paths */
+.catalog-plugin-dirs {
+  margin: 0.5rem 1rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.catalog-plugin-dirs-label {
+  font-weight: 500;
+}
+
+.catalog-plugin-dir-path {
+  background: var(--bg-secondary);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.6875rem;
+}
+
+/* ==========================================================================
+   Extensions Master/Detail
+   A type-grouped list on the left; the selected item's details on the right.
+   ========================================================================== */
+
+/* Empty-state placeholder shown in the detail pane / sub-sections. */
+.catalog-detail-empty {
+  padding: 3rem 1rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.9375rem;
+  font-style: italic;
+}
+
+/* "From extension:" back-link in a capability's detail. */
+.plugin-detail-from {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+}
+
+.plugin-detail-from-link {
+  color: var(--accent-blue);
+  cursor: pointer;
+}
+
+.plugin-detail-from-link:hover {
+  text-decoration: underline;
+}
+
+/* Explained permissions: each badge paired with a plain-language description. */
+.permissions-explained {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin-top: 0.75rem;
+}
+
+.permission-explained-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.permission-explained-item .permission-badge {
+  flex-shrink: 0;
+}
+
+.permission-explained-desc {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* A clickable capability row inside an extension's detail. */
+.ext-cap-link {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ext-cap-link:hover {
+  border-color: var(--accent-blue);
+  background: var(--bg-secondary);
+}
+
+.ext-source {
+  text-transform: uppercase;
+  letter-spacing: 0.0313rem;
+  font-size: 0.6875rem;
+}
+
+.ext-source-builtin {
+  background: rgb(88 166 255 / 15%);
+  color: var(--accent-blue);
+}
+
+.ext-source-user {
+  background: rgb(63 185 80 / 15%);
+  color: var(--accent-green);
+}
+
+.ext-source-project {
+  background: rgb(167 139 250 / 15%);
+  color: #a78bfa;
+}
+
+.ext-card-error-msg {
+  padding: 0.5rem 0.75rem;
+  background: rgb(248 81 73 / 12%);
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--accent-red);
+  overflow-wrap: anywhere;
+}
+
+/* Capability list ---------------------------------------------------------- */
+
+.ext-cap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.ext-cap {
+  padding: 0.625rem 0.75rem;
+  background: var(--bg-tertiary);
+  border: 0.0625rem solid var(--border-color);
+  border-radius: 0.5rem;
+}
+
+.ext-cap-disabled {
+  opacity: 0.6;
+}
+
+.ext-cap-failed {
+  border-color: var(--accent-red);
+}
+
+.ext-cap-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.ext-cap-name {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+.ext-cap-type {
+  font-size: 0.625rem;
+}
+
+.ext-cap-type-context-item {
+  background: rgb(63 185 80 / 15%);
+  color: var(--accent-green);
+}
+
+.ext-cap-type-strategy {
+  background: rgb(167 139 250 / 15%);
+  color: #a78bfa;
+}
+
+.ext-cap-type-command {
+  background: rgb(88 166 255 / 15%);
+  color: var(--accent-blue);
+}
+
+.ext-cap-status {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+}
+
+.ext-cap-status-disabled {
+  background: rgb(136 136 136 / 18%);
+  color: var(--text-tertiary);
+}
+
+.ext-cap-status-failed {
+  background: rgb(248 81 73 / 15%);
+  color: var(--accent-red);
+}
+
+.ext-cap-desc {
+  margin-top: 0.375rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.ext-cap-error {
+  margin-top: 0.375rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--accent-red);
+  overflow-wrap: anywhere;
+}
+
+

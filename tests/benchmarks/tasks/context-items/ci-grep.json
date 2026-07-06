@@ -1,0 +1,21 @@
+{
+  "id": "ci-grep",
+  "category": "context-items",
+  "description": "Test grep context item with regex patterns, case sensitivity, and file filtering",
+  "fixture": "ci-grep-fixture",
+  "prompt": "Test the grep context item's search capabilities:\n\n1. Search for all TODO comments (case-sensitive search for 'TODO')\n2. Search for 'todo' with case-insensitive mode\n3. Search for TODO comments only in JavaScript files (*.js filter)\n4. Search for the word 'function' with context lines (show surrounding code)\n5. Search for 'FIXME' comments\n6. Try searching for a pattern that has no matches ('NOTFOUND')\n\nCreate a file called GREP_TEST_RESULTS.md that documents:\n- Each search operation performed\n- Number of matches found\n- Which files contained matches\n- Confirmation that filters worked (e.g., *.js only searched .js files)\n- Proof that case-sensitivity toggling works\n- How the no-match scenario was handled",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "GREP_TEST_RESULTS.md",
+    "contains_strings": [
+      "TODO",
+      "case-sensitive",
+      "case-insensitive",
+      "*.js",
+      "FIXME",
+      "no matches",
+      "auth.js",
+      "api.js"
+    ]
+  }
+}

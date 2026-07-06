@@ -1,0 +1,30 @@
+{
+  "extends": "stylelint-config-standard",
+  "plugins": ["stylelint-rem-over-px"],
+  "ignoreFiles": ["../**/vendor/**/*.css", "../**/*prism*.css"],
+  "rules": {
+    "rem-over-px/rem-over-px": [
+      true,
+      {
+        "ignore": ["1px"],
+        "fontSize": 16,
+        "ignoreFunctions": ["url"],
+        "ignoreAtRules": [],
+        "ignoreProperties": []
+      }
+    ],
+    "unit-disallowed-list": [
+      ["px"],
+      {
+        "ignoreProperties": {
+          "px": ["/^border/", "outline", "box-shadow"]
+        }
+      }
+    ],
+    "selector-class-pattern": null,
+    "custom-property-pattern": null,
+    "keyframes-name-pattern": null,
+    "no-descending-specificity": null,
+    "property-no-vendor-prefix": [true, { "ignoreProperties": ["-webkit-user-select"] }]
+  }
+}

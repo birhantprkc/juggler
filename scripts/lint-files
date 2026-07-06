@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# lint-files — lint a specific set of files with the SAME linters and configs
+# that `make lint` uses, scoped to just the paths you pass.
+#
+# This exists so there is exactly ONE way to lint a subset of the tree. Do NOT
+# invoke eslint / stylelint / golangci-lint / gofmt / go vet directly — their
+# flags, configs, ignore patterns and tool versions are pinned here and in the
+# Makefile so a per-file run matches a full `make lint` run exactly. Reaching
+# for the underlying tools by hand reintroduces the drift this wrapper removes.
+#
+# Usage (prefer the Makefile entrypoint):
+#   make lint-files FILES="cmd/juggler/worker/foo.go web/js/bar.js"
+#
+# Or directly:
+#   scripts/lint-files cmd/juggler/worker/foo.go web/js/bar.js web/css/baz.css
+#
+# Routing is by extension:
+#   *.go         → gofmt check + go vet + golangci-lint (on each file's package)
+#   *.js         → eslint
+#   *.css        → stylelint
+# Other extensions are reported and skipped. Whole-program checks that have no
+# meaningful per-file form (deadcode) are intentionally NOT run here — use
+# `make lint` for those.
+#
+# Run from the repo root.
+
+set -euo pipefail
+
+# Resolve repo root from this script's location so it works from any cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT"
+
+# Keep in sync with the Makefile.
+GOLANGCI_LINT_VERSION="${GOLANGCI_LINT_VERSION:-v2.12.2}"
+NPM_BIN="tooling/node_modules/.bin"
+GOPATH_BIN="$(go env GOPATH)/bin"
+
+# Accept files as arguments, or fall back to the $FILES env var (how the
+# Makefile target forwards them).
+files=("$@")
+if [ ${#files[@]} -eq 0 ] && [ -n "${FILES:-}" ]; then
+	# shellcheck disable=SC2206
+	files=(${FILES})
+fi
+
+if [ ${#files[@]} -eq 0 ]; then
+	echo "lint-files: no files given." >&2
+	echo "Usage: make lint-files FILES=\"path/one.go path/two.js\"" >&2
+	exit 2
+fi
+
+# Bucket the files by language, and collect unique package dirs for Go.
+go_files=()
+js_files=()
+css_files=()
+go_dirs=()
+unknown=()
+missing=()
+
+add_go_dir() {
+	local d="$1"
+	local existing
+	for existing in "${go_dirs[@]:-}"; do
+		[ "$existing" = "$d" ] && return 0
+	done
+	go_dirs+=("$d")
+}
+
+for f in "${files[@]}"; do
+	if [ ! -e "$f" ]; then
+		missing+=("$f")
+		continue
+	fi
+	case "$f" in
+		*.go)
+			go_files+=("$f")
+			add_go_dir "./$(dirname "$f")"
+			;;
+		*.js)  js_files+=("$f") ;;
+		*.css) css_files+=("$f") ;;
+		*)     unknown+=("$f") ;;
+	esac
+done
+
+if [ ${#missing[@]} -gt 0 ]; then
+	echo "lint-files: these paths do not exist:" >&2
+	printf '  %s\n' "${missing[@]}" >&2
+	exit 2
+fi
+
+status=0
+
+# Ensure a tooling/node_modules linter is present, installing the JS/CSS
+# toolchain on demand the SAME way the Go path below bootstraps golangci-lint.
+# A per-file lint that silently passes without ever running eslint/stylelint is
+# worse than a clear failure — so if npm is unavailable we exit non-zero rather
+# than skip (that silent skip is the bug this replaces). The linters live in
+# exactly one place, tooling/node_modules, never duplicated elsewhere.
+ensure_node_tooling() {
+	local bin="$1"
+	if [ -x "$NPM_BIN/$bin" ]; then return 0; fi
+	if ! command -v npm &> /dev/null; then
+		echo "lint-files: npm not found on PATH — cannot lint JS/CSS." >&2
+		echo "Install Node.js (or run 'cd tooling && npm install') and retry." >&2
+		exit 2
+	fi
+	echo "Installing JS/CSS linters (cd tooling && npm install)..."
+	( cd tooling && npm install ) || {
+		echo "lint-files: 'npm install' in tooling/ failed." >&2
+		exit 2
+	}
+	if [ ! -x "$NPM_BIN/$bin" ]; then
+		echo "lint-files: $bin still missing after 'npm install'." >&2
+		exit 2
+	fi
+}
+
+# ---- Go -------------------------------------------------------------------
+if [ ${#go_files[@]} -gt 0 ]; then
+	echo "==> gofmt (${#go_files[@]} file(s))"
+	unformatted="$(gofmt -l "${go_files[@]}")"
+	if [ -n "$unformatted" ]; then
+		echo "gofmt: the following files are not formatted:"
+		echo "$unformatted"
+		echo "fix with: gofmt -w <file>   (or 'make fmt' for the whole tree)"
+		status=1
+	fi
+
+	echo "==> go vet (${#go_dirs[@]} package(s))"
+	go vet "${go_dirs[@]}" || status=1
+
+	if ! command -v golangci-lint &> /dev/null && [ ! -x "$GOPATH_BIN/golangci-lint" ]; then
+		echo "Installing golangci-lint $GOLANGCI_LINT_VERSION..."
+		go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION"
+	fi
+	echo "==> golangci-lint (${#go_dirs[@]} package(s))"
+	"$GOPATH_BIN/golangci-lint" run --timeout=5m "${go_dirs[@]}" || status=1
+fi
+
+# ---- JavaScript -----------------------------------------------------------
+if [ ${#js_files[@]} -gt 0 ]; then
+	ensure_node_tooling eslint
+	echo "==> eslint (${#js_files[@]} file(s))"
+	NODE_NO_WARNINGS=1 "$NPM_BIN/eslint" --config tooling/eslint.config.js \
+		--max-warnings 0 --ignore-pattern 'web/js/vendor/**' "${js_files[@]}" || status=1
+fi
+
+# ---- CSS ------------------------------------------------------------------
+if [ ${#css_files[@]} -gt 0 ]; then
+	ensure_node_tooling stylelint
+	echo "==> stylelint (${#css_files[@]} file(s))"
+	NODE_NO_WARNINGS=1 "$NPM_BIN/stylelint" --config tooling/.stylelintrc.json "${css_files[@]}" || status=1
+fi
+
+# ---- Unroutable files -----------------------------------------------------
+if [ ${#unknown[@]} -gt 0 ]; then
+	echo "lint-files: no linter for these (skipped):" >&2
+	printf '  %s\n' "${unknown[@]}" >&2
+fi
+
+if [ "$status" -eq 0 ]; then
+	echo "✓ lint-files passed"
+fi
+exit "$status"

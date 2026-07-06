@@ -1,0 +1,19 @@
+{
+  "id": "ci-tree",
+  "category": "context-items",
+  "description": "Test tree context item with depth, filtering, and large directory handling",
+  "fixture": "ci-tree-fixture",
+  "prompt": "Test the tree context item's capabilities:\n\n1. Generate a directory tree at depth 3\n2. Filter to show only JavaScript files (*.js)\n3. Filter to show only TypeScript files (*.tsx)\n4. Filter to show Go files (*.go)\n5. Generate tree with file-type filter showing files only (no directories)\n6. Show that the tree can handle the src/components directory specifically\n\nCreate a file called TREE_TEST_RESULTS.md that documents:\n- Each tree operation you performed\n- What filters were applied\n- Confirmation that filtering worked correctly\n- Total number of items found in each tree variant",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "TREE_TEST_RESULTS.md",
+    "contains_strings": [
+      "depth 3",
+      "*.js",
+      "*.tsx",
+      "*.go",
+      "files only",
+      "src/components"
+    ]
+  }
+}

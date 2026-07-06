@@ -1,0 +1,236 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+//go:build !production
+
+package testing
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+
+	"juggler/cmd/juggler/server/handlers"
+)
+
+// HandleJSTrace logs ad-hoc trace messages from iframes to stderr when
+// JUGGLER_TEST_TRACE is set. No-op otherwise.
+func (api *TestRunAPI) HandleJSTrace(w http.ResponseWriter, r *http.Request) {
+	if os.Getenv("JUGGLER_TEST_TRACE") == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	body, _ := io.ReadAll(r.Body)
+	fmt.Fprintf(os.Stderr, "[TEST_TRACE] JS %s\n", string(body))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// testEntry is a single queued test run request.
+type testEntry struct {
+	Name        string `json:"name"`
+	ProjectPath string `json:"projectPath"`
+	// Optional fields for benchmark task mode (used by juggler-test).
+	TaskID   string `json:"taskId,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// testResult is what the browser posts when a test finishes.
+type testResult struct {
+	Name    string   `json:"name"`
+	Passed  bool     `json:"passed"`
+	Details string   `json:"details"`
+	Errors  []string `json:"errors"`
+}
+
+// TestRunAPI coordinates test execution between Go and the browser. It is
+// multi-flight: any number of tests can be in flight at once, each routed to
+// the matching POST /api/test/result by name. This lets the Go side fan a
+// pool of N parallel TestBrowser sub-tests out across N test consumers
+// (subprocesses or iframes inside one subprocess) that all race for the same
+// /api/test/pending queue.
+//
+// All state is owned by a single actor goroutine; HTTP handlers exchange
+// closures with it over opsCh (no mutexes — the actor is the serialiser).
+type TestRunAPI struct {
+	opsCh   chan func(*actorState)
+	namesCh chan testNames // capacity 1: test names list waiting to be consumed
+}
+
+// testNames is the discovered test inventory: every test name plus the subset
+// that pollutes the shared fixture root (and so must run isolated — see
+// pollutesFixtureRoot in the JS test definitions).
+type testNames struct {
+	Names     []string `json:"names"`
+	Polluters []string `json:"polluters"`
+}
+
+// actorState lives entirely inside the actor goroutine. Closures from opsCh
+// receive a pointer to it.
+type actorState struct {
+	pending    []testEntry             // FIFO of queued tests
+	resultBufs map[string][]testResult // delivered results not yet picked up
+}
+
+// NewTestRunAPI creates a ready-to-use TestRunAPI.
+func NewTestRunAPI() *TestRunAPI {
+	api := &TestRunAPI{
+		opsCh:   make(chan func(*actorState), 128),
+		namesCh: make(chan testNames, 1),
+	}
+	go api.run()
+	return api
+}
+
+func (api *TestRunAPI) run() {
+	st := &actorState{
+		resultBufs: map[string][]testResult{},
+	}
+	for op := range api.opsCh {
+		op(st)
+	}
+}
+
+// withState submits fn to the actor goroutine and waits for it to finish.
+func (api *TestRunAPI) withState(fn func(*actorState)) {
+	done := make(chan struct{})
+	api.opsCh <- func(s *actorState) {
+		fn(s)
+		close(done)
+	}
+	<-done
+}
+
+// HandleRun enqueues a test (or the special "__list__" sentinel).
+// POST /api/test/run  body: {"name":"...", "projectPath":"..."}
+func (api *TestRunAPI) HandleRun(w http.ResponseWriter, r *http.Request) {
+	var entry testEntry
+	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	api.withState(func(s *actorState) {
+		s.pending = append(s.pending, entry)
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandlePending returns the next queued test, or 204 if none is waiting.
+// GET /api/test/pending
+func (api *TestRunAPI) HandlePending(w http.ResponseWriter, r *http.Request) {
+	var (
+		entry testEntry
+		ok    bool
+	)
+	api.withState(func(s *actorState) {
+		if len(s.pending) > 0 {
+			entry = s.pending[0]
+			s.pending = s.pending[1:]
+			ok = true
+		}
+	})
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	handlers.WriteJSON(w, r, 0, entry)
+}
+
+// HandlePostResult receives the test result from the browser.
+// POST /api/test/result  body: {"name":"...", "passed":bool, ...}
+// The result is buffered by name; GET /api/test/result?name=X picks it up.
+func (api *TestRunAPI) HandlePostResult(w http.ResponseWriter, r *http.Request) {
+	var result testResult
+	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	api.withState(func(s *actorState) {
+		s.resultBufs[result.Name] = append(s.resultBufs[result.Name], result)
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleGetResult returns the stored result for a test name, or 204 if not
+// ready yet. If ?name= is omitted, returns ANY buffered result (legacy
+// callers that ran one test at a time per pool slot).
+// GET /api/test/result[?name=X]
+func (api *TestRunAPI) HandleGetResult(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	var (
+		result testResult
+		ok     bool
+	)
+	api.withState(func(s *actorState) {
+		if name != "" {
+			if bufs := s.resultBufs[name]; len(bufs) > 0 {
+				result = bufs[0]
+				s.resultBufs[name] = bufs[1:]
+				ok = true
+			}
+			return
+		}
+		for n, bufs := range s.resultBufs {
+			if len(bufs) > 0 {
+				result = bufs[0]
+				s.resultBufs[n] = bufs[1:]
+				ok = true
+				return
+			}
+		}
+	})
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	handlers.WriteJSON(w, r, 0, result)
+}
+
+// HandlePostNames receives the discovered test names from the browser.
+// POST /api/test/names  body: {"names":["integration:foo",...],"polluters":[...]}
+func (api *TestRunAPI) HandlePostNames(w http.ResponseWriter, r *http.Request) {
+	var payload testNames
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	select {
+	case <-api.namesCh:
+	default:
+	}
+	api.namesCh <- payload
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleGetNames returns the stored names list, or 204 if not yet available.
+// GET /api/test/names
+func (api *TestRunAPI) HandleGetNames(w http.ResponseWriter, r *http.Request) {
+	select {
+	case names := <-api.namesCh:
+		handlers.WriteJSON(w, r, 0, names)
+		api.namesCh <- names
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// TestService combines the task/fixture API and the run/result API into
+// a single object that RegisterTestRoutes can accept.
+type TestService struct {
+	*TestAPI
+	*TestRunAPI
+}
+
+// NewTestService creates a TestService for the given juggler project root.
+// session is the live SessionManager (passed in so future test helpers can
+// reach it through the service); the test API currently uses it only for
+// the optional per-test bulldoze hook.
+func NewTestService(projectRoot string, session SessionResetter) *TestService {
+	return &TestService{
+		TestAPI:    NewTestAPIWithSession(projectRoot, session),
+		TestRunAPI: NewTestRunAPI(),
+	}
+}

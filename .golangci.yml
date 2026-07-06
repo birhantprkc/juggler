@@ -1,0 +1,79 @@
+version: "2"
+
+linters:
+  enable:
+    - unused
+    - ineffassign
+    - staticcheck
+    - govet
+    - errcheck
+    - gocritic
+    - revive
+    - misspell
+    - gosec
+    - bodyclose
+    - forbidigo
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+
+    gosec:
+      excludes:
+        - G101
+        - G103
+        - G104
+        - G114
+        - G115
+        - G122
+        - G204
+        - G702
+        - G301
+        - G302
+        - G304
+        - G306
+        - G307
+        - G703
+        - G705
+
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - exitAfterDefer
+        - elseif
+        - deprecatedComment
+
+    forbidigo:
+      forbid:
+        - pattern: sync\.Mutex
+          msg: Use goroutines and channels instead of sync.Mutex
+        - pattern: sync\.RWMutex
+          msg: Use goroutines and channels instead of sync.RWMutex
+
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+
+  exclusions:
+    presets:
+      - std-error-handling
+    paths:
+      - node_modules
+      - 3rdparty
+    rules:
+      - linters:
+          - unused
+        path: (tests/|internal/core/debug/|internal/core/agent/)
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt

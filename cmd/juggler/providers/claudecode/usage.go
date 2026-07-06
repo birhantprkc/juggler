@@ -1,0 +1,162 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package claudecode
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	// Windows ships no IANA tz database and a deployed binary has no GOROOT, so
+	// without this embedded copy time.LoadLocation fails for the zone the CLI
+	// reports (e.g. "Europe/London") and the reset instant would be misread in
+	// the machine's local zone instead.
+	_ "time/tzdata"
+
+	provider "juggler/cmd/juggler/providers/registry"
+)
+
+type usageCommandResult struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype"`
+	Result  string `json:"result"`
+}
+
+var usageLineRE = regexp.MustCompile(`^Current (session|week)(?: \(([^)]+)\))?:\s*([0-9]+(?:\.[0-9]+)?)% used(?:\s*·\s*resets\s*(.+))?$`)
+
+// usageResetLayouts spans the locale shapes the claude CLI prints the reset time
+// in. The CLI formats it with the host's conventions, so the date word-order
+// (Jun 12 vs 12 Jun) and clock (1:50pm vs 13:50 on a 24-hour machine) both vary.
+// The date/time separator also varies — " at " on macOS, ", " on Windows — but
+// parseUsageReset normalises that to a single space before matching, so the
+// layouts here use a bare space.
+var usageResetLayouts = func() []string {
+	dates := []string{"Jan 2", "2 Jan"}
+	clocks := []string{"3:04pm", "3pm", "15:04"}
+	var out []string
+	for _, d := range dates {
+		for _, c := range clocks {
+			out = append(out, d+" "+c+" 2006")
+		}
+	}
+	return out
+}()
+
+// UsageStats fetches Claude.ai subscription limit usage using Claude Code's
+// zero-turn /usage command. The richer statusLine rate_limits JSON is only
+// emitted in interactive sessions, not in the -p/stream-json mode Juggler uses,
+// but /usage is available in print mode and returns the same user-visible
+// percentages without making a model turn.
+func (c *Client) UsageStats(ctx context.Context) (provider.UsageStats, error) {
+	bin := claudeBinary()
+	if bin == "" {
+		return provider.UsageStats{}, fmt.Errorf("failed to start claude CLI: claude executable not found. Searched $PATH, the login shell, and known install locations (%s). Set %s to its absolute path if it lives elsewhere", claudeInstallLocationsHint, claudePathEnvVar)
+	}
+	args := []string{"-p", "--output-format", "json", "--max-turns", "1", "/usage"}
+	cmd := claudeCommand(ctx, bin, args)
+	cmd.Dir = c.workingDir
+	cmd.Env = spawnEnv(bin, testExtraSpawnEnv)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return provider.UsageStats{}, fmt.Errorf("claude /usage failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	var parsed usageCommandResult
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return provider.UsageStats{}, fmt.Errorf("decode claude /usage output: %w", err)
+	}
+	if parsed.Type != "result" || parsed.Subtype != "success" {
+		return provider.UsageStats{}, fmt.Errorf("claude /usage returned %s/%s", parsed.Type, parsed.Subtype)
+	}
+	return parseUsageText(parsed.Result, time.Now()), nil
+}
+
+func parseUsageText(text string, now time.Time) provider.UsageStats {
+	stats := provider.UsageStats{
+		Provider:  "claudecode",
+		UpdatedAt: now,
+	}
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		m := usageLineRE.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		pct, err := strconv.ParseFloat(m[3], 64)
+		if err != nil {
+			continue
+		}
+		stat := provider.UsageStat{
+			UsedPercent: provider.Pct(pct),
+		}
+		switch m[1] {
+		case "session":
+			stat.Name = "Session (5h)"
+			stat.Category = "primary"
+			stat.WindowSecs = 5 * 60 * 60
+		case "week":
+			label := strings.TrimSpace(m[2])
+			if label == "" {
+				stat.Name = "Week (7d)"
+				stat.Category = "weekly"
+			} else {
+				stat.Name = "Week (" + label + ")"
+				if strings.EqualFold(label, "all models") {
+					stat.Category = "weekly"
+				} else {
+					stat.Category = "model"
+				}
+			}
+			stat.WindowSecs = 7 * 24 * 60 * 60
+		}
+		if reset := parseUsageReset(strings.TrimSpace(m[4]), now); reset != nil {
+			stat.ResetsAt = reset
+		}
+		stats.Stats = append(stats.Stats, stat)
+	}
+	return stats
+}
+
+func parseUsageReset(s string, now time.Time) *time.Time {
+	if s == "" {
+		return nil
+	}
+	zoneName := ""
+	if open := strings.LastIndex(s, "("); open >= 0 && strings.HasSuffix(s, ")") {
+		zoneName = strings.TrimSpace(strings.TrimSuffix(s[open+1:], ")"))
+		s = strings.TrimSpace(s[:open])
+	}
+	loc := time.Local
+	if zoneName != "" {
+		if loaded, err := time.LoadLocation(zoneName); err == nil {
+			loc = loaded
+		}
+	}
+	// The CLI separates date and time with " at " on macOS and ", " on Windows;
+	// normalise both to a single space so one set of layouts matches either host.
+	s = strings.ReplaceAll(s, " at ", " ")
+	s = strings.ReplaceAll(s, ",", "")
+	withYear := fmt.Sprintf("%s %d", s, now.In(loc).Year())
+	for _, layout := range usageResetLayouts {
+		parsed, err := time.ParseInLocation(layout, withYear, loc)
+		if err != nil {
+			continue
+		}
+		nowInLoc := now.In(loc)
+		// Around New Year, a future weekly reset may belong to the next calendar
+		// year. Use the same instant normalised into the parsed location before
+		// comparing; comparing a Europe/London parse directly against a time.Local
+		// value would be host/timezone dependent on Windows/Linux/macOS.
+		if parsed.Before(nowInLoc.Add(-24 * time.Hour)) {
+			parsed = parsed.AddDate(1, 0, 0)
+		}
+		utc := parsed.UTC()
+		return &utc
+	}
+	return nil
+}

@@ -1,0 +1,20 @@
+{
+  "id": "action-execute",
+  "category": "actions",
+  "description": "Test execute action for running shell commands and test suites",
+  "fixture": "action-edit-fixture",
+  "prompt": "Test the execute action:\n\n1. Run the test suite using: npm test\n   This should execute tests/test_calculator.js and all tests should pass\n\n2. Create a simple verification script and execute it:\n   - Create a file called verify.sh:\n     ```bash\n     #!/bin/bash\n     echo \"Verification starting...\"\n     echo \"Files found:\"\n     find src -name '*.js' -type f\n     echo \"Verification complete\"\n     exit 0\n     ```\n   - Make it executable: chmod +x verify.sh\n   - Execute it: ./verify.sh\n\n3. Create a file called EXECUTE_TEST_RESULTS.md documenting:\n   - Output from npm test (all tests should pass)\n   - Output from verify.sh\n   - Exit codes for both commands\n   - Confirmation that stdout/stderr are captured correctly",
+  "scoring": {
+    "type": "multi_file_consistency",
+    "files": [
+      {
+        "path": "EXECUTE_TEST_RESULTS.md",
+        "contains_strings": ["npm test", "All tests passed", "exit code", "verify.sh"]
+      },
+      {
+        "path": "verify.sh",
+        "contains_strings": ["#!/bin/bash", "find src"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "integration-all",
+  "category": "integration-tests",
+  "description": "All integration tests - exercises full pipeline with mock LLM responses",
+  "fixture": "unit-test-fixture",
+  "prompt": "",
+  "scoring": {
+    "type": "integration_test",
+    "test_module": "integration-test-executor.js"
+  },
+  "metadata": {
+    "test_type": "integration",
+    "description": "Full pipeline tests: sendMessage → worker → mock LLM → tool execution → Yjs sync"
+  }
+}

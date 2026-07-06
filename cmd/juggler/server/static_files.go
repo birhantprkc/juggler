@@ -1,0 +1,578 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package server
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"html/template"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"juggler/internal/jlog"
+	"juggler/web"
+)
+
+// generateCSPNonce returns a fresh per-response base64 nonce for inline scripts.
+func generateCSPNonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(b[:])
+}
+
+// setHTMLSecurityHeaders writes the Content-Security-Policy and related
+// hardening headers for HTML responses. The nonce is consumed by the
+// {{.CSPNonce}} placeholders in the template's inline <script> blocks.
+func setHTMLSecurityHeaders(w http.ResponseWriter, nonce string) {
+	setHTMLSecurityHeadersFramed(w, nonce, false, "")
+}
+
+// setHTMLSecurityHeadersFramed is like setHTMLSecurityHeaders but allows the
+// page to be embedded as a same-origin frame (used by the test-pool host page
+// to tile N copies of /headless-test in iframes) and to widen connect-src by
+// one extra origin (extraConnect, empty for none). The extra origin is the
+// desktop app's loopback window-control endpoint: when the app opens a window
+// it serves the page from the server's origin but the page must POST window
+// controls to the app's own loopback port, which 'self' would block.
+func setHTMLSecurityHeadersFramed(w http.ResponseWriter, nonce string, sameOriginFrameable bool, extraConnect string) {
+	frameAncestors := "frame-ancestors 'none'"
+	if sameOriginFrameable {
+		frameAncestors = "frame-ancestors 'self'"
+	}
+	connectSrc := "connect-src 'self' ws: wss:"
+	if extraConnect != "" {
+		connectSrc += " " + extraConnect
+	}
+	csp := "default-src 'self'; " +
+		"script-src 'self' 'nonce-" + nonce + "' https://cdnjs.cloudflare.com; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data: blob:; " +
+		"font-src 'self' data:; " +
+		connectSrc + "; " +
+		"object-src 'none'; " +
+		"base-uri 'self'; " +
+		frameAncestors
+	w.Header().Set("Content-Security-Policy", csp)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
+// nativeControlOrigin returns the scheme://host:port of the request's
+// `nativeCtl` query param when it is an http(s) loopback URL, else "". The
+// desktop app passes its loopback control endpoint here; we widen the served
+// page's connect-src to exactly that origin so window-control POSTs succeed.
+// Restricted to loopback so a crafted ?nativeCtl on a remote browser cannot
+// open that page's CSP to an arbitrary host.
+func nativeControlOrigin(r *http.Request) string {
+	raw := r.URL.Query().Get("nativeCtl")
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	ip := net.ParseIP(u.Hostname())
+	if u.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// requestOrigin returns the scheme://host:port the client used to reach this
+// server, derived from the request (Host header + TLS state). Used to add the
+// server's own origin to the sandbox CSP for the blob-URL worker (see
+// setSandboxSecurityHeaders).
+func requestOrigin(r *http.Request) string {
+	if r.Host == "" {
+		return ""
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+// setSandboxSecurityHeaders writes the Content-Security-Policy for the host
+// sandbox iframe (juggler/sandbox). Isolation is provided by the parent
+// loading the iframe with `sandbox="allow-scripts"` (no allow-same-origin),
+// so even hostile code has no DOM/storage/cookie access to the main page —
+// only the explicit RPC channel. The nested sandbox worker the iframe spawns
+// inherits this opaque origin, so it is isolated the same way.
+//
+// frame-ancestors 'self' ensures only same-origin parents can embed the
+// sandbox; default-src 'none' denies anything not explicitly permitted.
+//
+// selfOrigin is the server's own scheme://host:port (e.g. http://127.0.0.1:PORT).
+// It is added to script-src explicitly because the nested worker runs from a
+// blob: URL: in that worker's CSP context 'self' resolves to the worker's opaque
+// origin (NOT the http host the way it does for the http-loaded iframe), so
+// 'self' alone would block the worker from `import()`ing the absolute-project-
+// path modules user code pulls in. The explicit origin re-permits exactly those
+// cross-origin (opaque-to-host) module loads (CORS-gated by ACAO=*).
+func setSandboxSecurityHeaders(w http.ResponseWriter, nonce, selfOrigin string) {
+	// script-src covers the absolute-project-path modules user code `import()`s,
+	// fetched cross-origin with ACAO=* from the opaque-origin worker. The nonce
+	// covers this HTML's inline script. worker-src 'self' blob: permits spawning
+	// the nested worker, which is created from a blob: URL whose source is inlined
+	// in the iframe (a worker script must be same-origin with its creating
+	// context; the opaque-origin frame has no same-origin http URL but a blob:
+	// URL it mints is same-origin to it; a cross-origin served module worker does
+	// not load in WebKit). 'unsafe-eval' is load-bearing in the worker, which
+	// compiles user code via the Function constructor (the worker inherits this
+	// CSP, having no CSP of its own).
+	scriptSrc := "script-src 'self' 'nonce-" + nonce + "' 'unsafe-eval'"
+	if selfOrigin != "" {
+		scriptSrc += " " + selfOrigin
+	}
+	csp := "default-src 'none'; " +
+		scriptSrc + "; " +
+		"worker-src 'self' blob:; " +
+		"connect-src 'self'; " +
+		"frame-ancestors 'self'; " +
+		"base-uri 'none'"
+	w.Header().Set("Content-Security-Policy", csp)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
+// corsMiddleware adds CORS headers. Cross-Origin-Resource-Policy is set
+// to cross-origin so the explore_code sandbox iframe — which runs with an
+// opaque/null origin (no allow-same-origin) — can fetch and `import()`
+// static assets served by this handler. ACAO=* alone permits the load
+// against the CORS check; CORP is a separate, stricter gate WebKit
+// enforces on module loads from opaque-origin readers.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The permissive ACAO:* + CORP:cross-origin exists ONLY so the
+		// explore_code sandbox iframe (opaque/null origin) can fetch and
+		// import() static module assets. The /api surface is same-origin — a
+		// wildcard ACAO there would let any website read tool/provider/session
+		// responses, so scope the permissive headers to non-/api (static asset)
+		// routes only (§S.3). A cross-origin /api request therefore fails the
+		// browser's CORS check even before the token middleware sees it.
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// loadIndexTemplate loads the index.html template for cache busting
+func (s *Server) loadIndexTemplate() error {
+	var tmplContent string
+
+	if s.devMode {
+		// In dev mode, load from disk
+		staticDir, err := s.findStaticDir()
+		if err != nil {
+			return fmt.Errorf("failed to find static dir: %w", err)
+		}
+		indexPath := filepath.Join(staticDir, "index.html")
+		content, err := os.ReadFile(indexPath)
+		if err != nil {
+			return fmt.Errorf("failed to read index.html: %w", err)
+		}
+		tmplContent = string(content)
+	} else {
+		// In production, load from embedded files
+		content, err := web.Files.ReadFile("index.html")
+		if err != nil {
+			return fmt.Errorf("failed to read embedded index.html: %w", err)
+		}
+		tmplContent = string(content)
+	}
+
+	// Parse template
+	tmpl, err := template.New("index").Parse(tmplContent)
+	if err != nil {
+		return fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	s.indexTemplate = tmpl
+	return nil
+}
+
+// serveEngine serves the engine page for the hidden headless browser.
+// External access is harmless — the engine page only exposes a WS upgrade
+// path which is itself loopback-gated in handleWebSocket.
+func (s *Server) serveEngine(w http.ResponseWriter, r *http.Request) {
+	var content []byte
+	var err error
+
+	if s.devMode {
+		// In dev mode, load from disk for live reload
+		staticDir, findErr := s.findStaticDir()
+		if findErr == nil {
+			content, err = os.ReadFile(filepath.Join(staticDir, "engine.html"))
+		}
+		if err != nil || findErr != nil {
+			// Fall back to embedded
+			content, err = web.Files.ReadFile("engine.html")
+		}
+	} else {
+		content, err = web.Files.ReadFile("engine.html")
+	}
+
+	if err != nil {
+		http.Error(w, "Engine page not found", http.StatusNotFound)
+		return
+	}
+
+	nonce := generateCSPNonce()
+	html := strings.ReplaceAll(string(content), "{{.StaticVersion}}", s.staticVersion)
+	html = strings.ReplaceAll(html, "{{.CSPNonce}}", nonce)
+	html = strings.ReplaceAll(html, "{{.APIToken}}", s.apiToken)
+
+	setHTMLSecurityHeaders(w, nonce)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write([]byte(html))
+}
+
+// serveHeadlessTest serves the headless test page (only registered by RegisterTestRoutes)
+func (s *Server) serveHeadlessTest(w http.ResponseWriter, r *http.Request) {
+	// In dev mode, read from disk so edits take effect without rebuilding.
+	// juggler-test runs with DevMode=true, so tests never use baked-in files.
+	var content []byte
+	var err error
+	if s.devMode {
+		if staticDir, derr := s.findStaticDir(); derr == nil {
+			content, err = os.ReadFile(filepath.Join(staticDir, "js-tests", "headless-test.html"))
+		} else {
+			err = derr
+		}
+	}
+	if content == nil {
+		content, err = web.TestFiles.ReadFile("js-tests/headless-test.html")
+	}
+	if err != nil {
+		http.Error(w, "Headless test runner not found", http.StatusNotFound)
+		return
+	}
+
+	nonce := generateCSPNonce()
+	html := strings.ReplaceAll(string(content), "{{.StaticVersion}}", s.staticVersion)
+	html = strings.ReplaceAll(html, "{{.CSPNonce}}", nonce)
+
+	// Allow same-origin framing so the /test-pool host page can tile N copies
+	// of this page in iframes.
+	setHTMLSecurityHeadersFramed(w, nonce, true, "")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write([]byte(html))
+}
+
+// serveTestPool serves a tiling host page that mounts N copies of
+// /headless-test in cross-origin-style iframes laid out in a grid. The Wails
+// window loads this page in test-iframe mode; each iframe is an independent
+// test client that polls /api/test/pending for work.
+func (s *Server) serveTestPool(w http.ResponseWriter, r *http.Request) {
+	n := r.URL.Query().Get("n")
+	if n == "" {
+		n = "4"
+	}
+	nonce := generateCSPNonce()
+	page := `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Juggler Test Pool</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0d1117; color: #e6edf3; font-family: monospace; }
+  #grid { display: grid; gap: 1px; width: 100vw; height: 100vh; background: #30363d; }
+  iframe { width: 100%; height: 100%; border: 0; background: #0d1117; }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<script nonce="` + nonce + `">
+(() => {
+  const n = parseInt(new URLSearchParams(location.search).get('n') || '` + n + `', 10) || 4;
+  // Square-ish grid: cols = ceil(sqrt(n)), rows = ceil(n/cols).
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  const grid = document.getElementById('grid');
+  grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+  grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+  for (let i = 0; i < n; i++) {
+    const f = document.createElement('iframe');
+    f.src = '/headless-test?lane=' + i;
+    f.setAttribute('data-lane', String(i));
+    grid.appendChild(f);
+  }
+})();
+</script>
+</body>
+</html>`
+	setHTMLSecurityHeadersFramed(w, nonce, false, "")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write([]byte(page))
+}
+
+// serveSandbox serves the host sandbox page (juggler/sandbox). The page runs
+// untrusted code inside a sandboxed iframe with its own CSP, isolating it from
+// the host page. See setSandboxSecurityHeaders for the served CSP.
+func (s *Server) serveSandbox(w http.ResponseWriter, r *http.Request) {
+	var content []byte
+	var err error
+
+	if s.devMode {
+		staticDir, findErr := s.findStaticDir()
+		if findErr == nil {
+			content, err = os.ReadFile(filepath.Join(staticDir, "sandbox.html"))
+		}
+		if err != nil || findErr != nil {
+			content, err = web.Files.ReadFile("sandbox.html")
+		}
+	} else {
+		content, err = web.Files.ReadFile("sandbox.html")
+	}
+
+	if err != nil {
+		http.Error(w, "Sandbox page not found", http.StatusNotFound)
+		return
+	}
+
+	nonce := generateCSPNonce()
+	// projectRoot is the user-visible absolute path the LLM thinks in
+	// (e.g. "/Users/jules/code/juggler"). The sandbox's import map
+	// rewrites "<projectRoot>/web/" → "/v<ver>/" so dynamic imports of
+	// absolute project paths resolve to the same-origin static handler.
+	// Empty projectRoot leaves the mapping as "/web/" → "/v<ver>/", which
+	// is harmless — no caller imports starting with bare "/web/".
+	projectRoot := s.ProjectPath()
+	html := strings.ReplaceAll(string(content), "{{.CSPNonce}}", nonce)
+	html = strings.ReplaceAll(html, "{{.StaticVersion}}", s.staticVersion)
+	html = strings.ReplaceAll(html, "{{.ProjectRoot}}", template.JSEscapeString(projectRoot))
+
+	setSandboxSecurityHeaders(w, nonce, requestOrigin(r))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write([]byte(html))
+}
+
+// serveFavicon serves the logo SVG directly as the favicon. Serving the bytes
+// (rather than 301-redirecting to the versioned asset path) is robust across
+// every transport: a fetch/service-worker context that doesn't follow a
+// cross-path redirect — e.g. a request proxied over the juggler.studio P2P
+// DataChannel — still gets the icon.
+func (s *Server) serveFavicon(w http.ResponseWriter, r *http.Request) {
+	var content []byte
+	var err error
+	if s.devMode {
+		if staticDir, derr := s.findStaticDir(); derr == nil {
+			content, err = os.ReadFile(filepath.Join(staticDir, "resources", "juggler-logo.svg"))
+		} else {
+			err = derr
+		}
+	}
+	if content == nil {
+		content, err = web.Files.ReadFile("resources/juggler-logo.svg")
+	}
+	if err != nil {
+		http.Error(w, "favicon not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=3600, must-revalidate")
+	_, _ = w.Write(content)
+}
+
+// serveIndex serves the index.html template
+func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
+	// Reload template in dev mode for live changes
+	if s.devMode {
+		if err := s.loadIndexTemplate(); err != nil {
+			jlog.Error("Error reloading template: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	nonce := generateCSPNonce()
+	setHTMLSecurityHeadersFramed(w, nonce, false, nativeControlOrigin(r))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+
+	data := struct {
+		StaticVersion string
+		IsTestMode    bool
+		IsDevMode     bool
+		IsWindowMode  bool
+		CSPNonce      string
+		APIToken      string
+	}{
+		StaticVersion: s.staticVersion,
+		IsTestMode:    s.testMode,
+		IsDevMode:     s.devMode,
+		APIToken:      s.apiToken,
+		// The desktop app opens the page with ?window=1; remote browsers never
+		// have it. Mirrors the client-side check in index.html and gates the
+		// Wails runtime <script>, which only does anything in a native window.
+		IsWindowMode: r.URL.Query().Has("window"),
+		CSPNonce:     nonce,
+	}
+
+	if err := s.indexTemplate.Execute(w, data); err != nil {
+		jlog.Error("Error executing template: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+// FindProjectRoot finds the juggler project root by looking for a go.mod whose
+// directory also contains a web/ tree. Requiring the web/ dir makes this locate
+// the juggler root specifically rather than any enclosing Go module — important
+// when the binary is launched from inside another repo (e.g. the pro parent)
+// that has its own go.mod but no web/ assets. Exported so it can be used by the
+// testing package.
+func FindProjectRoot(startPath string) (string, error) {
+	// searchForGoMod walks upward from start, returning the first directory that
+	// holds both a go.mod and a web/ directory.
+	searchForGoMod := func(start string) (string, bool) {
+		searchPath := start
+		for {
+			if isJugglerRoot(searchPath) {
+				return searchPath, true
+			}
+
+			parent := filepath.Dir(searchPath)
+			if parent == searchPath {
+				break // Reached filesystem root
+			}
+			searchPath = parent
+		}
+		return "", false
+	}
+
+	// Strategy 1: Search from provided startPath
+	if startPath != "" {
+		if root, found := searchForGoMod(startPath); found {
+			return root, nil
+		}
+	}
+
+	// Strategy 2: Search from current working directory
+	cwd, err := os.Getwd()
+	if err == nil {
+		if root, found := searchForGoMod(cwd); found {
+			return root, nil
+		}
+	}
+
+	// Strategy 3: Search from executable's location (for --assets-from-disk from arbitrary directory)
+	exePath, err := os.Executable()
+	if err == nil {
+		// Resolve symlinks to get actual binary location
+		exePath, err = filepath.EvalSymlinks(exePath)
+		if err == nil {
+			exeDir := filepath.Dir(exePath)
+			if root, found := searchForGoMod(exeDir); found {
+				return root, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("could not find juggler project root (no go.mod with a web/ directory found in startPath, cwd, or executable location)")
+}
+
+// isJugglerRoot reports whether dir is the juggler root: a directory holding
+// both go.mod and a web/ tree.
+func isJugglerRoot(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, "web"))
+	return err == nil && info.IsDir()
+}
+
+// findWebDir finds the web directory for dev mode (package-level, used during server creation)
+func findWebDir() string {
+	projectRoot, err := FindProjectRoot("")
+	if err != nil {
+		return ""
+	}
+
+	webPath := filepath.Join(projectRoot, "web")
+	if _, err := os.Stat(webPath); err == nil {
+		return webPath
+	}
+
+	return ""
+}
+
+// findStaticDir finds the static directory by looking for the juggler project root.
+// Falls back to bootProjectPath when no project is loaded so dev-mode static
+// serving works in no-project boots.
+func (s *Server) findStaticDir() (string, error) {
+	root := s.ProjectPath()
+	if root == "" {
+		root = s.bootProjectPath
+	}
+	projectRoot, err := FindProjectRoot(root)
+	if err != nil {
+		return "", err
+	}
+
+	webPath := filepath.Join(projectRoot, "web")
+	if _, err := os.Stat(webPath); err == nil {
+		return webPath, nil
+	}
+
+	return "", fmt.Errorf("project root found at %s but web dir missing", projectRoot)
+}
+
+// cacheControlMiddleware adds appropriate cache headers based on file type
+func (s *Server) cacheControlMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// Skip API routes and index.html (they have their own cache headers)
+		if strings.HasPrefix(path, "/api/") || path == "/" || path == "/index.html" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Versioned paths get immutable caching (the version changes on each deploy)
+		if strings.HasPrefix(path, "/v"+s.staticVersion+"/") {
+			if !s.devMode {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Non-versioned paths: dev vs production
+		if s.devMode {
+			if strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".css") {
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				w.Header().Set("Pragma", "no-cache")
+				w.Header().Set("Expires", "0")
+			}
+		} else {
+			w.Header().Set("Cache-Control", "public, max-age=3600, must-revalidate")
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}

@@ -1,0 +1,458 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package claudecode
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"sync/atomic"
+	"time"
+
+	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/internal/jlog"
+)
+
+// Client implements the provider.Provider interface using Claude Code CLI.
+// Tool execution flows back through the stdio control protocol, not a
+// per-client HTTP MCP server. See control_protocol.go for the
+// dispatcher that fields the CLI's mcp_message control_requests.
+type Client struct {
+	model         string
+	workingDir    string
+	threadID      string         // "" = root thread; sub-threads are in-memory only (no disk sidecar)
+	activeSession *activeSession // Persisted between StreamMessage calls for continuation
+
+	// own is the single-owner token for activeSession: a 1-buffered channel
+	// pre-loaded with exactly one token. Whoever holds the token is the sole
+	// goroutine permitted to mutate activeSession (and the live-CLI fields it
+	// owns). A streaming turn holds it for its whole duration; Cancel/Close
+	// first interrupt the in-flight turn (so it unwinds and releases the token)
+	// then take the token to tear down. This makes activeSession single-owner
+	// across the turn goroutine and the conversationCache-actor goroutine
+	// without a mutex (channels, per the project concurrency rule). Initialised
+	// by NewClient; the test-only direct &Client{} builds never stream/cancel.
+	own chan struct{}
+	// turnInterrupt holds the in-flight turn's context-cancel func so Cancel /
+	// Close can make the owning turn unwind and release `own` promptly. nil
+	// between turns.
+	turnInterrupt atomic.Pointer[context.CancelFunc]
+
+	// consecutiveStalls counts how many turn attempts in a row have failed with
+	// a transient stall/exit (the resumed CLI produced no terminal turn). It is
+	// reset to zero by any successful or definitively-failed turn. When it
+	// reaches maxConsecutiveStallsBeforeColdStart the next dispatch ABANDONS the
+	// stored --resume uuid and cold-starts fresh: a session whose --resume keeps
+	// stalling is wedged on the CLI side (a backed-up stdin queue or a corrupt
+	// resume transcript), and re-resuming it every turn leaves the user staring
+	// at "receiving…" forever. Mutated only under the `own` token (single turn at
+	// a time), so a plain int is safe — no mutex (project concurrency rule).
+	consecutiveStalls int
+
+	// turnWaitingPhase is the spinner label the parser emits at system/init —
+	// the moment the freshly-spawned CLI has booted and the otherwise-silent
+	// prompt-ingestion wait begins. dispatchTurn resets it to phaseWaiting each
+	// turn; startFreshSession overrides it to phaseProcessingHistory for a cold
+	// start that carries prior history, so the long cache-miss wait reads as
+	// purposeful instead of a generic "Waiting…". Mutated only under the `own`
+	// token (single turn at a time) and read on the same turn goroutine, so a
+	// plain string is safe — no mutex (project concurrency rule).
+	turnWaitingPhase string
+
+	// onAutonomousTurn, when non-nil, receives every turn the persistent CLI
+	// emits while no Submit is in flight (scheduled wake / monitor). The
+	// always-on stdout reader surfaces these via the background drain
+	// (autonomous_turn.go) instead of letting them pile up unread and be
+	// mis-attributed to the next user message. Set by the consumer (the
+	// worker; the claudecode tests set it directly). One Client per
+	// conversation, so a plain field is the single owner — no map, no global.
+	onAutonomousTurn func(*turnResult)
+}
+
+// NewClient creates a new Claude Code provider client
+func NewClient(cfg provider.Config) (provider.Provider, error) {
+	// Get working directory from environment or current directory
+	workingDir := os.Getenv("JUGGLER_PROJECT_PATH")
+	if workingDir == "" {
+		var err error
+		workingDir, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get working directory: %w", err)
+		}
+	}
+
+	c := &Client{
+		model:      cfg.Model,
+		workingDir: workingDir,
+		own:        make(chan struct{}, 1),
+	}
+	c.own <- struct{}{} // token starts available: no turn in flight
+	return c, nil
+}
+
+// acquireOwnership blocks until this goroutine holds the sole right to mutate
+// activeSession, returning a release func. A nil `own` (test-only direct
+// &Client{} builds that never stream/cancel) yields a no-op so those tests
+// keep working. Callers that race a turn must interrupt it first (see
+// cancelSession) so the held token frees promptly.
+func (c *Client) acquireOwnership() (release func()) {
+	if c.own == nil {
+		return func() {}
+	}
+	<-c.own
+	return func() { c.own <- struct{}{} }
+}
+
+// Name returns the provider name
+func (c *Client) Name() string {
+	return "claudecode"
+}
+
+// reapIdleCLI frees the live CLI subprocess when this session has gone idle,
+// while KEEPING the resumable record (sessionUUID/sentCount/sentHash) so the
+// next turn --resumes warm. Per-thread keying means one CLI per thread, so
+// idle processes must be bounded — but a re-opened thread should still resume
+// warm, hence we reap the process, not the session. Non-blocking on ownership:
+// if a turn holds `own` the session is active, so skip. A session parked
+// awaiting tool results (pendingTools != nil) is waiting on us, not idle.
+func (c *Client) reapIdleCLI(idle time.Duration) {
+	if c.own == nil {
+		return
+	}
+	select {
+	case <-c.own:
+	default:
+		return // a turn is in flight — not idle
+	}
+	defer func() { c.own <- struct{}{} }()
+
+	s := c.activeSession
+	if s == nil || !s.hasLiveCLI() || len(s.pendingTools) > 0 {
+		return
+	}
+	if time.Since(s.lastUsedAt) < idle {
+		return
+	}
+	s.tearDownLiveCLI() // free the OS process; the resumable record survives
+}
+
+// OpenConversation returns a native claudecode Conversation handle. The
+// handle binds this *Client (which carries model + workingDir + the
+// lazily-populated activeSession) to convID. One Client per Conversation;
+// the server's conversationCache owns the handle's lifetime.
+func (c *Client) OpenConversation(ctx context.Context, convID string) (provider.Conversation, error) {
+	// The handle owns a registry of per-thread sessions (one warm CLI per
+	// thread); this Client is the config template and the root-thread ("")
+	// session. See conversation.go.
+	return newConversation(c, convID), nil
+}
+
+// newThreadSession clones this Client's config into a fresh per-thread session
+// (its own activeSession, ownership token, and threadID). Sub-thread sessions
+// (threadID != "") keep their state in memory only — never the on-disk sidecar
+// (gated in loadSidecar/saveSidecar/deleteSidecar). Autonomous-turn surfacing
+// is a root-thread concern, so onAutonomousTurn is intentionally NOT copied.
+func (base *Client) newThreadSession(threadID string) *Client {
+	s := &Client{
+		model:      base.model,
+		workingDir: base.workingDir,
+		threadID:   threadID,
+		own:        make(chan struct{}, 1),
+	}
+	s.own <- struct{}{} // token starts available: no turn in flight
+	return s
+}
+
+// loadSidecar / saveSidecar / deleteSidecar centralise the on-disk warm-resume
+// sidecar. Only the ROOT thread persists: a sub-thread's session is transient
+// and in-memory only, so it must never touch (read, overwrite, or delete) the
+// conversation-level sidecar keyed by convID. Gating here keeps that invariant
+// in one place.
+func (c *Client) loadSidecar(convID string) *activeSession {
+	if c.threadID != "" {
+		return nil
+	}
+	return loadDiskSession(c.workingDir, convID)
+}
+
+func (c *Client) saveSidecar(convID string, sess *activeSession) {
+	if c.threadID != "" {
+		return
+	}
+	saveDiskSession(c.workingDir, convID, sess)
+}
+
+func (c *Client) deleteSidecar(convID string) {
+	if c.threadID != "" {
+		return
+	}
+	deleteDiskSession(c.workingDir, convID)
+}
+
+// streamMessage drives one LLM turn against the CLI. The Conversation
+// handle (conversation.go) is the public entry point; this method holds
+// the dispatch logic across three regimes:
+//
+//  1. Tool-use continuation: a CLI process is alive, paused inside an MCP
+//     tools/call waiting for our tool results. Feed the results via MCP and
+//     resume reading. (No new CLI invocation; this is mid-LLM-turn.)
+//
+//  2. Resume with delta: no live CLI, but we have a stored sessionUUID and the
+//     new req.Messages is a strict linear extension of what claude already has.
+//     Spawn `claude --resume <uuid> --input-format stream-json` and pipe only
+//     the delta on stdin. Prompt cache stays warm.
+//
+//  3. Fresh start: divergent history or first turn. Spawn with `-p
+//     --input-format stream-json` and capture the session id from the
+//     system/init event so future turns can use --resume.
+//
+// Per-conversation state lives on c.activeSession; one *Client is bound
+// to one conversation via the server's conversationCache, so no global
+// lookup is needed. Cold-start after a juggler restart loads state from
+// the on-disk sidecar.
+// req.ToolChoice is intentionally NOT honoured here: the claude CLI exposes no
+// tool_choice / forced-function-call equivalent (only --allowedTools /
+// --disallowedTools name-gating, which cannot compel a call). A plugin that
+// forces a tool (e.g. /compact forcing return_result) therefore degrades
+// gracefully under claudecode — the model may answer in text and the worker's
+// writeThreadResult fallback turns that into the thread result. If the CLI ever
+// gains a forced-tool option, translate req.ToolChoice here.
+func (c *Client) streamMessage(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	// Per-turn cancelable context. Publish its cancel as turnInterrupt BEFORE
+	// the slot wait so Cancel/Close can unblock a turn that is merely queued
+	// (cliTurnSlots.acquire waits on turnCtx) as well as one that is streaming.
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	c.turnInterrupt.Store(&turnCancel)
+	defer func() {
+		c.turnInterrupt.Store(nil)
+		turnCancel()
+	}()
+
+	// Throttle concurrently-streaming turns process-wide before doing any
+	// work. Acquired BEFORE stopping the autonomous drain so that, while this
+	// turn queues behind others, the CLI's background drain keeps surfacing
+	// autonomous turns. The slot is held only for this active-streaming window
+	// and released on return (see concurrency.go for the deadlock-freedom
+	// argument: a turn that pauses for tool approval / subthreads has already
+	// returned and holds no slot). A turn cancelled while queued bails here.
+	release, err := cliTurnSlots.acquire(turnCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	// Take sole ownership of activeSession for the streaming window. Cancel /
+	// Close interrupt this turn via turnInterrupt so the token frees promptly,
+	// then take the token to tear down — so activeSession is never mutated by
+	// the turn goroutine and the cache-actor goroutine at the same time.
+	releaseOwn := c.acquireOwnership()
+	defer releaseOwn()
+
+	// A Submit owns stdout for the duration of its turn: stop any background
+	// autonomous-turn drain so the foreground turn is the sole consumer of
+	// s.content (single-consumer invariant), then flush any already-complete
+	// autonomous turns the CLI emitted before this Submit so they surface via
+	// the sink ahead of the user's message instead of being mis-read as its
+	// reply (send-site ordering; see flushBufferedTurns). Zero-cost when the
+	// CLI has been quiet.
+	if c.activeSession != nil {
+		c.activeSession.stopAutonomousDrain()
+		c.flushBufferedTurns()
+	}
+
+	res, err := c.dispatchTurnWithRetry(turnCtx, req, callback)
+
+	// The CLI now idles on stdin and may emit autonomous turns (scheduled
+	// wake / monitor). Resume the drain so they surface promptly instead of
+	// piling up unread and being mis-attributed to the next user message.
+	c.maybeStartAutonomousDrain(res, err)
+	return res, err
+}
+
+// cliMaxRetries bounds how many times a single turn is re-attempted after a
+// transient CLI failure: one initial attempt plus cliMaxRetries retries.
+const cliMaxRetries = 2
+
+// maxConsecutiveStallsBeforeColdStart is the circuit-breaker threshold: after
+// this many back-to-back transient stalls/exits on a warm --resume, the next
+// dispatch stops re-resuming the (evidently wedged) session and cold-starts
+// fresh. Set to 2 so a single one-off stall (e.g. a dropped connection across
+// system sleep) still retries WARM — preserving the prompt cache — and only a
+// genuinely stuck session escalates to a (cache-missing but unwedging) cold
+// start.
+const maxConsecutiveStallsBeforeColdStart = 2
+
+// cliRetryBackoff is the base delay between transient-failure retries; the
+// nth retry waits n*cliRetryBackoff. A package var so tests can shrink it.
+var cliRetryBackoff = 750 * time.Millisecond
+
+// dispatchTurnWithRetry runs dispatchTurn and, on a transient CLI failure
+// (the process died without a terminal stop reason, or the stream stalled),
+// re-attempts the turn up to cliMaxRetries times with linear backoff.
+//
+// The claude CLI already handles in-band rate-limit (HTTP 529) backoff itself
+// via api_retry; this covers the orthogonal case where the process VANISHES
+// without reporting an in-band result — most likely when many parallel CLIs
+// (e.g. fanned-out subthreads) momentarily overwhelm the account's
+// concurrency / usage limits, but also a plain crash or a dropped connection.
+//
+// A retry is only safe when NOTHING has streamed to the UI yet: replaying
+// would duplicate already-shown text / thinking / tool_use. A clean,
+// definitive error (rate-limit exhaustion the CLI reported in-band, a 400) is
+// not a transientCLIError and is never retried. The failed attempt's
+// finalizeTurn keeps the on-disk sidecar, so each retry --resumes warm rather
+// than cold-starting the whole history.
+func (c *Client) dispatchTurnWithRetry(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+	for attempt := 0; ; attempt++ {
+		// Whether this attempt streamed any real content. Status chunks (the
+		// rate-limit notices) are not content and don't block a retry.
+		streamed := false
+		wrapped := func(chunk provider.StreamChunk) (*provider.ToolResult, error) {
+			if chunk.Type != provider.ContentBlockTypeStatus {
+				streamed = true
+			}
+			return callback(chunk)
+		}
+
+		res, err := c.dispatchTurn(ctx, req, wrapped)
+
+		// Circuit-breaker bookkeeping: only consecutive transient stalls/exits
+		// accumulate. A clean success or a definitive (non-transient) error
+		// means the session isn't wedged, so reset. The count persists across
+		// turns on the Client, so a wedge that spans user submissions still
+		// escalates to a cold start on the next dispatch (see dispatchTurn).
+		if err == nil || !isTransientCLIError(err) {
+			c.consecutiveStalls = 0
+		} else {
+			c.consecutiveStalls++
+		}
+
+		if err == nil || attempt >= cliMaxRetries {
+			return res, err
+		}
+		if ctx.Err() != nil || !isTransientCLIError(err) || streamed {
+			// Cancelled, a definitive (non-transient) error, or content has
+			// already streamed — none are safely retryable.
+			return res, err
+		}
+
+		delay := time.Duration(attempt+1) * cliRetryBackoff
+		jlog.Info("[claudecode] transient CLI failure on attempt %d/%d (%v) — retrying in %v",
+			attempt+1, cliMaxRetries+1, err, delay)
+		select {
+		case <-ctx.Done():
+			return res, err
+		case <-time.After(delay):
+		}
+	}
+}
+
+// dispatchTurn classifies the request and routes it to the matching regime.
+// Factored out of streamMessage so the autonomous-turn drain can be stopped
+// before dispatch and restarted after it.
+func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+	// Default spinner label for the post-boot wait; startFreshSession overrides
+	// it for a cold start that carries prior history (see turnWaitingPhase).
+	c.turnWaitingPhase = phaseWaiting
+
+	// Cold-start path: no in-memory session yet, but a sidecar from a
+	// prior juggler run may exist on disk. Load so the first turn after
+	// restart can --resume directly.
+	if c.activeSession == nil {
+		if loaded := c.loadSidecar(req.ConversationID); loaded != nil {
+			c.activeSession = loaded
+		}
+	}
+
+	if c.activeSession != nil {
+		// Touch lastUsedAt for diagnostics; nothing sweeps it.
+		c.activeSession.lastUsedAt = time.Now()
+	}
+
+	// Circuit breaker: a stored session whose --resume has stalled repeatedly is
+	// wedged on the CLI side. Stop re-resuming the poisoned uuid; cold-start
+	// fresh instead (startFreshSession rebuilds the CLI session from juggler's
+	// own history under a NEW synthetic uuid, escaping the wedge). The sidecar is
+	// preserved until the replacement turn succeeds and overwrites it
+	// (dispatchFreshStart), so this never causes a spurious "no prior session"
+	// cold start for a healthy session — only one that has actually stalled out.
+	if c.activeSession != nil && c.activeSession.sessionUUID != "" &&
+		c.consecutiveStalls >= maxConsecutiveStallsBeforeColdStart {
+		jlog.Info("⚠ claudecode: abandoning wedged --resume session uuid=%s after %d consecutive stalls — cold-starting fresh conv=%s",
+			shortID(c.activeSession.sessionUUID), c.consecutiveStalls, shortID(req.ConversationID))
+		c.dispatchFreshStart()
+		return c.startFreshSession(ctx, req, callback)
+	}
+
+	dec := classifyRegime(c.activeSession, c.model, req.SystemPrompt, req.Messages, c.activeSession.hasLiveCLI())
+	switch dec.Regime {
+	case regimeContinue:
+		return c.continueSession(ctx, req, callback)
+	case regimeResumeDelta:
+		if dec.SoftReset {
+			// Pending tools but we couldn't continue (live CLI died, or user
+			// interjected new content). Kill the parked subprocess so it
+			// doesn't leak inside MCP; sessionUUID/sentCount/sentHash survive
+			// so resume-with-delta still hits a warm prompt cache.
+			jlog.Debug("Soft-resetting session before resume-with-delta (pendingTools=%d)",
+				len(c.activeSession.pendingTools))
+			c.activeSession.tearDownLiveCLI()
+			c.activeSession.pendingTools = nil
+		}
+		return c.runPersistentResumeTurn(ctx, req, dec.DeltaStart, dec.DeltaEnd, callback)
+	case regimeResumeAppendResult:
+		// A tool_result-bearing delta whose results close the warm transcript's
+		// dangling tool_use. Pair them into the warm session file and re-resume
+		// warm rather than cold-rebuilding (see runWarmAppendResume).
+		return c.runWarmAppendResume(ctx, req, dec.DeltaStart, dec.DeltaEnd, callback)
+	case regimeStartFresh:
+		// "no-new-msgs" steady state (e.g. user hit Continue with no edits,
+		// or last turn produced only thinking/empty content): there is no
+		// delta to ship through --resume, and cold-starting would torch the
+		// 30k+ token prompt cache. Pipe a tiny continuationNudge (a
+		// <system-reminder>-wrapped synthetic user turn) into the live
+		// session instead — preserves the cache and gives the LLM a fresh
+		// prompt cue without the model quoting it back as if the human had
+		// typed it. Falls through to cold-start if the session can't be
+		// resumed.
+		if dec.NoNewMsgs && c.activeSession != nil && c.activeSession.sessionUUID != "" {
+			return c.runResumeNudge(ctx, req, callback)
+		}
+		if c.activeSession != nil {
+			reason := dec.Reason
+			if dec.Reason == "diverged" || dec.Reason == "shrunk" {
+				if detail := diagnoseDivergence(c.activeSession, req.SystemPrompt, req.Messages); detail != "" {
+					reason = dec.Reason + ": " + detail
+				}
+			}
+			jlog.Info("⚠ claudecode cache-miss: cold start (reason=%s) conv=%s msgs=%d",
+				reason, shortID(req.ConversationID), len(req.Messages))
+			c.dispatchFreshStart()
+		} else {
+			jlog.Info("⚠ claudecode cache-miss: cold start (no prior session) conv=%s msgs=%d",
+				shortID(req.ConversationID), len(req.Messages))
+		}
+		return c.startFreshSession(ctx, req, callback)
+	}
+	return nil, fmt.Errorf("claudecode: unknown regime %d", dec.Regime)
+}
+
+// dispatchFreshStart prepares for a replacement fresh session after a routine
+// cache-miss classification (diverged/shrunk/model-changed). It releases the
+// live/in-memory handle, but deliberately PRESERVES the durable sidecar until
+// the replacement turn succeeds and overwrites it. If the replacement stalls or
+// fails (common after sleep/wake), the old sidecar is still the retry's only
+// warm-resume anchor; deleting it here causes repeated "no prior session" cold
+// starts.
+func (c *Client) dispatchFreshStart() {
+	if c.activeSession == nil {
+		return
+	}
+	c.releaseSession()
+}

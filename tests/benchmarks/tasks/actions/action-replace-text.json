@@ -1,0 +1,15 @@
+{
+  "id": "action-replace-text",
+  "category": "actions",
+  "description": "Test replace-text action (search-replace) with exact matching",
+  "fixture": "action-edit-fixture",
+  "prompt": "Test the replace-text action using search-replace:\n\n1. In src/calculator.js, replace the comment on the subtract function:\n   OLD: `return a - b;  // TODO: Add input validation`\n   NEW: `return a - b;  // Input validation added`\n\n2. In src/calculator.js, replace the modulo function comment:\n   OLD: `return a % b;  // FIXME: Handle negative numbers`\n   NEW: `return a % b;  // Negative numbers now handled`\n\nNote: The search string must match EXACTLY (including whitespace) for replace-text to work.\n\nVerify the edits were applied correctly.",
+  "scoring": {
+    "type": "file_contains",
+    "file_path": "src/calculator.js",
+    "contains_strings": [
+      "Input validation added",
+      "Negative numbers now handled"
+    ]
+  }
+}
