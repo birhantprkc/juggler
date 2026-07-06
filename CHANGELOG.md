@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-06
+
 - Misc UI improvements, and some auto-update UX fixes
 
 ## [0.2.0] - 2026-07-06
