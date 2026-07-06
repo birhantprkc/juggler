@@ -184,6 +184,12 @@
                      server version notice with the in-app auto-updater (when
                      present) and opens the update dialog on click. -->
                 <update-button id="update-button" hidden></update-button>
+                <!-- Regular controls. Grouped so that on a narrow (phone) header
+                     they stay squeezed onto a single non-wrapping row, while the
+                     update pill (a sibling, outside this group) can take its own
+                     row. `display: contents` on wide viewports so grouping has no
+                     layout effect there. -->
+                <div class="header-actions-controls">
                 <!-- Undo / Redo -->
                 <button class="u-btn-ghost u-btn-circular-control control-undo-button" id="control-undo-button"
                         aria-label="Undo last operation"
@@ -232,6 +238,7 @@
 
                 <!-- Settings Button -->
                 <button class="u-btn-ghost u-btn-icon-header settings-button" id="settings-button" title="Settings" aria-label="Settings"></button>
+                </div>
             </header-actions>
 
             <!-- Windows-only min/maximise/close caption buttons. Hidden by CSS

@@ -3612,6 +3612,19 @@ input-box .permission-btn.open {
     border-color: var(--accent-blue);
 }
 
+/* Path editor uses <path-input> for autocomplete; its inner .path-input-field
+   carries the bordered-input styling, so the host is just the flex slot — no
+   border/background of its own (avoids a box-in-a-box). */
+.permissions-popup .path-edit-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.permissions-popup .path-edit-input .path-input-field {
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+}
+
 .permissions-popup .pattern-save-btn,
 .permissions-popup .pattern-cancel-btn {
     background: transparent;

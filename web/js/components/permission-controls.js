@@ -469,6 +469,7 @@ class PermissionControls extends HTMLElement {
         `;
       listEl = /** @type {HTMLElement} */ (host.querySelector('.paths-list'));
       listEl.addEventListener('click', (e) => this._onPathsListClick(e));
+      listEl.addEventListener('keydown', (e) => this._onPathsListKeydown(/** @type {KeyboardEvent} */ (e)));
       const addBtn = host.querySelector('.add-path-btn');
       if (addBtn) addBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -529,13 +530,13 @@ class PermissionControls extends HTMLElement {
     } else if (d.mode === 'edit') {
       row.className = 'pattern-row editing';
       row.innerHTML = `
-        <path-input dirs-only class="pattern-edit-input path-edit-input" value="${escapeHtml(p)}" data-old-path="${escapeHtml(d.key)}" placeholder="${escapeHtml(p)}"></path-input>
+        <path-input dirs-only class="path-edit-input" value="${escapeHtml(p)}" data-old-path="${escapeHtml(d.key)}" placeholder="${escapeHtml(p)}"></path-input>
         <button class="pattern-save-btn path-save-btn" data-old-path="${escapeHtml(d.key)}" title="Save">Save</button>
         <button class="pattern-cancel-btn path-cancel-btn" title="Cancel">Cancel</button>`;
     } else if (d.mode === 'new') {
       row.className = 'pattern-row editing';
       row.innerHTML = `
-        <path-input dirs-only class="pattern-edit-input path-edit-input" placeholder="e.g., ~/code/juggler" data-old-path=""></path-input>
+        <path-input dirs-only class="path-edit-input" placeholder="e.g., ~/code/juggler" data-old-path=""></path-input>
         <button class="pattern-save-btn path-save-btn" data-old-path="" title="Save">Save</button>
         <button class="pattern-cancel-btn path-cancel-btn" title="Cancel">Cancel</button>`;
     } else {
@@ -673,6 +674,30 @@ class PermissionControls extends HTMLElement {
     const cancelBtn = target.closest('.path-cancel-btn');
     if (cancelBtn) {
       e.stopPropagation();
+      this._endPathEditing();
+    }
+  }
+
+  /**
+   * Delegated keydown handler for the inline path editor. Enter saves, Escape
+   * cancels. When the `<path-input>` completion menu is open it consumes these
+   * keys itself (accept/close) and calls `preventDefault`, so we skip those to
+   * avoid saving mid-completion.
+   * @param {KeyboardEvent} e keydown event
+   * @private
+   */
+  _onPathsListKeydown(e) {
+    if (e.defaultPrevented) return;
+    const pathInput = /** @type {any} */ (/** @type {HTMLElement} */ (e.target).closest('.path-edit-input'));
+    if (!pathInput) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const row = pathInput.closest('.pattern-row');
+      const saveBtn = row && row.querySelector('.path-save-btn');
+      const value = typeof pathInput.value === 'string' ? pathInput.value : '';
+      this._saveAllowedPath(saveBtn ? saveBtn.getAttribute('data-old-path') || '' : '', value);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
       this._endPathEditing();
     }
   }

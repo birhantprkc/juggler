@@ -814,6 +814,14 @@ header-actions {
     flex-shrink: 0;
 }
 
+/* The regular-controls group is transparent to layout on wide viewports — its
+   buttons behave as direct flex children of header-actions. It only becomes a
+   real (non-wrapping, shrink-to-fit) flex row on a narrow header; see the
+   width <= 36rem block below. */
+.header-actions-controls {
+    display: contents;
+}
+
 header-actions .u-btn-icon-header {
     width: 32px;
     height: 32px;
@@ -1552,18 +1560,64 @@ a:hover {
 /* Narrow viewports (phones): header-actions is a fixed-width, non-shrinking
    cluster, so on a narrow screen its rightmost buttons (network, settings) run
    off the right edge. Let the header wrap and drop the WHOLE action cluster
-   onto its own full-width second row, where it stays on a single line at normal
-   size. Row 1 keeps the hamburger, logo, and project path; row 2 is just the
-   buttons. Pill labels collapse to icon-only. */
+   onto its own full-width second row. Row 1 keeps the hamburger, logo, and
+   project path; row 2 is the buttons. Pill labels collapse to icon-only.
+
+   The regular icon buttons are kept on ONE non-wrapping row that spans the full
+   header width: they're spread edge-to-edge (space-between) so no leftover space
+   pools in front of the first button, and each may shrink so the row always fits
+   rather than spilling a button off the right. The undo/redo circles are pinned
+   (never shrink) so they can't distort into ovals. The update pill — a non-icon
+   control that can't collapse to a glyph and whose label must stay readable
+   ("Downloading update… 42%") — is the one exception: it sits outside the icon
+   group and takes a full row of its own above them, present only when relevant. */
 @media (width <= 36rem) {
+    /* Tighten the whole header on a phone: the desktop's generous 12px/20px
+       padding wastes scarce width and height once the actions drop to their own
+       row. */
     .app-header {
         flex-wrap: wrap;
         gap: 0 0.5rem;
+        padding: 0.5rem 0.75rem;
     }
 
+    /* Drop header-actions' own inset so the button row reaches the header's
+       edges — with the reduced .app-header padding above, its only remaining
+       margin from the screen edge. */
     header-actions {
         flex-basis: 100%;
+        min-width: 0;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        padding: 0;
+    }
+
+    /* The icon buttons become a single non-wrapping row that fills the header
+       width; they spread edge-to-edge and shrink to fit so nothing wraps or
+       spills. */
+    header-actions .header-actions-controls {
+        display: flex;
+        flex: 1 1 100%;
         flex-wrap: nowrap;
+        align-items: center;
+        justify-content: space-between;
+        min-width: 0;
+    }
+
+    header-actions .header-actions-controls > button {
+        flex: 0 1 auto;
+        min-width: 0;
+    }
+
+    /* Keep the visible undo/redo circles perfectly round — they must never be
+       squeezed into ovals; the transparent icon buttons absorb the shrink. */
+    header-actions .header-actions-controls > .u-btn-circular-control {
+        flex-shrink: 0;
+    }
+
+    /* The update pill gets its own full-width row, above the icon buttons. */
+    header-actions > update-button:not([hidden]) {
+        flex: 0 0 100%;
         justify-content: flex-end;
     }
 
