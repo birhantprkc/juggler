@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import wsService from '../services/websocket.js';
-import { getUpdaterState } from '../services/updater-control.js';
+import { getUpdaterState, startInstall } from '../services/updater-control.js';
 
 /**
  * <update-button> — the single header affordance for updates. It merges the two
@@ -41,6 +41,8 @@ class UpdateButton extends HTMLElement {
     this._appManagedServer = true;
     /** @type {boolean} @private — was the pill visible on the last render */
     this._wasVisible = false;
+    /** @type {boolean} @private — proactively kicked the updater once already */
+    this._autoKicked = false;
     /** @type {number} @private — pending rAF handle for throttled renders */
     this._raf = 0;
     /** @type {(() => void)[]} @private — teardown callbacks */
@@ -211,9 +213,30 @@ class UpdateButton extends HTMLElement {
     this._raf = requestAnimationFrame(() => { this._raf = 0; this._render(); });
   }
 
+  /**
+   * When the server version notice reports an update and this build has an
+   * in-app updater still sitting idle (it hasn't run its first post-launch check
+   * yet), nudge it to check + download now rather than waiting out its warmup
+   * poll (~30s). One-shot per page. This only changes *when* the flow starts —
+   * the app already auto-downloads a found update — so it's latency, not policy.
+   * No-op in browser / free / non-macOS builds (no updater present) and once the
+   * updater has moved past its initial idle state.
+   * @private
+   * @param {import('./update-notice.js').UpdateViewModel} vm
+   */
+  _maybeAutoKick(vm) {
+    if (this._autoKicked) return;
+    if (!vm.present || !vm.serverUpdateAvailable) return;
+    const st = vm.updaterState || '';
+    if (st !== '' && st !== 'idle') return;
+    this._autoKicked = true;
+    void startInstall();
+  }
+
   /** @private */
   _render() {
     const vm = this._viewModel();
+    this._maybeAutoKick(vm);
     const visible = this._isRelevant(vm);
     this.hidden = !visible;
 

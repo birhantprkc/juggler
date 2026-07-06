@@ -128,6 +128,18 @@ function sanitizeHTML(html) {
 const FLOW_STATES = new Set(['downloading', 'verifying', 'installing', 'ready']);
 
 /**
+ * States that mean a page-triggered install has produced a real reaction — the
+ * flow has started, finished, or errored, or a Check came back up-to-date. While
+ * an optimistic install is pending (see {@link UpdateNotice#_doInstall}) every
+ * other state is masked so the dialog holds its in-flight shape; seeing one of
+ * these hands control back to the live snapshot. 'available' is deliberately
+ * absent — it's the pre-download state a Check leaves behind, and masking it
+ * avoids a flicker back to "Update now" between the Check completing and the
+ * download starting.
+ */
+const REACTION_STATES = new Set(['downloading', 'verifying', 'installing', 'ready', 'error', 'up-to-date']);
+
+/**
  * UpdateNotice — the update dialog. It no longer decides *when* to show: the
  * header <update-button> owns visibility and opens this imperatively via
  * `open(viewModel)`, passing a merged view-model of both update sources (the
@@ -151,6 +163,8 @@ class UpdateNotice extends HTMLElement {
     this._releasePopupOpen = null;
     /** @type {boolean} @private — a restart is being requested */
     this._restarting = false;
+    /** @type {boolean} @private — install requested; show in-flight shape optimistically until a real snapshot reacts */
+    this._pendingInstall = false;
   }
 
   disconnectedCallback() {
@@ -168,8 +182,9 @@ class UpdateNotice extends HTMLElement {
    */
   open(vm) {
     this._vm = vm;
-    this._build(vm);
-    const dismissible = this._dismissible(vm);
+    const ev = this._effectiveVm(vm);
+    this._build(ev);
+    const dismissible = this._dismissible(ev);
     this._teardownDismissal();
     // Dismissible dialogs close via Escape and the browser/mobile Back button
     // (routed through popup-manager); a required notice registers no close
@@ -186,11 +201,34 @@ class UpdateNotice extends HTMLElement {
   refresh(vm) {
     if (!this.isOpen()) return;
     this._vm = vm;
-    if (this._renderKey !== this._computeRenderKey(vm)) {
-      this._build(vm);
+    // A real reaction to our optimistic install has arrived — stop masking and
+    // let the live snapshot drive the dialog again.
+    if (this._pendingInstall && vm.present && REACTION_STATES.has(vm.updaterState || '')) {
+      this._pendingInstall = false;
+    }
+    const ev = this._effectiveVm(vm);
+    if (this._renderKey !== this._computeRenderKey(ev)) {
+      this._build(ev);
       return;
     }
-    this._patchProgress(vm);
+    this._patchProgress(ev);
+  }
+
+  /**
+   * Fold the optimistic "install requested" state onto a view-model. The moment
+   * the user clicks Update now / Retry we want the dialog to show the in-flight
+   * shape (disabled primary, indeterminate progress): the real snapshot can be a
+   * round-trip away — a Check during the launch warmup, then the download start —
+   * and without this the primary button sits unchanged and reads as a dead click.
+   * The optimism is dropped in {@link refresh} as soon as a real reaction state
+   * arrives.
+   * @private
+   * @param {UpdateViewModel} vm
+   * @returns {UpdateViewModel} vm unchanged, or an in-flight-shaped override.
+   */
+  _effectiveVm(vm) {
+    if (!this._pendingInstall || !vm.present) return vm;
+    return { ...vm, updaterState: 'downloading', pct: null };
   }
 
   /** Close the dialog for this page session (button stays in the header). */
@@ -490,6 +528,11 @@ class UpdateNotice extends HTMLElement {
    * @private
    */
   _doInstall() {
+    // Flip to the in-flight shape now; the real snapshot (which may be a Check
+    // round-trip away during the launch warmup) reconciles this in refresh().
+    // Without it the click has no visible effect and reads as dead.
+    this._pendingInstall = true;
+    if (this._vm) this._build(this._effectiveVm(this._vm));
     void startInstall();
   }
 
@@ -533,6 +576,7 @@ class UpdateNotice extends HTMLElement {
   _dismiss() {
     this._vm = null;
     this._renderKey = null;
+    this._pendingInstall = false;
     this.innerHTML = '';
     this._teardownDismissal();
   }
