@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-06
+
 - Auto-update on macOS
 - Interrupting a running bash command now kills its process instead of orphaning it.
 - Settings gained a Logs page to view this session's logs live, with copy/reveal.
