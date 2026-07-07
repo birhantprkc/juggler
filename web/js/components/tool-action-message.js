@@ -251,6 +251,14 @@ class ToolActionMessage extends HTMLElement {
     if (!item) return null;
     const state = item.get('state');
     if (state !== TOOL_STATES.RUNNING && state !== TOOL_STATES.APPROVED) return null;
+    // Convergence guard: a settled `result` means terminal, whatever `state` says.
+    // A late APPROVED→RUNNING claim (claimRunning) can win the Yjs LWW on `state`
+    // against the worker's concurrent `state='cancelled'`, leaving
+    // state=running + result=interrupted. The worker is the sole writer of
+    // results, so a present result is authoritative — without this the spinner
+    // sticks on "Running …" forever. Regression: cancel in the approved→running window.
+    const result = item.get('result');
+    if (result !== null && result !== undefined) return null;
     const toolName = item.get('toolName') || 'tool';
     return { message: `Running ${toolName}...`, spinner: true };
   }
@@ -271,12 +279,19 @@ class ToolActionMessage extends HTMLElement {
 
     // Route to appropriate renderer based on state
     const state = item.get('state');
+    const result = item.get('result');
     if (state === TOOL_STATES.PENDING) {
       this._renderPendingApproval(item);
-    } else if (state === TOOL_STATES.RUNNING || state === TOOL_STATES.APPROVED || state === undefined) {
-      this._renderRunning(item);
     } else if (state === TOOL_STATES.CANCELLED) {
       this._renderCancelled(item);
+    } else if (result !== null && result !== undefined && (state === TOOL_STATES.RUNNING || state === TOOL_STATES.APPROVED || state === undefined)) {
+      // Same race as getBusyState: a running/approved item that already carries a
+      // settled result is terminal. Result wins — cancelled result → cancelled row.
+      (result.get ? result.get('cancelled') : result.cancelled)
+        ? this._renderCancelled(item)
+        : this._renderResult(item);
+    } else if (state === TOOL_STATES.RUNNING || state === TOOL_STATES.APPROVED || state === undefined) {
+      this._renderRunning(item);
     } else {
       this._renderResult(item);
     }
