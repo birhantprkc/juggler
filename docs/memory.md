@@ -7,8 +7,9 @@ the Juggler-native equivalent of the "saved memories" you may know from other
 assistants.
 
 Memory is **per project, private, and editable**. It is not a replacement for
-`CLAUDE.md`: that file is the instructions *you* write for the assistant; memory
-is the notes the *assistant* keeps for itself.
+your agent instructions file (`CLAUDE.md` / `AGENTS.md`): that file is the
+instructions *you* write for the assistant; memory is the notes the *assistant*
+keeps for itself.
 
 ## Where it lives
 
@@ -32,11 +33,10 @@ A single heading over a flat list of dated, one-line facts:
 - [2026-06-13] Window geometry lives in the session, not app-side
 ```
 
-The format is deliberately strict and flat — one fact per bullet, newest or
-oldest order preserved as written. This matches how the most widely-used
-assistant memory systems store facts, and keeps the file easy to skim and to
-hand-edit. If you edit the file loosely (extra blank lines, a missing date), the
-assistant tidies it back to this canonical shape the next time it writes.
+The format is deliberately strict and flat — one fact per bullet, order
+preserved as written — which keeps the file easy to skim and to hand-edit. If
+you edit it loosely (extra blank lines, a missing date), the assistant tidies it
+back to this canonical shape the next time it writes.
 
 ## How it gets written
 

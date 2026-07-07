@@ -103,9 +103,9 @@ Windows binaries cross-compile from any host with `make build-windows`; the Linu
 
 ## Tech stack
 
-Juggler is a simple native app without baggage. The backend is Go, using Wails for windowing. The UI is HTML/JS served by the Go backend. Session documents are stored and synchronised with Yjs. Extensions are JavaScript, executed in a hidden webview or in the client browser.
+Juggler is a simple native app without baggage. The backend is Go, using Wails for windowing. The UI is HTML/JS served by the Go backend. Session documents are stored and synchronised with Yjs. Extensions are JavaScript. It doesn't use electron.
 
-The frontend is type-checked JavaScript rather than TypeScript: types live in JSDoc and are enforced in CI with `tsc --checkJs --strict` (`make lint-types`), so there's full static checking with no build step between source and what ships.
+The frontend is type-checked JavaScript rather than TypeScript: types live in JSDoc and are enforced in CI with strict static linting. There's no build step between source and what ships.
 
 ----------
 

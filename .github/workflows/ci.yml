@@ -34,13 +34,10 @@ jobs:
     # Generous over the 15m browser-suite timeout to leave room for the
     # checkout (large wails submodule) and build.
     timeout-minutes: 30
-    # The macOS leg is advisory (see the matrix entry below): its failure is
-    # reported but doesn't fail the run.
-    continue-on-error: ${{ matrix.advisory == true }}
     strategy:
-      # Don't cancel sibling matrix legs on first failure — Linux, macOS, and
-      # Windows surface different issues (build-tag drift, line endings, cgo
-      # specifics) and seeing all three at once is more useful than seeing one.
+      # Don't cancel sibling matrix legs on first failure — Linux and Windows
+      # surface different issues (build-tag drift, line endings, cgo specifics)
+      # and seeing both at once is more useful than seeing one.
       fail-fast: false
       matrix:
         include:
@@ -50,13 +47,10 @@ jobs:
             os: ubuntu-latest
           - name: windows
             os: windows-latest
-          # ADVISORY: the test suite was only ever run on a self-hosted Mac;
-          # hosted-runner WebView behaviour is unverified. Until this leg has
-          # proven stable on GitHub-hosted macOS, its result is informational
-          # and doesn't gate the run. Flip `advisory` off once trusted.
-          - name: darwin
-            os: macos-latest
-            advisory: true
+          # No macOS leg here on purpose: this public repo uses GitHub-hosted
+          # runners only, and hosted-mac minutes bill at 10x. macOS is covered
+          # on the maintainer's self-hosted Mac in the private release pipeline
+          # before anything ships.
 
     steps:
       - name: Configure Git

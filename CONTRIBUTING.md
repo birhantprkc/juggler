@@ -1,10 +1,13 @@
 # Contributing to Juggler
 
-Thanks for your interest. This document covers the basics; for the broader engineering rules (architecture, concurrency, Yjs invariants, fork-submodule workflow) see [`CLAUDE.md`](CLAUDE.md).
+Thanks for your interest. This document covers the basics. The authoritative
+engineering guide — architecture, concurrency, Yjs invariants, and the
+submodule-fork workflow — is [`AGENTS.md`](AGENTS.md).
 
 ## Setup
 
-Juggler needs Go 1.24+ and a recent Node toolchain (for JS linting). Clone with submodules so the Wails fork is populated:
+Juggler needs Go 1.26+ and a recent Node toolchain (for JS linting). Clone with
+submodules so the vendored Wails fork is populated:
 
 ```bash
 git clone --recurse-submodules https://github.com/juggler-ai/juggler
@@ -12,107 +15,124 @@ cd juggler
 make build
 ```
 
-If you cloned without submodules, run `git submodule update --init --recursive`.
+If you already cloned without submodules, run `git submodule update --init --recursive`.
 
 ## Building and running
 
 ```bash
-make build       # Lint + build Go binaries (bin/juggler, bin/juggler-app, bin/juggler-test)
-make go-build    # Build Go binaries only (skip linting)
-make dev         # Build and run the server
+make build       # Lint + build all Go binaries (bin/juggler, bin/juggler-app, bin/juggler-test)
+make go-build    # Build the Go binaries only (skip linting)
+make dev         # Build, then run the server against on-disk assets
 ```
 
-Juggler is two binaries: `cmd/juggler` is the headless **server** (HTTP/WS + the hidden engine WebView) and `cmd/juggler-app` is the multi-window **desktop app** (`bin/Juggler.app`). The desktop app is a pure viewer that talks to a server over HTTP/WebSocket — see the Architecture ▸ Server/app split section in [`CLAUDE.md`](CLAUDE.md).
+Juggler is two binaries: `cmd/juggler` is the headless **server** (HTTP/WS plus
+the hidden engine WebView), and `cmd/juggler-app` is the multi-window **desktop
+app** (`bin/Juggler.app`). The desktop app is a pure viewer that talks to a
+server over HTTP/WebSocket. See the Architecture section of
+[`AGENTS.md`](AGENTS.md) for the full split.
 
 ## Tests
 
-The inner-loop command runs everything (unit, integration, browser) and skips linting:
+`make test` runs the whole suite (Go unit, integration, and browser tests) and
+skips linting for a fast inner loop. No API keys required.
 
 ```bash
-make test
+make test                      # Full suite, no linting
+make test RUN='TestDiffView'   # One test by name regex, across whichever layer it lives in
+make test-full                 # Lint + full suite — run this before opening a PR
 ```
 
-Before opening a PR, run the full check:
-
-```bash
-make test-full   # Lint + tests
-```
-
-For finer-grained runs:
-
-```bash
-go test -v -count=1 -timeout 15m ./tests/integration
-go test -short ./tests/integration                                # skip browser tests
-go test -v -count=1 -run 'TestBrowser/integration:glob' ./tests/integration
-```
+`make test RUN='<regex>'` is the supported way to run a single test; it flips on
+`-v` and tees output to `bin/test*.log`. Don't invoke `go test`, `node`, or the
+browser harness by hand.
 
 ## Linting
 
 ```bash
 make lint         # Go + JS type-check + JS lint + CSS
-make lint-types   # TypeScript type-check of the JS frontend only
+make lint-types   # TypeScript type-check of the frontend only
 ```
 
-CI runs the same lints. Fix lint errors locally before pushing; do not use `--no-verify` to skip hooks.
+CI runs the same lints. Fix lint errors locally before pushing; don't use
+`--no-verify` to skip hooks.
 
-This repo's CI is a sanity gate only — lint, build, and tests on hosted
-runners, with no secrets. Official signed binaries are built and published to
-the [Releases](https://github.com/juggler-ai/juggler/releases) page by the
-maintainer's separate release pipeline, so a green CI here never produces
-release artifacts.
+CI here is a sanity gate only — lint, build, and tests on hosted runners, with
+no secrets. Official signed binaries are built and published to the
+[Releases](https://github.com/juggler-ai/juggler/releases) page by the
+maintainer's separate release pipeline, so green CI never produces release
+artifacts.
 
 ### The frontend is type-checked JavaScript, not TypeScript
 
-`web/` is plain JavaScript with types expressed as JSDoc annotations — but it is **fully type-checked**. `make lint-types` runs `tsc --project tooling/jsconfig.json --noEmit` with `checkJs` and `strict` on (plus `noUncheckedIndexedAccess` and friends), so the frontend gets the same TypeScript checker, inference, and editor tooling as a `.ts` codebase — with no build step or transpile between source and what ships. This is the same approach Svelte and others took; type errors fail `make lint`, so keep your JSDoc honest. New frontend code is expected to type-check clean.
+`web/` is plain JavaScript with types expressed as JSDoc annotations, but it is
+**fully type-checked**: `make lint-types` runs `tsc` against
+`tooling/jsconfig.json` with `checkJs` and `strict` on. The frontend gets the
+same checker, inference, and editor tooling as a `.ts` codebase with no build or
+transpile step between source and what ships. Type errors fail `make lint`, so
+keep your JSDoc honest — new frontend code is expected to type-check clean.
 
 ## Commit and PR style
 
 - One logical change per commit; rebase noise out before opening the PR.
-- Commit subjects: short imperative ("Fix CI", "Bump Node versions for CI"). Match the style you see in `git log`.
-- New commits, not amended ones, after a failing pre-commit hook. The failed commit didn't happen — `--amend` would modify the previous commit.
-- Tests for behaviour changes. Prefer browser integration tests under `tests/integration/` over Go unit tests for anything that has a UI surface.
+- Commit subjects: short imperative ("Fix CI", "Bump Node versions for CI") —
+  match the style in `git log`.
+- After a failing pre-commit hook, make a new commit rather than amending: the
+  failed commit never happened, so `--amend` would rewrite the previous one.
+- Add tests for behaviour changes. Prefer browser integration tests under
+  `tests/integration/` over Go unit tests for anything with a UI surface.
 
 ## Repository layout
 
-- **`docs/`** is for published, user-facing documentation only — not plans, working notes, or temporary development files.
-- WIP planning docs and scratch notes go in **`scratch/`** (git-ignored, with `local/` and `playground/`). Promote a doc into `docs/` only once it's meant for users.
+- **`docs/`** is published, user-facing documentation only — not plans, working
+  notes, or temporary files.
+- WIP planning docs and scratch notes go in **`scratch/`** (git-ignored).
+  Promote a doc into `docs/` only once it's meant for users.
 
-## Architecture rules
+## Architecture conventions
 
-A short list of project conventions you will be asked to follow in review. Full rationale lives in [`CLAUDE.md`](CLAUDE.md).
+A few conventions you'll be held to in review; full rationale is in
+[`AGENTS.md`](AGENTS.md).
 
-- **Concurrency**: goroutines and channels, not mutexes. There is exactly one sanctioned `sync.Mutex` in the codebase (`ycrdtMu`), and adding another will be flagged.
-- **Yjs invariants**: when two pieces of CRDT state must co-vary, encode the relationship as a reactive observer, not in click handlers.
-- **Frontend services**: classes for per-instance state, module singletons for one-logical-instance registries. Don't rewrite existing services to match a different style.
-- **Plugin architecture**: plugins drive behaviour by mutating the Yjs document; they don't call `workerManager` directly.
-- **Render callbacks** never perform state changes — fire events from the action site instead.
-- **Server stays windowless**: `cmd/juggler` creates only the hidden engine WebView in production. Visible windows belong to `cmd/juggler-app`; the server's one visible-window path is test-only and isolated in `window_testpool.go`.
+- **Concurrency**: goroutines and channels, not mutexes. The one sanctioned
+  `sync.Mutex` is `ycrdtMu` (the y-crdt C binding isn't goroutine-safe); any
+  other mutex will be flagged.
+- **Yjs invariants**: when two pieces of CRDT state must co-vary, encode the
+  relationship as a reactive observer, not in a click handler.
+- **Plugins** drive behaviour by mutating the Yjs document; they don't call
+  `workerManager` directly.
+- **Render callbacks** never perform state changes — fire events from the action
+  site instead.
+- **The server stays windowless**: `cmd/juggler` creates only the hidden engine
+  WebView in production. Visible windows belong to `cmd/juggler-app`.
 
-## Submodule forks (`3rdparty/`)
+## Vendored fork (`3rdparty/wails`)
 
-The Wails fork is vendored as a git submodule with a `replace` directive in `go.mod`. The submodule pointer is the source of truth. `CLAUDE.md` has the rebase / push workflow if you need to update it.
+The Wails fork is a git submodule wired in through a `go.mod` `replace`
+directive; the submodule pointer is the source of truth. See
+[`AGENTS.md`](AGENTS.md) for the rebase/update workflow.
 
 ## Licensing and sign-off
 
 The repo carries two licenses — AGPL-3.0-or-later for the application,
-Apache-2.0 for `web/sdk/**` and `web/extensions/**`. See
-[`LICENSING.md`](LICENSING.md). Your contribution is licensed under the license
+Apache-2.0 for `web/sdk/**` and `web/extensions/**` (see
+[`LICENSING.md`](LICENSING.md)). Your contribution is licensed under the license
 of the directory it lands in.
 
 ### Sign your work
 
 Every commit must carry a `Signed-off-by:` line certifying the
-[Developer Certificate of Origin](DCO) — that you wrote the change (or
-otherwise have the right to submit it) under the applicable license:
+[Developer Certificate of Origin](DCO) — that you wrote the change, or otherwise
+have the right to submit it under the applicable license:
 
 ```bash
 git commit -s
 ```
 
-This adds `Signed-off-by: Your Name <you@example.com>` (matching your git
-`user.name`/`user.email`) to the commit message. PRs with unsigned commits
-fail the DCO check and can't be merged.
+This appends `Signed-off-by: Your Name <you@example.com>` from your git
+`user.name`/`user.email`. PRs with unsigned commits fail the DCO check and can't
+be merged.
 
 ## Reporting bugs
 
-Open an issue using the bug template. For security issues, see [`SECURITY.md`](SECURITY.md) — please don't file them as public issues.
+Open an issue using the bug template. For security issues, see
+[`SECURITY.md`](SECURITY.md) — please don't file them as public issues.
