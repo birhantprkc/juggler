@@ -851,6 +851,39 @@ conversation-bar .info-card__body {
     color: var(--text-secondary, inherit);
 }
 
+/* Git-status per-repo rows: a subtle name badge + the monospaced counts. The
+   whole row is set in the mono face so path labels and counts share the tabular
+   look of the working tree they describe. */
+conversation-bar .info-card__git-line {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+
+/* Quiet chip: a barely-there fill and hairline so the repo name reads as a tag
+   without competing with the counts — deliberately softer than the keycap. */
+conversation-bar .info-card__git-repo {
+    flex-shrink: 0;
+    padding: 0.0625rem 0.3125rem;
+    border-radius: var(--radius-md, 0.25rem);
+    background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-primary) 12%, transparent);
+    color: var(--text-primary, inherit);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+conversation-bar .info-card__git-counts {
+    color: var(--text-secondary, inherit);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
 /* Bin modal — list of binned conversations with row actions. */
 bin-modal {
     display: none;

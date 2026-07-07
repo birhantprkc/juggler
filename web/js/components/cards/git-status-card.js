@@ -66,7 +66,8 @@ function countsPhrase(repo) {
 }
 
 /**
- * Make a body-styled line element.
+ * Make a body-styled line element. Used for the whole-card status messages
+ * ("Checking…", "No changed files"), not the per-repo rows.
  * @param {string} text
  * @returns {HTMLParagraphElement} The populated line element.
  */
@@ -75,6 +76,30 @@ function line(text) {
   p.className = 'info-card__body';
   p.textContent = text;
   return p;
+}
+
+/**
+ * Make a per-repo status row: an optional subtle name badge followed by the
+ * monospaced counts phrase. When `name` is null (the lone-repo-at-root case)
+ * the row is just the counts, still in the mono face for a consistent read.
+ * @param {string|null} name - Repo location label, or null to omit the badge.
+ * @param {string} counts - The counts phrase (e.g. "2 changed, 1 staged").
+ * @returns {HTMLDivElement} The populated row element.
+ */
+function repoLine(name, counts) {
+  const row = document.createElement('div');
+  row.className = 'info-card__git-line';
+  if (name) {
+    const badge = document.createElement('span');
+    badge.className = 'info-card__git-repo';
+    badge.textContent = name;
+    row.appendChild(badge);
+  }
+  const countsEl = document.createElement('span');
+  countsEl.className = 'info-card__git-counts';
+  countsEl.textContent = counts;
+  row.appendChild(countsEl);
+  return row;
 }
 
 /**
@@ -102,7 +127,7 @@ function render(contentEl) {
   const showLabels = !(repos.length === 1 && !repos[0]?.path);
   const nodes = dirty.map((r) => {
     const counts = countsPhrase(r);
-    return line(showLabels ? `${repoLabel(snap.root, r.path)}: ${counts}` : counts);
+    return repoLine(showLabels ? repoLabel(snap.root, r.path) : null, counts);
   });
   contentEl.replaceChildren(...nodes);
 }
