@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Added a Git status info card summarising changed/staged files per repo.
+- Show other connected clients (count in header; origin and connect time in connectivity settings).
 
 ## [0.2.1] - 2026-07-06
 

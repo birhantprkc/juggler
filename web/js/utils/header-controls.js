@@ -10,6 +10,7 @@
  */
 
 import keyShortcutManager from '../services/key-shortcut-manager.js';
+import wsService from '../services/websocket.js';
 
 /**
  * @typedef {import('../model/session.js').default} Session
@@ -27,6 +28,8 @@ export function setupHeaderControls(session) {
   const pathChip = /** @type {HTMLButtonElement|null} */ (document.getElementById('project-path-chip'));
   const pathLabel = /** @type {HTMLElement|null} */ (pathDisplay?.querySelector('.ppd-path') ?? null);
   const newWindowBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('project-new-window-button'));
+  const clientsIndicator = /** @type {HTMLButtonElement|null} */ (document.getElementById('project-clients-indicator'));
+  const clientsCountLabel = /** @type {HTMLElement|null} */ (clientsIndicator?.querySelector('.ppd-clients-count') ?? null);
 
   /** @type {Conversation|null} */
   let currentConversation = null;
@@ -128,6 +131,38 @@ export function setupHeaderControls(session) {
         await window.showAlert(extractUserMessage(err), 'New window');
       }
     });
+  }
+
+  // Connected-clients indicator. Shows how many OTHER clients share this
+  // session (the server's count includes this one, so subtract it), and hides
+  // itself when this is the only client. Clicking opens Connectivity settings.
+  const updateClientsIndicator = (/** @type {number} */ total) => {
+    if (!clientsIndicator) return;
+    const others = Math.max(0, (total || 1) - 1);
+    if (others > 0) {
+      if (clientsCountLabel) clientsCountLabel.textContent = `+${others}`;
+      clientsIndicator.title = others === 1
+        ? '1 other client is connected'
+        : `${others} other clients are connected`;
+      clientsIndicator.hidden = false;
+    } else {
+      clientsIndicator.hidden = true;
+    }
+  };
+  if (clientsIndicator) {
+    clientsIndicator.addEventListener('click', () => {
+      if (typeof (/** @type {any} */ (window).openSettings) === 'function') {
+        /** @type {any} */ (window).openSettings('connectivity');
+      }
+    });
+    // Live updates as viewers join/leave.
+    wsService.on('clients-changed', (/** @type {any} */ data) => updateClientsIndicator(data?.count));
+    // Seed the initial count: the join broadcast may have fired before this
+    // listener was attached, so fetch the authoritative count once at startup.
+    fetch('/api/connectivity')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((c) => { if (c) updateClientsIndicator(c.clientCount); })
+      .catch(() => { /* offline seed failure — a later clients-changed will correct it */ });
   }
 
   // Native menu (File ▸ Open…) bridges to the picker via this event, since the

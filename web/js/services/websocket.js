@@ -9,7 +9,7 @@ const WEBRTC_CHUNK_TYPE = '__juggler_dc_chunk';
 const WEBRTC_CHUNK_SIZE = 16 * 1024;
 
 /**
- * @typedef {'open'|'close'|'error'|'message'|'session'|'file-change'|'project-changed'|'plugin-changed'|'retry'|'streaming-error'|'providers-update'|'providers-ready'|'shell-output'|'reconnect-attempt'|'processing-heartbeat'|'engine-bridge'|'update-status'} WSEventType
+ * @typedef {'open'|'close'|'error'|'message'|'session'|'file-change'|'project-changed'|'plugin-changed'|'retry'|'streaming-error'|'providers-update'|'providers-ready'|'shell-output'|'reconnect-attempt'|'processing-heartbeat'|'engine-bridge'|'update-status'|'clients-changed'} WSEventType
  */
 
 /**
@@ -70,6 +70,8 @@ class WebSocketService {
     this.ws = null;
     /** @type {boolean} */
     this.connected = false;
+    /** @type {string|null} - This client's server-assigned id, from the session message. Used to exclude self from the connected-clients list. */
+    this.clientId = null;
     /** @type {number} @private */
     this.reconnectAttempts = 0;
     /** @type {boolean} @private */
@@ -112,7 +114,8 @@ class WebSocketService {
       'reconnect-attempt': [],
       'processing-heartbeat': [],
       'engine-bridge': [],
-      'update-status': []
+      'update-status': [],
+      'clients-changed': []
     };
   }
 
@@ -405,6 +408,14 @@ class WebSocketService {
         return;
       }
 
+      // Handle connected-client changes (a viewer joined or left). `count` is the
+      // total number of viewer clients (this one included); `clients` describes
+      // each, so listeners can exclude self by id and show origin/connect-time.
+      if (data.type === 'clients-changed') {
+        this._emit('clients-changed', { count: data.count, clients: data.clients || [] });
+        return;
+      }
+
       // Handle shell output streaming
       if (data.type === 'shell-output') {
         this._emit('shell-output', data);
@@ -493,6 +504,9 @@ class WebSocketService {
 
       // Handle session initialization message from server
       if (data.type === 'session') {
+        // Remember our own server-assigned id so the connected-clients UI can
+        // exclude this window from the list of other clients.
+        if (data.clientId) this.clientId = data.clientId;
         this._emit('session', data);
       } else {
         // All other messages go through normal message handler

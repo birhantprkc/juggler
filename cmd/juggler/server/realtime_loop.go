@@ -12,6 +12,16 @@ import (
 	"juggler/internal/jlog"
 )
 
+// ClientInfo is descriptive metadata about a connected client, captured once at
+// connect time, so the OTHER clients sharing the session can be shown who is
+// connected and how. Purely presentational — nothing keys off it.
+type ClientInfo struct {
+	Origin      string // "local" (same machine), "lan", or "remote"
+	Detail      string // LAN IP, or the remote transport label; empty for local
+	UserAgent   string // raw User-Agent, when the transport carried one
+	ConnectedAt int64  // connection time, unix milliseconds
+}
+
 // RealtimeClient is the transport-independent server-side client surface used
 // by the WebSocket protocol. A client may be backed by a real WebSocket
 // or by a WebRTC DataChannel; the JSON message protocol above it is identical.
@@ -20,6 +30,7 @@ type RealtimeClient interface {
 	Close()
 	ClientID() string
 	ClientRole() ClientRole
+	ClientInfo() ClientInfo
 }
 
 // runRealtimeClientLoop runs the WS message protocol on top of any
@@ -49,12 +60,16 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 		}()
 	}
 
-	// Register with server state for broadcasts.
+	// Send session ready signal to client. It carries the client's own
+	// server-assigned id so the UI can exclude itself from the connected-clients
+	// list it receives via clients-changed.
+	client.Send(map[string]string{"type": "session", "clientId": client.ClientID()})
+
+	// Register with server state for broadcasts. Done AFTER the session send so
+	// the client already knows its own id before the first clients-changed
+	// broadcast (which registering triggers) can reach it.
 	s.registerClient(client)
 	defer s.unregisterClient(client)
-
-	// Send session ready signal to client.
-	client.Send(map[string]string{"type": "session"})
 
 	// Seed providers snapshot. `ready` is false until the first refresh has
 	// computed real availability, so clients don't mistake the empty/stale connect

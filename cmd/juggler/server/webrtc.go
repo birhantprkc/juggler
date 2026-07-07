@@ -328,6 +328,7 @@ func (s *Server) handleHTTPOverDC(client *webRTCClient, frame []byte) {
 type webRTCClient struct {
 	id        string
 	role      ClientRole
+	info      ClientInfo
 	dc        *webrtc.DataChannel
 	pc        *webrtc.PeerConnection
 	send      chan wsMessage
@@ -337,8 +338,11 @@ type webRTCClient struct {
 
 func newWebRTCClient(dc *webrtc.DataChannel, pc *webrtc.PeerConnection, stats *wsStats) *webRTCClient {
 	c := &webRTCClient{
-		id:    generateClientID(),
-		role:  ClientRoleViewer,
+		id:   generateClientID(),
+		role: ClientRoleViewer,
+		// A data-channel viewer always reaches us over the WebRTC peer transport;
+		// there is no HTTP request (hence no User-Agent) at channel-open time.
+		info:  ClientInfo{Origin: "remote", Detail: remoteTransportLabel(dataChannelIngressKind), ConnectedAt: time.Now().UnixMilli()},
 		dc:    dc,
 		pc:    pc,
 		send:  make(chan wsMessage, 256),
@@ -350,6 +354,7 @@ func newWebRTCClient(dc *webrtc.DataChannel, pc *webrtc.PeerConnection, stats *w
 
 func (c *webRTCClient) ClientID() string       { return c.id }
 func (c *webRTCClient) ClientRole() ClientRole { return c.role }
+func (c *webRTCClient) ClientInfo() ClientInfo { return c.info }
 
 func (c *webRTCClient) writePump() {
 	for msg := range c.send {

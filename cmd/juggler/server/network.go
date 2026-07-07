@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"juggler/cmd/juggler/core"
 )
@@ -216,6 +217,41 @@ func RemoteIngressKind(r *http.Request) string {
 // remote-access transport (see MarkRemoteIngress).
 func isRemoteIngress(r *http.Request) bool {
 	return RemoteIngressKind(r) != ""
+}
+
+// clientInfoFromRequest derives display metadata for a client from the request
+// that opened its connection: how it reached us (local / LAN / remote transport),
+// a human detail (LAN IP, or the transport label), its User-Agent, and now as the
+// connect time. Presentational only.
+func clientInfoFromRequest(r *http.Request) ClientInfo {
+	info := ClientInfo{UserAgent: r.UserAgent(), ConnectedAt: time.Now().UnixMilli()}
+	if kind := RemoteIngressKind(r); kind != "" {
+		info.Origin = "remote"
+		info.Detail = remoteTransportLabel(kind)
+		return info
+	}
+	if isLoopbackAddr(r.RemoteAddr) {
+		info.Origin = "local"
+		return info
+	}
+	info.Origin = "lan"
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		info.Detail = host
+	}
+	return info
+}
+
+// remoteTransportLabel turns a remote-ingress kind (see MarkRemoteIngress) into a
+// short human label: the WebRTC data channel, or a registered tunnel mode's
+// title, falling back to the raw kind for anything unrecognised.
+func remoteTransportLabel(kind string) string {
+	if kind == dataChannelIngressKind {
+		return "Peer-to-peer"
+	}
+	if spec, ok := findTunnelMode(TunnelMode(kind)); ok {
+		return spec.Title
+	}
+	return kind
 }
 
 // lanAddress is a reachable LAN IPv4 address together with the name of the

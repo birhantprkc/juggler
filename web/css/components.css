@@ -1156,6 +1156,41 @@ conversation-bar .conversation-tabs::-webkit-scrollbar-thumb {
     fill: var(--text-primary);
 }
 
+/* Connected-clients indicator: a count + people icon welded to the right of the
+   new-window button. Hidden unless OTHER clients share the session; unlike the
+   new-window button it shows in every mode, since a remote browser tab is
+   exactly the shared-session case. Tinted with the accent so it reads as an
+   active, informative state without being loud. */
+.app-header .ppd-clients-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    flex-shrink: 0;
+    height: 1.75rem;
+    padding: 0 0.5rem;
+    color: var(--accent-blue, #58a6ff);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+
+.app-header .ppd-clients-indicator[hidden] {
+    display: none;
+}
+
+.app-header .ppd-clients-indicator svg {
+    width: 1.125rem;
+    height: 1.125rem;
+    fill: currentcolor;
+}
+
+.app-header .ppd-clients-indicator:hover:not(:disabled),
+.app-header .ppd-clients-indicator:active:not(:disabled) {
+    color: var(--accent-blue, #58a6ff);
+}
+
 /* No-project overlay: full-area onboarding copy. */
 no-project-overlay {
     flex: 1;
@@ -4608,6 +4643,65 @@ settings-panel .connectivity-wan-heading {
 
 settings-panel .connectivity-wan-error {
     color: var(--accent-red, #f85149);
+}
+
+/* Connected-clients box: a "Connected clients" label on the left, and on the
+   right the list of other clients (dot + origin + muted device/time), or a muted
+   empty line. Top-align so the label sits level with the first list row. */
+settings-panel .connectivity-clients {
+    align-items: start;
+}
+
+settings-panel .connectivity-clients-empty {
+    color: var(--text-tertiary);
+    font-size: 0.8125rem;
+}
+
+settings-panel .connectivity-client-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+settings-panel .connectivity-client {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+settings-panel .connectivity-client-dot {
+    flex-shrink: 0;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    align-self: center;
+    background: var(--text-tertiary);
+}
+
+settings-panel .connectivity-client-dot.origin-local {
+    background: var(--accent-green, #3fb950);
+}
+
+settings-panel .connectivity-client-dot.origin-lan {
+    background: var(--accent-blue, #58a6ff);
+}
+
+settings-panel .connectivity-client-dot.origin-remote {
+    background: var(--accent-orange, #d29922);
+}
+
+settings-panel .connectivity-client-origin {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+settings-panel .connectivity-client-meta {
+    color: var(--text-tertiary);
 }
 
 settings-panel .connectivity-url-list {

@@ -55,6 +55,9 @@ func (s *Server) handleGetConnectivity(w http.ResponseWriter, r *http.Request) {
 			"available":       spec.IsAvailable(),
 		})
 	}
+	// One descriptor per connected viewer (this client included). The UI excludes
+	// itself by id to show how many OTHER clients share the session.
+	clients := s.hub.viewerClients()
 	handlers.WriteJSON(w, r, 0, map[string]any{
 		"lanEnabled":    s.publicMode.Load(),
 		"lanURLs":       lanURLs,
@@ -63,6 +66,8 @@ func (s *Server) handleGetConnectivity(w http.ResponseWriter, r *http.Request) {
 		"tunnelMode":    tunnelMode,
 		"tunnelRelay":   tunnelRelay,
 		"wanModes":      wanModes,
+		"clientCount":   len(clients),
+		"clients":       clients,
 	})
 }
 

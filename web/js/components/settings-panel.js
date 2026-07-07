@@ -14,6 +14,7 @@ import { openExternalURL } from '../../sdk/lib/window-control.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
+import wsService from '../services/websocket.js';
 import { allInfoCards, isCardEnabled, setCardEnabled, INFO_CARDS_CHANGED_EVENT } from '../services/info-cards-manager.js';
 import {
   getAttentionPrefs,
@@ -75,6 +76,73 @@ function formatBytes(bytes) {
  */
 
 /**
+ * One connected viewer client, as reported by GET /api/connectivity `clients`
+ * and the clients-changed event. The `id` lets a client exclude itself.
+ * @typedef {object} ClientDescriptor
+ * @property {string} id - Server-assigned client id
+ * @property {string} origin - "local" (same machine), "lan", or "remote"
+ * @property {string} detail - LAN IP, or remote transport label; "" for local
+ * @property {string} userAgent - Raw User-Agent, when the transport had one
+ * @property {number} connectedAt - Connect time, unix milliseconds
+ */
+
+/**
+ * Human label for a client's origin, e.g. "Same machine", "LAN · 192.168.1.4",
+ * or the remote transport name ("Cloudflare Tunnel relay", "Peer-to-peer").
+ * @param {ClientDescriptor} c
+ * @returns {string} The origin label.
+ */
+function clientOriginLabel(c) {
+  switch (c.origin) {
+    case 'local': return 'Same machine';
+    case 'lan': return c.detail ? `LAN · ${c.detail}` : 'LAN';
+    case 'remote': return c.detail || 'Remote';
+    default: return 'Connected';
+  }
+}
+
+/**
+ * Coarse "Browser · OS" label from a User-Agent, best-effort. Returns '' when
+ * nothing recognisable is present (UA parsing is deliberately shallow).
+ * @param {string} ua
+ * @returns {string} A "Browser · OS" label, or '' when nothing is recognised.
+ */
+function clientDeviceLabel(ua) {
+  if (!ua) return '';
+  let os = '';
+  if (/iPhone/.test(ua)) os = 'iPhone';
+  else if (/iPad/.test(ua)) os = 'iPad';
+  else if (/Android/.test(ua)) os = 'Android';
+  else if (/Macintosh|Mac OS X/.test(ua)) os = 'Mac';
+  else if (/Windows/.test(ua)) os = 'Windows';
+  else if (/Linux/.test(ua)) os = 'Linux';
+  let br = '';
+  if (/Edg\//.test(ua)) br = 'Edge';
+  else if (/OPR\//.test(ua)) br = 'Opera';
+  else if (/Chrome\//.test(ua)) br = 'Chrome';
+  else if (/Firefox\//.test(ua)) br = 'Firefox';
+  else if (/Safari\//.test(ua)) br = 'Safari';
+  return [br, os].filter(Boolean).join(' · ');
+}
+
+/**
+ * Short relative "connected N ago" string from a unix-ms timestamp.
+ * @param {number} ms
+ * @returns {string} A short "N min ago"-style string, or '' for a falsy input.
+ */
+function clientConnectedAgo(ms) {
+  if (!ms) return '';
+  const diff = Date.now() - ms;
+  if (diff < 45000) return 'just now';
+  const mins = Math.round(diff / 60000);
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hr${hrs === 1 ? '' : 's'} ago`;
+  const days = Math.round(hrs / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+/**
  * Fetch a QR-code SVG for `url` from the server and inline it into `host`.
  * Inline (rather than <img>) so `fill="currentColor"` inherits the surrounding
  * text colour. The SVG is transparent (no background rect).
@@ -126,8 +194,10 @@ class SettingsPanel extends HTMLElement {
     this._filePathPath = '';
     /** @type {boolean} @private - True while a log tail fetch is in flight, so overlapping poll ticks don't double-append. */
     this._logTailBusy = false;
-    /** @type {{lanEnabled: boolean, lanURLs: string[], tunnelEnabled: boolean, tunnelURL: string, tunnelMode: string, tunnelRelay: boolean, wanModes: WANMode[]}} @private */
-    this.connectivity = { lanEnabled: false, lanURLs: [], tunnelEnabled: false, tunnelURL: '', tunnelMode: '', tunnelRelay: false, wanModes: [] };
+    /** @type {{lanEnabled: boolean, lanURLs: string[], tunnelEnabled: boolean, tunnelURL: string, tunnelMode: string, tunnelRelay: boolean, wanModes: WANMode[], clientCount: number, clients: ClientDescriptor[]}} @private */
+    this.connectivity = { lanEnabled: false, lanURLs: [], tunnelEnabled: false, tunnelURL: '', tunnelMode: '', tunnelRelay: false, wanModes: [], clientCount: 1, clients: [] };
+    /** @type {((data: any) => void)|null} @private - Live update of the connected-client count while the panel is open. */
+    this._onClientsChanged = null;
     /** @type {string} @private - Inline error from the most recent WAN action, set at the action site and cleared at the start of the next one. */
     this._wanError = '';
     /** @type {{provider: string, model: string, explicit?: boolean}} @private - Model new conversations are seeded with; explicit=false means automatic. */
@@ -145,6 +215,19 @@ class SettingsPanel extends HTMLElement {
   connectedCallback() {
     this.render();
     this.setupListeners();
+
+    // Keep the Connectivity tab's connected-clients box live as viewers join or
+    // leave, independent of the 2 s poll (which only runs while that tab is open).
+    // Only the clients section re-renders — never the whole form — so open LAN/WAN
+    // QR images and controls are left untouched.
+    this._onClientsChanged = (/** @type {{count: number, clients: ClientDescriptor[]}} */ data) => {
+      this.connectivity.clientCount = data.count;
+      this.connectivity.clients = data.clients || [];
+      if (this.currentTab === 'connectivity' && this._hasLoadedOnce) {
+        this._refreshClientsSection();
+      }
+    };
+    wsService.on('clients-changed', this._onClientsChanged);
   }
 
   disconnectedCallback() {
@@ -163,6 +246,10 @@ class SettingsPanel extends HTMLElement {
     if (this._onInfoCardsChanged) {
       window.removeEventListener(INFO_CARDS_CHANGED_EVENT, this._onInfoCardsChanged);
       this._onInfoCardsChanged = null;
+    }
+    if (this._onClientsChanged) {
+      wsService.off('clients-changed', this._onClientsChanged);
+      this._onClientsChanged = null;
     }
     if (this._tabScrollEl && this._onTabScroll) {
       this._tabScrollEl.removeEventListener('scroll', this._onTabScroll);
@@ -1246,9 +1333,14 @@ class SettingsPanel extends HTMLElement {
       const next = await res.json();
       const prev = this.connectivity;
       this.connectivity = next;
-      // Skip the re-render if nothing observable has changed. Without
-      // this the 2 s poll wipes the connectivity form (innerHTML = '')
-      // every tick, killing input focus and re-loading QR images.
+      // The connected-clients section owns no inputs or QR images, so refresh it
+      // every tick — that keeps the relative "connected N ago" times and the
+      // membership current without a full-form rebuild.
+      this._refreshClientsSection();
+      // Skip the full re-render if nothing observable in the LAN/WAN form has
+      // changed. Without this the 2 s poll wipes the connectivity form
+      // (innerHTML = '') every tick, killing input focus and re-loading QR
+      // images. The client list is excluded here — it's handled just above.
       const serialise = (/** @type {any} */ c) => JSON.stringify({
         lanEnabled: c.lanEnabled,
         lanURLs: c.lanURLs || [],
@@ -1639,6 +1731,17 @@ class SettingsPanel extends HTMLElement {
 
     container.innerHTML = '';
 
+    // ── Connected clients ─────────────────────────────────────────────
+    // Lists the OTHER clients sharing this session (this window excluded). The
+    // box IS the section element (a standard provider-field row) so it keeps the
+    // normal inter-box gap; _refreshClientsSection rebuilds only its contents,
+    // so live updates never touch the LAN/WAN form below.
+    const clientsSection = document.createElement('div');
+    clientsSection.id = 'connectivity-clients-section';
+    clientsSection.className = 'settings-group provider-field connectivity-clients';
+    container.appendChild(clientsSection);
+    this._refreshClientsSection();
+
     // ── LAN access row ────────────────────────────────────────────────
     container.appendChild(this._buildLANAccessRow(c));
 
@@ -1648,6 +1751,78 @@ class SettingsPanel extends HTMLElement {
     if ((c.wanModes || []).length > 0) {
       container.appendChild(this._buildWANAccessRow(c));
     }
+  }
+
+  /**
+   * (Re)build the connected-clients box contents in place: a "Connected clients"
+   * label on the left, and on the right a list with one line per OTHER client
+   * (this window is filtered out by id) — its origin, device, and how long it's
+   * been connected — or a muted "none" line. Safe to call before the box exists
+   * (no-op) and cheap to call on every poll tick (no inputs or QR images).
+   * @private
+   */
+  _refreshClientsSection() {
+    const section = this.querySelector('#connectivity-clients-section');
+    if (!section) return;
+
+    const all = this.connectivity.clients || [];
+    // Exclude our own window by id. Before the session id is known (a brief
+    // window at startup) nothing matches, so drop one entry so we never count
+    // ourselves as an "other" client.
+    const selfId = wsService.clientId;
+    let others = selfId ? all.filter((c) => c.id !== selfId) : all.slice(1);
+    // Oldest first, so the list order stays stable as clients join.
+    others = others.slice().sort((a, b) => (a.connectedAt || 0) - (b.connectedAt || 0));
+
+    section.innerHTML = '';
+
+    const info = document.createElement('div');
+    info.className = 'provider-info';
+    const name = document.createElement('div');
+    name.className = 'provider-name';
+    name.textContent = 'Connected clients';
+    info.appendChild(name);
+
+    const ctrl = document.createElement('div');
+    ctrl.className = 'provider-control';
+
+    if (others.length === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'connectivity-clients-empty';
+      empty.textContent = 'No other clients connected';
+      ctrl.appendChild(empty);
+    } else {
+      const list = document.createElement('ul');
+      list.className = 'connectivity-client-list';
+      for (const c of others) {
+        const li = document.createElement('li');
+        li.className = 'connectivity-client';
+
+        const dot = document.createElement('span');
+        dot.className = `connectivity-client-dot origin-${c.origin || 'unknown'}`;
+        li.appendChild(dot);
+
+        const originEl = document.createElement('span');
+        originEl.className = 'connectivity-client-origin';
+        originEl.textContent = clientOriginLabel(c);
+        li.appendChild(originEl);
+
+        // Device + connected-since, muted. Either may be absent.
+        const parts = [clientDeviceLabel(c.userAgent), clientConnectedAgo(c.connectedAt)].filter(Boolean);
+        if (parts.length) {
+          const meta = document.createElement('span');
+          meta.className = 'connectivity-client-meta';
+          meta.textContent = parts.join(' — ');
+          li.appendChild(meta);
+        }
+
+        list.appendChild(li);
+      }
+      ctrl.appendChild(list);
+    }
+
+    section.appendChild(info);
+    section.appendChild(ctrl);
   }
 
   /**

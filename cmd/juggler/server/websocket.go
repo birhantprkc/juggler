@@ -42,6 +42,7 @@ const (
 type WSClient struct {
 	ID        string     // Unique identifier for this client connection
 	Role      ClientRole // Role: engine or viewer
+	info      ClientInfo // Display metadata captured at connect (see clientInfoFromRequest)
 	conn      *websocket.Conn
 	send      chan wsMessage // Channel for outgoing messages; closed to signal shutdown
 	closeOnce sync.Once      // Ensures send channel is closed only once
@@ -57,12 +58,14 @@ func generateClientID() string {
 	return fmt.Sprintf("client_%s", hex.EncodeToString(b))
 }
 
-// NewWSClient creates a new WSClient and starts its writer goroutine. stats may
-// be nil (accounting disabled).
-func NewWSClient(conn *websocket.Conn, role ClientRole, stats *wsStats) *WSClient {
+// NewWSClient creates a new WSClient and starts its writer goroutine. info is
+// display metadata for the connected-clients UI; stats may be nil (accounting
+// disabled).
+func NewWSClient(conn *websocket.Conn, role ClientRole, info ClientInfo, stats *wsStats) *WSClient {
 	client := &WSClient{
 		ID:    generateClientID(),
 		Role:  role,
+		info:  info,
 		conn:  conn,
 		send:  make(chan wsMessage, 256), // Buffered to prevent blocking senders
 		stats: stats,
@@ -154,6 +157,7 @@ func (c *WSClient) Close() {
 
 func (c *WSClient) ClientID() string       { return c.ID }
 func (c *WSClient) ClientRole() ClientRole { return c.Role }
+func (c *WSClient) ClientInfo() ClientInfo { return c.info }
 
 // Sender is the interface for broadcasting messages to a WebSocket client.
 // WSClient satisfies this interface.

@@ -74,7 +74,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create WSClient with dedicated writer goroutine
-	client := NewWSClient(conn, role, s.stats)
+	client := NewWSClient(conn, role, clientInfoFromRequest(r), s.stats)
 	defer client.Close()
 
 	msgCh := make(chan []byte, 100)

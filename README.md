@@ -4,13 +4,15 @@ Yes, it's another AI coding agent. The industry definitely needed one more.
 
 If Juggler has an angle, it's that it's for people who want to be more hands-on over what the LLM is doing to their codebase. It gives you a visual workbench: inspectable tool calls, branching threads, editable context.
 
+The website is: [juggler.studio](https://juggler.studio)
+
 Here's the TL;DR:
 
 - **It is a real GUI.** Not a terminal UI wearing sunglasses. Juggler is built for visual navigation, inspection, and control.
-- **The session is a tree, not a doom-scroll.** It's a document, not a chat log. Create sub-threads, drill down, backtrack, compare, and edit.
+- **The session is a tree, not a doom-scroll.** It's a Yjs document, not a transcript. Create sub-threads, drill down, backtrack, compare, and edit.
 - **Everything important is visible.** Tool calls, approvals, thread structure, item properties, raw context — laid out in Finder-style Miller columns instead of buried in chat sludge.
 - **Everything is a plugin.** Context items, slash commands, LLM loop strategies, and their UIs are JavaScript extensions you can inspect, fork, or replace.
-- **It runs locally, remotely, or both.** Use the native desktop app, a browser tab, or multiple clients attached to the same live server session.
+- **It runs locally, remotely, or both.** See the same UI in the native desktop app, a browser, and multiple clients can attach to the same session.
 - **It talks to the usual model zoo.** Claude Code (via CLI or API), OpenAI (codex plan or API), Gemini, Ollama, OpenRouter, Z.AI, Deepseek, etc.
 
 ----------
@@ -32,7 +34,7 @@ The desktop app, browser tabs (on local or remote machines) can all be clients v
 - **Windows** — download `Juggler-<version>-setup.exe` and run it. It installs the desktop app and the matching `juggler.exe` command-line server together in one directory (and can add `juggler` to your PATH), so the two never drift apart.
 - **Linux** — download the `juggler` server binary and run it from a terminal, then connect with a browser or the desktop app.
 
-The desktop app and the server always ship and install as one unit — see [`docs/distribution.md`](docs/distribution.md) for how the channels (DMG, installer, and the planned Homebrew cask / winget) keep them in lock-step.
+The desktop app and the server always ship and install as one unit — see [`docs/distribution.md`](docs/distribution.md).
 
 #### Running the server directly
 
