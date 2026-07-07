@@ -307,31 +307,36 @@ type codexAuthFile struct {
 	} `json:"tokens"`
 }
 
+func codexSignInHint(path string) string {
+	return fmt.Sprintf("sign in with the Codex app or run `codex login` (checked %s)", path)
+}
+
 func loadCodexCLIAccessToken() (string, string, error) {
 	path, err := codexAuthPath()
 	if err != nil {
 		return "", "", err
 	}
+	hint := codexSignInHint(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", "", fmt.Errorf("codex CLI auth not found. Run `codex login` first")
+			return "", "", fmt.Errorf("codex auth not found; %s", hint)
 		}
-		return "", "", fmt.Errorf("failed to read Codex CLI auth. Run `codex login` first")
+		return "", "", fmt.Errorf("failed to read Codex auth. %s", hint)
 	}
 
 	var auth codexAuthFile
 	if err := json.Unmarshal(data, &auth); err != nil {
-		return "", "", fmt.Errorf("failed to parse Codex CLI auth. Run `codex login` first")
+		return "", "", fmt.Errorf("failed to parse Codex auth. %s", hint)
 	}
 	if auth.AuthMode != "chatgpt" {
-		return "", "", fmt.Errorf("codex CLI is not signed in with ChatGPT. Run `codex login` first")
+		return "", "", fmt.Errorf("codex is not signed in with ChatGPT; %s", hint)
 	}
 	if auth.Tokens.AccessToken == "" {
-		return "", "", fmt.Errorf("codex CLI access token is missing. Run `codex login` first")
+		return "", "", fmt.Errorf("codex access token is missing; %s", hint)
 	}
 	if jwtExpired(auth.Tokens.AccessToken, time.Now()) {
-		return "", "", fmt.Errorf("codex CLI access token is expired. Run `codex login` first")
+		return "", "", fmt.Errorf("codex access token is expired; %s", hint)
 	}
 	return auth.Tokens.AccessToken, auth.Tokens.AccountID, nil
 }
@@ -459,7 +464,7 @@ func (s *CredentialsStore) GetProviderCredential(providerName string) (ProviderC
 		case "codex_cli":
 			token, accountID, err := loadCodexCLIAccessToken()
 			if err != nil {
-				return ProviderCredential{AuthHint: "Run `codex login` first"}, err
+				return ProviderCredential{AuthHint: err.Error()}, err
 			}
 			headers := map[string]string(nil)
 			if accountID != "" {
@@ -469,7 +474,7 @@ func (s *CredentialsStore) GetProviderCredential(providerName string) (ProviderC
 				BearerToken: token,
 				Headers:     headers,
 				KeySource:   KeySourceCodexCLI,
-				AuthHint:    "Signed in via Codex CLI",
+				AuthHint:    "Signed in via Codex app/CLI",
 			}, nil
 		default:
 			return ProviderCredential{}, fmt.Errorf("unsupported OAuth bearer source for provider %s: %s", providerName, providerInfo.AuthSource)

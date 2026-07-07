@@ -92,8 +92,12 @@ func TestLoadCodexCLIAccessTokenRejectsInvalidAuth(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error")
 			}
-			if !strings.Contains(err.Error(), "codex login") {
-				t.Fatalf("error should mention codex login, got %q", err.Error())
+			msg := err.Error()
+			if !strings.Contains(msg, "Codex") || !strings.Contains(msg, "Codex app") || !strings.Contains(msg, "codex login") {
+				t.Fatalf("error should mention Codex sign-in options, got %q", msg)
+			}
+			if !strings.Contains(msg, filepath.Join(dir, "auth.json")) {
+				t.Fatalf("error should mention checked auth path, got %q", msg)
 			}
 		})
 	}

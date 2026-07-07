@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Improved Codex sign-in diagnostics with checked auth-file paths.
+
 ## [0.2.2] - 2026-07-07
 
 - Added MCP server support: stdio tools surface as context items with live status and approval.

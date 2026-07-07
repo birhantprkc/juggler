@@ -26,12 +26,12 @@ const (
 )
 
 // Register adds the OpenAI Codex-plan provider to the global registry. It
-// uses the local Codex CLI's ChatGPT OAuth token, not a Platform API key.
+// uses the local Codex app/CLI's ChatGPT OAuth token, not a Platform API key.
 func Register() {
 	openaibase.Register(openaibase.Descriptor{
 		Name:               "openaicodex",
 		DisplayName:        "OpenAI Codex (ChatGPT plan)",
-		Description:        "Uses your local Codex CLI ChatGPT login, so Plus/Pro/Business/Edu/Enterprise Codex plans can be selected without an OpenAI Platform API key.",
+		Description:        "Uses your local Codex app/CLI ChatGPT login, so Plus/Pro/Business/Edu/Enterprise Codex plans can be selected without an OpenAI Platform API key.",
 		AuthType:           provider.AuthTypeOAuthBearer,
 		AuthSource:         "codex_cli",
 		BaseURL:            baseURL,
