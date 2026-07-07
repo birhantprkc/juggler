@@ -6,7 +6,8 @@ import contextItemRegistry from '../registries/context-item-registry.js';
 import Conversation from './conversation.js';
 import {
   SAVE_DEBOUNCE_MS,
-  MAX_MESSAGE_HISTORY
+  MAX_MESSAGE_HISTORY,
+  DUPLICATE_WHILE_ACTIVE_NOTICE
 } from '../utils/constants.js';
 import { readFileLoad } from '../services/ops-api.js';
 import workerManager from '../services/worker-manager.js';
@@ -1406,6 +1407,20 @@ class Session {
   async duplicateConversation(conversationId) {
     const source = this.getConversation(conversationId);
     if (!source) {
+      return null;
+    }
+
+    // Refuse mid-turn. The server copies the source via FlushConversation,
+    // which can't complete while a turn owns the worker run loop (its inner
+    // selects don't drain flushReq), so a mid-turn duplicate hangs the HTTP
+    // handler until the turn ends and then ships a clone with a `running`
+    // item no worker will ever resolve. Cancelling implicitly would surprise
+    // the user (and discard their in-flight work), so refuse outright and
+    // let them settle or cancel explicitly. Covers every entry point:
+    // Cmd-D, the tab context menu's "Duplicate", branch-from-message, and
+    // `/duplicate` (which checks first to avoid a second notice).
+    if (source.isTurnActive()) {
+      source.showWarning(DUPLICATE_WHILE_ACTIVE_NOTICE, 5000);
       return null;
     }
 

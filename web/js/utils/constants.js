@@ -32,3 +32,14 @@ export const YJS_SYNC_BATCH_MS = 50;
  * cancellation from being silent.
  */
 export const TURN_CANCELLED_NOTICE = 'Cancelled the active turn';
+
+/**
+ * Notice shown when duplication (Cmd-D, the tab context menu's "Duplicate",
+ * branch-from-message, or `/duplicate`) is refused because the source
+ * conversation has a turn in flight. A clone taken mid-turn would block on the
+ * worker's flush until the turn ends (often visibly hanging), and the copy
+ * would capture a `running` item no worker will ever resolve — so duplicating
+ * is refused outright rather than silently cancelling the turn.
+ */
+export const DUPLICATE_WHILE_ACTIVE_NOTICE =
+  "Can't duplicate while a turn is running — wait for it to finish, or cancel it first.";

@@ -90,12 +90,12 @@ class NoProjectOverlay extends HTMLElement {
           above to open the codebase you want to work on.
         </p>
         <p class="no-project-settings-note">
-          If you need to add provider keys, enter them in
+          Set up your LLM provider keys in the
           <button type="button" class="no-project-inline-link no-project-settings-link">settings</button>.
         </p>
         <p class="no-project-settings-note">
           New here? Browse the
-          <button type="button" class="no-project-inline-link no-project-shortcuts-link">tips &amp; keyboard shortcuts</button>.
+          <button type="button" class="no-project-inline-link no-project-shortcuts-link">keyboard shortcuts</button>.
         </p>
       </section>
     `;

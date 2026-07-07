@@ -1762,6 +1762,22 @@ class Conversation {
   }
 
   /**
+   * Whether a turn is currently in flight on this conversation.
+   *
+   * Synchronous snapshot of the same two truth sources `cancelAndSettle`
+   * settles on, so callers that only want to REFUSE a mid-turn action (rather
+   * than cancel it) can check without awaiting. See `cancelAndSettle` for the
+   * rationale on each source.
+   * @returns {boolean} true if the worker is mid-turn OR a frontend-driven
+   *   tool action is still running.
+   */
+  isTurnActive() {
+    const status = this.processingState?.status;
+    const workerBusy = !!status && status !== 'idle';
+    return workerBusy || this._actionExecutor.hasRunningActions();
+  }
+
+  /**
    * Cancel any in-flight processing AND wait for it to settle.
    *
    * This is the architectural chokepoint that any code wanting to mutate the
@@ -1788,12 +1804,7 @@ class Conversation {
    * @returns {Promise<void>}
    */
   async cancelAndSettle() {
-    const workerBusy = () => {
-      const status = this.processingState?.status;
-      return !!status && status !== 'idle';
-    };
-    const settled = () =>
-      !workerBusy() && !this._actionExecutor.hasRunningActions();
+    const settled = () => !this.isTurnActive();
 
     if (settled()) return;
 

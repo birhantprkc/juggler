@@ -11,10 +11,11 @@ import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
  * tab placed directly after the source, then switch to the clone. The source
  * is left intact.
  *
- * `mutatesConversation` is set so the handler settles the source
- * (`cancelAndSettle`) before the clone is taken: duplicating mid-turn would
- * otherwise copy a `state: 'running'` item into a tab whose worker will never
- * flip it to completed/cancelled. Settling first guarantees a clean clone.
+ * Duplication is refused while a turn is active (see
+ * `Session.duplicateConversation`): a mid-turn clone can't be flushed without
+ * hanging on the worker, and silently cancelling the turn to allow it would
+ * discard the user's in-flight work. The session surfaces the refusal as a
+ * warning, so this command only adds its own message for genuine failures.
  *
  * Tab management is a Session concern, so the command reaches the session
  * through `messageThread.conversation.session`. `/compact-new` used to be
@@ -27,8 +28,7 @@ class DuplicateConversationCommandType extends CommandType {
     name: 'Duplicate Conversation',
     version: '1.0.0',
     description: 'Clone this conversation into a new tab',
-    icon: 'icon-box',
-    mutatesConversation: true
+    icon: 'icon-box'
   };
 
   /**
@@ -46,7 +46,10 @@ class DuplicateConversationCommandType extends CommandType {
     try {
       const newId = await session.duplicateConversation(sourceConversation.id);
       if (!newId) {
-        return { handled: true, message: 'Failed to duplicate conversation', error: true };
+        // A null clone is the session's mid-turn refusal: it already surfaced
+        // DUPLICATE_WHILE_ACTIVE_NOTICE, so don't layer a second message on.
+        // Treat as handled (not an error) so the slash handler stays quiet.
+        return { handled: true };
       }
       session.switchConversation(newId);
       return { handled: true };

@@ -1216,12 +1216,6 @@ class SettingsPanel extends HTMLElement {
     // column (`flex-direction: column; gap: 0.375rem`).
     const row = document.createElement('div');
 
-    const label = document.createElement('label');
-    label.className = 'provider-name';
-    label.setAttribute('for', 'ollama-host-input');
-    label.textContent = 'Daemon host';
-    row.appendChild(label);
-
     // Reuse the same wrapper as API-key rows so the input picks up the
     // shared border / focus-ring styling without provider-specific CSS.
     const inputWrapper = document.createElement('div');
