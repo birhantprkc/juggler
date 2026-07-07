@@ -8,10 +8,17 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
-	"sort"
 	"strings"
+
+	"juggler/internal/skipdirs"
 )
+
+// PathSearcher is the subset of the file index that completion needs. It is an
+// interface so this package does not import core (which would be an import
+// cycle — core imports ops for FileMatch); core's *PathIndex satisfies it.
+type PathSearcher interface {
+	Search(query string, limit int) []FileMatch
+}
 
 // CompletePath returns filesystem entries whose names match the typed prefix.
 // Unlike CompleteFiles, it is NOT restricted to the project directory and
@@ -123,17 +130,18 @@ type FileMatch struct {
 	IsDir bool   `json:"isDir"`
 }
 
-// excludedDirs are directories skipped during completion traversal.
-var excludedDirs = []string{
-	"node_modules", "vendor", "dist", "build", ".git",
-}
-
 // CompleteFiles returns file and directory paths whose names start with the
 // name component of query, within the directory component of query.
 // Directories are returned first (with trailing "/"), then files, both
 // case-insensitively sorted. Results are capped at limit.
+//
+// For an unqualified query of at least four characters, the whole-tree lookup
+// is delegated to searcher (the file-path index), which finds files anywhere in
+// the project whose basename contains the query as a contiguous substring,
+// instantly and without re-walking the tree. When searcher is nil (no project /
+// no watcher) only the current-directory prefix scan applies.
 // The call returns early (with nil, nil) if ctx is cancelled.
-func CompleteFiles(ctx context.Context, workingDir, query string, limit int) ([]FileMatch, error) {
+func CompleteFiles(ctx context.Context, workingDir, query string, limit int, searcher PathSearcher) ([]FileMatch, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -186,7 +194,7 @@ func CompleteFiles(ctx context.Context, workingDir, query string, limit int) ([]
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		if entry.IsDir() && slices.Contains(excludedDirs, name) {
+		if entry.IsDir() && skipdirs.Skip(name) {
 			continue
 		}
 
@@ -226,111 +234,17 @@ func CompleteFiles(ctx context.Context, workingDir, query string, limit int) ([]
 		results = results[:limit]
 	}
 
-	// Recursive fuzzy search: unqualified query (no slash), at least 4 chars.
-	// Finds files/dirs anywhere in the tree whose basename CONTAINS the prefix
-	// (not just starts with it), appended after the prefix-scan results (which
-	// take priority). This is what makes "@foobar" surface nested files like
-	// src/deep/foobar.go, not just root entries starting with "foobar". Shorter
-	// queries are skipped — tree-wide they match too much to be useful.
-	if !filepath.IsAbs(dirPart) && !strings.Contains(query, "/") && len(namePrefix) >= 4 {
-		existing := make(map[string]bool, len(results))
-		for _, m := range results {
-			existing[m.Path] = true
-		}
-		fuzzy := fuzzySearchFiles(ctx, workingDir, namePrefix, limit, 5000)
-		for _, m := range fuzzy {
-			if len(results) >= limit {
-				break
-			}
-			if !existing[m.Path] {
-				results = append(results, m)
-			}
+	// Unqualified query (no slash), at least 4 chars: hand the whole-tree
+	// lookup to the path index. It finds files/dirs anywhere in the project
+	// whose basename contains (or subsequence-matches) the query, ranked by
+	// relevance — instantly, with no per-keystroke tree walk. Shorter or
+	// qualified queries stay on the prefix scan above. If there is no index
+	// (no project / no watcher) the prefix-scan results are all we have.
+	if searcher != nil && !filepath.IsAbs(dirPart) && !strings.Contains(query, "/") && len(namePrefix) >= 4 {
+		if indexed := searcher.Search(namePrefix, limit); indexed != nil {
+			return indexed, nil
 		}
 	}
 
 	return results, nil
-}
-
-// fuzzySearchFiles does a depth-limited recursive walk from workingDir looking
-// for files and directories whose basename contains namePrefix
-// (case-insensitive). Results are ordered: shallower paths first, directories
-// before files at the same depth, then alphabetically.
-// budget caps the total number of directory entries scanned to stay fast.
-// The walk stops immediately if ctx is cancelled.
-func fuzzySearchFiles(ctx context.Context, workingDir, namePrefix string, limit, budget int) []FileMatch {
-	lower := strings.ToLower(namePrefix)
-
-	type scoredMatch struct {
-		FileMatch
-		depth int
-	}
-
-	var matches []scoredMatch
-	scanned := 0
-
-	var walk func(dir, relDir string, depth int)
-	walk = func(dir, relDir string, depth int) {
-		if scanned >= budget || len(matches) >= limit*4 || depth > 8 {
-			return
-		}
-		// Stop if the HTTP request was cancelled (client moved on to a newer query).
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		scanned += len(entries)
-
-		for _, entry := range entries {
-			name := entry.Name()
-			if strings.HasPrefix(name, ".") {
-				continue
-			}
-			if entry.IsDir() && slices.Contains(excludedDirs, name) {
-				continue
-			}
-
-			var relPath string
-			if relDir == "." {
-				relPath = name
-			} else {
-				relPath = relDir + "/" + name
-			}
-
-			if strings.Contains(strings.ToLower(name), lower) {
-				path := relPath
-				if entry.IsDir() {
-					path += "/"
-				}
-				matches = append(matches, scoredMatch{FileMatch{Path: path, IsDir: entry.IsDir()}, depth})
-			}
-
-			if entry.IsDir() {
-				walk(dir+"/"+name, relPath, depth+1)
-			}
-		}
-	}
-
-	walk(workingDir, ".", 0)
-
-	sort.Slice(matches, func(i, j int) bool {
-		ri, rj := matches[i], matches[j]
-		if ri.depth != rj.depth {
-			return ri.depth < rj.depth
-		}
-		if ri.IsDir != rj.IsDir {
-			return ri.IsDir
-		}
-		return ri.Path < rj.Path
-	})
-
-	out := make([]FileMatch, len(matches))
-	for i, m := range matches {
-		out[i] = m.FileMatch
-	}
-	return out
 }

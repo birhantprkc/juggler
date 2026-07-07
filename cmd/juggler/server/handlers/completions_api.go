@@ -18,13 +18,17 @@ import (
 // The working directory is read through a provider func so runtime project
 // switches transparently retarget the search root.
 type CompletionsAPI struct {
-	pathProvider func() string
+	pathProvider  func() string
+	indexProvider func() ops.PathSearcher
 }
 
 // NewCompletionsAPI creates a new CompletionsAPI handler. pathProvider must
-// return the current project path on each call.
-func NewCompletionsAPI(pathProvider func() string) *CompletionsAPI {
-	return &CompletionsAPI{pathProvider: pathProvider}
+// return the current project path on each call. indexProvider returns the
+// current file-path index (or nil in no-project mode) for whole-tree "@"
+// completion; it may itself be nil, in which case completion is prefix-scan
+// only.
+func NewCompletionsAPI(pathProvider func() string, indexProvider func() ops.PathSearcher) *CompletionsAPI {
+	return &CompletionsAPI{pathProvider: pathProvider, indexProvider: indexProvider}
 }
 
 // fileCompletionsResponse is the JSON response shape.
@@ -126,7 +130,11 @@ func (a *CompletionsAPI) HandleFileCompletions(w http.ResponseWriter, r *http.Re
 		writeJSON(w, r, 0, fileCompletionsResponse{Results: []ops.FileMatch{}})
 		return
 	}
-	results, err := ops.CompleteFiles(r.Context(), workingDir, query, limit)
+	var searcher ops.PathSearcher
+	if a.indexProvider != nil {
+		searcher = a.indexProvider()
+	}
+	results, err := ops.CompleteFiles(r.Context(), workingDir, query, limit, searcher)
 	if err != nil {
 		// Return empty results on error — completions are best-effort
 		results = []ops.FileMatch{}

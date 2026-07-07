@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/ops"
 	"juggler/cmd/juggler/server/handlers"
 	"juggler/cmd/juggler/syswake"
 	"juggler/cmd/juggler/worker"
@@ -278,7 +279,12 @@ func New(cfg Config) (*Server, error) {
 	s.bootProjectPath = cfg.ProjectPath
 	s.extraRoutes = cfg.ExtraRoutes
 	s.opsAPI = handlers.NewOpsAPI(s.ProjectPath)
-	s.completionsAPI = handlers.NewCompletionsAPI(s.ProjectPath)
+	s.completionsAPI = handlers.NewCompletionsAPI(s.ProjectPath, func() ops.PathSearcher {
+		if fw := s.FileWatcher(); fw != nil {
+			return fw.Index()
+		}
+		return nil
+	})
 	s.gitStatusAPI = handlers.NewGitStatusAPI(s.ProjectPath)
 	s.extensionsAPI = extensionsAPI
 	s.configAPI = configAPI

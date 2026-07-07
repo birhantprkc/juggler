@@ -4,15 +4,15 @@ Yes, it's another AI coding agent. The industry definitely needed one more.
 
 If Juggler has an angle, it's that it's for people who want to be more hands-on over what the LLM is doing to their codebase. It gives you a visual workbench: inspectable tool calls, branching threads, editable context.
 
-The website is: [juggler.studio](https://juggler.studio)
+More blurb on the website: [https://juggler.studio](https://juggler.studio)
 
-Here's the TL;DR:
+And here's the TL;DR:
 
-- **It is a real GUI.** Not a terminal UI wearing sunglasses. Juggler is built for visual navigation, inspection, and control.
+- **It is a proper GUI.** This is not a console app. It's all about graphical visual navigation, inspection, and control.
 - **The session is a tree, not a doom-scroll.** It's a Yjs document, not a transcript. Create sub-threads, drill down, backtrack, compare, and edit.
-- **Everything important is visible.** Tool calls, approvals, thread structure, item properties, raw context — laid out in Finder-style Miller columns instead of buried in chat sludge.
-- **Everything is a plugin.** Context items, slash commands, LLM loop strategies, and their UIs are JavaScript extensions you can inspect, fork, or replace.
-- **It runs locally, remotely, or both.** See the same UI in the native desktop app, a browser, and multiple clients can attach to the same session.
+- **Everything important is visible.** Tool calls, approvals, thread structure, item properties, raw context — laid out in Finder-style Miller columns instead of buried in collapsible chat.
+- **It's plugins all the way down.** Context items, slash commands, LLM loop strategies, and their UIs are JavaScript extensions you can inspect, fork, or replace.
+- **It runs locally, remotely, or both at once.** Use the same session with the same UI in the native desktop app, and/or browsers. Multiple clients can attach to the same session.
 - **It talks to the usual model zoo.** Claude Code (via CLI or API), OpenAI (codex plan or API), Gemini, Ollama, OpenRouter, Z.AI, Deepseek, etc.
 
 ----------
