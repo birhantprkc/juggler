@@ -5,26 +5,27 @@
 /**
  * TipsManager — the source of truth for onboarding tips: short hints that raise
  * awareness of features a new user is unlikely to stumble on. Presentation lives
- * in {@link module:components/tip-rail}; this module just owns the tip list and
- * the persisted state.
+ * in {@link module:components/cards/tips-card}; this module just owns the tip list
+ * and the persisted "seen" state.
  *
  * Shortcut tips are *derived* from the {@link module:services/key-shortcut-manager
  * KeyShortcutManager} by id, so their title and key glyph can't drift from the
  * real (rebindable) binding. Feature tips are hand-authored for gestures with no
- * key. "Seen" state and the global on/off live in localStorage, mirroring the
- * other per-window UI prefs; there's no server round-trip.
+ * key. "Seen" state lives in localStorage, mirroring the other per-window UI
+ * prefs; there's no server round-trip. Whether the Tips card is shown at all is
+ * a separate concern owned by {@link module:services/info-cards-manager}.
  * @module services/tips-manager
  */
 
 import keyShortcutManager from './key-shortcut-manager.js';
 
-/** localStorage key holding `{ seen: string[], optedOut: boolean }`. */
+/** localStorage key holding `{ seen: string[] }`. */
 const STORAGE_KEY = 'juggler-tips';
 
 /**
- * Fired on `window` whenever the tips state changes — the global toggle flips, or
- * a tip is retired. The sidebar rail and the Settings toggle listen so they
- * re-sync immediately instead of waiting for an unrelated render.
+ * Fired on `window` whenever a tip is retired (learn-by-doing, or the seen set
+ * otherwise changes). The sidebar rail listens so it re-syncs immediately instead
+ * of waiting for an unrelated render.
  */
 export const TIPS_CHANGED_EVENT = 'juggler:tips-changed';
 
@@ -93,7 +94,7 @@ const FEATURE_TIPS = [
 
 /**
  * Read the persisted state, tolerant of a missing/corrupt blob.
- * @returns {{seen: string[], optedOut: boolean}} The merged state.
+ * @returns {{seen: string[]}} The merged state.
  * @private
  */
 function readState() {
@@ -101,16 +102,15 @@ function readState() {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {};
     return {
       seen: Array.isArray(raw.seen) ? raw.seen.filter((/** @type {any} */ x) => typeof x === 'string') : [],
-      optedOut: !!raw.optedOut,
     };
   } catch {
-    return { seen: [], optedOut: false };
+    return { seen: [] };
   }
 }
 
 /**
  * Persist state, best-effort (a failed write just re-shows the tip next session).
- * @param {{seen: string[], optedOut: boolean}} state
+ * @param {{seen: string[]}} state
  * @private
  */
 function writeState(state) {
@@ -136,29 +136,12 @@ export function allTips() {
   return [...shortcuts, ...FEATURE_TIPS];
 }
 
-/** @returns {boolean} Whether the user has turned tips off entirely. */
-export function isOptedOut() {
-  return readState().optedOut;
-}
-
 /**
  * @param {string} id
  * @returns {boolean} Whether this tip has been seen.
  */
 export function isSeen(id) {
   return readState().seen.includes(id);
-}
-
-/**
- * Master on/off for the tips feature. Turning tips ON also clears the "seen"
- * record, so re-enabling replays every tip from the top. Turning OFF just
- * suppresses them.
- * @param {boolean} on
- * @returns {void}
- */
-export function setTipsEnabled(on) {
-  writeState({ seen: on ? [] : readState().seen, optedOut: !on });
-  notifyChanged();
 }
 
 /**
@@ -174,4 +157,15 @@ export function markSeen(id) {
     writeState(state);
     notifyChanged();
   }
+}
+
+/**
+ * Clear the "seen" record so every tip plays again from the top. Called when the
+ * user re-enables the Tips card — otherwise, once all tips are seen, turning the
+ * card back on would show nothing and there'd be no way to replay them.
+ * @returns {void}
+ */
+export function resetSeen() {
+  writeState({ seen: [] });
+  notifyChanged();
 }

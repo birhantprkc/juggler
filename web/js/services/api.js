@@ -43,6 +43,13 @@ import { getTheme } from '../utils/theme-manager.js';
  */
 
 /**
+ * @typedef {object} GitRepoStatus
+ * @property {string} path - Repo location relative to the project root ("" for the root repo).
+ * @property {number} changed - Count of files with working-tree changes (incl. untracked).
+ * @property {number} staged - Count of files with staged (index) changes.
+ */
+
+/**
  * REST API service for Juggler backend
  * @class
  */
@@ -420,6 +427,16 @@ class APIService {
       method: 'PUT',
       body: JSON.stringify({ id })
     });
+  }
+
+  /**
+   * Summarise the working tree of every git repo under the project (root repo
+   * plus nested subrepos/submodules). Best-effort: repos whose status can't be
+   * read are omitted, and an empty repo list means no git repository was found.
+   * @returns {Promise<{root: string, repos: GitRepoStatus[]}>} Project root and per-repo status.
+   */
+  async getGitStatus() {
+    return await this.request('/git/status');
   }
 
   /**

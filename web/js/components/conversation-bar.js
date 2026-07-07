@@ -30,7 +30,7 @@ import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import './bin-modal.js';
-import './tip-rail.js';
+import './info-rail.js';
 
 // Material "delete" (trash can) icon — the per-tab "move to bin" affordance.
 const BIN_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="1rem" viewBox="0 -960 960 960" width="1rem" fill="currentColor" aria-hidden="true"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
@@ -507,16 +507,15 @@ class ConversationBar extends HTMLElement {
       nav.appendChild(tabsMenu);
     }
 
-    // Ambient onboarding tips, parked in the empty space above the Bin. Created
-    // once and cached; it manages its own visibility/rotation and measures the
-    // sidebar's free space to decide whether to show (reconciled at the end of
-    // render()). Sits between the flex:1 tabs menu and the Bin, resting above it.
-    let tipRail = /** @type {any} */ (this._cachedElements.get('tip-rail'));
-    if (!tipRail) {
-      tipRail = document.createElement('tip-rail');
-      tipRail.hidden = true;
-      this._cachedElements.set('tip-rail', tipRail);
-      nav.appendChild(tipRail);
+    // Ambient info cards (Tips, Git status, …), parked in the empty space above
+    // the Bin. Created once and cached; it manages its own visibility and measures
+    // the sidebar's free space to decide how many cards fit (reconciled at the end
+    // of render()). Sits between the flex:1 tabs menu and the Bin, resting above it.
+    let infoRail = /** @type {any} */ (this._cachedElements.get('info-rail'));
+    if (!infoRail) {
+      infoRail = document.createElement('info-rail');
+      this._cachedElements.set('info-rail', infoRail);
+      nav.appendChild(infoRail);
     }
 
     // Bottom-of-bar "Bin" button — opens the bin modal.
@@ -594,16 +593,16 @@ class ConversationBar extends HTMLElement {
 
     // Remove tabs for deleted conversations
     for (const [id, element] of this._cachedElements) {
-      if (id !== 'nav' && id !== 'tabs-menu' && id !== 'add-button' && id !== 'bin-button' && id !== 'tip-rail' && !currentConversationIds.has(id)) {
+      if (id !== 'nav' && id !== 'tabs-menu' && id !== 'add-button' && id !== 'bin-button' && id !== 'info-rail' && !currentConversationIds.has(id)) {
         element.remove();
         this._cachedElements.delete(id);
       }
     }
 
-    // Reconcile the ambient tip rail LAST, once the tabs are laid out, so it can
-    // measure the real free space in the sidebar and show/hide accordingly.
-    if (tipRail && typeof tipRail.update === 'function') {
-      tipRail.update();
+    // Reconcile the ambient info rail LAST, once the tabs are laid out, so it can
+    // measure the real free space in the sidebar and show/hide cards accordingly.
+    if (infoRail && typeof infoRail.update === 'function') {
+      infoRail.update();
     }
   }
 

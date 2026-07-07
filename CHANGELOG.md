@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added a Git status info card summarising changed/staged files per repo.
+
 ## [0.2.1] - 2026-07-06
 
 - Misc UI improvements, and some auto-update UX fixes

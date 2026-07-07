@@ -106,6 +106,7 @@ type Server struct {
 	bootProjectPath   string
 	opsAPI            *handlers.OpsAPI
 	completionsAPI    *handlers.CompletionsAPI
+	gitStatusAPI      *handlers.GitStatusAPI
 	extensionsAPI     *handlers.ExtensionsAPI
 	configAPI         *handlers.ConfigAPI
 	defaultModelStore *core.DefaultModelStore
@@ -278,6 +279,7 @@ func New(cfg Config) (*Server, error) {
 	s.extraRoutes = cfg.ExtraRoutes
 	s.opsAPI = handlers.NewOpsAPI(s.ProjectPath)
 	s.completionsAPI = handlers.NewCompletionsAPI(s.ProjectPath)
+	s.gitStatusAPI = handlers.NewGitStatusAPI(s.ProjectPath)
 	s.extensionsAPI = extensionsAPI
 	s.configAPI = configAPI
 	s.defaultModelStore = defaultModelStore

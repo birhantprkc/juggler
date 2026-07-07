@@ -14,7 +14,7 @@ import { openExternalURL } from '../../sdk/lib/window-control.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
-import { allTips, isOptedOut, setTipsEnabled, TIPS_CHANGED_EVENT } from '../services/tips-manager.js';
+import { allInfoCards, isCardEnabled, setCardEnabled, INFO_CARDS_CHANGED_EVENT } from '../services/info-cards-manager.js';
 import {
   getAttentionPrefs,
   setSoundEnabled,
@@ -160,9 +160,9 @@ class SettingsPanel extends HTMLElement {
       window.removeEventListener(ATTENTION_PREFS_EVENT, this._onAttentionPrefs);
       this._onAttentionPrefs = null;
     }
-    if (this._onTipsChanged) {
-      window.removeEventListener(TIPS_CHANGED_EVENT, this._onTipsChanged);
-      this._onTipsChanged = null;
+    if (this._onInfoCardsChanged) {
+      window.removeEventListener(INFO_CARDS_CHANGED_EVENT, this._onInfoCardsChanged);
+      this._onInfoCardsChanged = null;
     }
     if (this._tabScrollEl && this._onTabScroll) {
       this._tabScrollEl.removeEventListener('scroll', this._onTabScroll);
@@ -190,6 +190,7 @@ class SettingsPanel extends HTMLElement {
                         <button class="settings-tab" data-tab="connectivity">Connectivity</button>
                         <button class="settings-tab" data-tab="context-items">Extensions</button>
                         <button class="settings-tab" data-tab="notifications">Notifications</button>
+                        <button class="settings-tab" data-tab="info-cards">Info cards</button>
                         <button class="settings-tab" data-tab="shortcuts">Keyboard shortcuts</button>
                         <button class="settings-tab" data-tab="logs">Logs</button>
                     </div>
@@ -243,6 +244,15 @@ class SettingsPanel extends HTMLElement {
                         <div class="settings-form" id="notifications-form"></div>
                     </section>
 
+                    <section class="settings-tab-content" id="tab-info-cards">
+                        <p class="settings-description">
+                            Info cards fill the empty space above the Bin in the sidebar
+                            when there's room. Choose which ones to show &mdash; the tabs
+                            always take priority.
+                        </p>
+                        <div class="settings-form" id="info-cards-form"></div>
+                    </section>
+
                     <section class="settings-tab-content" id="tab-shortcuts">
                         <p class="settings-description">
                             Keyboard shortcuts for common actions. Modifier keys are shown
@@ -275,6 +285,8 @@ class SettingsPanel extends HTMLElement {
     this.renderNotificationsForm();
     // Shortcuts are read straight from the KeyShortcutManager — no server fetch.
     this.renderShortcutsForm();
+    // Info-card toggles are per-window prefs (localStorage) — no server fetch.
+    this.renderInfoCardsForm();
   }
 
   /**
@@ -1338,61 +1350,42 @@ class SettingsPanel extends HTMLElement {
         container.appendChild(this._buildShortcutRow(def));
       }
     }
-
-    // Tips section: the global on/off for the ambient sidebar tips, plus the
-    // non-keyboard feature tips (the keyboard ones are already listed above). This
-    // is the discoverable off switch and the on-demand reference for the tips that
-    // otherwise only appear briefly in the sidebar.
-    const tipsHeading = document.createElement('h3');
-    tipsHeading.className = 'settings-section-heading';
-    tipsHeading.textContent = 'Tips';
-    container.appendChild(tipsHeading);
-
-    const { row: tipsToggleRow, input: tipsToggle } = this._buildAttentionToggleRow(
-      'Show onboarding tips',
-      'Show occasional tips in the sidebar. Turning this back on replays them all.',
-      !isOptedOut(),
-      (on) => setTipsEnabled(on),
-    );
-    container.appendChild(tipsToggleRow);
-    // Keep the toggle in sync when tips are hidden/re-enabled elsewhere (the × in
-    // the sidebar rail fires TIPS_CHANGED_EVENT). Rebind to the current input;
-    // removed in disconnectedCallback.
-    if (this._onTipsChanged) window.removeEventListener(TIPS_CHANGED_EVENT, this._onTipsChanged);
-    this._onTipsChanged = () => { tipsToggle.checked = !isOptedOut(); };
-    window.addEventListener(TIPS_CHANGED_EVENT, this._onTipsChanged);
-
-    for (const tip of allTips().filter((t) => t.kind === 'feature')) {
-      container.appendChild(this._buildTipInfoRow(tip.title, tip.body));
-    }
   }
 
   /**
-   * Build a read-only info row (title + description, no control) for a feature
-   * tip, matching the shortcut-row layout so the Tips list sits flush with the
-   * keyboard rows above it.
-   * @param {string} title
-   * @param {string} body
-   * @returns {HTMLElement} The row element.
+   * Render the Info cards tab: one enable/disable toggle per ambient sidebar card
+   * (Tips, Git status, …), read from the InfoCardsManager. No server fetch — these
+   * are per-window localStorage prefs. This is where the Tips toggle now lives
+   * (moved out of Keyboard shortcuts).
    * @private
    */
-  _buildTipInfoRow(title, body) {
-    const row = document.createElement('div');
-    row.className = 'settings-group provider-field shortcut-row';
+  renderInfoCardsForm() {
+    const container = this.querySelector('#info-cards-form');
+    if (!container) return;
+    container.innerHTML = '';
 
-    const info = document.createElement('div');
-    info.className = 'provider-info';
-    const nameEl = document.createElement('div');
-    nameEl.className = 'provider-name';
-    nameEl.textContent = title;
-    const desc = document.createElement('div');
-    desc.className = 'provider-description';
-    desc.textContent = body;
-    info.appendChild(nameEl);
-    info.appendChild(desc);
+    for (const card of allInfoCards()) {
+      const { row, input } = this._buildAttentionToggleRow(
+        card.label,
+        card.description,
+        card.enabled,
+        (on) => setCardEnabled(card.id, on),
+      );
+      input.dataset.cardId = card.id;
+      container.appendChild(row);
+    }
 
-    row.appendChild(info);
-    return row;
+    // Keep the toggles in sync when a card is hidden/re-enabled elsewhere (the ×
+    // on a sidebar card fires INFO_CARDS_CHANGED_EVENT). Rebind to the current
+    // inputs; removed in disconnectedCallback.
+    if (this._onInfoCardsChanged) window.removeEventListener(INFO_CARDS_CHANGED_EVENT, this._onInfoCardsChanged);
+    this._onInfoCardsChanged = () => {
+      container.querySelectorAll('input[data-card-id]').forEach((el) => {
+        const input = /** @type {HTMLInputElement} */ (el);
+        if (input.dataset.cardId) input.checked = isCardEnabled(input.dataset.cardId);
+      });
+    };
+    window.addEventListener(INFO_CARDS_CHANGED_EVENT, this._onInfoCardsChanged);
   }
 
   /**

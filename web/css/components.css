@@ -291,7 +291,10 @@ conversation-bar .conversation-tabs {
     margin-left: 0.4rem;
     list-style: none;
     overflow: auto;
-    flex: 1;
+
+    /* Content-sized, but shrinks and scrolls before the info rail gets any room —
+       the conversation list always wins the column (see the info-rail flex below). */
+    flex: 0 1 auto;
     min-height: 0;
 
     /* Thin, unobtrusive scrollbar — matches .conversation-message-list */
@@ -724,37 +727,57 @@ conversation-bar .conversation-bin-button:hover {
 }
 
 /* ----------------------------------------------------------------------------
-   Ambient tip rail (web/js/components/tip-rail.js) — sits in the empty sidebar
-   space above the Bin for new users, hides once conversations fill the column.
-   Deliberately low-key: no card chrome (no background, border or shadow) — just
-   muted text sitting directly on the sidebar panel. .app-main sets a monospace
-   font-family that the sidebar inherits, so the host forces the whole tip (title,
-   body, keycap) back to the UI sans font.
+   Ambient info rail (web/js/components/info-rail.js) — a stack of info cards
+   (Tips, Git status, …) filling the empty sidebar space above the Bin, shown only
+   while the tabs leave room for them. The rail is the flex child that grows into
+   whatever the conversation list doesn't use (flex: 1 1 0), so its own height IS
+   the available space — no measuring of siblings. When the list is tall it shrinks
+   to nothing first (basis 0) and the tabs scroll instead; cards bottom-align so
+   they rest just above the Bin. overflow:hidden is a safety net — the component
+   only ever appends cards that fully fit. Deliberately low-key: no card chrome (no
+   background, border or shadow) — just muted text sitting directly on the sidebar
+   panel. .app-main sets a monospace font-family that the sidebar inherits, so the
+   host forces the card text (title, body, keycap) back to the UI sans font.
    ---------------------------------------------------------------------------- */
-conversation-bar tip-rail {
-    display: block;
-    flex-shrink: 0;
-    margin: 0.5rem 0.4rem 0.85rem;
+conversation-bar info-rail {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+    margin: 0 0.4rem;
+    padding: 0.5rem 0 0.85rem;
     font-family: var(--font-ui);
 }
 
-conversation-bar tip-rail[hidden] {
+conversation-bar info-rail[hidden] {
     display: none;
 }
 
-conversation-bar .tip-rail__card {
+conversation-bar .info-card {
+    display: flex;
+    flex-direction: column;
+    padding: 0.5rem 0.4rem;
+}
+
+conversation-bar .info-card__content {
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-    padding: 0.5rem 0.4rem;
-    cursor: pointer;
+}
 
-    /* Advancing tips is a rapid click; keep repeated clicks from selecting text. */
+/* Cards whose content advances on click (Tips): pointer cursor, and keep the
+   repeated clicks from selecting text. */
+conversation-bar .info-card__content--interactive {
+    cursor: pointer;
     -webkit-user-select: none;
     user-select: none;
 }
 
-conversation-bar .tip-rail__header {
+conversation-bar .info-card__header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -762,7 +785,7 @@ conversation-bar .tip-rail__header {
     margin-bottom: 0.3125rem;
 }
 
-conversation-bar .tip-rail__eyebrow {
+conversation-bar .info-card__eyebrow {
     font-size: 0.625rem;
     font-weight: 600;
     letter-spacing: 0.06em;
@@ -770,7 +793,7 @@ conversation-bar .tip-rail__eyebrow {
     color: var(--accent-green, var(--text-secondary));
 }
 
-conversation-bar .tip-rail__close {
+conversation-bar .info-card__close {
     flex-shrink: 0;
     width: 1.125rem;
     height: 1.125rem;
@@ -789,13 +812,13 @@ conversation-bar .tip-rail__close {
     transition: opacity 150ms ease, background 150ms ease, color 150ms ease;
 }
 
-conversation-bar .tip-rail__close:hover {
+conversation-bar .info-card__close:hover {
     opacity: 1;
     background: var(--bg-tertiary);
     color: var(--text-primary, inherit);
 }
 
-conversation-bar .tip-rail__title {
+conversation-bar .info-card__title {
     font-size: 0.8125rem;
     font-weight: 600;
     line-height: 1.5;
@@ -805,7 +828,7 @@ conversation-bar .tip-rail__title {
 /* Inline keycap: inverted (panel colours swapped) so it reads as a key against
    the flat sidebar, and an inline-block <span> so following title text wraps
    around it rather than dropping to its own line. */
-conversation-bar .tip-rail__key {
+conversation-bar .info-card__key {
     display: inline-block;
     margin-right: 0.5rem;
     padding: 0.0625rem 0.375rem;
@@ -821,7 +844,7 @@ conversation-bar .tip-rail__key {
     vertical-align: baseline;
 }
 
-conversation-bar .tip-rail__body {
+conversation-bar .info-card__body {
     margin: 0;
     font-size: 0.75rem;
     line-height: 1.45;
