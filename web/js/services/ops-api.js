@@ -1097,6 +1097,138 @@ export async function osRevealPath(params) {
 }
 
 // ============================================================================
+// MCP (Model Context Protocol) Operations
+// ============================================================================
+
+/**
+ * A tool discovered on an MCP server, flattened for the engine.
+ * @typedef {object} McpToolInfo
+ * @property {string} server - Owning server name
+ * @property {string} name - Raw MCP tool name
+ * @property {string} title - Display title (falls back to name)
+ * @property {string} description - Server-provided description
+ * @property {object} inputSchema - JSON Schema for the tool's arguments
+ * @property {boolean} readOnly - annotations.readOnlyHint
+ * @property {boolean} destructive - annotations.destructiveHint (when !readOnly)
+ * @property {number} schemaTokens - ~chars/4 estimate of the input schema
+ */
+
+/**
+ * Status of one configured MCP server.
+ * @typedef {object} McpServerStatus
+ * @property {string} name - Configured server name
+ * @property {'stopped'|'starting'|'running'|'failed'} status - Live lifecycle status
+ * @property {string} [error] - Last error, when failed or restarting
+ * @property {string} transport - Transport kind (stdio)
+ * @property {boolean} enabled - Whether the server is enabled in config
+ * @property {number} toolCount - Number of discovered tools
+ * @property {number} schemaTokens - Estimated schema token cost across tools
+ * @property {string} [serverName] - Server-reported implementation name
+ * @property {string} [serverVersion] - Server-reported implementation version
+ */
+
+/**
+ * One content block returned by an MCP tool call.
+ * @typedef {object} McpContentBlock
+ * @property {'text'|'image'|'audio'|'resource'|'resource_link'|'unknown'} type - Block kind
+ * @property {string} [text] - Text content (type=text)
+ * @property {string} [data] - base64 payload for image/audio
+ * @property {string} [mimeType] - MIME type for image/audio/resource
+ * @property {string} [uri] - Resource URI for resource/resource_link
+ * @property {string} [name] - Resource name for resource_link
+ * @property {string} [title] - Resource title for resource_link
+ * @property {string} [description] - Resource description for resource_link
+ */
+
+/**
+ * List configured MCP servers and their live status.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{servers: McpServerStatus[]}>} Configured servers and their status
+ */
+export async function mcpListServers(signal) {
+  return callOp('mcp', 'listServers', {}, signal);
+}
+
+/**
+ * List discovered tools, optionally scoped to one server.
+ * @param {{server?: string}} [params]
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{tools: McpToolInfo[]}>} Discovered tools
+ */
+export async function mcpListTools(params, signal) {
+  return callOp('mcp', 'listTools', params || {}, signal);
+}
+
+/**
+ * Fetch the full discovered-tool snapshot across all running servers. Reads the
+ * manager's current cache (never blocks on a live handshake) and, as a side
+ * effect, reconciles the manager to the active project so enabled servers start.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{tools: McpToolInfo[]}>} The current discovered-tool snapshot
+ */
+export async function mcpSnapshot(signal) {
+  return callOp('mcp', 'snapshot', {}, signal);
+}
+
+/**
+ * Invoke an MCP tool. Honors the abort signal (cancels the tools/call).
+ * @param {{server: string, tool: string, args?: object}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{content: McpContentBlock[], isError: boolean}>} Tool result content blocks
+ */
+export async function mcpCallTool(params, signal) {
+  if (!params.server || !params.tool) {
+    throw new TypeError('server and tool are required');
+  }
+  return callOp('mcp', 'callTool', params, signal);
+}
+
+/**
+ * Control a server's lifecycle.
+ * @param {{server: string, action: 'start'|'stop'|'restart'|'reload'}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{servers: McpServerStatus[]}>} Updated server list
+ */
+export async function mcpServerControl(params, signal) {
+  if (!params.server || !params.action) {
+    throw new TypeError('server and action are required');
+  }
+  return callOp('mcp', 'serverControl', params, signal);
+}
+
+/**
+ * Recent stderr for a server (diagnostics).
+ * @param {{server: string}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{log: string}>} Recent stderr
+ */
+export async function mcpGetLog(params, signal) {
+  if (!params.server) {
+    throw new TypeError('server is required');
+  }
+  return callOp('mcp', 'getLog', params, signal);
+}
+
+/**
+ * Read the merged MCP config plus the raw per-file server maps.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{merged: object, global: object, project: object, hasProject: boolean}>} Merged and per-file config
+ */
+export async function mcpGetConfig(signal) {
+  return callOp('mcp', 'getConfig', {}, signal);
+}
+
+/**
+ * Write servers to the global or project mcp.json and reconcile live.
+ * @param {{scope?: 'global'|'project', servers: object}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{servers: McpServerStatus[]}>} Updated server list
+ */
+export async function mcpSetConfig(params, signal) {
+  return callOp('mcp', 'setConfig', params, signal);
+}
+
+// ============================================================================
 // Exports Summary
 // ============================================================================
 

@@ -707,7 +707,8 @@ class ResponseHandler {
       id: actionId,
       session: this._conversation.session,
       conversation: this._conversation,
-      messageThread
+      messageThread,
+      toolName: resolvedName  // Lets a multi-tool class route validate/approval to the invoked tool
     });
 
     const prepared = await action.prepare(toolInput);
@@ -932,6 +933,7 @@ class ResponseHandler {
           conversation: this._conversation,
           messageThread,
           toolUseId: toolCall.id,
+          toolName: resolveToolName(toolCall.name),  // route multi-tool classes to the invoked tool
           _approvalHandled: true
         }
       );

@@ -63,6 +63,7 @@ import { runTests as runAskUserQuestionDetailsTests } from '../unit-tests/ask-us
 import { runTests as runItemAccessorTests } from '../unit-tests/item-accessor-test.js';
 import { runTests as runMessageTypeGuardTests } from '../unit-tests/message-type-guard-test.js';
 import { runTests as runMonitorToolsTests } from '../unit-tests/monitor-tools-test.js';
+import { runTests as runMcpToolTests } from '../unit-tests/mcp-tool-test.js';
 import { runTests as runMemoryFormatTests } from '../unit-tests/memory-format-test.js';
 import { runTests as runMemoryItemTests } from '../unit-tests/memory-item-test.js';
 import { runTests as runMemorySeedTests } from '../unit-tests/memory-seed-test.js';
@@ -223,6 +224,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:item-accessor', run: runItemAccessorTests },
   { name: 'unit:message-type-guard', run: runMessageTypeGuardTests },
   { name: 'unit:monitor-tools', run: runMonitorToolsTests },
+  { name: 'unit:mcp-tool', run: runMcpToolTests },
   { name: 'unit:memory-format', run: runMemoryFormatTests },
   { name: 'unit:memory-item', run: runMemoryItemTests },
   { name: 'unit:memory-seed', run: runMemorySeedTests },

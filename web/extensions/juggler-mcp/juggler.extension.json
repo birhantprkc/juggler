@@ -1,0 +1,14 @@
+{
+  "id": "@juggler/mcp",
+  "name": "Juggler MCP",
+  "version": "1.0.0",
+  "author": "Juggler Team",
+  "homepage": "https://juggler.studio",
+  "license": "Apache-2.0",
+  "engineApi": "^1.0.0",
+  "permissions": [],
+  "provides": {
+    "contextItems": ["context-items/*-context-item.js"],
+    "commands": ["commands/*-command-type.js"]
+  }
+}

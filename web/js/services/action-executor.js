@@ -92,6 +92,7 @@ function warnOnEmptySuccessSummary(rawSummary, className) {
  * @property {import('../model/conversation.js').default} conversation - Current conversation
  * @property {import('../model/message-thread.js').MessageThread} messageThread - Message thread for scoped operations
  * @property {string} [toolUseId] - Tool use ID for progress event correlation
+ * @property {string} [toolName] - Resolved tool name being executed; forwarded to the item so multi-tool classes can route (see ItemContext.toolName)
  * @property {AbortSignal} [signal] - Abort signal for cancellation
  * @property {(event: ActionProgressEvent) => void} [onProgress] - Progress callback
  * @property {boolean} [_approvalHandled] - INTERNAL: Set only by ResponseHandler/Conversation after approval was shown to user
@@ -245,6 +246,7 @@ class ActionExecutor {
       conversation: context.conversation,
       messageThread: context.messageThread,
       toolUseId: context.toolUseId,  // For filtering self from items during validation
+      toolName: context.toolName,    // Lets a multi-tool class route to the invoked tool
       signal: controller.signal,
       onProgress: (/** @type {ActionProgressEvent} */ event) => this._emitProgress(executionId, event)
     }));

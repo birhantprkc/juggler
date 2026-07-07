@@ -162,6 +162,7 @@ import { coerceToolInputToSchema } from './coerce-schema-types.js';
  * @property {import('../js/model/message-thread.js').MessageThread} messageThread - Message thread for scoped operations
  * @property {string} [type] - Item type identifier
  * @property {string} [toolUseId] - Tool use ID (for filtering self from items during validation)
+ * @property {string} [toolName] - The (resolved) name of the tool being invoked. Set by the framework at every tool-execution construction site so a single class that exposes many tools (e.g. the MCP bridge, whose per-tool args are server-defined and indistinguishable by shape) can route validate/execute/approval to the right tool. Undefined for non-tool instantiations.
  * @property {AbortSignal} [signal] - Abort signal for cooperative cancellation of execute()
  * @property {(event: any) => void} [onProgress] - Progress callback for streaming output
  */
@@ -445,6 +446,15 @@ class ContextItem {
      * @type {string|undefined}
      */
     this.toolUseId = context.toolUseId;
+
+    /**
+     * The (resolved) name of the tool this instance was created to handle.
+     * Set by the framework at tool-execution construction sites so a class that
+     * exposes multiple tools can route to the right one (the MCP bridge relies
+     * on this). Undefined for non-tool instantiations.
+     * @type {string|undefined}
+     */
+    this.toolName = context.toolName;
 
     /**
      * Abort signal for cooperative cancellation. The framework aborts this

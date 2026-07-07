@@ -54,5 +54,14 @@ export {
   // OS integration
   osOpenPath as openPath,
   osRevealPath as revealPath,
+  // MCP (Model Context Protocol) client
+  mcpListServers,
+  mcpListTools,
+  mcpSnapshot,
+  mcpCallTool,
+  mcpServerControl,
+  mcpGetLog,
+  mcpGetConfig,
+  mcpSetConfig,
 } from '../js/services/ops-api.js';
 export { FileSystem, ReadOnlyFileSystem } from '../js/services/fs.js';

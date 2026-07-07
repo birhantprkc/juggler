@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/mcp"
 	"juggler/internal/jlog"
 
 	"github.com/fsnotify/fsnotify"
@@ -46,6 +47,12 @@ func (s *Server) StartWatchers() {
 		}
 	}
 	s.startPluginWatcher()
+	// When the MCP tool snapshot changes (a server became ready, crashed, or
+	// sent tools/list_changed), reuse the extension hot-reload broadcast so
+	// connected engines reload registries and pick up the new tool set.
+	mcp.SetChangeHook(func() {
+		s.broadcastToAll(map[string]any{"type": "plugin-changed", "path": "config/mcp"})
+	})
 	s.RefreshProviders()
 	s.startUpdateChecker()
 }

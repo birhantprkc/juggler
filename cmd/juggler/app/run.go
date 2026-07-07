@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/mcp"
 	"juggler/cmd/juggler/ops"
 	"juggler/cmd/juggler/providers/anthropic"
 	"juggler/cmd/juggler/providers/claudecode"
@@ -78,6 +79,7 @@ func Run(cfg Config) int {
 	}
 
 	ops.RegisterAll()
+	mcp.Register()
 	registerProviders()
 
 	// Self-terminate if our parent dies, so a server spawned by juggler-app (or
