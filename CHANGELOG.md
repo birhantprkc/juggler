@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-07
+
 - Added MCP server support: stdio tools surface as context items with live status and approval.
 - Added a Git status info card summarising changed/staged files per repo.
 - Show other connected clients (count in header; origin and connect time in connectivity settings).
