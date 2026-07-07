@@ -4744,6 +4744,235 @@ settings-panel .connectivity-url-list {
     margin-top: 0.75rem;
 }
 
+/* MCP servers tab: server list, status dots, stderr log viewer, and the
+   add/edit form (repeatable arg/env rows with masked env values). */
+settings-panel .mcp-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.875rem;
+}
+
+settings-panel .mcp-import-soon {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+}
+
+settings-panel .mcp-empty {
+    line-height: 1.5;
+}
+
+settings-panel .mcp-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+}
+
+settings-panel .mcp-row {
+    margin-bottom: 0;
+}
+
+settings-panel .mcp-row-disabled .provider-info {
+    opacity: 0.55;
+}
+
+settings-panel .mcp-name-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+settings-panel .mcp-status-dot {
+    flex-shrink: 0;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--text-tertiary);
+}
+
+settings-panel .mcp-status-dot.status-running {
+    background: var(--accent-green, #3fb950);
+}
+
+settings-panel .mcp-status-dot.status-starting {
+    background: var(--accent-orange, #d29922);
+    animation: mcp-dot-pulse 1.2s ease-in-out infinite;
+}
+
+settings-panel .mcp-status-dot.status-failed {
+    background: var(--accent-red, #f85149);
+}
+
+settings-panel .mcp-status-dot.status-stopped {
+    background: var(--text-tertiary);
+}
+
+@keyframes mcp-dot-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+settings-panel .mcp-impl,
+settings-panel .mcp-scope-chip {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    font-weight: normal;
+}
+
+settings-panel .mcp-scope-chip {
+    padding: 0.0625rem 0.375rem;
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.625rem;
+}
+
+settings-panel .mcp-error-hint {
+    color: var(--accent-red, #f85149);
+}
+
+settings-panel .mcp-controls {
+    align-items: flex-end;
+}
+
+settings-panel .mcp-toggle-wrap {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+settings-panel .mcp-btn-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.375rem;
+}
+
+settings-panel .mcp-log-view {
+    margin: 0.25rem 0 0;
+    max-height: 12rem;
+    overflow: auto;
+    padding: 0.625rem 0.75rem;
+    background: var(--bg-primary);
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.375rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    tab-size: 4;
+}
+
+/* Add/edit form */
+settings-panel .mcp-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+settings-panel .mcp-form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+settings-panel .mcp-field-label {
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+}
+
+settings-panel .mcp-field-hint {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+}
+
+settings-panel .mcp-input {
+    padding: 0.4375rem 0.625rem;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.375rem;
+    font-family: var(--font-ui);
+    font-size: 0.8125rem;
+}
+
+settings-panel .mcp-input:focus-visible {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 0.1875rem rgb(88 166 255 / 10%);
+}
+
+settings-panel select.mcp-input {
+    cursor: pointer;
+}
+
+settings-panel .mcp-args-list,
+settings-panel .mcp-env-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+settings-panel .mcp-repeat-row {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+settings-panel .mcp-repeat-row .mcp-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+settings-panel .mcp-env-row .mcp-env-key {
+    flex: 0 1 12rem;
+}
+
+settings-panel .mcp-remove-row,
+settings-panel .mcp-reveal-btn {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    background: transparent;
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.375rem;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    cursor: pointer;
+}
+
+settings-panel .mcp-remove-row:hover,
+settings-panel .mcp-reveal-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-tertiary);
+}
+
+settings-panel .mcp-add-row {
+    align-self: flex-start;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+settings-panel .mcp-enabled-field {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+settings-panel .mcp-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+}
+
 /* Notifications tab: one sound-customisation row with audio-style rotary
    controls. The native range remains accessible/focusable; pointer dragging is
    handled by JS against the visible dial. */
