@@ -176,7 +176,16 @@ class ConversationTab extends HTMLElement {
           // next remaining pending-approval item, if any. Each column decides
           // its own next ID; we route through ColumnSelectionState so the
           // rebuild updates the visual + properties panel consistently.
-          this._maybeAutoSelectNextPendingInAllColumns();
+          //
+          // Rule 16: when this advances to the next pending approval (e.g. the
+          // user just approved the one that had keyboard focus), engage its
+          // widget so it gets real focus — not just selection. This path calls
+          // ColumnSelectionState directly, bypassing the _onItemSelected auto-
+          // engage, so without this the next item is selected but unfocused and
+          // Enter merely engages it instead of acting on it.
+          if (this._maybeAutoSelectNextPendingInAllColumns()) {
+            this._engageSelectedApproval();
+          }
 
           // The onItemsInserted fan-out above can change the root selection
           // to a thread item, opening that thread column DURING this event —
@@ -421,6 +430,8 @@ class ConversationTab extends HTMLElement {
    * pending-approval target (if any) and apply it via ColumnSelectionState
    * so the visual update and properties panel stay consistent. Idempotent:
    * `getNextPendingApprovalToSelect` returns null when there's nothing to do.
+   * @returns {boolean} true iff a column's selection was advanced to a new
+   *   pending approval (so the caller can engage its widget — Rule 16).
    * @private
    */
   _maybeAutoSelectNextPendingInAllColumns() {
@@ -437,6 +448,7 @@ class ConversationTab extends HTMLElement {
     if (didChange) {
       this._rebuildColumns(false);
     }
+    return didChange;
   }
 
   /**
