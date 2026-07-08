@@ -2743,12 +2743,12 @@ juggler-spinner svg {
     100% { transform: rotate(360deg); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-    juggler-spinner .js-pivot,
-    juggler-spinner .js-club {
-        animation-duration: 6s;
-    }
-}
+/* No prefers-reduced-motion slowdown: a busy spinner is an essential status
+   indicator (it signals the app is working), not decorative motion, so it
+   runs at its normal --duration everywhere. If a gentle slowdown is ever
+   wanted here, override the --duration *variable* (not animation-duration) so
+   the calc()'d per-club phase delays scale with it and the clubs stay 120°
+   apart — overriding animation-duration alone bunches them. */
 
 /* Model Selector - Hint when no providers configured */
 .menu-item-hint {
