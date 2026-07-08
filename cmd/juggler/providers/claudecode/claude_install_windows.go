@@ -51,14 +51,6 @@ func claudeBinaryCandidates() []string {
 // excludes directories).
 func isExecutableFile(info os.FileInfo) bool { return !info.IsDir() }
 
-// resolveViaLoginShell is a no-op on Windows. There is no POSIX login shell to
-// replay, and GUI processes inherit the full user/system PATH (Windows doesn't
-// strip it the way macOS does for Finder/Dock launches), so exec.LookPath
-// already honours PATH+PATHEXT. Version-manager installs (nvm-windows) likewise
-// publish their bin dir to PATH. The JUGGLER_CLAUDE_PATH override covers any
-// remaining unusual location.
-func resolveViaLoginShell() string { return "" }
-
 // claudeCommand builds the exec.Cmd that launches the CLI. A .cmd/.bat shim
 // (e.g. the npm global install) can't be executed directly by CreateProcess,
 // so it is run through "cmd /c"; a native .exe is invoked directly. Note: very

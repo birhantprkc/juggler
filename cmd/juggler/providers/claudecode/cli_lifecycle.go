@@ -122,20 +122,16 @@ func configuredClaudeBinary() string {
 // resolveClaudeBinary auto-detects the claude CLI (no user overrides — those
 // live in configuredClaudeBinary) by trying, in priority order:
 //
-//  1. the current process PATH via exec.LookPath (honours PATHEXT on Windows;
-//     succeeds when juggler was launched from a terminal);
-//  2. the user's login shell PATH (unix only — replicates a terminal's `which
-//     claude`, so nvm/fnm/volta/asdf/homebrew installs resolve even under a
-//     GUI-stripped PATH; a no-op on Windows, which doesn't strip GUI PATH);
-//  3. a fixed list of well-known install locations.
+//  1. the current process PATH via exec.LookPath. This honours PATHEXT on
+//     Windows and, on a GUI launch, the login-shell PATH that Run() already
+//     merged in at startup (see repairPathForGUILaunch), so version-manager and
+//     homebrew installs resolve without a second per-provider shell probe;
+//  2. a fixed list of well-known install locations.
 //
-// The candidate list, the login-shell probe, and the notion of "executable"
-// are OS-specific — see claude_install_unix.go and claude_install_windows.go.
+// The candidate list and the notion of "executable" are OS-specific — see
+// claude_install_unix.go and claude_install_windows.go.
 func resolveClaudeBinary() string {
 	if p, err := exec.LookPath("claude"); err == nil {
-		return p
-	}
-	if p := resolveViaLoginShell(); p != "" {
 		return p
 	}
 	for _, c := range claudeBinaryCandidates() {
@@ -151,19 +147,6 @@ func resolveClaudeBinary() string {
 func isExecutablePath(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir() && isExecutableFile(info)
-}
-
-// lastNonEmptyLine returns the final non-blank, trimmed line of s. Used to pull
-// the resolved path out of login-shell output, whose rc files may print
-// banners ahead of the `command -v claude` result.
-func lastNonEmptyLine(s string) string {
-	lines := strings.Split(s, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if t := strings.TrimSpace(lines[i]); t != "" {
-			return t
-		}
-	}
-	return ""
 }
 
 // spawnEnv builds the child environment for a claude CLI spawn: the parent

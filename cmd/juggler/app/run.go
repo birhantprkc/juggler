@@ -66,6 +66,13 @@ func Run(cfg Config) int {
 	// a side effect (see launchedFromTerminal), so this must run early.
 	hasTerminal := launchedFromTerminal()
 
+	// A GUI launch inherits a stripped PATH that omits everything the user's
+	// shell adds (Homebrew, version managers, ~/go/bin, ~/.local/bin, rustup,
+	// …). Repair PATH before any child process (bash tool, git, the claude CLI)
+	// is spawned so they resolve tools the same way a terminal launch would.
+	// No-op for a terminal launch and on Windows.
+	repairPathForGUILaunch(hasTerminal)
+
 	flags, version := parseFlags(hasTerminal)
 	if version {
 		fmt.Printf("juggler %s (commit: %s, built: %s)\n",

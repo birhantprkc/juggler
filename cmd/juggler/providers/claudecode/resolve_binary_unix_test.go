@@ -14,48 +14,6 @@ import (
 	"juggler/internal/userpaths/userpathstest"
 )
 
-// TestResolveViaLoginShell simulates the macOS-GUI case: claude lives in a
-// version-manager bin dir that the current PATH omits, but the user's login
-// shell knows where it is. We stand in a fake $SHELL that echoes the path the
-// way `command -v claude` would, plus a banner line to exercise the
-// last-non-empty-line extraction.
-func TestResolveViaLoginShell(t *testing.T) {
-	dir := t.TempDir()
-	claude := writeExecutable(t, dir, "claude")
-
-	// Fake shell: ignore all args, print a noisy banner then the resolved path.
-	shell := filepath.Join(dir, "fakeshell")
-	script := "#!/bin/sh\n" +
-		"echo 'welcome to your shell'\n" +
-		"printf '%s\\n' '" + claude + "'\n"
-	if err := os.WriteFile(shell, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SHELL", shell)
-
-	if got := resolveViaLoginShell(); got != claude {
-		t.Fatalf("resolveViaLoginShell() = %q, want %q", got, claude)
-	}
-}
-
-func TestResolveViaLoginShell_RejectsNonExecutableResult(t *testing.T) {
-	dir := t.TempDir()
-	// A path the shell reports but which isn't a runnable file must be rejected.
-	plain := filepath.Join(dir, "claude.txt")
-	if err := os.WriteFile(plain, []byte("not a binary"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	shell := filepath.Join(dir, "fakeshell")
-	if err := os.WriteFile(shell, []byte("#!/bin/sh\nprintf '%s\\n' '"+plain+"'\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SHELL", shell)
-
-	if got := resolveViaLoginShell(); got != "" {
-		t.Fatalf("resolveViaLoginShell() = %q, want \"\" for a non-executable result", got)
-	}
-}
-
 // TestClaudeBinary_NonExecutableOverrideIgnored is Unix-only: it constructs a
 // "non-executable" file by withholding the +x permission bit, then asserts the
 // resolver rejects it. That premise has no Windows analogue — Windows has no
@@ -74,13 +32,6 @@ func TestClaudeBinary_NonExecutableOverrideIgnored(t *testing.T) {
 
 	if got := claudeBinary(); got == bogus {
 		t.Fatalf("claudeBinary() returned the non-executable override %q", got)
-	}
-}
-
-func TestResolveViaLoginShell_NoShellEnv(t *testing.T) {
-	t.Setenv("SHELL", "")
-	if got := resolveViaLoginShell(); got != "" {
-		t.Fatalf("resolveViaLoginShell() = %q, want \"\" when $SHELL is unset", got)
 	}
 }
 

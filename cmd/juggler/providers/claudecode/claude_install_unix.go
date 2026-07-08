@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
 )
 
 // claudeInstallLocationsHint names the fallback install dirs probed when the
@@ -41,40 +40,6 @@ func claudeBinaryCandidates() []string {
 // isExecutableFile reports whether a probed candidate is runnable. On Unix that
 // means at least one execute bit is set.
 func isExecutableFile(info os.FileInfo) bool { return info.Mode()&0o111 != 0 }
-
-// resolveViaLoginShell asks the user's login shell where claude is, so we
-// resolve it exactly as a terminal's `which claude` does. This is the general
-// fix for the macOS-GUI case: an app launched from Finder/Dock inherits a
-// minimal PATH that omits the version-manager bin dirs (nvm/fnm/volta/asdf) and
-// homebrew prefixes where the binary actually lives, but those are set up in
-// the shell's rc files. We run the login+interactive shell so the same profile
-// and rc files are sourced, then read the resolved path. Returns "" when $SHELL
-// is unset, the probe fails or times out, or the result isn't a runnable file.
-func resolveViaLoginShell() string {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-
-	// -l (login) + -i (interactive) source the profile + rc files where version
-	// managers register their PATH. `command -v claude` is POSIX and works in
-	// bash/zsh/fish. Flags are passed separately (not bundled as -lic) for fish
-	// compatibility. Stdin defaults to /dev/null so an interactive shell can't
-	// block waiting for input; stderr (rc-file chatter, job-control warnings) is
-	// discarded by Output, which captures stdout only.
-	cmd := exec.CommandContext(ctx, shell, "-l", "-i", "-c", "command -v claude")
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	path := lastNonEmptyLine(string(out))
-	if path == "" || !filepath.IsAbs(path) || !isExecutablePath(path) {
-		return ""
-	}
-	return path
-}
 
 // claudeCommand builds the exec.Cmd that launches the CLI. On Unix the binary
 // is invoked directly.

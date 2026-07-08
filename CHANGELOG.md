@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Fixed Finder/Dock-launched app inheriting a stripped PATH, so the bash tool now sees the user's full shell PATH.
 - Improved Codex sign-in diagnostics with checked auth-file paths.
 
 ## [0.2.2] - 2026-07-07

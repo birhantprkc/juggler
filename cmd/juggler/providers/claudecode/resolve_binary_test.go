@@ -25,7 +25,6 @@ func writeExecutable(t *testing.T, dir, name string) string {
 func TestClaudeBinary_EnvOverrideWins(t *testing.T) {
 	// A valid JUGGLER_CLAUDE_PATH short-circuits auto-detection.
 	userpathstest.Isolate(t) // empty credentials store
-	t.Setenv("SHELL", "")    // keep the login-shell probe out of this test
 	bin := writeExecutable(t, t.TempDir(), "claude")
 	t.Setenv(claudePathEnvVar, bin)
 
@@ -41,22 +40,6 @@ func TestClaudeBinary_MissingOverrideIgnored(t *testing.T) {
 
 	if got := claudeBinary(); got != "" && !filepath.IsAbs(got) {
 		t.Fatalf("claudeBinary() = %q, want \"\" or an absolute fallback path", got)
-	}
-}
-
-func TestLastNonEmptyLine(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"", ""},
-		{"\n\n", ""},
-		{"/usr/bin/claude", "/usr/bin/claude"},
-		{"/usr/bin/claude\n", "/usr/bin/claude"},
-		{"banner\nmore noise\n  /home/u/.nvm/bin/claude  \n", "/home/u/.nvm/bin/claude"},
-		{"/a\n/b\n\n", "/b"},
-	}
-	for _, c := range cases {
-		if got := lastNonEmptyLine(c.in); got != c.want {
-			t.Errorf("lastNonEmptyLine(%q) = %q, want %q", c.in, got, c.want)
-		}
 	}
 }
 

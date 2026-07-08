@@ -14,17 +14,6 @@ import (
 	"juggler/internal/userpaths/userpathstest"
 )
 
-// TestResolveViaLoginShell_WindowsAlwaysEmpty verifies that resolveViaLoginShell
-// always returns "" on Windows. Windows GUI processes inherit the full user
-// PATH from the registry so there is no need to probe a POSIX login shell.
-func TestResolveViaLoginShell_WindowsAlwaysEmpty(t *testing.T) {
-	// Even an unusual $SHELL value must be ignored on Windows.
-	t.Setenv("SHELL", "/bin/sh")
-	if got := resolveViaLoginShell(); got != "" {
-		t.Fatalf("resolveViaLoginShell() = %q on Windows, want \"\"", got)
-	}
-}
-
 // TestIsExecutablePath_WindowsAnyRegularFileAccepted verifies that on Windows
 // any regular file is considered executable. Windows has no Unix +x bit:
 // isExecutableFile checks !IsDir() only.
