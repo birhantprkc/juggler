@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -152,9 +153,19 @@ const singleInstanceID = "studio.juggler.juggler"
 // the quit-time server cleanup hook and the native menu (neither needs a
 // window).
 func (a *appState) initApplication() {
+	// Route Wails' own logger/errors/warnings/panics into jlog. Without this a
+	// production build discards them (default logger is io.Discard, no
+	// ErrorHandler), so a failed window launch — including Wails' internal
+	// os.Exit(1) fatal path — produces no output at all. See wailsLogHandlers.
+	wailsLogger, onWailsError, onWailsWarn, onWailsPanic := wailsLogHandlers()
 	a.app = application.New(application.Options{
-		Name:        "Juggler",
-		Description: "AI Code Agent",
+		Name:           "Juggler",
+		Description:    "AI Code Agent",
+		Logger:         wailsLogger,
+		LogLevel:       slog.LevelDebug,
+		ErrorHandler:   onWailsError,
+		WarningHandler: onWailsWarn,
+		PanicHandler:   onWailsPanic,
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID:               singleInstanceID,
 			OnSecondInstanceLaunch: a.onSecondInstance,
@@ -227,6 +238,13 @@ func (a *appState) run(specs []windowSpec) error {
 		initial = a.buildWindow(windowSpec{}, serverURL, proc, saved, hasSaved, "")
 	}
 
+	// Crash loudly if the initial window never becomes visible (e.g. the webview
+	// fails to realise but reports no error), instead of lingering invisibly.
+	// windowUp is closed once the window is confirmed visible; we consult it after
+	// the loop returns to distinguish a real exit from a silent never-showed one.
+	windowUp := make(chan struct{})
+	go a.watchWindowStartup(initial, windowUp)
+
 	a.app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(_ *application.ApplicationEvent) {
 		// The initial window is materialised by Wails during startup in its own
 		// goroutine (go window.Run()). When it was created visible
@@ -236,14 +254,34 @@ func (a *appState) run(specs []windowSpec) error {
 		// window). Only reveal it ourselves when it was created hidden (macOS/Linux),
 		// where it won't show on its own.
 		if platformWindowHidden {
-			application.InvokeAsync(func() { a.showWindow(initial) })
+			application.InvokeAsync(func() {
+				// A panic while showing the first window would otherwise die in this
+				// Wails-owned callback goroutine; make it a visible crash instead.
+				defer func() {
+					if r := recover(); r != nil {
+						fatalf("panic while showing initial window: %v", r)
+					}
+				}()
+				a.showWindow(initial)
+			})
 		}
 		for _, s := range rest {
 			a.openWindow(s, "")
 		}
 	})
 
-	return a.app.Run()
+	err := a.app.Run()
+	// The GTK loop has returned. If it did so before the initial window was ever
+	// confirmed visible, this is the silent failure: the loop exits cleanly
+	// (status 0) having presented nothing. Turn it into a loud crash rather than a
+	// success. A window that showed at least once (windowUp closed) exiting is a
+	// normal quit.
+	select {
+	case <-windowUp:
+	default:
+		fatalf("GUI event loop exited (err=%v) before the initial window ever became visible — %s", err, windowUnavailableHint)
+	}
+	return err
 }
 
 // startupSpecs decides which windows to open at launch. An explicit --url or
@@ -279,8 +317,10 @@ func (a *appState) onSecondInstance(data application.SecondInstanceData) {
 	// spawning extra servers that become orphan candidates.
 	if rawURL == "" && project == "" {
 		if a.focusAnyWindow() {
+			logf("second instance: raised existing window (bare relaunch)")
 			return
 		}
+		logf("second instance: no window open, opening a fresh one (bare relaunch)")
 		a.openWindow(windowSpec{}, "")
 		return
 	}
@@ -295,8 +335,10 @@ func (a *appState) onSecondInstance(data application.SecondInstanceData) {
 	// a project window's identity is independent of which server hosts it, so we
 	// can match without resolving the server first.
 	if a.focusWindowBySpec(spec) {
+		logf("second instance: raised existing window for %+v", spec.entry())
 		return
 	}
+	logf("second instance: opening new window for %+v", spec.entry())
 	a.openWindow(spec, "")
 }
 
@@ -362,7 +404,10 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme string) {
 		}
 		saved, hasSaved := fetchWindowState(serverURL)
 		application.InvokeAsync(func() {
-			a.showWindow(a.buildWindow(spec, serverURL, proc, saved, hasSaved, inheritedTheme))
+			e := a.buildWindow(spec, serverURL, proc, saved, hasSaved, inheritedTheme)
+			a.showWindow(e)
+			// Don't let a dynamically-opened window fail to appear silently.
+			go a.warnIfWindowNeverVisible(e, "opened dynamically")
 		})
 	}()
 }
@@ -557,8 +602,21 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 				FullSizeContent:      true,
 			},
 		},
+		// WebviewGpuPolicy defaults to the zero value WebviewGpuPolicyAlways, which
+		// forces WebKitGTK's hardware-accelerated compositing path. On a broken or
+		// absent GL stack (VM software GL, no DRI, headless) that path fails during
+		// webview realisation, the native window widget never comes up, and the
+		// window never becomes visible (the startup watchdog then FATALs). Never
+		// maps to webkit_settings_set_hardware_acceleration_policy(NEVER) — software
+		// compositing, which this text UI doesn't miss — so the window always paints.
+		Linux: application.LinuxWindow{
+			WebviewGpuPolicy: application.WebviewGpuPolicyNever,
+		},
 		Windows: application.WindowsWindow{DisableFramelessWindowDecorations: false},
 	})
+	if win == nil {
+		fatalf("Window.NewWithOptions returned nil for %s (url=%s) — the native window could not be created", id, fullURL)
+	}
 
 	// Ctrl+Tab / Ctrl+Shift+Tab cycle conversation tabs in THIS window (WKWebView
 	// swallows them before page JS on macOS). Per-window keybindings target the

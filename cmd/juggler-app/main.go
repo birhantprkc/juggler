@@ -63,7 +63,10 @@ func main() {
 	runErr := app.run(specs)
 	app.stopAllServers()
 	if runErr != nil {
-		logf("window app exited with error: %v", runErr)
+		// A non-nil return from the event loop means the GUI itself failed (e.g.
+		// g_application_run exited non-zero). Surface it loudly and exit non-zero
+		// rather than reporting success for a launch that never showed a window.
+		fatalf("window app exited with error: %v", runErr)
 	}
 }
 

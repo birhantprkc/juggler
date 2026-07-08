@@ -6,6 +6,18 @@ BUILD_DIR=bin
 
 # Platform detection (used to optionally bundle a macOS .app)
 UNAME_S := $(shell uname -s)
+# Host CPU arch, translated to Go's GOARCH names — the default for native Linux
+# builds below, so `make linux-binaries` targets the running machine instead of
+# silently cross-compiling (these are cgo GTK/WebKitGTK builds, so a mismatched
+# GOARCH needs a cross-gcc toolchain most machines don't have).
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+GOARCH_HOST := amd64
+else ifneq (,$(filter $(UNAME_M),aarch64 arm64))
+GOARCH_HOST := arm64
+else
+GOARCH_HOST := $(UNAME_M)
+endif
 MAC_APP_DIR=$(BUILD_DIR)/Juggler.app
 # The clickable bundle executable is the desktop app (juggler-app); the headless
 # server binary (juggler) sits alongside it in MacOS/ so the app's serverBinPath
@@ -264,7 +276,7 @@ win-installer-pack:
 # ── Linux release bundle ────────────────────────────────────────────────────
 # Linux ships the server + desktop app together as one tarball per arch — the
 # same "both binaries travel together" invariant the DMG/installer uphold.
-GOARCH ?= amd64
+GOARCH ?= $(GOARCH_HOST)
 
 ## linux-binaries: Build the server (or the prebuilt $(SERVER_BIN)) + the desktop
 ## app into bin/ for $(GOARCH). Native Linux only (the desktop app is cgo

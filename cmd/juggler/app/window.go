@@ -5,6 +5,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -42,7 +43,7 @@ func runWindowApp(srv *server.Server, devMode bool, headless bool, testMode bool
 		runTestPoolWindowApp(srv, devMode, headless, testIframes, done, requestQuit, onWindowReady)
 		return
 	}
-	runHeadlessServerApp(srv, done, onWindowReady)
+	runHeadlessServerApp(srv, done, requestQuit, onWindowReady)
 }
 
 // runHeadlessServerApp runs the Wails event loop for a windowless production
@@ -55,9 +56,30 @@ func runWindowApp(srv *server.Server, devMode bool, headless bool, testMode bool
 // visible UI lives in the separate
 // juggler-app process, which connects over HTTP/WebSocket like any viewer.
 // Blocks on the calling goroutine until done is closed.
-func runHeadlessServerApp(srv *server.Server, done <-chan struct{}, onWindowReady func(*application.App, *application.WebviewWindow)) {
+//
+// requestQuit is the same shutdown trigger the signal handlers use (it closes
+// done, which this function's goroutine turns into app.Quit + a force-exit
+// backstop). startEngine calls it if the hidden engine WebView never comes up,
+// so a headless server whose WebView failed can never linger as a useless
+// zombie — the whole reason this binary exists is to run that WebView.
+func runHeadlessServerApp(srv *server.Server, done <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
+	// The headless server MUST NOT share a GtkApplication identity with the
+	// desktop viewer (juggler-app) or with sibling per-project servers. On Linux,
+	// Wails derives the GApplication ID from Name ("org.wails."+sanitized) and
+	// always registers it as *unique* on the session bus (it hardcodes
+	// G_APPLICATION_DEFAULT_FLAGS). Two live processes with the same ID collide:
+	// the second becomes a remote instance, its GTK "activate" never fires
+	// locally, and Wails' window Run() blocks forever in waitForActivation before
+	// it ever calls windowNew — so that process's window is never created. For the
+	// viewer that means no window at all plus gtk_widget_is_visible(NULL)
+	// GTK-CRITICAL spam; for a server it means the hidden engine WebView never
+	// comes up. Because both this server and juggler-app were named "Juggler",
+	// every launch that runs a server alongside the app (i.e. all of them) raced
+	// for org.wails.juggler and one side lost. Give each server a process-unique
+	// name so its GApplication ID can never collide. The server is windowless, so
+	// this name is never user-visible.
 	app := application.New(application.Options{
-		Name:        "Juggler",
+		Name:        fmt.Sprintf("Juggler Server %d", os.Getpid()),
 		Description: "AI Code Agent",
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
@@ -93,7 +115,7 @@ func runHeadlessServerApp(srv *server.Server, done <-chan struct{}, onWindowRead
 		// CVDisplayLink path that deadlocks on display reconfiguration (see
 		// engine_lifecycle.go).
 		onWindowReady(app, nil)
-		startEngine(app, srv)
+		startEngine(app, srv, requestQuit)
 	})
 
 	go func() {

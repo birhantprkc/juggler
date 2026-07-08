@@ -292,8 +292,12 @@ func (a *App) initServer() error {
 func (a *App) initEngineWatcher() error {
 	go func() {
 		if !a.server.WaitForEngineConnected(engineConnectTimeout) {
-			jlog.Error("Engine did not connect within %v", engineConnectTimeout)
-			jlog.Info("   Tools will not execute until a browser connects.")
+			// The engine WebView failed to come up. No external browser can stand
+			// in for it (the engine WS role is loopback-only), so the server is
+			// permanently unable to run tools — startEngine is concurrently tearing
+			// the process down for exactly this reason. Just stop here; don't start
+			// watchers or the banner on a server that's on its way out.
+			jlog.Error("Engine did not connect within %v — server is shutting down", engineConnectTimeout)
 			return
 		}
 		a.printInteractiveBanner()

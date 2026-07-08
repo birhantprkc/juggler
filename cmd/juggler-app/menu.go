@@ -5,6 +5,8 @@
 package main
 
 import (
+	"runtime"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -13,6 +15,17 @@ import (
 // another in-process window (no project → picker); View carries dev-only
 // reload/devtools plus Toggle Full Screen; Help ▸ Learn More opens the browser.
 func installAppMenu(a *appState, devMode bool) {
+	// Linux renders the application menu as a GtkMenuBar embedded at the top of
+	// the window (Wails prepends it into the window's vbox), which looks wrong
+	// against our custom header. macOS shows it as the global top-of-screen menu
+	// bar (correct) and the frameless Windows window doesn't display it at all,
+	// so only Linux needs suppressing. The Linux window builds its menu bar
+	// solely from globalApplication.applicationMenu, and the default-menu
+	// fallback is darwin-only — so by never calling Menu.Set here, applicationMenu
+	// stays nil and the window attaches no menu bar at all.
+	if runtime.GOOS == "linux" {
+		return
+	}
 	menu := application.NewMenu()
 	buildAppMenu(a, menu)
 
