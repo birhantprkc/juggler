@@ -125,7 +125,7 @@ func (w *ConversationWorker) runDeliveryPump(p *taskDeliveryPump) {
 		case <-ticker.C:
 			snap := ops.TaskState(p.taskID)
 			if !snap.Found {
-				inject(deliveryHeader(p.label) + "\nmonitor task is no longer available.")
+				inject(deliveryHeader(p.label) + "\nbackground task is no longer available (it may have been reaped after the server restarted).")
 				end()
 				return
 			}
@@ -156,7 +156,7 @@ func (w *ConversationWorker) runDeliveryPump(p *taskDeliveryPump) {
 				if partial != "" {
 					inject(deliveryHeader(p.label) + "\n" + partial)
 				}
-				inject(deliveryHeader(p.label) + fmt.Sprintf("\nexited (status %s, exit code %d)", snap.Status, snap.ExitCode))
+				inject(deliveryHeader(p.label) + fmt.Sprintf("\nbackground task ended (status %s, exit code %d)", snap.Status, snap.ExitCode))
 				end()
 				return
 			}

@@ -10,8 +10,8 @@
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
 import { modelLabel, modelLabelFromList } from '../model/model-display.js';
-import { openExternalURL } from '../../sdk/lib/window-control.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { wireExternalLinks } from '../utils/external-links.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import wsService from '../services/websocket.js';
@@ -970,13 +970,8 @@ class SettingsPanel extends HTMLElement {
       keyLink.rel = 'noopener noreferrer';
       keyLink.className = 'get-api-key-link';
       keyLink.textContent = 'Get API Key \u2192';
-      // Route through the loopback opener so a native window hands the
-      // URL to the system browser (browser tabs fall back to _blank).
-      const apiKeyURL = provider.apiKeyURL;
-      keyLink.addEventListener('click', (e) => {
-        e.preventDefault();
-        openExternalURL(apiKeyURL);
-      });
+      // Route through the loopback opener (see wireExternalLinks).
+      wireExternalLinks(keyLink);
       infoColumn.appendChild(keyLink);
     }
 
@@ -2244,10 +2239,7 @@ class SettingsPanel extends HTMLElement {
         link.rel = 'noopener noreferrer';
         link.className = 'connectivity-url';
         link.textContent = part;
-        link.addEventListener('click', (e) => {
-          e.preventDefault();
-          openExternalURL(link.href);
-        });
+        wireExternalLinks(link);
         hint.appendChild(link);
       } else if (part) {
         hint.appendChild(document.createTextNode(part));
@@ -2315,10 +2307,7 @@ class SettingsPanel extends HTMLElement {
     urlLink.rel = 'noopener noreferrer';
     urlLink.className = 'connectivity-url';
     urlLink.textContent = url;
-    urlLink.addEventListener('click', (e) => {
-      e.preventDefault();
-      openExternalURL(url);
-    });
+    wireExternalLinks(urlLink);
     const qrHost = document.createElement('div');
     qrHost.className = 'connectivity-qr';
     qrHost.setAttribute('role', 'img');

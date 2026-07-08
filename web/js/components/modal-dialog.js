@@ -6,13 +6,14 @@
  * @typedef {object} ModalOptions
  * @property {string} [title] - Dialog title
  * @property {string} [message] - Dialog message
- * @property {'alert'|'confirm'|'prompt'|'choice'} [type] - Dialog type
+ * @property {'alert'|'confirm'|'prompt'|'choice'|'notice'} [type] - Dialog type
  * @property {string} [confirmText] - Confirm button text
  * @property {string} [cancelText] - Cancel button text
  * @property {boolean} [danger] - Use danger styling for confirm button
  * @property {string} [defaultValue] - Default value for prompt input
  * @property {string[]} [choices] - Array of choice options
  * @property {boolean} [allowCustom] - Allow custom text input for choice type
+ * @property {number} [duration] - For 'notice': auto-dismiss after this many ms (0 = manual). Default 5000.
  */
 
 // Extend Window interface for modal helper functions
@@ -23,6 +24,7 @@
  * @property {function(string, string=, ConfirmOptions=): Promise<boolean>} showConfirm - Show a confirmation dialog
  * @property {function(string, string=, string=): Promise<string|null>} showPrompt - Show a prompt dialog
  * @property {function(string, string[], string=, boolean=): Promise<string|null>} showChoice - Show a choice dialog
+ * @property {function(string, {duration?: number}=): void} showNotice - Show a transient, auto-dismissing notice
  */
 
 /**
@@ -52,6 +54,7 @@
  */
 import { markPopupOpen } from '../utils/popup-manager.js';
 
+
 class ModalDialog extends HTMLElement {
   constructor() {
     super();
@@ -63,6 +66,8 @@ class ModalDialog extends HTMLElement {
     this._releasePopupOpen = null;
     /** @type {(() => void)|null} @private */
     this._backdropClickHandler = null;
+    /** @type {number|null} @private - Auto-dismiss timer for 'notice' mode. */
+    this._noticeTimer = null;
   }
 
   connectedCallback() {
@@ -77,6 +82,10 @@ class ModalDialog extends HTMLElement {
     if (this._releasePopupOpen) {
       this._releasePopupOpen();
       this._releasePopupOpen = null;
+    }
+    if (this._noticeTimer !== null) {
+      clearTimeout(this._noticeTimer);
+      this._noticeTimer = null;
     }
 
     // Resolve any pending promises with null
@@ -129,7 +138,8 @@ class ModalDialog extends HTMLElement {
       danger = false,
       defaultValue = '',
       choices = [],
-      allowCustom = false
+      allowCustom = false,
+      duration = 5000
     } = options;
 
     // Per-show reset: this is a reused singleton, so clear any stale key handler
@@ -137,6 +147,14 @@ class ModalDialog extends HTMLElement {
     // decides whether it needs one. Escape-to-close is handled by popup-manager.
     if (this.handleKeydown) document.removeEventListener('keydown', this.handleKeydown);
     this.handleKeydown = null;
+    // Clear any prior notice auto-dismiss timer (a fresh notice supersedes it).
+    if (this._noticeTimer !== null) {
+      clearTimeout(this._noticeTimer);
+      this._noticeTimer = null;
+    }
+
+    const isNotice = type === 'notice';
+    this.classList.toggle('is-notice', isNotice);
 
     // Set title and message
     const titleEl = this.querySelector('.modal-title');
@@ -207,6 +225,10 @@ class ModalDialog extends HTMLElement {
     } else if (type === 'choice') {
       // Choice type doesn't use footer buttons - everything is in the choice options
       footer.classList.add('hidden');
+    } else if (isNotice) {
+      // A notice carries no action buttons — it's dismissed by timeout,
+      // backdrop click, Escape, or browser-Back (all wired below).
+      footer.classList.add('hidden');
     }
 
     // Show modal
@@ -218,6 +240,11 @@ class ModalDialog extends HTMLElement {
     // Escape and the browser/mobile Back button dismiss via popup-manager.
     if (this._releasePopupOpen) this._releasePopupOpen();
     this._releasePopupOpen = markPopupOpen(() => this.close(null));
+
+    // A notice auto-dismisses after its duration (0 means manual dismissal only).
+    if (isNotice && duration > 0) {
+      this._noticeTimer = window.setTimeout(() => this.close(null), duration);
+    }
 
     // Return promise
     return new Promise((resolve) => {
@@ -350,13 +377,17 @@ class ModalDialog extends HTMLElement {
    * @param {any} result - Dialog result to resolve promise with
    */
   close(result) {
-    this.classList.remove('show');
+    this.classList.remove('show', 'is-notice');
     if (this.handleKeydown) {
       document.removeEventListener('keydown', this.handleKeydown);
     }
     if (this._releasePopupOpen) {
       this._releasePopupOpen();
       this._releasePopupOpen = null;
+    }
+    if (this._noticeTimer !== null) {
+      clearTimeout(this._noticeTimer);
+      this._noticeTimer = null;
     }
 
     if (this.resolvePromise) {
@@ -444,3 +475,29 @@ window.showChoice = async function(/** @type {string} */ message, /** @type {str
     allowCustom
   });
 };
+
+/**
+ * Show a transient, toast-like notice (clean centered panel, no icon/buttons).
+ * Unlike the `showModal`-backed helpers above, this creates a FRESH
+ * `<modal-dialog>` per call and removes it once dismissed, so a notice fired
+ * while a `showConfirm`/`showPrompt` singleton is open can never clobber that
+ * dialog or its unresolved promise. Dismisses on: auto-timeout (default 5s),
+ * backdrop click, Escape, or the browser/mobile Back button (the last two via
+ * the modal-dialog's existing `markPopupOpen` wiring).
+ * @param {string} message - Notice text to display.
+ * @param {{ duration?: number }} [opts] - `duration` ms (0 = manual dismissal only; default 5000).
+ */
+export function showNotice(/** @type {string} */ message, /** @type {{ duration?: number }} */ opts) {
+  const duration = opts && typeof opts.duration === 'number' ? opts.duration : 5000;
+  /** @type {any} */
+  const modal = document.createElement('modal-dialog');
+  document.body.appendChild(modal);
+  // Remove the element from <body> once dismissed so a transient notice never
+  // litters the DOM. The promise resolves with null on every close path.
+  modal.show({ type: 'notice', message, duration }).finally(() => modal.remove());
+}
+
+// Global alias, mirroring showAlert/showConfirm/showPrompt/showChoice.
+// @ts-ignore - Extending window object
+window.showNotice = showNotice;
+

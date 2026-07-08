@@ -366,13 +366,12 @@ export async function executeUIOperation(harness, op) {
     }
 
     case 'assert-input-warning': {
-      // Assert a visible input-box warning notice. Searched document-wide so it
+      // Assert a visible centered warning notice. Searched document-wide so it
       // is robust to which column owns the active input box.
       await driver.waitForDOMStable();
-      const warnings = Array.from(document.querySelectorAll('input-box-warning'));
-      const visible = warnings.filter(w => w.classList.contains('visible'));
+      const warnings = Array.from(document.querySelectorAll('modal-dialog.is-notice.show'));
       const needle = op.textContains || '';
-      const match = visible.find(w => (w.textContent || '').includes(needle));
+      const match = warnings.find(w => (w.textContent || '').includes(needle));
       if (op.absent) {
         if (match) {
           throw new Error(`assert-input-warning: expected no visible warning containing "${needle}", but found "${match.textContent}"`);
@@ -380,7 +379,7 @@ export async function executeUIOperation(harness, op) {
       } else if (!match) {
         throw new Error(
           `assert-input-warning: expected a visible warning containing "${needle}"; ` +
-				`visible warnings: ${JSON.stringify(visible.map(w => w.textContent))}`
+					`visible warnings: ${JSON.stringify(warnings.map(w => w.textContent))}`
         );
       }
       break;

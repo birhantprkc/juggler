@@ -13,6 +13,7 @@ import { CompletionMenu } from './completion-menu.js';
 import { fileMentionProvider, extractFileMentionsAsync } from './file-mention-provider.js';
 import { slashCommandProvider } from './slash-command-provider.js';
 import { THREAD_ARROW_SVG, IMAGE_ATTACH_SVG, SEND_ARROW_SVG, PLUS_SVG, CLOCK_SVG } from '../utils/icons.js';
+import { showNotice } from './modal-dialog.js';
 import apiService from '../services/api.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 
@@ -172,12 +173,6 @@ class InputBox extends HTMLElement {
     this.currentDraft = '';        // Save work-in-progress when navigating
     /** @type {Record<number, string>} @private */
     this._historyEdits = {};       // Per-level edits preserved across navigation
-
-    // Warning display
-    /** @type {string|null} @private */
-    this._warningMessage = null;
-    /** @type {number|null} @private */
-    this._warningTimeoutId = null;
 
     // Draft save debounce timer
     /** @type {number|null} @private */
@@ -547,10 +542,6 @@ class InputBox extends HTMLElement {
     textarea.addEventListener('input', () => {
       this.autoResize(textarea);
       this._updateSendButtonState();
-      // Clear warning when user starts typing
-      if (this._warningMessage) {
-        this.clearWarning();
-      }
       // Debounced draft save for page reload restoration
       this._scheduleDraftSave(textarea.value);
       // @ file completions
@@ -1151,39 +1142,14 @@ class InputBox extends HTMLElement {
   }
 
   /**
-   * Show a warning message in the input box
+   * Show a prominent, transient warning notice to the user. Delegates to the
+   * app-level `showNotice` (a centered modal-dialog): the input box owns no
+   * warning state of its own.
    * @param {string} message - Warning message to display
-   * @param {number} [duration=5000] - Duration to show warning in milliseconds (0 = permanent)
+   * @param {number} [duration=5000] - Duration to show warning in milliseconds (0 = manual dismissal only)
    */
   showWarning(message, duration = 5000) {
-    this._warningMessage = message;
-    this._updateWarningDisplay();
-
-    // Clear any existing timeout
-    if (this._warningTimeoutId !== null) {
-      clearTimeout(this._warningTimeoutId);
-      this._warningTimeoutId = null;
-    }
-
-    // Auto-hide after duration (if not permanent)
-    if (duration > 0) {
-      this._warningTimeoutId = setTimeout(() => {
-        this.clearWarning();
-      }, duration);
-    }
-  }
-
-  /**
-   * Clear the warning message
-   */
-  clearWarning() {
-    this._warningMessage = null;
-    this._updateWarningDisplay();
-
-    if (this._warningTimeoutId !== null) {
-      clearTimeout(this._warningTimeoutId);
-      this._warningTimeoutId = null;
-    }
+    showNotice(message, { duration });
   }
 
   /**
@@ -1197,23 +1163,6 @@ class InputBox extends HTMLElement {
     const footer = convArea.querySelector('conversation-footer');
     if (footer) {
       footer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  }
-
-  /**
-   * Update the warning display.
-   * @private
-   */
-  _updateWarningDisplay() {
-    const warningEl = /** @type {HTMLElement|null} */ (this.querySelector('input-box-warning'));
-    if (!warningEl) return;
-
-    const text = this._warningMessage;
-    if (text) {
-      warningEl.textContent = text;
-      warningEl.classList.add('visible');
-    } else {
-      warningEl.classList.remove('visible');
     }
   }
 
@@ -2138,7 +2087,6 @@ class InputBox extends HTMLElement {
 
   render() {
     this.innerHTML = `
-            <input-box-warning></input-box-warning>
             <input-box-wrapper>
                 <input-box-attachments></input-box-attachments>
                 <textarea

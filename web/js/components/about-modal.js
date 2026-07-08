@@ -2,8 +2,8 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import { openExternalURL } from '../../sdk/lib/window-control.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { wireExternalLinks } from '../utils/external-links.js';
 
 /**
  * AboutModal - Shows information about the application
@@ -169,15 +169,8 @@ class AboutModal extends HTMLElement {
       setTimeout(() => /** @type {HTMLElement} */ (closeButton).focus(), 100);
     }
 
-    // External links: route via the loopback opener so a native window
-    // hands the URL to the system browser (browser tabs fall back to a new
-    // tab; target=_blank alone is swallowed by the native WebView).
-    this.querySelectorAll('a[href^="http"]').forEach((link) => {
-      link.addEventListener('click', (e) => {
-        e.preventDefault();
-        openExternalURL(/** @type {HTMLAnchorElement} */ (link).href);
-      });
-    });
+    // External links route via the loopback opener (see wireExternalLinks).
+    wireExternalLinks(this);
   }
 }
 

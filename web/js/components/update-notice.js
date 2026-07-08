@@ -4,6 +4,7 @@
 
 import { openExternalURL } from '../../sdk/lib/window-control.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { wireExternalLinks } from '../utils/external-links.js';
 import { startInstall, requestRestart } from '../services/updater-control.js';
 
 /**
@@ -339,13 +340,9 @@ class UpdateNotice extends HTMLElement {
         : 'A newer version is now available.';
       body.appendChild(p);
     }
-    // Hand any sanitized links to the system browser.
-    body.querySelectorAll('a[href]').forEach((a) => {
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        openExternalURL(/** @type {HTMLAnchorElement} */ (a).href);
-      });
-    });
+    // Hand any sanitized links to the system browser. The sanitizer only keeps
+    // http(s) hrefs, so match every remaining anchor.
+    wireExternalLinks(body, 'a[href]');
 
     // Edge case 18: the viewed server was started outside the app, so an app
     // update won't touch it. Say so plainly instead of implying "Restart

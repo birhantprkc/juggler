@@ -2968,33 +2968,6 @@ input-box {
     background: var(--bg-secondary);
 }
 
-input-box input-box-warning {
-    position: absolute;
-    bottom: 100%;
-    left: 1rem;
-    right: 1rem;
-    margin-bottom: 0.5rem;
-    background: var(--bg-secondary);
-    border: 0.0625rem solid var(--border-color);
-    color: var(--text-secondary);
-    padding: 0.5rem 0.75rem;
-    border-radius: 0.375rem;
-    font-size: 0.8125rem;
-    line-height: 1.4;
-    font-weight: 500;
-    opacity: 0;
-    transform: translateY(-0.5rem);
-    transition: opacity 0.2s ease-out, transform 0.2s ease-out;
-    pointer-events: none;
-    z-index: var(--z-raised);
-}
-
-input-box input-box-warning.visible {
-    opacity: 1;
-    transform: translateY(0);
-    pointer-events: auto;
-}
-
 /* Input box wrapper - the visual bubble containing textarea and button */
 input-box input-box-wrapper {
     display: flex;
@@ -3146,10 +3119,6 @@ input-box .strategy-selector-button[data-has-color="true"] .strategy-icon {
 input-box .strategy-selector-button .strategy-chevron svg {
     width: 1rem;
     height: 1rem;
-}
-
-:root[data-theme="light"] input-box input-box-warning {
-    background: var(--bg-secondary);
 }
 
 /* Input controls container - permission controls + strategy selector */
@@ -3896,6 +3865,66 @@ modal-dialog .modal-button.secondary {
 modal-dialog .modal-button.secondary:hover {
     background: var(--bg-raised);
     color: var(--text-primary);
+}
+
+/* ── Notice mode (showNotice) ──────────────────────────────────────────────
+   A transient, toast-like notice: a clean raised panel, centred, that floats
+   over the page without dimming it. No icon, no left bar, no action buttons.
+   Dismisses on timeout / backdrop / Escape / Back. Scoped to
+   `modal-dialog.is-notice`, so the same element renders a normal dialog when
+   the class is absent. */
+
+/* A notice is a quick toast, not a decision modal — it shouldn't dim the page
+   behind it. The backdrop stays transparent but still fills the viewport, so a
+   click anywhere dismisses. */
+modal-dialog.is-notice .modal-backdrop-el {
+    background: transparent;
+}
+
+/* No header (the heading is empty here) and no footer (there are no buttons). */
+modal-dialog.is-notice .modal-header,
+modal-dialog.is-notice .modal-footer {
+    display: none;
+}
+
+modal-dialog.is-notice .modal-container {
+    max-width: 26rem;
+    width: min(90vw, 26rem);
+
+    /* Card chrome (background, border, radius) comes from the shared
+       popup-surface rule; a lifted shadow lets the toast read cleanly on its
+       own without a dimmed backdrop behind it. */
+    box-shadow: 0 0.75rem 2rem var(--overlay-dark-50), 0 0.125rem 0.5rem var(--overlay-dark-50);
+    animation: modal-notice-in 0.18s ease-out;
+}
+
+modal-dialog.is-notice .modal-body {
+    padding: 1.125rem 1.5rem;
+}
+
+modal-dialog.is-notice .modal-message {
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    line-height: 1.5;
+    margin-bottom: 0;       /* no footer to space it from */
+    text-align: center;
+}
+
+/* Pop in on open (the .show class flips display:flex in the base rule, so the
+   animation runs on the now-visible panel). No out-animation: the shared base
+   rule hides the element via display:none the instant .show leaves, so an exit
+   animation would never be seen. */
+@keyframes modal-notice-in {
+    from {
+        opacity: 0;
+        transform: scale(0.94);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
 }
 
 /* Choice modal styles */
