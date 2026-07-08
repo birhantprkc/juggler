@@ -384,6 +384,29 @@ const fallbackMaxOutputTokens = 8192
 // instructions on the request.
 const defaultResponsesInstructions = "You are a helpful assistant."
 
+// promptCacheKey returns a stable per-conversation/thread key for OpenAI's
+// prompt-cache routing, or "" when there's no conversation id to key on.
+//
+// OpenAI's prefix cache lives on a specific backend shard, and requests are
+// routed to a shard by hashing the prompt prefix PLUS this key when present.
+// Without a stable key, consecutive turns with an identical prefix get
+// load-balanced onto different shards and miss a cache that genuinely exists —
+// so an agent loop's growing prefix is re-billed at the fresh rate roughly
+// every other turn. Sending the same key each turn keeps the conversation
+// pinned to one shard. Scoped by thread as well, mirroring how stateful
+// providers keep a per-thread session (ThreadID "" = root thread).
+//
+// Empty conversation id => no key: a constant fallback like "/" would funnel
+// unrelated conversations onto a single shard, which is worse than default
+// prefix-only routing. This also means the key is absent in unit tests that
+// don't set ConversationID, so request bodies there are unchanged.
+func promptCacheKey(req provider.MessageRequest) string {
+	if req.ConversationID == "" {
+		return ""
+	}
+	return req.ConversationID + "/" + req.ThreadID
+}
+
 // streamMessageResponses uses the Responses API for any model id containing "codex"
 func (c *Client) streamMessageResponses(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	jlog.Debug("Streaming message with Responses API, model %s, %d messages", c.model, len(req.Messages))
@@ -400,6 +423,13 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	}
 	if !c.quirks.ForceResponsesAPI {
 		params.Temperature = openai.Float(1.0)
+	}
+
+	// Pin prompt-cache routing to this conversation/thread so the growing
+	// prefix stays on one cache shard across turns instead of being
+	// load-balanced onto a cold shard and re-billed (see promptCacheKey).
+	if key := promptCacheKey(req); key != "" {
+		params.PromptCacheKey = openai.String(key)
 	}
 
 	// Add system prompt as instructions
@@ -932,6 +962,13 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 		StreamOptions: openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: openai.Bool(true),
 		},
+	}
+
+	// Pin prompt-cache routing to this conversation/thread so the growing
+	// prefix stays on one cache shard across turns instead of being
+	// load-balanced onto a cold shard and re-billed (see promptCacheKey).
+	if key := promptCacheKey(req); key != "" {
+		params.PromptCacheKey = openai.String(key)
 	}
 
 	if c.quirks.IncludeFrequencyPenalty {
