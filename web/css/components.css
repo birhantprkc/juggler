@@ -3891,10 +3891,14 @@ modal-dialog.is-notice .modal-container {
     max-width: 26rem;
     width: min(90vw, 26rem);
 
-    /* Card chrome (background, border, radius) comes from the shared
-       popup-surface rule; a lifted shadow lets the toast read cleanly on its
-       own without a dimmed backdrop behind it. */
-    box-shadow: 0 0.75rem 2rem var(--overlay-dark-50), 0 0.125rem 0.5rem var(--overlay-dark-50);
+    /* Override the shared popup-surface chrome: a prominent yellow fill (dark
+       text set on .modal-message) reads on its own, so drop the border, tighten
+       the corner radius, and keep only a soft shadow — no dimmed backdrop sits
+       behind it, so the heavy lifted shadow the modal uses is too much here. */
+    background: var(--notice-bg);
+    border: none;
+    border-radius: 0.5rem;
+    box-shadow: 0 0.25rem 0.75rem var(--overlay-dark-15), 0 0.0625rem 0.1875rem var(--overlay-dark-10);
     animation: modal-notice-in 0.18s ease-out;
 }
 
@@ -3903,7 +3907,7 @@ modal-dialog.is-notice .modal-body {
 }
 
 modal-dialog.is-notice .modal-message {
-    color: var(--text-primary);
+    color: var(--notice-text);
     font-size: 0.9375rem;
     font-weight: 500;
     line-height: 1.5;

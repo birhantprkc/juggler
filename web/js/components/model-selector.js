@@ -582,6 +582,21 @@ class ModelSelector extends HTMLElement {
         return this._menuSection({ header: provider.displayName, items });
       }).join('');
 
+    // Bottom-of-list escape hatch: clear the model selection entirely. Styled
+    // as a plain selection row so it matches the model items above; active (✓)
+    // when nothing is currently selected.
+    content += '<li class="menu-divider"></li>';
+    content += this._menuSection({
+      items: [
+        this._selectionItem({
+          label: 'No model',
+          active: !this.model,
+          classes: 'no-model',
+          dataAttrs: 'id="no-model-item"',
+        }),
+      ],
+    });
+
     return content;
   }
 
@@ -841,6 +856,20 @@ class ModelSelector extends HTMLElement {
           this._messageThread.modelConfig = null;
           this._syncModelDisplay();
         }
+        this.closeDropdown();
+        return;
+      }
+
+      if (item.id === 'no-model-item') {
+        // Clear the model field. At the root binding this nulls the
+        // conversation default (→ "Select Model"); on a sub-thread override it
+        // reverts that thread to its inherited model.
+        if (this._messageThread) {
+          this._messageThread.modelConfig = null;
+        } else if (this.conversation) {
+          this.conversation.setModelConfig(null);
+        }
+        this._syncModelDisplay();
         this.closeDropdown();
         return;
       }

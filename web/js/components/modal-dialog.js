@@ -68,6 +68,20 @@ class ModalDialog extends HTMLElement {
     this._backdropClickHandler = null;
     /** @type {number|null} @private - Auto-dismiss timer for 'notice' mode. */
     this._noticeTimer = null;
+    // Listener removers registered by the current show() on the reused child
+    // inputs (prompt/choice), cleared on the next show() and on close so they
+    // can't accumulate across opens.
+    /** @type {Array<() => void>} @private */
+    this._showCleanups = [];
+  }
+
+  /**
+   * Run and clear any listeners registered by the current show().
+   * @private
+   */
+  _runShowCleanups() {
+    this._showCleanups.forEach((fn) => fn());
+    this._showCleanups = [];
   }
 
   connectedCallback() {
@@ -75,6 +89,7 @@ class ModalDialog extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._runShowCleanups();
     if (this.handleKeydown) {
       document.removeEventListener('keydown', this.handleKeydown);
       this.handleKeydown = null;
@@ -147,6 +162,9 @@ class ModalDialog extends HTMLElement {
     // decides whether it needs one. Escape-to-close is handled by popup-manager.
     if (this.handleKeydown) document.removeEventListener('keydown', this.handleKeydown);
     this.handleKeydown = null;
+    // Drop listeners a previous show() left on the reused prompt/choice inputs
+    // so repeated opens of this singleton element don't stack them.
+    this._runShowCleanups();
     // Clear any prior notice auto-dismiss timer (a fresh notice supersedes it).
     if (this._noticeTimer !== null) {
       clearTimeout(this._noticeTimer);
@@ -217,11 +235,13 @@ class ModalDialog extends HTMLElement {
       footer.appendChild(confirmButton);
 
       // Submit on Enter
-      input.addEventListener('keydown', (/** @type {KeyboardEvent} */ e) => {
+      const onPromptKeydown = (/** @type {KeyboardEvent} */ e) => {
         if (e.key === 'Enter') {
           this.close(input.value);
         }
-      });
+      };
+      input.addEventListener('keydown', onPromptKeydown);
+      this._showCleanups.push(() => input.removeEventListener('keydown', onPromptKeydown));
     } else if (type === 'choice') {
       // Choice type doesn't use footer buttons - everything is in the choice options
       footer.classList.add('hidden');
@@ -294,7 +314,7 @@ class ModalDialog extends HTMLElement {
       allButtons.push(otherButton);
 
       // Handle custom input submission
-      customInput.addEventListener('keydown', (/** @type {KeyboardEvent} */ e) => {
+      const onCustomKeydown = (/** @type {KeyboardEvent} */ e) => {
         if (e.key === 'Enter' && customInput.value.trim()) {
           this.close(customInput.value.trim());
         } else if (e.key === 'Escape') {
@@ -307,7 +327,9 @@ class ModalDialog extends HTMLElement {
           customInput.value = '';
           allButtons[focusedIndex]?.focus();
         }
-      });
+      };
+      customInput.addEventListener('keydown', onCustomKeydown);
+      this._showCleanups.push(() => customInput.removeEventListener('keydown', onCustomKeydown));
     }
 
     // Add "None of the above" option
@@ -378,6 +400,7 @@ class ModalDialog extends HTMLElement {
    */
   close(result) {
     this.classList.remove('show', 'is-notice');
+    this._runShowCleanups();
     if (this.handleKeydown) {
       document.removeEventListener('keydown', this.handleKeydown);
     }
@@ -476,12 +499,16 @@ window.showChoice = async function(/** @type {string} */ message, /** @type {str
   });
 };
 
+/** @type {any} - The notice currently on screen, so a new one can replace it. */
+let activeNotice = null;
+
 /**
  * Show a transient, toast-like notice (clean centered panel, no icon/buttons).
  * Unlike the `showModal`-backed helpers above, this creates a FRESH
  * `<modal-dialog>` per call and removes it once dismissed, so a notice fired
  * while a `showConfirm`/`showPrompt` singleton is open can never clobber that
- * dialog or its unresolved promise. Dismisses on: auto-timeout (default 5s),
+ * dialog or its unresolved promise. A new notice replaces any still-showing
+ * notice rather than stacking. Dismisses on: auto-timeout (default 5s),
  * backdrop click, Escape, or the browser/mobile Back button (the last two via
  * the modal-dialog's existing `markPopupOpen` wiring).
  * @param {string} message - Notice text to display.
@@ -489,12 +516,22 @@ window.showChoice = async function(/** @type {string} */ message, /** @type {str
  */
 export function showNotice(/** @type {string} */ message, /** @type {{ duration?: number }} */ opts) {
   const duration = opts && typeof opts.duration === 'number' ? opts.duration : 5000;
+  // A notice is transient — a new one supersedes any still-showing notice
+  // instead of stacking on top of it. close(null) resolves that notice's
+  // promise, whose .finally() removes its element (and clears activeNotice via
+  // the identity check below, but only if a newer notice hasn't already taken
+  // its place — that removal runs a microtask later).
+  if (activeNotice) activeNotice.close(null);
   /** @type {any} */
   const modal = document.createElement('modal-dialog');
   document.body.appendChild(modal);
+  activeNotice = modal;
   // Remove the element from <body> once dismissed so a transient notice never
   // litters the DOM. The promise resolves with null on every close path.
-  modal.show({ type: 'notice', message, duration }).finally(() => modal.remove());
+  modal.show({ type: 'notice', message, duration }).finally(() => {
+    modal.remove();
+    if (activeNotice === modal) activeNotice = null;
+  });
 }
 
 // Global alias, mirroring showAlert/showConfirm/showPrompt/showChoice.

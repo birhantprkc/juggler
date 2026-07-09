@@ -101,6 +101,10 @@ select {
     --accent-red: #f85149;
     --accent-purple: #bc8cff;
 
+    /* showNotice toast — a prominent warm-yellow fill with near-black text. */
+    --notice-bg: #e6b93f;
+    --notice-text: #241c00;
+
     /* Approval-button keyboard-focus ring (action-confirmation ↑/↓ cursor).
        A neutral near-white reads clearly on every button fill in dark mode. */
     --approval-focus-ring: var(--text-primary);
@@ -350,6 +354,10 @@ select {
     --accent-orange: #bf8700;
     --accent-red: #d1242f;
     --accent-purple: #8250df;
+
+    /* showNotice toast — a prominent warm-yellow fill with dark text. */
+    --notice-bg: #ffdf7e;
+    --notice-text: #3d2c00;
 
     /* Approval-button keyboard-focus ring (action-confirmation ↑/↓ cursor).
        Greens rather than a harsh near-black outline: a solid green reads on the
