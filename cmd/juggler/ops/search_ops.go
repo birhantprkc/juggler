@@ -341,7 +341,9 @@ func (ops *SearchOperations) searchInFile(filePath, basePath string, pattern *re
 	// produce a multi-".." rel path (filepath.Rel takes symlinks literally
 	// and a workingDir stored as /var/folders/... vs a filePath surfaced as
 	// /private/var/folders/... would otherwise diverge at the root).
-	relPath := filepathRelEvalSymlinks(ops.scope.Root(), filePath)
+	// filepath.Rel yields OS separators (\ on Windows); tool results are always
+	// POSIX-style, so normalise back to forward slashes.
+	relPath := filepath.ToSlash(filepathRelEvalSymlinks(ops.scope.Root(), filePath))
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 1

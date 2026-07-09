@@ -1,0 +1,5 @@
+# Test fixtures must be byte-identical across platforms: the filesystem-api
+# suite asserts stat().size == readFile().length, and readFile normalises to
+# LF. With the repo-wide core.autocrlf=true these files would otherwise check
+# out as CRLF on Windows and the byte count would diverge. Force LF here.
+* text=auto eol=lf

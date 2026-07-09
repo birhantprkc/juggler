@@ -433,6 +433,10 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 		macWindow.WebviewPreferences = application.MacWebviewPreferences{
 			KeepRunningWhenHidden: application.Enabled,
 		}
+		// Windows: the same hazard as WebView2 "efficiency mode" — a hidden
+		// window's controller is dropped to IsVisible=false and its JS timers
+		// throttle toward 0Hz, stalling every lane. Keep the controller live.
+		winWindow.KeepRunningWhenHidden = true
 	}
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:           winTitle,
@@ -505,6 +509,12 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 				// regardless of window visibility.
 				KeepRunningWhenHidden: application.Enabled,
 			},
+		},
+		Windows: application.WindowsWindow{
+			// The engine WebView is permanently hidden and drives every tool
+			// call. Without this, WebView2 efficiency mode throttles its JS
+			// timers once the window loses visibility, freezing the backend.
+			KeepRunningWhenHidden: true,
 		},
 		Linux: application.LinuxWindow{},
 	})

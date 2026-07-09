@@ -115,6 +115,18 @@ function errMsg(e) {
   try { return JSON.stringify(e); } catch (_) { return 'sandbox error'; }
 }
 
+// A binding redeclaration (the common LLM mistake of \`const fs = ...\` over an
+// injected capability) is a SyntaxError whose text is engine-specific: V8
+// (WebView2/Windows) says "Identifier 'x' has already been declared", while
+// JavaScriptCore (WebKit/macOS+Linux) says "Cannot declare a const variable
+// twice: 'x'.". Rewrite V8's wording to WebKit's so the sandbox surfaces one
+// stable message everywhere; WebKit's own text passes through untouched.
+function compileErrMsg(e) {
+  const m = errMsg(e);
+  const v8 = m.match(/Identifier '([^']+)' has already been declared/);
+  return v8 ? ("Cannot declare a const variable twice: '" + v8[1] + "'.") : m;
+}
+
 // The iframe posts {type:'init', code, timeoutMs, capabilities, projectRoot,
 // origin} plus a MessagePort on the worker's first 'message'. All further
 // traffic is on the port: capability calls go out as {kind, method, args, id};
@@ -162,7 +174,12 @@ self.addEventListener('message', (event) => {
   function sandboxImport(spec) {
     let url = spec;
     if (typeof spec === 'string') {
-      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(spec)) url = spec;
+      // A Windows absolute path (C:/... or C:\\...) also matches the URL-scheme
+      // test below (its drive letter looks like a "c:" scheme), so detect it
+      // first and resolve it against the origin like any other absolute project
+      // path — the server serves "<projectRoot>/web/..." from the static tree.
+      if (/^[a-zA-Z]:[\\\\/]/.test(spec)) url = origin + '/' + spec.replace(/\\\\/g, '/');
+      else if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(spec)) url = spec;
       else if (spec.startsWith('/')) url = origin + spec;
       else url = origin + '/' + spec.replace(/^\\.\\//, '');
     }
@@ -193,7 +210,7 @@ self.addEventListener('message', (event) => {
   try {
     fn = new AsyncFunction(...names, code);
   } catch (err) {
-    port.postMessage({ kind: 'result', ok: false, error: errMsg(err) });
+    port.postMessage({ kind: 'result', ok: false, error: compileErrMsg(err) });
     return;
   }
 
@@ -226,7 +243,16 @@ self.addEventListener('message', (event) => {
 
             let worker;
             try {
-                worker = new Worker(SANDBOX_WORKER_BLOB, { type: 'module' });
+                // WebView2/Chromium refuses to load a *module* worker from this
+                // opaque-origin blob: URL (its module-graph fetch is denied, so
+                // the failure surfaces async as an empty-message worker.onerror).
+                // A classic worker from the same blob loads fine, and the worker
+                // source is self-contained — no static imports; dynamic import()
+                // still works in a classic worker. WebKit (macOS WKWebView, Linux
+                // WebKitGTK) already loads the module worker correctly, so it
+                // keeps that path and its behaviour is unchanged.
+                const isChromium = /\bChrome\//.test(navigator.userAgent);
+                worker = new Worker(SANDBOX_WORKER_BLOB, isChromium ? undefined : { type: 'module' });
             } catch (err) {
                 hostPort.postMessage({ kind: 'result', ok: false, error: (err && err.message) || String(err) });
                 return;

@@ -570,7 +570,9 @@ func (ops *TreeOperations) glob(ctx context.Context, params map[string]any) (any
 		if searchPath == "." {
 			relPath = match
 		} else {
-			relPath = filepath.Join(searchPath, match)
+			// filepath.Join uses the OS separator (\ on Windows); tool results
+			// are always POSIX-style, so normalise back to forward slashes.
+			relPath = filepath.ToSlash(filepath.Join(searchPath, match))
 		}
 
 		files = append(files, fileInfo{
@@ -633,7 +635,8 @@ func (ops *TreeOperations) expandDirectory(params map[string]any) (any, error) {
 		items = append(items, map[string]any{
 			"name":  entry.Name(),
 			"isDir": entry.IsDir(),
-			"path":  filepath.Join(path, entry.Name()),
+			// POSIX-style path in results, even on Windows (filepath.Join → \).
+			"path": filepath.ToSlash(filepath.Join(path, entry.Name())),
 		})
 	}
 

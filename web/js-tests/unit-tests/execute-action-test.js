@@ -167,7 +167,16 @@ export async function runTests(ctx) {
     // outcomes[0].result is the content string directly
     const stdout = /** @type {string} */ (outcomes[0].result).trim();
     assert(stdout.includes('/'), 'pwd should output a path');
-    assert(stdout === ctx.fixtureDir, 'pwd should match fixture dir');
+    // The shell reports its cwd in its own namespace: on POSIX it equals the
+    // native fixture dir, but git-bash on Windows remaps C:\Users\…\Temp\X to
+    // /tmp/X via its mount table (and WSL to /mnt/c/…/X), so the strings can't
+    // be compared directly. Both always share the unique leaf dir name, which is
+    // what actually proves the command ran in the fixture directory. (On POSIX
+    // the exact-match arm still holds, so the check stays as strict as before —
+    // and it also tolerates a /var ↔ /private/var symlink on macOS.)
+    const leaf = (p) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+    assert(stdout === ctx.fixtureDir || leaf(stdout) === leaf(ctx.fixtureDir),
+      `pwd should run in the fixture dir (pwd=${stdout})`);
 
     passed++;
   } catch (e) {

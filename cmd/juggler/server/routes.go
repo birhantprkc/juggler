@@ -688,14 +688,15 @@ func (s *Server) setupRoutes() {
 	// "/v<ver>/" rewrite. Matched dynamically because the project path is not
 	// known at registration time; no project loaded ⇒ never matches.
 	s.router.MatcherFunc(func(r *http.Request, _ *mux.RouteMatch) bool {
-		root := s.ProjectPath()
-		return root != "" && strings.HasPrefix(r.URL.Path, root+"/web/")
+		root := sandboxImportRoot(s.ProjectPath())
+		return root != "" && strings.HasPrefix(sandboxImportPath(r.URL.Path, root), root+"/web/")
 	}).HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if staticFileServer == nil {
 			http.NotFound(w, r)
 			return
 		}
-		rest := strings.TrimPrefix(r.URL.Path, s.ProjectPath()+"/web")
+		root := sandboxImportRoot(s.ProjectPath())
+		rest := strings.TrimPrefix(sandboxImportPath(r.URL.Path, root), root+"/web")
 		r2 := r.Clone(r.Context())
 		r2.URL.Path = rest
 		r2.URL.RawPath = ""
@@ -758,4 +759,24 @@ func (s *Server) serveEmbeddedTestAssets(vPrefix string) {
 	}
 	fileServer := http.FileServer(http.FS(testFS))
 	s.router.PathPrefix(vPrefix + "/js-tests/").Handler(http.StripPrefix(vPrefix, fileServer))
+}
+
+// sandboxImportRoot normalises the project path for the explore_code sandbox's
+// absolute-path module loader: forward slashes so it matches the worker's
+// origin-resolved import URLs on every OS (a Windows ProjectPath uses
+// backslashes, but the sandbox and its URLs are POSIX-style throughout).
+func sandboxImportRoot(projectPath string) string {
+	return filepath.ToSlash(projectPath)
+}
+
+// sandboxImportPath aligns a request URL path with sandboxImportRoot. A POSIX
+// project root is itself absolute ("/Users/…"), so the worker's origin+spec
+// already yields a matching "/Users/…/web/…" path. A Windows drive-letter root
+// ("C:/…") has no leading slash, so the worker resolves it against the origin as
+// "/C:/…/web/…"; drop that synthetic leading slash so the prefix lines up.
+func sandboxImportPath(urlPath, root string) string {
+	if len(root) >= 2 && root[1] == ':' {
+		return strings.TrimPrefix(urlPath, "/")
+	}
+	return urlPath
 }

@@ -361,7 +361,11 @@ func (s *Server) serveSandbox(w http.ResponseWriter, r *http.Request) {
 	// absolute project paths resolve to the same-origin static handler.
 	// Empty projectRoot leaves the mapping as "/web/" → "/v<ver>/", which
 	// is harmless — no caller imports starting with bare "/web/".
-	projectRoot := s.ProjectPath()
+	// Forward slashes even on Windows: the sandbox is entirely POSIX-path based
+	// (its path module uses '/'), and every other tool result is normalised the
+	// same way, so a backslash projectRoot would mismatch when joined or prefix-
+	// stripped against those forward-slash paths.
+	projectRoot := filepath.ToSlash(s.ProjectPath())
 	html := strings.ReplaceAll(string(content), "{{.CSPNonce}}", nonce)
 	html = strings.ReplaceAll(html, "{{.StaticVersion}}", s.staticVersion)
 	html = strings.ReplaceAll(html, "{{.ProjectRoot}}", template.JSEscapeString(projectRoot))
