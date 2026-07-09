@@ -595,7 +595,7 @@ lint-go: app-icon-embed wails-runtime-embed
 		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
 		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
 	fi
-	@$(shell go env GOPATH)/bin/golangci-lint run --timeout=5m ./cmd/... ./tests/... ./web/...
+	@$(subst \,/,$(shell go env GOPATH))/bin/golangci-lint run --timeout=5m ./cmd/... ./tests/... ./web/...
 
 ## lint-deadcode: Find unreachable Go functions in cmd/ (production code).
 ## Test helpers and benchmark fixtures are excluded; mock methods in _test.go
@@ -607,11 +607,12 @@ lint-go: app-icon-embed wails-runtime-embed
 ## files (e.g. flatted/golang/pkg/flatted/) that are unrelated to this
 ## module and tank the analysis with bogus "unreachable" hits.
 lint-deadcode: app-icon-embed wails-runtime-embed
-	@if [ ! -x "$(shell go env GOPATH)/bin/deadcode" ]; then \
+	@if [ ! -x "$(subst \,/,$(shell go env GOPATH))/bin/deadcode" ]; then \
 		echo "Installing deadcode..."; \
 		go install golang.org/x/tools/cmd/deadcode@latest; \
 	fi
-	@out=$$($(shell go env GOPATH)/bin/deadcode -test ./cmd/... ./tests/... ./web/... \
+	@out=$$($(subst \,/,$(shell go env GOPATH))/bin/deadcode -test ./cmd/... ./tests/... ./web/... \
+		| tr '\134' '/' \
 		| grep -v '_test\.go:' \
 		| grep -v '^tests/helpers/' \
 		| grep -v '^tests/integration/helpers/' \

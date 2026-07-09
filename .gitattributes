@@ -13,3 +13,9 @@ Makefile text eol=lf
 # Keep Windows batch files with CRLF
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Generated verbatim copy of the vendored Wails runtime (synced by the Makefile's
+# wails-runtime-embed target via cp). Keep it byte-for-byte with its
+# 3rdparty/wails source — treat as binary so the `* text=auto` rule above doesn't
+# fight the build by trying to normalize the source's original line endings.
+cmd/juggler/server/wails_runtime.js -text
