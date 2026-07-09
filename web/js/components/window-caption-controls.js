@@ -3,19 +3,23 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Windows caption controls — minimise / maximise-restore / close buttons for
- * the frameless Windows window.
+ * Caption controls — minimise / maximise-restore / close buttons for the
+ * frameless Windows and Linux windows.
  *
- * The desktop window strips the native Win32 title bar (cmd/juggler/window.go
- * sets Frameless on Windows) so the app's own header fills the top of the
- * window, matching the frameless macOS look. macOS keeps its native traffic
- * lights via the transparent MacTitleBar, so it needs no HTML controls; only
- * Windows is left without window buttons, which this element supplies.
+ * The desktop window strips the native title bar on Windows (Win32 caption) and
+ * Linux (GTK decorations) — see cmd/juggler-app/window_frame_{windows,linux}.go
+ * — so the app's own header fills the top of the window, matching the frameless
+ * macOS look. macOS keeps its native traffic lights via the transparent
+ * MacTitleBar, so it needs no HTML controls; Windows and Linux are the platforms
+ * left without window buttons, which this element supplies. The buttons and
+ * their glyphs are shared across both; only the CSS chrome differs (flat
+ * full-height caption on Windows, rounded Adwaita-style buttons on Linux).
  *
  * Inert everywhere else:
- *   - Remote browsers and the macOS/Linux windows: CSS keeps the element
- *     `display: none` (it only shows under [data-window-platform="windows"] in
- *     window-mode), and connectedCallback bails before wiring anything.
+ *   - Remote browsers and the macOS window: CSS keeps the element
+ *     `display: none` (it only shows under [data-window-platform="windows"] and
+ *     ["linux"] in window-mode), and connectedCallback bails before wiring
+ *     anything.
  *
  * Buttons drive the native window through the window-control endpoint (see
  * _control / window-control.js). The maximise glyph flips to a "restore" glyph
@@ -51,9 +55,11 @@ function svg(inner) {
 class WindowCaptionControls extends HTMLElement {
   connectedCallback() {
     const root = document.documentElement;
-    // Only the in-process Windows window gets caption buttons. Bail in
-    // remote browsers, the macOS/Linux windows, and any non-window tab.
-    if (root.dataset.windowMode !== '1' || root.dataset.windowPlatform !== 'windows') {
+    // Only the frameless in-process windows (Windows, Linux) get caption
+    // buttons. Bail in remote browsers, the macOS window (native traffic
+    // lights), and any non-window tab.
+    const platform = root.dataset.windowPlatform;
+    if (root.dataset.windowMode !== '1' || (platform !== 'windows' && platform !== 'linux')) {
       return;
     }
     // Buttons drive the native window through the loopback /api/window/

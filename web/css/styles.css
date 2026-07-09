@@ -2924,8 +2924,8 @@ thread-column-actions {
 }
 
 /* macOS draws the native traffic lights over the top-left of the webview, so
-   the header reserves room for them. Windows/Linux have no such overlay (and
-   Windows puts its caption buttons on the right instead — see below). */
+   the header reserves room for them. Windows/Linux have no such overlay (they
+   put their own caption buttons on the right instead — see below). */
 :root[data-window-platform="mac"] .window-mode .app-header {
     /* stylelint-disable-next-line rem-over-px/rem-over-px, unit-disallowed-list */
     padding-left: 80px; /* clear macOS traffic lights */
@@ -2985,30 +2985,28 @@ thread-column-actions {
 }
 
 /* ============================================================================
-   WINDOWS CAPTION CONTROLS
-   The frameless Windows window has no native title bar, so the header supplies
-   its own minimise / maximise / close buttons (window-caption-controls.js).
-   Hidden everywhere else — macOS keeps native traffic lights, remote browsers
-   have no window to control. Only shown in the Windows desktop window.
+   CAPTION CONTROLS (frameless Windows + Linux)
+   The frameless Windows and Linux windows have no native title bar, so the
+   header supplies its own minimise / maximise / close buttons
+   (window-caption-controls.js). Hidden everywhere else — macOS keeps native
+   traffic lights, remote browsers have no window to control. The buttons and
+   glyphs are shared; the chrome differs per platform: a flat, full-height
+   caption strip on Windows, and compact rounded Adwaita-style buttons on Linux.
    ============================================================================ */
 
 window-caption-controls {
     display: none;
 }
 
-:root[data-window-platform="windows"] .window-mode window-caption-controls {
+:root[data-window-platform="windows"] .window-mode window-caption-controls,
+:root[data-window-platform="linux"] .window-mode window-caption-controls {
     display: flex;
-    align-self: stretch; /* span the full header height */
-
-    /* Cancel the header's right + vertical padding so the buttons sit flush in
-       the window's top-right corner, the way native caption buttons do. */
-    margin: -0.75rem -1.25rem -0.75rem 0;
 
     --wails-draggable: no-drag; /* buttons are clickable, not a drag region */
 
     /* Stay above the disconnection overlay (z-index --z-modal). Without a
        native title bar these HTML buttons are the ONLY way to close the
-       frameless Windows window, so they must never be covered — otherwise a
+       frameless window, so they must never be covered — otherwise a
        lost-connection overlay traps the window with no way to close it. This
        only works because the overlay is mounted INSIDE <app-container> (see
        disconnection-overlay.js): app-container is position:fixed and so forms
@@ -3019,17 +3017,43 @@ window-caption-controls {
     z-index: var(--z-above-modal);
 }
 
+/* Windows: full-height buttons flush to the top-right corner, native-caption
+   style. Cancel the header's right + vertical padding so they sit flush. */
+:root[data-window-platform="windows"] .window-mode window-caption-controls {
+    align-self: stretch; /* span the full header height */
+    margin: -0.75rem -1.25rem -0.75rem 0;
+}
+
+/* Linux: compact rounded buttons inset from the corner, matching the GNOME /
+   Adwaita convention. They sit within the header padding rather than flush. */
+:root[data-window-platform="linux"] .window-mode window-caption-controls {
+    align-self: center;
+    gap: 0.25rem;
+    margin-left: 0.5rem; /* separate from the header actions to their left */
+}
+
 .window-caption-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2.875rem; /* 46px — standard Windows caption-button width */
     padding: 0;
     border: none;
     background: transparent;
     color: var(--text-secondary);
     cursor: default;
     transition: background-color var(--transition-base), color var(--transition-base);
+}
+
+/* Windows caption width: 46px, full header height (stretched container). */
+:root[data-window-platform="windows"] .window-caption-btn {
+    width: 2.875rem; /* 46px — standard Windows caption-button width */
+}
+
+/* Linux (Adwaita): small circular buttons. */
+:root[data-window-platform="linux"] .window-caption-btn {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
 }
 
 .window-caption-btn svg {
@@ -3047,7 +3071,7 @@ window-caption-controls {
 }
 
 .window-caption-btn--close:hover {
-    background: #e81123; /* Windows close-button red */
+    background: #e81123; /* close-button red */
     color: #fff;
 }
 
