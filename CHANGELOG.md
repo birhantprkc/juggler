@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Made the model chooser list able to hide some providers
+
 ## [0.2.3] - 2026-07-10
 
 - Linux desktop window now uses the app's own title bar with custom caption buttons, matching macOS/Windows.

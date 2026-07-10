@@ -8,12 +8,17 @@ import providersCache from '../services/providers-cache.js';
 import usageStatsCache from '../services/usage-stats-cache.js';
 import recentModels from '../services/recent-models.js';
 import { getRecommendedModels } from '../utils/model-filter.js';
-import { getToggleIcons } from '../../sdk/lib/html.js';
 import { resolveConfig } from '../model/model-config.js';
 import { modelLabel, modelLabelFromList } from '../model/model-display.js';
 
 /** Usage snapshots older than this are blanked while refreshing rather than shown. */
 const USAGE_STALE_MS = 5 * 60 * 1000;
+
+/** localStorage key holding the per-provider list view-state override map. */
+const VIEW_STATE_STORAGE_KEY = 'juggler-model-view-state';
+
+/** The list view-states a provider header toggle cycles through. */
+const VIEW_STATES = ['none', 'top', 'all'];
 
 /**
  * Model selector component with provider and model dropdown menu
@@ -51,8 +56,16 @@ class ModelSelector extends HTMLElement {
     this._popupRelease = null;
     /** @type {import('../services/websocket.js').WSEventCallback|null} @private */
     this._providersUpdateHandler = null;
-    /** @type {Record<string, boolean>} @private */
-    this.showAllState = {};
+    /**
+     * Per-provider list view state: how many of a provider's models the list
+     * column shows. Tri-state, cycled from the toggle in each provider's header:
+     * 'none' (collapsed, no rows) → 'top' (recommended shortlist) → 'all' (full
+     * list). Unset defaults to 'top' for providers with a shortlist, else 'all'.
+     * Seeded from (and persisted to) localStorage as a sparse map of user
+     * overrides — untouched providers stay absent and fall back to the default.
+     * @type {Record<string, 'none'|'top'|'all'>} @private
+     */
+    this.providerViewState = this._loadViewState();
     /** @type {import('../model/message-thread.js').default|null} @private */
     this._messageThread = null;
     /** @type {*} @private */
@@ -345,12 +358,74 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
-   * Toggle show all state for a provider
+   * Read the persisted per-provider view-state overrides, tolerant of a
+   * missing or corrupt blob. Only recognised states are kept, so a stale or
+   * hand-edited value can never poison the map.
+   * @private
+   * @returns {Record<string, 'none'|'top'|'all'>} provider name → view state.
+   */
+  _loadViewState() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(VIEW_STATE_STORAGE_KEY) || '{}') || {};
+      /** @type {Record<string, 'none'|'top'|'all'>} */
+      const clean = {};
+      for (const [name, state] of Object.entries(raw)) {
+        if (VIEW_STATES.includes(/** @type {string} */ (state))) {
+          clean[name] = /** @type {'none'|'top'|'all'} */ (state);
+        }
+      }
+      return clean;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Persist the current per-provider view-state map, best-effort.
+   * @private
+   */
+  _saveViewState() {
+    try {
+      localStorage.setItem(VIEW_STATE_STORAGE_KEY, JSON.stringify(this.providerViewState));
+    } catch {
+      /* best-effort — localStorage may be full or unavailable */
+    }
+  }
+
+  /**
+   * Resolve a provider's effective list view state, applying the default when
+   * nothing has been chosen yet. Providers with no meaningful shortlist (the
+   * recommended subset equals the full list) skip the 'top' state, so an unset
+   * or stale 'top' collapses to 'all' for them.
+   * @private
+   * @param {string} providerName
+   * @param {boolean} hasShortlist - Whether a recommended subset < full list exists.
+   * @returns {'none'|'top'|'all'} The state to render.
+   */
+  _resolveViewState(providerName, hasShortlist) {
+    const s = this.providerViewState[providerName];
+    if (s === 'none' || s === 'all') return s;
+    if (s === 'top') return hasShortlist ? 'top' : 'all';
+    // Unset: default to the shortlist when there is one, else the full list.
+    return hasShortlist ? 'top' : 'all';
+  }
+
+  /**
+   * Advance a provider's list view to the next tri-state in the cycle
+   * none → top → all → none (providers without a shortlist cycle none ↔ all).
    * @private
    * @param {string} providerName
    */
-  _toggleShowAll(providerName) {
-    this.showAllState[providerName] = !this.showAllState[providerName];
+  _cycleProviderView(providerName) {
+    const provider = this.providers.find(p => p.name === providerName);
+    if (!provider) return;
+    const all = provider.modelsWithContext || [];
+    const hasShortlist = getRecommendedModels(all).length < all.length;
+    const order = hasShortlist ? ['none', 'top', 'all'] : ['none', 'all'];
+    const current = this._resolveViewState(providerName, hasShortlist);
+    const next = order[(order.indexOf(current) + 1) % order.length];
+    this.providerViewState[providerName] = /** @type {'none'|'top'|'all'} */ (next);
+    this._saveViewState();
     this._updateDropdownContent();
   }
 
@@ -493,6 +568,60 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
+   * Render one provider's section: a header bar carrying the provider name and
+   * a tri-state view toggle ("none"/"top"/"all"), followed by the model rows
+   * dictated by the current view state. The header is always rendered — even in
+   * the 'none' (collapsed) state, where no rows follow — so the toggle stays
+   * reachable to re-expand the list.
+   * @private
+   * @param {Provider} provider
+   * @returns {string} HTML for the provider's header + model group.
+   */
+  _generateProviderSection(provider) {
+    const allModels = provider.modelsWithContext;
+    const recommendedModels = getRecommendedModels(allModels);
+    const hasShortlist = recommendedModels.length < allModels.length;
+    const state = this._resolveViewState(provider.name, hasShortlist);
+
+    // Rows shown depend on the state: none → empty, top → shortlist, all → full.
+    let modelsToShow = state === 'none' ? [] : (state === 'all' ? allModels : recommendedModels);
+
+    // In the shortlist view, always keep the currently selected model visible
+    // even when it isn't part of the recommended subset.
+    if (state === 'top' && this.provider === provider.name && this.model) {
+      const selectedModel = allModels.find(m => m.id === this.model);
+      if (selectedModel && !modelsToShow.find(m => m.id === this.model)) {
+        modelsToShow = [selectedModel, ...modelsToShow];
+      }
+    }
+
+    const recommendedIds = new Set(recommendedModels.map(m => m.id));
+    const disabledNote = provider.available ? '' : this._unavailableHint(provider);
+
+    const items = modelsToShow.map(model => {
+      const displayName = modelLabel(model.displayName, model.id);
+      if (disabledNote) {
+        return this._disabledModelItem({
+          label: displayName,
+          note: disabledNote,
+          active: this.provider === provider.name && this.model === model.id,
+        });
+      }
+      return this._selectionItem({
+        label: displayName,
+        active: this.provider === provider.name && this.model === model.id,
+        classes: recommendedIds.has(model.id) ? 'recommended' : '',
+        dataAttrs: `data-provider="${provider.name}" data-model="${model.id}"`,
+      });
+    });
+
+    const toggle = `<button type="button" class="provider-view-toggle" data-provider="${provider.name}" title="Toggle model list: none / top / all">${state}</button>`;
+    const header = `<li class="menu-header provider-menu-header"><span class="menu-header-label">${provider.displayName}</span>${toggle}</li>`;
+    const group = items.length ? `<menu class="menu-group">${items.join('')}</menu>` : '';
+    return `${header}${group}`;
+  }
+
+  /**
    * Generate the scrolling model-list column: per-provider model sections.
    * @private
    * @returns {string} The HTML string for the dropdown's model list.
@@ -528,59 +657,7 @@ class ModelSelector extends HTMLElement {
     }
 
     content += menuProviders
-      .map(provider => {
-        const showAll = this.showAllState?.[provider.name] || false;
-        const allModels = provider.modelsWithContext;
-        const recommendedModels = getRecommendedModels(allModels);
-
-        // Recommended by default; all models when toggled.
-        let modelsToShow = showAll ? allModels : recommendedModels;
-
-        // CRITICAL: Always include the currently selected model, even if not recommended
-        if (!showAll && this.provider === provider.name && this.model) {
-          const selectedModel = allModels.find(m => m.id === this.model);
-          if (selectedModel && !modelsToShow.find(m => m.id === this.model)) {
-            modelsToShow = [selectedModel, ...modelsToShow];
-          }
-        }
-
-        const recommendedIds = new Set(recommendedModels.map(m => m.id));
-        const disabledNote = provider.available ? '' : this._unavailableHint(provider);
-
-        const items = modelsToShow.map(model => {
-          const displayName = modelLabel(model.displayName, model.id);
-          if (disabledNote) {
-            return this._disabledModelItem({
-              label: displayName,
-              note: disabledNote,
-              active: this.provider === provider.name && this.model === model.id,
-            });
-          }
-          return this._selectionItem({
-            label: displayName,
-            active: this.provider === provider.name && this.model === model.id,
-            classes: recommendedIds.has(model.id) ? 'recommended' : '',
-            dataAttrs: `data-provider="${provider.name}" data-model="${model.id}"`,
-          });
-        });
-
-        // Toggle button, only when there are more than 8 models.
-        if (allModels.length > 8) {
-          const icons = getToggleIcons();
-          const icon = showAll ? icons.collapse : icons.expand;
-          const label = showAll
-            ? 'Show recommended only'
-            : `Show all ${allModels.length} models`;
-          items.push(`
-                        <li class="menu-item toggle-show-all" data-provider="${provider.name}">
-                            ${icon}
-                            <span class="toggle-label">${label}</span>
-                        </li>
-                    `);
-        }
-
-        return this._menuSection({ header: provider.displayName, items });
-      }).join('');
+      .map(provider => this._generateProviderSection(provider)).join('');
 
     // Bottom-of-list escape hatch: clear the model selection entirely. Styled
     // as a plain selection row so it matches the model items above; active (✓)
@@ -823,14 +900,14 @@ class ModelSelector extends HTMLElement {
   _attachDropdownListener(dropdown) {
     dropdown.addEventListener('click', (e) => {
       const target = /** @type {Element} */(e.target);
-      const item = target.closest('.menu-item, .toggle-show-all');
+      const item = target.closest('.menu-item, .provider-view-toggle');
       if (!item) return;
 
-      if (item.classList.contains('toggle-show-all')) {
+      if (item.classList.contains('provider-view-toggle')) {
         e.stopPropagation();
         const providerName = item.getAttribute('data-provider');
         if (providerName) {
-          this._toggleShowAll(providerName);
+          this._cycleProviderView(providerName);
         }
         return;
       }
