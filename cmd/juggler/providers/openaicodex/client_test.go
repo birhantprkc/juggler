@@ -68,14 +68,23 @@ func TestListModelsParsesCodexCatalog(t *testing.T) {
 	if accountHeader != "acct_123" {
 		t.Fatalf("ChatGPT-Account-Id header = %q, want acct_123", accountHeader)
 	}
-	if len(models) != 2 {
-		t.Fatalf("got %d models, want 2", len(models))
+	if len(models) != 8 {
+		t.Fatalf("got %d models, want 8", len(models))
 	}
 	if models[0].ID != "gpt-5.5" || models[0].ContextWindow != 272000 || models[0].MaxOutputTokens != 32768 || !models[0].FromAPI {
 		t.Fatalf("unexpected first model: %+v", models[0])
 	}
 	if models[1].ID != "gpt-5.3-codex" || models[1].ContextWindow != 192000 || models[1].MaxOutputTokens != DefaultMaxOutputTokens {
 		t.Fatalf("unexpected second model: %+v", models[1])
+	}
+	fallbackIDs := map[string]bool{}
+	for _, model := range models[2:] {
+		fallbackIDs[model.ID] = !model.FromAPI
+	}
+	for _, id := range []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if !fallbackIDs[id] {
+			t.Fatalf("missing static fallback %s in %+v", id, models)
+		}
 	}
 }
 

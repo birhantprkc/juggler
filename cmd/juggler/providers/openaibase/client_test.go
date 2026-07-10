@@ -82,9 +82,11 @@ func TestNewClientFromProviderConfigRequiresCredential(t *testing.T) {
 	}
 }
 
-func TestCodexModelsUseResponsesAPI(t *testing.T) {
-	if !IsResponsesAPIModel("gpt-5.2-codex") {
-		t.Fatal("codex model should use Responses API")
+func TestModelsUseResponsesAPI(t *testing.T) {
+	for _, model := range []string{"gpt-5.2-codex", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		if !IsResponsesAPIModel(model) {
+			t.Fatalf("%s should use Responses API", model)
+		}
 	}
 	if IsResponsesAPIModel("gpt-4o") {
 		t.Fatal("non-codex model should not require Responses API")

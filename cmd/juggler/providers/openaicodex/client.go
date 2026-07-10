@@ -22,7 +22,7 @@ import (
 var baseURL = "https://chatgpt.com/backend-api/codex"
 
 const (
-	codexClientVersion = "0.133.0"
+	codexClientVersion = "0.144.1"
 )
 
 // Register adds the OpenAI Codex-plan provider to the global registry. It
@@ -128,5 +128,31 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 	if len(infos) == 0 {
 		return nil, fmt.Errorf("OpenAI Codex /models returned no visible models")
 	}
-	return infos, nil
+	return withStaticFallbackModels(infos), nil
+}
+
+func withStaticFallbackModels(infos []provider.ModelInfo) []provider.ModelInfo {
+	seen := make(map[string]bool, len(infos))
+	for _, info := range infos {
+		seen[info.ID] = true
+	}
+
+	ids := make([]string, 0, len(ModelContextWindows))
+	for id := range ModelContextWindows {
+		if !seen[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		infos = append(infos, provider.ModelInfo{
+			ID:              id,
+			DisplayName:     utils.ModelDisplayName(id) + " (ChatGPT plan)",
+			ContextWindow:   ModelContextWindows[id],
+			MaxOutputTokens: DefaultMaxOutputTokens,
+			FromAPI:         false,
+		})
+	}
+	return infos
 }

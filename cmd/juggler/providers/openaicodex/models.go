@@ -12,6 +12,10 @@ const (
 // ModelContextWindows is the static context-window map exposed via
 // ProviderInfo.ModelContextWindows for the providers settings UI.
 var ModelContextWindows = map[string]int{
+	"gpt-5.6":       DefaultContextWindow,
+	"gpt-5.6-sol":   DefaultContextWindow,
+	"gpt-5.6-terra": DefaultContextWindow,
+	"gpt-5.6-luna":  DefaultContextWindow,
 	"gpt-5.1-codex": DefaultContextWindow,
 	"gpt-5.2-codex": DefaultContextWindow,
 }

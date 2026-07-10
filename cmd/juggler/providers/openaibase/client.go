@@ -260,11 +260,11 @@ func (c *Client) GetModel() string {
 	return c.model
 }
 
-// IsResponsesAPIModel returns true if the model requires the Responses API instead of Chat Completions
+// IsResponsesAPIModel returns true if the model requires the Responses API instead of Chat Completions.
 func IsResponsesAPIModel(model string) bool {
 	modelLower := strings.ToLower(model)
-	// Any model id containing "codex" requires the Responses API.
-	return strings.Contains(modelLower, "codex")
+	// Codex and GPT-5.6 model ids require the Responses API.
+	return strings.Contains(modelLower, "codex") || strings.HasPrefix(modelLower, "gpt-5.6")
 }
 
 // convertToolsToResponsesAPI converts provider.ToolDefinition to Responses API tool format
@@ -407,7 +407,7 @@ func promptCacheKey(req provider.MessageRequest) string {
 	return req.ConversationID + "/" + req.ThreadID
 }
 
-// streamMessageResponses uses the Responses API for any model id containing "codex"
+// streamMessageResponses uses the Responses API for models that need it.
 func (c *Client) streamMessageResponses(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	jlog.Debug("Streaming message with Responses API, model %s, %d messages", c.model, len(req.Messages))
 

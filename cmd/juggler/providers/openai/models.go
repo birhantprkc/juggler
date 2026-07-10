@@ -13,6 +13,10 @@ var ModelContextWindows = map[string]int{
 	"gpt-5":            400000,
 	"gpt-5-mini":       400000,
 	"gpt-5-nano":       400000,
+	"gpt-5.6":          400000,
+	"gpt-5.6-sol":      400000,
+	"gpt-5.6-terra":    400000,
+	"gpt-5.6-luna":     400000,
 	"gpt-5.1":          128000, // ChatGPT version
 	"gpt-5.1-thinking": 196000,
 
@@ -42,6 +46,10 @@ var ModelMaxOutputTokens = map[string]int{
 	"gpt-5":            128000,
 	"gpt-5-mini":       128000,
 	"gpt-5-nano":       128000,
+	"gpt-5.6":          128000,
+	"gpt-5.6-sol":      128000,
+	"gpt-5.6-terra":    128000,
+	"gpt-5.6-luna":     128000,
 	"gpt-5.1":          128000,
 	"gpt-5.1-thinking": 128000,
 
