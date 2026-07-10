@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-10
+
 - Used the saved theme hint earlier to avoid startup background flashes.
 
 ## [0.3.0] - 2026-07-10
