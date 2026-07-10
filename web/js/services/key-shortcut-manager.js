@@ -167,6 +167,16 @@ const SHORTCUT_DEFS = [
     allowInInput: true,
   },
   {
+    id: 'find-in-conversation',
+    label: 'Find in conversation',
+    description: 'Open the find bar to search for text in the current conversation.',
+    category: 'Search',
+    // Works while typing in the composer — the find bar is a search overlay, so
+    // it must be reachable without first leaving the text field.
+    defaultBinding: { mod: true, key: 'f' },
+    allowInInput: true,
+  },
+  {
     id: 'undo',
     label: 'Undo',
     description: 'Undo the last change in the current conversation.',

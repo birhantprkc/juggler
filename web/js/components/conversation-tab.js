@@ -323,6 +323,22 @@ class ConversationTab extends HTMLElement {
     return this._columns[0] || null;
   }
 
+  /**
+   * The conversation-area column that Find (⌘F) should search: the focused
+   * column when it is a conversation-area, else the first conversation-area
+   * column. Unlike {@link _inputColumn}, a column whose input box is hidden
+   * still qualifies — Find searches a column's messages, it doesn't type into
+   * its composer.
+   * @returns {HTMLElement|null} The conversation-area element, or null.
+   */
+  getActiveConversationColumn() {
+    const active = /** @type {HTMLElement} */ (this._columns[this._selection.activeColumnIndex]);
+    if (active && active.tagName === 'CONVERSATION-AREA') return active;
+    return /** @type {HTMLElement|null} */ (
+      this._columns.find((c) => /** @type {HTMLElement} */ (c).tagName === 'CONVERSATION-AREA') || null
+    );
+  }
+
   // ── Focus management ──────────────────────────────────────────────
   //
   // Two focus modes: TYPING (textarea focused) and NAVIGATING (textarea

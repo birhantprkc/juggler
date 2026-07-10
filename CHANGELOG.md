@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Made the model chooser list able to hide some providers
+- Added ⌘F find-in-conversation with a floating search bar and match navigation
 
 ## [0.2.3] - 2026-07-10
 

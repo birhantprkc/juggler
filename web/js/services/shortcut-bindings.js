@@ -19,6 +19,7 @@ import {
   toggleActiveFileEditing,
 } from './conversation-commands.js';
 import { markSeen } from './tips-manager.js';
+import findBar from '../components/find-bar.js';
 
 /**
  * Register the conversation command handlers and install the global dispatcher.
@@ -47,6 +48,19 @@ export function registerConversationShortcuts(session) {
     const acted = toggleActiveFileEditing(session);
     if (acted) markSeen('toggle-file-editing');
     return acted;
+  });
+  // Find-in-conversation opens/refocuses the find bar against the active
+  // conversation-area column (the focused column of the visible tab). ⌘F never
+  // closes — it opens if closed and focuses+selects-all if already open, so
+  // repeated presses behave like the platform find field (Esc / ✕ close). Falls
+  // through (returns false) when there's no conversation column to search, so
+  // the browser's native find still works on empty/project-picker views.
+  keyShortcutManager.register('find-in-conversation', () => {
+    const tab = /** @type {any} */ (document.querySelector('conversation-tab.active'));
+    const column = tab?.getActiveConversationColumn?.();
+    if (!column) return false;
+    findBar.open(column);
+    return true;
   });
   keyShortcutManager.install();
 }

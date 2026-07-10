@@ -109,6 +109,7 @@ import { runTests as runNestedApprovalStatusTests } from '../unit-tests/nested-a
 import { runTests as runBatchCoerceTests } from '../unit-tests/batch-coerce-test.js';
 import { runTests as runChimeRecoveryTests } from '../unit-tests/chime-recovery-test.js';
 import { runTests as runKeyShortcutManagerTests } from '../unit-tests/key-shortcut-manager-test.js';
+import { runTests as runFindTests } from '../unit-tests/find-test.js';
 import { runTests as runContextMenuTests } from '../unit-tests/context-menu-test.js';
 import { runTests as runExtensionRegistryTests } from '../unit-tests/extension-registry-test.js';
 import { runTests as runSdkFacadeParityTests } from '../unit-tests/sdk-facade-parity-test.js';
@@ -215,6 +216,7 @@ const ALL_TESTS = [
 const UNIT_TEST_SUITES = [
   { name: 'unit:approval-flow', run: runApprovalFlowTests },
   { name: 'unit:key-shortcut-manager', run: runKeyShortcutManagerTests },
+  { name: 'unit:find', run: runFindTests },
   { name: 'unit:context-item-persistence', run: runContextItemPersistenceTests },
   { name: 'unit:conversation-name-persistence', run: runConversationNameTests },
   { name: 'unit:draft-persistence', run: runDraftPersistenceTests },

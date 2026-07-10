@@ -60,6 +60,10 @@ export function applyCollapsible(contentEl, { key = '', thresholdPx = DEFAULT_TH
   if (contentEl.scrollHeight <= thresholdPx + SLACK_PX) return;
 
   contentEl.classList.add('collapsible');
+  // Stamp the key onto the element so `expandCollapsibleContaining` can recover
+  // it and persist an auto-expand into `expandedState` (see below). Purely
+  // additive — the clamp/toggle behaviour is unchanged.
+  if (key) contentEl.dataset.collapsibleKey = key;
 
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -87,4 +91,41 @@ export function applyCollapsible(contentEl, { key = '', thresholdPx = DEFAULT_TH
   });
 
   contentEl.after(btn);
+}
+
+/**
+ * Expand the nearest collapsed collapsible that contains `node`, if any, so a
+ * match buried inside a clamped block (e.g. found by ⌘F) can be scrolled to and
+ * seen. Walks up from `node` to the closest `.collapsible.is-collapsed`
+ * ancestor and, if found, replays exactly what the internal toggle does on
+ * expand: flip `is-collapsed`→`is-expanded` and repaint the adjacent
+ * `.collapsible-toggle` into its "Show less" state. If the collapsible carries a
+ * `key` (stamped as `dataset.collapsibleKey` by {@link applyCollapsible}), the
+ * expanded state is also recorded in `expandedState`, so a later repaint keeps
+ * it open rather than snapping shut.
+ * @param {Node | null} node - Any node inside (or equal to) the collapsible.
+ * @returns {boolean} True if a collapsed collapsible was expanded, else false.
+ */
+export function expandCollapsibleContaining(node) {
+  const startEl = /** @type {Element | null} */ (
+    node && node.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement ?? null
+  );
+  const contentEl = /** @type {HTMLElement | null} */ (
+    startEl?.closest('.collapsible.is-collapsed') ?? null
+  );
+  if (!contentEl) return false;
+
+  contentEl.classList.remove('is-collapsed');
+  contentEl.classList.add('is-expanded');
+
+  const btn = contentEl.nextElementSibling;
+  if (btn && btn.classList.contains('collapsible-toggle')) {
+    btn.innerHTML = EXPAND_LESS_SVG + '<span>Show less</span>';
+    btn.setAttribute('aria-expanded', 'true');
+  }
+
+  const key = contentEl.dataset.collapsibleKey;
+  if (key) expandedState.set(key, true);
+
+  return true;
 }
