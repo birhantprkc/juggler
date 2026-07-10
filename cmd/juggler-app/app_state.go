@@ -559,9 +559,20 @@ func (a *appState) setWindowProject(e *winEntry, project string) {
 func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *exec.Cmd, saved core.WindowState, hasSaved bool, inheritedTheme string) *winEntry {
 	id := <-a.ids
 	nativeCtl := fmt.Sprintf("http://127.0.0.1:%d/win/%s", a.ctlPort, id)
+
+	// Resolve the startup theme hint before building the URL/options. The page can
+	// use ?theme= to apply the user's last-reported theme before localStorage is
+	// read, and the native window uses the same colour for its bare pre-paint fill.
+	// Only send a real hint (inherited from the source window or persisted from a
+	// previous launch); don't send the dark fallback, because a first-ever launch
+	// with no explicit choice should still let the page follow the OS preference.
+	startupTheme := normaliseTheme(inheritedTheme)
+	if startupTheme == "" {
+		a.reg(func(st *regState) { startupTheme = st.lastTheme })
+	}
 	fullURL := strings.TrimRight(serverURL, "/") + "/?window=1&nativeCtl=" + url.QueryEscape(nativeCtl)
-	if inheritedTheme = normaliseTheme(inheritedTheme); inheritedTheme != "" {
-		fullURL += "&theme=" + url.QueryEscape(inheritedTheme)
+	if startupTheme != "" {
+		fullURL += "&theme=" + url.QueryEscape(startupTheme)
 	}
 
 	// Resolve the native background colour to paint before the page's first
@@ -569,12 +580,10 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// false), so Wails fills the bare frame with options.BackgroundColour on
 	// WM_ERASEBKGND until WebView2 paints; left unset that fill is black, which
 	// shows as a flash. Match it to the theme: the inherited theme for File ▸ New
-	// Window, else the last theme any window reported this session (so a restored
-	// window matches where you left off), else the app's dark default.
-	bgTheme := inheritedTheme
-	if bgTheme == "" {
-		a.reg(func(st *regState) { bgTheme = st.lastTheme })
-	}
+	// Window, else the last theme any window reported this session or a previous
+	// launch (so a restored/Finder-launched window matches where you left off),
+	// else the app's dark default.
+	bgTheme := startupTheme
 	if bgTheme == "" {
 		bgTheme = "dark"
 	}
@@ -675,7 +684,7 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 		serverURL:    serverURL,
 		saveCh:       make(chan struct{}, 1),
 		stopSave:     make(chan struct{}),
-		currentTheme: inheritedTheme,
+		currentTheme: startupTheme,
 	}
 	a.reg(func(st *regState) {
 		st.windows[id] = e

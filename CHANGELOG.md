@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Used the saved theme hint earlier to avoid startup background flashes.
+
 ## [0.3.0] - 2026-07-10
 
 - Made the model chooser list able to hide some providers
