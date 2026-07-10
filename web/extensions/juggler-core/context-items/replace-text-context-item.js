@@ -5,7 +5,7 @@
 
 import EditBase from './edit-base.js';
 import { editFile } from 'juggler/ops';
-import { normalizeFilePath } from 'juggler/item-utils';
+import { normalizeFilePath, basename } from 'juggler/item-utils';
 
 /**
  * @typedef {object} ReplaceTextParams
@@ -287,7 +287,7 @@ class ReplaceTextContextItem extends EditBase {
    */
   formatError(result, _toolName) {
     // User-friendly message - short and clear with filename
-    const filename = result.path ? result.path.split('/').pop() || result.path : 'unknown';
+    const filename = result.path ? basename(result.path) || result.path : 'unknown';
     const userMessage = `failed in ${filename}`;
 
     // LLM message with technical details for self-correction (built as array to avoid += lint rule)
@@ -328,7 +328,7 @@ class ReplaceTextContextItem extends EditBase {
     const result = actionStatus.result || {};
     const path = result.path || toolInput?.file_path || toolInput?.path || 'unknown';
     // Get just the filename for display
-    const filename = path.split('/').pop() || path;
+    const filename = basename(path) || path;
 
     // Build summary
     let summary;

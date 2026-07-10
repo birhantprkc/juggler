@@ -8,6 +8,7 @@
 export {
   formatFileSize,
   formatDisplayPath,
+  basename,
   formatFileContentForLLM,
   normalizeFilePath,
 } from './lib/context-item-utils.js';

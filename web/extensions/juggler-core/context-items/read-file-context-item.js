@@ -5,7 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile } from 'juggler/ops';
-import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createCodeBlock, normalizeFilePath, injectFileContentStyles } from 'juggler/item-utils';
+import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createCodeBlock, normalizeFilePath, injectFileContentStyles, basename } from 'juggler/item-utils';
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { smartTruncate } from 'juggler/ui';
@@ -316,7 +316,7 @@ class ReadFileContextItem extends ContextItem {
 
     const path = /** @type {string} */ (toolInput?.file_path || toolInput?.path) || 'unknown';
     // Get just the filename for display
-    const filename = path.split('/').pop() || path;
+    const filename = basename(path) || path;
 
     let summary;
     /** @type {import('juggler/context-item').ResultStatus|undefined} */

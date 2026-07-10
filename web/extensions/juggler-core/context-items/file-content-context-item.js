@@ -5,7 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile, getTree } from 'juggler/ops';
-import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createCodeBlock, createTextBlock, injectFileContentStyles } from 'juggler/item-utils';
+import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createCodeBlock, createTextBlock, injectFileContentStyles, basename } from 'juggler/item-utils';
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { buildPickerPanel } from 'juggler/ui';
@@ -91,10 +91,10 @@ class FileContentContextItem extends ContextItem {
       return { typeName: 'File Content', summary: 'No file selected' };
     }
     if (this.data.isDirectory) {
-      const displayPath = this.data.path.replace(/\/+$/, '').split('/').pop() || this.data.path;
+      const displayPath = basename(this.data.path) || this.data.path;
       return { typeName: 'Folder', summary: `${displayPath}/`, status: 'success' };
     }
-    const filename = this.data.path.split('/').pop() || this.data.path;
+    const filename = basename(this.data.path) || this.data.path;
     return { typeName: 'File Content', summary: filename, status: 'success' };
   }
 
@@ -509,7 +509,7 @@ class FileContentContextItem extends ContextItem {
    * @returns {string} Filename portion of path
    */
   _getFilename(path) {
-    return path.split('/').pop() || path;
+    return basename(path) || path;
   }
 
   /**

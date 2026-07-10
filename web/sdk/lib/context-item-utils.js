@@ -51,6 +51,21 @@ export function formatDisplayPath(path) {
 }
 
 /**
+ * Return the final segment (filename or folder name) of a path for display.
+ * Handles both POSIX (`/`) and Windows (`\`) separators — the backend reports
+ * native OS paths, so titles must strip either — and trims trailing separators
+ * so a directory path yields its own name rather than an empty string.
+ * @param {string} path - File or directory path
+ * @returns {string} Last path segment, or '' if the path is empty
+ */
+export function basename(path) {
+  if (!path) return '';
+  const trimmed = path.replace(/[/\\]+$/, '');
+  const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return idx === -1 ? trimmed : trimmed.slice(idx + 1);
+}
+
+/**
  * Create an empty state element
  * @param {string} message - Empty state message
  * @param {string} [icon=''] - Optional icon

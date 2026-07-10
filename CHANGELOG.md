@@ -8,6 +8,7 @@ of changes; this project follows semantic versioning.
 - Linux desktop window now uses the app's own title bar with custom caption buttons, matching macOS/Windows.
 - Fixed Finder/Dock-launched app inheriting a stripped PATH, so the bash tool now sees the user's full shell PATH.
 - Improved Codex sign-in diagnostics with checked auth-file paths.
+- Fixed file context-item titles showing the full path on Windows instead of just the filename.
 
 ## [0.2.2] - 2026-07-07
 

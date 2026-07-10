@@ -48,7 +48,7 @@ class ExploreCodeContextItem extends ContextItem {
         properties: {
           code: {
             type: 'string',
-            description: 'JavaScript code to execute. Must return a value. Use async/await freely.\n\nAvailable local variables:\n- `fs` — standard read-only Node.js fs.promises API\n- `path` — standard Node.js path module\n- `grep(pattern, {cwd?, glob?, maxResults?, ignoreCase?})` — search file contents (like ripgrep), returns [{file, line, content}]\n- `glob(pattern, {cwd?})` — find files matching a glob pattern (like Node.js fs.glob), returns string[]\n- `projectRoot` — absolute path to the current project root (string). You can `import()` any module under `${projectRoot}/web/...` by its absolute path — relative sibling imports inside resolve normally.'
+            description: 'JavaScript to execute (async/await OK; must return a value). Browser realm, NOT Node: no `process`/`require`/`Buffer`. In-scope bindings:\n- `fs` — read-only fs.promises subset\n- `path` — POSIX path (forward-slash, even on Windows)\n- `grep(pattern, {cwd?, glob?, maxResults?, ignoreCase?})` → [{file, line, content}]\n- `glob(pattern, {cwd?})` → string[]\n- `projectRoot` — absolute project root (forward-slashed). `import()` any `${projectRoot}/web/...` module by absolute path.'
           },
           description: {
             type: 'string',

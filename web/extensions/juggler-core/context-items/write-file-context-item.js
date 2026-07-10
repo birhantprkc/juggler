@@ -5,7 +5,7 @@
 
 import EditBase from './edit-base.js';
 import { readFile, writeFile } from 'juggler/ops';
-import { formatDisplayPath, normalizeFilePath, createCodeBlock } from 'juggler/item-utils';
+import { formatDisplayPath, normalizeFilePath, createCodeBlock, basename } from 'juggler/item-utils';
 
 /** @type {Record<string, string>} */
 const LANG_MAP = {
@@ -306,7 +306,7 @@ class WriteFileContextItem extends EditBase {
     const result = actionStatus.result || {};
     const path = result.path || toolInput?.file_path || toolInput?.path || contentData?.path || diffData?.path || 'unknown';
     // Get just the filename for display
-    const filename = path.split('/').pop() || path;
+    const filename = basename(path) || path;
 
     // Build summary
     let summary;
