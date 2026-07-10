@@ -19,7 +19,7 @@
  * @module unit-tests/bash-command-approval-unit-test
  */
 
-import { isCommandAutoApproved, suggestApprovalPatterns, tokenize, posixNormalize, matchesGlob, isGrantableRoot } from '../../extensions/juggler-core/context-items/execute/command-approval.js';
+import { isCommandAutoApproved, suggestApprovalPatterns, tokenize, posixNormalize, matchesGlob, isGrantableRoot, isPathInsideAllowedRoots } from '../../extensions/juggler-core/context-items/execute/command-approval.js';
 
 const PROJECT_ROOT = '/Users/jules/code/juggler';
 const TEST_HOME = '/Users/jules';
@@ -88,6 +88,25 @@ const CASES = [
     command: 'dir', patterns: ['*'], platform: 'windows', expected: false },
   { name: 'windows pwsh prompts (native interpreter)',
     command: 'pwsh -c "ls"', patterns: ['*'], platform: 'windows', expected: false },
+
+  // === Windows path-format normalisation (git-bash / MSYS vs native drive) ===
+  // On Windows the shell is git-bash, so a command path arrives MSYS-style
+  // (/c/...); the backend stores allowed roots in native form (C:\...). Every
+  // spelling of the same location must compare equal, and a drive path OUTSIDE
+  // the roots must still be rejected (a forward-slash C:/ path must not be
+  // mistaken for a relative in-project path).
+  { name: 'windows: leading cd to /c/ project + make build 2>&1|tail matches make * (the reported command)',
+    command: 'cd /c/Users/jules/code/juggler && make build 2>&1 | tail -40', patterns: ['make *'], platform: 'windows',
+    allowedRoots: ['C:\\Users\\jules\\code\\juggler'], expected: true },
+  { name: 'windows: git-bash /c/ path inside a native C:\\ root auto-approves',
+    command: 'ls /c/Users/jules/code/juggler/web', patterns: [], platform: 'windows',
+    allowedRoots: ['C:\\Users\\jules\\code\\juggler'], expected: true },
+  { name: 'windows: forward-slash C:/ command path inside native root auto-approves',
+    command: 'cat C:/Users/jules/code/juggler/README.md', patterns: [], platform: 'windows',
+    allowedRoots: ['C:\\Users\\jules\\code\\juggler'], expected: true },
+  { name: 'windows: forward-slash C:/ path OUTSIDE roots prompts (no relative-path over-approval)',
+    command: 'ls C:/Windows/System32', patterns: [], platform: 'windows',
+    allowedRoots: ['C:\\Users\\jules\\code\\juggler'], expected: false },
   { name: 'linux git log matches git *',
     command: 'git log', patterns: ['git *'], platform: 'linux', expected: true },
 
@@ -1356,6 +1375,42 @@ export async function runTests() {
   for (const [root, want] of GRANT_CASES) {
     const got = isGrantableRoot(root, TEST_HOME);
     if (got !== want) { failed++; errors.push(`isGrantableRoot("${root}"): want ${want}, got ${got}`); }
+    else passed++;
+  }
+
+  // === Windows path-format normalisation spot-checks ===
+  // Every spelling of the same Windows location must compare equal, and a path
+  // outside the roots must stay outside regardless of spelling. `platform`
+  // gates the drive reinterpretation so POSIX behaviour is unchanged (on POSIX,
+  // `/c/...` is a real path and comparison stays case-sensitive).
+  /** @type {Array<[string, string[], string, boolean]>} p, roots, platform, expected-inside */
+  const WIN_PATH_CASES = [
+    // git-bash /c/ command path vs the three root spellings — all the same place
+    ['/c/Users/jules/code/juggler/web', ['C:\\Users\\jules\\code\\juggler'], 'windows', true],
+    ['/c/Users/jules/code/juggler/web', ['C:/Users/jules/code/juggler'], 'windows', true],
+    ['/c/Users/jules/code/juggler/web', ['/c/Users/jules/code/juggler'], 'windows', true],
+    // forward-slash C:/ command path vs native root
+    ['C:/Users/jules/code/juggler/README.md', ['C:\\Users\\jules\\code\\juggler'], 'windows', true],
+    // native backslash command path vs native root (both need folding)
+    ['C:\\Users\\jules\\code\\juggler\\web', ['C:\\Users\\jules\\code\\juggler'], 'windows', true],
+    // /cygdrive/c/ Cygwin spelling
+    ['/cygdrive/c/Users/jules/code/juggler/web', ['C:\\Users\\jules\\code\\juggler'], 'windows', true],
+    // drive-letter + path case-insensitivity (Windows FS is case-insensitive)
+    ['/c/users/JULES/code/juggler/web', ['C:\\Users\\jules\\code\\juggler'], 'windows', true],
+    // OUTSIDE the roots — must stay out, every spelling
+    ['C:/Windows/System32', ['C:\\Users\\jules\\code\\juggler'], 'windows', false],
+    ['/c/Windows/System32', ['C:\\Users\\jules\\code\\juggler'], 'windows', false],
+    // a different drive is never inside a C: root
+    ['/d/Users/jules/code/juggler/web', ['C:\\Users\\jules\\code\\juggler'], 'windows', false],
+    // POSIX guard: `/c/` is a literal path, no drive reinterpretation, and
+    // comparison stays case-sensitive.
+    ['/c/Users/x/file', ['/c/Users/x'], 'linux', true],
+    ['/C/Users/x/file', ['/c/Users/x'], 'linux', false],
+    ['C:/Windows/System32', ['/c/Users'], 'linux', true], // relative-path branch off-Windows (unchanged legacy behaviour)
+  ];
+  for (const [p, roots, platform, want] of WIN_PATH_CASES) {
+    const got = isPathInsideAllowedRoots(p, roots, '', platform);
+    if (got !== want) { failed++; errors.push(`isPathInsideAllowedRoots("${p}", ${JSON.stringify(roots)}, "${platform}"): want ${want}, got ${got}`); }
     else passed++;
   }
 

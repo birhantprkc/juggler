@@ -561,12 +561,43 @@ export function posixNormalize(p) {
 }
 
 /**
+ * Canonicalise a Windows path to a single comparable POSIX-shaped, lower-cased
+ * form, so the same location compares equal however it was spelled. On Windows
+ * (git-bash / MSYS is the expected shell) one directory can arrive as a native
+ * drive path (`C:\Users\me`), a forward-slash drive path (`C:/Users/me`), an
+ * MSYS drive path (`/c/Users/me`), or a Cygwin path (`/cygdrive/c/Users/me`) —
+ * all the same place. We fold every form to `/c/users/me`:
+ *   - backslashes become forward slashes;
+ *   - a `/cygdrive/<d>/…` or `<d>:/…` (or bare `<d>:`) drive prefix becomes
+ *     `/<d>/…`, so a drive path becomes an ordinary rooted path;
+ *   - the whole path is lower-cased, because Windows filesystems are
+ *     case-insensitive, so `C:\Users` and `c:\users` are one location.
+ * Idempotent: a path already in `/c/…` lower-case form is returned unchanged.
+ *
+ * Called ONLY when the conversation's platform is Windows. On POSIX platforms
+ * `/c/foo` is a real absolute path and a bare `C:` could be a filename, so this
+ * reinterpretation must never run there — every caller gates on `platform`.
+ * @param {string} p input path in any Windows spelling
+ * @returns {string} canonical POSIX-shaped, lower-cased path
+ */
+function windowsToComparable(p) {
+  if (!p) return p;
+  let s = p.replace(/\\/g, '/');
+  s = s.replace(/^\/cygdrive\/([A-Za-z])(?=\/|$)/, (_m, d) => '/' + d);
+  s = s.replace(/^([A-Za-z]):(?=\/|$)/, (_m, d) => '/' + d);
+  return s.toLowerCase();
+}
+
+/**
  * Reduce a path to a canonical string for allowed-root containment comparison,
  * so the same location compares equal however it is written. Both the command's
  * path argument and each stored allowed root pass through here before matching —
  * stored roots are kept verbatim as the user typed them, so either side may be
  * absolute OR `~`-form, and only canonicalising both makes them comparable.
  *
+ *   - On Windows, every drive-path spelling is first folded to one comparable
+ *     `/c/…` lower-case form (see {@link windowsToComparable}) — including
+ *     `home`, so `~` still expands consistently.
  *   - A leading `~`/`~/<suffix>` expands to its absolute path when `home` is
  *     known (mirroring the shell expanding `~` to $HOME); when `home` is unknown
  *     a `~/<suffix>` path keeps a canonical `~/<suffix>` form so a `~`-form root
@@ -578,11 +609,16 @@ export function posixNormalize(p) {
  * a `~/..`-escape, or a shell expansion we cannot resolve).
  * @param {string} path input path or stored root
  * @param {string} [home] backend user-home dir for resolving `~`
+ * @param {string} [platform] conversation platform; 'windows' enables drive-path folding
  * @returns {string} comparable canonical path, or '' if unusable
  */
-function toComparablePath(path, home = '') {
+function toComparablePath(path, home = '', platform = '') {
   if (!path) return '';
   if (path.includes('$') || path.includes('`')) return '';
+  if (platform === 'windows') {
+    path = windowsToComparable(path);
+    if (home) home = windowsToComparable(home);
+  }
   if (path === '~' || path === '~/') {
     return home ? posixNormalize(home.endsWith('/') ? home.slice(0, -1) : home) : '';
   }
@@ -618,25 +654,33 @@ function toComparablePath(path, home = '') {
  * @param {string} p input path
  * @param {string[]} allowedRoots allowed filesystem roots
  * @param {string} [home] backend user-home dir for resolving `~/...`
+ * @param {string} [platform] conversation platform; 'windows' folds every drive-path spelling before matching
  * @returns {boolean} true if `p` resolves inside any allowed root
  */
-export function isPathInsideAllowedRoots(p, allowedRoots, home = '') {
+export function isPathInsideAllowedRoots(p, allowedRoots, home = '', platform = '') {
   if (!p) return false;
   if (p.includes('$') || p.includes('`')) return false;
   if (!Array.isArray(allowedRoots) || allowedRoots.length === 0) return false;
 
+  // On Windows a drive path (`C:\…`, `C:/…`, `/cygdrive/c/…`) denotes an
+  // absolute location, but only `/c/…` and native `C:\…` *look* rooted — a
+  // forward-slash `C:/…` would fall through to the relative branch below and be
+  // mis-approved as an in-project path. Fold to the comparable form FIRST so the
+  // rooted-vs-relative decision is made on the canonical spelling.
+  const cp = platform === 'windows' ? windowsToComparable(p) : p;
+
   // Relative path: just verify it doesn't escape via `..`. We treat
   // the cwd as implicitly allowed (the conversation's project path is
   // always among the roots in normal use).
-  if (!p.startsWith('/') && !p.startsWith('~')) {
-    const norm = posixNormalize(p);
+  if (!cp.startsWith('/') && !cp.startsWith('~')) {
+    const norm = posixNormalize(cp);
     return norm !== '..' && !norm.startsWith('../');
   }
 
-  const target = toComparablePath(p, home);
+  const target = toComparablePath(p, home, platform);
   if (!target) return false;
   for (const root of allowedRoots) {
-    const r = toComparablePath(root, home);
+    const r = toComparablePath(root, home, platform);
     if (!r) continue;
     if (target === r || target.startsWith(r + '/')) return true;
   }
@@ -823,7 +867,7 @@ class CommandHandler {
   static outOfRootPaths(args, ctx) {
     const paths = this.pathArgs(args, ctx);
     if (paths === null) return [];
-    return paths.filter(p => !isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home));
+    return paths.filter(p => !isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform));
   }
 
   /**
@@ -966,7 +1010,7 @@ class CdHandler extends CommandHandler {
   static isSafe(args, ctx) {
     return args.length === 1
 			&& !checkedAt(args, 0).startsWith('-')
-			&& isPathInsideAllowedRoots(checkedAt(args, 0), ctx.allowedRoots, ctx.home);
+			&& isPathInsideAllowedRoots(checkedAt(args, 0), ctx.allowedRoots, ctx.home, ctx.platform);
   }
 }
 
@@ -1024,7 +1068,7 @@ class LsHandler extends CommandHandler {
     const paths = LsHandler._parsePaths(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -1093,7 +1137,7 @@ class DuHandler extends CommandHandler {
             val = checkedAt(args, ++i);
           }
           if ((flag === '--max-depth') && !/^\d+$/.test(val)) return null;
-          if (flag === '--exclude-from' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home)) return null;
+          if (flag === '--exclude-from' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
           continue;
         }
         return null;
@@ -1111,7 +1155,7 @@ class DuHandler extends CommandHandler {
             val = checkedAt(args, ++i);
           }
           if (ch === 'd' && !/^\d+$/.test(val)) return null;
-          if (ch === 'X' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home)) return null;
+          if (ch === 'X' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
           break;
         }
       }
@@ -1128,7 +1172,7 @@ class DuHandler extends CommandHandler {
     const paths = DuHandler._parseFlags(args, ctx);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -1187,7 +1231,7 @@ class FlaggedFileReader extends CommandHandler {
     const paths = this.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -1334,7 +1378,7 @@ class SortHandler extends CommandHandler {
     const start = SortHandler._parseFlags(args);
     if (start === -1) return false;
     for (let j = start; j < args.length; j++) {
-      if (!isPathInsideAllowedRoots(checkedAt(args, j), ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(checkedAt(args, j), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -1460,7 +1504,7 @@ class UniqHandler extends CommandHandler {
     if (positionals === null) return false;
     if (positionals.length > 1) return false; // 2nd positional = output file
     for (const p of positionals) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -1580,7 +1624,7 @@ class CutHandler extends CommandHandler {
     const positionals = CutHandler._parseFlags(args);
     if (positionals === null) return false;
     for (const p of positionals) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -1690,7 +1734,7 @@ class CatHandler extends CommandHandler {
     const paths = CatHandler.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -1781,11 +1825,11 @@ class GrepHandler extends CommandHandler {
           // Value is either the rest of the cluster or the next arg.
           const rest = cluster.slice(k + 1);
           if (rest.length > 0) {
-            if (ch === 'f' && !isPathInsideAllowedRoots(rest, ctx.allowedRoots, ctx.home)) return null;
+            if (ch === 'f' && !isPathInsideAllowedRoots(rest, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
           } else {
             if (i + 1 >= args.length) return null;
             const val = checkedAt(args, i + 1);
-            if (ch === 'f' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home)) return null;
+            if (ch === 'f' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
             i++;
           }
           consumed = true;
@@ -1814,7 +1858,7 @@ class GrepHandler extends CommandHandler {
     // grep invocation (`grep /tmp/foo`). Treat it as a path obstacle for approval
     // rather than letting a broad `grep *` pattern bless it.
     if (positionals.length === 1 && (checkedAt(positionals, 0).startsWith('/') || checkedAt(positionals, 0).startsWith('~/'))) {
-      return isPathInsideAllowedRoots(checkedAt(positionals, 0), ctx.allowedRoots, ctx.home);
+      return isPathInsideAllowedRoots(checkedAt(positionals, 0), ctx.allowedRoots, ctx.home, ctx.platform);
     }
     // Drop the pattern (first positional) if present.
     const paths = positionals.slice(1);
@@ -1825,7 +1869,7 @@ class GrepHandler extends CommandHandler {
       return isRecursive;
     }
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -1955,7 +1999,7 @@ class FileHandler extends CommandHandler {
     const paths = FileHandler.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -2002,7 +2046,7 @@ class StatHandler extends CommandHandler {
     const paths = StatHandler.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -2084,7 +2128,7 @@ class TestHandler extends CommandHandler {
       const op = checkedAt(expr, 0);
       const operand = checkedAt(expr, 1);
       if (this.STRING_UNARY.has(op)) return true;
-      if (this.FILE_UNARY.has(op)) return isPathInsideAllowedRoots(operand, ctx.allowedRoots, ctx.home);
+      if (this.FILE_UNARY.has(op)) return isPathInsideAllowedRoots(operand, ctx.allowedRoots, ctx.home, ctx.platform);
       return false;
     }
     if (expr.length === 3) {
@@ -2094,8 +2138,8 @@ class TestHandler extends CommandHandler {
       if (this.STR_BINARY.has(op)) return true;
       if (this.INT_BINARY.has(op)) return /^-?\d+$/.test(a) && /^-?\d+$/.test(b);
       if (this.FILE_BINARY.has(op)) {
-        return isPathInsideAllowedRoots(a, ctx.allowedRoots, ctx.home) &&
-          isPathInsideAllowedRoots(b, ctx.allowedRoots, ctx.home);
+        return isPathInsideAllowedRoots(a, ctx.allowedRoots, ctx.home, ctx.platform) &&
+          isPathInsideAllowedRoots(b, ctx.allowedRoots, ctx.home, ctx.platform);
       }
       return false;
     }
@@ -2202,7 +2246,7 @@ class FindHandler extends CommandHandler {
 
     // Starting-point paths (zero or more). All must be in-project.
     while (i < args.length && !checkedAt(args, i).startsWith('-') && checkedAt(args, i) !== '!' && checkedAt(args, i) !== '(') {
-      if (!isPathInsideAllowedRoots(checkedAt(args, i), ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(checkedAt(args, i), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
       i++;
     }
 
@@ -2352,7 +2396,7 @@ class SedHandler extends CommandHandler {
     }
     // Remaining positionals are file paths — must be in-project.
     for (const p of parsed.paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -2648,7 +2692,7 @@ class AwkHandler extends CommandHandler {
     if (!parsed) return false;
     if (!isSafeAwkScript(checkedAt(args, parsed.scriptIdx))) return false;
     for (let j = parsed.restStart; j < args.length; j++) {
-      if (!isPathInsideAllowedRoots(checkedAt(args, j), ctx.allowedRoots, ctx.home)) return false;
+      if (!isPathInsideAllowedRoots(checkedAt(args, j), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
     }
     return true;
   }
@@ -2798,17 +2842,17 @@ class GitHandler extends CommandHandler {
       if (a === '--no-pager' || a === '--paginate' || a === '--no-replace-objects' || a === '--bare') { i++; continue; }
       if (a === '-C') {
         if (i + 1 >= args.length) return false;
-        if (!isPathInsideAllowedRoots(checkedAt(args, i + 1), ctx.allowedRoots, ctx.home)) return false;
+        if (!isPathInsideAllowedRoots(checkedAt(args, i + 1), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
         i += 2;
         continue;
       }
       if (a.startsWith('--git-dir=')) {
-        if (!isPathInsideAllowedRoots(a.slice('--git-dir='.length), ctx.allowedRoots, ctx.home)) return false;
+        if (!isPathInsideAllowedRoots(a.slice('--git-dir='.length), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
         i++;
         continue;
       }
       if (a.startsWith('--work-tree=')) {
-        if (!isPathInsideAllowedRoots(a.slice('--work-tree='.length), ctx.allowedRoots, ctx.home)) return false;
+        if (!isPathInsideAllowedRoots(a.slice('--work-tree='.length), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
         i++;
         continue;
       }
@@ -3093,7 +3137,7 @@ class GitHandler extends CommandHandler {
    * @returns {boolean} in-project path
    */
   static isPathPositional(arg, ctx) {
-    return isPathInsideAllowedRoots(arg, ctx.allowedRoots, ctx.home);
+    return isPathInsideAllowedRoots(arg, ctx.allowedRoots, ctx.home, ctx.platform);
   }
 }
 
@@ -3244,7 +3288,7 @@ const COMMAND_HANDLERS = /** @type {Map<string, typeof CommandHandler>} */ (new 
 // ============================================================================
 
 /**
- * @typedef {{allowedRoots?: string[], writeEnabled?: boolean, home?: string}} RedirectCfg
+ * @typedef {{allowedRoots?: string[], writeEnabled?: boolean, home?: string, platform?: string}} RedirectCfg
  */
 
 /**
@@ -3266,7 +3310,7 @@ const COMMAND_HANDLERS = /** @type {Map<string, typeof CommandHandler>} */ (new 
  */
 function isStrippableRedirectTarget(target, cfg = {}) {
   if (target === '/dev/null') return true;
-  return Boolean(cfg.writeEnabled) && isPathInsideAllowedRoots(target, cfg.allowedRoots || [], cfg.home || '');
+  return Boolean(cfg.writeEnabled) && isPathInsideAllowedRoots(target, cfg.allowedRoots || [], cfg.home || '', cfg.platform || '');
 }
 
 /**
@@ -3381,7 +3425,7 @@ function stripLeadingSafeCd(tokens, ctx) {
   const t2 = checkedAt(tokens, 2);
   if (t1.type !== 'word') return null;
   if (t2.type !== 'op' || !TOP_LEVEL_SPLIT_OPS.has(t2.text)) return null;
-  if (!isPathInsideAllowedRoots(t1.text, ctx.allowedRoots, ctx.home)) return null;
+  if (!isPathInsideAllowedRoots(t1.text, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
   return tokens.slice(3);
 }
 
