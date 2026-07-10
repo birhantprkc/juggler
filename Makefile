@@ -356,6 +356,12 @@ wails-runtime-embed:
 ## github.com/tc-hib/go-winres (auto-installed). Skipped silently if the tool
 ## can't be installed (e.g. no network); the binaries still build, just without
 ## an icon resource.
+##
+## --manifest gui embeds an application manifest declaring the Common-Controls
+## v6 side-by-side assembly (and PerMonitor-v2 DPI awareness, which the app also
+## sets at runtime, so that part is a no-op). The v6 dependency is what lets the
+## desktop app show themed TaskDialog message boxes instead of the classic
+## Win32 MessageBox; without it the dialog code falls back to the legacy look.
 #
 # On the Windows runner `go env GOPATH` returns a backslash path
 # (C:\Users\...\go); the msys `sh` that Make spawns eats the backslashes,
@@ -373,6 +379,7 @@ win-icon:
 		"$(GO_WINRES)" simply \
 			--arch $(WIN_SYSO_ARCHES) \
 			--icon "$(APP_ICON_PNG)" \
+			--manifest gui \
 			--product-name Juggler \
 			--file-description Juggler \
 			--out cmd/$$pkg/rsrc >/dev/null || { \
