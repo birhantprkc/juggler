@@ -68,9 +68,16 @@ func (e workspaceEntry) spec() windowSpec {
 	return windowSpec{project: e.Project}
 }
 
-// workspaceFile is the JSON document: an ordered list of open windows.
+// workspaceFile is the JSON document: an ordered list of open windows plus a
+// small "last theme used" hint. lastTheme is the most recent theme any page
+// reported; it's read back at startup to paint a restored window's bare native
+// frame to match instead of flashing the dark default before the page's first
+// paint (see buildWindow's bgTheme). It's global, not per-project — the
+// per-project value only lives in the page's localStorage, which the Go side
+// can't read at window-build time.
 type workspaceFile struct {
-	Windows []workspaceEntry `json:"windows"`
+	Windows   []workspaceEntry `json:"windows"`
+	LastTheme string           `json:"lastTheme,omitempty"`
 }
 
 // workspaceStore persists the open-window set. One goroutine owns the file;
@@ -81,15 +88,26 @@ type workspaceStore struct {
 }
 
 type wsSaveReq struct {
-	entries []workspaceEntry
-	done    chan struct{} // non-nil for a synchronous flush
+	entries []workspaceEntry // nil leaves the persisted window set unchanged
+	theme   *string          // nil leaves the persisted theme unchanged
+	done    chan struct{}    // non-nil for a synchronous flush
 }
 
 func newWorkspaceStore() *workspaceStore {
 	w := &workspaceStore{saves: make(chan wsSaveReq, 16), path: workspaceFilePath()}
 	go func() {
+		// Hold the whole document in memory so a windows-only or theme-only save
+		// preserves the other field. Seed from disk once; this goroutine is the
+		// file's sole writer thereafter (no mutex, per the concurrency rule).
+		cur := readWorkspaceFile(w.path)
 		for req := range w.saves {
-			writeWorkspaceFile(w.path, req.entries)
+			if req.entries != nil {
+				cur.Windows = req.entries
+			}
+			if req.theme != nil {
+				cur.LastTheme = *req.theme
+			}
+			writeWorkspaceFile(w.path, cur)
 			if req.done != nil {
 				close(req.done)
 			}
@@ -111,17 +129,20 @@ func (w *workspaceStore) flush(entries []workspaceEntry) {
 	<-done
 }
 
-// load reads the persisted set as specs (nil when missing/corrupt → caller
+// saveTheme records the last-used theme, preserving the open-window set.
+// Best-effort and fire-and-forget, like save; a failure just means the next
+// launch falls back to its default frame colour.
+func (w *workspaceStore) saveTheme(theme string) {
+	if normaliseTheme(theme) == "" {
+		return
+	}
+	w.saves <- wsSaveReq{theme: &theme}
+}
+
+// load reads the persisted set as specs (empty when missing/corrupt → caller
 // falls back to a single default window).
 func (w *workspaceStore) load() []windowSpec {
-	data, err := os.ReadFile(w.path)
-	if err != nil {
-		return nil
-	}
-	var f workspaceFile
-	if json.Unmarshal(data, &f) != nil {
-		return nil
-	}
+	f := readWorkspaceFile(w.path)
 	specs := make([]windowSpec, 0, len(f.Windows))
 	for _, e := range f.Windows {
 		s := e.spec()
@@ -138,16 +159,37 @@ func (w *workspaceStore) load() []windowSpec {
 	return specs
 }
 
+// loadLastTheme returns the persisted last-used theme, normalised to a theme we
+// know (or "" when absent/corrupt/unknown). Read at startup to seed the native
+// frame colour before any page has reported its theme.
+func (w *workspaceStore) loadLastTheme() string {
+	return normaliseTheme(readWorkspaceFile(w.path).LastTheme)
+}
+
 func workspaceFilePath() string {
 	return filepath.Join(userpaths.ConfigDir(), "workspace.json")
 }
 
-func writeWorkspaceFile(path string, entries []workspaceEntry) {
+// readWorkspaceFile parses the document, returning a zero value when the file is
+// missing or corrupt (callers then fall back to their defaults).
+func readWorkspaceFile(path string) workspaceFile {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return workspaceFile{}
+	}
+	var f workspaceFile
+	if json.Unmarshal(data, &f) != nil {
+		return workspaceFile{}
+	}
+	return f
+}
+
+func writeWorkspaceFile(path string, doc workspaceFile) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		logf("workspace: mkdir failed: %v", err)
 		return
 	}
-	data, err := json.MarshalIndent(workspaceFile{Windows: entries}, "", "  ")
+	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return
 	}

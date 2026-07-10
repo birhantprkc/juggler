@@ -80,6 +80,12 @@ type regState struct {
 	windows map[string]*winEntry
 	servers map[string]*exec.Cmd // url -> spawned server we own (and must stop)
 
+	// lastTheme is the most recent page-reported theme across all windows. It
+	// seeds the native background colour of the next window built without an
+	// inherited theme (e.g. a restored window), so its bare frame matches the
+	// theme instead of flashing the default before the page's first paint.
+	lastTheme string
+
 	// quitting is set once an app-wide quit has been authorised (the quit guard
 	// found no busy work, or the user confirmed the discard). While set, the
 	// ShouldQuit hook allows termination and per-window close hooks stop
@@ -109,7 +115,10 @@ func newAppState(devMode int) *appState {
 		ids:       make(chan string),
 	}
 	go func() {
-		st := &regState{windows: map[string]*winEntry{}, servers: map[string]*exec.Cmd{}}
+		// Seed lastTheme from the persisted last-used theme so the very first
+		// window built this launch (before any page has reported) paints its bare
+		// frame to match instead of flashing the dark default (see workspace.go).
+		st := &regState{windows: map[string]*winEntry{}, servers: map[string]*exec.Cmd{}, lastTheme: a.workspace.loadLastTheme()}
 		for op := range a.regOps {
 			op(st)
 		}
@@ -450,11 +459,23 @@ func (a *appState) setWindowTheme(e *winEntry, theme string) (application.RGBA, 
 	if theme == "" {
 		return application.RGBA{}, false
 	}
-	a.reg(func(_ *regState) {
+	changed := false
+	a.reg(func(st *regState) {
 		if e != nil {
 			e.currentTheme = theme
 		}
+		// Remember the freshest theme so the next window built without an
+		// inherited one paints its bare frame to match (see buildWindow's bgTheme).
+		if st.lastTheme != theme {
+			st.lastTheme = theme
+			changed = true
+		}
 	})
+	// Persist across launches so a restored window's first frame matches, too.
+	// Only on an actual change — the page reports its theme on every load.
+	if changed {
+		a.workspace.saveTheme(theme)
+	}
 	return themeColours[theme], true
 }
 
@@ -543,6 +564,21 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 		fullURL += "&theme=" + url.QueryEscape(inheritedTheme)
 	}
 
+	// Resolve the native background colour to paint before the page's first
+	// frame. On Windows the window is created visible (platformWindowHidden is
+	// false), so Wails fills the bare frame with options.BackgroundColour on
+	// WM_ERASEBKGND until WebView2 paints; left unset that fill is black, which
+	// shows as a flash. Match it to the theme: the inherited theme for File ▸ New
+	// Window, else the last theme any window reported this session (so a restored
+	// window matches where you left off), else the app's dark default.
+	bgTheme := inheritedTheme
+	if bgTheme == "" {
+		a.reg(func(st *regState) { bgTheme = st.lastTheme })
+	}
+	if bgTheme == "" {
+		bgTheme = "dark"
+	}
+
 	// Place the window at the geometry saved in this project's session (passed in
 	// by the caller, read from the server), falling back to a centred default the
 	// first time a project is opened.
@@ -588,6 +624,10 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 		StartState:      startState,
 		Hidden:          platformWindowHidden,
 		Frameless:       platformFrameless,
+		// Theme-matched bare-frame fill (see bgTheme above) so a window shown
+		// before its first paint doesn't flash black. On macOS applyWindowChrome
+		// repaints the NSWindow too; this covers Windows/Linux where it's a no-op.
+		BackgroundColour: themeColours[bgTheme],
 		// NB: deliberately NOT setting EnableFileDrop. With it off, WebKit's own
 		// HTML5 file drag-and-drop reaches the page — the WKWebView delivers real
 		// File objects to page JS exactly like a browser — and the input box's

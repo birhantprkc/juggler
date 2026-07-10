@@ -8,7 +8,7 @@ delete.
 ~/.juggler/
 ├── credentials.json        API keys (owner-only, 0600)
 ├── default-model.json      your chosen default model
-├── workspace.json          desktop app's open-window set
+├── workspace.json          desktop app's open-window set + last-used theme
 ├── extensions/             installed extensions
 └── cache/                  regenerable — safe to delete
     ├── recents.json        recently-opened projects (MRU list)
