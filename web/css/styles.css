@@ -372,6 +372,25 @@ select {
     --cursor-row-resize: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='24'><path d='M8 2 L4 7 L6.4 7 L6.4 17 L4 17 L8 22 L12 17 L9.6 17 L9.6 7 L12 7 Z' fill='white' stroke='black' stroke-width='1.1' stroke-linejoin='round'/></svg>") 8 12, ns-resize;
 }
 
+/* Blanket i-beam substitution for the same Windows bug. The UA draws the native
+   i-beam automatically over any selectable/editable text — we never wrote
+   `cursor: text` for those, so there's no per-element rule to override and every
+   untouched text region still shows the invisible white cursor. A fixed `url()`
+   cursor can't replicate the UA's context-sensitive `auto` (i-beam only over
+   glyphs, arrow over padding), so instead we set it once on each text-region
+   root and lean on `cursor` inheritance to reach all their text children. Scoped
+   to Windows so macOS/Linux keep the pixel-perfect native i-beam. Interactive
+   descendants (links/buttons) inherit it too, so the second rule re-asserts the
+   pointer for them. input/textarea already carry --cursor-text via their own
+   rule. Part of the TEMPORARY workaround — remove with the block above. */
+:root[data-os="windows"] :is(.markdown, pre, code, .ci-text-block, .ci-code-block, [contenteditable]) {
+    cursor: var(--cursor-text);
+}
+
+:root[data-os="windows"] :is(.markdown, .ci-text-block, .ci-code-block) :is(a, button, [role="button"]) {
+    cursor: pointer;
+}
+
 /* Light Theme */
 :root[data-theme="light"] {
     /* Pair with the light variable set so Chromium draws dark (visible) native
