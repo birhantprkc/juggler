@@ -154,6 +154,23 @@ export function mapChimeParams(p) {
 let ctx = null;
 
 /**
+ * Persistent output element and the MediaStream sink feeding it. The chime is
+ * routed through an HTMLMediaElement (see {@link audioSink}) rather than straight
+ * to `AudioContext.destination`, because a macOS sleep/wake wedges the WKWebView's
+ * Web-Audio output path **process-wide**: the shared context keeps reporting
+ * `state === 'running'` with an advancing clock, yet every note is silent — a
+ * fault invisible to JS (no bad state, no error), so it can't be detected or
+ * recovered at the AudioContext layer. The media-element output path survives the
+ * same wedge, so routing through it is the fix rather than a recovery. Created
+ * lazily and started inside the {@link unlockAudio} gesture, then reused for the
+ * document's life; the sink is rebound whenever the context is rebuilt.
+ * @type {HTMLAudioElement|null}
+ */
+let mediaEl = null;
+/** @type {MediaStreamAudioDestinationNode|null} Sink feeding {@link mediaEl}, rebound per context. */
+let streamDest = null;
+
+/**
  * Report an untoward audio event to the APPLICATION log — not the browser
  * console. Every failure in this module is best-effort and swallowed by design
  * (a parked context simply doesn't sound), which otherwise leaves a silent chime
@@ -215,15 +232,21 @@ export function wakeContext(ac) {
 }
 
 /**
- * Is this context wedged past what resume() can fix — so a caller inside a user
- * gesture should rebuild it rather than resume it? Two states qualify:
- *  - `closed`: terminal; resume() rejects forever.
- *  - `interrupted`: the WKWebView stuck state (see the module notes and
- *    {@link wakeContext}). resume() *sometimes* clears it, but when the OS audio
- *    session stays wedged it never does, leaving every chime — including the
- *    settings Preview — silent with no error. From inside a gesture the reliable
- *    cure is to discard the context and build a fresh one against the current
- *    output device.
+ * Is this context stuck in a state machine resume() can't clear — so a caller
+ * inside a user gesture should discard it and build a fresh one rather than
+ * resume it? Two states qualify:
+ *  - `closed`: terminal; resume() rejects forever, so the context must be replaced.
+ *  - `interrupted`: a non-standard WebKit state resume() *sometimes* can't clear;
+ *    a fresh context comes up `suspended` and resumes cleanly, so replacing it is
+ *    a reliable state-machine reset. NOTE: rebuilding resets the context's *state*
+ *    only — it does NOT re-bind audio output to the current device. A sleep/wake
+ *    can wedge the WKWebView's output path process-wide while the context still
+ *    reports `running`; a fresh context inherits the same dead route (confirmed:
+ *    a brand-new context was `running`, clock advancing, yet silent). That failure
+ *    is handled by routing the chime through a media element instead (see
+ *    {@link mediaEl}/{@link audioSink}), not here. `interrupted` has never been
+ *    observed in this app's field logs, but the branch is kept as cheap insurance
+ *    (and {@link audioContext}'s telemetry is the canary if it ever occurs).
  * Pure (needs no AudioContext) so the decision is unit-testable.
  * @param {{state: string} | null | undefined} ac
  * @returns {boolean} True when the context should be rebuilt, not resumed.
@@ -233,16 +256,20 @@ export function isContextWedged(ac) {
 }
 
 /**
- * Tear down the shared context so the next {@link audioContext}
- * builds a fresh one against the current output device. The escape hatch for a
- * context wedged past resume() (see {@link isContextWedged}); the old context is
- * closed best-effort and its handles dropped.
+ * Tear down the shared context so the next {@link audioContext} builds a fresh
+ * one. The escape hatch for a context stuck past resume() (see
+ * {@link isContextWedged}); the old context is closed best-effort and its handles
+ * dropped. This resets the context's state machine — it does NOT re-bind audio
+ * output to the current device (a fresh context inherits the same output route).
  * @returns {void}
  * @private
  */
 function recreateContext() {
   const dead = ctx;
   ctx = null;
+  // Drop the media sink so the next audioSink() rebinds the element to the fresh
+  // context; the element itself persists (and keeps its play() permission).
+  streamDest = null;
   if (dead) {
     dead.onstatechange = null; // don't let the pending close() re-enter wakeContext
     if (dead.state !== 'closed') {
@@ -279,9 +306,12 @@ function audioContext() {
   // unlockAudio.) Best-effort, not load-bearing: playChime's play-time recovery
   // (recoverThenSchedule) covers the same ground if onstatechange is unsupported
   // or never fires.
-  // A fresh context normally comes up `suspended`; coming up `interrupted` means
-  // the OS audio session is wedged below the web layer, where no JS resume can
-  // reach — the smoking gun for the total-shutdown case, so surface it.
+  // A fresh context normally comes up `suspended`; coming up `interrupted` would
+  // mean the OS audio session is wedged below the web layer where no JS resume can
+  // reach. This has never been seen in the field, and it is NOT the known
+  // total-silence failure — that one comes up `running` with an advancing clock,
+  // invisible here, and is handled by the media-element sink (see audioSink). We
+  // still surface `interrupted` as the canary in case such a state ever occurs.
   if (ac.state === 'interrupted') {
     areport('error', 'fresh AudioContext came up interrupted — OS audio session wedged below the web layer');
   }
@@ -307,17 +337,22 @@ function audioContext() {
 export function unlockAudio() {
   let ac = audioContext();
   if (!ac) { areport('error', 'unlockAudio: Web Audio unavailable'); return; }
-  // Inside a user gesture we can afford the heavy hammer. If the context is wedged
-  // past what resume() can fix — a stale `interrupted` session, or a `closed`
-  // context — rebuild it fresh against the current output device so this gesture
-  // (the settings Preview button or the header bell) reliably restores sound. This
-  // is the recovery playChime's play-time resume() path can't perform on its own.
+  // Inside a user gesture we can afford the heavy hammer. If the context is stuck
+  // past what resume() can fix — a `closed` context, or a stale `interrupted`
+  // session — discard it and build a fresh one so this gesture (the settings
+  // Preview button or the header bell) reliably clears the stuck state. NOTE: this
+  // resets the context's state only; it does NOT restore a wedged *output* route
+  // (that's handled by the media-element sink — see audioSink). It's the
+  // state-machine reset playChime's play-time resume() path can't perform alone.
   if (isContextWedged(ac)) {
-    areport('info', `unlockAudio: context wedged (${ac.state}) — rebuilding against current device`);
+    areport('info', `unlockAudio: context wedged (${ac.state}) — rebuilding to reset stuck state`);
     recreateContext();
     ac = audioContext();
     if (!ac) { areport('error', 'unlockAudio: rebuild failed — Web Audio unavailable'); return; }
   }
+  // Start the media-element sink within this gesture so automatic chimes can feed
+  // the already-playing element without a gesture of their own (see audioSink).
+  primeSink(ac);
   wakeContext(ac);
 }
 
@@ -378,8 +413,10 @@ export function recoverThenSchedule(ac, schedule, rebuild, { retries = RECOVER_R
    */
   const attempt = (context, triesLeft, rebuilt) => {
     if (context.state === 'running') { schedule(context); return; }
-    // Wedged past what resume() can fix: rebuild once against the current output
-    // device, then drive the fresh context (which starts `suspended` → resume).
+    // Stuck past what resume() can fix (`closed`, or a resume-proof `interrupted`):
+    // rebuild once to reset the state machine, then drive the fresh context (which
+    // starts `suspended` → resume). This does not re-route wedged output (the
+    // media-element sink handles that — see audioSink); it only clears a bad state.
     if (!rebuilt && isContextWedged(context)) {
       areport('info', `playChime: context wedged (${context.state}) — rebuilding`);
       const fresh = rebuild();
@@ -426,6 +463,52 @@ export function playChime(params = {}) {
 }
 
 /**
+ * Resolve the node the chime's master gain connects to. Prefers an
+ * HTMLMediaElement sink — a {@link MediaStreamAudioDestinationNode} whose stream
+ * drives a persistent `<audio>` element — over the context's own `destination`,
+ * because the media-element output path survives the process-wide sleep/wake wedge
+ * that silences `AudioContext.destination` (see {@link mediaEl}). The stream is a
+ * live `srcObject` (no `data:`/`blob:` URL), so it needs no `media-src` in the CSP.
+ *
+ * The sink is (re)built whenever it isn't bound to the current context — first use,
+ * or after a rebuild via {@link recreateContext}. Falls back to `ac.destination`
+ * where no media-element path exists (e.g. `Audio` or `createMediaStreamDestination`
+ * unavailable), so playback still routes somewhere rather than throwing.
+ * @param {AudioContext} ac - The running context the chime is scheduled on.
+ * @returns {AudioNode} The node to connect the chime's master gain to.
+ * @private
+ */
+function audioSink(ac) {
+  const AudioEl = /** @type {any} */ (window).Audio;
+  if (typeof AudioEl !== 'function' || typeof ac.createMediaStreamDestination !== 'function') {
+    return ac.destination; // no media-element path — best-effort direct output
+  }
+  if (!streamDest || streamDest.context !== ac) {
+    streamDest = ac.createMediaStreamDestination();
+    const el = mediaEl ?? (mediaEl = new AudioEl());
+    el.autoplay = true;
+    el.srcObject = streamDest.stream;
+    // Best-effort here; the unlockAudio gesture is what reliably grants playback.
+    el.play().catch(() => { /* re-primed on the next unlockAudio gesture */ });
+  }
+  return streamDest;
+}
+
+/**
+ * Build and start the output element from inside a user gesture, so later
+ * *automatic* chimes (which fire with no gesture of their own) can feed the
+ * already-playing element. Called by {@link unlockAudio}; a no-op where no
+ * media-element path exists.
+ * @param {AudioContext} ac - The context to bind the sink to.
+ * @returns {void}
+ * @private
+ */
+function primeSink(ac) {
+  audioSink(ac); // (re)build + bind the element to this context
+  if (mediaEl) mediaEl.play().catch(() => { /* retried on the next gesture */ });
+}
+
+/**
  * Build and start the self-disposing voice graph for one chime on a *running*
  * context. The motif is scheduled relative to `ac.currentTime` read here, so this
  * must run only once the context is live — otherwise the notes pin to a clock that
@@ -440,10 +523,11 @@ function scheduleChime(ac, { notes, gain, duration }) {
   const attack = 0.005; // near-instant strike
 
   // Shared master so `volume` scales the whole motif and the stacked notes share
-  // one route to the speakers.
+  // one route to the speakers — via the media-element sink, which survives the
+  // sleep/wake wedge that silences ac.destination (see audioSink).
   const master = ac.createGain();
   master.gain.value = gain;
-  master.connect(ac.destination);
+  master.connect(audioSink(ac));
 
   /**
    * Schedule one note: its strike envelope plus the partials voicing it, each
