@@ -73,6 +73,18 @@ select {
 /* Dark Theme (default) */
 :root,
 :root[data-theme="dark"] {
+    /* Tell Chromium/WebView2 the native rendering scheme. Our themes only swap
+       CSS variables, which the native layer never sees — so without this it
+       draws OS-default (here, dark) mouse cursors (i-beam, col/ew-resize),
+       scrollbars, and form widgets regardless of the active theme. */
+    color-scheme: dark;
+
+    /* Mouse-cursor variables. Native keywords everywhere by default; only the
+       Windows workaround block below overrides them (see it for why). */
+    --cursor-text: text;
+    --cursor-col-resize: col-resize;
+    --cursor-row-resize: ns-resize;
+
     /* Font weights - single source of truth */
     --font-weight-normal: 200;
     --font-weight-medium: 400;
@@ -325,8 +337,47 @@ select {
     --scrollbar-thumb-radius: 0.25rem;
 }
 
+/* ─── TEMPORARY: Windows-only white-cursor workaround ──────────────────────
+   BUG: On Windows, WebView2/Chromium draws the native i-beam and resize
+   cursors as solid white, so they're invisible on the light theme. Those are
+   monochrome *inverting* system cursors that Windows XORs against the pixels
+   behind them; under the DirectComposition / multi-plane-overlay presentation
+   path the GPU can drop the layer the cursor should invert against, so the
+   inversion resolves to white. It is a platform bug, not ours.
+
+   Things that do NOT fix it (all tried): `color-scheme` (only steers
+   scrollbars/form widgets, never the system cursor); the WebView2 flag
+   `--disable-features=UseMultiPlaneOverlay` (no such Chromium feature name — it
+   is silently ignored). The real Chromium lever, `--disable-direct-composition`,
+   would work but is heavy: the vendored Wails leans on DirectComposition for the
+   frameless Windows window (transparency, hit-testing, chrome), so disabling it
+   risks regressing the window itself.
+
+   WORKAROUND: substitute full-colour SVG cursors, which the browser rasterises
+   itself and never hands to the OS as inverting cursors, so the compositor
+   can't blank them. Shapes mirror the native Windows cursors: a thin serifed
+   i-beam (black stroke + white halo, so it reads on either theme) and
+   white-filled, black-outlined double-headed resize arrows (the same
+   white-body/black-edge as the OS cursors). The native keyword after the
+   hotspot coords stays as the fallback. Gated on `data-os="windows"` (set on
+   <html> at startup in index.html) so macOS/Linux keep their pixel-perfect
+   native cursors untouched.
+
+   REMOVE THIS BLOCK (and the `data-os` marker in index.html, and revert the
+   `var(--cursor-*)` consumers to plain keywords) once WebView2 fixes the
+   compositor cursor bug or a safe DirectComposition opt-out exists. */
+:root[data-os="windows"] {
+    --cursor-text: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M5 3.5 Q7 3.5 8 5 Q9 3.5 11 3.5 M8 5 L8 19 M5 20.5 Q7 20.5 8 19 Q9 20.5 11 20.5' stroke='white' stroke-width='3'/><path d='M5 3.5 Q7 3.5 8 5 Q9 3.5 11 3.5 M8 5 L8 19 M5 20.5 Q7 20.5 8 19 Q9 20.5 11 20.5' stroke='black' stroke-width='1.25'/></g></svg>") 8 12, text;
+    --cursor-col-resize: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='16'><path d='M2 8 L7 4 L7 6.4 L17 6.4 L17 4 L22 8 L17 12 L17 9.6 L7 9.6 L7 12 Z' fill='white' stroke='black' stroke-width='1.1' stroke-linejoin='round'/></svg>") 12 8, col-resize;
+    --cursor-row-resize: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='24'><path d='M8 2 L4 7 L6.4 7 L6.4 17 L4 17 L8 22 L12 17 L9.6 17 L9.6 7 L12 7 Z' fill='white' stroke='black' stroke-width='1.1' stroke-linejoin='round'/></svg>") 8 12, ns-resize;
+}
+
 /* Light Theme */
 :root[data-theme="light"] {
+    /* Pair with the light variable set so Chromium draws dark (visible) native
+       cursors/scrollbars/widgets against the light theme (see the dark block). */
+    color-scheme: light;
+
     /* Font weights - single source of truth */
     --font-weight-normal: 400;
     --font-weight-medium: 500;
@@ -1040,6 +1091,21 @@ column-container {
     scroll-behavior: smooth;
 }
 
+/* Frameless Windows synthesizes the bottom resize border only within a few
+   pixels of the window edge (SM_CYSIZEFRAME + SM_CXPADDEDBORDER, see
+   resizeBorderHitTest in the vendored wails nonclient handler). column-container's
+   horizontal scrollbar is taller than that band and sits flush at the edge, so
+   grabbing the bottom-right corner catches the scrollbar instead of resizing the
+   window. Lift the scrollbar clear of the resize band (margin, not padding — a
+   scroll container draws its bar at the border-box bottom regardless of padding).
+   Mirrors .window-resize-strip, which solves the same overlap at the top edge.
+   Windows-only: macOS uses auto-hiding overlay scrollbars and remote browsers
+   have a native frame. */
+:root[data-window-platform="windows"] .window-mode column-container {
+    /* stylelint-disable-next-line rem-over-px/rem-over-px, unit-disallowed-list */
+    margin-bottom: 6px;
+}
+
 /* Conversation-area columns: fixed default width, resizable */
 column-container conversation-area {
     flex: 0 0 30rem;
@@ -1143,7 +1209,7 @@ col-resize-handle {
     bottom: 0;
     width: 0.5rem;
     background: var(--resize-handle-bg);
-    cursor: col-resize;
+    cursor: var(--cursor-col-resize);
     z-index: var(--z-raised);
     transition: background 150ms ease;
     touch-action: none;
@@ -1190,7 +1256,7 @@ conversation-message-list-wrapper {
     min-height: 0;
     display: flex;
     flex-direction: column;
-    cursor: text;
+    cursor: var(--cursor-text);
     position: relative;
 }
 
@@ -1471,6 +1537,10 @@ input, textarea {
     font-size: 1rem;
     outline: none;
     transition: border-color 0.2s;
+
+    /* Override the UA default i-beam, which WebView2 draws white (invisible on
+       the light theme). See the Windows workaround block / --cursor-text. */
+    cursor: var(--cursor-text);
 }
 
 input:focus, textarea:focus {

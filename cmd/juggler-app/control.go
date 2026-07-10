@@ -112,7 +112,17 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		application.InvokeAsync(func() { applyWindowChrome(e.win, colour) })
+		application.InvokeAsync(func() {
+			// Repaint the native window to the new theme. SetBackgroundColour is the
+			// cross-platform lever: it updates the stored option (so the bare frame
+			// exposed during a live resize — and the pre-paint fill — use the new
+			// colour) AND repaints the window immediately. On Windows/Linux this is
+			// what makes a theme flip actually update the window background, since
+			// applyWindowChrome is a no-op there. On macOS applyWindowChrome then
+			// additionally repaints the NSWindow appearance and traffic lights.
+			e.win.SetBackgroundColour(colour)
+			applyWindowChrome(e.win, colour)
+		})
 		w.WriteHeader(http.StatusNoContent)
 	case "title":
 		// The page reports the project it's viewing. Two uses: the display title

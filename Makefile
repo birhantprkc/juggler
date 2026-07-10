@@ -75,6 +75,11 @@ GOTEST=$(GOCMD) test
 # space survives the single-quoted `bash -c` wrappers in the test recipes below.
 RUN ?=
 GOTEST_RUN=$(if $(RUN),-run "$(RUN)" -v)
+# The race detector needs cgo (a C compiler). CI and most Unix dev boxes have
+# one, so default -race on. A Windows dev box usually has no C toolchain, so cgo
+# can't build and `go test -race` fails outright with "requires cgo" — override
+# with `make test RACE=` there to run the suite (minus race). Empty = no race.
+RACE ?= -race
 GOGET=$(GOCMD) get
 GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
@@ -488,7 +493,7 @@ build: lint go-build
 test: test-go
 	@mkdir -p $(BUILD_DIR)
 	@bash -c 'set -o pipefail; \
-		$(GOTEST) -count=1 -race -timeout 15m $(GOTEST_RUN) ./tests/integration/... 2>&1 | tee $(BUILD_DIR)/test.log; \
+		$(GOTEST) -count=1 $(RACE) -timeout 15m $(GOTEST_RUN) ./tests/integration/... 2>&1 | tee $(BUILD_DIR)/test.log; \
 		exit $${PIPESTATUS[0]}'
 
 ## test-go: Run Go package unit tests (claudecode provider, worker, etc.).
@@ -498,7 +503,7 @@ test: test-go
 test-go: go-build
 	@mkdir -p $(BUILD_DIR)
 	@bash -c 'set -o pipefail; \
-		$(GOTEST) -count=1 -race -timeout 5m $(GOTEST_RUN) ./cmd/... 2>&1 | tee $(BUILD_DIR)/test-go.log; \
+		$(GOTEST) -count=1 $(RACE) -timeout 5m $(GOTEST_RUN) ./cmd/... 2>&1 | tee $(BUILD_DIR)/test-go.log; \
 		exit $${PIPESTATUS[0]}'
 
 ## test-full: Run lint + all tests (pre-PR target).

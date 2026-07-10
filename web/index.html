@@ -19,6 +19,16 @@
         (function() {
             var theme = localStorage.getItem('juggler-theme') || 'dark';
             document.documentElement.style.background = theme === 'light' ? '#fff' : '#0d1117';
+            // TEMPORARY (Windows-only): mark the OS pre-paint so styles.css can
+            // swap in SVG mouse cursors. Windows/WebView2 draws the native
+            // i-beam and resize cursors solid white (invisible on the light
+            // theme) — a DirectComposition/overlay compositor bug. Set here (not
+            // only in window-mode) because it also affects Windows browser tabs.
+            // Remove with the workaround block in styles.css once the platform
+            // bug is fixed.
+            if (/Windows/.test(navigator.userAgent)) {
+                document.documentElement.dataset.os = 'windows';
+            }
             // Mark window-mode when loaded inside a native desktop window, which
             // the desktop app opens with ?window=1; remote browsers never have
             // this query param.
