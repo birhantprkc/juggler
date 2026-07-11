@@ -257,10 +257,12 @@ function testDuckDuckGoParamsBuilding(session, conversation) {
 }
 
 /**
- * Test empty results handling
- * @returns {{passed: boolean, error?: string}} Test result
- */
-/**
+ * Test empty results handling and blocked-vs-genuine classification.
+ *
+ * `parseDuckDuckGoResponse` no longer throws on an empty parse — it returns an
+ * empty array — and `looksLikeNoResults` distinguishes DuckDuckGo's genuine
+ * "no results" page (retained as an empty success) from a rate-limit/captcha
+ * page (retried, then surfaced as an error by `search`).
  * @param {any} session
  * @param {any} conversation
  * @returns {{passed: boolean, error?: string}} Test result
@@ -269,14 +271,26 @@ function testEmptyResultsHandling(session, conversation) {
   const action = new WebSearchContextItem({ id: "web-search", session, conversation, messageThread: conversation.rootMessageThread });
 
   try {
-    action.parseDuckDuckGoResponse('<html><body></body></html>');
-    return { passed: false, error: 'Should have thrown error for no results' };
+    // No result blocks -> empty array, not a throw.
+    const blocked = action.parseDuckDuckGoResponse('<html><body></body></html>');
+    if (!Array.isArray(blocked) || blocked.length !== 0) {
+      throw new Error(`Expected empty array for no result blocks, got ${JSON.stringify(blocked)}`);
+    }
+
+    // An empty/anomalous page has no "no results" marker -> treated as blocked.
+    if (action.looksLikeNoResults('<html><body></body></html>')) {
+      throw new Error('Empty body should not be classified as a genuine no-results page');
+    }
+
+    // DuckDuckGo's genuine empty result set carries a no-results marker.
+    if (!action.looksLikeNoResults('<div class="no-results">No results.</div>')) {
+      throw new Error('no-results marker should be classified as a genuine empty result set');
+    }
+
+    return { passed: true };
   } catch (e) {
     const error = /** @type {Error} */ (e);
-    if (error.message.includes('No results found')) {
-      return { passed: true };
-    }
-    return { passed: false, error: `Wrong error message: ${error.message}` };
+    return { passed: false, error: error.message };
   }
 }
 
@@ -309,7 +323,7 @@ export async function runTests(_ctx) {
     { name: 'Domain filtering (allowed)', fn: () => testDomainFilteringAllowed(session, conversation) },
     { name: 'Domain filtering (blocked)', fn: () => testDomainFilteringBlocked(session, conversation) },
     { name: 'DuckDuckGo params building', fn: () => testDuckDuckGoParamsBuilding(session, conversation) },
-    { name: 'Empty results handling', fn: () => testEmptyResultsHandling(session, conversation) }
+    { name: 'Empty and blocked results handling', fn: () => testEmptyResultsHandling(session, conversation) }
   ];
 
   let passed = 0;

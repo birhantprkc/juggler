@@ -54,6 +54,12 @@ class WebSearchContextItem extends ContextItem {
   // DuckDuckGo HTML endpoint URL
   static DDG_URL = 'https://html.duckduckgo.com/html/';
 
+  // Retry policy for DuckDuckGo rate-limit / captcha responses. DuckDuckGo
+  // throttles bursts of requests from one IP, so a blocked response is retried
+  // a few times with exponential backoff + jitter before giving up.
+  static MAX_RETRIES = 2;
+  static RETRY_BASE_MS = 400;
+
   /**
    * Get tool definitions for WebSearch action
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
@@ -119,8 +125,13 @@ class WebSearchContextItem extends ContextItem {
    * class (e.g. `<div class="result results_links ...">`); within a block the
    * link comes from `.result__a`, the title from `.result__title` (falling back
    * to the link text), and the snippet from `.result__snippet`.
+   *
+   * Returns an empty array when the markup contains no result blocks. Callers
+   * distinguish a genuine empty result set from a blocked/captcha page via
+   * {@link WebSearchContextItem#looksLikeNoResults} rather than treating every
+   * empty parse as an error.
    * @param {string} content - Raw HTML response
-   * @returns {WebSearchResultItem[]} Parsed results
+   * @returns {WebSearchResultItem[]} Parsed results (possibly empty)
    */
   parseDuckDuckGoResponse(content) {
     /** @type {WebSearchResultItem[]} */
@@ -143,11 +154,42 @@ class WebSearchContextItem extends ContextItem {
       results.push({ title, url, description });
     }
 
-    if (results.length === 0) {
-      throw new Error('No results found - may be blocked or need captcha');
-    }
-
     return results;
+  }
+
+  /**
+   * Detect DuckDuckGo's genuine "no results" page — a valid results page that
+   * simply had no hits — as opposed to a rate-limit/captcha challenge page.
+   * DuckDuckGo marks the former with a `no-results` container; a response with
+   * zero result blocks and no such marker is treated as blocked and is worth
+   * retrying.
+   * @param {string} content - Raw HTML response
+   * @returns {boolean} True if the page is a genuine empty result set
+   */
+  looksLikeNoResults(content) {
+    return /\bclass\s*=\s*"[^"]*\bno-results\b[^"]*"/i.test(content);
+  }
+
+  /**
+   * Abortable delay used for retry backoff. Rejects promptly if the search's
+   * abort signal fires while waiting, so a cancelled search does not sit out
+   * the backoff.
+   * @param {number} ms - Milliseconds to wait
+   * @returns {Promise<void>} Resolves after `ms`, rejects on abort
+   */
+  delay(ms) {
+    const signal = this.signal;
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(signal.reason ?? new Error('Aborted'));
+        return;
+      }
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new Error('Aborted'));
+      }, { once: true });
+    });
   }
 
   /**
@@ -290,7 +332,14 @@ class WebSearchContextItem extends ContextItem {
   }
 
   /**
-   * Search using DuckDuckGo
+   * Search using DuckDuckGo.
+   *
+   * DuckDuckGo throttles bursts of requests from a single IP, returning a
+   * captcha/challenge page instead of results. Such a response parses to zero
+   * result blocks and carries no genuine "no results" marker; it is retried
+   * with exponential backoff + jitter up to {@link WebSearchContextItem.MAX_RETRIES}
+   * times before the captcha error is surfaced. A genuine empty result set
+   * (the `no-results` marker is present) returns successfully with zero results.
    * @param {string} query - Search query
    * @param {string[]} [allowedDomains] - Allowed domains
    * @param {string[]} [blockedDomains] - Blocked domains
@@ -298,12 +347,31 @@ class WebSearchContextItem extends ContextItem {
    */
   async search(query, allowedDomains, blockedDomains) {
     const ddgParams = this.buildDuckDuckGoParams(query);
-    const response = await webSearch(
-      /** @type {import('../../../js/services/ops-api.js').WebSearchParams} */ (ddgParams),
-      this.signal
-    );
+    const maxAttempts = WebSearchContextItem.MAX_RETRIES + 1;
 
-    const results = this.parseDuckDuckGoResponse(response.content);
+    /** @type {WebSearchResultItem[]} */
+    let results = [];
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await webSearch(
+        /** @type {import('../../../js/services/ops-api.js').WebSearchParams} */ (ddgParams),
+        this.signal
+      );
+
+      results = this.parseDuckDuckGoResponse(response.content);
+      if (results.length > 0 || this.looksLikeNoResults(response.content)) {
+        break; // got hits, or a genuine empty result set — either way, done
+      }
+
+      // Zero result blocks and no "no results" marker: almost certainly a
+      // rate-limit/captcha page. Retry with backoff unless attempts are spent.
+      if (attempt === maxAttempts) {
+        throw new Error('No results found - may be blocked or need captcha');
+      }
+      const backoff = WebSearchContextItem.RETRY_BASE_MS * 2 ** (attempt - 1);
+      const jitter = Math.floor(Math.random() * WebSearchContextItem.RETRY_BASE_MS);
+      await this.delay(backoff + jitter);
+    }
+
     const filtered = this.filterResults(results, allowedDomains, blockedDomains);
 
     return {
