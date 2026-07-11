@@ -1,4 +1,4 @@
-.PHONY: build test test-go test-full benchmark dev clean fmt lint lint-files lint-go lint-deadcode lint-js lint-types lint-css node-deps help mac-app install-mac app-icon-embed wails-runtime-embed win-icon release-build-mac mac-dmg mac-dmg-pack win-installer win-installer-pack linux-binaries linux-tarball linux-tarball-pack mac-codesign
+.PHONY: build test test-go test-full benchmark dev clean fmt lint lint-files lint-go lint-deadcode lint-js lint-types lint-css fix fix-files fix-fmt fix-go fix-js fix-css node-deps help mac-app install-mac app-icon-embed wails-runtime-embed win-icon release-build-mac mac-dmg mac-dmg-pack win-installer win-installer-pack linux-binaries linux-tarball linux-tarball-pack mac-codesign
 
 # Binary name
 BINARY_NAME=juggler
@@ -669,6 +669,46 @@ lint-js: node-deps
 ## lint-css: Run CSS linter (enforces rem units, no px)
 lint-css: node-deps
 	@NODE_NO_WARNINGS=1 $(NPM_BIN)/stylelint --config tooling/.stylelintrc.json 'web/css/**/*.css'
+
+## fix: Auto-fix everything the linters CAN fix in place — gofmt, golangci-lint
+## --fix, eslint --fix, stylelint --fix — reusing the SAME globs, configs, and
+## pinned tool versions as `make lint`, so a fix run and a lint run can never
+## diverge. This is the counterpart to `lint`: run `make fix` to clear the
+## mechanical failures, then `make lint` to see what genuinely needs a human. It
+## does NOT touch type errors (lint-types) or dead code (lint-deadcode) — those
+## have no safe auto-fix. Like lint, this and `fix-files` are the ONLY sanctioned
+## ways to auto-fix; never run gofmt -w / eslint --fix / stylelint --fix by hand.
+fix: fix-fmt fix-go fix-js fix-css
+	@echo "✓ auto-fixes applied — now run 'make lint'"
+
+## fix-fmt: gofmt -w across the tree (same file set lint-fmt checks).
+fix-fmt:
+	@gofmt -w $$(find . -name '*.go' -not -path './3rdparty/*' -not -path './tooling/*')
+
+## fix-go: Apply golangci-lint's auto-fixes (only the linters that support --fix;
+## many findings have none and still need a hand edit). Same package scope as
+## lint-go; embeds regenerated first so the fixers typecheck against the real build.
+fix-go: app-icon-embed wails-runtime-embed
+	@if ! command -v golangci-lint &> /dev/null; then \
+		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
+	fi
+	@$(subst \,/,$(shell go env GOPATH))/bin/golangci-lint run --fix --timeout=5m ./cmd/... ./tests/... ./web/...
+
+## fix-js: eslint --fix (same globs, config, and ignore patterns as lint-js).
+fix-js: node-deps
+	@NODE_NO_WARNINGS=1 $(NPM_BIN)/eslint --config tooling/eslint.config.js --fix --ignore-pattern 'web/js/vendor/**' 'web/js/**/*.js' 'web/sdk/**/*.js' 'web/extensions/**/*.js' 'web/js-tests/**/*.js'
+
+## fix-css: stylelint --fix (same globs and config as lint-css).
+fix-css: node-deps
+	@NODE_NO_WARNINGS=1 $(NPM_BIN)/stylelint --config tooling/.stylelintrc.json --fix 'web/css/**/*.css'
+
+## fix-files: Auto-fix ONLY the named files, routed by extension to the same
+## fixers as `make fix` (the write-mode counterpart to lint-files). Whole-program
+## checks with no per-file fix (deadcode, type errors) are not run here.
+##   make fix-files FILES="cmd/juggler/worker/foo.go web/css/bar.css"
+fix-files: app-icon-embed wails-runtime-embed
+	@GOLANGCI_LINT_VERSION="$(GOLANGCI_LINT_VERSION)" FIX=1 scripts/lint-files $(FILES)
 
 ## install: Install binary globally
 install: build

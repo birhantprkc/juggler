@@ -23,6 +23,11 @@
 # meaningful per-file form (deadcode) are intentionally NOT run here — use
 # `make lint` for those.
 #
+# Set FIX=1 (how `make fix-files` invokes this) to auto-fix in place instead of
+# reporting: gofmt -w + golangci-lint --fix / eslint --fix / stylelint --fix,
+# same routing. Checks with no safe auto-fix (go vet, type errors, deadcode) are
+# skipped in fix mode — run `make lint`/`make lint-files` afterwards for those.
+#
 # Run from the repo root.
 
 set -euo pipefail
@@ -117,41 +122,65 @@ ensure_node_tooling() {
 	fi
 }
 
-# ---- Go -------------------------------------------------------------------
-if [ ${#go_files[@]} -gt 0 ]; then
-	echo "==> gofmt (${#go_files[@]} file(s))"
-	unformatted="$(gofmt -l "${go_files[@]}")"
-	if [ -n "$unformatted" ]; then
-		echo "gofmt: the following files are not formatted:"
-		echo "$unformatted"
-		echo "fix with: gofmt -w <file>   (or 'make fmt' for the whole tree)"
-		status=1
-	fi
-
-	echo "==> go vet (${#go_dirs[@]} package(s))"
-	go vet "${go_dirs[@]}" || status=1
-
+ensure_golangci() {
 	if ! command -v golangci-lint &> /dev/null && [ ! -x "$GOPATH_BIN/golangci-lint" ]; then
 		echo "Installing golangci-lint $GOLANGCI_LINT_VERSION..."
 		go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_LINT_VERSION"
 	fi
-	echo "==> golangci-lint (${#go_dirs[@]} package(s))"
-	"$GOPATH_BIN/golangci-lint" run --timeout=5m "${go_dirs[@]}" || status=1
+}
+
+# ---- Go -------------------------------------------------------------------
+if [ ${#go_files[@]} -gt 0 ]; then
+	if [ -n "${FIX:-}" ]; then
+		echo "==> gofmt -w (${#go_files[@]} file(s))"
+		gofmt -w "${go_files[@]}"
+
+		ensure_golangci
+		echo "==> golangci-lint --fix (${#go_dirs[@]} package(s))"
+		"$GOPATH_BIN/golangci-lint" run --fix --timeout=5m "${go_dirs[@]}" || status=1
+	else
+		echo "==> gofmt (${#go_files[@]} file(s))"
+		unformatted="$(gofmt -l "${go_files[@]}")"
+		if [ -n "$unformatted" ]; then
+			echo "gofmt: the following files are not formatted:"
+			echo "$unformatted"
+			echo "fix with: gofmt -w <file>   (or 'make fmt' for the whole tree)"
+			status=1
+		fi
+
+		echo "==> go vet (${#go_dirs[@]} package(s))"
+		go vet "${go_dirs[@]}" || status=1
+
+		ensure_golangci
+		echo "==> golangci-lint (${#go_dirs[@]} package(s))"
+		"$GOPATH_BIN/golangci-lint" run --timeout=5m "${go_dirs[@]}" || status=1
+	fi
 fi
 
 # ---- JavaScript -----------------------------------------------------------
 if [ ${#js_files[@]} -gt 0 ]; then
 	ensure_node_tooling eslint
-	echo "==> eslint (${#js_files[@]} file(s))"
-	NODE_NO_WARNINGS=1 "$NPM_BIN/eslint" --config tooling/eslint.config.js \
-		--max-warnings 0 --ignore-pattern 'web/js/vendor/**' "${js_files[@]}" || status=1
+	if [ -n "${FIX:-}" ]; then
+		echo "==> eslint --fix (${#js_files[@]} file(s))"
+		NODE_NO_WARNINGS=1 "$NPM_BIN/eslint" --config tooling/eslint.config.js \
+			--fix --ignore-pattern 'web/js/vendor/**' "${js_files[@]}" || status=1
+	else
+		echo "==> eslint (${#js_files[@]} file(s))"
+		NODE_NO_WARNINGS=1 "$NPM_BIN/eslint" --config tooling/eslint.config.js \
+			--max-warnings 0 --ignore-pattern 'web/js/vendor/**' "${js_files[@]}" || status=1
+	fi
 fi
 
 # ---- CSS ------------------------------------------------------------------
 if [ ${#css_files[@]} -gt 0 ]; then
 	ensure_node_tooling stylelint
-	echo "==> stylelint (${#css_files[@]} file(s))"
-	NODE_NO_WARNINGS=1 "$NPM_BIN/stylelint" --config tooling/.stylelintrc.json "${css_files[@]}" || status=1
+	if [ -n "${FIX:-}" ]; then
+		echo "==> stylelint --fix (${#css_files[@]} file(s))"
+		NODE_NO_WARNINGS=1 "$NPM_BIN/stylelint" --config tooling/.stylelintrc.json --fix "${css_files[@]}" || status=1
+	else
+		echo "==> stylelint (${#css_files[@]} file(s))"
+		NODE_NO_WARNINGS=1 "$NPM_BIN/stylelint" --config tooling/.stylelintrc.json "${css_files[@]}" || status=1
+	fi
 fi
 
 # ---- Unroutable files -----------------------------------------------------
@@ -161,6 +190,10 @@ if [ ${#unknown[@]} -gt 0 ]; then
 fi
 
 if [ "$status" -eq 0 ]; then
-	echo "✓ lint-files passed"
+	if [ -n "${FIX:-}" ]; then
+		echo "✓ fix-files applied — now run 'make lint-files' on the same paths"
+	else
+		echo "✓ lint-files passed"
+	fi
 fi
 exit "$status"

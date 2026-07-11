@@ -8,6 +8,7 @@ make test           # All tests (unit + integration + browser); RUN='<name>' run
 make go-build       # Build Go binaries only (skip linting)
 make test-full      # Lint + tests. Run before opening a PR.
 make lint           # All linters (Go + JS + CSS) — the only way to lint everything
+make fix            # Auto-fix what the linters can (gofmt, eslint/stylelint --fix); then re-lint
 make dev            # Build and run server
 make build-windows  # Cross-compile bin/windows/*.exe (pure-Go, no cgo)
 ```
@@ -24,6 +25,16 @@ make build-windows  # Cross-compile bin/windows/*.exe (pure-Go, no cgo)
 - To lint specific files (routed by extension to the same linters):
   ```bash
   make lint-files FILES="cmd/juggler/worker/foo.go web/js/bar.js"
+  ```
+- **Before fixing lint failures by hand, run `make fix`** — it applies every
+  auto-fix the linters can (gofmt, `golangci-lint --fix`, `eslint --fix`,
+  `stylelint --fix`) using the same configs and globs as `make lint`, then tells
+  you to re-lint. It never fixes type errors (lint-types) or dead code
+  (lint-deadcode) — those still need a human. `make fix` and `make fix-files`
+  are the only sanctioned ways to auto-fix; don't run `gofmt -w`, `eslint --fix`,
+  or `stylelint --fix` directly (same drift reason as lint). Per-file:
+  ```bash
+  make fix-files FILES="cmd/juggler/worker/foo.go web/css/bar.css"
   ```
 
 ## Tests
