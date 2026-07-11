@@ -62,6 +62,7 @@ import { runTests as runGlobActionTests } from '../unit-tests/glob-action-test.j
 import { runTests as runAskUserQuestionDetailsTests } from '../unit-tests/ask-user-question-details-test.js';
 import { runTests as runItemAccessorTests } from '../unit-tests/item-accessor-test.js';
 import { runTests as runMessageTypeGuardTests } from '../unit-tests/message-type-guard-test.js';
+import { runTests as runModelFilterTests } from '../unit-tests/model-filter-test.js';
 import { runTests as runMonitorToolsTests } from '../unit-tests/monitor-tools-test.js';
 import { runTests as runMcpToolTests } from '../unit-tests/mcp-tool-test.js';
 import { runTests as runMcpSettingsTests } from '../unit-tests/mcp-settings-test.js';
@@ -227,6 +228,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:glob-action', run: runGlobActionTests },
   { name: 'unit:item-accessor', run: runItemAccessorTests },
   { name: 'unit:message-type-guard', run: runMessageTypeGuardTests },
+  { name: 'unit:model-filter', run: runModelFilterTests },
   { name: 'unit:monitor-tools', run: runMonitorToolsTests },
   { name: 'unit:mcp-tool', run: runMcpToolTests },
   { name: 'unit:mcp-settings', run: runMcpSettingsTests },

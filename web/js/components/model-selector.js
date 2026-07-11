@@ -7,7 +7,7 @@ import wsService from '../services/websocket.js';
 import providersCache from '../services/providers-cache.js';
 import usageStatsCache from '../services/usage-stats-cache.js';
 import recentModels from '../services/recent-models.js';
-import { getRecommendedModels } from '../utils/model-filter.js';
+import { getRecommendedModels, sortModelsByVersion } from '../utils/model-filter.js';
 import { resolveConfig } from '../model/model-config.js';
 import { modelLabel, modelLabelFromList } from '../model/model-display.js';
 
@@ -578,7 +578,10 @@ class ModelSelector extends HTMLElement {
    * @returns {string} HTML for the provider's header + model group.
    */
   _generateProviderSection(provider) {
-    const allModels = provider.modelsWithContext;
+    // Sort the full list newest-first: providers (notably OpenAI and Gemini)
+    // return models in no meaningful order, so both the "all" view and the
+    // shortlist derived from it should be version-ordered rather than API-ordered.
+    const allModels = sortModelsByVersion(provider.modelsWithContext);
     const recommendedModels = getRecommendedModels(allModels);
     const hasShortlist = recommendedModels.length < allModels.length;
     const state = this._resolveViewState(provider.name, hasShortlist);
