@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-11
+
 - Added user-defined slash commands with a UI editor and sub-thread execution
 - Made juggler able to explain how to use itself
 - Clear per-OS error with fix-it steps when no display or webview runtime is available, instead of a silent exit.
