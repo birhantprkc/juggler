@@ -4,6 +4,8 @@
 
 import BaseRegistry from './base-registry.js';
 import { getExtensionCapabilities } from '../services/extensions.js';
+import { getRegisterableUserCommands } from '../services/user-commands.js';
+import { makeUserCommandClass } from '../plugins/user-command-factory.js';
 
 /**
  * CommandRegistry - JavaScript-based command registry system
@@ -43,11 +45,40 @@ class CommandRegistry extends BaseRegistry {
 
   /**
    * Initialize the registry, building alias map
+   *
+   * After loading extension-provided command modules (the base `init`), the
+   * declarative user-defined commands are synthesised and registered as a second
+   * source. They register *after* extensions so a user command can never shadow
+   * a built-in/extension command — `registerClass` refuses the collision and it
+   * surfaces in the manager UI.
    * @returns {Promise<void>}
    */
   async init() {
     await super.init();
+    await this._registerUserCommands();
     this._buildAliasMap();
+  }
+
+  /**
+   * Fetch the registerable user-command definitions (valid, project-shadowed)
+   * and register a synthesised class for each. Failures are non-fatal — a broken
+   * definition never blocks the built-in commands from loading.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _registerUserCommands() {
+    try {
+      const defs = await getRegisterableUserCommands();
+      for (const def of defs) {
+        const CommandClass = makeUserCommandClass(def);
+        this.registerClass(CommandClass, {
+          extensionId: null,
+          modulePath: `user-command:${def.scope}/${def.name}`,
+        });
+      }
+    } catch (err) {
+      console.warn('[CommandRegistry] Failed to register user commands:', err);
+    }
   }
 
   /**

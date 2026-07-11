@@ -42,6 +42,16 @@ type CreateThreadOptions struct {
 	// to scope into a specific parent). Empty means: keep the current scope.
 	ParentThreadItemID string
 
+	// StrategyID and ModelConfigJSON, when set, override the new thread's
+	// strategy and model — stamped on its Y.Map as currentStrategyId /
+	// modelConfig so getEffectiveStrategyId / ResolveEffectiveModelConfig
+	// resolve them. Used by user-defined subthread commands to run their prompt
+	// under a different (e.g. read-only) strategy or model than the parent.
+	// ModelConfigJSON is the JSON encoding of a {provider, model, ...} object;
+	// empty/invalid leaves the thread inheriting the parent's model.
+	StrategyID      string
+	ModelConfigJSON string
+
 	// ExternalDispatch=true marks the WS/orchestrator entry path: the worker
 	// must be idle, the effective model must be set, the new thread is
 	// marked strategyCreated, and the LLM is dispatched via requestLLM+
@@ -122,6 +132,18 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 				m.Set("strategyCreated", true)
 			} else {
 				m.Set("llmCreated", true)
+			}
+			// Optional per-thread strategy/model overrides (user-defined
+			// subthread commands). Stamped so getEffectiveStrategyId /
+			// ResolveEffectiveModelConfig resolve them on the new thread.
+			if opts.StrategyID != "" {
+				m.Set("currentStrategyId", opts.StrategyID)
+			}
+			if opts.ModelConfigJSON != "" {
+				var mc map[string]any
+				if err := json.Unmarshal([]byte(opts.ModelConfigJSON), &mc); err == nil && len(mc) > 0 {
+					m.Set("modelConfig", convertToYcrdt(mc))
+				}
 			}
 			if opts.ToolUseID != "" {
 				m.Set("toolUseId", opts.ToolUseID)
@@ -255,12 +277,14 @@ func (w *ConversationWorker) handleCreateThread(payload json.RawMessage) {
 // dispatchCreateThread is the orchestrator entry point used by
 // pendingRequests. Same semantics as handleCreateThread but returns the
 // new thread's itemId directly (no WS response).
-func (w *ConversationWorker) dispatchCreateThread(goal, prompt, parentThreadItemID string, isContinuation bool) (string, error) {
+func (w *ConversationWorker) dispatchCreateThread(goal, prompt, parentThreadItemID string, isContinuation bool, strategyID, modelConfigJSON string) (string, error) {
 	return w.createThread(CreateThreadOptions{
 		Goal:               goal,
 		Prompt:             prompt,
 		IsContinuation:     isContinuation,
 		ParentThreadItemID: parentThreadItemID,
+		StrategyID:         strategyID,
+		ModelConfigJSON:    modelConfigJSON,
 		ExternalDispatch:   true,
 	})
 }

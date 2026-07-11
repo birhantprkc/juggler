@@ -96,7 +96,7 @@ export async function runTests(_ctx) {
   // Test 1: grep returns matches in tool-result (no context item created)
   try {
     const conversation = await createTestConversation(session);
-    const toolCall = createToolCall('grep', { pattern: 'main', output_mode: 'content', path: 'src' });
+    const toolCall = createToolCall('grep', { pattern: 'main', output_mode: 'content', path: 'src', glob: '*.go' });
 
     const { context } = await executeToolsAndGetContext(
       conversation, session, [toolCall]
@@ -109,7 +109,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$1',
         toolName: 'grep',
-        toolInput: { pattern: 'main', output_mode: 'content', path: 'src' }
+        toolInput: { pattern: 'main', output_mode: 'content', path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',
@@ -137,7 +137,7 @@ export async function runTests(_ctx) {
   // Test 2: grep for function definition (replaces old find_symbol test)
   try {
     const conversation = await createTestConversation(session);
-    const toolCall = createToolCall('grep', { pattern: 'func add', output_mode: 'content', path: 'src' });
+    const toolCall = createToolCall('grep', { pattern: 'func add', output_mode: 'content', path: 'src', glob: '*.go' });
 
     const { context } = await executeToolsAndGetContext(
       conversation, session, [toolCall]
@@ -150,7 +150,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$1',
         toolName: 'grep',
-        toolInput: { pattern: 'func add', output_mode: 'content', path: 'src' }
+        toolInput: { pattern: 'func add', output_mode: 'content', path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',
@@ -216,10 +216,10 @@ export async function runTests(_ctx) {
   try {
     const conversation = await createTestConversation(session);
 
-    const call1 = createToolCall('grep', { pattern: 'package', output_mode: 'content', path: 'src' });
+    const call1 = createToolCall('grep', { pattern: 'package', output_mode: 'content', path: 'src', glob: '*.go' });
     await executeToolsAndGetContext(conversation, session, [call1]);
 
-    const call2 = createToolCall('grep', { pattern: 'import', output_mode: 'content', path: 'src' });
+    const call2 = createToolCall('grep', { pattern: 'import', output_mode: 'content', path: 'src', glob: '*.go' });
     const { context } = await executeToolsAndGetContext(
       conversation, session, [call2]
     );
@@ -232,7 +232,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$1',
         toolName: 'grep',
-        toolInput: { pattern: 'package', output_mode: 'content', path: 'src' }
+        toolInput: { pattern: 'package', output_mode: 'content', path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',
@@ -247,7 +247,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$2',
         toolName: 'grep',
-        toolInput: { pattern: 'import', output_mode: 'content', path: 'src' }
+        toolInput: { pattern: 'import', output_mode: 'content', path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',
@@ -277,11 +277,11 @@ export async function runTests(_ctx) {
     const conversation = await createTestConversation(session);
 
     // First search
-    const call1 = createToolCall('grep', { pattern: 'func', output_mode: 'content', path: 'src' });
+    const call1 = createToolCall('grep', { pattern: 'func', output_mode: 'content', path: 'src', glob: '*.go' });
     await executeToolsAndGetContext(conversation, session, [call1]);
 
     // Second search with same pattern
-    const call2 = createToolCall('grep', { pattern: 'func', output_mode: 'content', path: 'src' });
+    const call2 = createToolCall('grep', { pattern: 'func', output_mode: 'content', path: 'src', glob: '*.go' });
     const { context } = await executeToolsAndGetContext(conversation, session, [call2]);
 
     // GOLDEN: The ENTIRE expected context (both searches, both have full results)
@@ -292,7 +292,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$1',
         toolName: 'grep',
-        toolInput: { pattern: 'func', output_mode: 'content', path: 'src' }
+        toolInput: { pattern: 'func', output_mode: 'content', path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',
@@ -307,7 +307,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$2',
         toolName: 'grep',
-        toolInput: { pattern: 'func', output_mode: 'content', path: 'src' }
+        toolInput: { pattern: 'func', output_mode: 'content', path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',
@@ -329,7 +329,7 @@ export async function runTests(_ctx) {
   // Test 6: files_with_matches mode (default) - returns only file paths
   try {
     const conversation = await createTestConversation(session);
-    const toolCall = createToolCall('grep', { pattern: 'func', path: 'src' });
+    const toolCall = createToolCall('grep', { pattern: 'func', path: 'src', glob: '*.go' });
 
     const { context } = await executeToolsAndGetContext(
       conversation, session, [toolCall]
@@ -342,7 +342,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$1',
         toolName: 'grep',
-        toolInput: { pattern: 'func', path: 'src' }
+        toolInput: { pattern: 'func', path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',
@@ -364,7 +364,7 @@ export async function runTests(_ctx) {
   // Test 7: count mode - returns match counts per file
   try {
     const conversation = await createTestConversation(session);
-    const toolCall = createToolCall('grep', { pattern: 'func', output_mode: 'count', path: 'src' });
+    const toolCall = createToolCall('grep', { pattern: 'func', output_mode: 'count', path: 'src', glob: '*.go' });
 
     const { context } = await executeToolsAndGetContext(
       conversation, session, [toolCall]
@@ -377,7 +377,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$1',
         toolName: 'grep',
-        toolInput: { pattern: 'func', output_mode: 'count', path: 'src' }
+        toolInput: { pattern: 'func', output_mode: 'count', path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',
@@ -404,7 +404,8 @@ export async function runTests(_ctx) {
       pattern: 'func',
       output_mode: 'content',
       head_limit: 1,
-      path: 'src'
+      path: 'src',
+      glob: '*.go'
     });
 
     const { context } = await executeToolsAndGetContext(
@@ -418,7 +419,7 @@ export async function runTests(_ctx) {
         type: 'tool-use',
         toolUseId: '$1',
         toolName: 'grep',
-        toolInput: { pattern: 'func', output_mode: 'content', head_limit: 1, path: 'src' }
+        toolInput: { pattern: 'func', output_mode: 'content', head_limit: 1, path: 'src', glob: '*.go' }
       },
       {
         type: 'tool-result',

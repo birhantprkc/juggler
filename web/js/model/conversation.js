@@ -2098,6 +2098,25 @@ class Conversation {
           }
           break;
         }
+        case 'setDraft': {
+          // A user command in 'draft' run mode expanded its template into the
+          // input box for editing before send. Commands never touch the DOM;
+          // they declare intent and the host splices it in, caret at the end.
+          const inputBox = /** @type {any} */ (this._getInputBox());
+          if (inputBox && typeof inputBox.setDraft === 'function') {
+            inputBox.setDraft(String(data.text ?? ''));
+          } else if (inputBox && typeof inputBox.setText === 'function') {
+            inputBox.setText(String(data.text ?? ''));
+          }
+          break;
+        }
+        case 'openCommandManager': {
+          // The /commands manager. Loaded lazily so the editor dialog module is
+          // only pulled in when actually opened.
+          const { openCommandManager } = await import('../components/command-editor-dialog.js');
+          openCommandManager();
+          break;
+        }
       }
     }
   }

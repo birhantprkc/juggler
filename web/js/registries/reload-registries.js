@@ -6,6 +6,7 @@ import contextItemRegistry from './context-item-registry.js';
 import strategyRegistry from './strategy-registry.js';
 import commandRegistry from './command-registry.js';
 import { resetExtensionsCache } from '../services/extensions.js';
+import { resetUserCommandsCache } from '../services/user-commands.js';
 import { markRegistriesReady } from './registry-ready.js';
 
 /**
@@ -65,6 +66,7 @@ async function waitForLocalQuiescence() {
 /** @returns {Promise<void>} */
 async function rebuildRegistriesNow() {
   resetExtensionsCache();
+  resetUserCommandsCache();
   strategyRegistry.reset();
   contextItemRegistry.reset();
   contextItemRegistry.invalidateCache();

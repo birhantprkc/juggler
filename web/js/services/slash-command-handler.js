@@ -24,6 +24,9 @@ import commandRegistry from '../registries/command-registry.js';
  * @property {string} description - Help text for the command
  * @property {boolean} [danger] - Whether this is a destructive action (for menu styling)
  * @property {string} [icon] - CSS class for menu icon (e.g. 'icon-trashcan')
+ * @property {boolean} [userDefined] - Whether this is a user-defined (declarative) command
+ * @property {string} [scope] - Provenance scope of a user command ('user' | 'project')
+ * @property {string} [argsHint] - Ghost-text hint shown after accepting the command
  */
 
 /**
@@ -131,7 +134,10 @@ class SlashCommandHandler {
         label: manifest.name,
         description: manifest.description,
         danger: manifest.danger || false,
-        icon: manifest.icon || ''
+        icon: manifest.icon || '',
+        userDefined: manifest.userDefined || false,
+        scope: manifest.scope || '',
+        argsHint: manifest.argsHint || ''
       };
     });
   }

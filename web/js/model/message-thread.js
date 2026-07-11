@@ -942,17 +942,27 @@ export default class MessageThread {
    * Create a child thread, run it to completion, and return the result.
    * This is the public API for plugins to create sub-threads — callers
    * do not need to know about the worker or execution engine.
+   * Optional `strategyId` / `modelConfig` overrides are stamped on the new
+   * thread's Y.Map (the worker applies them in createThread), so the child runs
+   * under a different strategy (e.g. read-only) or model than this thread —
+   * used by user-defined subthread commands.
    * @plugin-api
-   * @param {{goal: string, prompt: string, isContinuation?: boolean, signal?: AbortSignal|null}} options
+   * @param {{goal: string, prompt: string, isContinuation?: boolean, signal?: AbortSignal|null, strategyId?: string, modelConfig?: object|null}} options
    * @returns {Promise<{threadItemId: string, result: string}>} Thread item ID and result
    * @throws {Error} If thread creation fails or is cancelled
    */
-  async runInThread({ goal, prompt, isContinuation = false, signal = null }) {
+  async runInThread({ goal, prompt, isContinuation = false, signal = null, strategyId = '', modelConfig = null }) {
     return submitPendingRequest(this, 'createThread', (reqMap) => {
       reqMap.set('goal', goal);
       reqMap.set('prompt', prompt);
       if (this.threadItemId !== null && this.threadItemId !== undefined) {
         reqMap.set('parentThreadItemId', this.threadItemId);
+      }
+      if (strategyId) reqMap.set('strategyId', strategyId);
+      // modelConfig rides as a JSON string (a simple scalar the worker snapshot
+      // reads without nested Y.Map decoding).
+      if (modelConfig && typeof modelConfig === 'object') {
+        reqMap.set('modelConfig', JSON.stringify(modelConfig));
       }
       reqMap.set('isContinuation', isContinuation === true);
     }, signal ?? undefined);

@@ -112,5 +112,17 @@ export default function systemPromptContribution({ enabledPluginIds }) {
     );
   }
 
+  // define_command — offer to save a repeatable workflow as a user-defined slash
+  // command. Gated on the plugin so the prompt never advertises it when disabled.
+  if (has('define-command')) {
+    sections.push(
+      '## Custom slash commands\n' +
+        'When the user asks to save, name, or repeat a prompt/workflow as a reusable command ' +
+        '("make that a slash command", "save this as /review"), offer the `define_command` tool: it ' +
+        'writes a user-defined slash command they can invoke with `/name`. The user approves the full ' +
+        'definition before it is created.'
+    );
+  }
+
   return sections.join('\n\n');
 }

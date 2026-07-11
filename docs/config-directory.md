@@ -10,6 +10,7 @@ delete.
 ├── default-model.json      your chosen default model
 ├── workspace.json          desktop app's open-window set + last-used theme
 ├── extensions/             installed extensions
+├── commands/               user-defined slash commands (see custom-commands.md)
 └── cache/                  regenerable — safe to delete
     ├── recents.json        recently-opened projects (MRU list)
     └── claudecode-model-info.json   learned model context-window sizes

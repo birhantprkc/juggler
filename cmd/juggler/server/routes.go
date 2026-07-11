@@ -629,6 +629,10 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/extensions", s.extensionsAPI.HandleListExtensions).Methods("GET")
 	api.HandleFunc("/extensions/locations", s.extensionsAPI.HandleListLocations).Methods("GET")
 
+	api.HandleFunc("/user-commands", s.userCommandsAPI.HandleList).Methods("GET")
+	api.HandleFunc("/user-commands/{scope}/{name}", s.userCommandsAPI.HandlePut).Methods("PUT")
+	api.HandleFunc("/user-commands/{scope}/{name}", s.userCommandsAPI.HandleDelete).Methods("DELETE")
+
 	api.HandleFunc("/version", s.handleVersion).Methods("GET")
 	api.HandleFunc("/update-status", s.handleUpdateStatus).Methods("GET")
 

@@ -16,7 +16,7 @@ func TestIsPluginFile(t *testing.T) {
 	cases := map[string]bool{
 		"/a/b/foo-context-item.js":     true,
 		"/a/b/juggler.extension.json":  true,
-		"/a/b/README.md":               false,
+		"/a/b/review.md":               true, // user-command definition (or a stray .md — harmless)
 		"/a/b/icon.svg":                false,
 		"/a/juggler.extension.json.js": true,  // .js suffix
 		"/a/notes.json":                false, // a non-manifest json is ignored
@@ -47,7 +47,8 @@ func TestClassifyPluginEvent(t *testing.T) {
 		{"new capability file", "/ext/linked/bar-context-item.js", fsnotify.Create, false, false, true},
 		{"removed capability file", "/ext/linked/gone-context-item.js", fsnotify.Remove, false, false, true},
 		{"edited manifest", "/ext/linked/juggler.extension.json", fsnotify.Write, false, false, true},
-		{"unrelated file edit", "/ext/linked/README.md", fsnotify.Write, false, false, false},
+		{"edited command definition", "/commands/review.md", fsnotify.Write, false, false, true},
+		{"unrelated non-plugin edit", "/ext/linked/icon.svg", fsnotify.Write, false, false, false},
 		{"chmod on capability file", "/ext/linked/foo-context-item.js", fsnotify.Chmod, false, false, false},
 	}
 	for _, c := range cases {

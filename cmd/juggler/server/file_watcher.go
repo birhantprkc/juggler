@@ -150,27 +150,36 @@ func (s *Server) startPluginWatcher() {
 	}()
 }
 
-// pluginWatchDirs returns the extension container directories whose trees the
-// watcher should register, all owned by the ExtensionsAPI. The container is
-// created if absent so a `juggler ext link` performed while the server is already
-// running is caught by the watch on the container.
+// pluginWatchDirs returns the directory trees the watcher should register: the
+// extension container (owned by the ExtensionsAPI) plus the user- and
+// project-scope user-command directories. Each is created if absent so a `juggler
+// ext link` or a first command file written while the server is already running
+// is caught by the watch on the container. An external edit to a command file
+// broadcasts plugin-changed (see isPluginFile), reusing the extension hot-reload
+// path with no new client plumbing.
 func (s *Server) pluginWatchDirs() []string {
-	api := s.extensionsAPI
 	var dirs []string
-	for _, extDir := range []string{api.UserExtensionDir()} {
-		if extDir == "" {
-			continue
+	watch := func(dir string) {
+		if dir == "" {
+			return
 		}
-		_ = os.MkdirAll(extDir, 0o755)
-		dirs = append(dirs, extDir)
+		_ = os.MkdirAll(dir, 0o755)
+		dirs = append(dirs, dir)
 	}
+	watch(s.extensionsAPI.UserExtensionDir())
+	watch(s.userCommandsAPI.UserCommandDir())
+	watch(s.userCommandsAPI.ProjectCommandDir())
 	return dirs
 }
 
 // isPluginFile reports whether a changed path is one a hot reload cares about:
-// any JS capability file or an extension manifest.
+// any JS capability file, an extension manifest, or a user-command markdown
+// definition. A stray .md under a watched extension tree (e.g. a README) also
+// triggers a reload, which is harmless — reloadRegistries is idempotent.
 func isPluginFile(name string) bool {
-	return strings.HasSuffix(name, ".js") || filepath.Base(name) == "juggler.extension.json"
+	return strings.HasSuffix(name, ".js") ||
+		strings.HasSuffix(name, ".md") ||
+		filepath.Base(name) == "juggler.extension.json"
 }
 
 // pluginEventAction is how the plugin watcher reacts to one filesystem event.

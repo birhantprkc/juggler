@@ -33,6 +33,11 @@ Juggler ships its own built-ins as one core extension, `@juggler/core`
 (`web/extensions/juggler-core/`), loaded through the **exact same path** as any
 third-party extension. It is the best reference for well-formed capabilities.
 
+> **Just want a `/name` shortcut for a prompt you reuse?** You don't need an
+> extension. A [custom slash command](custom-commands.md) is a no-code markdown
+> file — a prompt template plus a few options — editable from the UI. Reach for a
+> Command capability (below) only when the command needs real code.
+
 ## Quick start
 
 ```bash

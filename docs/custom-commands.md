@@ -1,0 +1,101 @@
+# Custom slash commands
+
+Custom slash commands let you save a prompt you use often as `/name`, with no
+code. A command is a small markdown file — a prompt template plus a few options —
+that Juggler turns into a real slash command in the menu. They hot-reload the
+moment you save, and you can share the project-scoped ones through git.
+
+For commands that need real logic (call an API, transform the document, add a
+tool), write an **extension** instead — see the [extension guide](extension_guide.md).
+Custom commands are the no-code tier below that.
+
+## Creating one
+
+Three ways, all equivalent — they write the same file:
+
+- **Type a name that doesn't exist.** `/standup` with no such command offers a
+  pinned **"New command '/standup'…"** row that opens the editor pre-filled.
+- **`/commands`** opens the manager, where **New command…** creates one and each
+  existing command can be edited or deleted.
+- **Ask the assistant.** "Make that a slash command" → it calls `define_command`
+  and you approve the full definition before it's written.
+
+## The file format
+
+One file per command under a `commands/` directory (see [Scopes](#scopes)). The
+name of the file (without `.md`) is the command name, so `review-pr.md` becomes
+`/review-pr`. Names are lowercase letters, digits, and hyphens, starting with a
+letter.
+
+Each file is YAML frontmatter followed by the prompt template:
+
+```markdown
+---
+description: Review a PR and report findings   # required — shown in the menu
+argsHint: <pr-number>                           # optional — hint after you accept it
+run: subthread                                  # send (default) | draft | subthread
+strategy: read-only                             # optional — subthread only
+model: claude-haiku-...                          # optional — subthread only
+goal: PR review                                 # optional — subthread thread label
+icon: icon-eye                                  # optional — a menu icon class
+---
+Review PR $1. Check out the branch, read the diff, and
+report each finding as `file:line — description`.
+$ARGUMENTS
+```
+
+### Placeholders
+
+The template is expanded against whatever you type after the command name:
+
+| Placeholder    | Expands to                                             |
+| -------------- | ------------------------------------------------------ |
+| `$1` … `$9`    | The 1st … 9th positional argument (empty if not given) |
+| `$ARGUMENTS`   | Everything after the command name, as one string       |
+| `$$`           | A literal `$` (so `$$1` is the text `$1`, not an arg)  |
+
+Placeholders are single-digit, so `$10` is `$1` followed by a literal `0`. If a
+template uses placeholders and you supply no arguments, it still sends — the
+model can ask for what it needs.
+
+## Run modes
+
+`run:` decides what invoking the command does:
+
+- **`send`** (default) — expands the template and sends it as your next message.
+- **`draft`** — expands the template into the input box so you can edit it before
+  sending.
+- **`subthread`** — runs the expanded prompt in an isolated sub-thread and lands
+  the result back in the conversation, keeping the main context clean. Only this
+  mode honours `strategy`, `model`, and `goal`, so you can, for example, run a
+  review under the read-only strategy without changing your current thread.
+
+## Scopes
+
+A command lives in one of two places:
+
+| Scope       | Location                          | Applies to        |
+| ----------- | --------------------------------- | ----------------- |
+| **Project** | `<project>/.juggler/commands/*.md` | this project (git-shareable) |
+| **User**    | `~/.juggler/commands/*.md`         | all your projects |
+
+If both scopes define the same name, the **project** command wins. A custom
+command may **not** shadow a built-in command (`/clear`, `/compact`, …): such a
+file still loads but is flagged invalid in the `/commands` manager with the
+reason, so it never silently overrides a built-in.
+
+## Sharing and trust
+
+Project-scoped commands arrive with the repository, so a command someone else
+wrote can ship in a project you clone. A command is only ever run when **you**
+invoke it — never automatically — and its scope is shown as a badge in the menu
+and in the manager, so you can always see where a command came from before you
+run it. Commands cannot run shell or read files on their own; they only send a
+prompt (which the model then acts on under your normal approval rules).
+
+## Importing from Claude Code
+
+The format is deliberately close to Claude Code's `.claude/commands/*.md`. Juggler
+does not scan `.claude/` automatically; copy the files into a `commands/`
+directory (Juggler reads `argument-hint` as `argsHint` and ignores keys it does
+not recognise).

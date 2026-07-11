@@ -746,6 +746,25 @@ class InputBox extends HTMLElement {
   }
 
   /**
+   * Set the textarea to a command-supplied draft, focus it, and place the caret
+   * at the end so the user can immediately continue typing. Used by user-defined
+   * slash commands in 'draft' run mode (via the setDraft command side effect).
+   * @param {string} text
+   */
+  setDraft(text) {
+    this.setText(text);
+    const textarea = this.querySelector('textarea');
+    if (!textarea) return;
+    textarea.focus();
+    const end = textarea.value.length;
+    try {
+      textarea.setSelectionRange(end, end);
+    } catch {
+      // setSelectionRange throws on some input types — non-fatal.
+    }
+  }
+
+  /**
    * Get the current textarea text
    * @returns {string} Current text value
    */

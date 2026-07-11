@@ -98,6 +98,8 @@ core provides:
 - **plan** — create and track a multi-step implementation plan.
 - **memory** — record or remove durable, cross-session project facts.
 - **AskUserQuestion** — ask the user a structured multiple-choice question.
+- **define_command** — save a reusable prompt as a custom "/name" slash command;
+  the user approves the full definition before it is created.
 
 ## Strategies
 
@@ -112,13 +114,39 @@ hold to open the strategy menu).
 
 ## Slash commands
 
-Type "/" in the composer to run a command against the current conversation:
+Type "/" in the composer to run a command against the current conversation. The
+built-in commands are:
 
 - **/new** — open a new, empty conversation in a new tab.
 - **/duplicate** — clone the current conversation into a new tab.
 - **/clear** — clear the conversation's messages.
 - **/compact** — compact the whole conversation into a summary thread.
 - **/thread** — create a new sub-conversation thread.
+- **/commands** — open the manager for creating and editing custom commands.
+
+### Custom slash commands
+
+You can define your own "/name" commands without writing code. A custom command
+is a markdown file — YAML frontmatter (description, run mode, and a few options)
+over a prompt template — that Juggler turns into a real menu command and
+hot-reloads the moment you save. Placeholders in the template expand from what
+you type after the command: "$1".."$9" for positional arguments, "$ARGUMENTS"
+for everything after the command name, and "$$" for a literal dollar sign.
+
+There are three ways to create one, all writing the same file: type a name that
+does not exist yet (the menu offers a "New command…" row that opens the editor),
+use "/commands", or ask the assistant to save a workflow as a command (it calls
+the define_command tool and you approve the full definition first). A command
+runs in one of three modes: send it immediately, insert it into the composer as
+an editable draft, or run it in an isolated sub-thread (which can use its own
+strategy or model).
+
+Custom commands are stored as markdown files in two scopes:
+"~/.juggler/commands/" (yours, across all projects) and
+"<project>/.juggler/commands/" (shared through the project's git repository). A
+project command shadows a user command of the same name, but neither can override
+a built-in. For commands that need real code, write an extension instead. See
+docs/custom-commands.md.
 
 ## Keyboard shortcuts
 
@@ -142,6 +170,7 @@ Per-user state lives in the "~/.juggler" directory:
 - **default-model.json** — your chosen default model.
 - **workspace.json** — the desktop app's open-window set and last-used theme.
 - **extensions/** — installed user extensions.
+- **commands/** — your custom slash commands (see custom-commands.md).
 - **cache/** — regenerable cache (recent projects, learned model context sizes);
   safe to delete at any time.
 
@@ -152,7 +181,8 @@ small and copyable.
 
 Per-project state lives in a ".juggler" folder inside the project, including
 "MEMORY.md" — the durable, user-visible project memory the memory tool writes to
-(gitignored by default).
+(gitignored by default) — and "commands/", holding project-scoped custom slash
+commands that are shared through the project's git repository.
 
 ## Extensions
 
@@ -201,6 +231,8 @@ extend the app), read the source rather than guessing:
   web/extensions/ (juggler-core and juggler-mcp) are working examples to copy.
 - **Configuration and data layout** — docs/config-directory.md (the ~/.juggler
   directory, durable vs. cache).
+- **Custom slash commands** — docs/custom-commands.md (the no-code command
+  format: placeholders, run modes, and scopes).
 - **Project memory** — docs/memory.md (how .juggler/MEMORY.md is read and written).
 - **Logs and reporting issues** — docs/logging.md.
 - **Building and distribution** — docs/distribution.md; the top-level README.md

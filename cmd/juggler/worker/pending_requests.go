@@ -69,6 +69,8 @@ type pendingEntrySnapshot struct {
 	continueThreadID string
 	deliverTaskID    string // deliverTaskOutput: background task whose output to stream
 	deliverLabel     string // deliverTaskOutput: display label shown with each batch
+	strategyID       string // createThread: optional strategy override for the new thread
+	modelConfigJSON  string // createThread: optional model-config override (JSON), applied to the new thread
 }
 
 // scanPendingRequests is invoked from handleItemsChange. Walks the
@@ -147,6 +149,8 @@ func (w *ConversationWorker) snapshotPendingEntries() []pendingEntrySnapshot {
 				snap.goal, _ = req.Get("goal").(string)
 				snap.prompt, _ = req.Get("prompt").(string)
 				snap.parentThreadID, _ = req.Get("parentThreadItemId").(string)
+				snap.strategyID, _ = req.Get("strategyId").(string)
+				snap.modelConfigJSON, _ = req.Get("modelConfig").(string)
 				snap.isContinuation, _ = req.Get("isContinuation").(bool)
 				snap.continueThreadID, _ = req.Get("threadItemId").(string)
 				snap.deliverTaskID, _ = req.Get("taskId").(string)
@@ -245,7 +249,7 @@ func (w *ConversationWorker) claimAndDispatchPendingEntry(e pendingEntrySnapshot
 
 	switch e.kind {
 	case "createThread":
-		threadItemID, err := w.dispatchCreateThread(e.goal, e.prompt, e.parentThreadID, e.isContinuation)
+		threadItemID, err := w.dispatchCreateThread(e.goal, e.prompt, e.parentThreadID, e.isContinuation, e.strategyID, e.modelConfigJSON)
 		if err != nil {
 			w.writePendingEntryError(e.ownerThreadID, e.id, err.Error())
 			return

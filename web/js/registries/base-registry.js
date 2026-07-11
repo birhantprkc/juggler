@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { resolveAssetUrl, importModuleUrl } from '../utils/asset-url.js';
+import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 
 /**
  * Extract the served URL from a capability descriptor. Tolerates a bare path
@@ -305,6 +306,42 @@ class BaseRegistry {
       console.error(`[${this.name}] Failed to load ${this.name.toLowerCase()} from ${modulePath}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Register an already-loaded class directly, bypassing module import. This is
+   * the seam for capability sources that synthesise classes in-process rather
+   * than importing a module URL (e.g. user-defined slash commands built from
+   * markdown definitions). Call it AFTER `init()` so it can detect collisions
+   * against the module-loaded set.
+   *
+   * A class whose id collides with an already-registered (or config-disabled)
+   * capability is NOT registered — it is recorded as a failed module so the id's
+   * existing owner keeps it, and the collision is surfaced in the manager UI.
+   * This enforces the rule that a user command may never shadow a
+   * built-in/extension command.
+   * @param {T} ItemClass - The class to register (must have a valid MANIFEST)
+   * @param {{extensionId?: string|null, modulePath?: string}} [opts] - Attribution
+   * @returns {{registered: boolean, id?: string, reason?: string}} Outcome
+   */
+  registerClass(ItemClass, { extensionId = null, modulePath = '' } = {}) {
+    try {
+      this.validateClass(ItemClass);
+    } catch (err) {
+      const msg = extractErrorMessage(err);
+      this._failedModules.set(modulePath || '(registerClass)', msg);
+      return { registered: false, reason: msg };
+    }
+    const id = /** @type {any} */ (ItemClass).MANIFEST.id;
+    if (this.items.has(id) || this._disabledItems.has(id)) {
+      const reason = `"${id}" shadows an existing command; rename it`;
+      this._failedModules.set(modulePath || id, reason);
+      return { registered: false, id, reason };
+    }
+    this.items.set(id, ItemClass);
+    this.modulePaths.set(id, modulePath);
+    this.itemExtensions.set(id, extensionId);
+    return { registered: true, id };
   }
 
   /**

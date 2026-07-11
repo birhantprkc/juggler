@@ -84,14 +84,23 @@ export async function runTests() {
       assert(slashCommandProvider.detect('/two words') === null,
         'once a space is typed the command name is settled — no trigger');
 
-      // fetch() is registry-backed; await it directly (no debounce).
-      const all = (await slashCommandProvider.fetch('')).map((c) => c.name);
+      // fetch() is registry-backed; await it directly (no debounce). The list
+      // ends with a synthetic "New command…" row (no `name`); real commands are
+      // isolated by dropping it.
+      const realNames = (/** @type {any[]} */ items) => items.filter((c) => c.action !== 'new-command').map((c) => c.name);
+      const all = realNames(await slashCommandProvider.fetch(''));
       assert(all.includes('clear'), `fetch("") must offer /clear, got ${JSON.stringify(all)}`);
 
-      const filtered = (await slashCommandProvider.fetch('cl')).map((c) => c.name);
+      const filtered = realNames(await slashCommandProvider.fetch('cl'));
       assert(filtered.length > 0 && filtered.every((n) => n.startsWith('cl')),
         `fetch("cl") must return only cl* commands, got ${JSON.stringify(filtered)}`);
       assert(filtered.includes('clear'), `fetch("cl") must still offer /clear, got ${JSON.stringify(filtered)}`);
+
+      // The pinned "New command…" row is always last, carrying the typed query.
+      const withRow = await slashCommandProvider.fetch('standup');
+      const pinned = withRow[withRow.length - 1];
+      assert(pinned && pinned.action === 'new-command' && pinned.query === 'standup',
+        `fetch must pin a New command row carrying the query, got ${JSON.stringify(pinned)}`);
 
       // insert() splices text only — "/name " with a trailing space, no send.
       assert(slashCommandProvider.insert({ name: 'clear' }) === '/clear ',
