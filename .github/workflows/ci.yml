@@ -5,7 +5,8 @@ name: CI
 # SECURITY INVARIANTS — this repo is public and PR code is untrusted:
 #   * No secrets are referenced anywhere in this workflow, ever.
 #   * GitHub-hosted runners ONLY — never self-hosted. (The old workflow's
-#     self-hosted Mac has been re-registered with the private release repo.)
+#     self-hosted Mac has been re-registered with the private release repo;
+#     the public CI now uses hosted macos-latest instead.)
 #   * No packaging, no releases, no artifact publishing. Official binaries are
 #     built and published by the maintainer's private release pipeline.
 on:
@@ -35,9 +36,9 @@ jobs:
     # checkout (large wails submodule) and build.
     timeout-minutes: 30
     strategy:
-      # Don't cancel sibling matrix legs on first failure — Linux and Windows
-      # surface different issues (build-tag drift, line endings, cgo specifics)
-      # and seeing both at once is more useful than seeing one.
+      # Don't cancel sibling matrix legs on first failure — each platform
+      # surfaces different issues (build-tag drift, line endings, cgo/WKWebView
+      # specifics) and seeing all of them at once is more useful than one.
       fail-fast: false
       matrix:
         include:
@@ -47,10 +48,14 @@ jobs:
             os: ubuntu-latest
           - name: windows
             os: windows-latest
-          # No macOS leg here on purpose: this public repo uses GitHub-hosted
-          # runners only, and hosted-mac minutes bill at 10x. macOS is covered
-          # on the maintainer's self-hosted Mac in the private release pipeline
-          # before anything ships.
+          # macOS rounds out the full trio of hosted platforms. Public repos
+          # get hosted-mac minutes for free, so there's no cost reason to skip
+          # it — and it catches darwin-only build-tag / cgo (WKWebView) drift
+          # that Linux and Windows can't surface. (Packaging/signing still
+          # lives in the private release pipeline; this leg just builds +
+          # lints + tests.)
+          - name: macos
+            os: macos-latest
 
     steps:
       - name: Configure Git
