@@ -34,16 +34,16 @@ import (
 
 // createExtensionsAPI constructs the unified manifest-driven ExtensionsAPI, the
 // single owner of extension discovery and the on-disk locations they live in.
-func createExtensionsAPI(s *Server, projectPath string, devMode bool) *handlers.ExtensionsAPI {
+func createExtensionsAPI(s *Server, projectPath string, assetsFromDisk bool) *handlers.ExtensionsAPI {
 	var builtinFS fs.FS
-	builtinDir := "" // disk path of web/ in dev mode, so builtin extensions expose revealable files
-	if devMode {
+	builtinDir := "" // disk path of web/ when serving assets from disk, so builtin extensions expose revealable files
+	if assetsFromDisk {
 		if webDir := findWebDir(); webDir != "" {
 			builtinFS = os.DirFS(webDir)
 			builtinDir = webDir
-			jlog.Info("📂 Dev mode: Loading builtin assets from disk: %s", webDir)
+			jlog.Info("📂 Assets-from-disk: Loading builtin assets from disk: %s", webDir)
 		} else {
-			jlog.Error("Dev mode: Could not find web/ directory, using embedded files")
+			jlog.Error("Assets-from-disk: Could not find web/ directory, using embedded files")
 			builtinFS, _ = fs.Sub(web.Files, ".")
 		}
 	} else {
@@ -648,8 +648,8 @@ func (s *Server) setupRoutes() {
 	// Captured so the absolute-project-path route below can reuse it. Serves the
 	// web root, so a request path of "/js/foo.js" maps to web/js/foo.js.
 	var staticFileServer http.Handler
-	if s.devMode {
-		// Development mode: serve files directly from disk for live reload
+	if s.assetsFromDisk {
+		// Assets-from-disk: serve files directly from disk for live reload
 		staticDir, err := s.findStaticDir()
 		if err != nil {
 			jlog.Error("Failed to find static directory: %v", err)

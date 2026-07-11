@@ -181,8 +181,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 func (s *Server) loadIndexTemplate() error {
 	var tmplContent string
 
-	if s.devMode {
-		// In dev mode, load from disk
+	if s.assetsFromDisk {
+		// Assets-from-disk: load from disk
 		staticDir, err := s.findStaticDir()
 		if err != nil {
 			return fmt.Errorf("failed to find static dir: %w", err)
@@ -219,8 +219,8 @@ func (s *Server) serveEngine(w http.ResponseWriter, r *http.Request) {
 	var content []byte
 	var err error
 
-	if s.devMode {
-		// In dev mode, load from disk for live reload
+	if s.assetsFromDisk {
+		// Assets-from-disk: load from disk for live reload
 		staticDir, findErr := s.findStaticDir()
 		if findErr == nil {
 			content, err = os.ReadFile(filepath.Join(staticDir, "engine.html"))
@@ -251,11 +251,12 @@ func (s *Server) serveEngine(w http.ResponseWriter, r *http.Request) {
 
 // serveHeadlessTest serves the headless test page (only registered by RegisterTestRoutes)
 func (s *Server) serveHeadlessTest(w http.ResponseWriter, r *http.Request) {
-	// In dev mode, read from disk so edits take effect without rebuilding.
-	// juggler-test runs with DevMode=true, so tests never use baked-in files.
+	// With assets-from-disk, read from disk so edits take effect without
+	// rebuilding. juggler-test runs with --assets-from-disk, so tests never use
+	// baked-in files.
 	var content []byte
 	var err error
-	if s.devMode {
+	if s.assetsFromDisk {
 		if staticDir, derr := s.findStaticDir(); derr == nil {
 			content, err = os.ReadFile(filepath.Join(staticDir, "js-tests", "headless-test.html"))
 		} else {
@@ -337,7 +338,7 @@ func (s *Server) serveSandbox(w http.ResponseWriter, r *http.Request) {
 	var content []byte
 	var err error
 
-	if s.devMode {
+	if s.assetsFromDisk {
 		staticDir, findErr := s.findStaticDir()
 		if findErr == nil {
 			content, err = os.ReadFile(filepath.Join(staticDir, "sandbox.html"))
@@ -384,7 +385,7 @@ func (s *Server) serveSandbox(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveFavicon(w http.ResponseWriter, r *http.Request) {
 	var content []byte
 	var err error
-	if s.devMode {
+	if s.assetsFromDisk {
 		if staticDir, derr := s.findStaticDir(); derr == nil {
 			content, err = os.ReadFile(filepath.Join(staticDir, "resources", "juggler-logo.svg"))
 		} else {
@@ -405,8 +406,8 @@ func (s *Server) serveFavicon(w http.ResponseWriter, r *http.Request) {
 
 // serveIndex serves the index.html template
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
-	// Reload template in dev mode for live changes
-	if s.devMode {
+	// Reload template from disk on each request when serving assets from disk
+	if s.assetsFromDisk {
 		if err := s.loadIndexTemplate(); err != nil {
 			jlog.Error("Error reloading template: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -559,15 +560,15 @@ func (s *Server) cacheControlMiddleware(next http.Handler) http.Handler {
 
 		// Versioned paths get immutable caching (the version changes on each deploy)
 		if strings.HasPrefix(path, "/v"+s.staticVersion+"/") {
-			if !s.devMode {
+			if !s.assetsFromDisk {
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			}
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Non-versioned paths: dev vs production
-		if s.devMode {
+		// Non-versioned paths: live-reload (assets-from-disk) vs production
+		if s.assetsFromDisk {
 			if strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".css") {
 				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 				w.Header().Set("Pragma", "no-cache")

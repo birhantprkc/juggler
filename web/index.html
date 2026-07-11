@@ -139,7 +139,7 @@
                 return origFetch(input, init);
             };
         })();
-        // Runtime dev-mode flag (server --assets-from-disk / config). Gates the
+        // Runtime dev-mode flag (server --dev / --assets-from-disk / config). Gates the
         // native WKWebView debug context menu (reload / Inspect Element) — see
         // services/context-menu-service.js. Absent (falsy) in normal sessions.
         {{if .IsDevMode}}window.JUGGLER_DEV_MODE = true;{{end}}

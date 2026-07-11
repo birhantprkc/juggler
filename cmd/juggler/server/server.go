@@ -102,8 +102,9 @@ type Server struct {
 	upgrader          websocket.Upgrader
 	addr              string
 	listener          net.Listener // Bound listener (set after BindPort())
-	devMode           bool
-	testMode          bool // Set when test routes are registered; disables network calls in provider listing
+	devMode           bool         // Inspector / right-click menu + front-end JUGGLER_DEV_MODE (no source checkout needed)
+	assetsFromDisk    bool         // Serve web assets from the on-disk web/ tree with live reload (requires a source checkout)
+	testMode          bool         // Set when test routes are registered; disables network calls in provider listing
 	bootProjectPath   string
 	opsAPI            *handlers.OpsAPI
 	completionsAPI    *handlers.CompletionsAPI
@@ -192,8 +193,9 @@ type Config struct {
 	SessionManager *core.SessionManager
 	Host           string
 	Port           int
-	DevMode        bool               // If true, serve static files from disk for live reload
-	ProjectPath    string             // Project root path (for resolving static files in dev mode)
+	DevMode        bool               // If true, enable the web inspector / right-click menu (front-end dev mode); no source checkout required
+	AssetsFromDisk bool               // If true, serve static files from the on-disk web/ tree with live reload; requires a source checkout
+	ProjectPath    string             // Project root path (for resolving static files when AssetsFromDisk is set)
 	BootLock       *core.InstanceLock // Optional boot-time instance lock; ownership transfers to server.
 	// ExtraRoutes, if set, is called at the end of setupRoutes with the
 	// server's router, so a wrapping distribution can register additional
@@ -259,7 +261,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to create system prompt preset store: %w", err)
 	}
 
-	extensionsAPI := createExtensionsAPI(s, cfg.ProjectPath, cfg.DevMode)
+	extensionsAPI := createExtensionsAPI(s, cfg.ProjectPath, cfg.AssetsFromDisk)
 
 	staticVersion := generateStaticVersion()
 	recents, _ := core.NewRecentsStore()
@@ -276,6 +278,7 @@ func New(cfg Config) (*Server, error) {
 	s.upgrader = upgrader
 	s.addr = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	s.devMode = cfg.DevMode
+	s.assetsFromDisk = cfg.AssetsFromDisk
 	s.bootProjectPath = cfg.ProjectPath
 	s.extraRoutes = cfg.ExtraRoutes
 	s.opsAPI = handlers.NewOpsAPI(s.ProjectPath)

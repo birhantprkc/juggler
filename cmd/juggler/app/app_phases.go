@@ -222,11 +222,22 @@ func (a *App) initServer() error {
 		port = a.flags.port
 	}
 
+	// Assets-from-disk may also be enabled via config.json (not just the flag,
+	// which is guarded earlier in Run). Reject it here too if no source checkout
+	// is present, so the failure is the same clear message rather than a cryptic
+	// template-load error deep inside server.New.
+	assetsFromDisk := a.assetsFromDiskEnabled()
+	if assetsFromDisk && !assetsFromDiskAvailable() {
+		jlog.Error("%s", assetsFromDiskUnavailableMsg)
+		return fmt.Errorf("assets-from-disk requested but no source checkout found")
+	}
+
 	srv, err := server.New(server.Config{
 		SessionManager: a.session,
 		Host:           a.cfg.Server.Host,
 		Port:           port,
-		DevMode:        a.flags.assetsFromDisk || a.cfg.IsAssetsFromDiskEnabled(),
+		DevMode:        a.devModeEnabled(),
+		AssetsFromDisk: assetsFromDisk,
 		ProjectPath:    a.projectPath,
 		BootLock:       a.lock,
 		ExtraRoutes:    a.config.ExtraRoutes,

@@ -64,7 +64,7 @@ func (s *Server) readWorkerModule(moduleURL string) ([]byte, error) {
 	}
 	path = strings.TrimPrefix(path, "/")
 
-	if s.devMode {
+	if s.assetsFromDisk {
 		if staticDir, err := s.findStaticDir(); err == nil {
 			if content, err := os.ReadFile(filepath.Join(staticDir, filepath.FromSlash(path))); err == nil {
 				return content, nil

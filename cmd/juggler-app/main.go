@@ -29,7 +29,7 @@ func main() {
 	urlFlag := flag.String("url", "", "Connect the first window to a juggler server at this URL. When omitted, a local server is spawned.")
 	project := flag.String("project", "", "Project folder for the first window's spawned server (ignored when --url is given).")
 	verbose := flag.Bool("verbose", false, "Verbose logging and the dev View menu (reload, devtools).")
-	dev := flag.Bool("dev", false, "Enable dev mode: web inspector + the full right-click menu, and the dev View menu. Set by a server running with --assets-from-disk when it launches a window.")
+	dev := flag.Bool("dev", false, "Enable dev mode: web inspector + the full right-click menu, and the dev View menu. Set by a server running in dev mode (--dev or --assets-from-disk) when it launches a window.")
 	flag.Parse()
 
 	devMode := 0

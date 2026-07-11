@@ -15,7 +15,8 @@ import (
 // appFlags holds the CLI flags parsed by main.
 type appFlags struct {
 	verbose        bool // -v/--verbose: console log level → Debug
-	assetsFromDisk bool // --assets-from-disk: serve web/ from disk, no cache, reload templates per request
+	dev            bool // --dev: enable the web inspector / right-click menu (no source checkout needed)
+	assetsFromDisk bool // --assets-from-disk: serve web/ from disk, no cache, reload templates per request (implies dev)
 	killExisting   bool // --kill-existing: on lock collision, kill the holder instead of prompting
 	window         bool
 	project        string              // explicit --project value (raw, may be relative)
@@ -85,6 +86,20 @@ func (a *App) startupPhases() []struct {
 		{"serve", a.serve},
 		{"engine watcher", a.initEngineWatcher},
 	}
+}
+
+// assetsFromDiskEnabled reports whether web assets should be served from the
+// on-disk web/ tree (live-reload). Driven by --assets-from-disk or the config
+// equivalent; requires a source checkout (see assetsFromDiskAvailable).
+func (a *App) assetsFromDiskEnabled() bool {
+	return a.flags.assetsFromDisk || a.cfg.IsAssetsFromDiskEnabled()
+}
+
+// devModeEnabled reports whether front-end dev mode (web inspector / right-click
+// menu) should be on. Enabled by --dev directly, and implied by assets-from-disk
+// since serving from disk is inherently a developer workflow.
+func (a *App) devModeEnabled() bool {
+	return a.flags.dev || a.assetsFromDiskEnabled()
 }
 
 // pushCleanup registers a teardown function. Cleanups run in LIFO order.

@@ -17,8 +17,9 @@ import (
 // launchDesktopApp opens the juggler-app desktop window pointed at serverURL.
 // The server is windowless; the visible UI lives in this separate process.
 // Used by the 'w' key and by a window-mode (icon/Finder) launch. devMode
-// forwards --dev so a server in dev mode (--assets-from-disk) gives its windows
-// the web inspector and the full right-click menu.
+// forwards --dev so a server in dev mode (--dev, or the implied dev mode of
+// --assets-from-disk) gives its windows the web inspector and the full
+// right-click menu.
 func launchDesktopApp(serverURL string, devMode bool) error {
 	appBin, err := appBinPath()
 	if err != nil {

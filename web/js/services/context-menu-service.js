@@ -26,7 +26,7 @@
  *
  *  3. **Native fallback, dev-mode only.** When nothing juggler-specific applies
  *     and we're in runtime dev-mode (`window.JUGGLER_DEV_MODE`, injected by the
- *     index template from the server's `--assets-from-disk`/config flag), we let
+ *     index template from the server's `--dev`/`--assets-from-disk`/config flag), we let
  *     the event fall through so the native debug menu (Reload / Inspect Element)
  *     stays reachable by right-clicking any non-text region. We seed
  *     `window._wails.environment.Debug` from the same flag so the Wails runtime's
@@ -85,8 +85,8 @@ export function registerContextMenuProvider(provider) {
 }
 
 /**
- * Whether juggler is running in runtime dev-mode (server `--assets-from-disk`
- * or config). Drives the native debug-menu gate.
+ * Whether juggler is running in runtime dev-mode (server `--dev` /
+ * `--assets-from-disk` / config). Drives the native debug-menu gate.
  * @returns {boolean} True when running in runtime dev-mode.
  */
 export function isDevMode() {

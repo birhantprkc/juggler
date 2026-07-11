@@ -71,7 +71,7 @@ func (a *App) waitForExit() {
 	// juggler-app process pointed at this server's URL. The app owns the visible
 	// UI and connects back over HTTP/WebSocket like any viewer.
 	launchWindow := func() {
-		devMode := a.flags.assetsFromDisk || a.cfg.IsAssetsFromDiskEnabled()
+		devMode := a.devModeEnabled()
 		if err := launchDesktopApp(a.serverURL(), devMode); err != nil {
 			jlog.Error("Failed to open window: %v", err)
 		}
@@ -270,7 +270,7 @@ func (a *App) waitForExit() {
 		startMainThreadWatchdog(a.server.GetAddr(), !a.flags.testMode)
 	}
 
-	devMode := a.flags.assetsFromDisk || a.cfg.IsAssetsFromDiskEnabled()
+	devMode := a.devModeEnabled()
 	runWindowApp(a.server, devMode, !a.flags.window, a.flags.testMode, a.flags.testIframes, done, signalDone, onWindowReady)
 }
 

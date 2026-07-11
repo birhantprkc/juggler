@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/gorilla/mux"
 
@@ -80,6 +82,14 @@ func Run(cfg Config) int {
 		return 0
 	}
 
+	// --assets-from-disk is a developer flag that serves the web/ tree off disk;
+	// a stock binary shipped on its own has no such tree. Fail fast and clearly
+	// here rather than deep inside server startup with a cryptic template error.
+	if flags.assetsFromDisk && !assetsFromDiskAvailable() {
+		fmt.Fprintln(os.Stderr, assetsFromDiskUnavailableMsg)
+		return 1
+	}
+
 	// Install the asset overlay before anything reads web.Files.
 	if cfg.AssetOverlay != nil {
 		web.SetOverlay(cfg.AssetOverlay)
@@ -141,7 +151,8 @@ func startParentWatchdog() {
 func parseFlags(hasTerminal bool) (appFlags, bool) {
 	verbose := flag.Bool("verbose", false, "Verbose logging (debug level)")
 	flag.BoolVar(verbose, "v", false, "Verbose logging (debug level) (shorthand)")
-	assetsFromDisk := flag.Bool("assets-from-disk", false, "Load web assets from disk (web/) instead of the embedded FS; disables caching and reloads templates per request")
+	dev := flag.Bool("dev", false, "Enable dev mode: the web inspector and full right-click menu (no source checkout required)")
+	assetsFromDisk := flag.Bool("assets-from-disk", false, "Developer flag: serve web assets from the on-disk web/ tree (requires a source checkout) instead of the embedded FS, disabling caching and reloading templates per request; implies --dev")
 	version := flag.Bool("version", false, "Print version and exit")
 	killExisting := flag.Bool("kill-existing", false, "If another instance holds the lock, kill it instead of prompting")
 	window := flag.Bool("window", false, "Open a native window instead of printing the server URL")
@@ -166,6 +177,7 @@ func parseFlags(hasTerminal bool) (appFlags, bool) {
 	}
 	exitWithParent := flag.Bool("exit-with-parent", false, "Self-terminate if the parent process dies (set by juggler-app for servers it owns, so they never outlive the app)")
 	logFile := flag.String("log-file", "", "Explicit log file path, overriding the centrally-derived per-platform log path (set by juggler-app per spawned server)")
+	flag.Usage = usage
 	flag.Parse()
 
 	projectSet := false
@@ -203,6 +215,7 @@ func parseFlags(hasTerminal bool) (appFlags, bool) {
 
 	return appFlags{
 		verbose:        *verbose,
+		dev:            *dev,
 		assetsFromDisk: *assetsFromDisk,
 		killExisting:   *killExisting,
 		window:         *window,
@@ -221,6 +234,65 @@ func parseFlags(hasTerminal bool) (appFlags, bool) {
 		logFileSet:     logFileSet,
 	}, *version
 }
+
+// hiddenFlags are registered and functional but omitted from --help: developer,
+// test-harness, and internal flags an end user has no reason to set. Several are
+// load-bearing (the test harness passes --test/--assets-from-disk; juggler-app
+// passes --exit-with-parent/--log-file to servers it spawns), so they must keep
+// working — they're just undocumented.
+var hiddenFlags = map[string]bool{
+	"assets-from-disk": true,
+	"test":             true,
+	"test-iframes":     true,
+	"exit-with-parent": true,
+	"log-file":         true,
+}
+
+// usage prints a curated --help listing: only the user-facing flags, formatted
+// like flag.PrintDefaults. WAN flags contributed by tunnel modes appear
+// automatically since they aren't in hiddenFlags.
+func usage() {
+	out := flag.CommandLine.Output()
+	fmt.Fprintf(out, "Juggler — AI code agent\n\nUsage: %s [options]\n\nOptions:\n", filepath.Base(os.Args[0]))
+	flag.VisitAll(func(f *flag.Flag) {
+		if hiddenFlags[f.Name] {
+			return
+		}
+		dash := "--"
+		if len(f.Name) == 1 {
+			dash = "-"
+		}
+		name, help := flag.UnquoteUsage(f)
+		left := "  " + dash + f.Name
+		if name != "" {
+			left += " " + name
+		}
+		if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" {
+			help += fmt.Sprintf(" (default %q)", f.DefValue)
+		}
+		const col = 26
+		if len(left) < col {
+			left += strings.Repeat(" ", col-len(left))
+		} else {
+			left += "\n" + strings.Repeat(" ", col)
+		}
+		fmt.Fprintln(out, left+help)
+	})
+}
+
+// assetsFromDiskAvailable reports whether a juggler source checkout (a directory
+// tree containing web/) can be located, which --assets-from-disk requires.
+func assetsFromDiskAvailable() bool {
+	_, err := server.FindProjectRoot("")
+	return err == nil
+}
+
+// assetsFromDiskUnavailableMsg is shown when --assets-from-disk is requested but
+// no source checkout is present — the usual case for a stock standalone binary.
+const assetsFromDiskUnavailableMsg = "--assets-from-disk needs to run from a Juggler source checkout " +
+	"(a directory tree containing web/), and this binary isn't inside one, so there are no on-disk assets to serve.\n" +
+	"  • Remove --assets-from-disk to use the built-in assets.\n" +
+	"  • Use --dev to open the web inspector without on-disk assets."
 
 func printBanner() {
 	fmt.Printf(`
