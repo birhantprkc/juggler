@@ -123,6 +123,16 @@ export const tests = [
     'ok'
   ),
 
+  // On-disk project module import: a real JavaScript file anywhere in the user's
+  // project (not just under web/) resolves from disk, so the model can load and
+  // call the project's own code. src/greeter.js ships in unit-test-fixture.
+  exploreTest(
+    'explore-project-file-import',
+    'explore_code: can import() a project source module from disk',
+    'const m = await import(`${projectRoot}/src/greeter.js`);\nreturn m.greet("World") === "Hello, World!" && m.ANSWER === 42 ? "ok" : "bad";',
+    'ok'
+  ),
+
   // Sandbox isolation: the untrusted code runs in a nested worker spawned by
   // the opaque-origin sandbox iframe, so the worker INHERITS that opaque
   // origin. That is what denies it the backend: its security origin is

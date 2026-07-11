@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -680,13 +681,37 @@ func (s *Server) setupRoutes() {
 		s.serveEmbeddedTestAssets(vPrefix)
 	}
 
-	// Absolute-project-path module loader for the explore_code sandbox worker.
-	// The worker (opaque origin, no import map) resolves user code's
-	// `import('<projectRoot>/web/...')` against its own http origin, producing a
-	// request for `<projectRoot>/web/<rest>`. We serve that from the web root —
-	// the server-side equivalent of the iframe import map's "<root>/web/" →
-	// "/v<ver>/" rewrite. Matched dynamically because the project path is not
-	// known at registration time; no project loaded ⇒ never matches.
+	// Project-file module loader for the explore_code sandbox worker. The worker
+	// (opaque origin, no import map) resolves user code's
+	// `import('<projectRoot>/...')` against its own http origin, so it arrives
+	// here as a request for the absolute project path. We serve the real file
+	// straight off disk when it exists inside the project root and is an
+	// importable module — this is what lets explore_code load and test ANY
+	// JavaScript module in the user's own project, not just the app's own web/
+	// assets. Registered before the web-root fallback below so a real on-disk
+	// file wins; when no such file exists the matcher declines and the request
+	// falls through. Only .js/.mjs/.cjs/.json are served (never arbitrary
+	// source/secrets) even though the response carries ACAO=* for the opaque
+	// worker, and path traversal outside the root is rejected.
+	s.router.MatcherFunc(func(r *http.Request, _ *mux.RouteMatch) bool {
+		_, ok := s.sandboxProjectFile(r.URL.Path)
+		return ok
+	}).HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		diskPath, ok := s.sandboxProjectFile(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		serveSandboxProjectFile(w, r, diskPath)
+	})
+
+	// Web-root fallback for the sandbox worker. When the absolute import path is
+	// `<projectRoot>/web/...` and has no real on-disk file (the common case when
+	// the user is developing juggler itself against embedded/served assets), we
+	// serve it from the web root — the server-side equivalent of the iframe
+	// import map's "<root>/web/" → "/v<ver>/" rewrite. Matched dynamically
+	// because the project path is not known at registration time; no project
+	// loaded ⇒ never matches.
 	s.router.MatcherFunc(func(r *http.Request, _ *mux.RouteMatch) bool {
 		root := sandboxImportRoot(s.ProjectPath())
 		return root != "" && strings.HasPrefix(sandboxImportPath(r.URL.Path, root), root+"/web/")
@@ -742,6 +767,20 @@ func (s *Server) setupRoutes() {
 		s.extraRoutes(s.router)
 	}
 
+	// Unmatched requests: mirror corsMiddleware's non-/api headers so an
+	// unresolved sandbox import (a path that doesn't exist under the project
+	// root, e.g. a typo) returns a clean 404 the opaque-origin worker can read,
+	// instead of a bare 404 the browser surfaces as the misleading "Cross-Origin
+	// script load denied". mux does not run Use() middleware for the
+	// NotFoundHandler, so the headers are set here directly.
+	s.router.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+		}
+		http.NotFound(w, r)
+	})
+
 	// Add middleware
 	s.router.Use(corsMiddleware)
 	s.router.Use(s.cacheControlMiddleware)
@@ -779,4 +818,69 @@ func sandboxImportPath(urlPath, root string) string {
 		return strings.TrimPrefix(urlPath, "/")
 	}
 	return urlPath
+}
+
+// sandboxProjectFile maps an explore_code sandbox import URL to a real file on
+// disk inside the project root, or reports ok=false. The sandbox worker resolves
+// user code's `import('<projectRoot>/rel/path')` against its http origin, so the
+// request path is the absolute project path. We serve it only when it (a) stays
+// strictly inside the project root and (b) is an importable module, so the
+// ACAO=* response never exposes arbitrary project files (secrets, source) to a
+// cross-origin reader — only JavaScript/JSON modules the sandbox can import().
+func (s *Server) sandboxProjectFile(urlPath string) (string, bool) {
+	root := sandboxImportRoot(s.ProjectPath())
+	if root == "" {
+		return "", false
+	}
+	p := path.Clean(sandboxImportPath(urlPath, root))
+	// Clean has collapsed any "..", so a path still under the root cannot escape
+	// it. Reject the root itself and anything outside it.
+	if p != root && !strings.HasPrefix(p, root+"/") {
+		return "", false
+	}
+	if !sandboxImportableExt(p) {
+		return "", false
+	}
+	diskPath := filepath.FromSlash(p)
+	info, err := os.Stat(diskPath)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return diskPath, true
+}
+
+// sandboxImportableExt reports whether p has an extension the sandbox may load
+// over HTTP. Restricted to browser-importable module types so the ACAO=* static
+// route can never be used to read non-module project files cross-origin.
+func sandboxImportableExt(p string) bool {
+	switch strings.ToLower(path.Ext(p)) {
+	case ".js", ".mjs", ".cjs", ".json":
+		return true
+	default:
+		return false
+	}
+}
+
+// serveSandboxProjectFile writes a project file resolved by sandboxProjectFile.
+// It sets an explicit JavaScript/JSON MIME because .mjs/.cjs are absent from
+// Go's mime table and a module import() requires a JavaScript media type — a
+// sniffed text/plain would make the browser reject the module.
+func serveSandboxProjectFile(w http.ResponseWriter, r *http.Request, diskPath string) {
+	f, err := os.Open(diskPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	ct := "text/javascript; charset=utf-8"
+	if strings.EqualFold(path.Ext(diskPath), ".json") {
+		ct = "application/json; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", ct)
+	http.ServeContent(w, r, filepath.Base(diskPath), info.ModTime(), f)
 }

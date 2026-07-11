@@ -48,7 +48,7 @@ class ExploreCodeContextItem extends ContextItem {
         properties: {
           code: {
             type: 'string',
-            description: 'JavaScript to execute (async/await OK; must return a value). Browser realm, NOT Node: no `process`/`require`/`Buffer`. In-scope bindings:\n- `fs` — read-only fs.promises subset\n- `path` — POSIX path (forward-slash, even on Windows)\n- `grep(pattern, {cwd?, glob?, maxResults?, ignoreCase?})` → [{file, line, content}]\n- `glob(pattern, {cwd?})` → string[]\n- `projectRoot` — absolute project root (forward-slashed). `import()` any `${projectRoot}/web/...` module by absolute path.'
+            description: 'JavaScript to execute (async/await OK; must return a value). Browser realm, NOT Node: no `process`/`require`/`Buffer`. In-scope bindings:\n- `fs` — read-only fs.promises subset\n- `path` — POSIX path (forward-slash, even on Windows)\n- `grep(pattern, {cwd?, glob?, maxResults?, ignoreCase?})` → [{file, line, content}]\n- `glob(pattern, {cwd?})` → string[]\n- `projectRoot` — absolute project root (forward-slashed). `import()` any JavaScript/JSON module in the project by absolute path (e.g. `${projectRoot}/src/foo.js`) to call its real exports.'
           },
           description: {
             type: 'string',
