@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-11
+
 - Fixed a MIME type error that could mess things up on Windows under some circumstances
 
 ## [0.3.2] - 2026-07-11
