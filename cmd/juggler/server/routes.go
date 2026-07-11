@@ -655,14 +655,14 @@ func (s *Server) setupRoutes() {
 			jlog.Error("Failed to find static directory: %v", err)
 			jlog.Error("Falling back to embedded files")
 			staticFS, _ := fs.Sub(web.Files, ".")
-			staticFileServer = http.FileServer(http.FS(staticFS))
+			staticFileServer = staticAssetHandler(http.FileServer(http.FS(staticFS)))
 			for _, prefix := range prodPrefixes {
 				s.router.PathPrefix(vPrefix + prefix).Handler(http.StripPrefix(vPrefix, staticFileServer))
 			}
 			s.serveEmbeddedTestAssets(vPrefix)
 		} else {
 			jlog.Info("🔧 Dev mode: serving static files from %s", staticDir)
-			staticFileServer = http.FileServer(http.Dir(staticDir))
+			staticFileServer = staticAssetHandler(http.FileServer(http.Dir(staticDir)))
 			// Disk has js-tests/ alongside everything else, so serve it from disk too.
 			for _, prefix := range append(prodPrefixes, "/js-tests/") {
 				s.router.PathPrefix(vPrefix + prefix).Handler(http.StripPrefix(vPrefix, staticFileServer))
@@ -674,7 +674,7 @@ func (s *Server) setupRoutes() {
 		if err != nil {
 			jlog.Error("Could not load static files: %v", err)
 		}
-		staticFileServer = http.FileServer(http.FS(staticFS))
+		staticFileServer = staticAssetHandler(http.FileServer(http.FS(staticFS)))
 		for _, prefix := range prodPrefixes {
 			s.router.PathPrefix(vPrefix + prefix).Handler(http.StripPrefix(vPrefix, staticFileServer))
 		}
@@ -796,7 +796,7 @@ func (s *Server) serveEmbeddedTestAssets(vPrefix string) {
 		jlog.Error("Could not load test assets: %v", err)
 		return
 	}
-	fileServer := http.FileServer(http.FS(testFS))
+	fileServer := staticAssetHandler(http.FileServer(http.FS(testFS)))
 	s.router.PathPrefix(vPrefix + "/js-tests/").Handler(http.StripPrefix(vPrefix, fileServer))
 }
 
@@ -883,4 +883,46 @@ func serveSandboxProjectFile(w http.ResponseWriter, r *http.Request, diskPath st
 	}
 	w.Header().Set("Content-Type", ct)
 	http.ServeContent(w, r, filepath.Base(diskPath), info.ModTime(), f)
+}
+
+// staticAssetContentType returns a stable Content-Type for the web-asset
+// extensions the app serves, or "" to defer to the file server's own detection.
+//
+// http.FileServer derives the type from mime.TypeByExtension, which consults the
+// host MIME database — and on Windows that comes from the registry, where .mjs is
+// frequently mapped to text/plain (and other web types are unreliable too). A
+// module script served as text/plain is rejected by the browser's strict MIME
+// check, which silently breaks the app's entire ES-module graph (e.g.
+// web/js/vendor/yjs.mjs) while leaving unrelated standalone modules loading — so
+// we set these types explicitly rather than trust the OS. Mirrors the explicit
+// Content-Type in serveSandboxProjectFile.
+func staticAssetContentType(p string) string {
+	switch strings.ToLower(path.Ext(p)) {
+	case ".js", ".mjs", ".cjs":
+		return "text/javascript; charset=utf-8"
+	case ".json", ".map":
+		return "application/json; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml"
+	case ".wasm":
+		return "application/wasm"
+	default:
+		return ""
+	}
+}
+
+// staticAssetHandler wraps a static file server, forcing a stable Content-Type
+// for known web-asset extensions so serving is correct regardless of the host
+// MIME database. See staticAssetContentType. http.ServeContent (used by
+// http.FileServer) only sniffs a type when Content-Type is unset, so a header we
+// set here is preserved.
+func staticAssetHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ct := staticAssetContentType(r.URL.Path); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
