@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Clear per-OS error with fix-it steps when no display or webview runtime is available, instead of a silent exit.
+- Fixed some UTF16 handling issues
 
 ## [0.3.3] - 2026-07-11
 

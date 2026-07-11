@@ -616,33 +616,45 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 			defer close(readerDone)
 			reader := bufio.NewReader(pipeReader)
 			buf := make([]byte, 4096)
+			// carry holds a multi-byte UTF-8 rune split across two reads, so
+			// the published output never contains an invalid half (which the
+			// UI would render as U+FFFD). See utf8SafeChunk.
+			var carry []byte
+			forward := func(emit []byte) {
+				if len(emit) == 0 {
+					return
+				}
+				totalRead += int64(len(emit))
+				if headBytes < outputHeadLimit {
+					room := outputHeadLimit - int(headBytes)
+					if len(emit) <= room {
+						appendShellOutput(shellID, string(emit))
+						headBytes += int64(len(emit))
+					} else {
+						// Straddles the head limit: publish the head portion,
+						// retain the rest in the tail ring.
+						appendShellOutput(shellID, string(emit[:room]))
+						headBytes += int64(room)
+						truncated = true
+						tail.write(emit[room:])
+					}
+				} else {
+					truncated = true
+					tail.write(emit)
+				}
+			}
 			for {
 				n, readErr := reader.Read(buf)
 				if n > 0 {
-					totalRead += int64(n)
-					chunk := buf[:n]
-					if headBytes < outputHeadLimit {
-						room := outputHeadLimit - int(headBytes)
-						if n <= room {
-							appendShellOutput(shellID, string(chunk))
-							headBytes += int64(n)
-						} else {
-							// Straddles the head limit: publish the head portion,
-							// retain the rest in the tail ring.
-							appendShellOutput(shellID, string(chunk[:room]))
-							headBytes += int64(room)
-							truncated = true
-							tail.write(chunk[room:])
-						}
-					} else {
-						truncated = true
-						tail.write(chunk)
-					}
+					var emit []byte
+					emit, carry = utf8SafeChunk(carry, buf[:n], false)
+					forward(emit)
 				}
 				if readErr != nil {
 					break
 				}
 			}
+			forward(carry) // flush any trailing partial rune at stream end
 		}()
 
 		// Wait for the process to exit, then for the reader to drain fully before
@@ -981,34 +993,46 @@ func (ops *ShellOperations) ExecuteStreaming(
 	readerWG.Go(func() {
 		reader := bufio.NewReader(pipeReader)
 		buf := make([]byte, 4096)
+		// carry holds the trailing bytes of a multi-byte UTF-8 rune split across
+		// two reads; utf8SafeChunk prepends it to the next read so we never
+		// forward an invalid half (which would render as U+FFFD).
+		var carry []byte
+		forward := func(emit []byte) {
+			if len(emit) == 0 {
+				return
+			}
+			totalRead += int64(len(emit))
+			if headBytes < outputHeadLimit {
+				room := outputHeadLimit - int(headBytes)
+				if len(emit) <= room {
+					output <- ShellStreamChunk{ShellID: shellID, Data: string(emit)}
+					headBytes += int64(len(emit))
+				} else {
+					// Straddles the head limit: forward the head portion,
+					// retain the rest in the tail ring.
+					output <- ShellStreamChunk{ShellID: shellID, Data: string(emit[:room])}
+					headBytes += int64(room)
+					truncated = true
+					tail.write(emit[room:])
+				}
+			} else {
+				truncated = true
+				tail.write(emit)
+			}
+		}
 		for {
 			n, err := reader.Read(buf)
 			if n > 0 {
 				signalFirstByte()
-				totalRead += int64(n)
-				chunk := buf[:n]
-				if headBytes < outputHeadLimit {
-					room := outputHeadLimit - int(headBytes)
-					if n <= room {
-						output <- ShellStreamChunk{ShellID: shellID, Data: string(chunk)}
-						headBytes += int64(n)
-					} else {
-						// Straddles the head limit: forward the head portion,
-						// retain the rest in the tail ring.
-						output <- ShellStreamChunk{ShellID: shellID, Data: string(chunk[:room])}
-						headBytes += int64(room)
-						truncated = true
-						tail.write(chunk[room:])
-					}
-				} else {
-					truncated = true
-					tail.write(chunk)
-				}
+				var emit []byte
+				emit, carry = utf8SafeChunk(carry, buf[:n], false)
+				forward(emit)
 			}
 			if err != nil {
 				break
 			}
 		}
+		forward(carry) // flush any trailing partial rune left when the stream ended
 	})
 
 	// truncationSuffix builds the trailing data appended to the completion

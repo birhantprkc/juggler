@@ -129,3 +129,34 @@ func (b *cappedBuffer) String() string {
 	}
 	return string(b.head) + truncationMarker(omitted) + string(tail)
 }
+
+// utf8SafeChunk splits a freshly-read chunk (cur), prepended with any bytes
+// carried from the previous read (prev), into the portion that ends on a UTF-8
+// rune boundary (emit) and the trailing bytes of an incomplete multi-byte rune
+// to carry into the next read (carry).
+//
+// Streaming readers read into fixed 4096-byte buffers, so a multi-byte rune
+// (emoji, CJK, accented text) can straddle a read boundary. Forwarding each
+// half independently is lossy: each is invalid UTF-8 on its own, and Go's
+// json.Marshal replaces every invalid byte with U+FFFD before the frontend can
+// rejoin them — visible corruption even for perfectly valid UTF-8 output.
+// Holding the trailing partial rune back until the next read fixes this.
+//
+// When atEOF is true there is no next read (the stream has ended), so a
+// genuinely-truncated trailing sequence is returned as emit rather than held.
+// The returned carry is always freshly allocated, so callers may reuse cur's
+// backing buffer immediately.
+func utf8SafeChunk(prev, cur []byte, atEOF bool) (emit, carry []byte) {
+	combined := cur
+	if len(prev) > 0 {
+		combined = append(append([]byte(nil), prev...), cur...)
+	}
+	if atEOF {
+		return combined, nil
+	}
+	validLen := findLastCompleteUTF8(combined)
+	if validLen >= len(combined) {
+		return combined, nil
+	}
+	return combined[:validLen], append([]byte(nil), combined[validLen:]...)
+}

@@ -11,10 +11,22 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"juggler/cmd/juggler/ops"
 	"juggler/tests/helpers"
 )
+
+// utf16LEWithBOM encodes s as UTF-16 little-endian with a leading BOM — the
+// on-disk shape produced by PowerShell `>` redirection and Notepad's "Unicode"
+// save option on Windows.
+func utf16LEWithBOM(s string) []byte {
+	b := []byte{0xFF, 0xFE}
+	for _, u := range utf16.Encode([]rune(s)) {
+		b = append(b, byte(u), byte(u>>8))
+	}
+	return b
+}
 
 // TestLoadFile_BasicRead tests basic file reading functionality
 func TestLoadFile_BasicRead(t *testing.T) {
@@ -46,6 +58,53 @@ func TestLoadFile_BasicRead(t *testing.T) {
 
 	if resultMap["exists"] != true {
 		t.Error("Expected exists to be true")
+	}
+}
+
+// TestLoadFile_UTF16LE verifies a UTF-16LE (BOM'd) file — its pervasive null
+// bytes would trip the binary-file heuristic — is transcoded to UTF-8 and read
+// as text rather than rejected as binary.
+func TestLoadFile_UTF16LE(t *testing.T) {
+	projectDir := helpers.CreateTempDir(t)
+	defer os.RemoveAll(projectDir)
+
+	want := "Hello, 世界!\nSecond line\n"
+	helpers.WriteFile(t, filepath.Join(projectDir, "utf16.txt"), utf16LEWithBOM(want))
+
+	readOps := ops.NewFileOperations(ops.NewPathScope(projectDir, nil))
+	result, err := readOps.Execute(context.Background(), "loadFile", map[string]any{"path": "utf16.txt"})
+	if err != nil {
+		t.Fatalf("Expected no error but got: %v", err)
+	}
+
+	resultMap := result.(map[string]any)
+	if w, flagged := resultMap["warning"]; flagged {
+		t.Fatalf("UTF-16 file wrongly flagged as binary: %v", w)
+	}
+	if resultMap["content"] != want {
+		t.Errorf("Expected content %q but got %q", want, resultMap["content"])
+	}
+}
+
+// TestLoadFile_UTF8BOM verifies a leading UTF-8 BOM (common from Windows
+// editors) is stripped so it doesn't survive as a spurious \ufeff.
+func TestLoadFile_UTF8BOM(t *testing.T) {
+	projectDir := helpers.CreateTempDir(t)
+	defer os.RemoveAll(projectDir)
+
+	want := "package main\n"
+	raw := append([]byte{0xEF, 0xBB, 0xBF}, []byte(want)...)
+	helpers.WriteFile(t, filepath.Join(projectDir, "bom.txt"), raw)
+
+	readOps := ops.NewFileOperations(ops.NewPathScope(projectDir, nil))
+	result, err := readOps.Execute(context.Background(), "loadFile", map[string]any{"path": "bom.txt"})
+	if err != nil {
+		t.Fatalf("Expected no error but got: %v", err)
+	}
+
+	resultMap := result.(map[string]any)
+	if resultMap["content"] != want {
+		t.Errorf("Expected BOM-stripped content %q but got %q", want, resultMap["content"])
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"golang.org/x/text/encoding/unicode"
+
 	"juggler/internal/jlog"
 )
 
@@ -448,6 +450,14 @@ func IsBinaryFile(path string) (bool, error) {
 		return false, err
 	}
 
+	// A UTF-16 byte-order mark identifies a text file whose pervasive null bytes
+	// would otherwise trip the null-byte heuristic below (every ASCII char in
+	// UTF-16 carries a zero byte). Treat BOM'd UTF-16 as text; loadFile
+	// transcodes it to UTF-8 for display via decodeTextBytes.
+	if hasUTF16BOM(buf[:n]) {
+		return false, nil
+	}
+
 	// Check for null bytes (strong indicator of binary content)
 	for i := range n {
 		if buf[i] == 0 {
@@ -531,4 +541,35 @@ func findLastCompleteUTF8(data []byte) int {
 	// If we scanned 3 continuation bytes without finding a start byte,
 	// something is wrong - but return full length and let utf8.Valid catch it
 	return n
+}
+
+// hasUTF16BOM reports whether b begins with a UTF-16 little- or big-endian
+// byte-order mark (FF FE / FE FF).
+func hasUTF16BOM(b []byte) bool {
+	return len(b) >= 2 &&
+		((b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF))
+}
+
+// decodeTextBytes converts raw file bytes to UTF-8 text, honouring a leading
+// byte-order mark. UTF-16LE/BE (common on Windows — PowerShell `>` redirection,
+// Notepad "Unicode" saves, many .reg/registry exports and logs) is transcoded
+// to UTF-8, and a UTF-8 BOM is stripped. Bytes without a recognised BOM are
+// returned unchanged (already UTF-8/ASCII on the platforms we target). On a
+// decode error the original bytes are returned, so the caller degrades to the
+// prior behaviour rather than losing content.
+func decodeTextBytes(raw []byte) []byte {
+	switch {
+	case hasUTF16BOM(raw):
+		// UseBOM consumes the leading BOM and derives the endianness from it,
+		// so a single decoder handles both LE and BE inputs.
+		dec, err := unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewDecoder().Bytes(raw)
+		if err != nil {
+			return raw
+		}
+		return dec
+	case len(raw) >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF:
+		return raw[3:] // strip UTF-8 BOM
+	default:
+		return raw
+	}
 }

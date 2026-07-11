@@ -122,6 +122,12 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
+	// Transcode Windows text encodings to UTF-8 (UTF-16 BOM → UTF-8) and strip a
+	// UTF-8 BOM, so the properties panel and the model always see clean UTF-8
+	// regardless of how the file was saved. IsBinaryFile above already whitelists
+	// UTF-16 BOM files that the null-byte heuristic would otherwise reject.
+	content = decodeTextBytes(content)
+
 	fullContent := strings.ReplaceAll(string(content), "\r\n", "\n")
 	lines := strings.Split(fullContent, "\n")
 	totalLines := len(lines)

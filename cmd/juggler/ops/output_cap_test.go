@@ -114,3 +114,82 @@ func TestCappedBuffer_HeadAndTail(t *testing.T) {
 		t.Fatalf("tail wrong: %q", got)
 	}
 }
+
+// TestUTF8SafeChunk_SplitRune verifies a multi-byte rune split across two reads
+// is emitted whole: the leading bytes are held back as carry, then completed by
+// the next read — never forwarded as two invalid halves.
+func TestUTF8SafeChunk_SplitRune(t *testing.T) {
+	full := []byte("ab世cd") // 世 = E4 B8 96
+
+	// First read ends one byte into 世 (…a b E4). The E4 must be carried.
+	emit1, carry1 := utf8SafeChunk(nil, full[:3], false)
+	if string(emit1) != "ab" {
+		t.Fatalf("emit1 = %q, want \"ab\"", emit1)
+	}
+	if len(carry1) != 1 || carry1[0] != 0xE4 {
+		t.Fatalf("carry1 = % x, want e4", carry1)
+	}
+
+	// Second read supplies the rest (B8 96 c d); the carried E4 completes 世.
+	emit2, carry2 := utf8SafeChunk(carry1, full[3:], false)
+	if string(emit2) != "世cd" {
+		t.Fatalf("emit2 = %q, want \"世cd\"", emit2)
+	}
+	if len(carry2) != 0 {
+		t.Fatalf("carry2 = % x, want empty", carry2)
+	}
+
+	if got := string(emit1) + string(emit2); got != string(full) {
+		t.Fatalf("reassembled = %q, want %q", got, string(full))
+	}
+}
+
+// TestUTF8SafeChunk_FlushAtEOF verifies a genuinely-truncated trailing partial
+// rune is emitted (not swallowed) once the stream has ended.
+func TestUTF8SafeChunk_FlushAtEOF(t *testing.T) {
+	in := []byte{'x', 0xE4} // trailing lone start byte of a 3-byte rune
+	emit, carry := utf8SafeChunk(nil, in, true)
+	if len(carry) != 0 {
+		t.Fatalf("carry = % x, want empty at EOF", carry)
+	}
+	if string(emit) != string(in) {
+		t.Fatalf("emit = % x, want % x", emit, in)
+	}
+}
+
+// TestExecuteStreaming_NoRuneSplitCorruption is the end-to-end regression guard:
+// a stream of multi-byte runes long enough to cross many 4096-byte read
+// boundaries must arrive intact, with no U+FFFD replacement characters.
+func TestExecuteStreaming_NoRuneSplitCorruption(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only shell command")
+	}
+
+	shellOps := NewShellOperations(NewPathScope(t.TempDir(), nil))
+	out := make(chan ShellStreamChunk, 4096)
+
+	var b strings.Builder
+	doneCollecting := make(chan struct{})
+	go func() {
+		for c := range out {
+			b.WriteString(c.Data)
+		}
+		close(doneCollecting)
+	}()
+
+	// 20000 copies of the 3-byte rune 世 = 60000 bytes: well under the head
+	// budget (so nothing is truncated) but far past many 4096-byte read
+	// boundaries, and 60000 % 4096 != 0 so runes straddle those boundaries.
+	const n = 20000
+	shellOps.ExecuteStreaming(context.Background(), "shell-test",
+		"printf '世%.0s' $(seq 1 20000)", "", 30000, out)
+	<-doneCollecting
+
+	got := b.String()
+	if strings.ContainsRune(got, '\uFFFD') {
+		t.Fatalf("output contains U+FFFD — a rune was split across a read boundary")
+	}
+	if want := strings.Repeat("世", n); got != want {
+		t.Fatalf("output mismatch: got %d bytes, want %d", len(got), len(want))
+	}
+}
