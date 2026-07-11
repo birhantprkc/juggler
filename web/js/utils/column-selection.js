@@ -99,6 +99,17 @@ class ColumnSelectionState {
   }
 
   /**
+   * Close the open transaction-detail panel, if any. Focus returns to the
+   * properties panel that owns the toggle button so the just-closed column
+   * doesn't leave the active index dangling past the shortened chain.
+   */
+  closeTransaction() {
+    if (!this.openTxn) return;
+    this.activeColumnIndex = this.openTxn.columnIndex;
+    this.openTxn = null;
+  }
+
+  /**
    * Remove a thread from selections (e.g. when deleted).
    * @param {string} threadItemId
    * @returns {number} The column index where truncation happened, or -1 if not found

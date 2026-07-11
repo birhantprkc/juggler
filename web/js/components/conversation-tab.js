@@ -996,7 +996,8 @@ class ConversationTab extends HTMLElement {
    * Handle "View Transaction" click in any properties panel.
    * Records the open transaction tied to the originating column + selection;
    * the next rebuild appends a transaction-mode panel column at the right.
-   * Subsequent selection changes invalidate the anchor and the panel drops.
+   * Clicking the same button again while that transaction is open toggles it
+   * closed. Subsequent selection changes invalidate the anchor and the panel drops.
    * @param {CustomEvent} e
    * @private
    */
@@ -1016,7 +1017,15 @@ class ConversationTab extends HTMLElement {
     const itemId = this._selection.selections[columnIndex - 1];
     if (!itemId) return;
 
-    this._selection.openTransaction(columnIndex, itemId, transactionId);
+    // Toggle: clicking the button for the transaction that's already open
+    // closes it, rather than reopening the same panel.
+    const open = this._selection.openTxn;
+    if (open && open.columnIndex === columnIndex &&
+        open.itemId === itemId && open.transactionId === transactionId) {
+      this._selection.closeTransaction();
+    } else {
+      this._selection.openTransaction(columnIndex, itemId, transactionId);
+    }
     this._selection.markManualInteraction();
     this._rebuildColumns(true);
   }
