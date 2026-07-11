@@ -5,10 +5,12 @@
 package app
 
 import (
+	"fmt"
 	"time"
 
 	"juggler/cmd/juggler/server"
 	"juggler/internal/jlog"
+	"juggler/internal/webviewenv"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -81,6 +83,16 @@ func newEngineWindow(app *application.App, addr string) *application.WebviewWind
 // engine doesn't connect within the timeout we call requestQuit to tear the
 // process down: a headless server whose WebView failed must die, not linger.
 func startEngine(app *application.App, srv *server.Server, requestQuit func()) {
+	// Fail fast on a host that provably can't host a webview (e.g. a headless
+	// Linux box with no display), rather than creating a window that will never
+	// come up and making the user wait out engineConnectTimeout for a terse log
+	// line. Preflight is conservative — a "" result is not a guarantee — so the
+	// timeout below still backstops every other cause on every OS.
+	if problem := webviewenv.Preflight(); problem != "" {
+		jlog.Error("[engine] %s", webviewenv.UnavailableMessage(problem))
+		requestQuit()
+		return
+	}
 	start := time.Now()
 	jlog.Info("[engine] START — creating hidden engine WebView")
 	win := newEngineWindow(app, srv.GetAddr())
@@ -90,8 +102,13 @@ func startEngine(app *application.App, srv *server.Server, requestQuit func()) {
 			jlog.Info("[engine] connected in %v", time.Since(start).Round(time.Millisecond))
 			return
 		}
-		jlog.Error("[engine] did not connect within %v — engine WebView failed to come up; "+
-			"terminating headless server so it can't linger as a useless zombie", engineConnectTimeout)
+		// The hidden engine WebView never came up (missing webview runtime, no
+		// display, a wedged compositor, a WebKit crash…). This is the catch-all
+		// for every OS and every cause Preflight can't detect up front: print the
+		// per-OS remediation, then tear the process down so a headless server
+		// whose WebView failed can't linger as a useless zombie holding its port.
+		jlog.Error("[engine] %s", webviewenv.UnavailableMessage(
+			fmt.Sprintf("the hidden engine webview did not initialise within %v", engineConnectTimeout)))
 		requestQuit()
 	}()
 	srv.SetEngineReadyGate(func() bool { return srv.WaitForEngineConnected(engineConnectTimeout) })

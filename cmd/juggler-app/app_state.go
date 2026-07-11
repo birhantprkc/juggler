@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
+	"juggler/internal/webviewenv"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -288,7 +289,8 @@ func (a *appState) run(specs []windowSpec) error {
 	select {
 	case <-windowUp:
 	default:
-		fatalf("GUI event loop exited (err=%v) before the initial window ever became visible — %s", err, windowUnavailableHint)
+		fatalf("%s\n(the GUI event loop exited with err=%v)", webviewenv.UnavailableMessage(
+			"the GUI event loop exited before the initial window ever became visible"), err)
 	}
 	return err
 }

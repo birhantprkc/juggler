@@ -5,12 +5,14 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"juggler/internal/jlog"
+	"juggler/internal/webviewenv"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -65,13 +67,6 @@ func (jlogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// windowUnavailableHint is the shared tail of the two "no window" fatal
-// messages: the likely causes, in order, for a Linux webview that never paints.
-const windowUnavailableHint = "the GTK/WebKit webview layer never presented a window and reported no error. " +
-	"Check that a WebKitGTK runtime (libwebkit2gtk) is installed, that DISPLAY or " +
-	"WAYLAND_DISPLAY is set, and try relaunching with WEBKIT_DISABLE_DMABUF_RENDERER=1 " +
-	"and WEBKIT_DISABLE_COMPOSITING_MODE=1."
-
 // watchWindowStartup crashes the process if the initial window never becomes
 // visible within windowStartupTimeout. It is the backstop for the failure mode
 // where the event loop stays up but the native layer presents no window and
@@ -86,7 +81,8 @@ func (a *appState) watchWindowStartup(e *winEntry, up chan struct{}) {
 	for {
 		select {
 		case <-deadline:
-			fatalf("initial window never became visible within %s — %s", windowStartupTimeout, windowUnavailableHint)
+			fatalf("%s", webviewenv.UnavailableMessage(
+				fmt.Sprintf("the window never became visible within %s", windowStartupTimeout)))
 		case <-tick.C:
 			if a.windowIsVisible(e) {
 				close(up)
@@ -109,8 +105,8 @@ func (a *appState) warnIfWindowNeverVisible(e *winEntry, context string) {
 	for {
 		select {
 		case <-deadline:
-			jlog.Error("[juggler-app] window %s (%s) never became visible within %s — %s",
-				e.id, context, windowStartupTimeout, windowUnavailableHint)
+			jlog.Error("[juggler-app] window %s (%s): %s", e.id, context, webviewenv.UnavailableMessage(
+				fmt.Sprintf("the window never became visible within %s", windowStartupTimeout)))
 			return
 		case <-tick.C:
 			if a.windowIsVisible(e) {
