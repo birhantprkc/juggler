@@ -5,70 +5,198 @@
 /**
  * Chime synth — generates the "needs your attention" notification tone with
  * Web Audio, no samples. Rather than a single struck note, the chime plays a
- * short **motif**: one to four notes scheduled in sequence, each voiced by a
- * metallic bell (a sine fundamental plus two quieter inharmonic partials, the
- * region a struck bell/bar lives in) under an exponential-decay envelope. Every
- * note also blooms in from just above pitch — a subtle downward micro-glide
- * that gives the voice life instead of a dead static tone.
+ * short **pattern**: one to four notes scheduled in sequence, each voiced by a
+ * selectable **sound** (a set of partials + waveform + envelope) under an
+ * exponential-decay envelope. Every note also blooms in from just above pitch —
+ * a subtle downward micro-glide that gives the voice life instead of a dead
+ * static tone.
  *
- * The melodic shape is what makes one chime read differently from another: a
- * lone tick, a rising "incoming" 4th, a major-triad arpeggio, a "ta-da", a
- * descending drop, or a four-note sparkle. The public surface stays four
- * *abstract* 0..1 parameters — pitch, pattern, length, volume — that the
- * settings UI exposes as plain rotaries. All the DSP (frequencies, partial
- * ratios, motif tables, envelope timing) lives here and is clamped into a
- * tasteful band so no setting can make the chime sound broken or alarming.
+ * The public surface is three concrete choices the settings UI exposes directly:
+ *  - `pattern` — the *tune*: an id into a curated {@link PATTERNS} table of ~30
+ *    named musical motifs (lone notes at various pitches → 2/3/4-note figures),
+ *    each carrying its own base pitch and timing. Shown as a popup menu.
+ *  - `sound` — the *timbre*: an id into a {@link SOUNDS} table of distinct voices
+ *    (bell, music box, marimba, glass, pluck, …). Shown as a popup menu.
+ *  - `volume` — 0..1 output level. Shown as a rotary.
+ *
+ * All the DSP (frequencies, partial ratios, pattern tables, envelope timing)
+ * lives here and is clamped into a tasteful band so no choice can make the chime
+ * sound broken or alarming. Unknown ids fall back to the defaults.
  * @module utils/chime-synth
  */
 
 /**
  * @typedef {object} ChimeParams
- * @property {number} pitch   - 0..1, Low → High (base note frequency).
- * @property {number} pattern - 0..1, selects the melodic motif (tick → sparkle).
- * @property {number} length  - 0..1, Short → Long (note spacing + decay).
+ * @property {string} pattern - Id into {@link PATTERNS} — the tune (pitch + timing baked in).
+ * @property {string} sound   - Id into {@link SOUNDS} — the timbre voicing each note.
  * @property {number} volume  - 0..1, output level.
  */
 
 /**
- * Pleasant, balanced default chime — a major-triad arpeggio at a comfortable
- * register and spacing.
+ * Pleasant, balanced default chime — a pentatonic three-note figure voiced as
+ * the rounded retro blip at a comfortable volume.
  * @type {ChimeParams}
  */
 export const CHIME_DEFAULTS = Object.freeze({
-  pitch: 0.5,
-  pattern: 0.2,
-  length: 0.28,
+  pattern: 'pentatonic',
+  sound: 'retro',
   volume: 0.6,
 });
 
 /**
- * Motif table, ordered simple → rich. Each entry is a sequence of notes; the
- * `pattern` parameter picks one. A note is `{ s, a?, g? }`:
- *  - `s` semitone offset from the base note,
- *  - `a` accent (relative level, default 1),
- *  - `g` glide-from offset in semitones — the note starts `g` above its target
- *    and slides down into it. Small values (the default bloom) just add life;
- *    the larger value on `drop` is an audible downward portamento finish.
- * @type {ReadonlyArray<{name: string, notes: ReadonlyArray<{s: number, a?: number, g?: number}>}>}
+ * Reference pitch: A4 = 440 Hz. A pattern's `root` is a semitone offset from
+ * here, and each note's `s` is a further offset from that root — so every note
+ * lands on an equal-tempered chromatic pitch (never between notes, which reads
+ * as out-of-tune) inside a tasteful, non-piercing register (~220–1320 Hz).
  */
-const MOTIFS = Object.freeze([
-  { name: 'tick',    notes: [{ s: 0 }] },
-  { name: 'rise',    notes: [{ s: 0 }, { s: 5 }] },
-  { name: 'triad',   notes: [{ s: 0 }, { s: 4 }, { s: 7 }] },
-  { name: 'tada',    notes: [{ s: 0, a: 0.85 }, { s: 12 }] },
-  { name: 'drop',    notes: [{ s: 12 }, { s: 7 }, { s: 0, g: 5 }] },
-  { name: 'sparkle', notes: [{ s: 0 }, { s: 4 }, { s: 7, a: 0.9 }, { s: 12 }] },
-]);
+const A4_HZ = 440;
 
 /**
- * Inharmonic partials voicing each note: `[ratio, level]` relative to the fundamental.
- * @type {ReadonlyArray<readonly [number, number]>}
+ * @typedef {object} PatternNote
+ * @property {number} s  - Semitone offset from the pattern's root.
+ * @property {number} [a] - Accent (relative level, default 1).
+ * @property {number} [g] - Glide-from offset in semitones: the note starts `g`
+ *   above its target and slides down into it. Small values just add life; a
+ *   larger value is an audible downward portamento finish.
  */
-const PARTIALS = Object.freeze([
-  [1, 1],       // fundamental
-  [2.76, 0.18], // inharmonic metallic overtone (non-integer → struck metal)
-  [5.4, 0.08],  // high partial — adds high-frequency "air"
-]);
+/**
+ * @typedef {object} ChimePattern
+ * @property {string} id      - Stable identifier stored in prefs.
+ * @property {string} name    - Human-facing label shown in the popup menu.
+ * @property {number} root    - Semitone offset of the pattern's base note from A4.
+ * @property {number} spacing - Seconds between successive note onsets.
+ * @property {number} decay   - Per-note exponential decay time, seconds.
+ * @property {ReadonlyArray<PatternNote>} notes - The motif, in play order.
+ */
+
+/**
+ * Curated pattern table — the "tune" popup. ~30 named motifs, grouped lone →
+ * 2-note → 3-note → 4-note, each a self-contained musical figure with its own
+ * pitch (`root`) and timing (`spacing`/`decay`). Names are deliberately playful.
+ * Kept inside a tasteful register (roots + offsets ~ -12..+19 semitones from A4).
+ * @type {ReadonlyArray<ChimePattern>}
+ */
+const PATTERNS = Object.freeze(/** @type {ReadonlyArray<ChimePattern>} */ ([
+  // ── Lone notes, various pitches ──────────────────────────────────────
+  { id: 'lone-bell',   name: 'Lone Bell',   root: 0,   spacing: 0.1,  decay: 0.5,  notes: [{ s: 0 }] },
+  { id: 'droplet',     name: 'Droplet',     root: 5,   spacing: 0.1,  decay: 0.32, notes: [{ s: 0 }] },
+  { id: 'halo',        name: 'Halo',        root: 9,   spacing: 0.1,  decay: 0.4,  notes: [{ s: 0 }] },
+  { id: 'pip',         name: 'Pip',         root: 14,  spacing: 0.1,  decay: 0.16, notes: [{ s: 0 }] },
+  { id: 'deep-ping',   name: 'Deep Ping',   root: -12, spacing: 0.1,  decay: 0.45, notes: [{ s: 0 }] },
+  { id: 'needlepoint', name: 'Needlepoint', root: 19,  spacing: 0.1,  decay: 0.13, notes: [{ s: 0 }] },
+  // ── Two notes ────────────────────────────────────────────────────────
+  { id: 'ascend',      name: 'Ascend',      root: 0,   spacing: 0.11, decay: 0.3,  notes: [{ s: 0 }, { s: 7 }] },
+  { id: 'descend',     name: 'Descend',     root: 7,   spacing: 0.11, decay: 0.3,  notes: [{ s: 0 }, { s: -7 }] },
+  { id: 'leap',        name: 'Leap',        root: 0,   spacing: 0.12, decay: 0.32, notes: [{ s: 0 }, { s: 12 }] },
+  { id: 'doorbell',    name: 'Doorbell',    root: 9,   spacing: 0.16, decay: 0.4,  notes: [{ s: 0 }, { s: -4 }] },
+  { id: 'sigh',        name: 'Sigh',        root: 8,   spacing: 0.13, decay: 0.34, notes: [{ s: 0 }, { s: -3 }] },
+  { id: 'nudge',       name: 'Nudge',       root: 0,   spacing: 0.09, decay: 0.2,  notes: [{ s: 0 }, { s: 2 }] },
+  { id: 'knock-knock', name: 'Knock Knock', root: 4,   spacing: 0.1,  decay: 0.18, notes: [{ s: 0 }, { s: 0 }] },
+  { id: 'sixth-sense', name: 'Sixth Sense', root: 0,   spacing: 0.12, decay: 0.34, notes: [{ s: 0 }, { s: 9 }] },
+  // ── Three notes ──────────────────────────────────────────────────────
+  { id: 'major-triad', name: 'Major Triad', root: 0,   spacing: 0.1,  decay: 0.3,  notes: [{ s: 0 }, { s: 4 }, { s: 7 }] },
+  { id: 'minor-mood',  name: 'Minor Mood',  root: 0,   spacing: 0.1,  decay: 0.32, notes: [{ s: 0 }, { s: 3 }, { s: 7 }] },
+  { id: 'ta-da',       name: 'Ta-Da',       root: 0,   spacing: 0.13, decay: 0.34, notes: [{ s: 0, a: 0.85 }, { s: 7 }, { s: 12 }] },
+  { id: 'cascade',     name: 'Cascade',     root: 12,  spacing: 0.09, decay: 0.26, notes: [{ s: 0 }, { s: -5 }, { s: -8 }] },
+  { id: 'little-turn', name: 'Little Turn', root: 5,   spacing: 0.09, decay: 0.24, notes: [{ s: 0 }, { s: 2 }, { s: 0 }] },
+  { id: 'bounce',      name: 'Bounce',      root: 0,   spacing: 0.1,  decay: 0.26, notes: [{ s: 0 }, { s: 12 }, { s: 0, g: 5 }] },
+  { id: 'question',    name: 'Question?',   root: 0,   spacing: 0.11, decay: 0.3,  notes: [{ s: 0 }, { s: 4 }, { s: 5 }] },
+  { id: 'pentatonic',  name: 'Pentatonic',  root: 0,   spacing: 0.1,  decay: 0.3,  notes: [{ s: 0 }, { s: 2 }, { s: 7 }] },
+  { id: 'suspended',   name: 'Suspended',   root: 0,   spacing: 0.11, decay: 0.32, notes: [{ s: 0 }, { s: 5 }, { s: 7 }] },
+  // ── Four notes ───────────────────────────────────────────────────────
+  { id: 'sparkle',     name: 'Sparkle',     root: 0,   spacing: 0.09, decay: 0.26, notes: [{ s: 0 }, { s: 4 }, { s: 7 }, { s: 12 }] },
+  { id: 'skip',        name: 'Skip',        root: 0,   spacing: 0.09, decay: 0.26, notes: [{ s: 0 }, { s: 2 }, { s: 4 }, { s: 7 }] },
+  { id: 'music-box',   name: 'Music Box',   root: 12,  spacing: 0.1,  decay: 0.28, notes: [{ s: 0 }, { s: -5 }, { s: -8 }, { s: -12 }] },
+  { id: 'fountain',    name: 'Fountain',    root: 0,   spacing: 0.08, decay: 0.24, notes: [{ s: 0 }, { s: 7 }, { s: 12 }, { s: 16 }] },
+  { id: 'wander',      name: 'Wander',      root: 0,   spacing: 0.1,  decay: 0.28, notes: [{ s: 0 }, { s: 5 }, { s: 3 }, { s: 7 }] },
+  { id: 'pixie-dust',  name: 'Pixie Dust',  root: 7,   spacing: 0.08, decay: 0.22, notes: [{ s: 0 }, { s: 5 }, { s: 7 }, { s: 12 }] },
+  { id: 'staircase',   name: 'Staircase',   root: -5,  spacing: 0.1,  decay: 0.3,  notes: [{ s: 0 }, { s: 4 }, { s: 7 }, { s: 11 }] },
+]));
+
+/**
+ * @typedef {object} ChimeSound
+ * @property {string} id       - Stable identifier stored in prefs.
+ * @property {string} name     - Human-facing label shown in the popup menu.
+ * @property {OscillatorType} wave - Oscillator waveform voicing every partial.
+ * @property {ReadonlyArray<readonly [number, number]>} partials - `[ratio, level]`
+ *   pairs relative to the note's fundamental. The set of ratios (harmonic vs
+ *   inharmonic) is most of what gives a voice its character.
+ * @property {number} [attack]     - Strike time, seconds (default 0.005).
+ * @property {number} [decayScale] - Multiplier on the pattern's decay (default 1).
+ * @property {number} [gain]       - Loudness trim so voices sit at a similar level (default 1).
+ * @property {number} [lowpassRatio] - If set, a lowpass at `fundamental × ratio`
+ *   (clamped) tames a bright waveform (square/sawtooth) into something round.
+ */
+
+/**
+ * Curated sound table — the "timbre" popup. Each voice differs audibly in
+ * waveform, partial structure, envelope and/or filtering, so every entry is
+ * worth its place. `gain` trims are hand-tuned so switching voices doesn't jump
+ * in loudness; bright waveforms (square/sawtooth) are rounded by a lowpass.
+ * @type {ReadonlyArray<ChimeSound>}
+ */
+const SOUNDS = Object.freeze(/** @type {ReadonlyArray<ChimeSound>} */ ([
+  // Metallic struck bell — inharmonic partials, the original voice.
+  { id: 'bell',      name: 'Bell',       wave: 'sine',     partials: [[1, 1], [2.76, 0.18], [5.4, 0.08]], gain: 1 },
+  // Bright, glassy, quick to fade — a wind-up music box.
+  { id: 'music-box', name: 'Music Box',  wave: 'sine',     partials: [[1, 1], [3, 0.3], [6, 0.14]], attack: 0.004, decayScale: 0.7, gain: 0.85 },
+  // Woody mallet — the strong 4th-harmonic bar of a marimba, plucky and dry.
+  { id: 'marimba',   name: 'Marimba',    wave: 'triangle', partials: [[1, 1], [4, 0.25], [10, 0.05]], attack: 0.004, decayScale: 0.8, gain: 0.9 },
+  // Icy, shimmering, slightly inharmonic — struck glass with a long tail.
+  { id: 'glass',     name: 'Glass',      wave: 'sine',     partials: [[1, 1], [2.4, 0.2], [3.8, 0.14], [7.2, 0.06]], decayScale: 1.2, gain: 0.85 },
+  // Plucked string — a filtered sawtooth with a short, snappy decay.
+  { id: 'pluck',     name: 'Pluck',      wave: 'sawtooth', partials: [[1, 1]], attack: 0.004, decayScale: 0.55, gain: 0.5, lowpassRatio: 6 },
+  // Clean, soft sine — the gentlest, least attention-grabbing voice.
+  { id: 'pure',      name: 'Pure Tone',  wave: 'sine',     partials: [[1, 1]], decayScale: 1.1, gain: 1.1 },
+  // Stacked harmonics with a slow swell — a small reed organ.
+  { id: 'organ',     name: 'Organ',      wave: 'sine',     partials: [[1, 1], [2, 0.5], [3, 0.3], [4, 0.15]], attack: 0.02, decayScale: 1.3, gain: 0.5 },
+  // Chiptune blip — a rounded square wave, short and retro.
+  { id: 'retro',     name: 'Retro',      wave: 'square',   partials: [[1, 1]], attack: 0.004, decayScale: 0.6, gain: 0.42, lowpassRatio: 8 },
+  // Crystalline — pure fundamental plus high harmonics, bright and delicate.
+  { id: 'crystal',   name: 'Crystal',    wave: 'sine',     partials: [[1, 0.9], [4, 0.4], [9, 0.15]], decayScale: 0.9, gain: 0.8 },
+]));
+
+/** @type {ReadonlyMap<string, ChimePattern>} */
+const PATTERN_BY_ID = new Map(PATTERNS.map((p) => [p.id, p]));
+/** @type {ReadonlyMap<string, ChimeSound>} */
+const SOUND_BY_ID = new Map(SOUNDS.map((s) => [s.id, s]));
+
+/**
+ * Resolve a pattern id to its definition, falling back to the default pattern
+ * for an unknown/stale id (so a removed pattern never breaks playback).
+ * @param {string} id
+ * @returns {ChimePattern} The named pattern, or the default.
+ */
+function getPattern(id) {
+  return PATTERN_BY_ID.get(id) || /** @type {ChimePattern} */ (PATTERN_BY_ID.get(CHIME_DEFAULTS.pattern));
+}
+
+/**
+ * Resolve a sound id to its definition, falling back to the default voice for an
+ * unknown/stale id.
+ * @param {string} id
+ * @returns {ChimeSound} The named sound, or the default.
+ */
+function getSound(id) {
+  return SOUND_BY_ID.get(id) || /** @type {ChimeSound} */ (SOUND_BY_ID.get(CHIME_DEFAULTS.sound));
+}
+
+/**
+ * The pattern menu: `{ id, name }` for every pattern, in table order. The
+ * settings popup is built from this — the DSP stays private to this module.
+ * @returns {Array<{id: string, name: string}>} Pattern options for the UI.
+ */
+export function chimePatterns() {
+  return PATTERNS.map((p) => ({ id: p.id, name: p.name }));
+}
+
+/**
+ * The sound menu: `{ id, name }` for every voice, in table order.
+ * @returns {Array<{id: string, name: string}>} Sound options for the UI.
+ */
+export function chimeSounds() {
+  return SOUNDS.map((s) => ({ id: s.id, name: s.name }));
+}
 
 /** Default per-note bloom: start this many semitones sharp and settle to pitch. */
 const BLOOM_SEMITONES = 0.32;
@@ -104,41 +232,37 @@ function semis(semitones) {
  */
 
 /**
- * Translate the abstract 0..1 params into a concrete, schedulable plan: the
- * resolved motif as a list of notes plus the master gain and total duration.
- * Pure (no AudioContext) so it can be unit-tested.
+ * Translate the chosen params into a concrete, schedulable plan: the resolved
+ * pattern as a list of notes, the resolved voice, the master gain, and the total
+ * duration. Unknown pattern/sound ids fall back to the defaults. Pure (no
+ * AudioContext) so it can be unit-tested.
  * @param {ChimeParams} p
- * @returns {{notes: ChimeNote[], gain: number, duration: number}} The schedulable chime plan.
+ * @returns {{notes: ChimeNote[], gain: number, duration: number, sound: ChimeSound}} The schedulable chime plan.
  */
 export function mapChimeParams(p) {
-  // Base note, snapped to an equal-tempered chromatic note (A=440): A4 → F#5, 10
-  // in-tune steps. Snapping matters because the melody must never land between
-  // notes — that reads as out-of-tune to listeners with perfect pitch. Every
-  // melody note is this base plus an integer-semitone motif offset, so snapping
-  // the base keeps the whole tune chromatic. A comfortable, non-piercing
-  // register that still leaves headroom for the +12-semitone top of an arpeggio.
-  const f0 = 440 * semis(Math.round(lerp(p.pitch, 0, 9)));
-  // Spacing between note onsets and each note's decay both stretch with length:
-  // short → a tight ticking cluster, long → a spread, ringing arpeggio.
-  const spacing = lerp(p.length, 0.075, 0.17);
-  const decay = lerp(p.length, 0.2, 0.55);
-  // Output level with headroom so stacked partials never clip.
-  const gain = lerp(p.volume, 0, 0.45);
+  const pattern = getPattern(p.pattern);
+  const sound = getSound(p.sound);
 
-  const idx = Math.min(MOTIFS.length - 1, Math.floor(Math.max(0, Math.min(1, p.pattern)) * MOTIFS.length));
-  const motif = MOTIFS[idx];
-  if (!motif) return { notes: [], gain, duration: 0 }; // unreachable: idx is clamped in-range
+  // The pattern owns pitch (root, chromatic) and timing (spacing/decay); the
+  // voice can stretch the decay (`decayScale`). Output level keeps headroom so
+  // stacked partials never clip, trimmed per-voice so switching sounds doesn't
+  // jump in loudness.
+  const f0 = A4_HZ * semis(pattern.root);
+  const spacing = pattern.spacing;
+  const decay = pattern.decay * (sound.decayScale ?? 1);
+  const gain = lerp(p.volume, 0, 0.45) * (sound.gain ?? 1);
+
   const bloomGlide = Math.min(0.045, spacing * 0.5);
 
-  const notes = motif.notes.map((n, i) => {
+  const notes = pattern.notes.map((n, i) => {
     const freq = f0 * semis(n.s);
     const g = n.g ?? BLOOM_SEMITONES;
     return {
       freq,
       fromFreq: freq * semis(g),
       at: i * spacing,
-      // A large, deliberate glide (the `drop` finish) settles over the note's
-      // own decay; the subtle bloom settles almost instantly.
+      // A large, deliberate glide (e.g. `bounce`'s drop finish) settles over the
+      // note's own decay; the subtle bloom settles almost instantly.
       glide: n.g ? Math.min(decay, 0.18) : bloomGlide,
       decay,
       level: n.a ?? 1,
@@ -147,7 +271,7 @@ export function mapChimeParams(p) {
 
   const last = notes[notes.length - 1];
   const duration = last ? last.at + 0.005 + last.decay : 0;
-  return { notes, gain, duration };
+  return { notes, gain, duration, sound };
 }
 
 /** @type {AudioContext|null} Lazily created; shared for the document's life. */
@@ -514,13 +638,15 @@ function primeSink(ac) {
  * must run only once the context is live — otherwise the notes pin to a clock that
  * isn't advancing (the whole reason {@link recoverThenSchedule} gates on `running`).
  * @param {AudioContext} ac - A running context.
- * @param {{notes: ChimeNote[], gain: number, duration: number}} plan - The mapped chime plan.
+ * @param {{notes: ChimeNote[], gain: number, duration: number, sound: ChimeSound}} plan - The mapped chime plan.
  * @returns {void}
  * @private
  */
-function scheduleChime(ac, { notes, gain, duration }) {
+function scheduleChime(ac, { notes, gain, duration, sound }) {
   const start = ac.currentTime;
-  const attack = 0.005; // near-instant strike
+  const attack = sound.attack ?? 0.005; // near-instant strike by default
+  const wave = sound.wave ?? 'sine';
+  const partials = sound.partials;
 
   // Shared master so `volume` scales the whole motif and the stacked notes share
   // one route to the speakers — via the media-element sink, which survives the
@@ -531,7 +657,9 @@ function scheduleChime(ac, { notes, gain, duration }) {
 
   /**
    * Schedule one note: its strike envelope plus the partials voicing it, each
-   * gliding in from `fromFreq` to `freq`.
+   * gliding in from `fromFreq` to `freq`. When the voice specifies a
+   * `lowpassRatio`, the summed partials pass through a per-note lowpass tuned to
+   * the note's pitch, rounding off a bright waveform.
    * @param {ChimeNote} note
    */
   const playNote = (note) => {
@@ -541,14 +669,26 @@ function scheduleChime(ac, { notes, gain, duration }) {
     // Exponential-decay envelope. exponentialRamp can't reach 0, so we strike to
     // a small floor and ramp to a near-silent target, then hard-stop.
     const env = ac.createGain();
-    env.connect(master);
     env.gain.setValueAtTime(0.0001, t0);
     env.gain.linearRampToValueAtTime(note.level, t0 + attack);
     env.gain.exponentialRampToValueAtTime(0.0001, end);
 
-    for (const [ratio, level] of PARTIALS) {
+    // Optional per-note lowpass (env → filter → master); otherwise env → master.
+    /** @type {BiquadFilterNode|null} */
+    let lp = null;
+    if (sound.lowpassRatio) {
+      lp = ac.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = Math.max(600, Math.min(14000, note.freq * sound.lowpassRatio));
+      env.connect(lp);
+      lp.connect(master);
+    } else {
+      env.connect(master);
+    }
+
+    for (const [ratio, level] of partials) {
       const osc = ac.createOscillator();
-      osc.type = 'sine';
+      osc.type = wave;
       osc.frequency.setValueAtTime(note.fromFreq * ratio, t0);
       osc.frequency.exponentialRampToValueAtTime(note.freq * ratio, t0 + note.glide);
       const g = ac.createGain();
@@ -563,10 +703,11 @@ function scheduleChime(ac, { notes, gain, duration }) {
       };
     }
 
-    // Drop the note's envelope once its tail has rung out.
+    // Drop the note's envelope (and filter) once its tail has rung out.
     setTimeout(() => {
       try {
         env.disconnect();
+        if (lp) lp.disconnect();
       } catch { /* already gone */ }
     }, (note.at + attack + note.decay + 0.1) * 1000 + 50);
   };

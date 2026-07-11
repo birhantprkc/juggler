@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Improved model shortlist sorting and filtering
+- Improved the notification chime settings
 
 ## [0.3.1] - 2026-07-10
 

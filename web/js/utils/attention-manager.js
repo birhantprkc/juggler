@@ -36,7 +36,7 @@
  */
 
 import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
-import { playChime, unlockAudio, rearmAudio, CHIME_DEFAULTS } from './chime-synth.js';
+import { playChime, unlockAudio, rearmAudio, CHIME_DEFAULTS, chimePatterns, chimeSounds } from './chime-synth.js';
 import { windowControlURL } from '../../sdk/lib/window-control.js';
 
 const PREFS_KEY = 'juggler-attention';
@@ -76,13 +76,19 @@ export function getAttentionPrefs() {
   } catch {
     stored = {};
   }
-  // CHIME_DEFAULTS defines the chime schema: carry forward only known keys from
-  // the stored blob, so a stale param from an older build (e.g. a renamed knob)
-  // is dropped rather than riding through into prefs.
-  const storedChime = /** @type {Record<string, number>} */ (/** @type {any} */ (stored).chime || {});
-  const chime = /** @type {ChimeParams} */ (Object.fromEntries(
-    Object.keys(DEFAULT_PREFS.chime).map((k) => [k, storedChime[k] ?? /** @type {any} */ (DEFAULT_PREFS.chime)[k]]),
-  ));
+  // Validate each chime field against its live schema, so a stale value from an
+  // older build (the pre-menu `pitch`/`length`/numeric-`pattern` knobs, or a
+  // removed pattern/sound id) is dropped for the default rather than riding
+  // through into prefs and desyncing the settings popups.
+  const storedChime = /** @type {Record<string, unknown>} */ (/** @type {any} */ (stored).chime || {});
+  const validPatterns = new Set(chimePatterns().map((p) => p.id));
+  const validSounds = new Set(chimeSounds().map((s) => s.id));
+  const vol = storedChime.volume;
+  const chime = /** @type {ChimeParams} */ ({
+    pattern: validPatterns.has(/** @type {any} */ (storedChime.pattern)) ? storedChime.pattern : DEFAULT_PREFS.chime.pattern,
+    sound: validSounds.has(/** @type {any} */ (storedChime.sound)) ? storedChime.sound : DEFAULT_PREFS.chime.sound,
+    volume: typeof vol === 'number' ? Math.max(0, Math.min(1, vol)) : DEFAULT_PREFS.chime.volume,
+  });
   return { ...DEFAULT_PREFS, ...stored, chime };
 }
 
@@ -149,9 +155,10 @@ export function setNotifyEnabled(on) {
 }
 
 /**
- * Update one abstract chime parameter (pitch | pattern | length | volume).
+ * Update one chime parameter: `pattern`/`sound` (a menu id, string) or `volume`
+ * (0..1, number).
  * @param {keyof ChimeParams} name
- * @param {number} value - 0..1
+ * @param {string|number} value
  * @returns {void}
  */
 export function setChimeParam(name, value) {

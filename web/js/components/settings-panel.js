@@ -25,6 +25,7 @@ import {
   previewChime,
   ATTENTION_PREFS_EVENT,
 } from '../utils/attention-manager.js';
+import { chimePatterns, chimeSounds } from '../utils/chime-synth.js';
 import {
   mcpListServers,
   mcpGetConfig,
@@ -1590,9 +1591,8 @@ class SettingsPanel extends HTMLElement {
         const p = getAttentionPrefs();
         soundRow.input.checked = p.sound;
         notifyRow.input.checked = p.notify;
-        chimeRow.controls.pitch.setValue(p.chime.pitch);
         chimeRow.controls.pattern.setValue(p.chime.pattern);
-        chimeRow.controls.length.setValue(p.chime.length);
+        chimeRow.controls.sound.setValue(p.chime.sound);
         chimeRow.controls.volume.setValue(p.chime.volume);
       };
       window.addEventListener(ATTENTION_PREFS_EVENT, this._onAttentionPrefs);
@@ -1742,10 +1742,10 @@ class SettingsPanel extends HTMLElement {
   }
 
   /**
-   * Build the chime customisation section: four rotary controls plus the preview
-   * button on one row. Values are abstract 0..1 voice parameters.
+   * Build the chime customisation section: a Pattern popup and a Sound popup (the
+   * curated menus), a Volume rotary, and the preview/reset buttons.
    * @param {import('../utils/chime-synth.js').ChimeParams} chime
-   * @returns {{row: HTMLElement, controls: {pitch: {setValue: (v: number) => void}, pattern: {setValue: (v: number) => void}, length: {setValue: (v: number) => void}, volume: {setValue: (v: number) => void}}}} The row and named rotary controls.
+   * @returns {{row: HTMLElement, controls: {pattern: {setValue: (v: string) => void}, sound: {setValue: (v: string) => void}, volume: {setValue: (v: number) => void}}}} The row and named controls.
    * @private
    */
   _buildChimeControlsRow(chime) {
@@ -1759,31 +1759,43 @@ class SettingsPanel extends HTMLElement {
     name.textContent = 'Chime';
     const desc = document.createElement('div');
     desc.className = 'provider-description';
-    desc.textContent = 'Customise the notification sound and preview it.';
+    desc.textContent = 'Pick a pattern and sound, set the volume, and preview it.';
     info.appendChild(name);
     info.appendChild(desc);
 
     const ctrl = document.createElement('div');
     ctrl.className = 'provider-control chime-controls';
 
-    const controls = {
-      pitch: this._buildChimeRotary('Pitch', chime.pitch, (v) => setChimeParam('pitch', v), () => previewChime()),
-      pattern: this._buildChimeRotary('Pattern', chime.pattern, (v) => setChimeParam('pattern', v), () => previewChime()),
-      length: this._buildChimeRotary('Length', chime.length, (v) => setChimeParam('length', v), () => previewChime()),
-      volume: this._buildChimeRotary('Volume', chime.volume, (v) => setChimeParam('volume', v), () => previewChime()),
-    };
+    // The two curated popup menus (tune + timbre).
+    const menus = document.createElement('div');
+    menus.className = 'chime-menus';
+    const pattern = this._buildChimeSelect('Pattern', chimePatterns(), chime.pattern, (v) => {
+      setChimeParam('pattern', v);
+      previewChime();
+    });
+    const sound = this._buildChimeSelect('Sound', chimeSounds(), chime.sound, (v) => {
+      setChimeParam('sound', v);
+      previewChime();
+    });
+    menus.appendChild(pattern.el);
+    menus.appendChild(sound.el);
+    ctrl.appendChild(menus);
 
-    Object.values(controls).forEach((control) => ctrl.appendChild(control.el));
+    // The volume rotary sits with the preview/reset buttons on the action row.
+    const actions = document.createElement('div');
+    actions.className = 'chime-actions';
+    const volume = this._buildChimeRotary('Volume', chime.volume, (v) => setChimeParam('volume', v), () => previewChime());
+    actions.appendChild(volume.el);
 
     const previewBtn = document.createElement('button');
     previewBtn.type = 'button';
     previewBtn.className = 'settings-btn primary small chime-preview-btn';
     previewBtn.textContent = 'Preview';
     previewBtn.addEventListener('click', () => previewChime());
-    ctrl.appendChild(previewBtn);
+    actions.appendChild(previewBtn);
 
-    // Reset every rotary to the default voice. The resulting prefs event re-syncs
-    // the rotaries via _onAttentionPrefs, then we preview the restored chime.
+    // Reset every control to the default voice. The resulting prefs event
+    // re-syncs the menus/rotary via _onAttentionPrefs, then we preview it.
     const resetBtn = document.createElement('button');
     resetBtn.type = 'button';
     resetBtn.className = 'settings-btn small chime-reset-btn';
@@ -1792,11 +1804,53 @@ class SettingsPanel extends HTMLElement {
       resetChimeParams();
       previewChime();
     });
-    ctrl.appendChild(resetBtn);
+    actions.appendChild(resetBtn);
+
+    ctrl.appendChild(actions);
 
     row.appendChild(info);
     row.appendChild(ctrl);
-    return { row, controls };
+    return { row, controls: { pattern, sound, volume } };
+  }
+
+  /**
+   * Build one labelled popup menu (a native `<select>`) for a curated chime list.
+   * @param {string} name - Control label ('Pattern' | 'Sound').
+   * @param {Array<{id: string, name: string}>} options - The menu entries.
+   * @param {string} value - The currently selected id.
+   * @param {(v: string) => void} onChange - Called with the new id on selection.
+   * @returns {{el: HTMLElement, select: HTMLSelectElement, setValue: (v: string) => void}} The wrapper, select, and setter.
+   * @private
+   */
+  _buildChimeSelect(name, options, value, onChange) {
+    const wrap = document.createElement('label');
+    wrap.className = 'chime-select-field';
+
+    const label = document.createElement('span');
+    label.className = 'chime-select-label';
+    label.textContent = name;
+
+    const select = document.createElement('select');
+    select.className = 'chime-select';
+    select.setAttribute('aria-label', name);
+    for (const opt of options) {
+      const el = document.createElement('option');
+      el.value = opt.id;
+      el.textContent = opt.name;
+      select.appendChild(el);
+    }
+    const setValue = (/** @type {string} */ v) => {
+      select.value = v;
+      // A stored id no longer in the list (a removed entry) leaves value unset;
+      // fall back to the first option so the menu always shows a real choice.
+      if (!select.value && select.options.length) select.selectedIndex = 0;
+    };
+    setValue(value);
+    select.addEventListener('change', () => onChange(select.value));
+
+    wrap.appendChild(label);
+    wrap.appendChild(select);
+    return { el: wrap, select, setValue };
   }
 
   /**

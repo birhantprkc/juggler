@@ -4570,8 +4570,10 @@ settings-panel .provider-active-badge svg {
     flex-shrink: 0;
 }
 
-/* Default-model tab: the single model picker */
-settings-panel .default-model-select {
+/* Default-model tab: the single model picker. The Notifications chime menus
+   (Pattern/Sound) reuse the same native-select styling. */
+settings-panel .default-model-select,
+settings-panel .chime-select {
     width: 100%;
     padding: 0.625rem 2rem 0.625rem 0.875rem;
     background: var(--bg-primary);
@@ -4588,11 +4590,13 @@ settings-panel .default-model-select {
     transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
-settings-panel .default-model-select:hover {
+settings-panel .default-model-select:hover,
+settings-panel .chime-select:hover {
     border-color: var(--text-secondary);
 }
 
-settings-panel .default-model-select:focus {
+settings-panel .default-model-select:focus,
+settings-panel .chime-select:focus {
     outline: none;
     border-color: var(--accent-blue);
     box-shadow: 0 0 0 0.1875rem rgb(88 166 255 / 10%);
@@ -4605,7 +4609,8 @@ settings-panel .default-model-select optgroup {
     background: var(--bg-secondary);
 }
 
-settings-panel .default-model-select option {
+settings-panel .default-model-select option,
+settings-panel .chime-select option {
     color: var(--text-primary);
     background: var(--bg-primary);
     padding: 0.25rem 0.5rem;
@@ -5033,16 +5038,43 @@ settings-panel .mcp-form-actions {
     margin-top: 0.5rem;
 }
 
-/* Notifications tab: one sound-customisation row with audio-style rotary
-   controls. The native range remains accessible/focusable; pointer dragging is
-   handled by JS against the visible dial. */
+/* Notifications tab: the chime-customisation row — two popup menus (Pattern +
+   Sound) above an action row (Volume rotary + Preview/Reset). The rotary's
+   native range stays accessible/focusable; pointer dragging is handled by JS
+   against the visible dial. The control column stacks, so top-align it. */
 settings-panel .chime-controls-field {
-    align-items: center;
+    align-items: start;
 }
 
 settings-panel .chime-controls {
-    flex-flow: row nowrap;
-    justify-content: flex-start;
+    flex-flow: column nowrap;
+    align-items: stretch;
+    gap: 0.85rem;
+}
+
+/* The two curated popup menus, side by side. */
+settings-panel .chime-menus {
+    display: flex;
+    gap: 0.75rem;
+}
+
+settings-panel .chime-select-field {
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+settings-panel .chime-select-label {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+/* Volume rotary + Preview/Reset buttons share the action row. */
+settings-panel .chime-actions {
+    display: flex;
+    flex-flow: row wrap;
     align-items: center;
     gap: 1rem;
 }
@@ -5222,10 +5254,14 @@ settings-panel .toggle-label {
         margin-top: 1.25rem;
     }
 
-    /* The four chime dials + preview button overrun a phone-width control
-       column in their desktop `row nowrap`; let them wrap onto a second line. */
-    settings-panel .chime-controls {
+    /* The two chime menus sit side by side on desktop; on a phone-width control
+       column let them stack so neither select gets crushed. */
+    settings-panel .chime-menus {
         flex-wrap: wrap;
+    }
+
+    settings-panel .chime-menus .chime-select-field {
+        flex-basis: 100%;
     }
 }
 
