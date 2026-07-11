@@ -16,7 +16,7 @@
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import keyShortcutManager, { isMac, eventMatchesBinding } from '../../js/services/key-shortcut-manager.js';
+import keyShortcutManager, { isMac, eventMatchesBinding, formatBindingForPlatform } from '../../js/services/key-shortcut-manager.js';
 import {
   isFileEditingAllowed,
   toggleFileEditing,
@@ -160,6 +160,21 @@ export async function runTests(_ctx) {
     assert(keyShortcutManager.formatBinding('zoom-in') === (mac ? '⌘+' : 'Ctrl++'),
       `zoom-in label wrong: ${keyShortcutManager.formatBinding('zoom-in')}`);
     assert(keyShortcutManager.formatBinding('does-not-exist') === '', 'unknown id formats to empty string');
+  });
+
+  // formatBindingForPlatform renders for an EXPLICIT platform, independent of
+  // the running host — the seam the About-Juggler help corpus uses to describe
+  // shortcuts for session.platform rather than the client's navigator.
+  await run('formatBindingForPlatform renders both platforms regardless of host', () => {
+    const redo = keyShortcutManager.getBinding('redo');
+    assert(formatBindingForPlatform(redo, true) === '⇧⌘Z', `mac redo wrong: ${formatBindingForPlatform(redo, true)}`);
+    assert(formatBindingForPlatform(redo, false) === 'Ctrl+Shift+Z', `non-mac redo wrong: ${formatBindingForPlatform(redo, false)}`);
+    const bin = keyShortcutManager.getBinding('bin-conversation');
+    assert(formatBindingForPlatform(bin, true) === '⌘⌫', `mac bin wrong: ${formatBindingForPlatform(bin, true)}`);
+    assert(formatBindingForPlatform(bin, false) === 'Ctrl+Backspace', `non-mac bin wrong: ${formatBindingForPlatform(bin, false)}`);
+    // And it agrees with the navigator-based instance method on this host.
+    assert(formatBindingForPlatform(redo, mac) === keyShortcutManager.formatBinding('redo'),
+      'explicit-platform formatter should match formatBinding on this host');
   });
 
   // ── Customisation override seam ─────────────────────────────────────

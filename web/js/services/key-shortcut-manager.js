@@ -126,6 +126,48 @@ const NAMED_KEY_LABELS = {
 };
 
 /**
+ * The glyph/label for a binding's key on an explicit platform. Pure.
+ * @param {KeyBinding} binding
+ * @param {boolean} mac - True for macOS glyphs, false for Windows/Linux labels.
+ * @returns {string} The glyph/label for the binding's key.
+ */
+function keyGlyphFor(binding, mac) {
+  if (binding.displayKey) return binding.displayKey;
+  const key = binding.key;
+  if (mac && MAC_KEY_GLYPHS[key]) return MAC_KEY_GLYPHS[key];
+  if (!mac && NAMED_KEY_LABELS[key]) return NAMED_KEY_LABELS[key];
+  return key.length === 1 ? key.toUpperCase() : key;
+}
+
+/**
+ * Render a binding for an EXPLICIT platform (⌘⇧Z on macOS, "Ctrl+Shift+Z" on
+ * Windows/Linux), independent of the running client's navigator. Use when the
+ * target platform is known from data rather than the live client — e.g. building
+ * a platform-specific help corpus from `session.platform`. Pure; the instance
+ * {@link KeyShortcutManager#formatKeyBinding} delegates here with `isMac()`.
+ * @param {KeyBinding} binding
+ * @param {boolean} mac - True to render for macOS, false for Windows/Linux.
+ * @returns {string} The platform-correct key label.
+ */
+export function formatBindingForPlatform(binding, mac) {
+  const keyGlyph = keyGlyphFor(binding, mac);
+  if (mac) {
+    // Apple order: ⌃ ⌥ ⇧ ⌘ — we use ⌥ ⇧ ⌘.
+    let out = '';
+    if (binding.alt) out += '⌥';
+    if (binding.shift) out += '⇧';
+    if (binding.mod) out += '⌘';
+    return out + keyGlyph;
+  }
+  const parts = [];
+  if (binding.mod) parts.push('Ctrl');
+  if (binding.alt) parts.push('Alt');
+  if (binding.shift) parts.push('Shift');
+  parts.push(keyGlyph);
+  return parts.join('+');
+}
+
+/**
  * The central shortcut table. Add a customisable command here and nowhere else.
  * @type {ShortcutDef[]}
  */
@@ -335,36 +377,7 @@ class KeyShortcutManager {
    * @returns {string} The platform-correct key label.
    */
   formatKeyBinding(binding) {
-    const mac = isMac();
-    const keyGlyph = this._keyGlyph(binding, mac);
-    if (mac) {
-      // Apple order: ⌃ ⌥ ⇧ ⌘ — we use ⌥ ⇧ ⌘.
-      let out = '';
-      if (binding.alt) out += '⌥';
-      if (binding.shift) out += '⇧';
-      if (binding.mod) out += '⌘';
-      return out + keyGlyph;
-    }
-    const parts = [];
-    if (binding.mod) parts.push('Ctrl');
-    if (binding.alt) parts.push('Alt');
-    if (binding.shift) parts.push('Shift');
-    parts.push(keyGlyph);
-    return parts.join('+');
-  }
-
-  /**
-   * @param {KeyBinding} binding
-   * @param {boolean} mac
-   * @returns {string} The glyph/label for the binding's key.
-   * @private
-   */
-  _keyGlyph(binding, mac) {
-    if (binding.displayKey) return binding.displayKey;
-    const key = binding.key;
-    if (mac && MAC_KEY_GLYPHS[key]) return MAC_KEY_GLYPHS[key];
-    if (!mac && NAMED_KEY_LABELS[key]) return NAMED_KEY_LABELS[key];
-    return key.length === 1 ? key.toUpperCase() : key;
+    return formatBindingForPlatform(binding, isMac());
   }
 
   /**

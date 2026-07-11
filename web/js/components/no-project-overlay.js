@@ -97,6 +97,10 @@ class NoProjectOverlay extends HTMLElement {
           New here? Browse the
           <button type="button" class="no-project-inline-link no-project-shortcuts-link">keyboard shortcuts</button>.
         </p>
+        <p class="no-project-settings-note">
+          Once you've opened a project, you can ask Juggler about itself -
+          it can explain its own tools, shortcuts, and features.
+        </p>
       </section>
     `;
 
