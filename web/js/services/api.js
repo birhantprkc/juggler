@@ -193,16 +193,21 @@ class APIService {
    * returned name.
    * @param {string} name - Requested display name (server may append " (copy N)" on collision)
    * @param {string} [id] - Optional preallocated conversation id
-   * @param {{lane?: string, duplicateFrom?: string, origin?: string}} [options] - lane identifies
-   *   the creating test lane for the test-mode ownership ledger; duplicateFrom
-   *   makes the server clone that conversation's files into the new folder
-   *   before announcing it; origin is a gesture label (e.g. plus-button,
-   *   slash-command, initial-bootstrap) the server logs for create attribution
-   *   — the only way to name the gesture behind a "phantom" create after the fact.
+   * @param {{lane?: string, reason?: string, duplicateFrom?: string, origin?: string}} [options] - lane
+   *   identifies the creating test lane for the test-mode ownership ledger;
+   *   reason tags the create with the current test's name so a suite-end leak
+   *   dump names the culprit test; duplicateFrom makes the server clone that
+   *   conversation's files into the new folder before announcing it; origin is
+   *   a gesture label (e.g. plus-button, slash-command, initial-bootstrap) the
+   *   server logs for create attribution — the only way to name the gesture
+   *   behind a "phantom" create after the fact.
    * @returns {Promise<{id: string, name: string, created: string}>} Conversation id, canonical name actually written to disk, and ISO 8601 creation timestamp.
    */
   async createConversation(name, id, options = {}) {
-    const qs = options.lane ? `?lane=${encodeURIComponent(options.lane)}` : '';
+    const params = new URLSearchParams();
+    if (options.lane) params.set('lane', options.lane);
+    if (options.reason) params.set('reason', options.reason);
+    const qs = params.size > 0 ? `?${params}` : '';
     return await this.request(`/conversations${qs}`, {
       method: 'POST',
       body: JSON.stringify({

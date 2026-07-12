@@ -28,6 +28,15 @@ type ConvOwnership struct {
 	ops chan ownerOp
 }
 
+// OwnerInfo is a conversation's ownership record: the lane that created it and
+// the reason (the creating test's name, tagged onto the create ?reason=) so a
+// suite-end leak dump names the culprit test directly instead of only a random
+// lane id.
+type OwnerInfo struct {
+	Lane   string `json:"lane"`
+	Reason string `json:"reason"`
+}
+
 type ownerOpKind int
 
 const (
@@ -42,8 +51,9 @@ type ownerOp struct {
 	kind   ownerOpKind
 	convID string
 	lane   string
+	reason string
 	errOut chan error
-	mapOut chan map[string]string
+	mapOut chan map[string]OwnerInfo
 }
 
 // NewConvOwnership creates a ledger and starts its actor goroutine.
@@ -54,27 +64,27 @@ func NewConvOwnership() *ConvOwnership {
 }
 
 func (o *ConvOwnership) run() {
-	owners := map[string]string{}
+	owners := map[string]OwnerInfo{}
 	for op := range o.ops {
 		switch op.kind {
 		case ownerRecord:
 			if op.lane != "" {
-				owners[op.convID] = op.lane
+				owners[op.convID] = OwnerInfo{Lane: op.lane, Reason: op.reason}
 			}
 		case ownerRelease:
 			delete(owners, op.convID)
 		case ownerCheck:
 			owner, owned := owners[op.convID]
-			if owned && owner != op.lane {
+			if owned && owner.Lane != op.lane {
 				op.errOut <- fmt.Errorf(
 					"conversation %s is owned by lane %q; delete requested by lane %q — "+
 						"cross-lane deletes tear down a live test's worker and are forbidden",
-					op.convID, owner, op.lane)
+					op.convID, owner.Lane, op.lane)
 			} else {
 				op.errOut <- nil
 			}
 		case ownerDump:
-			out := make(map[string]string, len(owners))
+			out := make(map[string]OwnerInfo, len(owners))
 			for k, v := range owners {
 				out[k] = v
 			}
@@ -85,10 +95,11 @@ func (o *ConvOwnership) run() {
 	}
 }
 
-// Record registers lane as the owner of convID. Empty lane is a no-op so
+// Record registers lane as the owner of convID, tagged with reason (the
+// creating test's name) for leak attribution. Empty lane is a no-op so
 // untagged (production-path) creates never poison the ledger.
-func (o *ConvOwnership) Record(convID, lane string) {
-	o.ops <- ownerOp{kind: ownerRecord, convID: convID, lane: lane}
+func (o *ConvOwnership) Record(convID, lane, reason string) {
+	o.ops <- ownerOp{kind: ownerRecord, convID: convID, lane: lane, reason: reason}
 }
 
 // Release removes ownership — call after a successful delete.
@@ -104,10 +115,10 @@ func (o *ConvOwnership) CheckDelete(convID, lane string) error {
 	return <-reply
 }
 
-// Dump returns a copy of the current ownership map (convID → lane). A
+// Dump returns a copy of the current ownership map (convID → OwnerInfo). A
 // non-empty dump at suite end means those conversations leaked.
-func (o *ConvOwnership) Dump() map[string]string {
-	reply := make(chan map[string]string, 1)
+func (o *ConvOwnership) Dump() map[string]OwnerInfo {
+	reply := make(chan map[string]OwnerInfo, 1)
 	o.ops <- ownerOp{kind: ownerDump, mapOut: reply}
 	return <-reply
 }

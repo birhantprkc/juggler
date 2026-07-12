@@ -132,7 +132,8 @@ import logger from './test-logger.js';
 import {
   installClaimAutoRegistration,
   snapshotOwnConversationIds,
-  deleteOwnConversationsCreatedSince
+  deleteOwnConversationsCreatedSince,
+  setCurrentTestName
 } from './conversation-claims.js';
 
 // Action progress events fire in the engine WebviewWindow's document; without
@@ -342,6 +343,7 @@ export async function runTests(ctx) {
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Suite results after cleanup.
  */
 async function runUnitSuiteWithConvCleanup(suite, ctx) {
+  setCurrentTestName(suite.name);
   const before = snapshotOwnConversationIds();
   try {
     return await suite.run(ctx);

@@ -17,8 +17,8 @@ func TestConvOwnership(t *testing.T) {
 	o := NewConvOwnership()
 	defer o.Stop()
 
-	o.Record("conv_a", "lane1")
-	o.Record("conv_b", "lane2")
+	o.Record("conv_a", "lane1", "integration:test-a")
+	o.Record("conv_b", "lane2", "integration:test-b")
 
 	// Owner deleting its own conversation: allowed.
 	if err := o.CheckDelete("conv_a", "lane1"); err != nil {
@@ -54,13 +54,17 @@ func TestConvOwnership(t *testing.T) {
 	}
 
 	owners := o.Dump()
-	if len(owners) != 1 || owners["conv_b"] != "lane2" {
+	if len(owners) != 1 || owners["conv_b"].Lane != "lane2" {
 		t.Fatalf("dump should report exactly the still-owned conversations, got %v", owners)
+	}
+	// The create reason rides along so the leak dump can name the culprit test.
+	if owners["conv_b"].Reason != "integration:test-b" {
+		t.Fatalf("dump should carry the create reason for attribution, got %q", owners["conv_b"].Reason)
 	}
 
 	// Recording with an empty lane is a no-op (production-path creates carry
 	// no lane and must not poison the ledger).
-	o.Record("conv_c", "")
+	o.Record("conv_c", "", "integration:test-c")
 	if err := o.CheckDelete("conv_c", "laneX"); err != nil {
 		t.Fatalf("empty-lane record must not create ownership, got %v", err)
 	}

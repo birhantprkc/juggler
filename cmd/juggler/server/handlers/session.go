@@ -45,7 +45,7 @@ type SessionAPI struct {
 	// cross-lane delete tears down a live test's worker mid-test and is
 	// rejected with 403 instead of trusted to never happen. Wired by
 	// RegisterTestRoutes from the testing package's ConvOwnership ledger.
-	recordConvOwner  func(convID, lane string)
+	recordConvOwner  func(convID, lane, reason string)
 	checkConvDelete  func(convID, lane string) error
 	releaseConvOwner func(convID string)
 }
@@ -53,7 +53,7 @@ type SessionAPI struct {
 // SetConvOwnershipHooks wires the test-mode ownership ledger. Production
 // never calls this, leaving the hooks nil (no recording, no enforcement).
 func (api *SessionAPI) SetConvOwnershipHooks(
-	record func(convID, lane string),
+	record func(convID, lane, reason string),
 	check func(convID, lane string) error,
 	release func(convID string),
 ) {
@@ -341,10 +341,11 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 	}
 
 	// Test mode: record which lane created this conversation so the delete
-	// guard can reject cross-lane deletes. Production sends no lane and has
-	// nil hooks — both make this a no-op.
+	// guard can reject cross-lane deletes, tagged with ?reason= (the creating
+	// test's name) so a suite-end leak dump names the culprit. Production sends
+	// no lane and has nil hooks — both make this a no-op.
 	if api.recordConvOwner != nil {
-		api.recordConvOwner(id, r.URL.Query().Get("lane"))
+		api.recordConvOwner(id, r.URL.Query().Get("lane"), r.URL.Query().Get("reason"))
 	}
 
 	writeJSON(w, r, http.StatusCreated, map[string]any{

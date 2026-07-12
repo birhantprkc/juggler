@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,12 +203,24 @@ drained:
 						"guard/leak check is not wired; see RegisterTestRoutes", resp.StatusCode, s.addr)
 				}
 				var body struct {
-					Owners map[string]string `json:"owners"`
+					Owners map[string]struct {
+						Lane   string `json:"lane"`
+						Reason string `json:"reason"`
+					} `json:"owners"`
 				}
 				if err := json.NewDecoder(resp.Body).Decode(&body); err == nil && len(body.Owners) > 0 {
-					t.Errorf("LEAKED CONVERSATIONS on %s (created by a test, never deleted): %v — "+
+					lines := make([]string, 0, len(body.Owners))
+					for id, o := range body.Owners {
+						reason := o.Reason
+						if reason == "" {
+							reason = "unknown test"
+						}
+						lines = append(lines, fmt.Sprintf("%s (created by %s, lane %s)", id, reason, o.Lane))
+					}
+					sort.Strings(lines)
+					t.Errorf("LEAKED CONVERSATIONS on %s (created by a test, never deleted): %s — "+
 						"these accumulate in the shared session toward the MAX_CONVERSATIONS cap; "+
-						"the creating lane's tests must delete what they create", s.addr, body.Owners)
+						"the creating test must delete what it creates", s.addr, strings.Join(lines, "; "))
 				}
 				resp.Body.Close()
 			}

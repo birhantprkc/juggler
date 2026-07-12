@@ -38,7 +38,7 @@ func TestRegisterTestRoutesStructuralMatches(t *testing.T) {
 	}
 
 	if _, ok := api.(interface {
-		RecordConvOwner(convID, lane string)
+		RecordConvOwner(convID, lane, reason string)
 		CheckConvDelete(convID, lane string) error
 		ReleaseConvOwner(convID string)
 		HandleConversationOwners(w http.ResponseWriter, r *http.Request)

@@ -193,6 +193,16 @@ jobs:
             export WEBKIT_DISABLE_DMABUF_RENDERER=1
             export WEBKIT_DISABLE_COMPOSITING_MODE=1
             export LIBGL_ALWAYS_SOFTWARE=1
+            # WebKitGTK isolates its WebProcess in a bubblewrap (bwrap) sandbox
+            # that needs unprivileged user namespaces + loopback setup. The
+            # hosted runner denies those ("bwrap: loopback: Failed RTM_NEWADDR:
+            # Operation not permitted"), so the WebProcess dies before handing
+            # back credentials and the whole engine aborts on a fatal GLib
+            # ERROR (SIGTRAP in g_application_run) — the engine never boots, so
+            # /api/test/names times out at 30s. Disabling the sandbox is the
+            # supported CI escape hatch (safe here: we only ever load our own
+            # local test harness, never untrusted web content).
+            export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
             xvfb-run -a --server-args='-screen 0 1920x1080x24' \
               go test -count=1 -race -timeout 15m ./tests/integration/...
           else

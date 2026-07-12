@@ -41,6 +41,25 @@ function laneId() {
 }
 
 /**
+ * Set the name of the test currently running in this lane. The create-patch
+ * tags every conversation it creates with this name (server ?reason=), so a
+ * suite-end leak dump names the culprit test instead of only a random lane id.
+ * Called by the test runners at the start of each test/suite. Test-only.
+ * @param {string} name
+ */
+export function setCurrentTestName(name) {
+  /** @type {any} */ (globalThis).__convCreateReason = name || '';
+}
+
+/**
+ * The name of the test currently running in this lane, for create attribution.
+ * @returns {string} The current test's name, or '' if none has been set.
+ */
+function currentCreateReason() {
+  return /** @type {any} */ (globalThis).__convCreateReason || '';
+}
+
+/**
  * Record a conversation as owned by this lane.
  * @param {string} convId
  */
@@ -79,7 +98,14 @@ export function installClaimAutoRegistration() {
 
   const origCreate = apiService.createConversation.bind(apiService);
   apiService.createConversation = async (name, id, options = {}) => {
-    const result = await origCreate(name, id, { ...options, lane: laneId() });
+    const result = await origCreate(name, id, {
+      ...options,
+      lane: laneId(),
+      // Tag the create with the current test's name so a leaked conversation
+      // is attributable even when this lane never registers it locally (a
+      // create that succeeded server-side but whose response we never saw).
+      reason: options.reason ?? currentCreateReason(),
+    });
     if (result?.id) registerOwnConversation(result.id);
     return result;
   };
@@ -119,15 +145,55 @@ export function snapshotOwnConversationIds() {
  */
 export async function deleteOwnConversationsCreatedSince(before, reason) {
   /** @type {any} */ const owned = /** @type {any} */ (window).__ownConversationIds;
-  if (!owned) return;
-  const created = [...owned].filter((id) => !before.has(id));
-  for (const id of created) {
-    try {
-      await apiService.deleteConversation(id, { permanent: true, reason });
-    } catch {
-      // Already gone (the test deleted it itself, or another cleanup won).
+  if (owned) {
+    const created = [...owned].filter((id) => !before.has(id));
+    for (const id of created) {
+      try {
+        await apiService.deleteConversation(id, { permanent: true, reason });
+      } catch {
+        // Already gone (the test deleted it itself, or another cleanup won).
+      }
+      owned.delete(id);
     }
-    owned.delete(id);
+  }
+  // Reconcile against the server's ownership ledger. A create that succeeded
+  // server-side but whose response never reached us (dropped or slow — the
+  // Windows-runner failure mode) records an owner the local claim set above
+  // never saw, so the loop can't delete it and it leaks. Sweep anything the
+  // SERVER still attributes to THIS lane: within a lane tests run sequentially
+  // and each releases its own conversations, so any residue after our own
+  // deletes is this lane's leak, safe to remove. Best-effort — a true residue
+  // still trips the Go harness's leak check.
+  await reconcileServerOwnedConversations(reason);
+}
+
+/**
+ * Delete every conversation the server still attributes to THIS lane. Closes
+ * the gap where a create is recorded server-side but never registered locally
+ * (lost/slow create response), which no local-claim diff can catch.
+ * @param {string} reason - Attribution tag for the reconciling deletes.
+ */
+async function reconcileServerOwnedConversations(reason) {
+  /** @type {any} */ const owned = /** @type {any} */ (window).__ownConversationIds;
+  const mine = laneId();
+  try {
+    const resp = await fetch('/api/test/conversation-owners');
+    if (!resp.ok) return;
+    const body = await resp.json();
+    const owners = body?.owners ?? {};
+    for (const [id, info] of Object.entries(owners)) {
+      // Owners are {lane, reason}; tolerate a bare-string legacy shape too.
+      const lane = typeof info === 'string' ? info : /** @type {any} */ (info)?.lane;
+      if (lane !== mine) continue; // never touch another lane's live conversation
+      try {
+        await apiService.deleteConversation(id, { permanent: true, reason: `reconcile:${reason}` });
+      } catch {
+        // Already gone; ownership was released by the delete above.
+      }
+      owned?.delete(id);
+    }
+  } catch {
+    // Endpoint unreachable (non-pool run, teardown race): best-effort only.
   }
 }
 

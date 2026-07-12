@@ -63,9 +63,10 @@ func (api *TestAPI) SetTapeDumper(fn func(string) any) {
 // ledger to the session handlers (wired via SessionAPI.SetConvOwnershipHooks
 // in RegisterTestRoutes). See ConvOwnership for the invariant they enforce.
 
-// RecordConvOwner registers lane as the creator of convID.
-func (api *TestAPI) RecordConvOwner(convID, lane string) {
-	api.convOwnership.Record(convID, lane)
+// RecordConvOwner registers lane as the creator of convID, tagged with reason
+// (the creating test's name) so a leak dump can name the culprit test.
+func (api *TestAPI) RecordConvOwner(convID, lane, reason string) {
+	api.convOwnership.Record(convID, lane, reason)
 }
 
 // CheckConvDelete reports whether lane may delete convID.
@@ -78,11 +79,12 @@ func (api *TestAPI) ReleaseConvOwner(convID string) {
 	api.convOwnership.Release(convID)
 }
 
-// HandleConversationOwners returns the current ownership map (convID → lane).
-// GET /api/test/conversation-owners. A non-empty map at suite end means those
-// conversations leaked — created by a test, never deleted — and the Go
-// harness fails the run with this list so leaks can't silently accumulate
-// toward the MAX_CONVERSATIONS cap.
+// HandleConversationOwners returns the current ownership map
+// (convID → {lane, reason}). GET /api/test/conversation-owners. A non-empty
+// map at suite end means those conversations leaked — created by a test, never
+// deleted — and the Go harness fails the run with this list (each entry named
+// by its creating test's reason) so leaks can't silently accumulate toward the
+// MAX_CONVERSATIONS cap.
 func (api *TestAPI) HandleConversationOwners(w http.ResponseWriter, r *http.Request) {
 	handlers.WriteJSON(w, r, 0, map[string]any{"owners": api.convOwnership.Dump()})
 }

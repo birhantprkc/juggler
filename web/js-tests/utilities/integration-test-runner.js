@@ -22,7 +22,7 @@ import {
 import { ITEM_TYPE_TO_TAG } from './test-assertions.js';
 import logger from './test-logger.js';
 import { dumpTape, clearTape } from '../../js/utils/event-tape.js';
-import { snapshotOwnConversationIds, deleteOwnConversationsCreatedSince } from './conversation-claims.js';
+import { snapshotOwnConversationIds, deleteOwnConversationsCreatedSince, setCurrentTestName } from './conversation-claims.js';
 
 // Set the per-iframe trace flag so event-tape.js starts recording. The flag
 // is a single boolean test on every recordTape() call, so production page
@@ -648,6 +648,10 @@ export async function runIntegrationTest(testDef, ctx) {
   // failure block must be THIS test's. (Page-LOAD errors were snapshotted
   // by headless-test.html before any test ran and fail tests fast there.)
   /** @type {any} */ (window).__earlyErrors = [];
+
+  // Tag every conversation this test creates with the test's name (server
+  // ?reason=), so if one leaks the suite-end dump names this test directly.
+  setCurrentTestName(testDef.name);
 
   // Claims snapshot for the finally{} cleanup: everything this lane claims
   // beyond this set was created by THIS test and gets deleted afterwards.

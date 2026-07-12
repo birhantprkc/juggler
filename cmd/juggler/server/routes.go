@@ -545,7 +545,7 @@ func (s *Server) RegisterTestRoutes(testAPI any) {
 	// API; the session handlers consult it through these hooks, and the
 	// owners endpoint lets the Go harness fail the run on leaked conversations.
 	type convOwnershipAPI interface {
-		RecordConvOwner(convID, lane string)
+		RecordConvOwner(convID, lane, reason string)
 		CheckConvDelete(convID, lane string) error
 		ReleaseConvOwner(convID string)
 		HandleConversationOwners(w http.ResponseWriter, r *http.Request)
