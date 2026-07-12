@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-12
+
 - Added ability for extension items to spawn a subthread, and used this to make the webfetch tool run sub-prompts to filter its results
 - Injecting queued user messages now pushes them into the thread sooner
 - Added alt+up/down shortcuts to skip between user messages in the thread
