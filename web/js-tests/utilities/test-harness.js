@@ -16,6 +16,7 @@
  */
 
 import workerManager from '../../js/services/worker-manager.js';
+import wsService from '../../js/services/websocket.js';
 import { TOOL_STATES } from '../../sdk/lib/message.js';
 import { waitForTurnComplete, observeUntil, findItemRecursive, hasIncompleteApprovedTools } from './turn-sync.js';
 // Multi-iframe pool support: the integration-test-executor's BroadcastChannel
@@ -1613,14 +1614,15 @@ export class IntegrationTestHarness {
         counts.set(id, (counts.get(id) || 0) + 1);
       }
     };
-    import('../../js/services/websocket.js').then(({ default: wsService }) => {
-      wsService.on('engine-bridge', handler);
-    });
+    // Register synchronously — NOT via a lazy `import().then()`. The next
+    // operation (e.g. rerun-tool) can fire the tool's single 'start' event
+    // only ~100ms later; on a slow runner the dynamic import hadn't resolved
+    // yet, so the listener missed that lone event and the count came back 0
+    // (observed as a Windows CI flake in rerun-streaming-executes-once).
+    wsService.on('engine-bridge', handler);
     // Sentinel so _uninstallToolExecCounter can find and unsubscribe.
     this._toolExecChannel = { close: () => {
-      import('../../js/services/websocket.js').then(({ default: wsService }) => {
-        wsService.off('engine-bridge', handler);
-      });
+      wsService.off('engine-bridge', handler);
     } };
   }
 
