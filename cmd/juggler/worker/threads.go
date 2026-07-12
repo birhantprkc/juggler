@@ -212,7 +212,18 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 // legitimate nesting in practice is two or three levels — so an LLM that keeps
 // delegating instead of doing the work itself is stopped before it recurses
 // without bound. Guards only the LLM tool path, not user/orchestrator dispatch.
-const maxThreadDepth = 4
+const maxThreadDepth = 3
+
+// maxLiveThreads caps how many create_thread-spawned threads may be in flight
+// (llmCreated, no result yet) across the whole document at once. Where
+// maxThreadDepth bounds nesting along a single chain, this bounds fan-out across
+// the whole tree: a model that keeps decomposing one task into fresh subthreads
+// without ever deepening the chain stays within the depth cap but explodes in
+// breadth (N children per level ≈ N^depth threads). This is the backstop the
+// depth cap misses. It counts only in-flight threads, so it self-heals as
+// children return_result — legitimate sequential delegation never approaches it,
+// while a runaway fan-out trips it fast. Guards only the LLM tool path.
+const maxLiveThreads = 16
 
 // executeCreateThread handles the create_thread tool: parses tool input and
 // dispatches via createThread. Called from processLLMResponse when the LLM
@@ -239,6 +250,21 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 	if depth := w.doc.threadDepth(w.thread.itemID); depth >= maxThreadDepth {
 		msg := fmt.Sprintf("create_thread refused: thread nesting depth limit (%d) reached. "+
 			"Do this sub-task inline in the current thread instead of spawning another thread.", maxThreadDepth)
+		w.addMetaToolResult(toolUseID, toolName, toolInput, msg, true)
+		return nil
+	}
+
+	// Runaway fan-out guard. The depth cap above bounds a single chain but not
+	// breadth: a model that re-delegates the same task into ever more sibling
+	// subthreads stays shallow yet explodes in count. Refuse once too many
+	// create_thread children are already in flight, using the same paired
+	// meta-tool-result so the parent turn isn't stranded. Self-heals: the count
+	// drops as children return_result, so this throttles a runaway without
+	// permanently disabling the tool.
+	if live := w.doc.liveThreadCount(); live >= maxLiveThreads {
+		msg := fmt.Sprintf("create_thread refused: too many threads (%d) are already in progress. "+
+			"Do this sub-task inline in the current thread, or wait for running threads to finish "+
+			"before spawning more.", live)
 		w.addMetaToolResult(toolUseID, toolName, toolInput, msg, true)
 		return nil
 	}

@@ -636,8 +636,13 @@ conversation-bar .conversation-tab.active .conversation-tab-bin:hover {
     position: absolute;
 
     /* Slight halo around the tab, on all sides. Stays within the menu's clip
-       box at every sidebar width (see the comment above). */
-    inset: -0.25rem;
+       box at every sidebar width (see the comment above). Only top/left/right
+       are pinned — the bottom is left `auto` so the overlay grows downward to
+       fit its content (e.g. the collision error line) instead of clamping to
+       the tab's height and clipping the overflow. min-height keeps the
+       no-error state identical to the old top/bottom-pinned box. */
+    inset: -0.25rem -0.25rem auto;
+    min-height: calc(100% + 0.5rem);
     min-width: max(100%, 10rem);
     z-index: 10;
     display: flex;

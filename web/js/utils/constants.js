@@ -24,6 +24,18 @@ export const DRAFT_SAVE_DEBOUNCE_MS = 2000;
 /** Batching window for Yjs sync updates (milliseconds) */
 export const YJS_SYNC_BATCH_MS = 50;
 
+// ===== Conversation naming =====
+
+/**
+ * Maximum length (in characters) of a conversation / tab name. Enforced at
+ * both the UI level (the inline-rename input's `maxlength`) and the data level
+ * (`Session.renameConversation`), so it is the single source of truth for the
+ * limit. Kept just under the server's filesystem-safety cap of 50 runes
+ * (`core.SanitizedNameMaxRunes`) so a name we accept is never silently
+ * truncated when the folder is written to disk.
+ */
+export const MAX_CONVERSATION_NAME_LENGTH = 48;
+
 // ===== User-facing notices =====
 
 /**

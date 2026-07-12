@@ -2276,6 +2276,109 @@ func TestThreadDepthCap(t *testing.T) {
 	}
 }
 
+// TestThreadBreadthCap pins the runaway fan-out backstop: create_thread is
+// refused once maxLiveThreads llmCreated children are already in flight, even
+// though the nesting depth is well under maxThreadDepth. This is the case the
+// depth cap alone misses — a model re-delegating the same task into ever more
+// shallow siblings. Like the depth refusal, it must emit a paired
+// meta-tool-result (never a dangling tool_use) and must not create the thread.
+// The cap self-heals: once a child records a result, liveThreadCount drops and
+// spawning is allowed again.
+func TestThreadBreadthCap(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+
+	// Fill the document with maxLiveThreads in-flight llmCreated siblings at
+	// root (no result). These count toward liveThreadCount.
+	root := w.doc.ensureItems()
+	ids := make([]string, 0, maxLiveThreads)
+	for i := 0; i < maxLiveThreads; i++ {
+		w.doc.InsertThreadIntoArray(root, w.doc.GetItemsLengthFromArray(root), fmt.Sprintf("T%d", i))
+		items := w.doc.GetItemsFromArray(root)
+		id := items[len(items)-1].ItemID
+		w.doc.SetThreadField(id, "llmCreated", true)
+		ids = append(ids, id)
+	}
+	if got := w.doc.liveThreadCount(); got != maxLiveThreads {
+		t.Fatalf("liveThreadCount = %d, want %d", got, maxLiveThreads)
+	}
+
+	// A create_thread from root (depth 0, far under the depth cap) is refused
+	// purely because too many threads are already live.
+	beforeLen := w.doc.GetItemsLengthFromArray(root)
+	if err := w.executeCreateThread("tu-breadth", "create_thread",
+		json.RawMessage(`{"goal":"more","prompt":"spawn another"}`)); err != nil {
+		t.Fatalf("executeCreateThread returned error: %v", err)
+	}
+	if got := w.doc.GetItemsLengthFromArray(root); got != beforeLen+1 {
+		t.Fatalf("expected exactly one item appended (the refusal), before=%d after=%d", beforeLen, got)
+	}
+	rootItems := w.doc.GetItemsFromArray(root)
+	var refusal *ConversationItem
+	for i := range rootItems {
+		if rootItems[i].Type == ItemTypeThread && rootItems[i].ItemID != "" {
+			if !containsID(ids, rootItems[i].ItemID) {
+				t.Fatalf("breadth cap breached: a new thread was created while %d were live", maxLiveThreads)
+			}
+		}
+		if rootItems[i].Type == ItemTypeMetaToolResult && rootItems[i].ToolUseID == "tu-breadth" {
+			refusal = &rootItems[i]
+		}
+	}
+	if refusal == nil {
+		t.Fatalf("expected a meta-tool-result refusal bound to tu-breadth")
+	}
+	if !refusal.IsError {
+		t.Errorf("refusal meta-tool-result should be isError=true")
+	}
+
+	// The refusal reaches the LLM as a paired create_thread tool_use+tool_result.
+	msgs := w.buildMessages(nil)
+	var sawToolUse, sawResult bool
+	for _, m := range msgs {
+		if m["type"] == "tool-use" && m["toolUseId"] == "tu-breadth" {
+			sawToolUse = true
+		}
+		if m["type"] == "tool-result" && m["toolUseId"] == "tu-breadth" {
+			sawResult = true
+		}
+	}
+	if !sawToolUse || !sawResult {
+		t.Errorf("refusal must emit a paired tool_use+tool_result for tu-breadth; sawToolUse=%v sawResult=%v", sawToolUse, sawResult)
+	}
+
+	// Self-heal: once one live thread records a result, the count drops below
+	// the cap and a spawn is allowed again.
+	w.doc.SetThreadField(ids[0], "result", "done")
+	if got := w.doc.liveThreadCount(); got != maxLiveThreads-1 {
+		t.Fatalf("liveThreadCount after one result = %d, want %d", got, maxLiveThreads-1)
+	}
+	if err := w.executeCreateThread("tu-ok", "create_thread",
+		json.RawMessage(`{"goal":"ok","prompt":"work"}`)); err != nil {
+		t.Fatalf("executeCreateThread (below breadth cap) returned error: %v", err)
+	}
+	var spawned bool
+	for _, it := range w.doc.GetItemsFromArray(root) {
+		if it.Type == ItemTypeThread && !containsID(ids, it.ItemID) {
+			spawned = true
+		}
+	}
+	if !spawned {
+		t.Errorf("expected a child thread to be created below the breadth cap")
+	}
+}
+
+// containsID reports whether id is in ids.
+func containsID(ids []string, id string) bool {
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBrowserCreateThreadUsesRequestedParentThread(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	w.storeState(StateIdle)

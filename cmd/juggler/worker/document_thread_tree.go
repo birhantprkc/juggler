@@ -136,6 +136,29 @@ func (cd *ConversationDocument) threadDepth(threadItemID string) int {
 	return depth
 }
 
+// liveThreadCount returns how many create_thread-spawned threads anywhere in the
+// document are still in flight — llmCreated and not yet carrying a result. Walks
+// the whole tree under one lock (mirrors threadDepth). Where threadDepth bounds
+// nesting along a single chain, this counts fan-out across the whole tree, so
+// executeCreateThread can stop a model that keeps decomposing work into fresh
+// subthreads without ever deepening the chain. Counts only in-flight children,
+// so it self-heals as they return_result — it never permanently disables
+// create_thread the way a monotonic lifetime counter would.
+func (cd *ConversationDocument) liveThreadCount() int {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	n := 0
+	walkThreads(cd.getItems(), func(m *ycrdt.YMap, _ *ycrdt.YArray, _ string) bool {
+		llmCreated, _ := m.Get("llmCreated").(bool)
+		result, _ := m.Get("result").(string)
+		if llmCreated && result == "" {
+			n++
+		}
+		return false
+	})
+	return n
+}
+
 // FindThreadIDForToolUseID returns the threadItemID of the thread containing
 // the given toolUseId, or "" if it lives in the root array.
 // Returns ("", false) if not found anywhere.

@@ -7,7 +7,8 @@ import Conversation from './conversation.js';
 import {
   SAVE_DEBOUNCE_MS,
   MAX_MESSAGE_HISTORY,
-  DUPLICATE_WHILE_ACTIVE_NOTICE
+  DUPLICATE_WHILE_ACTIVE_NOTICE,
+  MAX_CONVERSATION_NAME_LENGTH
 } from '../utils/constants.js';
 import { readFileLoad } from '../services/ops-api.js';
 import workerManager from '../services/worker-manager.js';
@@ -1732,6 +1733,17 @@ class Session {
     }
     if (!newName || newName.trim() === '') {
       const err = new Error('Conversation name is empty');
+      /** @type {any} */ (err).code = 'INVALID';
+      throw err;
+    }
+    // Data-level enforcement of the shared name-length cap. The rename input
+    // caps typed input via `maxlength`, but paste and programmatic callers can
+    // still overshoot — reject those here rather than letting the server
+    // silently truncate the folder name to its filesystem-safety limit.
+    if (newName.trim().length > MAX_CONVERSATION_NAME_LENGTH) {
+      const err = new Error(
+        `Conversation name exceeds ${MAX_CONVERSATION_NAME_LENGTH} characters`
+      );
       /** @type {any} */ (err).code = 'INVALID';
       throw err;
     }

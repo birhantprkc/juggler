@@ -25,6 +25,7 @@
  */
 
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from '../model/session.js';
+import { MAX_CONVERSATION_NAME_LENGTH } from '../utils/constants.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
@@ -1022,6 +1023,12 @@ class ConversationBar extends HTMLElement {
     `;
     const input = /** @type {HTMLInputElement} */ (block.querySelector('.conversation-tab-rename-input'));
     const errorEl = /** @type {HTMLElement} */ (block.querySelector('.conversation-tab-rename-error'));
+    // UI-level enforcement of the shared name-length cap: the browser blocks
+    // further typed input at the limit. This input backs both rename and the
+    // "name a new conversation" flow, so both paths are covered here. The data
+    // level (Session.renameConversation) is the backstop for paste/programmatic
+    // input that can exceed maxlength.
+    input.maxLength = MAX_CONVERSATION_NAME_LENGTH;
     input.value = original;
 
     // Stop clicks inside the rename block from bubbling to the tab's click
