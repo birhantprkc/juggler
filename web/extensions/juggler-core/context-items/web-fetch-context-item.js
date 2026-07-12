@@ -70,13 +70,16 @@ class WebFetchContextItem extends ContextItem {
         },
         prompt: {
           type: 'string',
-          description: 'What to extract from the page. When provided, a sub-agent reads the page and returns just the answer. Omit to return the raw page content.'
+          description: 'Leave UNSET to read the page/file — the raw content comes straight back to you (no sub-agent). Set this ONLY to ask a question about a large, noisy page you do NOT want in your context: a sub-agent reads the page and returns just its (lossy) answer, and you never see the page itself. To read, quote, or work with a file such as an .md, .txt, JSON, or source file, do NOT set this — a prompt here would summarise it instead of returning it.'
         }
       },
       required: ['url']
     };
 
-    const description = 'Fetch a URL and process its content. With `prompt`, a sub-agent reads the page in its own context and returns just the answer (the page never enters this conversation); without it, returns the page content converted to markdown. Includes a 15-minute cache.';
+    const description = 'Fetch a URL. Two modes, chosen by whether you pass `prompt`:\n' +
+      '• RAW (omit `prompt`) — returns the page/file content verbatim into this conversation (HTML is converted to markdown; .md/.txt/JSON/source come back as-is). Use this whenever you actually want to read the content.\n' +
+      '• EXTRACT (pass `prompt`) — a sub-agent reads the page in its own context and returns ONLY the answer to your prompt; the page never enters this conversation and the answer is a lossy summary. Use this only for large/noisy pages where you want one specific fact, not the whole thing.\n' +
+      'Default to RAW: if you want the content itself, omit `prompt`. Includes a 15-minute cache.';
 
     return [
       {
