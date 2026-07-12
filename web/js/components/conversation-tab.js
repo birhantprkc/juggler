@@ -650,13 +650,21 @@ class ConversationTab extends HTMLElement {
             if (activeCol.tagName !== 'CONVERSATION-AREA') break;
             e.preventDefault();
             this._selection.markManualInteraction();
-            /** @type {any} */ (activeCol).selectNextItem();
+            if (e.altKey) {
+              /** @type {any} */ (activeCol).selectNextUserMessage();
+            } else {
+              /** @type {any} */ (activeCol).selectNextItem();
+            }
             break;
           case 'ArrowUp':
             if (activeCol.tagName !== 'CONVERSATION-AREA') break;
             e.preventDefault();
             this._selection.markManualInteraction();
-            /** @type {any} */ (activeCol).selectPreviousItem();
+            if (e.altKey) {
+              /** @type {any} */ (activeCol).selectPreviousUserMessage();
+            } else {
+              /** @type {any} */ (activeCol).selectPreviousItem();
+            }
             break;
           case 'ArrowRight':
             if (activeCol.tagName !== 'CONVERSATION-AREA') break;

@@ -878,6 +878,16 @@ class ConversationArea extends HTMLElement {
     this._selectPreviousItem();
   }
 
+  /** Skip forward to the next user message */
+  selectNextUserMessage() {
+    this._selectNextUserMessage();
+  }
+
+  /** Skip backward to the previous user message */
+  selectPreviousUserMessage() {
+    this._selectPreviousUserMessage();
+  }
+
   /**
    * Select a specific item by ID
    * @param {string} itemId
@@ -1375,6 +1385,53 @@ class ConversationArea extends HTMLElement {
     } else if (currentIndex === -1 && items.length > 0) {
       this._selectItem(/** @type {string} */ (items[items.length - 1])); // bounded by items.length > 0
     }
+  }
+
+  /**
+   * Select the next user message below the current selection.
+   * @private
+   */
+  _selectNextUserMessage() {
+    const items = this._getSelectableItemIds();
+    if (items.length === 0) return;
+
+    const currentIndex = this._localSelectedItemId ? items.indexOf(this._localSelectedItemId) : -1;
+    for (let i = currentIndex + 1; i < items.length; i++) {
+      const id = /** @type {string} */ (items[i]);
+      if (this._isUserMessageItem(id)) {
+        this._selectItem(id);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Select the previous user message above the current selection.
+   * @private
+   */
+  _selectPreviousUserMessage() {
+    const items = this._getSelectableItemIds();
+    if (items.length === 0) return;
+
+    const currentIndex = this._localSelectedItemId ? items.indexOf(this._localSelectedItemId) : items.length;
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      const id = /** @type {string} */ (items[i]);
+      if (this._isUserMessageItem(id)) {
+        this._selectItem(id);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Check whether a selectable item is a user message.
+   * @param {string} itemId
+   * @returns {boolean} True if the item is a user-message element.
+   * @private
+   */
+  _isUserMessageItem(itemId) {
+    const el = this.querySelector(`[message-id="${itemId}"]`);
+    return el?.tagName === 'USER-MESSAGE';
   }
 
   /**
