@@ -103,9 +103,18 @@ jobs:
       # hidden engine WebView needs an X display even in --test mode. Hosted
       # Linux runners are headless, so the suite runs under a virtual framebuffer
       # (see the "Run tests" step). macOS (WKWebView) / Windows (WebView2) don't.
+      #
+      # mesa software-GL drivers (libgl1-mesa-dri = swrast/llvmpipe, libegl-mesa0
+      # = software EGL): WebKitGTK's WebProcess still needs a GL/EGL context to
+      # composite even with the DMABUF renderer disabled. Under Xvfb there is no
+      # hardware GL, and LIBGL_ALWAYS_SOFTWARE=1 (see "Run tests") only helps if a
+      # software driver is actually installed — the base runner image doesn't
+      # guarantee one, and without it the WebProcess can't create a context and
+      # hangs before it runs the harness JS (the /api/test/names timeout), with no
+      # libEGL warning because the driver isn't even present to emit one.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev xvfb
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev xvfb libgl1-mesa-dri libegl-mesa0
 
       # Single lint entry point: identical to `make lint` locally, so a
       # contributor who passes lint at their terminal also passes CI lint.
@@ -189,3 +198,28 @@ jobs:
           else
             go test -count=1 -race -timeout 15m ./tests/integration/...
           fi
+
+      # Diagnostics on a browser-suite failure. Each spawned bin/juggler pipes
+      # its stderr — the WebKitGTK/libEGL/WebProcess-crash output that never
+      # reaches the go-test log — to /tmp/juggler-test-logs/juggler-stderr-*.log
+      # (see startJugglerSubprocess in tests/integration/main_test.go). That
+      # directory is a fixed path, not the run's throwaway log dir, so it
+      # survives the pool shutdown. Without this, a hung WebView surfaces only as
+      # an opaque "timeout polling /api/test/names" and every fix is a blind
+      # guess; dumping the real engine stderr here is what makes the failure
+      # diagnosable. Linux-only: it's the leg that drives WebKitGTK under Xvfb.
+      - name: Dump engine stderr on failure
+        if: ${{ failure() && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          logs=(/tmp/juggler-test-logs/*.log)
+          if [ ${#logs[@]} -eq 0 ]; then
+            echo "no subprocess stderr logs found in /tmp/juggler-test-logs/"
+            exit 0
+          fi
+          for f in "${logs[@]}"; do
+            echo "===== ${f} ====="
+            cat "${f}" || true
+            echo
+          done
