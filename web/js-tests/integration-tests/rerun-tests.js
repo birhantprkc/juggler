@@ -680,7 +680,11 @@ export const rerunBashDifferentOutputTest = {
 
   llmResponses: [
     toolUseResponse('call_1', 'bash',
-      { command: 'env echo "RUN-$RANDOM"' },
+      // The bash tool runs commands through POSIX `sh` (dash on Linux), which
+      // has no `$RANDOM` — that bashism expands to empty there, so every rerun
+      // printed identical output. Pull fresh random bytes from /dev/urandom
+      // instead: portable across dash and macOS's sh, and different every run.
+      { command: 'printf "RUN-%s\\n" "$(od -An -N4 -tx1 /dev/urandom | tr -d " ")"' },
       'Running command.'
     ),
     textResponse('Done.'),
