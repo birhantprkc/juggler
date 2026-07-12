@@ -263,9 +263,28 @@ class UpdateButton extends HTMLElement {
     }
     this._wasVisible = visible;
 
-    // Keep an open dialog in step with the live state.
+    // Keep an open dialog in step with the live state. Use the same up-to-date
+    // decision as the opener: a bare view-model never carries `upToDate`, so
+    // refreshing with one would strip a menu-opened "You're up to date" dialog
+    // back into a spurious "…is available" the moment any snapshot arrives.
     const dialog = this._dialog();
-    if (dialog && dialog.isOpen()) dialog.refresh(vm);
+    if (dialog && dialog.isOpen()) dialog.refresh(this._dialogVm());
+  }
+
+  /**
+   * The view-model to hand the dialog: the merged model, plus the explicit
+   * up-to-date state when nothing is worth offering (and the updater isn't in an
+   * error we'd rather surface). Shared by the "Check for Updates…" opener and the
+   * live refresh so a refresh can't strip the up-to-date flag off an open dialog.
+   * @private
+   * @returns {import('./update-notice.js').UpdateViewModel} The dialog model.
+   */
+  _dialogVm() {
+    const vm = this._viewModel();
+    if (!this._isRelevant(vm) && (!vm.present || vm.updaterState !== 'error')) {
+      return this._viewModel({ upToDate: true });
+    }
+    return vm;
   }
 
   /**
@@ -285,11 +304,10 @@ class UpdateButton extends HTMLElement {
   _openDialog(fromMenu = false) {
     const dialog = this._dialog();
     if (!dialog) return;
-    let vm = this._viewModel();
-    if (fromMenu && !this._isRelevant(vm) && (!vm.present || vm.updaterState !== 'error')) {
-      vm = this._viewModel({ upToDate: true });
-    }
-    dialog.open(vm);
+    // From the menu, show an explicit up-to-date state when there's nothing to
+    // offer; from a header-button click the button was only visible because
+    // something is relevant, so the bare model already renders that.
+    dialog.open(fromMenu ? this._dialogVm() : this._viewModel());
   }
 }
 
