@@ -35,6 +35,16 @@ import (
 // outstanding past it means the server is wedged, not slow.
 const harnessHTTPTimeout = 60 * time.Second
 
+// postConnectWindow bounds how long postToServer retries transport (dial)
+// failures. A freshly-spawned pool server announces its address (JUGGLER_ADDR=)
+// the instant it knows its port — which can be a beat before its HTTP listener
+// is actually accepting, and on a loaded CI runner that gap is wider. Without a
+// retry, that single "connection refused" fails the WHOLE suite before any test
+// runs (the __list__ POST that gates test discovery goes through postToServer).
+// A transport error means the request never reached the server, so re-sending
+// is safe; a genuine boot crash still surfaces once this window elapses.
+const postConnectWindow = 10 * time.Second
+
 // TestBrowser runs all browser-side tests in parallel. Each JS test becomes a
 // subtest addressable via -run, e.g. go test -run 'TestBrowser/integration:glob-go-files'.
 //
@@ -313,21 +323,38 @@ func runOneBrowserTest(t *testing.T, srv testServerEntry) {
 }
 
 // postToServer sends a JSON POST to addr+path and returns on non-2xx.
+//
+// Transport (dial) errors are retried with a short backoff up to
+// postConnectWindow: a pool server that has just printed its address may not be
+// accepting connections for a few more milliseconds, and a single unretried
+// "connection refused" on the __list__ POST fails the entire suite. A transport
+// error means no request reached the server, so re-sending is safe and cannot
+// double-apply. Once a response IS received (any status), we stop retrying — a
+// non-2xx is a real server-side result, not a transient condition.
 func postToServer(addr, path string, body any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
 	client := &http.Client{Timeout: harnessHTTPTimeout}
-	resp, err := client.Post("http://"+addr+path, "application/json", bytes.NewReader(data))
-	if err != nil {
-		return err
+	deadline := time.Now().Add(postConnectWindow)
+	for {
+		resp, err := client.Post("http://"+addr+path, "application/json", bytes.NewReader(data))
+		if err != nil {
+			// Transport failure: the request never landed. Retry until the
+			// connect window closes, then surface the last error.
+			if time.Now().Before(deadline) {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			return fmt.Errorf("unexpected status %d", resp.StatusCode)
+		}
+		return nil
 	}
-	resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-	return nil
 }
 
 // pollServer GET-polls addr+path every 200 ms until 200 OK is returned and the

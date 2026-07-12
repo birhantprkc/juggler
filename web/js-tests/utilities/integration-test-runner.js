@@ -24,6 +24,50 @@ import logger from './test-logger.js';
 import { dumpTape, clearTape } from '../../js/utils/event-tape.js';
 import { snapshotOwnConversationIds, deleteOwnConversationsCreatedSince, setCurrentTestName } from './conversation-claims.js';
 
+/**
+ * Race a promise against a timeout so a wedged/slow server can never hang the
+ * test lane. Resolves to the promise's value if it settles in time, otherwise
+ * to `fallback` — and NEVER rejects (a rejection also yields `fallback`).
+ *
+ * This is the backstop that keeps a single unresponsive worker from turning
+ * one test failure into a lane-wide 60s black hole. Two invariants depend on
+ * it: the per-test result MUST always be posted (else the Go harness times out
+ * the whole subtest after 60s with no diagnostics — exactly the "timeout
+ * polling /api/test/result" failure) and the conversations a test created MUST
+ * always be cleaned up (else they leak into the shared pool session, fail the
+ * run's leak check, and march it toward the MAX_CONVERSATIONS cross-lane
+ * bulldoze). Every post-timeout await — building the failure diagnostics (which
+ * fetch tapes from the very worker that may be stuck) and the finally{} cleanup
+ * — is wrapped in this so none of them can stall the lane.
+ * @template T
+ * @param {Promise<T>} promise - The work to bound.
+ * @param {number} ms - Deadline in milliseconds.
+ * @param {T} fallback - Value to resolve with if the deadline is hit or the promise rejects.
+ * @param {string} [label] - Optional label logged when the fallback is used.
+ * @returns {Promise<T>} The promise's value, or `fallback` on timeout/rejection.
+ */
+function _withDeadline(promise, ms, fallback, label) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      if (label) logger.error(`[runner] ${label} exceeded ${ms}ms — using fallback so the lane can't stall`);
+      resolve(fallback);
+    }, ms);
+    Promise.resolve(promise).then(
+      (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v); } },
+      (e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (label) logger.error(`[runner] ${label} errored: ${e}`);
+        resolve(fallback);
+      }
+    );
+  });
+}
+
 // Set the per-iframe trace flag so event-tape.js starts recording. The flag
 // is a single boolean test on every recordTape() call, so production page
 // loads (which never reach this module) pay nothing.
@@ -362,13 +406,22 @@ async function _collectCrossIframeTapes(convIds, waitMs = 500) {
  * @returns {Promise<any[]>} the worker's event tape entries, or an empty array if unavailable
  */
 async function _fetchWorkerTape(convId) {
+  // Abort the fetch after a short budget: this endpoint is served by the same
+  // process whose worker may have wedged (the reason the test failed), so an
+  // unbounded fetch here is a prime way for the diagnostics build to hang. The
+  // outer _withDeadline in the catch is the final backstop; this keeps a
+  // single stuck conv from eating that whole budget when several convs exist.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 1500);
   try {
-    const resp = await fetch(`/api/test/dump-tape?convId=${encodeURIComponent(convId)}`);
+    const resp = await fetch(`/api/test/dump-tape?convId=${encodeURIComponent(convId)}`, { signal: ctrl.signal });
     if (!resp.ok) return [];
     const body = await resp.json();
     return Array.isArray(body?.entries) ? body.entries : [];
   } catch {
     return [];
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -738,15 +791,26 @@ export async function runIntegrationTest(testDef, ctx) {
     ac.abort();
     const rawMsg = error instanceof Error ? error.message : String(error);
     const durationMs = Date.now() - startTime;
-    const errorWithDiag = await _buildFailureMessage({
-      testName: testDef.name,
-      rawMsg,
-      durationMs,
-      perTestTimeoutMs,
-      trace,
-      operations: testDef.operations,
-      harness
-    });
+    // Bound the diagnostics build: it fetches event tapes from the worker(s)
+    // this test used, and a test that failed BECAUSE its worker wedged would
+    // otherwise hang here forever (unbounded fetch to a stuck server) — the
+    // result would never post and the Go harness would time the subtest out
+    // at 60s with zero diagnostics. On the deadline we fall back to the bare
+    // message so the failure is always reported, just without the tapes.
+    const errorWithDiag = await _withDeadline(
+      _buildFailureMessage({
+        testName: testDef.name,
+        rawMsg,
+        durationMs,
+        perTestTimeoutMs,
+        trace,
+        operations: testDef.operations,
+        harness
+      }),
+      5000,
+      `[${testDef.name}] ${rawMsg}\n  (failure diagnostics unavailable — the diagnostics build timed out; the server/worker may be unresponsive)`,
+      `failure-diagnostics build for ${testDef.name}`
+    );
     return { passed: false, error: errorWithDiag, durationMs };
 
   } finally {
@@ -775,23 +839,31 @@ export async function runIntegrationTest(testDef, ctx) {
     // covered too — those used to slip past harness-level tracking and
     // leak into the shared session. Each delete is lane-tagged, and the
     // server's ownership guard would reject it if it weren't ours.
-    try {
-      await deleteOwnConversationsCreatedSince(claimsBeforeTest, `runner-cleanup:${testDef.name}`);
-    } catch (err) {
-      logger.error(`[runner] post-test cleanup error: ${err}`);
-    }
+    // Bounded: each delete is an HTTP round-trip to the shared server, and a
+    // server that wedged mid-test would otherwise hang the finally{} here —
+    // blocking the return of the (already-computed) result and stalling the
+    // lane past the harness's 60s poll. On the deadline we give up on the
+    // delete (the conversation may leak and surface in the run's leak check,
+    // which is the correct loud signal) rather than freeze the whole lane.
+    await _withDeadline(
+      deleteOwnConversationsCreatedSince(claimsBeforeTest, `runner-cleanup:${testDef.name}`),
+      5000,
+      undefined,
+      `post-test conversation cleanup for ${testDef.name}`
+    );
 
     // Wipe the per-test sandbox: one rm -rf of the testDir takes care of
     // every file/dir the test created UNDER its sandbox. Path-traversal
     // guarded by /api/test/delete-file (uses os.RemoveAll). This is the
     // catch-all for tests using the testDir convention.
     if (ctx.fixtureDir) {
-      try {
-        const url = `/api/test/delete-file?dir=${encodeURIComponent(ctx.fixtureDir)}&path=${encodeURIComponent(testDir)}`;
-        await fetch(url, { method: 'POST' });
-      } catch (err) {
-        logger.error(`[runner] testDir cleanup error: ${err}`);
-      }
+      const url = `/api/test/delete-file?dir=${encodeURIComponent(ctx.fixtureDir)}&path=${encodeURIComponent(testDir)}`;
+      await _withDeadline(
+        fetch(url, { method: 'POST' }),
+        3000,
+        undefined,
+        `testDir cleanup for ${testDef.name}`
+      );
     }
 
     // Also clean up explicit setupFiles paths. Tests that legitimately
@@ -801,19 +873,23 @@ export async function runIntegrationTest(testDef, ctx) {
     // setupFiles get caught by both this loop and the rm -rf above —
     // harmless redundancy.
     if (testDef.setupFiles && ctx.fixtureDir) {
-      try {
-        await Promise.allSettled(
+      await _withDeadline(
+        Promise.allSettled(
           Object.keys(testDef.setupFiles).map((/** @type {string} */ path) => {
             const url = `/api/test/delete-file?dir=${encodeURIComponent(ctx.fixtureDir)}&path=${encodeURIComponent(path)}`;
             return fetch(url, { method: 'POST' });
           })
-        );
-      } catch (err) {
-        logger.error(`[runner] setupFiles cleanup error: ${err}`);
-      }
+        ),
+        3000,
+        undefined,
+        `setupFiles cleanup for ${testDef.name}`
+      );
     }
 
-    await harness.teardown();
+    // Bounded: teardown destroys the session and detaches services; if a
+    // socket close or final flush blocks on the wedged server, an unbounded
+    // await would once again strand the result behind the finally{}.
+    await _withDeadline(harness.teardown(), 5000, undefined, `harness teardown for ${testDef.name}`);
   }
 }
 

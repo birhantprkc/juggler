@@ -28,6 +28,7 @@ import {
   isAnyPopupOpen,
   closeAllPopups,
   registerOpenPopup,
+  __resetPopupManagerForTests,
 } from '../../js/utils/popup-manager.js';
 
 const OVERLAY_MARKER = 'jugglerOverlay';
@@ -74,9 +75,15 @@ export async function runTests() {
   window.history.back = function () { backCount++; };
 
   try {
-    // A leaked popup from another suite would invalidate every delta below,
-    // so fail loudly rather than silently mis-measure.
-    tally(check(!isAnyPopupOpen(), 'precondition: no popup open at start', errors));
+    // The multi-iframe pool reuses ONE JS realm for the whole sequence of tests
+    // a lane runs, so a prior test that leaked an open-popup registration would
+    // poison this module singleton and break the 0→1 sentinel baseline every
+    // check below depends on (the sentinel push is gated on openPopups.size===1).
+    // Force a clean baseline rather than asserting one — a sibling test's leak is
+    // not this test's failure, and this test releases everything it opens. Then
+    // confirm the reset actually took.
+    __resetPopupManagerForTests();
+    tally(check(!isAnyPopupOpen(), 'precondition: popup registry clean after reset', errors));
 
     // === push-on-open: first overlay pushes one marked sentinel ===
     const pBeforeOpen = pushCount;

@@ -85,6 +85,23 @@ export function isAnyPopupOpen() {
 }
 
 /**
+ * TEST-ONLY: force the popup registry back to empty. The multi-iframe test pool
+ * reuses one JS realm across the sequence of tests a lane runs, so a prior test
+ * that leaked an open-popup registration would otherwise poison this module
+ * singleton for the next test — e.g. popup-back-button depends on a clean 0→1
+ * baseline because the sentinel push is gated on `openPopups.size === 1`. Not
+ * called in production: the app never force-clears popup state (each surface
+ * releases its own token on close). Clears the id-map and overlay flags too so
+ * the whole module is pristine.
+ */
+export function __resetPopupManagerForTests() {
+  openPopups.clear();
+  openPopupsById.clear();
+  overlayStatePushed = false;
+  removalScheduled = false;
+}
+
+/**
  * Dismiss every open popup/modal. The single "close everything overlaying the
  * page" primitive, routed to by BOTH the Escape key and the browser/mobile Back
  * button. Surfaces that registered an `onClose` with `markPopupOpen` are closed

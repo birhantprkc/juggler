@@ -1321,11 +1321,19 @@ class WorkerManager {
       // browser doc's items reference is the worker's array.
       await this._waitForWorkerReady(conversation.id);
 
-      // Browser-side sync application is batched on a timer; the worker's
-      // initial sync (containing the items Y.Array creation) may have
-      // arrived but not yet been applied. Flush so doc.root["items"] is
-      // present before we activate sync or insert SYSTEM_1.
-      conversation._doc.flushPendingUpdates();
+      // Browser-side sync application is batched on a timer, and under load
+      // the worker's initial yjs-sync (which CREATES root["items"]) can still
+      // be in flight when _waitForWorkerReady resolves — 'ready' is sent after
+      // that sync, but the two are applied through independent batched paths.
+      // A one-shot flush only applies syncs that have already arrived; if the
+      // array-bearing sync hasn't, doc.root["items"] is still absent and
+      // ensureSystemPromptPlaceholder() below creates a SECOND, competing
+      // root["items"] in the browser doc. Yjs Map-conflict resolution then
+      // keeps the worker's array and discards the browser's, dropping SYSTEM_1
+      // with it — the "system-prompt missing at [0]" flake seen under multi-
+      // conversation load. Positively WAIT for the worker's array so SYSTEM_1
+      // is always inserted into THAT array, never a rival one.
+      await this._waitForItemsArray(conversation);
 
       // 4. Activate Yjs sync (registers update handler, sends current state).
       conversation.activateYjsSync();
@@ -1341,6 +1349,36 @@ class WorkerManager {
       this.terminate(id);
       throw error;
     }
+  }
+
+  /**
+   * Wait until the worker's root["items"] Y.Array has arrived and been applied
+   * to the browser doc. This is the precondition for seeding SYSTEM_1: inserting
+   * the system-prompt placeholder while the array is still absent creates a
+   * competing browser-side root["items"], which Yjs Map-conflict resolution
+   * later discards in favour of the worker's — dropping SYSTEM_1. Flushes the
+   * batched sync buffer on each check so a just-arrived sync is applied
+   * promptly. Bounded so a pathological worker that never ships an array can't
+   * hang conversation creation; on timeout the caller falls through to the old
+   * behaviour (ensureSystemPromptPlaceholder creates the array), which is no
+   * worse than before this wait existed.
+   * @param {import('../model/conversation.js').default} conversation
+   * @param {number} [timeoutMs=2000] - Max time to wait for the array to sync.
+   * @returns {Promise<boolean>} True once the items array is present, false on timeout.
+   * @private
+   */
+  async _waitForItemsArray(conversation, timeoutMs = 2000) {
+    const deadline = Date.now() + timeoutMs;
+    conversation._doc.flushPendingUpdates();
+    while (!conversation._doc.root.get('items')) {
+      if (Date.now() >= deadline) {
+        console.warn(`[WorkerManager] items array not synced within ${timeoutMs}ms for ${conversation.id}; SYSTEM_1 may create a local array`);
+        return false;
+      }
+      await new Promise(r => setTimeout(r, 10));
+      conversation._doc.flushPendingUpdates();
+    }
+    return true;
   }
 
   /**

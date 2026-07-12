@@ -369,17 +369,39 @@ export async function executeUIOperation(harness, op) {
       // Assert a visible centered warning notice. Searched document-wide so it
       // is robust to which column owns the active input box.
       await driver.waitForDOMStable();
-      const warnings = Array.from(document.querySelectorAll('modal-dialog.is-notice.show'));
       const needle = op.textContains || '';
-      const match = warnings.find(w => (w.textContent || '').includes(needle));
+      /** @returns {{ warnings: Element[], match: Element | undefined }} All visible notices, and the first whose text contains the needle (if any). */
+      const findMatch = () => {
+        const warnings = Array.from(document.querySelectorAll('modal-dialog.is-notice.show'));
+        return { warnings, match: warnings.find(w => (w.textContent || '').includes(needle)) };
+      };
+
       if (op.absent) {
+        const { match } = findMatch();
         if (match) {
           throw new Error(`assert-input-warning: expected no visible warning containing "${needle}", but found "${match.textContent}"`);
         }
-      } else if (!match) {
+        break;
+      }
+
+      // Presence: the notice is surfaced asynchronously by the cancel/command
+      // flow (conversation.showWarning → app-level showNotice) and can land a
+      // beat AFTER the triggering op's promise resolves — the input box may
+      // still be (re)mounting, or the doc-stable point may precede the notice
+      // under multi-lane load. A single check races that gap, so poll up to a
+      // bounded deadline (mirroring the waitForDocumentMatch fence the runner
+      // uses for final assertions). A genuinely-missing notice still fails —
+      // just after the poll window rather than instantly.
+      const deadline = Date.now() + 2000;
+      let result = findMatch();
+      while (!result.match && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 50));
+        result = findMatch();
+      }
+      if (!result.match) {
         throw new Error(
           `assert-input-warning: expected a visible warning containing "${needle}"; ` +
-					`visible warnings: ${JSON.stringify(warnings.map(w => w.textContent))}`
+					`visible warnings: ${JSON.stringify(result.warnings.map(w => w.textContent))}`
         );
       }
       break;
