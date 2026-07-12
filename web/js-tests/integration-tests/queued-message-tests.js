@@ -94,12 +94,10 @@ function pendingItemsOf(conversation) {
 /**
  * Turn 1 streams a read (auto-approved) and pauses at the mock barrier. While
  * paused the user sends a second message — it must be queued, not dropped, not
- * injected mid-tool. After release, the read executes and the model reacts to
- * its result ("Done.") — that tool-result turn is the model finishing the
- * response it paused to call tools, so the queued message must NOT be spliced
- * into it. The queued message rides the FOLLOWING turn instead, as its own user
- * message the model then answers — queued input arrives at the next turn
- * boundary, after the current turn (including its tool loop) completes.
+ * injected mid-tool. After release, the read executes and the queue promotes at
+ * the tool-result boundary: the queued message is spliced in AFTER the completed
+ * tool action, riding the SAME continuation turn that delivers the tool result —
+ * the earliest opportunity, not deferred to end-of-run. One turn answers both.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const queueDrainsAtTurnBoundaryTest = {
@@ -109,7 +107,6 @@ export const queueDrainsAtTurnBoundaryTest = {
 
   llmResponses: [
     toolUseResponse('call_1', 'read', { file_path: 'README.md' }, 'Reading.', { pauseBeforeReturn: true }),
-    textResponse('Done.'),
     textResponse('On it.')
   ],
 
@@ -135,9 +132,8 @@ export const queueDrainsAtTurnBoundaryTest = {
         state: 'completed',
         result: { content: README_MD, isError: false }
       },
-      // The model reacts to the read result on its own tool-result turn.
-      { type: 'assistant', content: 'Done.' },
-      // Then the queued message drains as the next turn, and is answered.
+      // The queued message promotes at the tool-result boundary and rides the
+      // continuation turn, which answers the tool result and the steer together.
       { type: 'user', content: 'queued steer' },
       { type: 'assistant', content: 'On it.' }
     ]
@@ -159,8 +155,8 @@ export const queueDrainsAtTurnBoundaryTest = {
  * Two messages queued during the same live turn both promote at the next turn
  * boundary, as two ADJACENT user items, and the loop handles them without
  * merging. Pins the "don't special-case merging — emit N user messages, the
- * regular handler copes with adjacency" decision. As in TEST 1, the steers ride
- * the turn AFTER the tool-result turn, not spliced into it.
+ * regular handler copes with adjacency" decision. As in TEST 1, both steers are
+ * spliced in after the completed tool action and ride the same continuation turn.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const twoQueuedMessagesAdjacentTest = {
@@ -170,7 +166,6 @@ export const twoQueuedMessagesAdjacentTest = {
 
   llmResponses: [
     toolUseResponse('call_1', 'read', { file_path: 'README.md' }, 'Reading.', { pauseBeforeReturn: true }),
-    textResponse('Done.'),
     textResponse('On it.')
   ],
 
@@ -196,9 +191,8 @@ export const twoQueuedMessagesAdjacentTest = {
         state: 'completed',
         result: { content: README_MD, isError: false }
       },
-      // The model reacts to the tool result first; the two steers then
-      // drain adjacently as the next turn.
-      { type: 'assistant', content: 'Done.' },
+      // Both steers promote adjacently at the tool-result boundary and ride
+      // the continuation turn.
       { type: 'user', content: 'steer A' },
       { type: 'user', content: 'steer B' },
       { type: 'assistant', content: 'On it.' }
@@ -268,11 +262,12 @@ export const stopPromotesQueuedIdleTest = {
  * follow-up while the approval is up. A tool_use cannot be followed by a user
  * message before its tool_result, so the queued message must be HELD (not
  * injected) until the approval resolves. After approve, the tool runs and the
- * model reacts to its result ("Done.") on its tool-result turn — the queued
- * message is NOT spliced into it (that turn is the model finishing its current
- * response). The queued message then drains as the FOLLOWING turn and is
- * answered. Ordering (queued user AFTER the tool-result assistant turn) proves
- * the sequencing.
+ * queue promotes at the tool-result boundary: the queued message is spliced in
+ * after the completed tool action and rides the SAME continuation turn — a
+ * message typed at an approval prompt predates the tool even running, so it is
+ * steering and lands at the earliest opportunity, not after the whole run.
+ * Ordering (queued user AFTER the tool action, BEFORE the reply) proves the
+ * sequencing.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const queuedDuringApprovalDrainsOnApproveTest = {
@@ -282,7 +277,6 @@ export const queuedDuringApprovalDrainsOnApproveTest = {
 
   llmResponses: [
     toolUseResponse('call_1', 'bash', { command: 'env echo go' }, 'Running.'),
-    textResponse('Done.'),
     textResponse('On it.')
   ],
 
@@ -308,8 +302,8 @@ export const queuedDuringApprovalDrainsOnApproveTest = {
         state: 'completed',
         result: { content: 'go', isError: false }
       },
-      // The model's tool-result turn, then the queued message as the next turn.
-      { type: 'assistant', content: 'Done.' },
+      // The queued message promotes at the tool-result boundary and rides the
+      // continuation turn that delivers the tool result.
       { type: 'user', content: 'also do X' },
       { type: 'assistant', content: 'On it.' }
     ]

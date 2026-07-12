@@ -1994,18 +1994,20 @@ func TestReducer_EmptyUserThreadDoesNotAutoRunUnderAwaitingLLM(t *testing.T) {
 	}
 }
 
-// TestQueuedMessageRidesNextTurnAfterToolResults pins turn composition for a
+// TestQueuedMessageJoinsToolResultContinuation pins turn composition for a
 // message typed while a tool is running (parked in the pending "type while
-// busy" queue). A tool-result continuation is the model finishing the response
-// it paused to call tools, so the queued message must NOT be spliced into it —
-// it is the start of the next turn. It rides the FOLLOWING turn instead, after
-// the model has reacted to its tool results.
+// busy" queue). The strategy loop promotes the queue at EVERY turn boundary —
+// including a tool-result continuation — so the queued message is delivered at
+// the earliest opportunity: spliced in after the completed tool batch, riding
+// the SAME turn that delivers the tool results, not deferred to end-of-run.
+// The splice is append-only (the promoted item lands after the tool batch), so
+// stateless providers' prefix caches are unaffected; claudecode pays a warm
+// resume respawn, an accepted price for prompt delivery.
 //
-// Observable proof at the worker layer: the tool-result continuation turn runs
-// first (appending an assistant reply), and only THEN is the queued user
-// message promoted and answered — two LLM turns, with the queued user item
-// landing AFTER the first assistant reply, never spliced before it.
-func TestQueuedMessageRidesNextTurnAfterToolResults(t *testing.T) {
+// Observable proof at the worker layer: ONE LLM turn runs, and the promoted
+// queued user item lands after the completed tool action but BEFORE that
+// turn's assistant reply.
+func TestQueuedMessageJoinsToolResultContinuation(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.storeState(StateIdle)
@@ -2034,12 +2036,11 @@ func TestQueuedMessageRidesNextTurnAfterToolResults(t *testing.T) {
 	// User types a follow-up while the tool was running — parked in the queue.
 	w.enqueuePendingMessage("", UserMessageInput{Text: "queued follow-up"})
 
-	// Two scripted turns: (1) the tool-result continuation, (2) the queued
-	// message. If the queued message were fused onto turn 1, only ONE turn would
-	// run and the second response would be left unconsumed.
+	// ONE scripted turn: the tool-result continuation with the queued message
+	// spliced in. If the queued message were deferred to a second turn, the
+	// loop would run again and fail on the exhausted script.
 	w.setMockResponses([]MockResponse{
-		{Blocks: []LLMResponseBlock{{Type: "text", Content: "tool result reply"}}, StopReason: "end_turn"},
-		{Blocks: []LLMResponseBlock{{Type: "text", Content: "answer to follow-up"}}, StopReason: "end_turn"},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "reply to tools and follow-up"}}, StopReason: "end_turn"},
 	})
 
 	// Supply context/tools on demand so each dispatched turn completes. Two
@@ -2075,25 +2076,25 @@ func TestQueuedMessageRidesNextTurnAfterToolResults(t *testing.T) {
 		w.tryReconcile()
 	}
 
-	// Both turns must have run.
+	// Exactly the one scripted turn must have run.
 	if n := len(w.mock.responses); n != 0 {
-		t.Fatalf("expected both scripted turns consumed, %d left — the queued message was likely fused onto the tool-result turn (one turn instead of two)", n)
+		t.Fatalf("expected the single scripted turn consumed, %d left — the queued message was not promoted into the tool-result continuation", n)
 	}
 
-	// Full item sequence: the tool-result turn's assistant reply lands BEFORE
-	// the promoted queued user message, proving no fusion.
+	// Full item sequence: the promoted queued user message lands after the
+	// completed tool action and BEFORE the turn's assistant reply, proving it
+	// was spliced into the continuation rather than deferred.
 	items := w.doc.GetItems()
 	gotTypes := make([]string, len(items))
 	for i, it := range items {
 		gotTypes[i] = it.Type
 	}
 	// u-1 "run bash" / a-1 "I'll run that." / ta-1 completed /
-	// turn-1 assistant reply / promoted "queued follow-up" / turn-2 reply.
+	// promoted "queued follow-up" / the single turn's reply.
 	wantTypes := []string{
 		ItemTypeUser,
 		ItemTypeAssistant,
 		ItemTypeToolAction,
-		ItemTypeAssistant,
 		ItemTypeUser,
 		ItemTypeAssistant,
 	}
@@ -2105,14 +2106,11 @@ func TestQueuedMessageRidesNextTurnAfterToolResults(t *testing.T) {
 			t.Fatalf("item[%d] type = %q, want %q; full types=%v", i, gotTypes[i], wantTypes[i], gotTypes)
 		}
 	}
-	if items[3].Content != "tool result reply" {
-		t.Errorf("item[3] (tool-result turn reply) content = %q, want %q", items[3].Content, "tool result reply")
+	if items[3].Content != "queued follow-up" {
+		t.Errorf("item[3] (promoted queued message) content = %q, want %q", items[3].Content, "queued follow-up")
 	}
-	if items[4].Content != "queued follow-up" {
-		t.Errorf("item[4] (promoted queued message) content = %q, want %q", items[4].Content, "queued follow-up")
-	}
-	if items[5].Content != "answer to follow-up" {
-		t.Errorf("item[5] (reply to queued message) content = %q, want %q", items[5].Content, "answer to follow-up")
+	if items[4].Content != "reply to tools and follow-up" {
+		t.Errorf("item[4] (turn reply) content = %q, want %q", items[4].Content, "reply to tools and follow-up")
 	}
 	if w.hasPendingItems("") {
 		t.Errorf("pending queue should be drained after the queued message was promoted")

@@ -260,36 +260,6 @@ func anyBatchCancelled(batch []ConversationItem) bool {
 	return false
 }
 
-// upcomingTurnDeliversToolResults reports whether the next LLM turn for a
-// thread holding these items is a tool-result continuation: the trailing
-// effective items are a completed, non-cancelled tool batch the model still
-// has to react to. This is exactly decideNextAction's ItemTypeToolAction →
-// ActionCallLLM branch — the model is mid-response, finishing the turn it
-// paused to call tools.
-//
-// The strategy loop consults this to keep a queued ("type while busy") message
-// out of that continuation. A tool-result turn is the model completing its
-// current response, so a freshly-typed user message is the start of the NEXT
-// turn, not part of this one — it must not be spliced in alongside the tool
-// results. A cancelled batch is excluded: a denial already ends the turn, so a
-// queued message runs immediately there.
-func upcomingTurnDeliversToolResults(items []ConversationItem) bool {
-	eff := effectiveItems(items)
-	if len(eff) == 0 || eff[len(eff)-1].Type != ItemTypeToolAction {
-		return false
-	}
-	batch := currentToolBatch(eff)
-	if len(batch) == 0 {
-		return false
-	}
-	for _, t := range batch {
-		if !isToolTerminal(t) {
-			return false
-		}
-	}
-	return !anyBatchCancelled(batch)
-}
-
 // hasThreadResult reports whether a thread item has completed and written its result.
 // Thread Y.Maps store their result under the "result" key as a plain string.
 func hasThreadResult(item ConversationItem) bool {

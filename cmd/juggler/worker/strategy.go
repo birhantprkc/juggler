@@ -174,17 +174,18 @@ strategyLoop:
 		// so the upcoming turn sees them. Promote BEFORE findUnstampedUserMsgID
 		// so the newest queued message is the one stamped for this round-trip.
 		//
-		// EXCEPT when the upcoming turn is a tool-result continuation — the model
-		// finishing the response it paused to call tools. A freshly-typed user
-		// message starts a new turn; it is not part of that response, so don't
-		// splice it in alongside the tool results. Defer it: the model reacts to
-		// its tools first, and the queued message rides the next turn (the
-		// end-of-run drain below promotes it once this turn ends on assistant
-		// text). This is the "queued input arrives at the next turn boundary"
-		// behaviour.
-		if !upcomingTurnDeliversToolResults(w.getTargetItems()) {
-			w.promotePendingItems(w.thread.itemID)
-		}
+		// This drains at EVERY boundary, including a tool-result continuation:
+		// a message typed while tools ran (or sat at an approval prompt) is
+		// steering, and the user wants it seen at the earliest opportunity, not
+		// after the whole agentic run ends on assistant text. The promoted item
+		// appends AFTER the completed tool batch, so the request stays strictly
+		// append-only — the stateless API providers' prefix caches are
+		// unaffected. The claudecode provider cannot carry user content on its
+		// parked-CLI MCP fast path (userInterjectedAfterPendingTools), so an
+		// interjected continuation routes through the warm-append resume there —
+		// a few seconds of CLI respawn with the prompt cache intact, a fair
+		// price for prompt delivery of a deliberately-typed message.
+		w.promotePendingItems(w.thread.itemID)
 
 		userMsgToStamp := w.findUnstampedUserMsgID()
 
