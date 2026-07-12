@@ -902,6 +902,14 @@ class InputBox extends HTMLElement {
     const textarea = this.querySelector('textarea');
     if (!textarea) return;
 
+    // Dismiss any open completion popup (@ mentions / slash commands). A send
+    // via Enter keeps focus in the textarea, so the blur handler that normally
+    // closes the menu never fires — without this, submitting a command like
+    // `/clear` with nothing highlighted leaves the popup stranded over the now
+    // empty box. Every successful send funnels through here, so this covers the
+    // Enter, touch Send button, and scheduled-flush paths alike.
+    this._completions?.close();
+
     // Reset history navigation state
     this.historyIndex = -1;
     this.currentDraft = '';
