@@ -35,7 +35,7 @@ func TestServerWritesNestedProjectLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find project root: %v", err)
 	}
-	binary := filepath.Join(root, "bin", "juggler")
+	binary := serverBinary(root)
 	if _, err := os.Stat(binary); err != nil {
 		t.Fatalf("server binary not built at %s (run make go-build): %v", binary, err)
 	}

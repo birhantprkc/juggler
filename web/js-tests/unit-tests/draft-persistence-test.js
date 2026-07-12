@@ -54,10 +54,12 @@ export async function runTests(_ctx) {
   // the worker's debounced save, not browser→worker sync latency.
   conversation._doc.flushPendingUpdates();
 
-  // Wait comfortably past the worker's 2s debounced save (SaveDebounceTime); a
-  // removal marks the worker deleting and SKIPS saves, so the save must land
-  // before destroy.
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  // Force the worker to persist now and wait for the write to complete, instead
+  // of sleeping past the 2s SaveDebounceTime. Deterministic: the flush stops the
+  // debounce timer and saves synchronously, acking only once the write is done,
+  // so the save is guaranteed on disk before the destroy below (a destroy marks
+  // the worker deleting and SKIPS saves).
+  await workerManager.flushPersistence(convId);
 
   // Destroy + reload (simulates quit/restart).
   await workerManager.destroyConversationAndWorker(conversation);

@@ -18,6 +18,7 @@ import {
   initializeRegistries,
   createTestSession,
   createApprovalTestConversation,
+  waitFor,
   assert
 } from '../utilities/test-helpers.js';
 import '../../js/components/conversation-tab.js';
@@ -46,9 +47,13 @@ export async function runTests() {
     tab.setConversation(conversation);
     tab.setActive();
 
-    // Let setActive's column build settle so the input-box textarea exists.
-    await new Promise(r => setTimeout(r, 0));
-    await new Promise(r => setTimeout(r, 50));
+    // Wait for setActive's column build to produce the input-box textarea,
+    // polling the DOM instead of a fixed 50ms settle that was too short on slow
+    // CI runners (the custom-element column can take longer to upgrade there).
+    await waitFor(
+      () => !!tab.querySelector('input-box textarea'),
+      { description: "active tab's input-box textarea to build" }
+    );
 
     const textarea = /** @type {HTMLTextAreaElement|null} */ (
       tab.querySelector('input-box textarea')

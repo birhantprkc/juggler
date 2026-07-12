@@ -52,9 +52,11 @@ export async function runTests(_ctx) {
   assert(Boolean(originalName) && originalName !== 'Conversation',
     `Expected a meaningful conversation name, got: "${originalName}"`);
 
-  // Wait for debounced save to persist to backend
-  logger.info('[conversation-name-persistence-test] Waiting for debounced save...');
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  // Force the worker to persist now and wait for the write to complete, instead
+  // of sleeping past the 2s SaveDebounceTime (a zero-margin sleep that was racy
+  // on slow CI runners).
+  logger.info('[conversation-name-persistence-test] Flushing worker persistence...');
+  await workerManager.flushPersistence(convId);
 
   // Destroy conversation and terminate worker
   logger.info('[conversation-name-persistence-test] Destroying conversation and worker');
@@ -75,8 +77,9 @@ export async function runTests(_ctx) {
     };
   }
 
-  // Wait for worker to initialize
-  await new Promise(resolve => setTimeout(resolve, 500));
+  // Deterministically load the reloaded conversation's doc from disk (which
+  // carries the persisted name) instead of a fixed 500ms worker-init sleep.
+  await session.ensureConversationLoaded(convId);
 
   logger.info(`[conversation-name-persistence-test] Reloaded conversation name: "${reloadedConv.name}"`);
 

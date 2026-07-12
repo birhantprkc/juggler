@@ -25,15 +25,18 @@ import workerManager from '../../js/services/worker-manager.js';
 import { setupHeaderControls } from '../../js/utils/header-controls.js';
 
 /**
- * Force the worker to drain its queue and flush its Yjs batcher so undoState
- * has reached the main thread before we read canUndo().
- * @param {string} conversationId
+ * Deterministic barrier — no sleep. One ping makes the worker force-close the
+ * undo capture window and flush its Yjs batcher (undoState emitted before the
+ * ack); flushing pending inbound updates then applies that undoState frame
+ * synchronously, so canUndo() reads current state next line. Replaces a
+ * load-bearing 100ms sleep that was too short on slow CI runners. See the
+ * fuller explanation on undo-redo-test.js's waitForUndoStateSync.
+ * @param {import('../../model/conversation.js').default} conversation
  * @returns {Promise<void>}
  */
-async function syncUndoState(conversationId) {
-  await workerManager.ping(conversationId);
-  await new Promise(r => setTimeout(r, 100));
-  await workerManager.ping(conversationId);
+async function syncUndoState(conversation) {
+  await workerManager.ping(conversation.id);
+  conversation._doc.flushPendingUpdates();
 }
 
 /**
@@ -98,7 +101,7 @@ export async function runTests() {
     // would prove nothing (the button is disabled when there's nothing to
     // undo regardless of processing state).
     conversation.rootMessageThread.addEvent({ type: 'user', content: 'lock-test' });
-    await syncUndoState(conversation.id);
+    await syncUndoState(conversation);
 
     assert(conversation.canUndo(), 'precondition: conversation should have undo history');
 

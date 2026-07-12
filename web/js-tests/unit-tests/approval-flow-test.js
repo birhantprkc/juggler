@@ -19,6 +19,7 @@ import {
   createToolCall,
   buildContext,
   withTimeout,
+  waitFor,
   assert
 } from '../utilities/test-helpers.js';
 import { TOOL_STATES, ACTION_STATES, createToolActionMessage } from '../../sdk/lib/message.js';
@@ -651,8 +652,15 @@ export async function runTests(_ctx) {
     // Approve the action
     conversation.rootMessageThread.resolveApproval(toolUseId, 'yes');
 
-    // Wait a short time for 'running' state to appear (before command completes)
-    await new Promise(r => setTimeout(r, 100));
+    // Wait until the 'running' tool-result appears — it must be created the
+    // instant approval resolves, well before the 0.5s command finishes. Polling
+    // for the actual result (instead of a fixed 100ms sleep) is deterministic:
+    // it returns the moment the result lands and stays patient on slow CI
+    // runners where 100ms was too short and the assert below read `undefined`.
+    await waitFor(
+      () => findToolResultInConversation(conversation, toolUseId) !== undefined,
+      { description: 'running tool-result to appear immediately after approval' }
+    );
 
     // CRITICAL: Check that 'running' state was seen DURING execution
     const currentToolResult = findToolResultInConversation(conversation, toolUseId);

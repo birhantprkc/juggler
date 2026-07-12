@@ -99,9 +99,13 @@ jobs:
       # WebKitGTK/GTK4/libsoup dev headers for the cgo Wails v3 Linux backend.
       # The server (hidden engine WebView) and the desktop app both link
       # against these.
+      # xvfb: the browser suite spawns bin/juggler, a Wails/WebKitGTK app whose
+      # hidden engine WebView needs an X display even in --test mode. Hosted
+      # Linux runners are headless, so the suite runs under a virtual framebuffer
+      # (see the "Run tests" step). macOS (WKWebView) / Windows (WebView2) don't.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev xvfb
 
       # Single lint entry point: identical to `make lint` locally, so a
       # contributor who passes lint at their terminal also passes CI lint.
@@ -122,9 +126,14 @@ jobs:
           # what actually depends on it — keep it explicit here.
           make app-icon-embed wails-runtime-embed
           # bin/juggler is what the browser test suite spawns, so the tests
-          # below exercise the very binary we just built.
-          go build -o bin/juggler ./cmd/juggler
-          go build -o bin/juggler-test ./cmd/juggler-test
+          # below exercise the very binary we just built. On Windows the output
+          # must be named .exe: `go build -o` writes the name verbatim (no auto
+          # .exe on a Windows target) and Windows can't exec an extension-less
+          # file — the harness's serverBinary() resolves the same name.
+          EXE=""
+          [ "${RUNNER_OS}" = "Windows" ] && EXE=".exe"
+          go build -o "bin/juggler${EXE}" ./cmd/juggler
+          go build -o "bin/juggler-test${EXE}" ./cmd/juggler-test
 
       # The Linux desktop app (GTK), built on every run as a continuous
       # compile-regression guard: juggler-app's Linux build is new, so a break
@@ -136,13 +145,47 @@ jobs:
 
       # Go package unit tests (claudecode provider, worker, etc.) — ~75s under
       # -race. Kept a separate step from the browser suite so the CI log names
-      # which layer broke.
+      # which layer broke. Use -count=1 (not -short): -short makes these suites'
+      # TestMain/guards self-skip, which silently turned this gate into a no-op.
+      # Match `make test-go` exactly so CI can't drift weaker than local.
       - name: Run Go package tests
         shell: bash
         run: go test -count=1 -race -timeout 5m ./cmd/...
 
-      # Browser test suite: drives Google Chrome against a spawned bin/juggler.
-      # Full output lands in the step log; nothing is uploaded.
+      # Browser test suite: drives the WebKitGTK engine inside a spawned
+      # bin/juggler. -count=1 (not -short) is load-bearing — under -short the
+      # whole suite self-skips (browser_suite_test.go / main_test.go TestMain),
+      # so this is the step that actually exercises the behavioural gate.
+      # On Linux the spawned server needs a display, so run under xvfb; other
+      # platforms render headless. Full output lands in the step log.
+      #
+      # JUGGLER_TEST_IFRAMES=4 (default 9): the pool runs N concurrent test
+      # lanes against ONE shared WebKit engine (main_test.go). The default 9 is
+      # tuned for a dev workstation; a hosted CI runner (~2-4 vCPU) can't service
+      # 9 lanes on one engine, and starves them into failures that look like bugs
+      # but are pure load — lanes whose engine WS can't connect within 30s, tests
+      # that blow a 10s budget by a few ms, and an interrupted lane leaking state
+      # into the next test's preconditions. 4 lanes keeps real server-side
+      # concurrency coverage while fitting the runner. Local `make test` keeps
+      # the full 9-lane stress. Raise if runners get beefier.
       - name: Run tests
         shell: bash
-        run: go test -count=1 -race -timeout 15m ./tests/integration/...
+        env:
+          JUGGLER_TEST_IFRAMES: 4
+        run: |
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            # WebKitGTK 2.4x+ (2.52 on the runner) defaults to a DMABUF/GPU
+            # renderer whose EGL init needs DRI3, which Xvfb's software
+            # framebuffer can't provide ("libEGL warning: DRI3 error"). Without
+            # a fallback the hidden-engine WebView hangs before it loads the
+            # harness JS, so /api/test/names never responds and the suite times
+            # out at 30s. Force the software path so the engine boots headless.
+            # These vars only affect WebKitGTK/Mesa; harmless on other backends.
+            export WEBKIT_DISABLE_DMABUF_RENDERER=1
+            export WEBKIT_DISABLE_COMPOSITING_MODE=1
+            export LIBGL_ALWAYS_SOFTWARE=1
+            xvfb-run -a --server-args='-screen 0 1920x1080x24' \
+              go test -count=1 -race -timeout 15m ./tests/integration/...
+          else
+            go test -count=1 -race -timeout 15m ./tests/integration/...
+          fi

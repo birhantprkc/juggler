@@ -95,10 +95,13 @@ async function _runTests() {
   // Wait for worker to receive sync message and save
   logger.info('[context-item-persistence-test] Step 2: Waiting for worker to sync and save...');
 
-  // No ready check needed - if we have the conversation object, it's ready!
-  // Force a save on the worker (debounced save is 500ms, so wait 2000ms for buffer)
-  logger.info('[context-item-persistence-test] Waiting for debounced save...');
-  await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for debounced save (500ms) + extra buffer
+  // Force the worker to persist now and wait for the write to complete —
+  // deterministic, instead of sleeping past the 2s SaveDebounceTime (which
+  // races the save→destroy on slow CI runners). The context-item mutation is
+  // already on the ordered worker channel ahead of this call (Yjs fires its
+  // update synchronously on the local write), so the flush saves it.
+  logger.info('[context-item-persistence-test] Flushing worker persistence...');
+  await workerManager.flushPersistence(conversation.id);
 
   // Step 3: Reload conversation from backend
   logger.info('[context-item-persistence-test] Step 3: Reloading conversation from backend');

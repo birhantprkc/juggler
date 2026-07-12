@@ -34,23 +34,28 @@ import logger from '../utilities/test-logger.js';
 
 /**
  * Synchronization barrier between mutations and undo-state assertions.
+ * Deterministic — no sleep.
  *
- * The two pings each force the worker to drain its inbound queue and flush
- * its outbound Yjs batcher, so every prior message is fully processed and
- * every metadata update has reached the main thread before this returns.
+ * The mutation's yjs-sync is already on the ordered worker channel ahead of
+ * this ping: Yjs fires its `update` event synchronously on the local write, so
+ * the outbound sync is sent before we get here. The worker processes messages
+ * in FIFO order, so by the time it handles this ping the mutation is applied and
+ * captured; `handlePing` then force-closes the undo capture window
+ * (StopCapturing → undoState written synchronously) and flushes its outbound
+ * batcher, emitting the undoState frame *before* the ack.
  *
- * The sleep in the middle is unfortunately load-bearing: the y-crdt
- * UndoManager fires `stack-item-added` (which writes undoState) inside its
- * afterTransaction hook, but for browser-originated updates that hook
- * defers some work — without the gap, half the captures aren't visible by
- * the second ping. 100ms matches the wait the old per-callsite helpers used.
+ * Inbound Yjs updates are timer-batched on the main thread, so the undoState
+ * frame — received ahead of the ack — is sitting in the pending-update buffer
+ * when ping() resolves. flushPendingUpdates() applies it synchronously, so
+ * canUndo()/canRedo() read current state on the next line. This replaces a
+ * load-bearing 100ms sleep that merely gambled the batch had flushed — too
+ * short on slow/contended CI runners.
  * @param {import('../../model/conversation.js').default} conversation
  * @returns {Promise<void>}
  */
 async function waitForUndoStateSync(conversation) {
   await workerManager.ping(conversation.id);
-  await new Promise(r => setTimeout(r, 100));
-  await workerManager.ping(conversation.id);
+  conversation._doc.flushPendingUpdates();
 }
 
 /**
@@ -459,7 +464,6 @@ async function testClearAllUndo(session) {
   // Clear context items (via conversation method - pure Yjs)
   conversation.rootMessageThread.clearContextItems();
   await waitForUndoStateSync(conversation);
-  await new Promise(resolve => setTimeout(resolve, 300)); // Extra time for clear
 
   // Verify cleared
   assertContextItemIdsMatch(conversation, [], 'After clear - no context items');

@@ -698,6 +698,34 @@ export async function waitForPendingApproval(conversation, toolUseId, timeoutMs 
 }
 
 /**
+ * Poll `predicate` until it returns truthy, or throw once `timeoutMs` elapses.
+ *
+ * The deterministic replacement for fixed `setTimeout` sleeps used as sync
+ * barriers. A hard-coded `await sleep(100)` gambles that 100ms is enough for
+ * some async work to land — true on a fast dev machine, false on a slow or
+ * contended CI runner, where the assertion then reads not-yet-settled state and
+ * fails intermittently. Polling a real condition instead returns the instant the
+ * work is actually visible (near-zero on fast machines) and stays patient up to
+ * `timeoutMs` on slow ones, so the wait scales with the machine rather than a
+ * guessed constant. Prefer this (or a domain-specific waiter like
+ * {@link waitForPendingApproval}) over any load-bearing sleep.
+ * @param {() => boolean} predicate - Condition to wait for; polled until truthy.
+ * @param {{timeoutMs?: number, intervalMs?: number, description?: string}} [opts]
+ * @returns {Promise<void>} Resolves when predicate is truthy; rejects on timeout.
+ */
+export async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 10, description = 'condition' } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  // Final check so a condition that becomes true exactly at the deadline still
+  // passes rather than racing the loop guard.
+  if (predicate()) return;
+  throw new Error(`Timeout after ${timeoutMs}ms waiting for ${description}`);
+}
+
+/**
  * Create an orphaned approval message for testing.
  * This simulates what happens after a page reload: a tool-use message with
  * state: 'pending' but no entry in _pendingApprovals Map.

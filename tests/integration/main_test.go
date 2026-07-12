@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,6 +83,21 @@ func loadPoolConfig() poolConfig {
 
 func (c poolConfig) totalSlots() int { return c.windows * c.iframes }
 
+// serverBinary is the built server binary under <root>/bin, using the platform
+// executable name — "juggler" on Unix, "juggler.exe" on Windows. Both halves of
+// the contract need this: `go build -o` writes the output name verbatim (it does
+// NOT append .exe on a Windows target), and Windows exec.LookPath refuses to run
+// an extension-less file. So the three spawn sites here and the CI build step
+// must all agree on this name, or the suite fails at spawn with "executable file
+// not found" on Windows (which -short used to hide).
+func serverBinary(root string) string {
+	name := "juggler"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(root, "bin", name)
+}
+
 // TestMain spins up the test-pool topology controlled by poolConfig and
 // tears everything down after m.Run() returns.
 func TestMain(m *testing.M) {
@@ -97,7 +113,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	binary := filepath.Join(jugglerRoot, "bin", "juggler")
+	binary := serverBinary(jugglerRoot)
 	srcFixture := filepath.Join(jugglerRoot, "tests", "benchmarks", "fixtures", "unit-test-fixture")
 
 	log.SetOutput(io.Discard)

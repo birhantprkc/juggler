@@ -1097,6 +1097,21 @@ class WorkerManager {
   // ============================================================================
 
   /**
+   * Test-only: force the worker to persist its conversation state to disk now,
+   * bypassing the SaveDebounceTime debounce, and resolve once the write has
+   * completed (the worker acks after saveStateToDisk returns). Lets persistence
+   * tests do a deterministic mutate → save → destroy → reload without sleeping
+   * past the 2s debounce, which races the save on slow/contended CI runners.
+   * @param {string} conversationId - Conversation ID
+   * @returns {Promise<void>}
+   */
+  async flushPersistence(conversationId) {
+    // Patient like ping(): a loaded pool can push the save behind a deep inbound
+    // queue. The per-test hard timeout remains the fail-fast bound.
+    await this._sendWithAck(conversationId, { type: 'flush-persistence' }, 30000);
+  }
+
+  /**
    * Set mock LLM responses for testing.
    * When set, the worker's callLLM() will return these responses instead of calling real LLM.
    * @param {string} conversationId - Conversation ID

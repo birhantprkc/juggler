@@ -24,6 +24,8 @@ func (w *ConversationWorker) handleTestMessage(msg workerMessage) bool {
 		w.handleGetYjsState(msg.Payload)
 	case "ping":
 		w.handlePing(msg.Payload)
+	case "flush-persistence":
+		w.handleFlushPersistence(msg.Payload)
 	case "set-mock-responses":
 		w.handleSetMockResponses(msg.Payload)
 	case "release-mock":
@@ -47,6 +49,38 @@ func (w *ConversationWorker) handleGetYjsState(payload json.RawMessage) {
 		"type":   "ack",
 		"ackId":  msg.AckID,
 		"result": state,
+	})
+}
+
+// handleFlushPersistence forces the conversation's in-memory state to disk
+// synchronously, bypassing the SaveDebounceTime debounce, then acks. Persistence
+// tests use this instead of sleeping past the 2s debounce before a
+// destroy+reload cycle: when the ack arrives the write is complete, so the
+// reload can't race a not-yet-written file.
+//
+// This runs on the worker goroutine (dispatched inline from the run loop), so it
+// saves directly — mirroring the loop's own flushReq case — rather than routing
+// through ConversationWorker.FlushPersistence, which would deadlock waiting on
+// the same loop to service flushReq.
+func (w *ConversationWorker) handleFlushPersistence(payload json.RawMessage) {
+	var msg struct {
+		AckID string `json:"ackId,omitempty"`
+	}
+	_ = json.Unmarshal(payload, &msg)
+
+	// Match the run loop's flushReq handling: skip while deleting (the folder is
+	// about to be removed), otherwise stop the pending debounce timer and save.
+	if !w.deleting.Load() {
+		if w.saveTimer != nil {
+			w.saveTimer.Stop()
+		}
+		if err := w.saveStateToDisk(); err != nil {
+			w.log.Error("Failed to flush persistence: %v", err)
+		}
+	}
+	w.send(map[string]any{
+		"type":  "ack",
+		"ackId": msg.AckID,
 	})
 }
 
