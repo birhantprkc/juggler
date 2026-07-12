@@ -470,6 +470,108 @@ export const compactionSweepsMidConversationFileTest = {
 };
 
 /**
+ * Project memory (and any standing context item positioned AFTER it in the
+ * leading run) must STAY at the parent across /compact — the user-reported bug
+ * was that a compacted thread came back without the Project Memory block.
+ *
+ * The old leading-run predicate was `preventUserDeletion || file-content`.
+ * Memory is neither: it carries no `preventUserDeletion` flag on its Y.Map
+ * (only SYSTEM_1 does) and its type is `memory`, not `file-content`. So the old
+ * predicate BOTH swept memory into the summary thread AND — by treating it as
+ * the first conversational item — ended the leading run early, dropping any
+ * agents file pinned after it too. The fix keys the run on "standing context
+ * item" (has itemId, no toolUseId, not a conversational type), mirroring the
+ * worker's GetContextItemIDsForThread.
+ *
+ * Setup seeds `.juggler/MEMORY.md` then creates a fresh conversation so memory
+ * auto-instantiates onto root → [system-prompt, memory]. A file-content
+ * (README) is then pinned before any message, landing in the leading run but
+ * AFTER memory → [system-prompt, memory, file-content]. After /compact BOTH
+ * must remain at the parent and NEITHER may leak into the thread.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const compactionPreservesMemoryTest = {
+  name: 'compaction-preserves-memory',
+  description: 'Project memory (and a standing item after it) stays at the parent across /compact',
+  fixture: 'unit-test-fixture',
+  pollutesFixtureRoot: true,
+
+  setupFiles: {
+    '.juggler/MEMORY.md': '# Memory\n\n- [2026-06-14] MEMORY_MARKER_ZZZ: build with make build\n'
+  },
+
+  llmResponses: [],
+
+  operations: [
+    // Fresh conversation created AFTER the memory file exists → memory seeds
+    // onto root: [system-prompt, memory].
+    {
+      type: 'create-conversation',
+      name: 'CompactMem',
+      llmResponses: [
+        textResponse('Response 1.'),
+        textResponse('Response 2.'),
+        returnResultResponse('Summary of the work.')
+      ]
+    },
+    // Pin a file onto root BEFORE any message → leading run, AFTER memory:
+    // [system-prompt, memory, file-content(README)].
+    { type: 'add-context-item-to-root' },
+    { type: 'send-message', message: 'Message 1' },
+    { type: 'send-message', message: 'Message 2' },
+    { type: 'run-command', command: 'compact' },
+    { type: 'wait-for-state', condition: { hasCompactionBarrier: true } }
+  ],
+
+  // No expectedDocument: seeded memory + README shift item IDs; the structural
+  // guarantees are asserted precisely below.
+  customAssertions: (conversation) => {
+    const root = conversation.rootMessageThread.items;
+    const threadItem = root.find((/** @type {any} */ it) => it.get('type') === 'thread');
+    if (!threadItem) {
+      throw new Error('compaction-preserves-memory: no thread item at parent (compaction did not run)');
+    }
+    if (threadItem.get('result') !== 'Summary of the work.') {
+      throw new Error(
+        `compaction-preserves-memory: thread.result = ${JSON.stringify(threadItem.get('result'))}, ` +
+					'want "Summary of the work." — compaction did not complete'
+      );
+    }
+
+    // Both standing items must remain at the parent.
+    const parentCtx = conversation.rootMessageThread.contextItems;
+    const parentMemory = parentCtx.filter((/** @type {any} */ i) => i.type === 'memory');
+    const parentFiles = parentCtx.filter((/** @type {any} */ i) => i.type === 'file-content');
+    if (parentMemory.length !== 1) {
+      throw new Error(
+        `compaction-preserves-memory: expected 1 memory item at parent after /compact, found ${parentMemory.length} ` +
+					'— memory was swept into the summary thread (the reported bug)'
+      );
+    }
+    if (parentFiles.length !== 1) {
+      throw new Error(
+        `compaction-preserves-memory: expected 1 leading file-content at parent, found ${parentFiles.length} ` +
+					'— the standing item positioned after memory was dropped'
+      );
+    }
+
+    // ...and NEITHER may have leaked into the compaction thread.
+    const nested = threadItem.get('items');
+    const nestedArr = typeof nested?.toArray === 'function' ? nested.toArray() : [];
+    const leaked = nestedArr.filter((/** @type {any} */ it) => {
+      const t = it.get?.('type');
+      return t === 'memory' || t === 'file-content';
+    });
+    if (leaked.length !== 0) {
+      throw new Error(
+        `compaction-preserves-memory: ${leaked.length} standing item(s) leaked into the compaction thread ` +
+					`(types: ${leaked.map((/** @type {any} */ it) => it.get?.('type')).join(', ')})`
+      );
+    }
+  }
+};
+
+/**
  * /new opens a fresh, empty conversation in a new tab and switches to it,
  * leaving the source conversation intact. Asserts:
  *   (i)   the active conversation after /new has no conversation turns,
@@ -857,6 +959,7 @@ export const tests = [
   compactionSweepsToolActionsTest,
   compactionPreservesLeadingAgentsFilesTest,
   compactionSweepsMidConversationFileTest,
+  compactionPreservesMemoryTest,
   newConversationTest,
   duplicateConversationTest,
   compactionCancelsRunningTurnTest

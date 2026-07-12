@@ -25,6 +25,7 @@ export {
   isSystemReminderMessage,
   isErrorMessage,
   isThreadMessage,
+  isConversationalItemType,
   createUserMessage,
   createAssistantMessage,
   createToolActionMessage,

@@ -11,7 +11,7 @@ import {
   endCompaction,
   defaultSummarizationPrompt
 } from 'juggler/model';
-import { createThreadMessage, createUserMessage } from 'juggler/model';
+import { createThreadMessage, createUserMessage, isConversationalItemType } from 'juggler/model';
 
 /**
  * Compact command — collapse the entire conversation into a sub-thread.
@@ -69,22 +69,32 @@ class CompactCommandType extends CommandType {
       // not moved into the sub-thread" → those were context items
       // produced by tools).
       //
-      // The one exception is the *leading* run of pinned file-content
-      // context items — the project's ambient instruction files
-      // (CLAUDE.md / AGENTS.md / …) that the session auto-loads at the top
-      // of every conversation (see Session.addAIAssistantFiles). Those are
-      // working context, not conversation history: sweeping them into the
-      // sub-thread leaves the parent without its agents files after the
-      // summary lands, which is never what the user expects. We keep them
-      // at the parent. The summarization turn still sees them unchanged
-      // because the worker always sources context items from the ROOT items
-      // array regardless of which thread it is processing
+      // The one exception is the *leading run* of standing context items —
+      // everything the conversation is auto-seeded with before the first
+      // message: the project's ambient instruction files (CLAUDE.md /
+      // AGENTS.md / …, see Session.addAIAssistantFiles) AND project memory and
+      // any other auto-instantiated standing item (see seedAutoContextItems).
+      // Those are working context, not conversation history: sweeping them
+      // into the sub-thread leaves the parent without its agents files and
+      // memory after the summary lands, which is never what the user expects.
+      // We keep them at the parent. The summarization turn still sees them
+      // unchanged because the worker always sources context items from the
+      // ROOT items array regardless of which thread it is processing
       // (ConversationDocument.GetContextItemIDs reads root; the render-context
       // callback reads conv.rootMessageThread.contextItems), so the
       // prompt-cache prefix is preserved during compaction. Only the leading
-      // run is preserved — a file
-      // pinned mid-conversation is part of the work being folded up and is
-      // swept like any other item.
+      // run is preserved — a standing item pinned mid-conversation is part of
+      // the work being folded up and is swept like any other item.
+      //
+      // A standing context item has an itemId, was not minted by a tool (no
+      // toolUseId), and is not a conversational (history) type. The run ends at
+      // the first conversational item. This mirrors the worker's sub-thread
+      // inheritance rule (ConversationDocument.GetContextItemIDsForThread):
+      // keying on the leading run rather than the old (preventUserDeletion ||
+      // file-content) predicate is what keeps memory — which is neither
+      // preventUserDeletion on its Y.Map nor a file-content type — at the
+      // parent instead of both ending the run early AND being swept into the
+      // summary thread.
       /** @type {object[]} */
       const snapshots = [];
       /** @type {number[]} */
@@ -92,24 +102,28 @@ class CompactCommandType extends CommandType {
       let inLeadingContext = true;
       items.forEach((item, idx) => {
         if (!item || typeof item.toJSON !== 'function') return;
+        // Sticky parent-level items (today only the SYSTEM_1 system prompt)
+        // stay put and are transparent to the leading run — a
+        // preventUserDeletion item above does not end it.
         if (item.get?.('preventUserDeletion') === true) return;
-        // Leading agents-file pins stay at the parent (see above). A
-        // preventUserDeletion item above doesn't end the leading run, so the
-        // system-prompt placeholder at index 0 is transparent here.
-        if (
-          inLeadingContext &&
-          item.get?.('itemId') &&
-          !item.get?.('toolUseId') &&
-          item.get?.('type') === 'file-content'
-        ) return;
-        // First conversational item reached: everything from here on is
-        // folded into the thread, including any later file-content pins.
-        inLeadingContext = false;
+        const type = item.get?.('type');
+        if (inLeadingContext) {
+          if (isConversationalItemType(type)) {
+            // First conversational item ends the starting-context run:
+            // everything from here on is folded into the thread, including any
+            // later standing-item pins (they are mid-conversation work).
+            inLeadingContext = false;
+          } else if (item.get?.('itemId') && !item.get?.('toolUseId')) {
+            // A leading standing context item (agents file, memory, rule, …).
+            // Keep it at the parent.
+            return;
+          }
+        }
         // Defensive: a thread we ourselves just inserted is content by
         // type but must not be re-swallowed.
         if (
           item.get?.('noAutoSelect') &&
-          item.get?.('type') === 'thread' &&
+          type === 'thread' &&
           !item.get?.('result')
         ) return;
         snapshots.push(item.toJSON());

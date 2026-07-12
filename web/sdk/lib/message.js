@@ -57,6 +57,46 @@ export const MESSAGE_TYPES = Object.freeze({
 });
 
 /**
+ * The item types that are conversation HISTORY — a message, tool call,
+ * sub-thread, or strategy-injected instruction — as opposed to a standing
+ * context item (system-prompt, memory, file-content, rule, plan, …).
+ *
+ * Mirrors the worker's `isConversationalItemType`
+ * (cmd/juggler/worker/messages.go): keep the two in sync. Used to bound the
+ * *leading run* of starting-context items — the auto-seeded standing items
+ * (agents files, project memory) that sit at the top of a conversation before
+ * the first message. Both the worker's sub-thread inheritance
+ * (GetContextItemIDsForThread) and the /compact leading-context preservation
+ * key on "run ends at the first conversational item", so a standing item that
+ * is neither `preventUserDeletion` nor `file-content` (e.g. memory) is kept as
+ * starting context rather than treated as history.
+ * @type {ReadonlySet<string>}
+ */
+const CONVERSATIONAL_ITEM_TYPES = new Set([
+  MESSAGE_TYPES.USER,
+  MESSAGE_TYPES.ASSISTANT,
+  MESSAGE_TYPES.THINKING,
+  MESSAGE_TYPES.TOOL_ACTION,
+  MESSAGE_TYPES.THREAD,
+  MESSAGE_TYPES.META_TOOL_RESULT,
+  MESSAGE_TYPES.ERROR,
+  MESSAGE_TYPES.SYSTEM_REMINDER,
+  MESSAGE_TYPES.GUIDANCE
+]);
+
+/**
+ * Report whether an item type is conversation history (see
+ * {@link CONVERSATIONAL_ITEM_TYPES}). Standing context items (system-prompt,
+ * memory, file-content, rule, …) return false.
+ * @param {string|undefined} type - The item's `type` field
+ * @returns {boolean} True if the type is a conversational (history) item type
+ */
+export function isConversationalItemType(type) {
+  // Set.has(undefined) is already false, so no explicit null/undefined guard.
+  return CONVERSATIONAL_ITEM_TYPES.has(/** @type {string} */ (type));
+}
+
+/**
  * Tool lifecycle state constants for type-safe comparisons.
  *
  * The tool-action Y.Map is a state machine:
