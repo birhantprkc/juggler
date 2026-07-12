@@ -95,6 +95,15 @@ type ConversationWorker struct {
 	contextResultChan      chan json.RawMessage
 	toolsResultChan        chan json.RawMessage
 	strategyHookResultChan chan json.RawMessage
+	// Subthread-delegation round-trips (engine-targeted): the worker asks the
+	// engine to build a SubthreadSpec for a delegating tool, and to run the
+	// tool's onSubthreadError fallback when a delegated child ends open.
+	subthreadSpecResultChan  chan json.RawMessage
+	subthreadErrorResultChan chan json.RawMessage
+	// turnDelegatingTools is the set of tool names offered this turn whose item
+	// declared delegatesToSubthread. Rebuilt each iteration from the tools list
+	// and read by processLLMResponse to route a call to the delegation path.
+	turnDelegatingTools map[string]bool
 
 	// requestId of the in-flight render-context-items request, or "" when none.
 	// The worker broadcasts the request to every connected client and may receive
@@ -416,6 +425,8 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 		contextResultChan:         make(chan json.RawMessage, 1),
 		toolsResultChan:           make(chan json.RawMessage, 1),
 		strategyHookResultChan:    make(chan json.RawMessage, 1),
+		subthreadSpecResultChan:   make(chan json.RawMessage, 1),
+		subthreadErrorResultChan:  make(chan json.RawMessage, 1),
 		commandedToolActions:      make(map[string]string),
 		inFlightToolCommands:      make(map[string]string),
 		toolCommandRetries:        make(map[string]int),
@@ -940,6 +951,12 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 
 	case "strategy-hook-response":
 		w.handleStrategyHookResponse(msg.Payload)
+
+	case "build-subthread-spec-response":
+		w.handleBuildSubthreadSpecResponse(msg.Payload)
+
+	case "subthread-error-response":
+		w.handleSubthreadErrorResponse(msg.Payload)
 
 	case "yjs-sync":
 		w.handleYjsSync(msg.Payload)

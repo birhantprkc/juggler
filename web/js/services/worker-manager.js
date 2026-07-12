@@ -150,6 +150,20 @@ class WorkerManager {
     this._onToolsRequest = null;
 
     /**
+     * Callback for subthread-spec build requests (delegatesToSubthread tools)
+     * @type {((request: object, conversationId: string) => void)|null}
+     * @private
+     */
+    this._onSubthreadSpecRequest = null;
+
+    /**
+     * Callback for subthread-error fallback requests (onSubthreadError)
+     * @type {((request: object, conversationId: string) => void)|null}
+     * @private
+     */
+    this._onSubthreadErrorRequest = null;
+
+    /**
      * In-flight auto-load promises for unknown conversations (conversationId -> Promise).
      * Prevents duplicate loads and queues yjs-sync bytes until load completes.
      * @type {Map<string, {promise: Promise<void>, queuedBytes: string[]}>}
@@ -253,6 +267,24 @@ class WorkerManager {
    */
   setOnToolsRequest(callback) {
     this._onToolsRequest = callback;
+  }
+
+
+  /**
+   * Set callback for subthread-spec build requests from workers (engine-only).
+   * @param {(request: object, conversationId: string) => void} callback
+   */
+  setOnSubthreadSpecRequest(callback) {
+    this._onSubthreadSpecRequest = callback;
+  }
+
+
+  /**
+   * Set callback for subthread-error fallback requests from workers (engine-only).
+   * @param {(request: object, conversationId: string) => void} callback
+   */
+  setOnSubthreadErrorRequest(callback) {
+    this._onSubthreadErrorRequest = callback;
   }
 
 
@@ -386,6 +418,29 @@ class WorkerManager {
    */
   sendToolsResult(conversationId, requestId, tools) {
     protocols.sendToolsResult(this, conversationId, requestId, tools);
+  }
+
+
+  /**
+   * Send a built subthread spec (or null) back to the worker.
+   * @param {string} conversationId - Conversation ID
+   * @param {string} requestId - Request ID
+   * @param {object|null} spec - SubthreadSpec, or null to run the tool normally
+   * @param {string} [error] - Optional error reason (treated as null spec)
+   */
+  sendBuildSubthreadSpecResponse(conversationId, requestId, spec, error = '') {
+    protocols.sendBuildSubthreadSpecResponse(this, conversationId, requestId, spec, error);
+  }
+
+
+  /**
+   * Send an onSubthreadError fallback result back to the worker.
+   * @param {string} conversationId - Conversation ID
+   * @param {string} requestId - Request ID
+   * @param {string} result - Fallback tool_result text ('' → use default)
+   */
+  sendSubthreadErrorResponse(conversationId, requestId, result) {
+    protocols.sendSubthreadErrorResponse(this, conversationId, requestId, result);
   }
 
 
@@ -768,6 +823,23 @@ class WorkerManager {
 
       case 'request-tools':
         protocols.handleRequestTools(this, conversationId, data);
+        break;
+
+      case 'build-subthread-spec':
+        // Worker asks the engine to build a subthread spec for a delegating
+        // tool call (engine-only). Runs async and self-replies; guard the
+        // promise so a load failure surfaces instead of an unhandled rejection.
+        protocols.handleBuildSubthreadSpec(this, conversationId, data).catch((err) => {
+          console.error('[WorkerManager] build-subthread-spec failed:', err);
+        });
+        break;
+
+      case 'subthread-error':
+        // Worker asks the engine to run a delegating tool's onSubthreadError
+        // fallback for an open-ended delegated child (engine-only).
+        protocols.handleSubthreadError(this, conversationId, data).catch((err) => {
+          console.error('[WorkerManager] subthread-error failed:', err);
+        });
         break;
 
       case 'approval-request':

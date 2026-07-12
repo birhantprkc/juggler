@@ -102,6 +102,72 @@ export function sendToolsResult(wm, conversationId, requestId, tools) {
   });
 }
 
+// ── subthread delegation (worker-driven; engine-only) ────────────────
+
+/**
+ * Dispatch a build-subthread-spec request from the worker to the registered
+ * engine callback (set via setOnSubthreadSpecRequest). Ensures the engine's
+ * copy of the conversation is loaded and its pending syncs applied first, so the
+ * callback can resolve the tool's item (mirrors handleRenderContextItemsRequest).
+ * @param {any} wm
+ * @param {string} conversationId
+ * @param {any} data - {requestId, toolUseId, toolName, toolInput}
+ * @returns {Promise<void>}
+ */
+export async function handleBuildSubthreadSpec(wm, conversationId, data) {
+  if (!wm._onSubthreadSpecRequest) return;
+  const c = await ensureEngineConversationLoaded(wm, conversationId);
+  if (c) flushPendingSyncs(c);
+  wm._onSubthreadSpecRequest(data, conversationId);
+}
+
+/**
+ * Send a built subthread spec (or null) back to the worker.
+ * @param {any} wm
+ * @param {string} conversationId
+ * @param {string} requestId
+ * @param {object|null} spec - SubthreadSpec, or null to run the tool normally
+ * @param {string} [error]
+ */
+export function sendBuildSubthreadSpecResponse(wm, conversationId, requestId, spec, error = '') {
+  wm.sendToWorker(conversationId, {
+    type: 'build-subthread-spec-response',
+    requestId,
+    spec: spec || null,
+    error: error || ''
+  });
+}
+
+/**
+ * Dispatch a subthread-error request from the worker to the registered engine
+ * callback (set via setOnSubthreadErrorRequest).
+ * @param {any} wm
+ * @param {string} conversationId
+ * @param {any} data - {requestId, toolName, toolInput, reason}
+ * @returns {Promise<void>}
+ */
+export async function handleSubthreadError(wm, conversationId, data) {
+  if (!wm._onSubthreadErrorRequest) return;
+  const c = await ensureEngineConversationLoaded(wm, conversationId);
+  if (c) flushPendingSyncs(c);
+  wm._onSubthreadErrorRequest(data, conversationId);
+}
+
+/**
+ * Send an onSubthreadError fallback result back to the worker.
+ * @param {any} wm
+ * @param {string} conversationId
+ * @param {string} requestId
+ * @param {string} result - '' → use default error result
+ */
+export function sendSubthreadErrorResponse(wm, conversationId, requestId, result) {
+  wm.sendToWorker(conversationId, {
+    type: 'subthread-error-response',
+    requestId,
+    result: result || ''
+  });
+}
+
 // ── approval-request + tool-action mutations ─────────────────────────
 
 /**

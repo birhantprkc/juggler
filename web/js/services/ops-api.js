@@ -994,7 +994,10 @@ export async function shellKill(params) {
  * Parameters for web fetch operation
  * @typedef {object} WebFetchParams
  * @property {string} url - The URL to fetch content from
- * @property {string} prompt - What to extract from the page
+ * @property {string} [prompt] - What to extract from the page. Optional: when
+ *   omitted, the op returns the raw page content (the server treats prompt as
+ *   optional). The web-fetch context item delegates to a sub-agent only when a
+ *   prompt is present.
  */
 
 /**
@@ -1020,9 +1023,7 @@ export async function webFetch(params, signal) {
   if (!params.url) {
     throw new TypeError('url is required');
   }
-  if (!params.prompt) {
-    throw new TypeError('prompt is required');
-  }
+  // prompt is optional: without it the op returns the raw page content.
   return callOp('webfetch', 'fetch', params, signal);
 }
 

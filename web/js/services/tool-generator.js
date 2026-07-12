@@ -8,6 +8,8 @@
  * @property {string} description - Human-readable description
  * @property {object} input_schema - JSON Schema for parameters
  * @property {'read'|'write'|'meta'} category - Tool category for routing
+ * @property {boolean} [delegatesToSubthread] - Stamped from the owning item's
+ *   MANIFEST; tells the worker this tool MAY delegate to a subthread.
  */
 
 // ============================================================================
@@ -98,6 +100,15 @@ export async function generateToolDefinitions() {
     const itemClass = /** @type {any} */ (ItemClass);
     if (itemClass.getToolDefinitions) {
       const itemTools = itemClass.getToolDefinitions();
+      // Carry the item's subthread-delegation capability onto each of its tool
+      // definitions so the worker knows which tools MAY delegate (the per-call
+      // decision still runs in buildSubthreadSpec). The flag is a manifest-level
+      // property of the owning item, so it applies to every tool it declares.
+      if (itemClass.MANIFEST?.delegatesToSubthread) {
+        for (const t of itemTools) {
+          t.delegatesToSubthread = true;
+        }
+      }
       tools.push(...itemTools);
     }
   }

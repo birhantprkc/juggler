@@ -291,6 +291,12 @@ type ToolDefinition struct {
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
 	Category    string          `json:"category,omitempty"` // "read", "write", "meta"
+	// DelegatesToSubthread marks a tool whose invocation MAY run as a subthread
+	// (the browser item declared delegatesToSubthread in its MANIFEST). When the
+	// LLM calls such a tool, the worker first asks the engine to build a
+	// SubthreadSpec (BuildSubthreadSpecRequest); a spec spawns a delegated child
+	// thread, a null spec falls back to the ordinary client-side tool-action.
+	DelegatesToSubthread bool `json:"delegatesToSubthread,omitempty"`
 }
 
 // YjsSyncMessage contains Yjs CRDT state update.
@@ -395,6 +401,56 @@ type StrategyHookResponse struct {
 type GuidanceItem struct {
 	Content string `json:"content"`
 	Source  string `json:"source,omitempty"`
+}
+
+// SubthreadSpec is the seed for a delegated child thread, produced by the
+// engine's buildSubthreadSpec for a delegatesToSubthread tool. Goal/Prompt/
+// ResultSpec map directly onto CreateThreadOptions.
+type SubthreadSpec struct {
+	Goal       string `json:"goal"`
+	Prompt     string `json:"prompt"`
+	ResultSpec string `json:"resultSpec,omitempty"`
+}
+
+// BuildSubthreadSpecRequest asks the engine to run a delegating tool's
+// validate + buildSubthreadSpec for one invocation and report the resulting
+// spec (or null → run the tool client-side). Targeted at the engine only, so
+// the decision runs exactly once. Mirrors RunStrategyHookRequest.
+type BuildSubthreadSpecRequest struct {
+	Type      string          `json:"type"` // "build-subthread-spec"
+	RequestID string          `json:"requestId"`
+	ToolUseID string          `json:"toolUseId"`
+	ToolName  string          `json:"toolName"`
+	ToolInput json.RawMessage `json:"toolInput"`
+}
+
+// BuildSubthreadSpecResponse returns the engine's decision. Spec == nil means
+// "do not delegate — run the ordinary client-side execute()". A non-empty Error
+// is treated the same as a null spec (fall back), with the reason logged.
+type BuildSubthreadSpecResponse struct {
+	Type      string         `json:"type"` // "build-subthread-spec-response"
+	RequestID string         `json:"requestId"`
+	Spec      *SubthreadSpec `json:"spec"`
+	Error     string         `json:"error,omitempty"`
+}
+
+// SubthreadErrorRequest asks the engine to run a delegating tool's optional
+// onSubthreadError hook when its child ended without a result, so the tool can
+// degrade gracefully (e.g. return raw content) instead of a default error.
+type SubthreadErrorRequest struct {
+	Type      string          `json:"type"` // "subthread-error"
+	RequestID string          `json:"requestId"`
+	ToolName  string          `json:"toolName"`
+	ToolInput json.RawMessage `json:"toolInput"`
+	Reason    string          `json:"reason"`
+}
+
+// SubthreadErrorResponse returns the fallback tool_result text. Result == ""
+// means "no fallback — use the default error result".
+type SubthreadErrorResponse struct {
+	Type      string `json:"type"` // "subthread-error-response"
+	RequestID string `json:"requestId"`
+	Result    string `json:"result"`
 }
 
 // ErrorMessage reports an unhandled exception

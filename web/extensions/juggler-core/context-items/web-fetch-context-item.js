@@ -10,7 +10,7 @@ import { smartTruncate } from 'juggler/ui';
 /**
  * @typedef {object} WebFetchParams
  * @property {string} url - The URL to fetch content from
- * @property {string} prompt - What to extract from the page
+ * @property {string} [prompt] - What to extract from the page (optional; when set, the call delegates to a sub-agent)
  */
 
 /**
@@ -42,10 +42,17 @@ class WebFetchContextItem extends ContextItem {
   static MANIFEST = {
     id: 'web-fetch',
     name: 'Web Fetch',
-    version: '1.0.0',
+    version: '2.0.0',
     description: 'Fetch and process web content',
     author: 'Juggler Team',
-    requiresApproval: false
+    requiresApproval: false,
+    // With a `prompt`, buildSubthreadSpec fetches the page here and delegates to
+    // a sub-agent with the page text already inlined in its seed — the child
+    // answers from that text (never re-fetching) and only its answer returns, so
+    // the page never enters the caller's context. Without a `prompt`,
+    // buildSubthreadSpec returns null and the ordinary execute() runs, returning
+    // the raw content.
+    delegatesToSubthread: true
   };
 
   /**
@@ -63,13 +70,13 @@ class WebFetchContextItem extends ContextItem {
         },
         prompt: {
           type: 'string',
-          description: 'The prompt describing what information to extract from the page'
+          description: 'What to extract from the page. When provided, a sub-agent reads the page and returns just the answer. Omit to return the raw page content.'
         }
       },
-      required: ['url', 'prompt']
+      required: ['url']
     };
 
-    const description = 'Fetches content from a URL and processes it. Takes a URL and a prompt, fetches the content, converts HTML to markdown, and returns the result. Includes a 15-minute cache.';
+    const description = 'Fetch a URL and process its content. With `prompt`, a sub-agent reads the page in its own context and returns just the answer (the page never enters this conversation); without it, returns the page content converted to markdown. Includes a 15-minute cache.';
 
     return [
       {
@@ -96,10 +103,9 @@ class WebFetchContextItem extends ContextItem {
     if (typeof params.url !== 'string') {
       return { valid: false, error: 'Parameter "url" must be a string' };
     }
-    if (!params.prompt) {
-      return { valid: false, error: 'Missing required parameter: prompt' };
-    }
-    if (typeof params.prompt !== 'string') {
+    // prompt is optional: with it, the call delegates to a sub-agent
+    // (buildSubthreadSpec); without it, execute() returns raw content.
+    if (params.prompt !== undefined && params.prompt !== null && typeof params.prompt !== 'string') {
       return { valid: false, error: 'Parameter "prompt" must be a string' };
     }
 
@@ -111,6 +117,77 @@ class WebFetchContextItem extends ContextItem {
     }
 
     return { valid: true, params: toolInput };
+  }
+
+  /**
+   * Fetch the raw page once, here on the engine side. Isolated as its own method
+   * so buildSubthreadSpec and onSubthreadError share it and tests can stub the
+   * network.
+   * @param {string} url - The URL to fetch
+   * @returns {Promise<WebFetchResult>} Raw fetch result
+   */
+  async fetchRaw(url) {
+    return /** @type {WebFetchResult} */ (await webFetch({ url }, this.signal));
+  }
+
+  /**
+   * Delegate to a sub-agent only when there's something to extract. Critically,
+   * we fetch the page HERE and inline its full text into the child's seed prompt,
+   * so the child answers from content it was handed and never calls WebFetch
+   * itself — inlining, not re-fetching, is what stops the recursive delegation
+   * cascade. Without a prompt (nothing to extract), or if the fetch fails / has
+   * no usable content, return null so the ordinary execute() runs and yields the
+   * raw content (or surfaces the fetch error) to the caller.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Validated tool input
+   * @returns {Promise<import('juggler/context-item').SubthreadSpec | null>} Spec or null
+   */
+  async buildSubthreadSpec(toolInput) {
+    const url = String(toolInput.url || '');
+    const prompt = toolInput.prompt ? String(toolInput.prompt) : '';
+    if (!prompt) return null;
+
+    let page;
+    try {
+      page = await this.fetchRaw(url);
+    } catch {
+      // Fetch failed on the engine side: don't delegate — let execute() run and
+      // surface the fetch error to the caller the ordinary way.
+      return null;
+    }
+
+    // A redirect isn't content to reason over, and an empty body means there's
+    // nothing to inline — either way, fall back to execute() rather than seeding
+    // a child with nothing.
+    if (!page || page.redirect || !page.content) return null;
+
+    return {
+      goal: `Read ${url}`,
+      prompt:
+        'You have been given the full text of a web page below. Using ONLY that text, ' +
+        'answer the request. Do NOT fetch anything — the page content is already here.\n\n' +
+        `# Request\n${prompt}\n\n` +
+        `# Page: ${url}\n${page.content}`,
+      resultSpec: 'the answer in markdown, quoting the page where relevant, or "not found in page" if the content does not answer the request'
+    };
+  }
+
+  /**
+   * If the sub-agent errored or ended without a result, degrade to returning
+   * the raw fetched content rather than failing the call.
+   * @override
+   * @param {Error} error - Why the child ended open
+   * @param {Record<string, unknown>} toolInput - The original validated input
+   * @returns {Promise<import('juggler/context-item').SubthreadErrorFallback | null>} Raw-content fallback, or null to accept the default error
+   */
+  async onSubthreadError(error, toolInput) {
+    try {
+      const raw = await this.fetchRaw(String(toolInput.url || ''));
+      const content = raw && raw.content ? raw.content : '';
+      return { result: `(extraction failed: ${error.message}); raw content follows:\n\n${content}` };
+    } catch {
+      return null;
+    }
   }
 
   /**

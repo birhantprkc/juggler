@@ -83,6 +83,15 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 		// state so the Y.Map read can find the items.
 		if completedThreadID != "" && !wasCancelled {
 			w.writeThreadResult(completedThreadID)
+			// A delegated child (spawned by a delegatesToSubthread tool) whose
+			// turn ended without return_result would leave its parent's stamped
+			// tool_use unpaired. Resolve a result so the parent is never stranded:
+			// trailing text, else the tool's onSubthreadError fallback, else a
+			// default. No-op for non-delegated threads and for ones already closed
+			// via return_result. Runs BEFORE state is cleared so the Y.Map read
+			// finds the child's items, and BEFORE signalParentThread so the parent
+			// sees the just-written result and resumes.
+			w.resolveDelegatedThreadResult(completedThreadID)
 		}
 
 		w.storeState(StateIdle)
@@ -218,6 +227,18 @@ strategyLoop:
 				Description: `Return your result to the parent conversation when this thread's task is complete. Put the full summary in the required "result" argument (not "summary" or a plain text reply) — that string is exactly what the parent receives.`,
 				InputSchema: json.RawMessage(`{"type":"object","properties":{"result":{"type":"string","description":"The summary of what this thread accomplished, returned verbatim to the parent conversation."}},"required":["result"]}`),
 			})
+		}
+
+		// Remember which of this turn's tools may delegate to a subthread, so
+		// processLLMResponse can route a call to the build-spec round-trip. Rebuilt
+		// each iteration from the freshly-offered tools (a strategy may filter the
+		// set differently per turn).
+		w.turnDelegatingTools = collectDelegatingToolNames(tools)
+		// But a delegated sub-agent must never delegate again: inside a delegated
+		// thread (or any descendant of one), delegating tools run inline and return
+		// raw content, so a chain of subthreads can't recurse indefinitely.
+		if len(w.turnDelegatingTools) > 0 && w.withinDelegatedThread(w.thread.itemID) {
+			w.turnDelegatingTools = nil
 		}
 
 		// txnID identifies this round-trip; insertTargetMessage stamps it onto
@@ -661,6 +682,14 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 			if err := w.executeCreateThread(block.ID, block.Name, block.Input); err != nil {
 				w.log.Error("Thread creation failed: %v", err)
 			}
+			continue
+		}
+
+		// Delegating tool: ask the engine to build a subthread spec. A spec
+		// spawns a delegated child (parked like create_thread — its
+		// return_result becomes this tool_use's result); a null/timeout falls
+		// through to the ordinary client-side tool-action below.
+		if w.tryDelegateTool(block.ID, block.Name, block.Input) {
 			continue
 		}
 

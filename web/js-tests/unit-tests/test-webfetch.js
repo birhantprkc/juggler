@@ -106,24 +106,85 @@ async function testMissingURLValidation(session, conversation) {
 }
 
 /**
- * Test missing prompt parameter fails
+ * Test prompt is optional — a url alone passes validation (the no-prompt path
+ * returns raw content via execute() rather than delegating).
  * @param {any} session
  * @param {any} conversation
  * @returns {Promise<{passed: boolean, error?: string}>} Test result
  */
-async function testMissingPromptValidation(session, conversation) {
+async function testOptionalPromptValidation(session, conversation) {
   const action = new WebFetchContextItem({ id: "web-fetch", session, conversation, messageThread: conversation.rootMessageThread });
 
   try {
     const result = await action.validate({ url: 'https://example.com' });
 
-    if (result.valid) {
-      throw new Error('Missing prompt should fail validation');
-    }
-    if (!result.error || !result.error.includes('prompt')) {
-      throw new Error(`Wrong error message: ${result.error}`);
+    if (!result.valid) {
+      throw new Error(`url without prompt should pass validation; got error: ${result.error}`);
     }
 
+    return { passed: true };
+  } catch (e) {
+    const error = /** @type {Error} */ (e);
+    return { passed: false, error: error.message };
+  }
+}
+
+/**
+ * Test buildSubthreadSpec returns null when there is no prompt (→ execute()
+ * runs and returns raw content, no delegation).
+ * @param {any} session
+ * @param {any} conversation
+ * @returns {Promise<{passed: boolean, error?: string}>} Test result
+ */
+async function testBuildSubthreadSpecNoPrompt(session, conversation) {
+  const action = new WebFetchContextItem({ id: "web-fetch", session, conversation, messageThread: conversation.rootMessageThread });
+  // No prompt must short-circuit BEFORE any fetch — stub so a stray fetch fails.
+  action.fetchRaw = async () => { throw new Error('must not fetch when there is no prompt'); };
+
+  try {
+    const spec = await action.buildSubthreadSpec({ url: 'https://example.com' });
+    if (spec !== null) {
+      throw new Error(`Expected null spec without a prompt, got ${JSON.stringify(spec)}`);
+    }
+    return { passed: true };
+  } catch (e) {
+    const error = /** @type {Error} */ (e);
+    return { passed: false, error: error.message };
+  }
+}
+
+/**
+ * Test buildSubthreadSpec fetches the page and inlines its content into the
+ * child's seed prompt (so the child never re-fetches — the recursion fix).
+ * @param {any} session
+ * @param {any} conversation
+ * @returns {Promise<{passed: boolean, error?: string}>} Test result
+ */
+async function testBuildSubthreadSpecWithPrompt(session, conversation) {
+  const action = new WebFetchContextItem({ id: "web-fetch", session, conversation, messageThread: conversation.rootMessageThread });
+  // Stub the network: buildSubthreadSpec must fetch via fetchRaw and inline this.
+  const PAGE = '# Example Domain\nThe title of this page is Example Domain.';
+  action.fetchRaw = async (url) => (
+    /** @type {any} */ ({ url, content: PAGE, prompt: '', cached: false, truncated: false })
+  );
+
+  try {
+    const spec = await action.buildSubthreadSpec({ url: 'https://example.com', prompt: 'what is the title?' });
+    if (!spec) {
+      throw new Error('Expected a spec when a prompt is present, got null');
+    }
+    if (!spec.goal || !spec.goal.includes('https://example.com')) {
+      throw new Error(`spec.goal should reference the URL, got ${spec.goal}`);
+    }
+    if (!spec.prompt || !spec.prompt.includes('what is the title?')) {
+      throw new Error(`spec.prompt should carry the extraction prompt, got ${spec.prompt}`);
+    }
+    if (!spec.prompt.includes('Example Domain')) {
+      throw new Error('spec.prompt should inline the fetched page content so the child does not re-fetch');
+    }
+    if (!spec.resultSpec) {
+      throw new Error('spec.resultSpec should be set so the child knows the return contract');
+    }
     return { passed: true };
   } catch (e) {
     const error = /** @type {Error} */ (e);
@@ -378,7 +439,9 @@ export async function runTests(_ctx) {
     { name: 'Valid URLs pass validation', fn: () => testValidURLValidation(session, conversation) },
     { name: 'Invalid URLs fail validation', fn: () => testInvalidURLValidation(session, conversation) },
     { name: 'Missing url parameter fails', fn: () => testMissingURLValidation(session, conversation) },
-    { name: 'Missing prompt parameter fails', fn: () => testMissingPromptValidation(session, conversation) },
+    { name: 'Prompt is optional (url alone passes)', fn: () => testOptionalPromptValidation(session, conversation) },
+    { name: 'buildSubthreadSpec returns null without a prompt', fn: () => testBuildSubthreadSpecNoPrompt(session, conversation) },
+    { name: 'buildSubthreadSpec returns a spec with a prompt', fn: () => testBuildSubthreadSpecWithPrompt(session, conversation) },
     { name: 'Wrong parameter types fail', fn: () => testWrongTypeValidation(session, conversation) },
     { name: 'Success case formatting', fn: () => testSuccessFormatting(session, conversation) },
     { name: 'Truncated content indicator', fn: () => testTruncatedFormatting(session, conversation) },

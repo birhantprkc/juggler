@@ -282,6 +282,98 @@ export function setupWorkerCallbacks(session) {
     }
   });
 
+  // Handle subthread-spec build requests from workers (engine-only). For a
+  // delegatesToSubthread tool call, instantiate the owning item, run
+  // validate + buildSubthreadSpec, and reply with the spec (or null → the
+  // worker runs the ordinary client-side tool-action).
+  workerManager.setOnSubthreadSpecRequest(async (request, conversationId) => {
+    /** @type {{requestId: string, toolUseId: string, toolName: string, toolInput?: Record<string, unknown>}} */
+    const req = /** @type {*} */ (request);
+    const conv = session.conversations.get(conversationId);
+    // Engine-targeted (never broadcast), so replying null on a missing/failed
+    // conversation is safe and fast — the worker falls back to normal execution
+    // rather than stalling until the round-trip times out.
+    if (!conv) {
+      workerManager.sendBuildSubthreadSpecResponse(conversationId, req.requestId, null);
+      return;
+    }
+    try {
+      const ItemClass = contextItemRegistry.getByToolName(req.toolName);
+      if (!ItemClass) {
+        workerManager.sendBuildSubthreadSpecResponse(conversationId, req.requestId, null);
+        return;
+      }
+      const messageThread = conv.findMessageThreadForToolUse(req.toolUseId) || conv.rootMessageThread;
+      /** @type {import('juggler/context-item').ItemContext} */
+      const itemContext = {
+        id: req.toolUseId,
+        session,
+        conversation: conv,
+        messageThread,
+        toolUseId: req.toolUseId
+      };
+      const item = new (/** @type {any} */ (ItemClass))(itemContext);
+      const toolInput = /** @type {Record<string, unknown>} */ (req.toolInput || {});
+      const validation = await item.validate(toolInput);
+      if (!validation.valid) {
+        // Invalid input: don't delegate — let the normal tool path surface the
+        // validation error to the LLM.
+        workerManager.sendBuildSubthreadSpecResponse(conversationId, req.requestId, null);
+        return;
+      }
+      const spec = await item.buildSubthreadSpec(validation.params || toolInput, {
+        conversation: conv,
+        session,
+        signal: item.signal
+      });
+      workerManager.sendBuildSubthreadSpecResponse(conversationId, req.requestId, spec || null);
+    } catch (error) {
+      const errorMsg = extractErrorMessage(error);
+      console.error(`[Session] Error building subthread spec for ${req.toolName}:`, errorMsg);
+      workerManager.sendBuildSubthreadSpecResponse(conversationId, req.requestId, null, errorMsg);
+    }
+  });
+
+  // Handle subthread-error fallback requests from workers (engine-only). When a
+  // delegated child ended without a result, give the owning tool a chance to
+  // degrade gracefully via onSubthreadError; reply with the fallback text (or
+  // '' → the worker writes a default error result).
+  workerManager.setOnSubthreadErrorRequest(async (request, conversationId) => {
+    /** @type {{requestId: string, toolName: string, toolInput?: Record<string, unknown>, reason?: string}} */
+    const req = /** @type {*} */ (request);
+    const conv = session.conversations.get(conversationId);
+    if (!conv) {
+      workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, '');
+      return;
+    }
+    try {
+      const ItemClass = contextItemRegistry.getByToolName(req.toolName);
+      if (!ItemClass) {
+        workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, '');
+        return;
+      }
+      /** @type {import('juggler/context-item').ItemContext} */
+      const itemContext = {
+        id: req.requestId,
+        session,
+        conversation: conv,
+        messageThread: conv.rootMessageThread
+      };
+      const item = new (/** @type {any} */ (ItemClass))(itemContext);
+      if (typeof item.onSubthreadError !== 'function') {
+        workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, '');
+        return;
+      }
+      const error = new Error(req.reason || 'the delegated sub-agent failed');
+      const fallback = await item.onSubthreadError(error, /** @type {Record<string, unknown>} */ (req.toolInput || {}));
+      const result = fallback && typeof fallback.result === 'string' ? fallback.result : '';
+      workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, result);
+    } catch (error) {
+      console.error(`[Session] Error running onSubthreadError for ${req.toolName}:`, extractErrorMessage(error));
+      workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, '');
+    }
+  });
+
   // Handle approval requests from workers (shared engine/viewer logic).
   // Worker needs approval options from action plugins (which run on main thread).
   workerManager.setOnApprovalRequest((request, conversationId) =>

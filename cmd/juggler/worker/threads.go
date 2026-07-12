@@ -37,6 +37,14 @@ type CreateThreadOptions struct {
 	ToolName  string
 	ToolInput json.RawMessage
 
+	// Delegated marks a thread spawned by a delegatesToSubthread tool (not the
+	// create_thread meta-tool). It is stamped onto the thread Y.Map so the
+	// strategy-loop defer can guarantee an open-ended delegated child still
+	// resolves a result (resolveDelegatedThreadResult) — the parent's stamped
+	// tool_use must always be paired with a tool_result. Tool-use coordinates
+	// (ToolUseID/ToolName/ToolInput) are set exactly as for create_thread.
+	Delegated bool
+
 	// ParentThreadItemID, if non-empty, switches w.thread to that parent
 	// before creating the new thread (used by ExternalDispatch entry points
 	// to scope into a specific parent). Empty means: keep the current scope.
@@ -144,6 +152,9 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 				if err := json.Unmarshal([]byte(opts.ModelConfigJSON), &mc); err == nil && len(mc) > 0 {
 					m.Set("modelConfig", convertToYcrdt(mc))
 				}
+			}
+			if opts.Delegated {
+				m.Set("delegated", true)
 			}
 			if opts.ToolUseID != "" {
 				m.Set("toolUseId", opts.ToolUseID)

@@ -215,6 +215,15 @@ import { coerceToolInputToSchema } from './coerce-schema-types.js';
  * @property {boolean} [watchesFileChanges] - React to file modifications (default: false)
  * @property {string} [idPrefix] - **@internal** (outside the engineApi compat promise; used by core, third-party support not guaranteed). Prefix for generated IDs (e.g., 'ITEM', 'RULE'). Defaults to 'ITEM'
  * @property {string} [author] - Author name (e.g., 'Juggler Team')
+ * @property {boolean} [delegatesToSubthread] - If true, this item's tool MAY run
+ *   as a subthread instead of executing client-side. The flag only advertises
+ *   the capability to the worker; the per-call decision is
+ *   `buildSubthreadSpec(toolInput, ctx)` — returning a spec delegates, returning
+ *   `null` runs the ordinary `execute()`. When the tool delegates, the LLM's
+ *   `tool_use` is answered by a child agent turn's `return_result`; the child's
+ *   working context (large fetches, intermediate tool calls) never enters the
+ *   parent. Optionally pair with `onSubthreadError(error, toolInput)` to degrade
+ *   gracefully when the child fails. Default: false
  * @property {boolean} [workerManaged] - **@internal** (outside the engineApi compat promise). If true, execution is handled by the Go worker
  *   server-side instead of the engine browser. The plugin still provides
  *   `getToolDefinitions()`, `getStatusUI()`, and `getBadgeOptions()`, but
@@ -233,6 +242,32 @@ import { coerceToolInputToSchema } from './coerce-schema-types.js';
  *   `shouldAutoInstantiate()` returning a boolean/Promise (default: seed
  *   unconditionally when true). Default: false
  * @property {string} [itemCategory] - **@internal** (outside the engineApi compat promise). Item category: 'context-item', 'meta', or 'rule'
+ */
+
+/**
+ * The seed for a delegated subthread, returned by `buildSubthreadSpec`.
+ * @typedef {object} SubthreadSpec
+ * @property {string} goal - Child thread label / column header.
+ * @property {string} prompt - The child's seed user message (task + any inlined data).
+ * @property {string} [resultSpec] - Contract for what the child's `return_result`
+ *   must contain; appended to the seed and shown in the thread header.
+ */
+
+/**
+ * Context passed to `buildSubthreadSpec`. Runs in the browser (engine), after
+ * `validate()`.
+ * @typedef {object} SubthreadBuildContext
+ * @property {any} conversation - The conversation the tool was called in.
+ * @property {any} session - The owning session.
+ * @property {AbortSignal} [signal] - Abort signal for any local pre-work.
+ */
+
+/**
+ * The optional fallback a delegating tool returns from `onSubthreadError` when
+ * its child ends without a result.
+ * @typedef {object} SubthreadErrorFallback
+ * @property {string} result - The tool_result text delivered in place of the
+ *   failed child's result.
  */
 
 // ============================================================================
@@ -594,6 +629,43 @@ class ContextItem {
       approval: approval || undefined,
       displayData: approval?.display
     };
+  }
+
+  // ============================================================================
+  // SUBTHREAD DELEGATION
+  // ============================================================================
+
+  /**
+   * Decide whether this invocation runs as a subthread, and how to seed it.
+   * Only consulted when the MANIFEST sets `delegatesToSubthread: true`. Runs in
+   * the browser (engine), after `validate()`. Returning a spec delegates the
+   * call to a child agent turn (whose `return_result` becomes this tool's
+   * result); returning `null` runs the ordinary client-side `execute()`.
+   * [Context: engine]
+   * @param {Record<string, unknown>} toolInput - Validated tool input.
+   * @param {SubthreadBuildContext} ctx - { conversation, session, signal }.
+   * @returns {Promise<SubthreadSpec | null> | SubthreadSpec | null} Spec → delegate; null → run execute(). May be async (e.g. to fetch and inline data).
+   */
+  buildSubthreadSpec(toolInput, ctx) {
+    void toolInput;
+    void ctx;
+    return null;
+  }
+
+  /**
+   * Optional fallback invoked when a delegated child ends without a result
+   * (it errored, or ended without calling return_result and left no clean
+   * trailing text). Return `{ result }` to deliver that text as the tool_result
+   * instead of a default error, or `null` to accept the default.
+   * [Context: engine]
+   * @param {Error} error - Why the child failed / ended open.
+   * @param {Record<string, unknown>} toolInput - The original validated input.
+   * @returns {Promise<SubthreadErrorFallback | null> | SubthreadErrorFallback | null} Fallback result, or null for the default (base: null)
+   */
+  onSubthreadError(error, toolInput) {
+    void error;
+    void toolInput;
+    return null;
   }
 
   // ============================================================================

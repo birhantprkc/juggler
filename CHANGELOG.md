@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added ability for extension items to spawn a subthread, and used this to make the webfetch tool run sub-prompts to filter its results
+
 ## [0.3.4] - 2026-07-11
 
 - Added user-defined slash commands with a UI editor and sub-thread execution

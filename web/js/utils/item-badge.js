@@ -95,7 +95,17 @@ export function iconOptionsForItem(item, ctx = {}) {
     case 'user': return { color: 'green', iconSvg: USER_AVATAR_SVG };
     case 'thinking': return { color: /** @type {string} */ (TYPE_COLORS.thinking), iconSvg: TYPE_ICONS.thinking };
     case 'assistant': return { color: 'slate', iconSvg: TYPE_ICONS.assistant };
-    case 'thread': return classIconOptions(contextItemRegistry.get('thread'), TYPE_ICONS.context);
+    case 'thread': {
+      // A delegated thread carries its delegating tool's name (threads.go stamps
+      // `toolName` on the thread Y.Map). Badge it as that tool — the same lookup
+      // the tool-action case uses — so e.g. a WebFetch subthread shows the globe
+      // icon rather than the generic thread glyph. Undelegated threads have no
+      // toolName and keep the plain thread badge.
+      const toolName = item?.get?.('toolName');
+      const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;
+      if (ActionClass) return classIconOptions(ActionClass, TYPE_ICONS.action);
+      return classIconOptions(contextItemRegistry.get('thread'), TYPE_ICONS.context);
+    }
     case 'tool-action': {
       const toolName = item.get('toolName');
       const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;
@@ -195,7 +205,15 @@ export function typeNameForItem(item, ctx = {}) {
     case 'user': return 'User Message';
     case 'thinking': return 'Thinking';
     case 'assistant': return 'Assistant Message';
-    case 'thread': return pluginTypeName(null, contextItemRegistry.get('thread'), [], 'Thread');
+    case 'thread': {
+      // Delegated threads label as their delegating tool (e.g. "Web Fetch")
+      // rather than the generic "Thread"; mirrors the tool-action label path but
+      // uses the static type label (no per-call tool result to feed getStatusUI).
+      const toolName = item?.get?.('toolName');
+      const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;
+      if (ActionClass) return pluginTypeName(null, ActionClass, [], toolName);
+      return pluginTypeName(null, contextItemRegistry.get('thread'), [], 'Thread');
+    }
     case 'tool-action': {
       const toolName = item.get('toolName');
       const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;

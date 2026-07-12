@@ -539,6 +539,20 @@ func (w *ConversationWorker) handleStrategyHookResponse(payload json.RawMessage)
 	}
 }
 
+func (w *ConversationWorker) handleBuildSubthreadSpecResponse(payload json.RawMessage) {
+	select {
+	case w.subthreadSpecResultChan <- payload:
+	default:
+	}
+}
+
+func (w *ConversationWorker) handleSubthreadErrorResponse(payload json.RawMessage) {
+	select {
+	case w.subthreadErrorResultChan <- payload:
+	default:
+	}
+}
+
 func (w *ConversationWorker) handleYjsSync(payload json.RawMessage) {
 	var msg YjsSyncMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
