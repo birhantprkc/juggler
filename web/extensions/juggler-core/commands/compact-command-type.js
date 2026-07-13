@@ -9,9 +9,8 @@ import {
   isCompactionPending,
   startCompaction,
   endCompaction,
-  defaultSummarizationPrompt
+  foldConversationIntoSummaryThread
 } from 'juggler/model';
-import { createThreadMessage, createUserMessage, isConversationalItemType } from 'juggler/model';
 
 /**
  * Compact command — collapse the entire conversation into a sub-thread.
@@ -55,113 +54,18 @@ class CompactCommandType extends CommandType {
     startCompaction(mt.conversationId);
 
     try {
-      const items = this.items;
-
-      // Blocklist by persistence, not allowlist by type. Anything tagged
-      // `preventUserDeletion` is a sticky parent-level setting (today only
-      // the system-prompt) and stays put — the new thread inherits it from
-      // the parent at LLM-call time. Everything else is part of the
-      // conversation the user wants to fold up: regular messages, tool
-      // actions, meta-tool-results, thinking, AND dynamic context items
-      // the LLM produced during the conversation (plans, rules-snippets,
-      // files etc.). An allowlist over message types misses that last
-      // category and leaves orphans at the parent ("first and last items
-      // not moved into the sub-thread" → those were context items
-      // produced by tools).
-      //
-      // The one exception is the *leading run* of standing context items —
-      // everything the conversation is auto-seeded with before the first
-      // message: the project's ambient instruction files (CLAUDE.md /
-      // AGENTS.md / …, see Session.addAIAssistantFiles) AND project memory and
-      // any other auto-instantiated standing item (see seedAutoContextItems).
-      // Those are working context, not conversation history: sweeping them
-      // into the sub-thread leaves the parent without its agents files and
-      // memory after the summary lands, which is never what the user expects.
-      // We keep them at the parent. The summarization turn still sees them
-      // unchanged because the worker always sources context items from the
-      // ROOT items array regardless of which thread it is processing
-      // (ConversationDocument.GetContextItemIDs reads root; the render-context
-      // callback reads conv.rootMessageThread.contextItems), so the
-      // prompt-cache prefix is preserved during compaction. Only the leading
-      // run is preserved — a standing item pinned mid-conversation is part of
-      // the work being folded up and is swept like any other item.
-      //
-      // A standing context item has an itemId, was not minted by a tool (no
-      // toolUseId), and is not a conversational (history) type. The run ends at
-      // the first conversational item. This mirrors the worker's sub-thread
-      // inheritance rule (ConversationDocument.GetContextItemIDsForThread):
-      // keying on the leading run rather than the old (preventUserDeletion ||
-      // file-content) predicate is what keeps memory — which is neither
-      // preventUserDeletion on its Y.Map nor a file-content type — at the
-      // parent instead of both ending the run early AND being swept into the
-      // summary thread.
-      /** @type {object[]} */
-      const snapshots = [];
-      /** @type {number[]} */
-      const indicesToDelete = [];
-      let inLeadingContext = true;
-      items.forEach((item, idx) => {
-        if (!item || typeof item.toJSON !== 'function') return;
-        // Sticky parent-level items (today only the SYSTEM_1 system prompt)
-        // stay put and are transparent to the leading run — a
-        // preventUserDeletion item above does not end it.
-        if (item.get?.('preventUserDeletion') === true) return;
-        const type = item.get?.('type');
-        if (inLeadingContext) {
-          if (isConversationalItemType(type)) {
-            // First conversational item ends the starting-context run:
-            // everything from here on is folded into the thread, including any
-            // later standing-item pins (they are mid-conversation work).
-            inLeadingContext = false;
-          } else if (item.get?.('itemId') && !item.get?.('toolUseId')) {
-            // A leading standing context item (agents file, memory, rule, …).
-            // Keep it at the parent.
-            return;
-          }
-        }
-        // Defensive: a thread we ourselves just inserted is content by
-        // type but must not be re-swallowed.
-        if (
-          item.get?.('noAutoSelect') &&
-          type === 'thread' &&
-          !item.get?.('result')
-        ) return;
-        snapshots.push(item.toJSON());
-        indicesToDelete.push(idx);
+      // The heavy lifting — the blocklist-by-persistence classification, the
+      // leading-context-preservation rule, and the atomic fold-into-thread
+      // transaction — lives in foldConversationIntoSummaryThread so /handoff
+      // can reuse it verbatim. See that function for the full reasoning on why
+      // standing context items (agents files, memory, system prompt) are kept
+      // at the parent while all conversation history is swept into the thread.
+      const folded = foldConversationIntoSummaryThread(mt, {
+        goal: 'Compacted conversation history'
       });
-
-      if (snapshots.length === 0) {
+      if (!folded) {
         return { handled: true, message: 'Nothing to compact', error: true };
       }
-
-      const threadMsg = createThreadMessage({ goal: 'Compacted conversation history' });
-      /** @type {any} */ (threadMsg).needsStrategyRun = true;
-      // The user did not ask to drill into the new thread — they just want
-      // their conversation to compact in-place.
-      /** @type {any} */ (threadMsg).noAutoSelect = true;
-      // Force the summarization turn to call return_result rather than replying
-      // in plain text. `forceTool` is the generic framework mechanism (any plugin
-      // may set it on a thread it creates); the worker translates it into a
-      // provider tool_choice. Providers without forced-tool support (claudecode)
-      // fall back to the plain-text → writeThreadResult path.
-      /** @type {any} */ (threadMsg).forceTool = 'return_result';
-
-      const userMsg = createUserMessage(defaultSummarizationPrompt(snapshots.length));
-
-      // Insert position: where the first content item was (so the thread
-      // lands among the content, not before context items at index 0).
-      const insertAt = /** @type {number} */ (indicesToDelete[0]); // bounded: snapshots.length>0 guard guarantees ≥1 index
-
-      // Single Yjs transaction so undo reverses everything atomically.
-      mt.transact(() => {
-        const threadYMap = mt.buildThreadYMap(threadMsg, [...snapshots, userMsg]);
-
-        for (let i = indicesToDelete.length - 1; i >= 0; i--) {
-          mt.deleteAt(/** @type {number} */ (indicesToDelete[i])); // bounded by loop
-        }
-
-        mt.insertAt(insertAt, threadYMap);
-      });
 
       return { handled: true };
     } catch (error) {

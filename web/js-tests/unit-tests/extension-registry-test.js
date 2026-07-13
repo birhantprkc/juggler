@@ -46,7 +46,7 @@ const CORE = '@juggler/core';
 // Representative core capability ids that must survive the switchover unchanged.
 const CORE_CONTEXT_ITEMS = ['read-file', 'write-file', 'execute'];
 const CORE_STRATEGIES = ['default', 'read-only', 'yolo'];
-const CORE_COMMANDS = ['clear', 'compact', 'duplicate', 'new', 'thread'];
+const CORE_COMMANDS = ['clear', 'compact', 'duplicate', 'handoff', 'new', 'thread'];
 
 /**
  * @param {object} _ctx

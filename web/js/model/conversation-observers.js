@@ -17,7 +17,7 @@ import strategyRegistry from '../registries/strategy-registry.js';
 import workerManager from '../services/worker-manager.js';
 import { isViewer } from '../../sdk/lib/client-role.js';
 import { recordTape } from '../utils/event-tape.js';
-import { isCompactionPending } from '../utils/compaction-utils.js';
+import { isCompactionPending, maybePromoteHandoffThread } from '../utils/compaction-utils.js';
 import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
 
 /**
@@ -156,6 +156,10 @@ export function setupYjsObservers(c) {
       // inputTokens crosses the threshold relative to the budget.
       if (isViewer()) {
         maybeAutoCompact(c);
+        // /handoff completion: when this tab's handoff summary thread finishes,
+        // promote its result into the parked first user message. Cheap scan,
+        // fires both live (worker writes result) and on reload hydration.
+        maybePromoteHandoffThread(c._rootMessageThread);
       }
     } catch (err) {
       console.error('[Conversation] Items observer error (corrupt data?):', err);

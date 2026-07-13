@@ -1360,28 +1360,29 @@ class Session {
 
 
   /**
-   * Generate a unique name for a cloned/duplicated conversation
-   * If name has trailing number, increment it until unique.
-   * If no trailing number, append " 2" and increment until unique.
+   * Generate a unique "<base> (<word>)" name for a derived conversation (a clone
+   * via /duplicate, a continuation via /handoff, …). Strips an existing
+   * " (<word>)" / " (<word> N)" suffix first so re-deriving doesn't stack
+   * "X (copy) (copy)", then appends the suffix and bumps a counter until unique.
    * @param {string} sourceName - Original conversation name
-   * @returns {string} Unique name for the clone
+   * @param {string} [word] - Suffix word (default 'copy')
+   * @returns {string} Unique suffixed name
    * @private
    */
-  _generateUniqueCloneName(sourceName) {
+  _generateUniqueSuffixedName(sourceName, word = 'copy') {
     const existingNames = new Set();
     this.conversations.forEach((conv) => {
       existingNames.add(conv.name);
     });
 
-    // If sourceName already ends with " (copy)" or " (copy N)", strip it so we
-    // don't produce "X (copy) (copy)" when re-cloning a clone.
-    const base = sourceName.replace(/\s*\(copy(?:\s+\d+)?\)$/, '');
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const base = sourceName.replace(new RegExp(`\\s*\\(${escaped}(?:\\s+\\d+)?\\)$`), '');
 
-    const candidate = `${base} (copy)`;
+    const candidate = `${base} (${word})`;
     if (!existingNames.has(candidate)) return candidate;
     let n = 2;
-    while (existingNames.has(`${base} (copy ${n})`)) n++;
-    return `${base} (copy ${n})`;
+    while (existingNames.has(`${base} (${word} ${n})`)) n++;
+    return `${base} (${word} ${n})`;
   }
 
   /**
@@ -1395,7 +1396,7 @@ class Session {
     }
     const json = source.toJSON();
     json.id = this._generateConversationId();
-    json.name = this._generateUniqueCloneName(source.name);
+    json.name = this._generateUniqueSuffixedName(source.name);
     json.created = new Date().toISOString();
     return Conversation.fromJSON(json, this, /** @type {import('./session.js').ConversationServices} */ (this._services));
   }
@@ -1403,9 +1404,12 @@ class Session {
   /**
    * Duplicate a conversation and add it to the session, inserted right after the source
    * @param {string} conversationId - ID of conversation to duplicate
+   * @param {object} [options] - Options
+   * @param {string} [options.nameSuffix] - Suffix word for the derived name
+   *   (default 'copy'; /handoff passes 'continued' → "X (continued)")
    * @returns {Promise<string|null>} New conversation ID, or null if source not found
    */
-  async duplicateConversation(conversationId) {
+  async duplicateConversation(conversationId, { nameSuffix = 'copy' } = {}) {
     const source = this.getConversation(conversationId);
     if (!source) {
       return null;
@@ -1425,7 +1429,7 @@ class Session {
       return null;
     }
 
-    const requestedName = this._generateUniqueCloneName(source.name);
+    const requestedName = this._generateUniqueSuffixedName(source.name, nameSuffix);
 
     const requestedId = this._generateConversationId();
     this._pendingCreates.add(requestedId);

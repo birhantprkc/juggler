@@ -5,6 +5,9 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added a /handoff command which summarises the current conversation into a new tab
+- Added auto-update for Windows
+
 ## [0.3.5] - 2026-07-12
 
 - Added ability for extension items to spawn a subthread, and used this to make the webfetch tool run sub-prompts to filter its results

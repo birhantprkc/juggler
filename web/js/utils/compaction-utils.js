@@ -7,8 +7,15 @@
  * observer.
  */
 
+import {
+  createUserMessage,
+  createThreadMessage,
+  isConversationalItemType
+} from '../../sdk/lib/message.js';
+
 /**
  * @typedef {import('../../sdk/lib/message.js').Message} Message
+ * @typedef {import('../model/message-thread.js').MessageThread} MessageThread
  */
 
 /**
@@ -111,5 +118,151 @@ export function startCompaction(conversationId) {
  */
 export function endCompaction(conversationId) {
   pendingCompactions.delete(conversationId);
+}
+
+/**
+ * Fold a message thread's conversational history into a single summarization
+ * sub-thread — the shared primitive behind /compact and /handoff.
+ *
+ * Every content item (messages, tool actions, thinking, AND dynamic context
+ * items the LLM produced) is moved into a new thread carrying a summarization
+ * prompt; the LEADING run of standing context items (agents files, memory, the
+ * sticky system prompt) stays at the parent so the conversation keeps its
+ * working context. The thread is seeded with `needsStrategyRun` +
+ * `forceTool: 'return_result'`, so the worker answers the prompt and its
+ * `result` becomes the summary. The whole move is one Yjs transaction, so undo
+ * reverses it atomically.
+ *
+ * The blocklist-by-persistence rule and leading-context reasoning are described
+ * in detail at the /compact call site; this function is the extraction of that
+ * body so /handoff can reuse it verbatim (with a `handoffPromote` marker in
+ * `threadExtra`). Callers must first settle the conversation
+ * (cancelAndSettle) and guard against concurrent compactions
+ * (isCompactionPending) — this function only performs the document mutation.
+ * @param {MessageThread} mt - Message thread to fold
+ * @param {object} [opts]
+ * @param {string} [opts.goal] - Thread tile label
+ * @param {object} [opts.threadExtra] - Extra fields merged onto the thread
+ *   message (e.g. `{ handoffPromote: true }`)
+ * @returns {{ threadId: string } | null} The new summary thread's id, or null
+ *   when there was nothing to fold.
+ */
+export function foldConversationIntoSummaryThread(
+  mt,
+  { goal = 'Compacted conversation history', threadExtra = {} } = {}
+) {
+  const items = mt.items;
+
+  /** @type {object[]} */
+  const snapshots = [];
+  /** @type {number[]} */
+  const indicesToDelete = [];
+  let inLeadingContext = true;
+  items.forEach((item, idx) => {
+    if (!item || typeof item.toJSON !== 'function') return;
+    // Sticky parent-level items (today only the SYSTEM_1 system prompt) stay
+    // put and are transparent to the leading run.
+    if (item.get?.('preventUserDeletion') === true) return;
+    const type = item.get?.('type');
+    if (inLeadingContext) {
+      if (isConversationalItemType(type)) {
+        // First conversational item ends the starting-context run.
+        inLeadingContext = false;
+      } else if (item.get?.('itemId') && !item.get?.('toolUseId')) {
+        // A leading standing context item — keep it at the parent.
+        return;
+      }
+    }
+    // Defensive: a thread we ourselves just inserted is content by type but
+    // must not be re-swallowed.
+    if (item.get?.('noAutoSelect') && type === 'thread' && !item.get?.('result')) return;
+    snapshots.push(item.toJSON());
+    indicesToDelete.push(idx);
+  });
+
+  if (snapshots.length === 0) return null;
+
+  const threadMsg = /** @type {any} */ (createThreadMessage({ goal }));
+  threadMsg.needsStrategyRun = true;
+  // The user did not ask to drill into the new thread.
+  threadMsg.noAutoSelect = true;
+  // Force the summarization turn to call return_result rather than replying in
+  // plain text (providers without forced-tool support fall back to the
+  // plain-text → writeThreadResult path).
+  threadMsg.forceTool = 'return_result';
+  Object.assign(threadMsg, threadExtra);
+
+  const userMsg = createUserMessage(defaultSummarizationPrompt(snapshots.length));
+
+  // Insert where the first content item was, so the thread lands among the
+  // content rather than before the preserved leading context items.
+  const insertAt = /** @type {number} */ (indicesToDelete[0]);
+
+  // Single Yjs transaction so undo reverses everything atomically.
+  mt.transact(() => {
+    const threadYMap = mt.buildThreadYMap(threadMsg, [...snapshots, userMsg]);
+    for (let i = indicesToDelete.length - 1; i >= 0; i--) {
+      mt.deleteAt(/** @type {number} */ (indicesToDelete[i]));
+    }
+    mt.insertAt(insertAt, threadYMap);
+  });
+
+  return { threadId: threadMsg.itemId };
+}
+
+/** Guards against a single client double-promoting the same handoff thread. */
+const promotingHandoffs = new Set();
+
+/**
+ * /handoff completion step: when a summary thread minted by /handoff (tagged
+ * `handoffPromote`) has produced its `result`, replace the thread tile with a
+ * parked user message carrying that summary — the first message of the new
+ * "(continued)" tab. "Parked" is automatic: inserting a user item never starts
+ * a turn (only sendMessage / needsStrategyRun do), so the tab waits for the
+ * user to press Continue or type a follow-up.
+ *
+ * Best-effort and idempotent: driven from the items observer, so it fires both
+ * when the worker writes the result live and when a reloaded doc hydrates with
+ * the result already present. A normal /compact thread carries no
+ * `handoffPromote` flag and is never touched.
+ * @param {MessageThread} mt - Root message thread of the "(continued)" tab
+ * @returns {boolean} True if a thread was promoted this call
+ */
+export function maybePromoteHandoffThread(mt) {
+  try {
+    const items = mt?.items;
+    if (!items || !items.length) return false;
+    for (const item of items) {
+      if (item?.get?.('type') !== 'thread') continue;
+      if (item.get('handoffPromote') !== true) continue;
+      const threadId = item.get('itemId');
+      const result = item.get('result');
+      // Thread exists but hasn't summarised yet — wait for a later tick.
+      if (typeof result !== 'string' || !result.trim()) return false;
+
+      const key = `${mt.conversationId}:${threadId}`;
+      if (promotingHandoffs.has(key)) return false;
+      promotingHandoffs.add(key);
+      try {
+        mt.transact(() => {
+          const idx = mt.findIndexByItemId(threadId);
+          if (idx < 0) return;
+          mt.deleteAt(idx);
+          const msg = /** @type {any} */ (createUserMessage(result));
+          // Mint an id so the message is addressable/selectable, then reinsert
+          // at the thread's old slot (right after the preserved context items).
+          msg.itemId = mt.conversation._nextItemId();
+          mt.insertItem(idx, msg);
+        });
+      } finally {
+        promotingHandoffs.delete(key);
+      }
+      return true;
+    }
+  } catch (err) {
+    // Never let a promotion failure break the items observer.
+    console.warn('[handoff] promotion skipped:', err);
+  }
+  return false;
 }
 
