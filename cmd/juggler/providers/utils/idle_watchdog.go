@@ -6,6 +6,7 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,4 +101,20 @@ func (w *IdleWatchdog) Stop() {
 // i.e. the stream stalled rather than the caller cancelling it.
 func (w *IdleWatchdog) Fired() bool {
 	return w.fired.Load()
+}
+
+// StallMarker and StallDroppedMarker are the two substrings every provider's
+// idle-stall error carries. They form the contract the worker's transient-error
+// classifier (isTransientMsg) matches on, so the message text is built here in
+// one place rather than hand-written per provider.
+const (
+	StallMarker        = "stream stalled"
+	StallDroppedMarker = "connection may have dropped"
+)
+
+// StallError builds the canonical idle-stall error a streaming provider returns
+// when its IdleWatchdog fires. providerName is the lowercase provider label
+// ("anthropic", "openai", "gemini") and idle is the elapsed idle window.
+func StallError(providerName string, idle time.Duration) error {
+	return fmt.Errorf("%s %s: no data for %s — %s", providerName, StallMarker, idle, StallDroppedMarker)
 }

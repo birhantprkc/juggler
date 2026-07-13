@@ -278,34 +278,32 @@ class BaseRegistry {
   async _importDescriptor(descriptor) {
     const modulePath = descriptorPath(descriptor);
     const extensionId = typeof descriptor === 'string' ? null : (descriptor.extensionId ?? null);
-    try {
-      // Prefix embedded builtin paths with the versioned asset prefix for cache
-      // busting; disk-served plugin/extension paths are left untouched.
-      const resolvedPath = resolveAssetUrl(modulePath);
-      const module = await importModuleUrl(resolvedPath);
+    // Errors propagate to the caller (Promise.allSettled in load()), which logs
+    // the failure with full descriptor context — don't log here too or every
+    // failed plugin is reported twice.
+    // Prefix embedded builtin paths with the versioned asset prefix for cache
+    // busting; disk-served plugin/extension paths are left untouched.
+    const resolvedPath = resolveAssetUrl(modulePath);
+    const module = await importModuleUrl(resolvedPath);
 
-      if (!module.default) {
-        throw new Error(`${this.name} module ${modulePath} does not have a default export`);
-      }
-
-      const ItemClass = module.default;
-
-      // Validate class (this also ensures MANIFEST exists)
-      this.validateClass(ItemClass);
-
-      // Get ID from class's MANIFEST
-      const ItemClassWithManifest = /** @type {any} */ (ItemClass);
-      const id = ItemClassWithManifest.MANIFEST.id;
-
-      if (!id) {
-        throw new Error(`${this.name} class in ${modulePath} has no MANIFEST.id`);
-      }
-
-      return { id, ItemClass, modulePath, extensionId };
-    } catch (error) {
-      console.error(`[${this.name}] Failed to load ${this.name.toLowerCase()} from ${modulePath}:`, error);
-      throw error;
+    if (!module.default) {
+      throw new Error(`${this.name} module ${modulePath} does not have a default export`);
     }
+
+    const ItemClass = module.default;
+
+    // Validate class (this also ensures MANIFEST exists)
+    this.validateClass(ItemClass);
+
+    // Get ID from class's MANIFEST
+    const ItemClassWithManifest = /** @type {any} */ (ItemClass);
+    const id = ItemClassWithManifest.MANIFEST.id;
+
+    if (!id) {
+      throw new Error(`${this.name} class in ${modulePath} has no MANIFEST.id`);
+    }
+
+    return { id, ItemClass, modulePath, extensionId };
   }
 
   /**

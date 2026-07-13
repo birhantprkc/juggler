@@ -5,8 +5,6 @@
 package zai
 
 import (
-	"strings"
-
 	"juggler/cmd/juggler/providers/openaibase"
 )
 
@@ -20,7 +18,7 @@ func Register() {
 		EnvVarName:         "ZAI_API_KEY",
 		APIKeyURL:          "https://z.ai/manage-apikey/apikey-list",
 		DisplayProvider:    "Z.AI",
-		Filter:             isGLMChatModel,
+		Filter:             openaibase.PrefixModelFilter("glm-", "-embedding", "-vision", "-tts"),
 		ContextWindowCaps:  contextWindowCaps,
 		MaxOutputCaps:      maxOutputCaps,
 		UsageStatsOverride: usageStats,
@@ -30,18 +28,4 @@ func Register() {
 			IncludeFrequencyPenalty: true,
 		},
 	})
-}
-
-// isGLMChatModel filters to GLM chat models, excluding embedding/vision/tts variants.
-func isGLMChatModel(modelID string) bool {
-	id := strings.ToLower(modelID)
-	if !strings.HasPrefix(id, "glm-") {
-		return false
-	}
-	for _, suffix := range []string{"-embedding", "-vision", "-tts"} {
-		if strings.HasSuffix(id, suffix) {
-			return false
-		}
-	}
-	return true
 }

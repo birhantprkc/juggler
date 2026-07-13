@@ -55,9 +55,6 @@ export async function initializeRegistries() {
   if (!contextItemRegistry.isInitialized()) {
     await contextItemRegistry.init();
   }
-  if (!contextItemRegistry.isInitialized()) {
-    await contextItemRegistry.init();
-  }
   if (!strategyRegistry.isInitialized()) {
     await strategyRegistry.init();
   }
@@ -201,11 +198,7 @@ export function getResponseHandler(conversation) {
  */
 export async function buildContext(messageThread, session) {
   const contextWindow = messageThread.conversation.contextWindow || 200000;
-  const builder = await ContextBuilder.fromMessageThread(
-    messageThread,
-    session,
-    contextWindow
-  );
+  const builder = new ContextBuilder({ messageThread, session, contextWindow });
   return await builder.prepare();
 }
 

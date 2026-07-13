@@ -68,9 +68,7 @@ func (a ThreadAction) String() string {
 // LLM call needed" (activity="awaiting_llm") from "tools completed long
 // ago, conversation at rest" (activity=""). Without this, the reducer
 // would re-dispatch after undo or after a previous LLM error.
-func decideNextAction(items []ConversationItem, activity string, isRoot bool, continuation ...bool) ThreadAction {
-	explicitContinuation := len(continuation) > 0 && continuation[0]
-
+func decideNextAction(items []ConversationItem, activity string, isRoot bool, explicitContinuation bool) ThreadAction {
 	// In-flight guard: if an LLM call is already in progress, the
 	// reducer must not launch another. It will re-fire when the call
 	// finishes and activity is cleared.
@@ -328,6 +326,21 @@ func (w *ConversationWorker) updateApprovalWaitAnchor() {
 // item is an incomplete child thread, tryReconcile walks into the child
 // and evaluates it. This enables the reducer to dispatch on nested threads
 // without recursive strategy loop calls.
+
+// maxReconcilePasses bounds a drain loop so observer re-triggering can't spin
+// forever. A dispatch may complete and set needsReconcile again (e.g. a child
+// thread completes → parent needs dispatch), so we loop until quiet or capped.
+const maxReconcilePasses = 10
+
+// drainReconcile runs tryReconcile until the reducer is quiet, bounded by
+// maxReconcilePasses. Used wherever an event or strategy-loop step may leave
+// needsReconcile set and no run() event loop is guaranteed to pick it up.
+func (w *ConversationWorker) drainReconcile() {
+	for i := 0; i < maxReconcilePasses && w.needsReconcile; i++ {
+		w.tryReconcile()
+	}
+}
+
 func (w *ConversationWorker) tryReconcile() {
 	if !w.needsReconcile {
 		return

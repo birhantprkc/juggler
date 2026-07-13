@@ -112,7 +112,7 @@ type ExtensionLocations struct {
 
 // HandleListLocations returns the extension install directories.
 func (api *ExtensionsAPI) HandleListLocations(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, r, 0, ExtensionLocations{
+	WriteJSON(w, r, 0, ExtensionLocations{
 		UserExtensions: api.userExtensionDir,
 	})
 }
@@ -129,7 +129,7 @@ func (api *ExtensionsAPI) HandleListExtensions(w http.ResponseWriter, r *http.Re
 	// 2. User extensions (~/.juggler/extensions/*).
 	extensions = append(extensions, api.discoverContainer(api.userExtensionDir, "/user-extensions/", "user")...)
 
-	writeJSON(w, r, 0, extensions)
+	WriteJSON(w, r, 0, extensions)
 }
 
 // discoverEmbeddedContainer scans a container directory inside the embedded

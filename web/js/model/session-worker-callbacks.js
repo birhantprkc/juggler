@@ -8,12 +8,15 @@
  * and one for the viewer role (handles approvals only). Each takes the
  * Session instance and registers the appropriate handlers on workerManager.
  *
- * The shared helpers `updateToolActionApprovalOptions` and `formatToolInput`
- * live here too; they're called from both factories.
+ * The internal helpers `updateToolActionApprovalOptions` and `formatToolInput`
+ * live here too; they're used by the engine-role approval handlers below.
  * @module model/session-worker-callbacks
  */
 
 import workerManager from '../services/worker-manager.js';
+
+/** Fallback context-window size when the model config hasn't reported one yet. */
+const DEFAULT_CONTEXT_WINDOW = 128000;
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import { generateToolDefinitions } from '../services/tool-generator.js';
@@ -27,7 +30,7 @@ import { buildExtensionSystemPromptContributions } from '../services/extensions.
  * @param {Record<string, unknown>} toolInput - Tool input parameters
  * @returns {string} Formatted string
  */
-export function formatToolInput(toolInput) {
+function formatToolInput(toolInput) {
   if ('command' in toolInput && toolInput.command) {
     return String(toolInput.command);
   }
@@ -43,7 +46,7 @@ export function formatToolInput(toolInput) {
  * @param {string} toolUseId - Tool use ID
  * @param {object} approvalOptions - Approval options
  */
-export function updateToolActionApprovalOptions(conv, toolUseId, approvalOptions) {
+function updateToolActionApprovalOptions(conv, toolUseId, approvalOptions) {
   const messageThread = conv.findMessageThreadForToolUse(toolUseId);
   if (!messageThread) {
     console.warn(`[Session] Could not find tool-action ${toolUseId} to update approval options`);
@@ -205,7 +208,7 @@ export function setupWorkerCallbacks(session) {
     try {
       // Build proper contextParams with helpers
       const contextParams = {
-        contextWindowSize: conv.contextWindow || 128000,
+        contextWindowSize: conv.contextWindow || DEFAULT_CONTEXT_WINDOW,
         modelConfig: conv.modelConfig || null,
         helpers: FormattingHelpers,
         ...(req.contextParams || {})

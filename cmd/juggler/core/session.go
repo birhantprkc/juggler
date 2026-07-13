@@ -18,7 +18,7 @@ import (
 	"juggler/internal/jlog"
 )
 
-// BinnedConvInfo describes a conversation that lives in .juggler/bin/.
+// BinnedConvInfo describes a conversation that lives in .juggler/trash/.
 // Sent over the wire to populate the Bin modal. The bin is a permanent holding
 // area — items stay until the user restores them or empties the bin — so there
 // is no expiry/binned-at timestamp to track.
@@ -209,6 +209,8 @@ var (
 	ErrConversationNotFound = fmt.Errorf("conversation not found")
 	ErrNameCollision        = fmt.Errorf("conversation name already in use")
 	ErrInvalidName          = fmt.Errorf("conversation name is invalid")
+	ErrInvalidConvID        = fmt.Errorf("invalid conversation id")
+	ErrConvIDExists         = fmt.Errorf("conversation id already exists")
 )
 
 // ============================================================================
@@ -233,7 +235,7 @@ var (
 type FileSessionStore struct {
 	projectPath string
 	index       *ConvDirIndex
-	// binIndex mirrors the layout of .juggler/bin/ — conversation folders
+	// binIndex mirrors the layout of .juggler/trash/ — conversation folders
 	// that have been binned. Same shape as index; rebuilt on Load and mutated
 	// by BinConversation/RestoreConversation.
 	binIndex *ConvDirIndex
@@ -316,10 +318,10 @@ func (fs *FileSessionStore) CreateConversationFolder(name, requestedID string) (
 	if id == "" {
 		id = GenerateConvID()
 	} else if !IsValidConvID(id) {
-		return "", "", "", fmt.Errorf("invalid conversation id %q", id)
+		return "", "", "", fmt.Errorf("%w: %q", ErrInvalidConvID, id)
 	}
 	if _, exists := fs.index.ByID[id]; exists {
-		return "", "", "", fmt.Errorf("conversation id already exists: %s", id)
+		return "", "", "", fmt.Errorf("%w: %s", ErrConvIDExists, id)
 	}
 	// Collision-resolve against existing names. id is either freshly generated
 	// or has just been checked absent from the index; uniqueName's excludeID is
@@ -431,8 +433,15 @@ func (fs *FileSessionStore) Save(session *Session) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal session globals: %w", err)
 	}
-	if err := os.WriteFile(globalsPath, globalsData, 0644); err != nil {
+	// Atomic temp+rename (matching SaveConversationBinary) so a crash mid-write
+	// can't leave a truncated/torn session.json.
+	tmp := globalsPath + ".tmp"
+	if err := os.WriteFile(tmp, globalsData, 0644); err != nil {
 		return fmt.Errorf("failed to write session globals: %w", err)
+	}
+	if err := atomicio.RobustRename(tmp, globalsPath); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("failed to rename session globals: %w", err)
 	}
 
 	return nil
@@ -485,7 +494,7 @@ func (fs *FileSessionStore) RenameConversation(convID, newName string) (string, 
 		return "", ErrInvalidName
 	}
 	sanitized := SanitizeName(newName)
-	if sanitized == "" || sanitized == "Untitled" && strings.TrimSpace(newName) == "" {
+	if sanitized == "" {
 		return "", ErrInvalidName
 	}
 
@@ -554,7 +563,7 @@ func (fs *FileSessionStore) removeConversationFiles(convID string, permanent boo
 }
 
 // BinConversation moves a conversation's folder from .juggler/ to
-// .juggler/bin/. Returns ErrConversationNotFound if the conversation has no
+// .juggler/trash/. Returns ErrConversationNotFound if the conversation has no
 // active folder. Sets deletedIDs[convID]=true to close the worker-save race
 // window (matches removeConversationFiles); RestoreConversation clears it.
 func (fs *FileSessionStore) BinConversation(convID string) error {
@@ -585,7 +594,7 @@ func (fs *FileSessionStore) BinConversation(convID string) error {
 	return nil
 }
 
-// RestoreConversation moves a conversation's folder from .juggler/bin/ back
+// RestoreConversation moves a conversation's folder from .juggler/trash/ back
 // to .juggler/. Returns ErrConversationNotFound if the conversation is not in
 // the bin.
 func (fs *FileSessionStore) RestoreConversation(convID string) error {
@@ -611,7 +620,7 @@ func (fs *FileSessionStore) RestoreConversation(convID string) error {
 }
 
 // removeBinnedConversationFiles permanently removes (via OS trash where
-// available) a conversation folder from .juggler/bin/.
+// available) a conversation folder from .juggler/trash/.
 func (fs *FileSessionStore) removeBinnedConversationFiles(convID string) error {
 	if fs.binIndex == nil {
 		return nil
@@ -629,7 +638,7 @@ func (fs *FileSessionStore) removeBinnedConversationFiles(convID string) error {
 }
 
 // EmptyBin permanently removes (via OS trash) every conversation currently in
-// .juggler/bin/, returning the ids removed.
+// .juggler/trash/, returning the ids removed.
 func (fs *FileSessionStore) EmptyBin() ([]string, error) {
 	if fs.binIndex == nil {
 		return nil, nil
@@ -687,7 +696,7 @@ func lastActivityTime(convDir string) (time.Time, error) {
 	return st.ModTime(), nil
 }
 
-// BinnedConvList returns metadata for every conversation in .juggler/bin/,
+// BinnedConvList returns metadata for every conversation in .juggler/trash/,
 // sorted most-recently-modified first. "Modified" means the last real LLM
 // transaction (see lastActivityTime). Folders whose timestamp can't be resolved
 // are skipped.

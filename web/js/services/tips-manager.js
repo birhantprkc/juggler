@@ -18,6 +18,7 @@
  */
 
 import keyShortcutManager from './key-shortcut-manager.js';
+import { readPref, writePref, notifyPrefChanged } from './ui-pref-store.js';
 
 /** localStorage key holding `{ seen: string[] }`. */
 const STORAGE_KEY = 'juggler-tips';
@@ -28,19 +29,6 @@ const STORAGE_KEY = 'juggler-tips';
  * of waiting for an unrelated render.
  */
 export const TIPS_CHANGED_EVENT = 'juggler:tips-changed';
-
-/**
- * Best-effort broadcast that the tips state changed.
- * @returns {void}
- * @private
- */
-function notifyChanged() {
-  try {
-    window.dispatchEvent(new CustomEvent(TIPS_CHANGED_EVENT));
-  } catch {
-    /* no window / CustomEvent — nothing to notify */
-  }
-}
 
 /**
  * A materialized tip ready for display.
@@ -98,14 +86,10 @@ const FEATURE_TIPS = [
  * @private
  */
 function readState() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {};
-    return {
-      seen: Array.isArray(raw.seen) ? raw.seen.filter((/** @type {any} */ x) => typeof x === 'string') : [],
-    };
-  } catch {
-    return { seen: [] };
-  }
+  const raw = readPref(STORAGE_KEY, {});
+  return {
+    seen: Array.isArray(raw.seen) ? raw.seen.filter((/** @type {any} */ x) => typeof x === 'string') : [],
+  };
 }
 
 /**
@@ -114,11 +98,7 @@ function readState() {
  * @private
  */
 function writeState(state) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    /* best-effort */
-  }
+  writePref(STORAGE_KEY, state);
 }
 
 /**
@@ -155,7 +135,7 @@ export function markSeen(id) {
   if (!state.seen.includes(id)) {
     state.seen.push(id);
     writeState(state);
-    notifyChanged();
+    notifyPrefChanged(TIPS_CHANGED_EVENT);
   }
 }
 
@@ -167,5 +147,5 @@ export function markSeen(id) {
  */
 export function resetSeen() {
   writeState({ seen: [] });
-  notifyChanged();
+  notifyPrefChanged(TIPS_CHANGED_EVENT);
 }

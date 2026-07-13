@@ -67,9 +67,7 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 		if w.getActivity() == ActivityAwaitingLLM {
 			w.storeState(StateIdle)
 			w.needsReconcile = true
-			for i := 0; i < 10 && w.needsReconcile; i++ {
-				w.tryReconcile()
-			}
+			w.drainReconcile()
 			return
 		}
 
@@ -98,7 +96,7 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 		w.processingStartedAt = 0
 		w.approvalWaitStartedAt = 0
 		w.lastProgressWriteMs = 0
-		w.thread = threadContext{}
+		w.resetThreadContext()
 
 		if wasCancelled {
 			w.finalizeCancellation(completedThreadID)
@@ -136,9 +134,7 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 			if completedThreadID != "" && w.hasPendingItems("") {
 				w.requestLLM("")
 				w.needsReconcile = true
-				for i := 0; i < 10 && w.needsReconcile; i++ {
-					w.tryReconcile()
-				}
+				w.drainReconcile()
 				return
 			}
 
@@ -147,9 +143,7 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 			// forget: its effects re-enter via doc sync + reconcile.
 			w.dispatchWorkerIdleHook()
 		} else {
-			for i := 0; i < 10 && w.needsReconcile; i++ {
-				w.tryReconcile()
-			}
+			w.drainReconcile()
 		}
 	}()
 
@@ -385,7 +379,7 @@ strategyLoop:
 			}
 			return
 		}
-		if response.StopReason == "end_turn" && w.hasAssistantText(response) {
+		if response.StopReason == "end_turn" && hasAssistantText(response) {
 			if w.hasPendingItems(w.thread.itemID) {
 				continue strategyLoop
 			}
@@ -399,7 +393,7 @@ strategyLoop:
 // meta tools like return_result). Pure thinking or a literally empty
 // stream do NOT count; those mark a barren turn.
 func (w *ConversationWorker) turnProducedAction(response *LLMResponse) bool {
-	if w.hasAssistantText(response) {
+	if hasAssistantText(response) {
 		return true
 	}
 	for _, block := range response.Blocks {
@@ -625,29 +619,14 @@ func (w *ConversationWorker) callLLM(request json.RawMessage) (*LLMResponse, err
 // chunks (one per streamed piece), not merged content blocks, so we cannot
 // match them reliably.
 func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, error) {
-	var toolUseBlocks []struct {
-		ID       string
-		Name     string
-		Input    json.RawMessage
-		Metadata map[string]any
-	}
+	var toolUseBlocks []LLMResponseBlock
 	for _, block := range response.Blocks {
 		switch block.Type {
 		case provider.ContentBlockTypeText, provider.ContentBlockTypeThinking:
 			// Already added during streaming via processStreamChunk.
 			continue
 		case provider.ContentBlockTypeToolUse:
-			toolUseBlocks = append(toolUseBlocks, struct {
-				ID       string
-				Name     string
-				Input    json.RawMessage
-				Metadata map[string]any
-			}{
-				ID:       block.ID,
-				Name:     block.Name,
-				Input:    block.Input,
-				Metadata: block.Metadata,
-			})
+			toolUseBlocks = append(toolUseBlocks, block)
 		}
 	}
 
@@ -754,7 +733,9 @@ func assistantResponseText(response *LLMResponse) string {
 	return b.String()
 }
 
-func (w *ConversationWorker) hasAssistantText(response *LLMResponse) bool {
+// hasAssistantText reports whether the response carries any non-empty text
+// block (as opposed to only thinking / tool_use blocks).
+func hasAssistantText(response *LLMResponse) bool {
 	for _, block := range response.Blocks {
 		if block.Type == provider.ContentBlockTypeText && block.Content != "" {
 			return true
@@ -816,17 +797,13 @@ func generateTransactionID() string {
 	return fmt.Sprintf("txn_%d_%d", time.Now().UnixMilli(), id)
 }
 
-// toolSummary extracts a concise one-line summary from tool input JSON.
-func toolSummary(toolName string, input json.RawMessage) string {
+// toolSummary extracts a concise one-line summary from tool input JSON for the
+// debug tool-log line. It is deliberately tool-agnostic: rather than hardcoding
+// JS-plugin tool names in Go, it probes a small set of common input keys in
+// priority order, then falls back to a count for batch/array-valued inputs.
+func toolSummary(_ string, input json.RawMessage) string {
 	var m map[string]any
 	if err := json.Unmarshal(input, &m); err != nil {
-		return ""
-	}
-
-	str := func(key string) string {
-		if v, ok := m[key].(string); ok {
-			return v
-		}
 		return ""
 	}
 
@@ -837,63 +814,20 @@ func toolSummary(toolName string, input json.RawMessage) string {
 		return s[:max] + "…"
 	}
 
-	switch toolName {
-	case "loadFile", "read_file", "stat", "getFileHash":
-		return str("file_path")
-	case "writeFile", "write_file":
-		return str("file_path")
-	case "editFile", "edit_file", "editFileLines":
-		return str("file_path")
-	case "bash", "shell":
-		return truncate(str("command"), 80)
-	case "glob":
-		return str("pattern")
-	case "grep":
-		p := str("pattern")
-		path := str("path")
-		if path != "" {
-			return fmt.Sprintf("%q in %s", p, path)
+	// Probe common single-value string keys in priority order (file ops,
+	// bash, glob/grep/search, web tools, thread/plan).
+	for _, key := range []string{"file_path", "command", "pattern", "query", "url", "goal", "title", "path"} {
+		if v, ok := m[key].(string); ok && v != "" {
+			return truncate(v, 80)
 		}
-		return fmt.Sprintf("%q", p)
-	case "batch_grep":
-		if searches, ok := m["searches"].([]any); ok {
-			return fmt.Sprintf("%d searches", len(searches))
-		}
-		return ""
-	case "batch_read":
-		if files, ok := m["files"].([]any); ok {
-			return fmt.Sprintf("%d files", len(files))
-		}
-		return ""
-	case "create_thread":
-		return truncate(str("goal"), 60)
-	case "plan":
-		action := str("action")
-		if action == "" {
-			action = "submit"
-		}
-		if title := str("title"); title != "" {
-			return fmt.Sprintf("%s: %s", action, truncate(title, 60))
-		}
-		if idx, ok := m["index"]; ok {
-			return fmt.Sprintf("%s index=%v", action, idx)
-		}
-		return action
-	case "WebFetch":
-		return str("url")
-	case "WebSearch":
-		return truncate(str("query"), 80)
-	default:
-		// For unknown tools, try common keys.
-		if p := str("file_path"); p != "" {
-			return p
-		}
-		if p := str("path"); p != "" {
-			return p
-		}
-		if p := str("command"); p != "" {
-			return truncate(p, 80)
-		}
-		return ""
 	}
+
+	// Fall back to a count for array-valued batch inputs.
+	for _, key := range []string{"searches", "files", "edits"} {
+		if arr, ok := m[key].([]any); ok {
+			return fmt.Sprintf("%d %s", len(arr), key)
+		}
+	}
+
+	return ""
 }

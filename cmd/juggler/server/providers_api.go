@@ -379,25 +379,16 @@ func (s *Server) handleSetDefaultModel(w http.ResponseWriter, r *http.Request) {
 // currently available never affects it — recording a pick is decoupled from
 // availability, and the list is returned verbatim.
 func (s *Server) handleRecentModels(w http.ResponseWriter, r *http.Request) {
-	if s.recentModelsStore == nil {
-		handlers.WriteJSON(w, r, 0, map[string]any{"models": []core.ModelRef{}})
+	if r.Method == http.MethodPost {
+		s.handleRecentModelsPost(w, r)
 		return
 	}
+	s.handleRecentModelsGet(w, r)
+}
 
-	if r.Method == http.MethodPost {
-		var req struct {
-			Provider string `json:"provider"`
-			Model    string `json:"model"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
-			return
-		}
-		if err := s.recentModelsStore.Add(core.ModelRef{Provider: req.Provider, Model: req.Model}); err != nil {
-			handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to record recent model: %v", err)})
-			return
-		}
-		handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
+func (s *Server) handleRecentModelsGet(w http.ResponseWriter, r *http.Request) {
+	if s.recentModelsStore == nil {
+		handlers.WriteJSON(w, r, 0, map[string]any{"models": []core.ModelRef{}})
 		return
 	}
 
@@ -410,6 +401,27 @@ func (s *Server) handleRecentModels(w http.ResponseWriter, r *http.Request) {
 		models = []core.ModelRef{}
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{"models": models})
+}
+
+func (s *Server) handleRecentModelsPost(w http.ResponseWriter, r *http.Request) {
+	if s.recentModelsStore == nil {
+		handlers.WriteJSON(w, r, http.StatusServiceUnavailable, map[string]any{"success": false, "error": "Recent models are not available"})
+		return
+	}
+
+	var req struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+		return
+	}
+	if err := s.recentModelsStore.Add(core.ModelRef{Provider: req.Provider, Model: req.Model}); err != nil {
+		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to record recent model: %v", err)})
+		return
+	}
+	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
 }
 
 // cachedProviders returns the most recent provider list, or an empty slice

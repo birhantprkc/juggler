@@ -113,24 +113,21 @@ type Broadcaster interface {
 // in setups that don't need cross-client notifications. closeConversation
 // is an optional hook the server uses to release per-conversation provider
 // resources (Conversation cache, CLI subprocesses); nil is treated as a
-// no-op.
+// no-op. resolveDefaultModel may be nil in setups (e.g. tests) that don't
+// resolve a default model.
 func NewSessionAPI(
 	managerProvider func() *core.SessionManager,
 	workerManager WorkerManager,
 	broadcaster Broadcaster,
 	closeConversation func(string),
-	resolveDefaultModel ...func(context.Context) (core.ModelRef, bool),
+	resolveDefaultModel func(context.Context) (core.ModelRef, bool),
 ) *SessionAPI {
-	var resolve func(context.Context) (core.ModelRef, bool)
-	if len(resolveDefaultModel) > 0 {
-		resolve = resolveDefaultModel[0]
-	}
 	return &SessionAPI{
 		managerProvider:     managerProvider,
 		workerManager:       workerManager,
 		broadcaster:         broadcaster,
 		closeConversation:   closeConversation,
-		resolveDefaultModel: resolve,
+		resolveDefaultModel: resolveDefaultModel,
 	}
 }
 
@@ -144,7 +141,7 @@ func (api *SessionAPI) manager() *core.SessionManager { return api.managerProvid
 // no-project window).
 func (api *SessionAPI) HandleGetWindowState(w http.ResponseWriter, r *http.Request) {
 	ws, ok := api.manager().GetWindowState()
-	writeJSON(w, r, 0, map[string]any{"windowState": ws, "hasState": ok})
+	WriteJSON(w, r, 0, map[string]any{"windowState": ws, "hasState": ok})
 }
 
 // HandleSetWindowState persists the native-window geometry into this project's
@@ -161,7 +158,7 @@ func (api *SessionAPI) HandleSetWindowState(w http.ResponseWriter, r *http.Reque
 		writeError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, r, http.StatusOK, map[string]any{"ok": true})
+	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 
 // HandleGetSession retrieves the session with runtime info
@@ -183,7 +180,7 @@ func (api *SessionAPI) HandleGetSession(w http.ResponseWriter, r *http.Request) 
 		"binnedCount":          len(api.manager().ListBinnedConversations()),
 	}
 
-	writeJSON(w, r, 0, response)
+	WriteJSON(w, r, 0, response)
 }
 
 // HandleUpdateSession replaces conversations/metadata for the session
@@ -255,7 +252,7 @@ func (api *SessionAPI) HandlePatchSessionMetadata(w http.ResponseWriter, r *http
 		return
 	}
 
-	writeJSON(w, r, http.StatusOK, map[string]any{"metadata": changed})
+	WriteJSON(w, r, http.StatusOK, map[string]any{"metadata": changed})
 	if api.broadcaster != nil {
 		api.broadcaster.BroadcastSessionMetadataChanged(changed)
 	}
@@ -292,9 +289,9 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 	id, finalName, err := api.manager().CreateConversation(req.Name, req.ID)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "invalid conversation id") {
+		if errors.Is(err, core.ErrInvalidConvID) {
 			status = http.StatusBadRequest
-		} else if strings.Contains(err.Error(), "conversation id already exists") {
+		} else if errors.Is(err, core.ErrConvIDExists) {
 			status = http.StatusConflict
 		}
 		writeError(w, r, status, err.Error())
@@ -348,7 +345,7 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 		api.recordConvOwner(id, r.URL.Query().Get("lane"), r.URL.Query().Get("reason"))
 	}
 
-	writeJSON(w, r, http.StatusCreated, map[string]any{
+	WriteJSON(w, r, http.StatusCreated, map[string]any{
 		"id":      id,
 		"name":    finalName,
 		"created": created,
@@ -437,9 +434,9 @@ func copyDirContents(srcDir, dstDir string) error {
 	return nil
 }
 
-// convIDFromVars extracts the {convId} route variable. On a missing/empty id it
+// ConvIDFromVars extracts the {convId} route variable. On a missing/empty id it
 // writes a 400 response and returns ok=false, so callers can `if !ok { return }`.
-func convIDFromVars(w http.ResponseWriter, r *http.Request) (string, bool) {
+func ConvIDFromVars(w http.ResponseWriter, r *http.Request) (string, bool) {
 	convID := mux.Vars(r)["convId"]
 	if convID == "" {
 		writeError(w, r, http.StatusBadRequest, "Conversation ID is required")
@@ -450,7 +447,7 @@ func convIDFromVars(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 // HandleGetConversation retrieves a single conversation's binary data
 func (api *SessionAPI) HandleGetConversation(w http.ResponseWriter, r *http.Request) {
-	convID, ok := convIDFromVars(w, r)
+	convID, ok := ConvIDFromVars(w, r)
 	if !ok {
 		return
 	}
@@ -476,7 +473,7 @@ var assetSHARe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // image) from <convDir>/assets/<sha>.<ext>. Assets are immutable — the
 // filename is the content hash — so the response is cached aggressively.
 func (api *SessionAPI) HandleGetAsset(w http.ResponseWriter, r *http.Request) {
-	convID, ok := convIDFromVars(w, r)
+	convID, ok := ConvIDFromVars(w, r)
 	if !ok {
 		return
 	}
@@ -539,7 +536,7 @@ func assetContentType(path string) string {
 
 // HandleUpdateConversation updates a single conversation (binary Yjs format)
 func (api *SessionAPI) HandleUpdateConversation(w http.ResponseWriter, r *http.Request) {
-	convID, ok := convIDFromVars(w, r)
+	convID, ok := ConvIDFromVars(w, r)
 	if !ok {
 		return
 	}
@@ -567,7 +564,7 @@ func (api *SessionAPI) HandleUpdateConversation(w http.ResponseWriter, r *http.R
 
 // HandleDeleteConversation deletes a single conversation
 func (api *SessionAPI) HandleDeleteConversation(w http.ResponseWriter, r *http.Request) {
-	convID, ok := convIDFromVars(w, r)
+	convID, ok := ConvIDFromVars(w, r)
 	if !ok {
 		return
 	}
@@ -635,7 +632,7 @@ func (api *SessionAPI) HandleDeleteConversation(w http.ResponseWriter, r *http.R
 // unlike a permanent delete, the folder is preserved so it can be restored
 // (it lingers in the bin until the user restores it or empties the bin).
 func (api *SessionAPI) HandleBinConversation(w http.ResponseWriter, r *http.Request) {
-	convID, ok := convIDFromVars(w, r)
+	convID, ok := ConvIDFromVars(w, r)
 	if !ok {
 		return
 	}
@@ -679,7 +676,7 @@ func (api *SessionAPI) HandleBinConversation(w http.ResponseWriter, r *http.Requ
 // HandleRestoreConversation moves a conversation out of .juggler/bin/ back
 // into the active set.
 func (api *SessionAPI) HandleRestoreConversation(w http.ResponseWriter, r *http.Request) {
-	convID, ok := convIDFromVars(w, r)
+	convID, ok := ConvIDFromVars(w, r)
 	if !ok {
 		return
 	}
@@ -708,13 +705,13 @@ func (api *SessionAPI) HandleRestoreConversation(w http.ResponseWriter, r *http.
 // most-recently-modified first.
 func (api *SessionAPI) HandleListBinnedConversations(w http.ResponseWriter, r *http.Request) {
 	list := api.manager().ListBinnedConversations()
-	writeJSON(w, r, 0, map[string]any{"binned": list})
+	WriteJSON(w, r, 0, map[string]any{"binned": list})
 }
 
 // HandleDeleteBinnedConversation permanently removes a single conversation
 // folder from .juggler/bin/.
 func (api *SessionAPI) HandleDeleteBinnedConversation(w http.ResponseWriter, r *http.Request) {
-	convID, ok := convIDFromVars(w, r)
+	convID, ok := ConvIDFromVars(w, r)
 	if !ok {
 		return
 	}
@@ -752,7 +749,7 @@ func (api *SessionAPI) HandleEmptyBin(w http.ResponseWriter, r *http.Request) {
 // Body: {"name": "..."}. 200 with the canonical name on success, 400 for
 // invalid input, 404 for unknown id, 409 for collision (case-folded).
 func (api *SessionAPI) HandleRenameConversation(w http.ResponseWriter, r *http.Request) {
-	convID, ok := convIDFromVars(w, r)
+	convID, ok := ConvIDFromVars(w, r)
 	if !ok {
 		return
 	}
@@ -779,7 +776,7 @@ func (api *SessionAPI) HandleRenameConversation(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	writeJSON(w, r, 0, map[string]any{"name": canonical})
+	WriteJSON(w, r, 0, map[string]any{"name": canonical})
 
 	// Move the conversation's log file to match the new name (best-effort; no-op
 	// if the worker isn't loaded — it picks up the name on next init).

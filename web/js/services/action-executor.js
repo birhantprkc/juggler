@@ -535,20 +535,6 @@ class ActionExecutor {
   }
 
   /**
-   * Cancel a specific running action by execution ID
-   * @param {string} executionId - Execution ID to cancel
-   * @returns {boolean} True if action was found and cancelled
-   */
-  cancelAction(executionId) {
-    const runningAction = this._runningActions.get(executionId);
-    if (runningAction) {
-      runningAction.controller.abort();
-      return true;
-    }
-    return false;
-  }
-
-  /**
    * Cancel a running action by its tool-use ID, scoped to one conversation.
    *
    * Used by the engine's tool-action observer: when the Go worker (the sole
@@ -591,18 +577,6 @@ class ActionExecutor {
     // Map will be cleaned up by finally blocks in execute()
   }
 
-
-  /**
-   * Get list of currently running actions
-   * @returns {Array<{executionId: string, actionId: string, startTime: number}>} Running actions info
-   */
-  getRunningActions() {
-    return Array.from(this._runningActions.entries()).map(([executionId, info]) => ({
-      executionId,
-      actionId: info.actionId,
-      startTime: info.startTime
-    }));
-  }
 
   /**
    * Check if there are any running actions

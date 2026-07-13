@@ -426,21 +426,7 @@ func (cd *ConversationDocument) UpdateItemByID(itemID, field string, value any) 
 	if arr == nil {
 		return fmt.Errorf("item with id %s not found", itemID)
 	}
-	length := int(arr.GetLength())
-
-	for i := length - 1; i >= 0; i-- {
-		raw := arr.Get(ycrdt.Number(i))
-		if m, ok := raw.(*ycrdt.YMap); ok {
-			if id, _ := m.Get("itemId").(string); id == itemID {
-				cd.doc.Transact(func(_ *ycrdt.Transaction) {
-					m.Set(field, convertToYcrdt(value))
-				}, cd.txOrigin())
-				return nil
-			}
-		}
-	}
-
-	return fmt.Errorf("item with id %s not found", itemID)
+	return cd.updateItemByIDInArray(arr, itemID, field, value)
 }
 
 // FindIndexByItemID finds an item by itemId and returns its current index.
@@ -494,16 +480,7 @@ func (cd *ConversationDocument) InsertThread(index int, goal string) *ycrdt.YArr
 	defer ycrdtMu.Unlock()
 	var nestedItems *ycrdt.YArray
 	cd.doc.Transact(func(_ *ycrdt.Transaction) {
-		item := ConversationItem{
-			Type:   ItemTypeThread,
-			ItemID: generateItemID(),
-			Goal:   goal,
-		}
-		ymap := conversationItemToYMap(item)
-		yarr := ycrdt.NewYArray()
-		ymap.Set("items", yarr)
-		cd.ensureItems().Insert(ycrdt.Number(index), ycrdt.ArrayAny{ymap})
-		nestedItems = yarr
+		nestedItems = cd.insertThreadCore(cd.ensureItems(), index, goal)
 	}, cd.txOrigin())
 	return nestedItems
 }
@@ -599,8 +576,11 @@ func (cd *ConversationDocument) DeleteMessageFromArray(arr *ycrdt.YArray, index 
 func (cd *ConversationDocument) UpdateItemByIDInArray(arr *ycrdt.YArray, itemID, field string, value any) error {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
-	length := int(arr.GetLength())
+	return cd.updateItemByIDInArray(arr, itemID, field, value)
+}
 
+func (cd *ConversationDocument) updateItemByIDInArray(arr *ycrdt.YArray, itemID, field string, value any) error {
+	length := int(arr.GetLength())
 	for i := length - 1; i >= 0; i-- {
 		raw := arr.Get(ycrdt.Number(i))
 		if m, ok := raw.(*ycrdt.YMap); ok {
@@ -612,7 +592,6 @@ func (cd *ConversationDocument) UpdateItemByIDInArray(arr *ycrdt.YArray, itemID,
 			}
 		}
 	}
-
 	return fmt.Errorf("item with id %s not found in array", itemID)
 }
 
@@ -679,26 +658,7 @@ func (cd *ConversationDocument) getConversationItems() []ConversationItem {
 	if arr == nil {
 		return nil
 	}
-	rawItems := arr.ToArray()
-	result := make([]ConversationItem, len(rawItems))
-
-	for i, raw := range rawItems {
-		if m, ok := raw.(*ycrdt.YMap); ok {
-			result[i] = yMapToConversationItem(m)
-		} else {
-			converted := fromYcrdt(raw)
-			data, err := json.Marshal(converted)
-			if err != nil {
-				continue
-			}
-			var item ConversationItem
-			if err := json.Unmarshal(data, &item); err == nil {
-				result[i] = item
-			}
-		}
-	}
-
-	return result
+	return cd.getItemsFromArrayLocked(arr)
 }
 
 // GetContextItemIDsForThread returns the itemIds whose context must be rendered

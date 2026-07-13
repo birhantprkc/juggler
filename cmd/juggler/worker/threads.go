@@ -100,8 +100,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	} else if opts.ExternalDispatch {
 		prevThread = w.thread
 		restoreThread = true
-		w.thread.itemID = ""
-		w.thread.itemsArray = nil
+		w.resetThreadContext()
 	}
 	if restoreThread {
 		defer func() {
@@ -115,8 +114,6 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 			return "", fmt.Errorf("please select a model before creating a thread")
 		}
 	}
-
-	strategyCreated := opts.ExternalDispatch
 
 	// Create thread item with nested Y.Array (in the current target array).
 	// Use the tracker (authorID origin) so the insertion is tracked by the
@@ -136,7 +133,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 			if opts.ResultSpec != "" {
 				m.Set("resultSpec", opts.ResultSpec)
 			}
-			if strategyCreated {
+			if opts.ExternalDispatch {
 				m.Set("strategyCreated", true)
 			} else {
 				m.Set("llmCreated", true)
@@ -198,9 +195,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	if opts.ExternalDispatch {
 		w.requestLLM(threadItemID)
 		w.needsReconcile = true
-		for i := 0; i < 10 && w.needsReconcile; i++ {
-			w.tryReconcile()
-		}
+		w.drainReconcile()
 	}
 
 	return threadItemID, nil

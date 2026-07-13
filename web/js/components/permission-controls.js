@@ -45,6 +45,15 @@ class PermissionControls extends HTMLElement {
     this.popupOpen = false;
     /** @type {(() => void)|null} @private - presentPopup release for the open popup. */
     this._popupRelease = null;
+    /**
+     * This control's own popup while open (relocated to <body>), else null.
+     * Instance-scoped so updates/teardown never touch a sibling's surface:
+     * multiple controls coexist (root + each open sub-thread column) and all
+     * share the `[data-permission-controls="true"]` attribute, so a
+     * document-wide query would grab the wrong one.
+     * @type {HTMLElement|null} @private
+     */
+    this._livePopup = null;
     /** @type {((event: any) => void)|null} @private */
     this.metadataObserver = null;
     /** @type {(() => void)|null} @private */
@@ -74,6 +83,7 @@ class PermissionControls extends HTMLElement {
       this._popupRelease();
       this._popupRelease = null;
     }
+    this._livePopup = null;
     if (this.metadataObserver && this.messageThread) {
       this.messageThread.conversation.unobserveMetadata(this.metadataObserver);
       this.metadataObserver = null;
@@ -116,14 +126,14 @@ class PermissionControls extends HTMLElement {
           this.render();
           return;
         }
-        // `permissionRules` only affects the button label summary;
-        // per-plugin sections inside the popup observe rules
+        // A conversation permission-rule change only affects the button
+        // label summary; per-plugin sections inside the popup observe rules
         // themselves, so we never touch the popup here.
-        if (event.keysChanged.has('permissionRules') || event.keysChanged.has('conversationPermissionRules')) {
+        if (event.keysChanged.has('conversationPermissionRules')) {
           this._renderButton();
         }
-        if (event.keysChanged.has('allowedPaths') || event.keysChanged.has('conversationAllowedPaths')) {
-          // allowedPaths affects both the button summary and the
+        if (event.keysChanged.has('conversationAllowedPaths')) {
+          // conversationAllowedPaths affects both the button summary and the
           // generic "Allowed paths" section. Refresh the button
           // unconditionally; refresh the section only when no
           // inline editor is open — otherwise a concurrent peer
@@ -186,6 +196,7 @@ class PermissionControls extends HTMLElement {
       const button = /** @type {HTMLElement|null} */(this.querySelector('.permission-btn'));
       if (!popup || !button) return;
       popup.setAttribute('data-permission-controls', 'true');
+      this._livePopup = popup;
       this._popupRelease = presentPopup({
         surface: popup,
         anchor: button,
@@ -207,6 +218,7 @@ class PermissionControls extends HTMLElement {
       this._popupRelease();
       this._popupRelease = null;
     }
+    this._livePopup = null;
     this.editingPath = '';
     this.editingNewPath = false;
     this._disposeActiveSections();
@@ -253,8 +265,10 @@ class PermissionControls extends HTMLElement {
 
   /** @private */
   _removeDetachedPopup() {
-    const popup = document.querySelector('.permissions-popup[data-permission-controls="true"]');
-    if (popup) popup.remove();
+    if (this._livePopup) {
+      this._livePopup.remove();
+      this._livePopup = null;
+    }
   }
 
   render() {
@@ -271,7 +285,7 @@ class PermissionControls extends HTMLElement {
       return;
     }
 
-    const existingPopup = document.querySelector('.permissions-popup[data-permission-controls="true"]');
+    const existingPopup = this._livePopup;
 
     // While open, the popup has been relocated out of this element to <body>
     // (see openPopup) and positioned against our button. A re-render here —
@@ -439,7 +453,7 @@ class PermissionControls extends HTMLElement {
    * @private
    */
   _renderAllowedPaths(popupArg) {
-    const popup = popupArg || /** @type {HTMLElement|null} */ (document.querySelector('.permissions-popup[data-permission-controls="true"]'));
+    const popup = popupArg || this._livePopup;
     if (!popup || !this.messageThread) return;
     const host = /** @type {HTMLElement|null} */ (popup.querySelector('[data-section="allowed-paths"]'));
     if (!host) return;

@@ -165,11 +165,6 @@ func (c *Client) Name() string {
 	return "anthropic"
 }
 
-// GetModel returns the current model name
-func (c *Client) GetModel() string {
-	return c.model
-}
-
 // convertToolChoice maps the provider-agnostic ToolChoice onto the Anthropic
 // SDK union. Returns ok=false for nil/auto (the default — the model decides),
 // so the caller leaves params.ToolChoice unset.
@@ -319,10 +314,10 @@ func setRollingCacheBreakpoint(messages []anthropicsdk.MessageParam) {
 // sendMessageStreaming sends a message request using the streaming API to preserve block generation order.
 // Emits chunks to callback in real-time as content is generated.
 // Returns the accumulated blocks and metadata for the tool execution loop.
-func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StructuredResponse, []*provider.ToolResult, error) {
+func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StructuredResponse, error) {
 	// Check context before making API call
 	if ctx.Err() != nil {
-		return nil, nil, ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	// Build request params (system/tools/messages + prompt-cache breakpoints).
@@ -370,7 +365,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 		event := stream.Current()
 
 		if ctx.Err() != nil {
-			return nil, nil, ctx.Err()
+			return nil, ctx.Err()
 		}
 
 		switch event.Type {
@@ -422,7 +417,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 					Type:    provider.ContentBlockTypeText,
 					Content: text,
 				}); err != nil {
-					return nil, nil, fmt.Errorf("callback error: %w", err)
+					return nil, fmt.Errorf("callback error: %w", err)
 				}
 
 			case "input_json_delta":
@@ -442,7 +437,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 						Type:    provider.ContentBlockTypeThinking,
 						Content: thinking,
 					}); err != nil {
-						return nil, nil, fmt.Errorf("callback error: %w", err)
+						return nil, fmt.Errorf("callback error: %w", err)
 					}
 				}
 
@@ -461,7 +456,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 			// For tool_use blocks, stream to frontend (no execution - frontend handles that)
 			if block != nil && block.Type == provider.ContentBlockTypeToolUse {
 				if _, err := callback(provider.StreamChunk(*block)); err != nil {
-					return nil, nil, fmt.Errorf("callback error: %w", err)
+					return nil, fmt.Errorf("callback error: %w", err)
 				}
 			}
 
@@ -498,7 +493,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 						"cachedTokens": cacheRead,
 					},
 				}); err != nil {
-					return nil, nil, fmt.Errorf("callback error: %w", err)
+					return nil, fmt.Errorf("callback error: %w", err)
 				}
 			}
 		}
@@ -511,9 +506,9 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 		// Word it so the worker's transient classifier retries (it matches
 		// "stream stalled" / "connection may have dropped").
 		if idle.Fired() && ctx.Err() == nil {
-			return nil, nil, fmt.Errorf("anthropic stream stalled: no data for %s — connection may have dropped", utils.StreamIdleTimeout)
+			return nil, utils.StallError("anthropic", utils.StreamIdleTimeout)
 		}
-		return nil, nil, fmt.Errorf("anthropic streaming error: %w", err)
+		return nil, fmt.Errorf("anthropic streaming error: %w", err)
 	}
 
 	// Finalize any remaining block
@@ -529,7 +524,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 		OutputTokens:     outputTokens,
 		CachedTokens:     cacheReadTokens,
 		CacheWriteTokens: cacheWriteTokens,
-	}, nil, nil
+	}, nil
 }
 
 // finalizeCurrentBlock finalizes the current block being accumulated and adds it to blocks.
@@ -616,7 +611,7 @@ func (c *Client) streamMessage(ctx context.Context, req provider.MessageRequest,
 
 	// Stream response from API - this preserves block generation order
 	// and emits chunks to callback in real-time
-	resp, _, err := c.sendMessageStreaming(ctx, req, callback)
+	resp, err := c.sendMessageStreaming(ctx, req, callback)
 	if err != nil {
 		return nil, err
 	}

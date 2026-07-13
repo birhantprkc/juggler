@@ -47,7 +47,7 @@ func TestSessionResponse_IncludesConversationOrder(t *testing.T) {
 	helpers.AssertNoError(t, err)
 
 	// Create HTTP API and router (nil workerManager is fine for this test - no deletions)
-	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil)
+	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 	router := mux.NewRouter()
 	router.HandleFunc("/api/session", sessionAPI.HandleGetSession).Methods("GET")
 

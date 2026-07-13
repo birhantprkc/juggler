@@ -10,6 +10,8 @@ import recentModels from '../services/recent-models.js';
 import { getRecommendedModels, sortModelsByVersion } from '../utils/model-filter.js';
 import { resolveConfig } from '../model/model-config.js';
 import { modelLabel, modelLabelFromList } from '../model/model-display.js';
+import { escapeHtml } from '../../sdk/lib/html.js';
+import { formatTokens } from '../utils/format.js';
 
 /** Usage snapshots older than this are blanked while refreshing rather than shown. */
 const USAGE_STALE_MS = 5 * 60 * 1000;
@@ -54,6 +56,15 @@ class ModelSelector extends HTMLElement {
     this.conversation = null;
     /** @type {(() => void)|null} @private - presentPopup release for the open dropdown. */
     this._popupRelease = null;
+    /**
+     * This selector's own dropdown while open (relocated to <body>), else null.
+     * Instance-scoped so updates/teardown never touch a sibling's surface:
+     * multiple selectors coexist (root + each open sub-thread column) and all
+     * share the `[data-model-selector="true"]` attribute, so a document-wide
+     * query would grab the wrong one.
+     * @type {HTMLElement|null} @private
+     */
+    this._liveDropdown = null;
     /** @type {import('../services/websocket.js').WSEventCallback|null} @private */
     this._providersUpdateHandler = null;
     /**
@@ -112,10 +123,10 @@ class ModelSelector extends HTMLElement {
     if (this._providersUpdateHandler) {
       wsService.off('providers-update', this._providersUpdateHandler);
     }
-    // Clean up dropdown if it was moved to document.body
-    const dropdown = document.querySelector('.provider-dropdown[data-model-selector="true"]');
-    if (dropdown) {
-      dropdown.remove();
+    // Clean up this instance's dropdown if it was moved to document.body.
+    if (this._liveDropdown) {
+      this._liveDropdown.remove();
+      this._liveDropdown = null;
     }
   }
 
@@ -276,6 +287,7 @@ class ModelSelector extends HTMLElement {
       const button = /** @type {HTMLElement|null} */(this.querySelector('.model-selector-button'));
       if (!dropdown || !button) return;
       dropdown.setAttribute('data-model-selector', 'true');
+      this._liveDropdown = dropdown;
       this._attachDropdownListener(dropdown);
       this._popupRelease = presentPopup({
         surface: dropdown,
@@ -297,7 +309,7 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   _updateDropdownContent() {
-    const dropdown = document.querySelector('.provider-dropdown[data-model-selector="true"]');
+    const dropdown = this._liveDropdown;
     if (!dropdown) return;
 
     this._updateInfoColumn(dropdown);
@@ -327,8 +339,7 @@ class ModelSelector extends HTMLElement {
    * @param {Element|null} [dropdownEl] - Optional already-resolved dropdown root.
    */
   _updateInfoColumn(dropdownEl) {
-    const dropdown = dropdownEl
-            || document.querySelector('.provider-dropdown[data-model-selector="true"]');
+    const dropdown = dropdownEl || this._liveDropdown;
     if (!dropdown) return;
     const info = dropdown.querySelector('.model-menu-info');
     if (info) {
@@ -554,9 +565,9 @@ class ModelSelector extends HTMLElement {
       const providerEntry = this.providers.find(p => p.name === r.provider);
       const providerLabel = providerEntry?.displayName || r.provider;
       return `
-                <li class="menu-item recent-model" data-provider="${this._escapeHtml(r.provider)}" data-model="${this._escapeHtml(r.model)}">
-                    <span class="recent-model-name">${this._escapeHtml(label)}</span>
-                    <span class="recent-model-provider">${this._escapeHtml(providerLabel)}</span>
+                <li class="menu-item recent-model" data-provider="${escapeHtml(r.provider)}" data-model="${escapeHtml(r.model)}">
+                    <span class="recent-model-name">${escapeHtml(label)}</span>
+                    <span class="recent-model-provider">${escapeHtml(providerLabel)}</span>
                 </li>`;
     }).join('');
 
@@ -705,13 +716,13 @@ class ModelSelector extends HTMLElement {
     const ctx = modelEntry?.contextWindow || 0;
 
     const subParts = [providerLabel];
-    if (ctx > 0) subParts.push(`${this._formatTokenCount(ctx)} context`);
+    if (ctx > 0) subParts.push(`${formatTokens(ctx)} context`);
 
     return `
             <div class="model-current">
                 <div class="model-current-label">Current model</div>
-                <div class="model-current-name">${this._escapeHtml(modelLabelText)}</div>
-                <div class="model-current-sub">${this._escapeHtml(subParts.join(' · '))}</div>
+                <div class="model-current-name">${escapeHtml(modelLabelText)}</div>
+                <div class="model-current-sub">${escapeHtml(subParts.join(' · '))}</div>
             </div>
             ${this._generateUsageSection(resolved.provider)}`;
   }
@@ -742,7 +753,7 @@ class ModelSelector extends HTMLElement {
 
     if (showStats) {
       const planLabel = usage.plan
-        ? ` · <span class="model-usage-plan">${this._escapeHtml(this._formatPlan(usage.plan))}</span>`
+        ? ` · <span class="model-usage-plan">${escapeHtml(this._formatPlan(usage.plan))}</span>`
         : '';
       const rows = usage.stats.map(stat => this._usageRow(stat)).join('');
       return `
@@ -790,8 +801,8 @@ class ModelSelector extends HTMLElement {
    */
   _usageRow(stat) {
     const reset = this._formatResetIn(stat.resetsAt);
-    const resetRow = reset ? `<div class="usage-stat-reset">${this._escapeHtml(reset)}</div>` : '';
-    const detail = stat.detail ? this._escapeHtml(stat.detail) : '';
+    const resetRow = reset ? `<div class="usage-stat-reset">${escapeHtml(reset)}</div>` : '';
+    const detail = stat.detail ? escapeHtml(stat.detail) : '';
 
     // A stat without a percentage (e.g. a raw account balance) has no meter —
     // render the absolute value where the percentage would otherwise sit.
@@ -801,7 +812,7 @@ class ModelSelector extends HTMLElement {
       return `
             <div class="usage-stat usage-stat-value">
                 <div class="usage-stat-top">
-                    <span class="usage-stat-name">${this._escapeHtml(stat.name)}</span>
+                    <span class="usage-stat-name">${escapeHtml(stat.name)}</span>
                     <span class="usage-stat-pct">${detail || '—'}</span>
                 </div>
                 ${resetRow}
@@ -824,7 +835,7 @@ class ModelSelector extends HTMLElement {
     return `
             <div class="usage-stat">
                 <div class="usage-stat-top">
-                    <span class="usage-stat-name">${this._escapeHtml(stat.name)}</span>
+                    <span class="usage-stat-name">${escapeHtml(stat.name)}</span>
                     <span class="usage-stat-pct">${Math.round(pct)}%</span>
                 </div>
                 <div class="usage-stat-bar-wrap">
@@ -866,32 +877,6 @@ class ModelSelector extends HTMLElement {
   _formatPlan(plan) {
     if (!plan) return '';
     return plan.charAt(0).toUpperCase() + plan.slice(1);
-  }
-
-  /**
-   * Compact token count: 1000+ → "Nk", else raw.
-   * @private
-   * @param {number} n
-   * @returns {string} Compact count, e.g. "272k".
-   */
-  _formatTokenCount(n) {
-    if (n >= 1000) return Math.round(n / 1000) + 'k';
-    return String(n);
-  }
-
-  /**
-   * Escape interpolated text destined for innerHTML. Provider-supplied window
-   * names flow through here, so this is a real injection guard, not cosmetic.
-   * @private
-   * @param {string} s
-   * @returns {string} HTML-escaped text safe for innerHTML interpolation.
-   */
-  _escapeHtml(s) {
-    return String(s ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   }
 
   /**
@@ -977,6 +962,7 @@ class ModelSelector extends HTMLElement {
         this._popupRelease();
         this._popupRelease = null;
       }
+      this._liveDropdown = null;
       this.render();
     }
   }

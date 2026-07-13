@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gorilla/mux"
-
 	"juggler/cmd/juggler/server/handlers"
 	"juggler/cmd/juggler/worker"
 )
@@ -24,9 +22,8 @@ const maxAssetUploadBytes = 25 << 20 // 25 MiB
 // returns the resulting AssetRef as JSON. Lives in the server package (not
 // handlers) because it needs worker.AssetStore, which handlers must not import.
 func (s *Server) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
-	convID := mux.Vars(r)["convId"]
-	if convID == "" {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Missing conversation id"})
+	convID, ok := handlers.ConvIDFromVars(w, r)
+	if !ok {
 		return
 	}
 
@@ -42,13 +39,7 @@ func (s *Server) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
 	// Same path-provider pattern as createLLMCaller: the asset store resolves the
 	// per-conversation folder via the session manager, knowing nothing about the
 	// project layout.
-	assetStore := worker.NewAssetStore(func(id string) (string, bool) {
-		sm := s.SessionManager()
-		if sm == nil {
-			return "", false
-		}
-		return sm.ConvDir(id)
-	})
+	assetStore := worker.NewAssetStore(s.convDir)
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxAssetUploadBytes)
 	data, err := io.ReadAll(r.Body)

@@ -63,7 +63,7 @@ func (a *GitStatusAPI) HandleGitStatus(w http.ResponseWriter, r *http.Request) {
 	root := a.pathProvider()
 	resp := gitStatusResponse{Root: root, Repos: []gitRepoStatus{}}
 	if root == "" {
-		writeJSON(w, r, 0, resp)
+		WriteJSON(w, r, 0, resp)
 		return
 	}
 
@@ -92,7 +92,7 @@ func (a *GitStatusAPI) HandleGitStatus(w http.ResponseWriter, r *http.Request) {
 		return resp.Repos[i].Path < resp.Repos[j].Path
 	})
 
-	writeJSON(w, r, 0, resp)
+	WriteJSON(w, r, 0, resp)
 }
 
 // discoverRepos walks the project tree (bounded in depth, repo count, and pruned

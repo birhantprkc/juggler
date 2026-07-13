@@ -37,7 +37,7 @@
 
 import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { playChime, unlockAudio, rearmAudio, CHIME_DEFAULTS, chimePatterns, chimeSounds } from './chime-synth.js';
-import { windowControlURL } from '../../sdk/lib/window-control.js';
+import { isDesktopWindow, postWindowControl } from '../../sdk/lib/window-control.js';
 
 const PREFS_KEY = 'juggler-attention';
 /** Fired on window whenever prefs change, so the bell + settings stay in sync. */
@@ -220,8 +220,7 @@ let alertTimeoutMs = 20000;
  * @private
  */
 function isBrowserTab() {
-  return typeof document !== 'undefined'
-    && document.documentElement.dataset.windowMode !== '1';
+  return !isDesktopWindow();
 }
 
 /**
@@ -252,8 +251,7 @@ function syncBrowserTitleBadge() {
  * @private
  */
 function requestDockBounce() {
-  const url = windowControlURL('attention');
-  if (url) fetch(url, { method: 'POST' }).catch(() => { /* one-way; nothing to recover */ });
+  postWindowControl('attention');
 }
 
 /**
@@ -362,7 +360,7 @@ function isLookingAt(convId) {
  * @param {string} convId
  * @private
  */
-function alert(convId) {
+function raiseAttention(convId) {
   const prefs = getAttentionPrefs();
   if (prefs.sound) playChime(prefs.chime);
   // In-app conversation-tab flash: always — never gated on a preference.
@@ -410,7 +408,7 @@ function onStatus(convId) {
   // "Came to rest": a turn completed and the conversation is now idle.
   const turnEdge = turns > /** @type {number} */ (hadTurns) && !processing;
 
-  if (awaitingEdge || turnEdge) alert(convId);
+  if (awaitingEdge || turnEdge) raiseAttention(convId);
 }
 
 /**

@@ -80,6 +80,18 @@ function isContextItemInstance(item) {
 }
 
 /**
+ * Resolve the context-item ActionClass a Yjs item's `toolName` maps to, or null
+ * when the item carries no tool name or none is registered. Shared by the icon
+ * and type-name paths for both delegated threads and tool-action items.
+ * @param {any} item - Yjs message item (tool-action or delegated thread).
+ * @returns {typeof import('juggler/context-item').default|null} The class, or null.
+ */
+function actionClassFor(item) {
+  const toolName = item?.get?.('toolName');
+  return toolName ? (contextItemRegistry.getByToolName(toolName) ?? null) : null;
+}
+
+/**
  * Resolve the circular icon's colour + glyph for a conversation item. Shared by
  * the tiles and the panel so the icon is identical in both.
  * @param {any} item - Yjs message item (has `.get('type')`) or a context-item instance
@@ -101,15 +113,12 @@ export function iconOptionsForItem(item, ctx = {}) {
       // the tool-action case uses — so e.g. a WebFetch subthread shows the globe
       // icon rather than the generic thread glyph. Undelegated threads have no
       // toolName and keep the plain thread badge.
-      const toolName = item?.get?.('toolName');
-      const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;
+      const ActionClass = actionClassFor(item);
       if (ActionClass) return classIconOptions(ActionClass, TYPE_ICONS.action);
       return classIconOptions(contextItemRegistry.get('thread'), TYPE_ICONS.context);
     }
     case 'tool-action': {
-      const toolName = item.get('toolName');
-      const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;
-      return classIconOptions(ActionClass, TYPE_ICONS.action);
+      return classIconOptions(actionClassFor(item), TYPE_ICONS.action);
     }
     case 'context-item': {
       const inst = ctx.messageThread?.getContextItem?.(item.get('itemId'));
@@ -210,13 +219,13 @@ export function typeNameForItem(item, ctx = {}) {
       // rather than the generic "Thread"; mirrors the tool-action label path but
       // uses the static type label (no per-call tool result to feed getStatusUI).
       const toolName = item?.get?.('toolName');
-      const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;
+      const ActionClass = actionClassFor(item);
       if (ActionClass) return pluginTypeName(null, ActionClass, [], toolName);
       return pluginTypeName(null, contextItemRegistry.get('thread'), [], 'Thread');
     }
     case 'tool-action': {
       const toolName = item.get('toolName');
-      const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;
+      const ActionClass = actionClassFor(item);
       const instance = ActionClass ? makeInstance(ActionClass, ctx) : null;
       return pluginTypeName(instance, ActionClass, toolActionStatusArgs(item, ctx), toolName || 'Tool Action');
     }

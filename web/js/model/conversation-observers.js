@@ -17,6 +17,7 @@ import strategyRegistry from '../registries/strategy-registry.js';
 import workerManager from '../services/worker-manager.js';
 import { isViewer } from '../../sdk/lib/client-role.js';
 import { recordTape } from '../utils/event-tape.js';
+import { bytesToBase64 } from '../utils/base64.js';
 import { isCompactionPending, maybePromoteHandoffThread } from '../utils/compaction-utils.js';
 import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
 
@@ -49,15 +50,11 @@ export function setupYjsObservers(c) {
   c._doc.initializeAsClient();
 
   // Register sync callback to send updates to worker
-  c._doc.registerSyncCallbacks(
+  c._doc.setOnSyncBroadcast(
     (/** @type {Uint8Array} */ update, /** @type {{engineDerived?: boolean} | undefined} */ opts) => {
       // Convert Uint8Array to base64 string for Go compatibility
       // (Go's json.Unmarshal expects base64 for []byte fields)
-      let binary = '';
-      for (let i = 0; i < update.length; i++) {
-        binary += String.fromCharCode(/** @type {number} */ (update[i]));
-      }
-      const base64Bytes = globalThis.btoa(binary);
+      const base64Bytes = bytesToBase64(update);
       // Forward the engine-derived marker so the worker can apply this
       // update with a non-tracked origin and the UndoManager skips it.
       // See ENGINE_DERIVED_ORIGIN in document-sync-manager.js.
@@ -181,7 +178,7 @@ export function setupYjsObservers(c) {
     if (!event.keysChanged) return;
 
     // Check all relevant metadata keys
-    const relevantKeys = ['defaultModelConfig', 'currentStrategyId', 'permissions', 'permissionRules', 'allowedPaths', 'conversationPermissionRules', 'conversationAllowedPaths', 'processingState', 'completedTurns', 'undoState'];
+    const relevantKeys = ['defaultModelConfig', 'currentStrategyId', 'conversationPermissionRules', 'conversationAllowedPaths', 'processingState', 'completedTurns', 'undoState'];
     const changedRelevantKey = Array.from(event.keysChanged).some(key =>
       relevantKeys.includes(key)
     );
@@ -222,8 +219,7 @@ export function setupYjsObservers(c) {
       });
     }
 
-    if (event.keysChanged.has('permissionRules') || event.keysChanged.has('allowedPaths') ||
-            event.keysChanged.has('conversationPermissionRules') || event.keysChanged.has('conversationAllowedPaths')) {
+    if (event.keysChanged.has('conversationPermissionRules') || event.keysChanged.has('conversationAllowedPaths')) {
       approvePermittedPendingApprovals(c);
     }
 
@@ -354,12 +350,21 @@ export function checkForContextItemChanges(event) {
       const inserted = Array.isArray(change.insert) ? change.insert : [change.insert];
       for (const item of inserted) {
         if (item && typeof item === 'object' && typeof item.get === 'function') {
-          if (item.get('itemId')) {
+          // Mirror contextItemDescriptor's two discriminators (the single
+          // source of truth for "is this a context item"): a direct context
+          // item has an itemId but is not a tool-use/tool-action, and a
+          // tool-action counts only when it produced a context result.
+          // Keying the first branch off itemId alone matched EVERY item
+          // (messages and tool-actions all carry one), so the tool-action
+          // branch below was dead and non-context tool-actions falsely fired.
+          if (item.get('itemId') && !item.get('toolUseId')) {
             return true;
           }
-          const result = item.get('result');
-          if (item.get('type') === 'tool-action' && result?.get?.('resultType') === 'context') {
-            return true;
+          if (item.get('type') === 'tool-action') {
+            const result = item.get('result');
+            if (result?.get?.('resultType') === 'context') {
+              return true;
+            }
           }
         }
       }

@@ -17,6 +17,7 @@ import { extractUserMessage } from '../../sdk/lib/error-utils.js';
 import { presentPopup } from '../utils/popup-surface.js';
 import { closePopupById } from '../utils/popup-manager.js';
 import { hasNativeHost, pickDirectory } from '../../sdk/lib/window-control.js';
+import { focusWhenShown } from '../utils/focus.js';
 
 /**
  * @typedef {(path: string) => Promise<{valid: boolean, path?: string, error?: string}>} ValidateFn
@@ -293,7 +294,7 @@ export function buildPickerPanel({
     resolve(null);
   }
 
-  setTimeout(() => pathInputEl.focus(), 50);
+  focusWhenShown(pathInputEl, { delay: 50 });
 
   return { element: panel, promise, cancel };
 }
@@ -305,7 +306,7 @@ export function buildPickerPanel({
  * @param {string} path - Project folder to open in the new window
  * @returns {Promise<void>}
  */
-export async function openInNewWindow(path) {
+async function openInNewWindow(path) {
   try {
     await apiService.newWindow(path);
   } catch (err) {

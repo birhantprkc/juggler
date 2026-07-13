@@ -27,7 +27,7 @@ export async function waitForApproval(conversation, messageThread, toolUseId) {
   if (conversation._autoApprove) return 'yes';
 
   while (true) {
-    const message = messageThread.getToolMessage(toolUseId);
+    const message = messageThread.getToolAction(toolUseId);
 
     if (!message) return 'cancel';
 

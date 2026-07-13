@@ -17,12 +17,14 @@ import { DROPDOWN_ARROW_SVG } from '../utils/icons.js';
 class StrategySelector extends HTMLElement {
   constructor() {
     super();
+    /** @type {import('../model/message-thread.js').default|null} @private */
+    this._messageThread = null;
     /** @type {string} @private */
-    this.currentStrategyId = 'default';
+    this._currentStrategyId = 'default';
     /** @type {StrategyManifestInfo[]} @private */
-    this.strategies = [];
+    this._strategies = [];
     /** @type {boolean} @private */
-    this.dropdownOpen = false;
+    this._dropdownOpen = false;
     /** @type {(() => void)|null} @private - presentPopup release for the open dropdown. */
     this._popupRelease = null;
     /**
@@ -33,7 +35,7 @@ class StrategySelector extends HTMLElement {
      */
     this._liveDropdown = null;
     /** @type {(() => void)|null} @private */
-    this.boundRegistriesReloaded = null;
+    this._boundRegistriesReloaded = null;
   }
 
   connectedCallback() {
@@ -43,9 +45,9 @@ class StrategySelector extends HTMLElement {
   }
 
   disconnectedCallback() {
-    if (this.boundRegistriesReloaded) {
-      document.removeEventListener(REGISTRIES_RELOADED, this.boundRegistriesReloaded);
-      this.boundRegistriesReloaded = null;
+    if (this._boundRegistriesReloaded) {
+      document.removeEventListener(REGISTRIES_RELOADED, this._boundRegistriesReloaded);
+      this._boundRegistriesReloaded = null;
     }
     // Tear down the open dropdown (surface, scrim, observer, dismissal wiring).
     if (this._popupRelease) {
@@ -60,7 +62,7 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   loadStrategies() {
-    this.strategies = strategyRegistry.getAllManifests();
+    this._strategies = strategyRegistry.getAllManifests();
   }
 
   /**
@@ -68,11 +70,11 @@ class StrategySelector extends HTMLElement {
    * @param {import('../model/message-thread.js').default|null} messageThread
    */
   setMessageThread(messageThread) {
-    this.messageThread = messageThread;
+    this._messageThread = messageThread;
     if (messageThread) {
-      this.currentStrategyId = messageThread.currentStrategyId || 'default';
+      this._currentStrategyId = messageThread.currentStrategyId || 'default';
     } else {
-      this.currentStrategyId = 'default';
+      this._currentStrategyId = 'default';
     }
     this.render();
   }
@@ -82,20 +84,20 @@ class StrategySelector extends HTMLElement {
     // Refresh the menu when strategies are enabled/disabled (catalog toggle
     // or plugin hot reload). The registry is the source of truth; reload from
     // it and re-render so the dropdown reflects the new set of strategies.
-    this.boundRegistriesReloaded = () => {
+    this._boundRegistriesReloaded = () => {
       this.loadStrategies();
       this.render();
     };
-    document.addEventListener(REGISTRIES_RELOADED, this.boundRegistriesReloaded);
+    document.addEventListener(REGISTRIES_RELOADED, this._boundRegistriesReloaded);
   }
 
   /** @private */
   toggleDropdown() {
-    if (this.dropdownOpen) {
+    if (this._dropdownOpen) {
       this.closeDropdown();
       return;
     }
-    this.dropdownOpen = true;
+    this._dropdownOpen = true;
     this.render();
 
     // presentPopup owns body-append, dismissal wiring, the reposition observer
@@ -121,8 +123,8 @@ class StrategySelector extends HTMLElement {
 
   /** @private */
   closeDropdown() {
-    if (this.dropdownOpen) {
-      this.dropdownOpen = false;
+    if (this._dropdownOpen) {
+      this._dropdownOpen = false;
       // Release tears down the surface, scrim, observer and dismissal wiring.
       if (this._popupRelease) {
         this._popupRelease();
@@ -143,25 +145,25 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   selectStrategy(strategyId) {
-    if (!this.messageThread) {
+    if (!this._messageThread) {
       console.error('[StrategySelector] No message thread bound');
       this.closeDropdown();
       return;
     }
 
-    if (this.currentStrategyId === strategyId) {
+    if (this._currentStrategyId === strategyId) {
       this.closeDropdown();
       return;
     }
 
     // Update the conversation's strategy
-    this.messageThread?.setStrategy(strategyId);
+    this._messageThread?.setStrategy(strategyId);
 
     // Close dropdown first so render() sees dropdownOpen = false
     this.closeDropdown();
 
     // Update local display
-    this.currentStrategyId = strategyId;
+    this._currentStrategyId = strategyId;
     this.render();
   }
 
@@ -171,7 +173,7 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   getCurrentStrategyName() {
-    const strategy = this.strategies.find(s => s.id === this.currentStrategyId);
+    const strategy = this._strategies.find(s => s.id === this._currentStrategyId);
     return strategy ? strategy.manifest.name : 'Select Strategy';
   }
 
@@ -181,7 +183,7 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   generateDropdownContent() {
-    if (this.strategies.length === 0) {
+    if (this._strategies.length === 0) {
       return `
                 <li class="strategy-item unavailable">
                     <p class="strategy-item-description">No strategies available</p>
@@ -189,8 +191,8 @@ class StrategySelector extends HTMLElement {
             `;
     }
 
-    return this.strategies.map(({ id, manifest }) => {
-      const isActive = id === this.currentStrategyId;
+    return this._strategies.map(({ id, manifest }) => {
+      const isActive = id === this._currentStrategyId;
       const colorStyle = manifest.color ? `style="--strategy-color: ${manifest.color}"` : '';
 
       const iconHtml = manifest.icon
@@ -218,7 +220,7 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   getCurrentStrategyColor() {
-    const strategy = this.strategies.find(s => s.id === this.currentStrategyId);
+    const strategy = this._strategies.find(s => s.id === this._currentStrategyId);
     return strategy?.manifest.color || null;
   }
 
@@ -228,7 +230,7 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   getCurrentStrategyIcon() {
-    const strategy = this.strategies.find(s => s.id === this.currentStrategyId);
+    const strategy = this._strategies.find(s => s.id === this._currentStrategyId);
     return strategy?.manifest.icon || null;
   }
 
@@ -236,7 +238,7 @@ class StrategySelector extends HTMLElement {
    * Open the dropdown (for keyboard shortcut)
    */
   open() {
-    if (!this.dropdownOpen) {
+    if (!this._dropdownOpen) {
       this.toggleDropdown();
     }
   }
@@ -252,22 +254,22 @@ class StrategySelector extends HTMLElement {
    * Cycle to next strategy (wraps around), keeping dropdown open if it was open
    */
   cycleNext() {
-    if (!this.messageThread || this.strategies.length <= 1) return;
+    if (!this._messageThread || this._strategies.length <= 1) return;
 
-    const wasOpen = this.dropdownOpen;
+    const wasOpen = this._dropdownOpen;
 
     // Close dropdown first (removes from body) to avoid orphaned element
     if (wasOpen) {
       this.closeDropdown();
     }
 
-    const currentIndex = this.strategies.findIndex(s => s.id === this.currentStrategyId);
-    const nextIndex = (currentIndex + 1) % this.strategies.length;
-    const next = this.strategies[nextIndex];
+    const currentIndex = this._strategies.findIndex(s => s.id === this._currentStrategyId);
+    const nextIndex = (currentIndex + 1) % this._strategies.length;
+    const next = this._strategies[nextIndex];
 
     if (next) {
-      this.messageThread?.setStrategy(next.id);
-      this.currentStrategyId = next.id;
+      this._messageThread?.setStrategy(next.id);
+      this._currentStrategyId = next.id;
     }
     this.render();
 
@@ -306,7 +308,7 @@ class StrategySelector extends HTMLElement {
     const liveButton = /** @type {HTMLElement|null} */ (
       this.querySelector('.strategy-selector-button'));
 
-    if (this.dropdownOpen && liveDropdown && liveButton) {
+    if (this._dropdownOpen && liveDropdown && liveButton) {
       this._updateButton(liveButton, strategyName, strategyColor, strategyIcon);
       const menu = liveDropdown.querySelector('menu');
       if (menu) menu.innerHTML = dropdownContent;
@@ -316,7 +318,7 @@ class StrategySelector extends HTMLElement {
       return;
     }
 
-    const dropdownHtml = (this.dropdownOpen && !liveDropdown)
+    const dropdownHtml = (this._dropdownOpen && !liveDropdown)
       ? `<nav class="dropdown-menu strategy-dropdown show" id="strategy-dropdown"><menu>${dropdownContent}</menu></nav>`
       : '';
 
@@ -325,7 +327,7 @@ class StrategySelector extends HTMLElement {
       : '';
 
     this.innerHTML = `
-            <button class="strategy-selector-button input-ctrl-btn ${this.dropdownOpen ? 'open' : ''}" id="strategy-button" tabindex="-1" title="Select Strategy" ${colorStyle} ${hasColorAttr}>
+            <button class="strategy-selector-button input-ctrl-btn ${this._dropdownOpen ? 'open' : ''}" id="strategy-button" tabindex="-1" title="Select Strategy" ${colorStyle} ${hasColorAttr}>
                 ${buttonIconHtml}
                 <span class="strategy-name">${strategyName}</span>
                 <span class="strategy-chevron">${DROPDOWN_ARROW_SVG}</span>
@@ -389,7 +391,7 @@ class StrategySelector extends HTMLElement {
       button.style.removeProperty('--strategy-color');
       button.removeAttribute('data-has-color');
     }
-    button.classList.toggle('open', this.dropdownOpen);
+    button.classList.toggle('open', this._dropdownOpen);
   }
 
   /**

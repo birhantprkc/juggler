@@ -76,7 +76,7 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 	// Load current config
 	cfg, err := core.LoadConfig(c.projectPath())
 	if err != nil {
-		writeJSON(w, r, http.StatusInternalServerError, map[string]any{
+		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("Failed to load config: %v", err),
 		})
@@ -102,7 +102,7 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"claudecodeBinaryPath": c.credStore.GetRawKey(claudecodeBinaryPathKey),
 	}
 
-	writeJSON(w, r, 0, response)
+	WriteJSON(w, r, 0, response)
 }
 
 // HandleUpdateConfig updates the configuration
@@ -110,7 +110,7 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Decode as generic map to handle dynamic provider keys
 	var req map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
 			"success": false,
 			"error":   "Invalid request body",
 		})
@@ -139,7 +139,7 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			if apiKey, ok := value.(string); ok {
 				// Empty string means delete, non-empty means save
 				if err := c.credStore.SetAPIKey(providerName, apiKey); err != nil {
-					writeJSON(w, r, http.StatusInternalServerError, map[string]any{
+					WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
 						"success": false,
 						"error":   fmt.Sprintf("Failed to save %s API key: %v", providerName, err),
 					})
@@ -180,7 +180,7 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if model, ok := modelValue.(string); ok && model != "" {
 			cfg, err := core.LoadConfig(c.projectPath())
 			if err != nil {
-				writeJSON(w, r, http.StatusInternalServerError, map[string]any{
+				WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
 					"success": false,
 					"error":   fmt.Sprintf("Failed to load config: %v", err),
 				})
@@ -190,7 +190,7 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.Model = model
 
 			if err := cfg.Save(c.projectPath()); err != nil {
-				writeJSON(w, r, http.StatusInternalServerError, map[string]any{
+				WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
 					"success": false,
 					"error":   fmt.Sprintf("Failed to save config: %v", err),
 				})
@@ -210,20 +210,20 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c.fireCredsChanged()
-	writeJSON(w, r, 0, response)
+	WriteJSON(w, r, 0, response)
 }
 
 // HandleGetPluginConfig returns the resolved plugin disabled/enabled lists
 func (c *ConfigAPI) HandleGetPluginConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := core.LoadConfig(c.projectPath())
 	if err != nil {
-		writeJSON(w, r, http.StatusInternalServerError, map[string]any{
+		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
 			"error": fmt.Sprintf("Failed to load config: %v", err),
 		})
 		return
 	}
 
-	writeJSON(w, r, 0, map[string]any{
+	WriteJSON(w, r, 0, map[string]any{
 		"disabled": cfg.GetDisabledPlugins(),
 		"enabled":  cfg.GetEnabledPlugins(),
 	})
@@ -237,7 +237,7 @@ func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
 			"success": false,
 			"error":   "Invalid request body",
 		})
@@ -246,7 +246,7 @@ func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Requ
 
 	cfg, err := core.LoadConfig(c.projectPath())
 	if err != nil {
-		writeJSON(w, r, http.StatusInternalServerError, map[string]any{
+		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("Failed to load config: %v", err),
 		})
@@ -257,7 +257,7 @@ func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Requ
 	cfg.Plugins.Enabled = req.Enabled
 
 	if err := cfg.Save(c.projectPath()); err != nil {
-		writeJSON(w, r, http.StatusInternalServerError, map[string]any{
+		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("Failed to save config: %v", err),
 		})
@@ -266,7 +266,7 @@ func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Requ
 
 	c.firePluginsChanged()
 
-	writeJSON(w, r, 0, map[string]any{
+	WriteJSON(w, r, 0, map[string]any{
 		"success": true,
 	})
 }
@@ -281,7 +281,7 @@ func (c *ConfigAPI) HandleSetProviderEnabled(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
 			"success": false,
 			"error":   "Invalid request body",
 		})
@@ -289,7 +289,7 @@ func (c *ConfigAPI) HandleSetProviderEnabled(w http.ResponseWriter, r *http.Requ
 	}
 
 	if req.Provider == "" {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
 			"success": false,
 			"error":   "Provider name is required",
 		})
@@ -299,7 +299,7 @@ func (c *ConfigAPI) HandleSetProviderEnabled(w http.ResponseWriter, r *http.Requ
 	// Verify provider exists and is a toggle-style keyless provider.
 	info, found := provider.GetProviderInfo(req.Provider)
 	if found && info.EffectiveAuthType() != provider.AuthTypeToggle {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
 			"success": false,
 			"error":   "This provider cannot be enabled with a toggle",
 		})
@@ -307,7 +307,7 @@ func (c *ConfigAPI) HandleSetProviderEnabled(w http.ResponseWriter, r *http.Requ
 	}
 
 	if !found {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
 			"success": false,
 			"error":   "Unknown provider",
 		})
@@ -315,7 +315,7 @@ func (c *ConfigAPI) HandleSetProviderEnabled(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := c.credStore.SetProviderEnabled(req.Provider, req.Enabled); err != nil {
-		writeJSON(w, r, http.StatusInternalServerError, map[string]any{
+		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
 			"success": false,
 			"error":   fmt.Sprintf("Failed to update provider: %v", err),
 		})
@@ -323,7 +323,7 @@ func (c *ConfigAPI) HandleSetProviderEnabled(w http.ResponseWriter, r *http.Requ
 	}
 
 	c.fireCredsChanged()
-	writeJSON(w, r, 0, map[string]any{
+	WriteJSON(w, r, 0, map[string]any{
 		"success": true,
 	})
 }

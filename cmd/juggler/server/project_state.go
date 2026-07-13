@@ -6,6 +6,7 @@ package server
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -17,7 +18,7 @@ import (
 // projectState holds the per-project resources that get swapped wholesale
 // when the user opens a different project at runtime. Reads are lock-free
 // via the atomic pointer on Server; writes are serialized through the
-// switchMu so torn-down resources are released exactly once.
+// switchToken channel so torn-down resources are released exactly once.
 type projectState struct {
 	projectPath    string // "" indicates no-project mode
 	sessionManager *core.SessionManager
@@ -228,18 +229,23 @@ func (s *Server) forwardFileChanges(st *projectState) {
 	}
 }
 
-// host returns the configured listen host for instance-lock writes.
-func (s *Server) host() string {
-	// addr is "host:port"; split to recover host. If empty, default to "localhost".
-	addr := s.addr
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			h := addr[:i]
-			if h == "" {
-				return "localhost"
-			}
-			return h
-		}
+// convDir resolves a conversation's on-disk directory via the current session
+// manager, returning ("", false) when no project is loaded. It is the shared
+// path provider for worker path resolution and the per-conversation asset store.
+func (s *Server) convDir(convID string) (string, bool) {
+	sm := s.SessionManager()
+	if sm == nil {
+		return "", false
 	}
-	return "localhost"
+	return sm.ConvDir(convID)
+}
+
+// host returns the configured listen host for instance-lock writes. addr is
+// "host:port"; an empty or unparseable host defaults to "localhost".
+func (s *Server) host() string {
+	h, _, err := net.SplitHostPort(s.addr)
+	if err != nil || h == "" {
+		return "localhost"
+	}
+	return h
 }

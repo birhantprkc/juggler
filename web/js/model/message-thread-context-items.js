@@ -15,6 +15,59 @@ import contextItemRegistry from '../registries/context-item-registry.js';
 import workerManager from '../services/worker-manager.js';
 
 /**
+ * Derive the `{id, type, data}` descriptor for a context item from a thread
+ * item Y.Map, or null if the item is not a context item. Context items live
+ * either as standalone item Y.Maps (`itemId`, no `toolUseId`) or as the result
+ * of a context-producing tool-action (`contextItemId` + `resultType==='context'`).
+ * @param {any} item - Thread item Y.Map
+ * @param {string} [wantId] - If set, only match a context item with this id
+ * @returns {{id: string, type: string, data: any}|null} Descriptor, or null if not a context item
+ */
+function contextItemDescriptor(item, wantId) {
+  if (item.get('itemId') && !item.get('toolUseId')) {
+    const id = item.get('itemId');
+    if (wantId !== undefined && id !== wantId) return null;
+    const rawData = item.get('data');
+    return {
+      id,
+      type: item.get('type') || 'unknown',
+      data: rawData?.toJSON ? rawData.toJSON() : (rawData || {})
+    };
+  }
+  if (item.get('type') === 'tool-action' && item.get('contextItemId')) {
+    const id = item.get('contextItemId');
+    if (wantId !== undefined && id !== wantId) return null;
+    const result = item.get('result');
+    if (result?.get?.('resultType') === 'context') {
+      const fullResult = result.get?.('fullResult');
+      const rawCtxData = fullResult?.get?.('data');
+      return {
+        id,
+        type: result.get?.('itemType') || 'unknown',
+        data: rawCtxData?.toJSON ? rawCtxData.toJSON() : (rawCtxData || {})
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Instantiate a context item from its descriptor and wire its change handler.
+ * @param {any} mt - MessageThread instance
+ * @param {{id: string, type: string, data: any}} descriptor
+ * @returns {import('juggler/context-item').default|null} Instantiated item, or null if creation failed
+ */
+function instantiateContextItem(mt, descriptor) {
+  const contextItem = contextItemRegistry.createItem(descriptor, mt.conversation._session, mt.conversation, mt);
+  if (contextItem) {
+    contextItem.onContentChange = () => {
+      handleContextItemContentChanged(mt, contextItem.id, contextItem);
+    };
+  }
+  return contextItem;
+}
+
+/**
  * Read context items from the thread's items array. Instances are
  * transient wrappers around CRDT data — fresh objects on every call.
  * @param {any} mt - MessageThread instance
@@ -23,36 +76,11 @@ import workerManager from '../services/worker-manager.js';
 export function getContextItems(mt) {
   const contextItems = [];
   for (const item of mt.items) {
-    /** @type {any} */
-    let itemData = null;
-    if (item.get('itemId') && !item.get('toolUseId')) {
-      const rawData = item.get('data');
-      itemData = {
-        id: item.get('itemId'),
-        type: item.get('type') || 'unknown',
-        data: rawData?.toJSON ? rawData.toJSON() : (rawData || {})
-      };
-    } else if (item.get('type') === 'tool-action') {
-      const result = item.get('result');
-      if (result?.get?.('resultType') === 'context' && item.get('contextItemId')) {
-        const fullResult = result.get?.('fullResult');
-        const rawCtxData = fullResult?.get?.('data');
-        itemData = {
-          id: item.get('contextItemId'),
-          type: result.get?.('itemType') || 'unknown',
-          data: rawCtxData?.toJSON ? rawCtxData.toJSON() : (rawCtxData || {})
-        };
-      }
-    }
-    if (!itemData) continue;
+    const descriptor = contextItemDescriptor(item);
+    if (!descriptor) continue;
     try {
-      const contextItem = contextItemRegistry.createItem(itemData, mt.conversation._session, mt.conversation, mt);
-      if (contextItem) {
-        contextItem.onContentChange = () => {
-          handleContextItemContentChanged(mt, contextItem.id, contextItem);
-        };
-        contextItems.push(contextItem);
-      }
+      const contextItem = instantiateContextItem(mt, descriptor);
+      if (contextItem) contextItems.push(contextItem);
     } catch {
       // Ignore context items that fail to load
     }
@@ -72,39 +100,11 @@ export function getContextItems(mt) {
  */
 export function getContextItem(mt, itemId) {
   for (const item of mt.items) {
-    /** @type {any} */
-    let itemData = null;
-
-    if (item.get('itemId') === itemId && !item.get('toolUseId')) {
-      const rawData = item.get('data');
-      itemData = {
-        id: itemId,
-        type: item.get('type') || 'unknown',
-        data: rawData?.toJSON ? rawData.toJSON() : (rawData || {})
-      };
-    } else if (item.get('type') === 'tool-action' && item.get('contextItemId') === itemId) {
-      const result = item.get('result');
-      if (result?.get?.('resultType') === 'context') {
-        const fullResult = result.get?.('fullResult');
-        const rawCtxData = fullResult?.get?.('data');
-        itemData = {
-          id: itemId,
-          type: result.get?.('itemType') || 'unknown',
-          data: rawCtxData?.toJSON ? rawCtxData.toJSON() : (rawCtxData || {})
-        };
-      }
-    }
-
-    if (!itemData) continue;
-
+    const descriptor = contextItemDescriptor(item, itemId);
+    if (!descriptor) continue;
     try {
-      const contextItem = contextItemRegistry.createItem(itemData, mt.conversation._session, mt.conversation, mt);
-      if (contextItem) {
-        contextItem.onContentChange = () => {
-          handleContextItemContentChanged(mt, contextItem.id, contextItem);
-        };
-        return contextItem;
-      }
+      const contextItem = instantiateContextItem(mt, descriptor);
+      if (contextItem) return contextItem;
     } catch {
       // Ignore context items that fail to load
     }

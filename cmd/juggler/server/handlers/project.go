@@ -52,7 +52,7 @@ func NewProjectAPI(pathProvider func() string, switchFn func(path string) error,
 // HandleGetProject returns the current project path.
 // GET /api/project
 func (api *ProjectAPI) HandleGetProject(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, r, 0, map[string]any{
+	WriteJSON(w, r, 0, map[string]any{
 		"projectPath": api.pathProvider(),
 	})
 }
@@ -64,17 +64,17 @@ func (api *ProjectAPI) HandlePostProject(w http.ResponseWriter, r *http.Request)
 		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
 		return
 	}
 	if req.Path == "" {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "path is required"})
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": "path is required"})
 		return
 	}
 
 	abs, err := filepath.Abs(expandTilde(req.Path))
 	if err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -86,7 +86,7 @@ func (api *ProjectAPI) HandlePostProject(w http.ResponseWriter, r *http.Request)
 		case errors.Is(err, core.ErrProjectLocked):
 			status = http.StatusConflict
 		}
-		writeJSON(w, r, status, map[string]any{"error": err.Error()})
+		WriteJSON(w, r, status, map[string]any{"error": err.Error()})
 		return
 	}
 
@@ -94,7 +94,7 @@ func (api *ProjectAPI) HandlePostProject(w http.ResponseWriter, r *http.Request)
 		_ = api.recents.Add(abs)
 	}
 
-	writeJSON(w, r, 0, map[string]any{"projectPath": abs})
+	WriteJSON(w, r, 0, map[string]any{"projectPath": abs})
 }
 
 // HandleCheckProject validates whether a path exists and is a directory, without switching.
@@ -102,25 +102,25 @@ func (api *ProjectAPI) HandlePostProject(w http.ResponseWriter, r *http.Request)
 func (api *ProjectAPI) HandleCheckProject(w http.ResponseWriter, r *http.Request) {
 	raw := r.URL.Query().Get("path")
 	if raw == "" {
-		writeJSON(w, r, 0, map[string]any{"valid": false, "error": "path is required"})
+		WriteJSON(w, r, 0, map[string]any{"valid": false, "error": "path is required"})
 		return
 	}
 	abs, err := filepath.Abs(expandTilde(raw))
 	if err != nil {
-		writeJSON(w, r, 0, map[string]any{"valid": false, "error": err.Error()})
+		WriteJSON(w, r, 0, map[string]any{"valid": false, "error": err.Error()})
 		return
 	}
 	info, err := os.Stat(abs)
 	if os.IsNotExist(err) {
-		writeJSON(w, r, 0, map[string]any{"valid": false, "error": "path not found"})
+		WriteJSON(w, r, 0, map[string]any{"valid": false, "error": "path not found"})
 		return
 	}
 	if err != nil {
-		writeJSON(w, r, 0, map[string]any{"valid": false, "error": err.Error()})
+		WriteJSON(w, r, 0, map[string]any{"valid": false, "error": err.Error()})
 		return
 	}
 	if !info.IsDir() {
-		writeJSON(w, r, 0, map[string]any{"valid": false, "error": "not a directory"})
+		WriteJSON(w, r, 0, map[string]any{"valid": false, "error": "not a directory"})
 		return
 	}
 
@@ -133,21 +133,21 @@ func (api *ProjectAPI) HandleCheckProject(w http.ResponseWriter, r *http.Request
 				msg = fmt.Sprintf("Already open at http://%s:%d/", existing.Host, existing.Port)
 			}
 		}
-		writeJSON(w, r, 0, map[string]any{"valid": false, "error": msg, "locked": true})
+		WriteJSON(w, r, 0, map[string]any{"valid": false, "error": msg, "locked": true})
 		return
 	}
 
-	writeJSON(w, r, 0, map[string]any{"valid": true, "path": abs})
+	WriteJSON(w, r, 0, map[string]any{"valid": true, "path": abs})
 }
 
 // HandleDeleteProject closes the current project (returns to no-project mode).
 // DELETE /api/project
 func (api *ProjectAPI) HandleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := api.switchFn(""); err != nil {
-		writeJSON(w, r, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, r, 0, map[string]any{"projectPath": ""})
+	WriteJSON(w, r, 0, map[string]any{"projectPath": ""})
 }
 
 // HandleGetRecents returns the user's recents list (most-recent first).
@@ -162,7 +162,7 @@ func (api *ProjectAPI) HandleGetRecents(w http.ResponseWriter, r *http.Request) 
 	if paths == nil {
 		paths = []string{}
 	}
-	writeJSON(w, r, 0, map[string]any{"paths": paths})
+	WriteJSON(w, r, 0, map[string]any{"paths": paths})
 }
 
 // HandleDeleteRecent removes one path from the recents list.
@@ -172,7 +172,7 @@ func (api *ProjectAPI) HandleDeleteRecent(w http.ResponseWriter, r *http.Request
 		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
 		return
 	}
 	if api.recents != nil {

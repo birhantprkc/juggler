@@ -19,6 +19,15 @@ class ContextItemRegistry extends BaseRegistry {
    */
   constructor() {
     super('ContextItemRegistry', ['id', 'name', 'version', 'description']);
+
+    /**
+     * Lazily-built tool-name → item-class map (see {@link getByToolName}).
+     * `undefined` until first lookup; cleared by {@link invalidateCache} on
+     * every init/reset so it never survives a plugin reload.
+     * @type {Map<string, typeof import('juggler/context-item').default>|undefined}
+     * @private
+     */
+    this._toolNameCache = undefined;
   }
 
   /**
@@ -39,8 +48,17 @@ class ContextItemRegistry extends BaseRegistry {
    * @returns {Promise<void>}
    */
   async init() {
-    this._toolNameCache = undefined;
+    this.invalidateCache();
     return super.init();
+  }
+
+  /**
+   * Reset the registry, also clearing the tool-name cache the base reset()
+   * doesn't know about.
+   */
+  reset() {
+    super.reset();
+    this.invalidateCache();
   }
 
   /**
@@ -54,7 +72,6 @@ class ContextItemRegistry extends BaseRegistry {
   getByToolName(toolName) {
     // Build mapping if not cached
     if (!this._toolNameCache) {
-      /** @type {Map<string, typeof import('juggler/context-item').default>} */
       this._toolNameCache = new Map();
       for (const { class: ItemClass } of this.getAll()) {
         const ItemClassTyped = /** @type {any} */ (ItemClass);

@@ -6,6 +6,7 @@ import BaseMessage from './base-message.js';
 import { stripThinkingTags } from '../utils/content-utils.js';
 import { wrapWithIcon } from '../utils/icon-message-renderer.js';
 import { iconOptionsForItem } from '../utils/item-badge.js';
+import { formatTokens } from '../utils/format.js';
 
 /**
  * Thinking message component - compact summary line with yellow icon and streaming support.
@@ -26,8 +27,7 @@ class ThinkingMessage extends BaseMessage {
     const clean = stripThinkingTags(content).trim();
     if (!clean.length) return 'Thinking';
     const n = Math.ceil(clean.length / 4);
-    const formatted = n >= 2000 ? Math.floor(n / 1000) + 'k' : n.toLocaleString();
-    return `Thinking · ${formatted} tokens`;
+    return `Thinking · ${formatTokens(n)} tokens`;
   }
 
   render() {

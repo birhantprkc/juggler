@@ -11,6 +11,7 @@ import (
 	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
+	providerutils "juggler/cmd/juggler/providers/utils"
 )
 
 // streamingState holds accumulated streaming content for one LLM turn.
@@ -415,8 +416,8 @@ func isRateLimitMsg(msg string) bool {
 // signal genuine quota exhaustion that retrying would only paper over.
 func isTransientMsg(msg string) bool {
 	lower := strings.ToLower(msg)
-	return strings.Contains(lower, "stream stalled") ||
-		strings.Contains(lower, "connection may have dropped")
+	return strings.Contains(lower, providerutils.StallMarker) ||
+		strings.Contains(lower, providerutils.StallDroppedMarker)
 }
 
 // parseRetryWaitFromMsg extracts a suggested retry delay from an error string

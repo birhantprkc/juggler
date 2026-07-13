@@ -21,15 +21,16 @@ import (
 // EvalSymlinks deduplication didn't already break.
 const maxPluginWatchDepth = 12
 
-// StartWatchers constructs and starts the filesystem watcher (which walks
-// the project tree and registers fsnotify watches), kicks off the broadcast
-// goroutine, and starts the plugin-directory watcher. Call this once, after
-// the engine is up and the server is serving — earlier and you'd be
-// holding kernel watch handles for events with no audience.
+// StartBackgroundServices constructs and starts the filesystem watcher (which
+// walks the project tree and registers fsnotify watches), kicks off the
+// broadcast goroutine, starts the plugin-directory watcher, and then kicks off
+// the remaining background services (provider refresh, update checker). Call
+// this once, after the engine is up and the server is serving — earlier and
+// you'd be holding kernel watch handles for events with no audience.
 //
 // In no-project boot mode this is a no-op for the file watcher; the watcher
 // will be created later when the user picks a project via SwitchProject.
-func (s *Server) StartWatchers() {
+func (s *Server) StartBackgroundServices() {
 	st := s.projectState.Load()
 	if st != nil && st.projectPath != "" && st.fileWatcher == nil {
 		fw, err := core.NewFileWatcher(st.projectPath)

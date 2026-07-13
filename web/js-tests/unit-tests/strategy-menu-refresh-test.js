@@ -72,7 +72,7 @@ export async function runTests(_ctx) {
       // it to <body> with the marker attribute → record it in `_liveDropdown`,
       // exactly as the production rAF does.
       selector.setMessageThread(/** @type {any} */ ({ currentStrategyId: idA }));
-      selector.dropdownOpen = true;
+      selector._dropdownOpen = true;
       selector.render();
       const innerNav = selector.querySelector('.strategy-dropdown');
       assert(!!innerNav, 'inner <nav> is rendered when opening');
@@ -123,7 +123,7 @@ export async function runTests(_ctx) {
     // Snapshot the registry so we can restore it no matter what.
     const snapshot = new Map(strategyRegistry.items);
     try {
-      const initialCount = selector.strategies.length;
+      const initialCount = selector._strategies.length;
       assert(initialCount > 0, 'selector loaded at least one strategy at mount');
 
       // Disable a strategy at the registry level (what a catalog toggle does).
@@ -131,14 +131,14 @@ export async function runTests(_ctx) {
       strategyRegistry.items.delete(removedId);
 
       // Stale until notified.
-      assert(selector.strategies.length === initialCount,
+      assert(selector._strategies.length === initialCount,
         'selector keeps its cached list until the reload event fires');
 
       document.dispatchEvent(new CustomEvent(REGISTRIES_RELOADED));
 
-      assert(selector.strategies.length === initialCount - 1,
+      assert(selector._strategies.length === initialCount - 1,
         'selector reloaded its menu after REGISTRIES_RELOADED');
-      assert(!selector.strategies.some((/** @type {any} */ s) => s.id === removedId),
+      assert(!selector._strategies.some((/** @type {any} */ s) => s.id === removedId),
         'the disabled strategy is gone from the reloaded menu');
     } finally {
       strategyRegistry.items.clear();

@@ -25,18 +25,13 @@ func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 		if r != nil {
 			path = r.URL.Path
 		}
-		jlog.Error("writeJSON: encode failed for %s: %v", path, err)
+		jlog.Error("WriteJSON: encode failed for %s: %v", path, err)
 	}
-}
-
-// writeJSON is the package-internal alias other handler files use.
-func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
-	WriteJSON(w, r, status, v)
 }
 
 // writeError sends a consistent JSON error envelope, {"error": msg}, with the
 // given status. Handlers use this so every error response shares one shape the
 // frontend reads via the "error" field.
 func writeError(w http.ResponseWriter, r *http.Request, status int, msg string) {
-	writeJSON(w, r, status, map[string]string{"error": msg})
+	WriteJSON(w, r, status, map[string]string{"error": msg})
 }

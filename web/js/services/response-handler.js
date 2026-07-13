@@ -13,6 +13,7 @@ import { hashString } from '../utils/hash.js';
 import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import toolExecutor from './tool-executor.js';
 import workerManager from './worker-manager.js';
+import wsService from './websocket.js';
 import { APPROVAL_POLICY } from 'juggler/strategy-type';
 
 /**
@@ -82,14 +83,10 @@ class ResponseHandler {
   /**
    * @param {object} options - Configuration options
    * @param {import('../model/conversation.js').default} options.conversation - Conversation instance
-   * @param {import('./llm-state.js').default} options.llmState - LLM state manager
    */
   constructor(options) {
     /** @type {import('../model/conversation.js').default} @private */
     this._conversation = options.conversation;
-
-    /** @type {import('./llm-state.js').default} @private */
-    this._llmState = options.llmState;
   }
 
   /**
@@ -119,17 +116,6 @@ class ResponseHandler {
   // ToolExecutor handles routing; ResponseHandler handles execution and messages.
 
   /**
-   * Execute an action tool. Called by ToolExecutor.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {import('../model/message-thread.js').default} messageThread - Message thread
-   * @param {{onApproved?: () => void}} [options] - Callbacks
-   * @returns {Promise<ToolExecutionResult>} Execution result
-   */
-  async executeAction(toolCall, messageThread, options = {}) {
-    return this._executeActionWithMessage(toolCall, messageThread, options);
-  }
-
-  /**
    * Execute a context item tool. Called by ToolExecutor.
    * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
    * @param {{itemType: string, class: unknown}} itemDetails - Context item details from registry
@@ -148,16 +134,6 @@ class ResponseHandler {
    */
   async executeMetaTool(toolCall, messageThread) {
     return this._executeToolWithEvent(toolCall, 'meta-tool', messageThread, (ctx) => this._doMetaTool(toolCall, ctx, messageThread));
-  }
-
-  /**
-   * Create error result for unknown tool. Called by ToolExecutor.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call that failed
-   * @param {import('../model/message-thread.js').default} messageThread - Message thread
-   * @returns {ToolExecutionResult} Error result
-   */
-  createUnknownToolResult(toolCall, messageThread) {
-    return this._createUnknownToolResult(toolCall, messageThread);
   }
 
   // ========== END TOOL EXECUTOR API ==========
@@ -271,25 +247,13 @@ class ResponseHandler {
       return { toolId: tc.id, toolName: tc.name, valid: true, errorType: null };
     }));
 
-    const hasLLMErrors = results.some(r => !r.valid);
+    const allValid = results.every(r => r.valid);
 
     return {
-      allValid: results.every(r => r.valid),
+      allValid,
       results,
-      hasLLMErrors
+      hasLLMErrors: !allValid
     };
-  }
-
-  // ========== MESSAGE APPEND METHODS ==========
-
-  /**
-   * Append a thinking message to the conversation.
-   * @param {string} content - The thinking content
-   * @param {import('../model/message-thread.js').default} messageThread - Message thread
-   * @param {Record<string, unknown>} [providerData] - Optional provider-specific data (e.g., signature)
-   */
-  appendThinkingMessage(content, messageThread, providerData) {
-    messageThread.addEvent(/** @type {any} */ ({ type: 'thinking', content, providerData }));
   }
 
   // ========== CENTRALIZED TOOL EXECUTION WRAPPER ==========
@@ -310,7 +274,7 @@ class ResponseHandler {
    */
   async _executeToolWithEvent(toolCall, resultType, messageThread, executor) {
     // This method handles context item tools and meta tools.
-    // Actions use _executeActionWithMessage which adds tool-use/tool-result pairs.
+    // Actions use executeAction which adds tool-use/tool-result pairs.
     //
     // For context items: We do NOT add tool-use/tool-result because they are represented by
     // context-item messages (added by conversation.executeContextItem), not tool-use/result pairs.
@@ -505,14 +469,13 @@ class ResponseHandler {
   }
 
   /**
-   * Create error result for an unknown tool with user feedback.
-   * Adds tool-use and tool-result messages to show the error in UI.
+   * Create error result for an unknown tool with user feedback. Called by
+   * ToolExecutor. Adds tool-use and tool-result messages to show the error in UI.
    * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call that failed
    * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
    * @returns {ToolExecutionResult} Error result
-   * @private
    */
-  _createUnknownToolResult(toolCall, messageThread) {
+  createUnknownToolResult(toolCall, messageThread) {
     const errorMsg = `Unknown tool: "${toolCall.name}". This tool is not registered with any handler.`;
     // DOCUMENT-DRIVEN FLOW: Update existing tool-action created by worker
     messageThread.completeToolAction(toolCall.id, {
@@ -563,16 +526,15 @@ class ResponseHandler {
   }
 
   /**
-   * Execute an action tool with declarative state-driven pattern.
-   * Message state drives UI rendering - NO DOM manipulation here.
+   * Execute an action tool with declarative state-driven pattern. Called by
+   * ToolExecutor. Message state drives UI rendering - NO DOM manipulation here.
    * States: waiting_for_approval → running → completed/cancelled/error
    * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
    * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
    * @param {{onApproved?: () => void}} [outerOptions] - Callbacks
    * @returns {Promise<ToolExecutionResult>} Standardized result for orchestrator
-   * @private
    */
-  async _executeActionWithMessage(toolCall, messageThread, outerOptions = {}) {
+  async executeAction(toolCall, messageThread, outerOptions = {}) {
     const toolInput = /** @type {Record<string, unknown>} */ (toolCall.input || {});
 
     // Common tool-use data for all exit paths
@@ -806,7 +768,7 @@ class ResponseHandler {
       const approvalOptions = existingApprovalOptions || this.buildApprovalOptions(action, prepared);
 
       // DOCUMENT-DRIVEN FLOW: For retries, approval state is already set by observer.
-      // For initial execution, observer's _handleNewToolAction sets state to 'pending'.
+      // For initial execution, observer's handleNewToolAction sets state to 'pending'.
       // Create promise BEFORE updating message (prevents race condition)
       // waitForApproval polls message state - no options needed (they're on the message)
       const approvalPromise = messageThread.waitForApproval(toolCall.id);
@@ -821,7 +783,7 @@ class ResponseHandler {
       );
 
       approvalResult = await approvalPromise;
-    } else if (existingAction?.get('state') === TOOL_STATES.CANCELLED) {
+    } else if (existingState === TOOL_STATES.CANCELLED) {
       approvalResult = 'cancel';
     }
 
@@ -960,7 +922,6 @@ class ResponseHandler {
         // about to stamp 'cancelled' (e.g. a rerun whose execution got
         // spuriously aborted), the tool wedges at running-with-no-result
         // — surface the decision on every viewer's tape.
-        const wsService = (await import('./websocket.js')).default;
         wsService.sendEngineBridge('juggler-tool-exec', {
           toolUseId: toolCall.id,
           toolName: toolCall.name,

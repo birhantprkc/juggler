@@ -122,6 +122,12 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
+	// Hash the raw on-disk bytes (before decode/normalize/truncation) so the
+	// staleness baseline matches getFileHash, which hashes the same raw bytes.
+	// Hashing the transformed content instead made CRLF / long-line files read
+	// as permanently stale.
+	rawHashBytes := sha256.Sum256(content)
+
 	// Transcode Windows text encodings to UTF-8 (UTF-16 BOM → UTF-8) and strip a
 	// UTF-8 BOM, so the properties panel and the model always see clean UTF-8
 	// regardless of how the file was saved. IsBinaryFile above already whitelists
@@ -256,9 +262,11 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 		}
 	}
 
-	// Compute hash for detecting external file changes
-	contentHashBytes := sha256.Sum256([]byte(fullContent))
-	contentHash := hex.EncodeToString(contentHashBytes[:])
+	// Compute hash for detecting external file changes. Hash the raw on-disk
+	// bytes captured above (before decode/normalize/truncation) so it matches
+	// getFileHash — hashing the transformed content made CRLF / long-line files
+	// read as permanently stale.
+	contentHash := hex.EncodeToString(rawHashBytes[:])
 
 	return map[string]any{
 		"content":     resultContent,
@@ -492,8 +500,10 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 		}
 	}
 
-	// All strategies failed - return structured error data for frontend to interpret
-	if newContentStr == "" {
+	// All strategies failed - return structured error data for frontend to
+	// interpret. Test matchStrategy (not newContentStr) so a legitimate edit that
+	// replaces the whole file with "" isn't misreported as SEARCH_NOT_FOUND.
+	if matchStrategy == "" {
 		// Detect escaping issues
 		escapingHint := detectEscapingIssues(oldStr, currentContentStr)
 
@@ -660,11 +670,9 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 		}
 		actualContextLine := lines[contextLine-1] // Convert to 0-indexed
 
-		// Try exact match first (fastest)
-		if strings.Contains(actualContextLine, contextText) {
-			// Perfect match - continue
-		} else {
-			// Try normalized match (flexible whitespace)
+		// Try exact match first (fastest); fall back to a normalized
+		// (flexible-whitespace) match before treating it as a mismatch.
+		if !strings.Contains(actualContextLine, contextText) {
 			normalizedActual := strings.TrimSpace(actualContextLine)
 			normalizedExpected := strings.TrimSpace(contextText)
 

@@ -162,7 +162,6 @@ class ExecuteContextItem extends ContextItem {
 
   /**
    * Get tool definitions for Bash action
-   * Returns two tools: Bash (primary) and bash (alias)
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */
   static getToolDefinitions() {

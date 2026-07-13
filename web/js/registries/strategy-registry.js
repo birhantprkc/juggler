@@ -71,23 +71,12 @@ class StrategyRegistry extends BaseRegistry {
    *
    * Returns manifest metadata for all registered strategies.
    * Used to generate the strategy section in the system prompt.
-   * @returns {Array<{id: string, manifest: import('juggler/strategy-type').StrategyManifest, extensionId: string|null}>} Array of strategy metadata
+   * @returns {Array<{id: string, manifest: import('juggler/strategy-type').StrategyManifest, modulePath: string, extensionId: string|null}>} Array of strategy metadata
    */
   getAllManifests() {
-    const manifests = [];
-
-    for (const [id, StrategyClass] of this.items) {
-      if (!StrategyClass.MANIFEST) {
-        throw new Error(`Strategy ${id} is missing required MANIFEST property`);
-      }
-      manifests.push({
-        id,
-        manifest: StrategyClass.MANIFEST,
-        extensionId: this.itemExtensions.get(id) ?? null
-      });
-    }
-
-    return manifests;
+    // Same shape the base builds (id/manifest/modulePath/extensionId) — every
+    // registered strategy is guaranteed a MANIFEST by validateClass at load.
+    return /** @type {any} */ (this.getManifests());
   }
 
   /**

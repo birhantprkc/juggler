@@ -26,11 +26,11 @@ import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
  * @typedef {object} ApiService
  * @property {function(): Promise<SessionData>} getSession - Get session
  * @property {function(): Promise<{active: boolean, conversationIds: string[]}>} getActiveConversations - Conversations actively running a turn (excludes approval-parked)
- * @property {function(object[], string | null, string[]|undefined, Record<string, any>|undefined): Promise<void>} updateSession - Update session state
+ * @property {function(object[], string | null, string[]|undefined, Record<string, any>|undefined): Promise<{success: boolean}>} updateSession - Update session state
  * @property {function(Record<string, any>): Promise<{metadata: Record<string, any>}>} patchSessionMetadata - Patch session metadata keys
  * @property {function(string, string=, {lane?: string, duplicateFrom?: string, origin?: string}=): Promise<{id: string, name: string, created: string}>} createConversation - Atomically create a new conversation (POST /api/conversations); duplicateFrom clones that conversation's files server-side before announcing; origin is a gesture label logged for create attribution
  * @property {function(string, string): Promise<{name: string}>} renameConversation - Rename a conversation's on-disk folder
- * @property {function(string, object): Promise<void>} updateConversation - Update single conversation
+ * @property {function(string, object): Promise<{success: boolean}>} updateConversation - Update single conversation
  * @property {function(string, {permanent?: boolean, reason?: string}=): Promise<void>} deleteConversation - Delete single conversation
  * @property {function(string): Promise<void>} binConversation - Move single conversation to .juggler/bin/
  * @property {function(string): Promise<void>} restoreConversation - Move conversation back from .juggler/bin/
@@ -77,7 +77,6 @@ import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
 
 /**
  * @typedef {object} ConversationServices
- * @property {import('../services/animation-service.js').default} animationService - Animation service for UI transitions
  * @property {import('../services/llm-state.js').default} llmState - LLM state manager for tracking processing
  * @property {import('../services/action-executor.js').default} actionExecutor - Action executor for cancellation
  * @property {import('../services/websocket.js').default} wsService - WebSocket service for cancellation
@@ -681,8 +680,7 @@ class Session {
     // Persist the new ordering. The server merges this (possibly partial)
     // order into the manifest, so a viewer that knows only some conversations
     // never drops the others (see SessionManager.ReorderConversations).
-    this._apiService.reorderConversations(Array.from(this.conversations.keys()))
-      .catch((/** @type {any} */ err) => console.error('[Session] bump reorder persist failed:', err));
+    this._persistOrder('bump reorder');
   }
 
   /**
@@ -892,13 +890,8 @@ class Session {
    */
   async _doLoad() {
     try {
-      // Ensure context item and action registries are initialized
-      // Session needs these to create context items and handle actions
-      // @ts-ignore - BaseRegistry has isInitialized() and init() methods
-      if (contextItemRegistry && !contextItemRegistry.isInitialized()) {
-        // @ts-ignore - BaseRegistry has init() method
-        await contextItemRegistry.init();
-      }
+      // Ensure the context item registry is initialized — Session needs it to
+      // create context items and handle actions.
       // @ts-ignore - BaseRegistry has isInitialized() and init() methods
       if (contextItemRegistry && !contextItemRegistry.isInitialized()) {
         // @ts-ignore - BaseRegistry has init() method
@@ -1237,8 +1230,7 @@ class Session {
     this.messageHistory.push(message);
 
     // Limit history size to last 100 messages (FIFO)
-    const MAX_HISTORY = MAX_MESSAGE_HISTORY;
-    if (this.messageHistory.length > MAX_HISTORY) {
+    if (this.messageHistory.length > MAX_MESSAGE_HISTORY) {
       this.messageHistory.shift(); // Remove oldest
     }
 
@@ -1390,22 +1382,6 @@ class Session {
   }
 
   /**
-   * Clone a conversation (used internally by Conversation.clone())
-   * @param {Conversation} source - Conversation to clone
-   * @returns {Conversation} Cloned conversation with new ID
-   */
-  cloneConversation(source) {
-    if (!this._services) {
-      throw new Error('Cannot clone conversation: services not set');
-    }
-    const json = source.toJSON();
-    json.id = this._generateConversationId();
-    json.name = this._generateUniqueSuffixedName(source.name);
-    json.created = new Date().toISOString();
-    return Conversation.fromJSON(json, this, /** @type {import('./session.js').ConversationServices} */ (this._services));
-  }
-
-  /**
    * Duplicate a conversation and add it to the session, inserted right after the source
    * @param {string} conversationId - ID of conversation to duplicate
    * @param {object} [options] - Options
@@ -1473,8 +1449,7 @@ class Session {
       }
     }
     this.conversations = newConversations;
-    this._apiService.reorderConversations(Array.from(this.conversations.keys()))
-      .catch(err => console.error('[Session] duplicate reorder persist failed:', err));
+    this._persistOrder('duplicate reorder');
 
     // Clear undo history so user starts fresh (copied items are not undoable)
     // This prevents undoing built-in context items and copied messages
@@ -1483,6 +1458,18 @@ class Session {
     this._notify('conversation:created', loadedClone);
     this.save();
     return loadedClone.id;
+  }
+
+  /**
+   * Persist the current conversation ordering via the reorder endpoint (the sole
+   * writer of order). The server merges this (possibly partial) order into the
+   * manifest. Failures are logged, not surfaced.
+   * @param {string} label - Short context for the error log (e.g. 'bump reorder')
+   * @private
+   */
+  _persistOrder(label) {
+    this._apiService.reorderConversations(Array.from(this.conversations.keys()))
+      .catch((/** @type {any} */ err) => console.error(`[Session] ${label} persist failed:`, err));
   }
 
   /**
@@ -1519,8 +1506,7 @@ class Session {
     this._notify('conversation:reordered', { conversationId, beforeId });
 
     // POST /reorder is the sole writer of conversation order.
-    this._apiService.reorderConversations(Array.from(this.conversations.keys()))
-      .catch(err => console.error('[Session] reorder persist failed:', err));
+    this._persistOrder('reorder');
 
     return true;
   }
@@ -1543,42 +1529,11 @@ class Session {
     this._notify('conversation:reordered', { conversationId, beforeId: null });
 
     // Persist via the dedicated reorder endpoint (the sole writer of order).
-    this._apiService.reorderConversations(Array.from(this.conversations.keys()))
-      .catch(err => console.error('[Session] reorder persist failed:', err));
+    this._persistOrder('reorder');
 
     return true;
   }
 
-  /**
-   * Find the most recently used conversation (one with messages)
-   * @returns {Conversation|null} Most recent conversation or null if none exist
-   * @private
-   */
-  _findMostRecentConversation() {
-    let mostRecent = null;
-    let mostRecentTime = null;
-
-    for (const conv of this.conversations.values()) {
-      if (conv.hasContent()) {
-        // Use the latest item's timestamp as the activity proxy. Walk backward
-        // until we find one (most items carry one).
-        const items = conv.rootMessageThread.items;
-        let activity = conv.created;
-        for (let i = items.length - 1; i >= 0; i--) {
-          const ts = items[i]?.get?.('timestamp');
-          if (ts) { activity = ts; break; }
-        }
-        const txnTime = new Date(/** @type {string|number} */ (activity));
-
-        if (!mostRecentTime || txnTime > mostRecentTime) {
-          mostRecent = conv;
-          mostRecentTime = txnTime;
-        }
-      }
-    }
-
-    return mostRecent;
-  }
 
   /**
    * Bin a conversation. Mirrors deleteConversation locally (cancels
@@ -2048,10 +2003,23 @@ class Session {
       this._saveTimer = null;
     }
 
-    // Remove file change listener
-    if (this._fileChangeHandler && this._services?.wsService) {
-      this._services.wsService.off('file-change', /** @type {import('../services/websocket.js').WSEventCallback} */ (this._fileChangeHandler));
-      this._fileChangeHandler = undefined;
+    // Remove WebSocket listeners registered in _doLoad (all three, not just
+    // file-change — project-changed and providers-update would otherwise leak
+    // and fire against a destroyed session).
+    if (this._services?.wsService) {
+      const ws = this._services.wsService;
+      if (this._fileChangeHandler) {
+        ws.off('file-change', /** @type {import('../services/websocket.js').WSEventCallback} */ (this._fileChangeHandler));
+        this._fileChangeHandler = undefined;
+      }
+      if (this._projectChangedHandler) {
+        ws.off('project-changed', /** @type {import('../services/websocket.js').WSEventCallback} */ (this._projectChangedHandler));
+        this._projectChangedHandler = undefined;
+      }
+      if (this._providersUpdateHandler) {
+        ws.off('providers-update', this._providersUpdateHandler);
+        this._providersUpdateHandler = undefined;
+      }
     }
 
     // Terminate all workers

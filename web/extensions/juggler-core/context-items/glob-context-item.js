@@ -5,6 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { glob } from 'juggler/ops';
+import { formatPathForStatus } from 'juggler/item-utils';
 import { smartTruncate } from 'juggler/ui';
 
 /**
@@ -47,7 +48,6 @@ class GlobContextItem extends ContextItem {
 
   /**
    * Get tool definitions for Glob action
-   * Returns two tools: Glob (primary) and glob (alias)
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */
   static getToolDefinitions() {
@@ -188,7 +188,7 @@ class GlobContextItem extends ContextItem {
     const pattern = /** @type {string} */ (toolInput?.pattern) || 'unknown';
     const searchPath = /** @type {string|undefined} */ (toolInput?.path);
     const projectPath = /** @type {any} */ (context?.session)?.projectPath || this.session?.projectPath;
-    const displayPattern = searchPath ? `${this._formatSearchPath(searchPath, projectPath)}/${pattern}` : pattern;
+    const displayPattern = searchPath ? `${formatPathForStatus(searchPath, projectPath)}/${pattern}` : pattern;
 
     let summary;
     /** @type {import('juggler/context-item').ResultStatus|undefined} */
@@ -208,34 +208,6 @@ class GlobContextItem extends ContextItem {
     }
 
     return { typeName: 'Glob', summary, status };
-  }
-
-  /**
-   * Format a search path for display in status summaries.
-   * Strips the project root prefix and truncates long paths from the start.
-   * @param {string} searchPath - The raw search path
-   * @param {string} [projectPath] - Project root path to strip
-   * @returns {string} Formatted path for display
-   * @private
-   */
-  _formatSearchPath(searchPath, projectPath) {
-    let p = searchPath;
-
-    // Strip project root to get a relative path
-    if (projectPath && p.startsWith(projectPath)) {
-      p = p.slice(projectPath.length).replace(/^\/+/, '');
-    }
-
-    // Truncate long paths from the start, preserving the tail
-    const maxLen = 40;
-    if (p.length > maxLen) {
-      // Find a path separator near the truncation point to cut cleanly
-      const tail = p.slice(p.length - maxLen);
-      const sepIdx = tail.indexOf('/');
-      p = '\u2026/' + (sepIdx >= 0 ? tail.slice(sepIdx + 1) : tail);
-    }
-
-    return p;
   }
 
   /**

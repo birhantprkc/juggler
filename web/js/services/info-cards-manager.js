@@ -19,6 +19,7 @@
 
 import { tipsCard } from '../components/cards/tips-card.js';
 import { gitStatusCard } from '../components/cards/git-status-card.js';
+import { readPref, writePref, notifyPrefChanged } from './ui-pref-store.js';
 
 /**
  * Every info-card provider, in priority order — the info rail stacks them from
@@ -38,36 +39,19 @@ const STORAGE_KEY = 'juggler-info-cards';
 export const INFO_CARDS_CHANGED_EVENT = 'juggler:info-cards-changed';
 
 /**
- * Best-effort broadcast that the info-cards state changed.
- * @returns {void}
- * @private
- */
-function notifyChanged() {
-  try {
-    window.dispatchEvent(new CustomEvent(INFO_CARDS_CHANGED_EVENT));
-  } catch {
-    /* no window / CustomEvent — nothing to notify */
-  }
-}
-
-/**
  * Read the persisted override map, tolerant of a missing/corrupt blob.
  * @returns {Record<string, boolean>} id → user-chosen enabled state.
  * @private
  */
 function readOverrides() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {};
-    const overrides = raw && typeof raw.overrides === 'object' && raw.overrides ? raw.overrides : {};
-    /** @type {Record<string, boolean>} */
-    const clean = {};
-    for (const [id, on] of Object.entries(overrides)) {
-      if (typeof on === 'boolean') clean[id] = on;
-    }
-    return clean;
-  } catch {
-    return {};
+  const raw = readPref(STORAGE_KEY, {});
+  const overrides = raw && typeof raw.overrides === 'object' && raw.overrides ? raw.overrides : {};
+  /** @type {Record<string, boolean>} */
+  const clean = {};
+  for (const [id, on] of Object.entries(overrides)) {
+    if (typeof on === 'boolean') clean[id] = on;
   }
+  return clean;
 }
 
 /**
@@ -76,11 +60,7 @@ function readOverrides() {
  * @private
  */
 function writeOverrides(overrides) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ overrides }));
-  } catch {
-    /* best-effort */
-  }
+  writePref(STORAGE_KEY, { overrides });
 }
 
 /**
@@ -119,7 +99,7 @@ export function setCardEnabled(id, on) {
   overrides[id] = !!on;
   writeOverrides(overrides);
   if (on && !wasEnabled && typeof provider.onEnabled === 'function') provider.onEnabled();
-  notifyChanged();
+  notifyPrefChanged(INFO_CARDS_CHANGED_EVENT);
 }
 
 /**

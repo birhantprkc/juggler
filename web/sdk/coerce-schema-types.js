@@ -24,7 +24,7 @@
  *   genuine type confusion, and string-typed params want their strings.
  * - A property whose declared type is ambiguous across an item's tool
  *   definitions (e.g. number in one, string in another) is left untouched.
- * @module plugins/coerce-schema-types
+ * @module sdk/coerce-schema-types
  */
 
 const INTEGER_RE = /^[+-]?\d+$/;

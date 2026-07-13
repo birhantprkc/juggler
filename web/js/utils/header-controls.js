@@ -78,6 +78,14 @@ export function setupHeaderControls(session) {
     updateButtons();
   };
 
+  // Both the header path chip and the native File ▸ Open… menu event open the
+  // same project picker; the module is imported lazily so the picker (and its
+  // deps) stay off the initial header render path.
+  const openPicker = async () => {
+    const { openProjectPicker } = await import('../components/project-picker.js');
+    openProjectPicker(session.projectPath || '', session);
+  };
+
   const updateProjectPath = (/** @type {string} */ projectPath) => {
     if (!pathDisplay || !pathLabel) return;
     if (!projectPath) {
@@ -111,10 +119,7 @@ export function setupHeaderControls(session) {
   // --wails-draggable: no-drag), so a plain click reliably opens the picker —
   // no pointer-drag disambiguation needed.
   if (pathChip) {
-    pathChip.addEventListener('click', async () => {
-      const { openProjectPicker } = await import('../components/project-picker.js');
-      openProjectPicker(session.projectPath || '', session);
-    });
+    pathChip.addEventListener('click', openPicker);
   }
 
   // Inline "open new window" button. Spawns a fresh juggler window in
@@ -168,10 +173,7 @@ export function setupHeaderControls(session) {
   // Native menu (File ▸ Open…) bridges to the picker via this event, since the
   // Go side can't import the JS module directly. Same entry point as the
   // header path-display click above.
-  window.addEventListener('juggler:open-project', async () => {
-    const { openProjectPicker } = await import('../components/project-picker.js');
-    openProjectPicker(session.projectPath || '', session);
-  });
+  window.addEventListener('juggler:open-project', openPicker);
 
   // Keyboard shortcuts (undo / redo) — bindings and platform handling live in the
   // KeyShortcutManager; here we only supply the behaviour. Each returns truthy

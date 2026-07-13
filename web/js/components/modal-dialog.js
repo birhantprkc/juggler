@@ -53,6 +53,8 @@
  *   - 'prompt': Show input field with OK/Cancel buttons
  */
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { createButton as makeButton } from '../../sdk/lib/html.js';
+import { focusWhenShown } from '../utils/focus.js';
 
 
 class ModalDialog extends HTMLElement {
@@ -123,10 +125,10 @@ class ModalDialog extends HTMLElement {
           <div class="modal-choice-options hidden"></div>
           <input type="text" class="modal-custom-input hidden" placeholder="Enter your answer..." autocorrect="off" autocapitalize="off" spellcheck="false" />
         </div>
-        <footer class="modal-footer">
-          <!-- Buttons will be added dynamically -->
-        </div>
-      </modal-panel>
+          <footer class="modal-footer">
+            <!-- Buttons will be added dynamically -->
+          </footer>
+        </modal-panel>
     `;
 
     // Close on backdrop click
@@ -193,10 +195,7 @@ class ModalDialog extends HTMLElement {
     if (type === 'prompt' && input) {
       input.classList.remove('hidden');
       input.value = defaultValue;
-      setTimeout(() => {
-        input.focus();
-        input.select();
-      }, 100);
+      focusWhenShown(input, { select: true });
     } else if (type === 'choice' && choiceOptions && customInput) {
       choiceOptions.classList.remove('hidden');
       this.setupChoices(choices, allowCustom, choiceOptions, customInput);
@@ -213,7 +212,7 @@ class ModalDialog extends HTMLElement {
         this.close(true);
       });
       footer.appendChild(okButton);
-      setTimeout(() => okButton.focus(), 100);
+      focusWhenShown(okButton);
     } else if (type === 'confirm') {
       const cancelButton = this.createButton(cancelText, 'secondary', () => {
         this.close(false);
@@ -223,7 +222,7 @@ class ModalDialog extends HTMLElement {
       });
       footer.appendChild(cancelButton);
       footer.appendChild(confirmButton);
-      setTimeout(() => confirmButton.focus(), 100);
+      focusWhenShown(confirmButton);
     } else if (type === 'prompt' && input) {
       const cancelButton = this.createButton(cancelText, 'secondary', () => {
         this.close(null);
@@ -388,11 +387,7 @@ class ModalDialog extends HTMLElement {
    * @returns {HTMLButtonElement} Created button element
    */
   createButton(text, variant, onClick) {
-    const button = document.createElement('button');
-    button.className = `modal-button ${variant}`;
-    button.textContent = text;
-    button.addEventListener('click', onClick);
-    return button;
+    return makeButton(text, `modal-button ${variant}`, onClick);
   }
 
   /**
@@ -444,19 +439,34 @@ window.showModal = async function(/** @type {ModalOptions} */ options) {
   return await modal.show(options);
 };
 
-// Convenience methods
-// @ts-ignore - Extending window object
-window.showAlert = async function(/** @type {string} */ message, title = 'Alert') {
+// Convenience methods. Exported so components can import them directly rather
+// than reaching through the untyped `window.*` global; the window aliases below
+// preserve existing global callers.
+/**
+ * Show a simple alert modal with an OK button.
+ * @param {string} message - Body text
+ * @param {string} [title] - Modal title
+ * @returns {Promise<any>} Resolves when dismissed
+ */
+export async function showAlert(message, title = 'Alert') {
   // @ts-ignore - showModal is defined above
   return await window.showModal({
     title,
     message,
     type: 'alert'
   });
-};
-
+}
 // @ts-ignore - Extending window object
-window.showConfirm = async function(/** @type {string} */ message, title = 'Confirm', /** @type {ConfirmOptions} */ options = {}) {
+window.showAlert = showAlert;
+
+/**
+ * Show a confirm modal with OK/Cancel buttons.
+ * @param {string} message - Body text
+ * @param {string} [title] - Modal title
+ * @param {ConfirmOptions} [options] - Button labels / danger styling
+ * @returns {Promise<boolean>} True when confirmed
+ */
+export async function showConfirm(message, title = 'Confirm', options = {}) {
   // @ts-ignore - showModal is defined above
   return await window.showModal({
     title,
@@ -466,7 +476,9 @@ window.showConfirm = async function(/** @type {string} */ message, title = 'Conf
     cancelText: options.cancelText || 'Cancel',
     danger: options.danger || false
   });
-};
+}
+// @ts-ignore - Extending window object
+window.showConfirm = showConfirm;
 
 // @ts-ignore - Extending window object
 window.showPrompt = async function(/** @type {string} */ message, defaultValue = '', title = 'Input') {

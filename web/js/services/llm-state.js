@@ -242,23 +242,6 @@ class LLMState {
   }
 
   /**
-   * Reset state to initial values for a specific conversation
-   * Clears processing state for one conversation
-   * @param {string} conversationId - Conversation ID to reset
-   */
-  reset(conversationId) {
-    // Clear status message - THIS clears processing state
-    this._statusMessages.delete(conversationId);
-    this._statusData.delete(conversationId);
-
-    // Stop elapsed time timer
-    this._stopElapsedTimeTimer(conversationId);
-
-    // Update UI
-    this._notifyConversationArea(conversationId);
-  }
-
-  /**
    * Check if a specific conversation is currently processing.
    * A conversation is processing if and only if it has a status message.
    * @param {string} conversationId - Conversation ID to check

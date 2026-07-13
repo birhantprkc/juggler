@@ -159,46 +159,6 @@ class DocumentSyncManager {
   }
 
   // ========================================================================
-  // PERSISTENCE
-  // ========================================================================
-
-  /**
-   * Get full document state for persistence
-   * @returns {Uint8Array} Serialized document state
-   */
-  getState() {
-    return Y.encodeStateAsUpdate(this.doc);
-  }
-
-  /**
-   * Get state vector for efficient sync
-   * @returns {Uint8Array} State vector
-   */
-  getStateVector() {
-    return Y.encodeStateVector(this.doc);
-  }
-
-  /**
-   * Get state update since a specific vector
-   * @param {Uint8Array} [sinceVector] - Optional vector to diff against
-   * @returns {Uint8Array} State update
-   */
-  getStateUpdate(sinceVector) {
-    if (sinceVector) {
-      return Y.encodeStateAsUpdate(this.doc, sinceVector);
-    }
-    return Y.encodeStateAsUpdate(this.doc);
-  }
-
-  /**
-   * Load state from persisted data
-   * @param {Uint8Array} state
-   */
-  loadState(state) {
-    Y.applyUpdate(this.doc, state);
-  }
-
-  // ========================================================================
   // LIFECYCLE
   // ========================================================================
 
@@ -208,14 +168,6 @@ class DocumentSyncManager {
    */
   isConnected() {
     return this._connected;
-  }
-
-  /**
-   * Check if manager is initialized
-   * @returns {boolean} True if manager is initialized
-   */
-  isInitialized() {
-    return this._initialized;
   }
 
   /**

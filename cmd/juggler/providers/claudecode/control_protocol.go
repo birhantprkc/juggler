@@ -29,10 +29,10 @@
 package claudecode
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -46,7 +46,7 @@ import (
 //
 // Concurrency model: a single actor goroutine (run) owns every field below
 // and is the ONLY writer of the CLI's stdin. Public methods submit a closure
-// on cmds and block until the actor has executed it (see do), so callers get
+// on cmds and block until the actor has executed it (see runOnActor), so callers get
 // synchronous semantics while all state mutation + stdin writes happen on one
 // goroutine — no mutex. Internal `…Locked` bodies already run on the actor and
 // call each other directly (calling a public wrapper from inside the actor
@@ -58,7 +58,7 @@ type controlProtocol struct {
 	// Actor plumbing. cmds carries closures to run on the actor goroutine;
 	// quit stops it; done closes when run() returns. cmds is unbuffered so a
 	// successful send guarantees the actor will execute the closure before its
-	// next select (the basis for do()'s deadlock-freedom).
+	// next select (the basis for runOnActor()'s deadlock-freedom).
 	cmds chan func()
 	quit chan struct{}
 	done chan struct{}
@@ -281,7 +281,7 @@ func (cp *controlProtocol) run() {
 	}
 }
 
-// do runs fn on the actor goroutine and blocks until it completes, returning
+// runOnActor runs fn on the actor goroutine and blocks until it completes, returning
 // true. Returns false without running fn if the actor has already been torn
 // down. Deadlock-free: cmds is unbuffered, so a completed send means the actor
 // received fn and will execute it (closing the local done) before re-entering
@@ -307,16 +307,13 @@ func (cp *controlProtocol) nextRequestID() string {
 	return fmt.Sprintf("req_%d_%x", n, rnd)
 }
 
-// readRandom wraps crypto-quality random fill so callers don't need to
-// thread an error handler — failures degrade to whatever's in the buffer,
-// which for our request-id collision-avoidance use is harmless.
+// readRandom fills b with cryptographically-secure random bytes. Uses
+// crypto/rand so it works on every platform — the old /dev/urandom open
+// produced zero bytes on Windows, collapsing request-id suffixes. Failures
+// degrade to whatever's in the buffer, which for our request-id
+// collision-avoidance use is harmless.
 func readRandom(b []byte) (int, error) {
-	f, err := os.Open("/dev/urandom")
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	return f.Read(b)
+	return rand.Read(b)
 }
 
 // writeLine serialises one JSON value as a single line on the CLI's
@@ -419,7 +416,7 @@ func (cp *controlProtocol) handleMCPMessageLocked(requestID string, body *Contro
 
 	switch jrpc.Method {
 	case "initialize":
-		return cp.respondJSONRPC(requestID, jrpc.ID, mcpInitializeResult(), nil)
+		return cp.respondJSONRPC(requestID, jrpc.ID, mcpInitializeResult())
 	case "tools/list":
 		if cp.tools == nil {
 			return cp.respondJSONRPCError(requestID, jrpc.ID, -32603, "no tools registered for session")
@@ -428,7 +425,7 @@ func (cp *controlProtocol) handleMCPMessageLocked(requestID string, body *Contro
 		if err != nil {
 			return cp.respondJSONRPCError(requestID, jrpc.ID, -32603, err.Error())
 		}
-		return cp.respondJSONRPC(requestID, jrpc.ID, MCPToolsListResult{Tools: tools}, nil)
+		return cp.respondJSONRPC(requestID, jrpc.ID, MCPToolsListResult{Tools: tools})
 	case "tools/call":
 		return cp.recordPendingToolCallLocked(requestID, jrpc)
 	default:
@@ -436,18 +433,12 @@ func (cp *controlProtocol) handleMCPMessageLocked(requestID string, body *Contro
 	}
 }
 
-// recordPendingToolCall parks a CLI tools/call. It is answered later by
+// recordPendingToolCallLocked parks a CLI tools/call. It is answered later by
 // deliverNextToolResult — or immediately, if a result was already stashed (the
 // common result-before-call order, since the worker executes tools off the
 // stream), draining the oldest stash that matches this call by (name+args) key,
 // then by same tool name (arg-drift). It NEVER drains a stash of a different
 // tool: a cross-type answer is silent corruption, so the call waits instead.
-func (cp *controlProtocol) recordPendingToolCall(requestID string, jrpc JSONRPCMessage) error {
-	var err error
-	cp.runOnActor(func() { err = cp.recordPendingToolCallLocked(requestID, jrpc) })
-	return err
-}
-
 func (cp *controlProtocol) recordPendingToolCallLocked(requestID string, jrpc JSONRPCMessage) error {
 	var params MCPToolsCallParams
 	if err := json.Unmarshal(jrpc.Params, &params); err != nil {
@@ -501,7 +492,7 @@ func (cp *controlProtocol) deliverNextToolResult(recordedKey mcpMatchKey, result
 
 func (cp *controlProtocol) deliverNextToolResultLocked(recordedKey mcpMatchKey, result *provider.ToolResult) (bool, error) {
 	// Mark that the current round produced a delivery, so a subsequent
-	// advanceGeneration knows this round resolved (see advanceGeneration's
+	// openNewGenerationLocked knows this round resolved (see openNewGenerationLocked's
 	// invariant check). Set on entry — stash or match, the worker IS delivering
 	// for this round.
 	cp.deliveredSinceGenAdvance = true
@@ -674,7 +665,7 @@ func (cp *controlProtocol) hasParkedInGenerationLocked(gen int) bool {
 	return false
 }
 
-// outOfBandRoundCount returns how many out-of-band tool rounds advanceGeneration
+// outOfBandRoundCount returns how many out-of-band tool rounds openNewGenerationLocked
 // has detected this session (always 0 unless the CLI violated the
 // blocked-while-parked invariant). Actor-read so it is race-free against the
 // reader goroutine that mutates the counter.
@@ -709,7 +700,7 @@ func (cp *controlProtocol) answerCallLocked(call pendingMCPCall, result *provide
 
 // respondJSONRPC writes a control_response wrapping a successful JSONRPC
 // envelope. Used for initialize and tools/list dispatches.
-func (cp *controlProtocol) respondJSONRPC(requestID string, jrpcID json.RawMessage, result any, _ error) error {
+func (cp *controlProtocol) respondJSONRPC(requestID string, jrpcID json.RawMessage, result any) error {
 	mcpResp, err := jsonrpcSuccess(jrpcID, result)
 	if err != nil {
 		return fmt.Errorf("encode jsonrpc success: %w", err)

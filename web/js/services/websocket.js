@@ -33,30 +33,6 @@ const WEBRTC_CHUNK_SIZE = 16 * 1024;
  */
 
 /**
- * @typedef {object} ToolUseBlock
- * Specialized ContentBlock for tool_use type.
- * Contains only LLM I/O data - execution results are stored in tool-result event metadata.
- * @property {'tool_use'} type - Always 'tool_use'
- * @property {string} content - Tool use content (usually empty)
- * @property {string} toolUseId - Unique identifier for this tool use
- * @property {string} toolName - Name of the tool being called
- * @property {{[key: string]: unknown}} toolInput - Input parameters from the LLM
- * @property {{[key: string]: unknown}} [metadata] - Provider-specific metadata
- */
-
-/**
- * @typedef {object} WSMessage
- * @property {ContentBlock[]} [blocks] - Structured response blocks
- * @property {number} [inputTokens] - Input tokens used in the request
- * @property {number} [outputTokens] - Output tokens used in the response
- * @property {number} [cachedTokens] - Prompt tokens served from cache (OpenAI)
- * @property {string} [error] - Error message
- * @property {string} [message] - Error message detail
- * @property {'session'} [type] - Message type for session init
- * @property {string} [conversationId] - Conversation ID for message routing
- */
-
-/**
  * @typedef {function(unknown): void} WSEventCallback
  */
 
@@ -67,13 +43,13 @@ const WEBRTC_CHUNK_SIZE = 16 * 1024;
 class WebSocketService {
   constructor() {
     /** @type {WebSocket|RTCDataChannel|null} @private */
-    this.ws = null;
+    this._transport = null;
     /** @type {boolean} */
     this.connected = false;
     /** @type {string|null} - This client's server-assigned id, from the session message. Used to exclude self from the connected-clients list. */
     this.clientId = null;
     /** @type {number} @private */
-    this.reconnectAttempts = 0;
+    this._reconnectAttempts = 0;
     /** @type {boolean} @private */
     this._intentionalDisconnect = false;
     /** @type {boolean} @private */
@@ -97,7 +73,7 @@ class WebSocketService {
     /** @type {Map<string, {total: number, parts: string[], received: number}>} @private */
     this._dcIncomingChunks = new Map();
     /** @type {Record<WSEventType, WSEventCallback[]>} @private */
-    this.listeners = {
+    this._listeners = {
       open: [],
       close: [],
       error: [],
@@ -172,8 +148,8 @@ class WebSocketService {
     const token = /** @type {{__jugglerToken?: string}} */ (globalThis).__jugglerToken;
     const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
     const wsUrl = `${protocol}//${loc.host}/api/ws?role=${role}${tokenParam}`;
-    this.ws = new WebSocket(wsUrl);
-    this._configureTransport(this.ws, 'WebSocket');
+    this._transport = new WebSocket(wsUrl);
+    this._configureTransport(this._transport, 'WebSocket');
   }
 
   /**
@@ -188,7 +164,7 @@ class WebSocketService {
     try {
       const dc = pc.createDataChannel('juggler', { ordered: true });
       /** @type {RTCDataChannel & {__pc?: RTCPeerConnection}} */ (dc).__pc = pc;
-      this.ws = /** @type {any} */ (dc);
+      this._transport = /** @type {any} */ (dc);
       this._configureTransport(/** @type {any} */ (dc), 'WebRTC');
 
       const opened = new Promise((resolve, reject) => {
@@ -221,7 +197,7 @@ class WebSocketService {
     } catch (error) {
       this._suppressNextCloseReconnect = true;
       pc.close();
-      this.ws = null;
+      this._transport = null;
       throw error;
     }
   }
@@ -237,12 +213,12 @@ class WebSocketService {
     /** @type {{dc: RTCDataChannel, sendFrame: (text: string) => void, setRealtimeHandler: (fn: (raw: string) => void) => void}} */
     const studio = /** @type {any} */ (window).__jugglerStudio;
 
-    // Use a minimal send-adapter, NOT the raw RTCDataChannel, as this.ws.
+    // Use a minimal send-adapter, NOT the raw RTCDataChannel, as this._transport.
     // studio.sendFrame already applies the __juggler_dc_chunk envelope, and
-    // _sendTransport only chunks when this.ws is `instanceof RTCDataChannel` —
+    // _sendTransport only chunks when this._transport is `instanceof RTCDataChannel` —
     // so routing through this plain object correctly skips our chunker and
     // avoids double-chunking the same payload.
-    this.ws = /** @type {any} */ ({
+    this._transport = /** @type {any} */ ({
       send: (/** @type {string} */ payload) => studio.sendFrame(payload),
       close: () => {}
     });
@@ -254,7 +230,7 @@ class WebSocketService {
     // The channel is open at adoption time; replicate the relevant onopen bits
     // from _configureTransport. There was no prior connection, so do NOT take
     // the reconnect-reload branch.
-    this.reconnectAttempts = 0;
+    this._reconnectAttempts = 0;
     this.connected = true;
     console.info('[WebSocket] Connected via studio');
     this._emit('open', undefined);
@@ -309,11 +285,11 @@ class WebSocketService {
       // The engine page is headless with no UI/module-staleness concerns —
       // reloading just resets window.__engineReady and re-spams init to every
       // worker, so skip the reload there.
-      if (this.reconnectAttempts > 0 && !isEngine() && this._shouldReloadOnReconnect()) {
+      if (this._reconnectAttempts > 0 && !isEngine() && this._shouldReloadOnReconnect()) {
         this._reloadPage();
         return;
       }
-      this.reconnectAttempts = 0;
+      this._reconnectAttempts = 0;
       this.connected = true;
       console.info(`[WebSocket] Connected via ${label}`);
       this._emit('open', event);
@@ -322,7 +298,7 @@ class WebSocketService {
     transport.onclose = (/** @type {CloseEvent|Event} */ event) => this._onTransportClosed(event, transport);
 
     transport.onerror = (/** @type {Event} */ error) => {
-      console.error(`[ESSENTIAL] [${label}] Error: ${error}`);
+      console.error(`[ESSENTIAL] [${label}] transport error (type=${error?.type})`, error);
       this._emit('error', error);
     };
 
@@ -527,16 +503,16 @@ class WebSocketService {
    * @private
    */
   _sendTransport(payload) {
-    if (!this.ws) throw new Error('transport not connected');
+    if (!this._transport) throw new Error('transport not connected');
     // globalThis (not window): the engine runs in a Web Worker with no
     // `window`, and this send path runs for every outbound message. WebRTC
     // is viewer-only anyway, so RTCDataChannel is simply absent in the worker.
     const RTCDataChannelCtor = /** @type {any} */ (globalThis).RTCDataChannel;
-    if (typeof RTCDataChannelCtor !== 'undefined' && this.ws instanceof RTCDataChannelCtor && payload.length > WEBRTC_CHUNK_SIZE) {
+    if (typeof RTCDataChannelCtor !== 'undefined' && this._transport instanceof RTCDataChannelCtor && payload.length > WEBRTC_CHUNK_SIZE) {
       const id = `${Date.now().toString(36)}-${(++this._dcChunkSeq).toString(36)}`;
       const total = Math.ceil(payload.length / WEBRTC_CHUNK_SIZE);
       for (let i = 0; i < total; i++) {
-        this.ws.send(JSON.stringify({
+        this._transport.send(JSON.stringify({
           type: WEBRTC_CHUNK_TYPE,
           id,
           index: i,
@@ -546,7 +522,7 @@ class WebSocketService {
       }
       return;
     }
-    this.ws.send(payload);
+    this._transport.send(payload);
   }
 
   /**
@@ -577,16 +553,13 @@ class WebSocketService {
     }
   }
 
-  clearSession() {
-  }
-
   disconnect() {
     this._intentionalDisconnect = true;
-    if (this.ws) {
-      const pc = /** @type {any} */ (this.ws).__pc;
-      this.ws.close();
+    if (this._transport) {
+      const pc = /** @type {any} */ (this._transport).__pc;
+      this._transport.close();
       if (pc) pc.close();
-      this.ws = null;
+      this._transport = null;
     }
     this.connected = false;
   }
@@ -602,6 +575,10 @@ class WebSocketService {
    * @typedef {object} ModelConfig
    * @property {string} [provider] - LLM provider name
    * @property {string} [model] - LLM model name
+   */
+
+  /**
+   * Send an LLM request over the transport.
    * @param {string} systemPrompt - System prompt with instructions
    * @param {import('../../sdk/lib/message.js').Message[]} messages - Array of Message objects
    * @param {ToolDefinition[]} tools - Tool definitions for LLM to use
@@ -611,7 +588,7 @@ class WebSocketService {
    * @returns {boolean} True if message sent successfully, false otherwise
    */
   send(systemPrompt, messages, tools, conversationId, modelConfig, transactionId = '') {
-    if (!this.connected || !this.ws) {
+    if (!this.connected || !this._transport) {
       console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send message`);
       return false;
     }
@@ -651,7 +628,7 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendShellStart(shellId, command, cwd, timeout) {
-    if (!this.connected || !this.ws) {
+    if (!this.connected || !this._transport) {
       console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send shell-start`);
       return false;
     }
@@ -681,7 +658,7 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendToolResponse(requestId, content, resultStatus, category) {
-    if (!this.connected || !this.ws) {
+    if (!this.connected || !this._transport) {
       console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send tool response`);
       return false;
     }
@@ -708,7 +685,7 @@ class WebSocketService {
    * @param {string} requestId - Request ID from the tool_use_request
    */
   sendToolStarted(requestId) {
-    if (!this.connected || !this.ws) return;
+    if (!this.connected || !this._transport) return;
     this._sendTransport(JSON.stringify({ type: 'tool_use_started', requestId }));
   }
 
@@ -720,7 +697,7 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendShouldContinueResponse(requestId, shouldContinue, message) {
-    if (!this.connected || !this.ws) {
+    if (!this.connected || !this._transport) {
       console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send should_continue response`);
       return false;
     }
@@ -746,7 +723,7 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendShellCancel(shellId) {
-    if (!this.connected || !this.ws) {
+    if (!this.connected || !this._transport) {
       console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send shell-cancel`);
       return false;
     }
@@ -772,8 +749,8 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendWorkerMessage(conversationId, message) {
-    if (!this.connected || !this.ws) {
-      console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send worker message (connected=${this.connected}, ws=${!!this.ws})`);
+    if (!this.connected || !this._transport) {
+      console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send worker message (connected=${this.connected}, ws=${!!this._transport})`);
       return false;
     }
 
@@ -807,7 +784,7 @@ class WebSocketService {
    * @returns {boolean} Whether the message was sent
    */
   sendSessionChanged() {
-    if (!this.connected || !this.ws) return false;
+    if (!this.connected || !this._transport) return false;
     try {
       this._sendTransport(JSON.stringify({ type: 'session-changed' }));
       return true;
@@ -825,7 +802,7 @@ class WebSocketService {
    * @returns {boolean} True if sent
    */
   sendEngineBridge(channel, payload) {
-    if (!this.connected || !this.ws) return false;
+    if (!this.connected || !this._transport) return false;
     try {
       this._sendTransport(JSON.stringify({ type: 'engine-bridge', channel, payload }));
       return true;
@@ -840,8 +817,8 @@ class WebSocketService {
    * @param {WSEventCallback} callback - Callback function
    */
   on(event, callback) {
-    if (this.listeners[event]) {
-      this.listeners[event].push(callback);
+    if (this._listeners[event]) {
+      this._listeners[event].push(callback);
     } else {
       console.error(`[ESSENTIAL] [WebSocket] Cannot register listener for unknown event '${event}'`);
     }
@@ -852,8 +829,8 @@ class WebSocketService {
    * @param {WSEventCallback} callback
    */
   off(event, callback) {
-    if (this.listeners[event]) {
-      this.listeners[event] = this.listeners[event].filter(cb => cb !== callback);
+    if (this._listeners[event]) {
+      this._listeners[event] = this._listeners[event].filter(cb => cb !== callback);
     }
   }
 
@@ -864,8 +841,8 @@ class WebSocketService {
    * @private
    */
   _emit(event, data) {
-    if (this.listeners[event]) {
-      this.listeners[event].forEach(callback => callback(data));
+    if (this._listeners[event]) {
+      this._listeners[event].forEach(callback => callback(data));
     }
   }
 
@@ -902,20 +879,20 @@ class WebSocketService {
   }
 
   _reconnect() {
-    this.reconnectAttempts++;
+    this._reconnectAttempts++;
 
     // Tiered delay: 1s for first 50, 2s for next 50, 5s after that
     let delay;
-    if (this.reconnectAttempts <= 50) {
+    if (this._reconnectAttempts <= 50) {
       delay = 1000;
-    } else if (this.reconnectAttempts <= 100) {
+    } else if (this._reconnectAttempts <= 100) {
       delay = 2000;
     } else {
       delay = 5000;
     }
 
     // Emit reconnect-attempt event with delay so UI can show countdown
-    this._emit('reconnect-attempt', { attempt: this.reconnectAttempts, delayMs: delay });
+    this._emit('reconnect-attempt', { attempt: this._reconnectAttempts, delayMs: delay });
 
     setTimeout(() => {
       if (this.connected || this._intentionalDisconnect) return;
@@ -983,8 +960,8 @@ class WebSocketService {
    */
   async simulateDisconnect() {
     this._intentionalDisconnect = true;
-    if (this.ws) {
-      this.ws.close();
+    if (this._transport) {
+      this._transport.close();
     }
     this.connected = false;
     // Wait for close to complete

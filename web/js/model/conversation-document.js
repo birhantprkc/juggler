@@ -54,14 +54,10 @@ export class ConversationDocument {
     this.root = this.doc.getMap('root');
     /** @type {*} */
     this.metadata = this.doc.getMap('metadata');
-    /** @type {*} */
-    this.undoLog = this.doc.getArray('undoLog');
 
     /** @type {DocumentSyncManager} */
     // @ts-ignore - Yjs type mismatch between vendor version and imports
     this._syncManager = new DocumentSyncManager(this.doc);
-
-    this._inTransaction = false;
   }
 
   // ========================================================================
@@ -76,10 +72,10 @@ export class ConversationDocument {
   }
 
   /**
-   * Register callback for sync broadcasts
-   * @param {(bytes: Uint8Array) => void} onSyncBroadcast
+   * Set the callback invoked for sync broadcasts.
+   * @param {(bytes: Uint8Array, opts?: { engineDerived?: boolean }) => void} onSyncBroadcast
    */
-  registerSyncCallbacks(onSyncBroadcast) {
+  setOnSyncBroadcast(onSyncBroadcast) {
     this._syncManager.onSyncBroadcast = onSyncBroadcast;
   }
 

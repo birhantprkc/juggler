@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { markPopupOpen } from '../utils/popup-manager.js';
-import { wireExternalLinks } from '../utils/external-links.js';
+import { focusWhenShown } from '../utils/focus.js';
 
 /**
  * AboutModal - Shows information about the application
@@ -166,11 +166,8 @@ class AboutModal extends HTMLElement {
     if (closeButton) {
       closeButton.addEventListener('click', () => this._close());
       // Focus the close button
-      setTimeout(() => /** @type {HTMLElement} */ (closeButton).focus(), 100);
+      focusWhenShown(/** @type {HTMLElement} */ (closeButton));
     }
-
-    // External links route via the loopback opener (see wireExternalLinks).
-    wireExternalLinks(this);
   }
 }
 

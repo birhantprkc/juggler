@@ -144,16 +144,6 @@ function saveRulesByScope(mt, scope, rules) {
 }
 
 /**
- * Persist a full rule list back to the conversation scope. Prefer the
- * add/update/remove helpers for incremental changes.
- * @param {any} mt
- * @param {PermissionRule[]} rules
- */
-export function saveRules(mt, rules) {
-  saveConversationRules(mt, rules.map(r => ({ ...r, scope: SCOPE_CONVERSATION })));
-}
-
-/**
  * Add a new rule. Defaults to conversation scope unless `rule.scope` is set.
  * Dedupe checks both scopes so identical rules are not shown twice.
  * @param {any} mt

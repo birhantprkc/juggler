@@ -51,6 +51,35 @@ export function formatDisplayPath(path) {
 }
 
 /**
+ * Format a filesystem path for a compact status summary: strip the project-root
+ * prefix to a relative path, then truncate very long paths from the START so the
+ * meaningful tail (the filename) survives, with a leading ellipsis cut at a clean
+ * path separator.
+ * @param {string} path - The raw path
+ * @param {string} [projectPath] - Project root prefix to strip
+ * @param {number} [maxLen=40] - Max length before truncation kicks in
+ * @returns {string} Formatted path for display
+ */
+export function formatPathForStatus(path, projectPath, maxLen = 40) {
+  let p = path;
+
+  // Strip project root to get a relative path
+  if (projectPath && p.startsWith(projectPath)) {
+    p = p.slice(projectPath.length).replace(/^\/+/, '');
+  }
+
+  // Truncate long paths from the start, preserving the tail
+  if (p.length > maxLen) {
+    // Find a path separator near the truncation point to cut cleanly
+    const tail = p.slice(p.length - maxLen);
+    const sepIdx = tail.indexOf('/');
+    p = '\u2026/' + (sepIdx >= 0 ? tail.slice(sepIdx + 1) : tail);
+  }
+
+  return p;
+}
+
+/**
  * Return the final segment (filename or folder name) of a path for display.
  * Handles both POSIX (`/`) and Windows (`\`) separators — the backend reports
  * native OS paths, so titles must strip either — and trims trailing separators

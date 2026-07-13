@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
+
+	provider "juggler/cmd/juggler/providers/registry"
 )
 
 // TreeOperations handles directory tree operations
@@ -293,14 +295,14 @@ func buildTreeWithBudget(root string, depth int, ctx *buildContext, stats *treeS
 		line += "\n"
 
 		// Check if adding this line would exceed token budget
-		lineTokens := estimateTokens(line)
+		lineTokens := provider.EstimateTokens(line)
 		if ctx.tokensUsed+lineTokens > ctx.maxTokens {
 			// Budget exhausted - add summary and stop
 			remaining := len(treeEntries) - i
 			if remaining > 0 {
 				summary := fmt.Sprintf("%s... and %d more items (token budget exhausted)\n", indent, remaining)
 				builder.WriteString(summary)
-				ctx.tokensUsed += estimateTokens(summary)
+				ctx.tokensUsed += provider.EstimateTokens(summary)
 				ctx.truncated = true
 			}
 			break
@@ -323,7 +325,7 @@ func buildTreeWithBudget(root string, depth int, ctx *buildContext, stats *treeS
 	if truncatedCount > 0 {
 		summary := fmt.Sprintf("%s... and %d more items\n", indent, truncatedCount)
 		builder.WriteString(summary)
-		ctx.tokensUsed += estimateTokens(summary)
+		ctx.tokensUsed += provider.EstimateTokens(summary)
 		ctx.truncated = true
 	}
 
@@ -390,11 +392,6 @@ func matchesPattern(name, pattern string) bool {
 		return false
 	}
 	return matched
-}
-
-// estimateTokens estimates token count from text (rough heuristic: 1 token ≈ 4 chars)
-func estimateTokens(text string) int {
-	return len(text) / 4
 }
 
 // formatSize formats bytes in human-readable format

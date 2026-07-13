@@ -7,6 +7,8 @@
  * Persists zoom preference in localStorage
  */
 
+import { onDocumentReady } from './document-ready.js';
+
 const ZOOM_KEY = 'juggler-zoom';
 const ZOOM_STEP = 10;
 const ZOOM_MIN = 60;
@@ -64,9 +66,6 @@ function initZoom() {
   applyZoom(getZoom());
 }
 
-// Auto-initialize when module loads
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initZoom);
-} else {
-  initZoom();
-}
+// Auto-initialize when module loads. Zoom is a viewer affordance; onDocumentReady
+// skips off the main thread (the engine worker has no document).
+onDocumentReady(initZoom);

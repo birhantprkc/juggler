@@ -538,12 +538,12 @@ class UIEventManager {
   }
 
   /**
-   * Get session from connection manager
+   * The current session, or null before one is set. Populated via setSession()
+   * (called by JugglerApp once the session exists).
    * @returns {import('../model/session.js').default|null} Session instance or null if not set
    * @private
    */
   _getSession() {
-    // This will be set by JugglerApp
     return this._session || null;
   }
 

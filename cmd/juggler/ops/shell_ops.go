@@ -24,13 +24,42 @@ const (
 	maxExecTimeoutMs     = 1200000 // hard cap on any requested timeout
 )
 
+// timeoutFromParams reads an optional "timeout" (milliseconds) from params,
+// falling back to defaultMs when absent, and caps the result at maxExecTimeoutMs.
+func timeoutFromParams(params map[string]any, defaultMs int) time.Duration {
+	timeoutMs := defaultMs
+	if t, ok := params["timeout"].(float64); ok {
+		timeoutMs = int(t)
+	}
+	return capTimeout(timeoutMs)
+}
+
+// capTimeout caps a millisecond timeout at maxExecTimeoutMs and converts it to
+// a Duration.
+func capTimeout(timeoutMs int) time.Duration {
+	if timeoutMs > maxExecTimeoutMs {
+		timeoutMs = maxExecTimeoutMs
+	}
+	return time.Duration(timeoutMs) * time.Millisecond
+}
+
+// exitCodeOf reports the process exit code for a command error. The bool is
+// true only when err is an *exec.ExitError (a real process exit); callers use
+// it to distinguish a non-zero exit from a non-exit failure (spawn error,
+// context cancellation) that they handle differently.
+func exitCodeOf(err error) (int, bool) {
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
+}
+
 // shellStateSnapshot is a snapshot of a shell's mutable state
 type shellStateSnapshot struct {
 	Status   string
 	Output   string
 	ExitCode int
 	Error    string
-	Cmd      *exec.Cmd
 }
 
 // BackgroundShell represents a background shell process.
@@ -67,7 +96,6 @@ func (shell *BackgroundShell) snapshot() shellStateSnapshot {
 		Output:   shell.output.String(),
 		ExitCode: shell.exitCode,
 		Error:    shell.errMsg,
-		Cmd:      shell.cmd,
 	}
 }
 
@@ -375,10 +403,10 @@ func (ops *ShellOperations) probeFnOrDefault() func(dir string) {
 }
 
 // Execute executes a shell operation
-func (ops *ShellOperations) Execute(_ context.Context, operation string, params map[string]any) (any, error) {
+func (ops *ShellOperations) Execute(ctx context.Context, operation string, params map[string]any) (any, error) {
 	switch operation {
 	case "execute":
-		return ops.execute(params)
+		return ops.execute(ctx, params)
 	case "startBackground":
 		return ops.startBackground(params)
 	case "getOutput":
@@ -530,13 +558,7 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 	}
 
 	// Get timeout from params (default: 10 minutes for background tasks)
-	timeoutMs := maxExecTimeoutMs // Default 10 minutes
-	if t, ok := params["timeout"].(float64); ok {
-		timeoutMs = int(t)
-	}
-	if timeoutMs > maxExecTimeoutMs {
-		timeoutMs = maxExecTimeoutMs
-	}
+	timeout := timeoutFromParams(params, maxExecTimeoutMs)
 
 	// Extract conversation/tool-use tracking params (optional)
 	convID, _ := params["conv_id"].(string)
@@ -546,7 +568,6 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 	shellID := fmt.Sprintf("bg-%d", time.Now().UnixNano())
 
 	// Create context with timeout and cancellation
-	timeout := time.Duration(timeoutMs) * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
 	// Create background shell entry (mutable state initialized here,
@@ -688,8 +709,8 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 			exitCode = -1
 		} else if err != nil {
 			status = "failed"
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
+			if code, ok := exitCodeOf(err); ok {
+				exitCode = code
 				errMsg = fmt.Sprintf("exit code %d", exitCode)
 			} else {
 				errMsg = err.Error()
@@ -731,11 +752,11 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 //     This avoids shell escaping issues entirely.
 //
 // WARNING: Both modes execute arbitrary code and are security risks.
-func (ops *ShellOperations) execute(params map[string]any) (any, error) {
+func (ops *ShellOperations) execute(ctx context.Context, params map[string]any) (any, error) {
 	// Check if this is Python code execution (code param) or shell command
 	if code, ok := params["code"].(string); ok {
 		// Python code execution - pass via stdin to python3
-		return ops.executePythonCode(code, params)
+		return ops.executePythonCode(ctx, code, params)
 	}
 
 	command, ok := params["command"].(string)
@@ -752,15 +773,7 @@ func (ops *ShellOperations) execute(params map[string]any) (any, error) {
 	}
 
 	// Get timeout from params (defaults to defaultExecTimeoutMs, capped at maxExecTimeoutMs)
-	timeoutMs := defaultExecTimeoutMs
-	if t, ok := params["timeout"].(float64); ok {
-		timeoutMs = int(t)
-	}
-
-	// Cap at 10 minutes for safety
-	if timeoutMs > maxExecTimeoutMs {
-		timeoutMs = maxExecTimeoutMs
-	}
+	timeout := timeoutFromParams(params, defaultExecTimeoutMs)
 
 	// Get working directory from params (default: session's project path)
 	workingDir := ops.scope.Root()
@@ -772,11 +785,14 @@ func (ops *ShellOperations) execute(params map[string]any) (any, error) {
 		workingDir = resolved
 	}
 
-	// Create timeout duration
-	timeout := time.Duration(timeoutMs) * time.Millisecond
+	// Bound the command by both the caller's context and the timeout. Deriving
+	// from ctx (not context.Background) means a cancelled request actually kills
+	// the foreground command instead of leaving it running detached.
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Execute command in a POSIX shell (sh on Unix, WSL sh on Windows).
-	cmd := newShellCmd(context.Background(), command)
+	cmd := newShellCmd(execCtx, command)
 	// Set process group so we can kill all child processes on timeout (Unix only)
 	setProcGroup(cmd)
 	cmd.Dir = workingDir
@@ -790,26 +806,29 @@ func (ops *ShellOperations) execute(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("command start failed: %w", err)
 	}
 
-	// Wait for command with timeout
+	// Wait for command with timeout / caller cancellation
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
 	}()
 
 	select {
-	case <-time.After(timeout):
-		// Timeout - kill the process group (all child processes)
+	case <-execCtx.Done():
+		// Timeout or caller cancellation - kill the process group (all children).
 		killProcessGroup(cmd)
 		<-done // Wait for the goroutine to finish
-		return nil, fmt.Errorf("command execution timeout (exceeded %v)", timeout)
+		if execCtx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("command execution timeout (exceeded %v)", timeout)
+		}
+		return nil, execCtx.Err()
 	case err := <-done:
 		exitCode := 0
 		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			} else {
+			code, ok := exitCodeOf(err)
+			if !ok {
 				return nil, fmt.Errorf("command execution failed: %w", err)
 			}
+			exitCode = code
 		}
 		return map[string]any{
 			"command":  command,
@@ -826,19 +845,13 @@ func (ops *ShellOperations) execute(params map[string]any) (any, error) {
 // Why stdin instead of the -c flag: the code is passed as pure string data,
 // never parsed by a shell, so it sidesteps all shell escaping issues (quotes,
 // backslashes, newlines) and shell argument-length limits.
-func (ops *ShellOperations) executePythonCode(code string, params map[string]any) (any, error) {
+func (ops *ShellOperations) executePythonCode(ctx context.Context, code string, params map[string]any) (any, error) {
 	// Get timeout from params (defaults to defaultExecTimeoutMs, capped at maxExecTimeoutMs)
-	timeoutMs := defaultExecTimeoutMs
-	if t, ok := params["timeout"].(float64); ok {
-		timeoutMs = int(t)
-	}
-	if timeoutMs > maxExecTimeoutMs {
-		timeoutMs = maxExecTimeoutMs
-	}
+	timeout := timeoutFromParams(params, defaultExecTimeoutMs)
 
-	// Create context with timeout
-	timeout := time.Duration(timeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Create context with timeout, derived from the caller's context so a
+	// cancelled request stops the python process too.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Execute python with code passed via stdin
@@ -859,11 +872,11 @@ func (ops *ShellOperations) executePythonCode(code string, params map[string]any
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("python execution timeout (exceeded %v)", timeout)
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
+		code, ok := exitCodeOf(err)
+		if !ok {
 			return nil, fmt.Errorf("python execution failed: %w", err)
 		}
+		exitCode = code
 	}
 
 	return map[string]any{
@@ -919,9 +932,7 @@ func (ops *ShellOperations) ExecuteStreaming(
 	if timeoutMs <= 0 {
 		timeoutMs = defaultExecTimeoutMs
 	}
-	if timeoutMs > maxExecTimeoutMs {
-		timeoutMs = maxExecTimeoutMs
-	}
+	timeout := capTimeout(timeoutMs)
 
 	// Working directory, validated to stay within the project root.
 	workingDir, err := validateCwd(ops.scope.Root(), cwd)
@@ -935,7 +946,6 @@ func (ops *ShellOperations) ExecuteStreaming(
 	}
 
 	// Create timeout context
-	timeout := time.Duration(timeoutMs) * time.Millisecond
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1181,8 +1191,8 @@ func (ops *ShellOperations) ExecuteStreaming(
 		pipeReader.Close()
 		exitCode := 0
 		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
+			if code, ok := exitCodeOf(err); ok {
+				exitCode = code
 			}
 		}
 		output <- ShellStreamChunk{

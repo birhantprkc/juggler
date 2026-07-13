@@ -45,25 +45,25 @@ import { createCopyButton } from '../../sdk/lib/copy-button.js';
 /** @typedef {import('../../sdk/lib/message.js').Message} Message */
 
 // DOM element tag names - constants to avoid typos
-export const FOOTER_TAG = 'CONVERSATION-FOOTER';
+const FOOTER_TAG = 'CONVERSATION-FOOTER';
 
 // Synthesized non-item elements managed outside the item-diff (like the footer
 // and context toggle): the terminal thread-result block. Excluded from
 // buildElementMap/removeAllElements so the diff never tears it down.
-export const THREAD_RESULT_CLASS = 'thread-result-final';
+const THREAD_RESULT_CLASS = 'thread-result-final';
 
 // The caller's return contract for a sub-thread (create_thread's `resultSpec`):
 // a managed non-item block pinned at the top of the column, just under the
 // context toggle. Stored on the thread Y.Map, so — like the toggle and the
 // terminal result block — it lives outside the message-id item-diff.
-export const THREAD_RESULTSPEC_CLASS = 'thread-result-spec';
+const THREAD_RESULTSPEC_CLASS = 'thread-result-spec';
 
 // Queued-message zone: a managed non-item container rendered AFTER the footer,
 // holding bubbles for messages typed while a turn was in flight. Its bubbles are
 // nested (grandchildren of the message list) so the message-id item-diff never
 // sees them, but they DO carry message-id so the standard id+DOM selection path
 // treats them as first-class (select, properties panel, delete).
-export const PENDING_ZONE_CLASS = 'pending-messages';
+const PENDING_ZONE_CLASS = 'pending-messages';
 
 // Corner-up-left "return" arrow — semantically "returned to parent".
 const RESULT_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M280-200v-80h360q33 0 56.5-23.5T720-360q0-33-23.5-56.5T640-440H300l84 84-56 56-180-180 180-180 56 56-84 84h340q66 0 113 47t47 113q0 66-47 113t-113 47H280Z"/></svg>';
@@ -173,7 +173,7 @@ export const MESSAGE_TAGS = new Set([
 ]);
 
 // Element ID format helpers
-export const INVALID_ID_MARKER = 'null';  // IDs containing this are invalid
+const INVALID_ID_MARKER = 'null';  // IDs containing this are invalid
 
 /**
  * Get unique ID for an item. INVARIANT: items MUST have itemId.
@@ -190,20 +190,8 @@ export function getItemId(item) {
  * @param {Element} element
  * @returns {string} Element ID (e.g., "message:abc123")
  */
-export function getElementId(element) {
+function getElementId(element) {
   return `message:${element.getAttribute('message-id') || ''}`;
-}
-
-/**
- * True if the DOM element corresponds to the given item by message-id.
- * @param {Element} element
- * @param {any} item
- * @returns {boolean} True when message-id matches.
- */
-export function matchesItem(element, item) {
-  const message = /** @type {any} */ (item);
-  return MESSAGE_TAGS.has(element.tagName) &&
-    element.getAttribute('message-id') === message.get('itemId');
 }
 
 /**
@@ -592,7 +580,7 @@ export function positionElements(area, messageList, footer, items, currentElemen
  * @param {number} [itemIndex]
  * @returns {HTMLElement[]} Created elements (zero or more).
  */
-export function createBubblesForEvent(area, message, itemIndex) {
+function createBubblesForEvent(area, message, itemIndex) {
   /** @type {HTMLElement[]} */
   const elements = [];
 
@@ -630,7 +618,7 @@ export function createBubblesForEvent(area, message, itemIndex) {
  * @param {Record<string, string>} [options.attributes]
  * @returns {HTMLElement} Created element.
  */
-export function createMessageElement(tagName, options) {
+function createMessageElement(tagName, options) {
   const { itemId, itemIndex, attributes = {} } = options;
 
   const element = document.createElement(tagName);
@@ -654,7 +642,7 @@ export function createMessageElement(tagName, options) {
  * @param {number} [itemIndex]
  * @returns {HTMLElement} Created element.
  */
-export function createUserBubble(message, itemIndex) {
+function createUserBubble(message, itemIndex) {
   const msg = /** @type {import('../../sdk/lib/message.js').UserMessage} */ (message);
   /** @type {Record<string, string>} */
   const attributes = { content: msg.get('content') || '' };
@@ -675,7 +663,7 @@ export function createUserBubble(message, itemIndex) {
  * @param {number} [itemIndex]
  * @returns {HTMLElement|null} Created element, or null if the item has no visible body.
  */
-export function createAssistantBubble(message, itemIndex) {
+function createAssistantBubble(message, itemIndex) {
   let textContent = '';
 
   if (isAssistantMessage(message)) {
@@ -710,7 +698,7 @@ export function createAssistantBubble(message, itemIndex) {
  * @param {number} [itemIndex]
  * @returns {HTMLElement|null} Created element, or null if the item has no visible body.
  */
-export function createToolActionElement(message, itemIndex) {
+function createToolActionElement(message, itemIndex) {
   if (message.get('type') !== 'tool-action') {
     return null;
   }
@@ -738,7 +726,7 @@ export function createToolActionElement(message, itemIndex) {
  * @param {number} [itemIndex]
  * @returns {HTMLElement} Created element.
  */
-export function createErrorBubble(message, itemIndex) {
+function createErrorBubble(message, itemIndex) {
   return createMessageElement('error-message', {
     itemId: message.get('itemId'),
     itemIndex,
@@ -754,7 +742,7 @@ export function createErrorBubble(message, itemIndex) {
  * @param {number} [itemIndex]
  * @returns {HTMLElement|null} Created element, or null if the item has no visible body.
  */
-export function createContextItemBubble(area, message, itemIndex) {
+function createContextItemBubble(area, message, itemIndex) {
   const msg = /** @type {import('../../sdk/lib/message.js').ContextItemMessage} */ (message);
 
   // Only render items with a registered context item plugin
@@ -789,7 +777,7 @@ export function createContextItemBubble(area, message, itemIndex) {
  * @param {import('../utils/thread-display.js').ThreadLiveStatus|null} [live] - Conversation's live LLM status snapshot.
  * @returns {HTMLElement} Created element.
  */
-export function createThreadBubble(message, itemIndex, live) {
+function createThreadBubble(message, itemIndex, live) {
   const msg = /** @type {import('../../sdk/lib/message.js').ThreadMessage} */ (message);
 
   // Count child items in the thread's nested Y.Array

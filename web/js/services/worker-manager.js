@@ -12,6 +12,7 @@
 import wsService from './websocket.js';
 import * as protocols from './worker-manager-protocols.js';
 import { recordTape } from '../utils/event-tape.js';
+import { bytesToBase64, base64ToBytes } from '../utils/base64.js';
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 
@@ -179,8 +180,8 @@ class WorkerManager {
     this._pendingThreadRequests = new Map();
 
     /**
-     * Pending command acknowledgments (ackId -> {resolve, reject, timeout})
-     * @type {Map<string, {resolve: Function, reject: Function, timeout: number}>}
+     * Pending command acknowledgments (ackId -> {resolve, reject})
+     * @type {Map<string, {resolve: Function, reject: Function}>}
      * @private
      */
     this._pendingAcks = new Map();
@@ -363,6 +364,28 @@ class WorkerManager {
   terminateAll() {
     this._workers.clear();
     this._creating.clear();
+    this._spawning.clear();
+    this._pendingAutoLoads.clear();
+
+    // Reject outstanding thread requests so their awaiters unwind instead of
+    // hanging forever, then drop them.
+    for (const pending of this._pendingThreadRequests.values()) {
+      try {
+        const err = new Error('Worker manager terminated');
+        err.name = 'AbortError';
+        pending.reject(err);
+      } catch { /* ignore */ }
+    }
+    this._pendingThreadRequests.clear();
+
+    // Reject each pending ack — the reject wrapper clears its timeout, so the
+    // timers don't fire later against torn-down state.
+    for (const pending of this._pendingAcks.values()) {
+      try {
+        pending.reject(new Error('Worker manager terminated'));
+      } catch { /* ignore */ }
+    }
+    this._pendingAcks.clear();
   }
 
 
@@ -501,11 +524,26 @@ class WorkerManager {
     const requestId = `thread_${this._instanceId}_${++this._ackCounter}`;
 
     return new Promise((resolve, reject) => {
-      this._pendingThreadRequests.set(requestId, { resolve, reject });
+      /** @type {(() => void)|null} */
+      let onAbort = null;
+      // Detach the abort listener whenever the request settles — on success
+      // (create-thread-response), on error, or on abort. Without this the
+      // listener stays wired to the signal for the life of the AbortController,
+      // leaking one handler per completed thread.
+      const detachAbort = () => {
+        if (signal && onAbort) {
+          signal.removeEventListener('abort', onAbort);
+          onAbort = null;
+        }
+      };
+      this._pendingThreadRequests.set(requestId, {
+        resolve: (/** @type {*} */ value) => { detachAbort(); resolve(value); },
+        reject: (/** @type {Error} */ err) => { detachAbort(); reject(err); },
+      });
 
       // Wire up AbortSignal to reject + cleanup on cancellation
       if (signal) {
-        const onAbort = () => {
+        onAbort = () => {
           const pending = this._pendingThreadRequests.get(requestId);
           if (pending) {
             this._pendingThreadRequests.delete(requestId);
@@ -600,8 +638,7 @@ class WorkerManager {
         reject: (/** @type {Error} */ err) => {
           clearTimeout(timeoutId);
           reject(err);
-        },
-        timeout: /** @type {number} */ (/** @type {unknown} */ (timeoutId))
+        }
       });
 
       this.sendToWorker(conversationId, { ...message, ackId });
@@ -694,11 +731,9 @@ class WorkerManager {
       if (!conversation) continue;
       try {
         const vector = conversation.getYjsStateVector();
-        let binary = '';
-        for (let i = 0; i < vector.length; i++) binary += String.fromCharCode(/** @type {number} */ (vector[i]));
         this.sendToWorker(conversationId, {
           type: 'resync-request',
-          stateVector: globalThis.btoa(binary)
+          stateVector: bytesToBase64(vector)
         });
       } catch (err) {
         console.warn(`[WorkerManager] resync failed for ${conversationId}:`, err);
@@ -802,12 +837,7 @@ class WorkerManager {
           break;
         }
         // data.bytes is base64-encoded from Go's JSON marshaling of []byte
-        // Decode base64 to Uint8Array
-        const binaryString = atob(/** @type {string} */ (/** @type {unknown} */ (data.bytes)));
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
+        const bytes = base64ToBytes(/** @type {string} */ (/** @type {unknown} */ (data.bytes)));
         conversation.handleYjsSyncMessage(bytes);
         break;
       }
@@ -1063,15 +1093,6 @@ class WorkerManager {
     const conversation = this._session?.conversations.get(conversationId);
     const undoState = conversation?.getMetadata('undoState');
     return undoState?.canRedo ?? false;
-  }
-
-  /**
-   * Get Yjs state for sync (future use)
-   * @param {string} conversationId - Conversation ID
-   * @returns {Promise<Uint8Array|null>} Yjs state or null if not available
-   */
-  async getYjsState(conversationId) {
-    return await this._sendWithAck(conversationId, { type: 'get-yjs-state' });
   }
 
   /**
@@ -1425,7 +1446,7 @@ class WorkerManager {
         throw new Error('Cannot load conversation: services not set');
       }
 
-      // Reuse the stub created by Session._doLoad if present — replacing it
+      // 2. Reuse the stub created by Session._doLoad if present — replacing it
       // would break tab-element bindings and tab-bar references. Auto-load
       // and other direct callers fall through to create a fresh one.
       let conversation = session.conversations.get(conversationId);
@@ -1587,12 +1608,7 @@ class WorkerManager {
 
         // Apply all queued yjs-sync updates
         for (const b64 of queuedBytes) {
-          const binaryString = atob(b64);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          conversation.handleYjsSyncMessage(bytes);
+          conversation.handleYjsSyncMessage(base64ToBytes(b64));
         }
       } catch (err) {
         console.error(`[WorkerManager] Failed to auto-load conversation ${conversationId}:`, err);

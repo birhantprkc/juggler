@@ -7,16 +7,24 @@
 //
 // Message Protocol:
 //
+// The authoritative inbound dispatch is the switch in worker.go
+// (handleMessage); the test-only kinds are dispatched in worker_test_support.go.
+// This overview groups them by purpose — keep it in step with those switches.
+//
 // Messages TO worker:
-//   - init: Bootstrap with conversation data
-//   - send-message: User input (+ isContinuation flag)
-//   - cancel: Stop processing
-//   - approval-response: User approves/rejects action
-//   - render-context-items-response: Response with rendered context item content
-//   - tool-result: Action execution result
-//   - tools-result: Tool definitions from browser
-//   - yjs-sync: CRDT state updates
-//   - undo / redo: Undo/redo commands
+//   - lifecycle: init, send-message, cancel
+//   - turns/context: provider-turn, render-context-items-response, tools-result,
+//     strategy-hook-response, build-subthread-spec-response, subthread-error-response
+//   - threads: inject-thread-message, delivery-ended, create-thread,
+//     reopen-thread, close-thread-with-last-message
+//   - tool retry: retry-tool-approval, retry-tool-action, update-tool-action-for-retry
+//   - context-item items: move-context-item-message-to-end,
+//     update-and-reposition-tool-actions, reposition-context-item-placeholder
+//   - sync/undo: yjs-sync, undo, redo, clear-history, stop-undo-capturing,
+//     begin-undo-coalesce, end-undo-coalesce, request-full-state, resync-request,
+//     resync-to-origin, clear-undo-stacks, get-transaction
+//   - diagnostics: tool-command-ack, engine-trace, rename-log
+//   - test-only: get-yjs-state, ping, flush-persistence, set-mock-responses, release-mock
 //
 // NOTE: State mutations (item add/delete/update) flow through Yjs CRDT sync,
 // not as messages. The worker observes Yjs document changes via RegisterItemsObserver.
@@ -24,10 +32,10 @@
 // Messages FROM worker:
 //   - render-context-items-request: Get rendered context item content for LLM
 //   - request-tools: Get tool definitions from browser
-//   - approval-request: Ask user to approve tool
 //   - error: Unhandled exceptions
 //   - yjs-sync: CRDT state updates
 //   - ack: Acknowledgment for acked operations
+//   - pong: Reply to a test-only ping health check
 package worker
 
 import (
@@ -184,11 +192,6 @@ func (u UserMessageInput) isEmpty() bool {
 	return u.Text == "" && len(u.Attachments) == 0
 }
 
-// CancelMessage requests cancellation of current processing
-type CancelMessage struct {
-	Type string `json:"type"` // "cancel"
-}
-
 // ProviderTurnMessage carries a turn the provider surfaced out-of-band — a
 // turn the backend emitted with no Submit in flight (a scheduled wake /
 // monitor firing through a persistent CLI). It enters the worker through the
@@ -247,20 +250,6 @@ type LLMResponseBlock struct {
 	Name     string                    `json:"toolName,omitempty"`  // Tool name (matches provider.ContentBlock)
 	Input    json.RawMessage           `json:"toolInput,omitempty"` // Tool input (matches provider.ContentBlock)
 	Metadata map[string]any            `json:"metadata,omitempty"`  // Provider-specific metadata (e.g., Gemini ThoughtSignature)
-}
-
-// ApprovalResponseMessage contains user's approval decision
-type ApprovalResponseMessage struct {
-	Type      string           `json:"type"` // "approval-response"
-	ToolUseID string           `json:"toolUseId"`
-	Response  ApprovalDecision `json:"response"`
-}
-
-// ApprovalDecision represents a user's approval decision
-type ApprovalDecision struct {
-	Approved     bool              `json:"approved"`
-	Reason       string            `json:"reason,omitempty"`
-	ModifiedArgs map[string]string `json:"modifiedArgs,omitempty"`
 }
 
 // RenderContextItemsResponse contains rendered context item contexts for LLM
@@ -325,18 +314,6 @@ type YjsSyncMessage struct {
 type ResyncRequestMessage struct {
 	Type        string `json:"type"` // "resync-request"
 	StateVector []byte `json:"stateVector"`
-}
-
-// UndoMessage requests undo operation
-type UndoMessage struct {
-	Type  string `json:"type"` // "undo"
-	AckID string `json:"ackId,omitempty"`
-}
-
-// RedoMessage requests redo operation
-type RedoMessage struct {
-	Type  string `json:"type"` // "redo"
-	AckID string `json:"ackId,omitempty"`
 }
 
 // ReopenThreadMessage requests that a completed thread's result be cleared,
@@ -520,16 +497,6 @@ type GetTransactionMessage struct {
 	Type          string `json:"type"` // "get-transaction"
 	AckID         string `json:"ackId"`
 	TransactionID string `json:"transactionId"`
-}
-
-// PingMessage is a health check
-type PingMessage struct {
-	Type string `json:"type"` // "ping"
-}
-
-// PongMessage is the response to a ping
-type PongMessage struct {
-	Type string `json:"type"` // "pong"
 }
 
 // SetMockResponsesMessage injects mock LLM responses for testing.

@@ -67,6 +67,23 @@ export function createElement(tag, className, textContent) {
 }
 
 /**
+ * Create a `<button>` with a class, text label, and click handler. The
+ * `className` is applied verbatim so callers control their own styling
+ * convention (e.g. "modal-button primary", "update-notice__button").
+ * @param {string} text - Button label
+ * @param {string} className - Full class string applied verbatim
+ * @param {() => void} onClick - Click handler
+ * @returns {HTMLButtonElement} The constructed button
+ */
+export function createButton(text, className, onClick) {
+  const button = document.createElement('button');
+  button.className = className;
+  button.textContent = text;
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+/**
  * SVG icons for expand/collapse toggle buttons (used by model-selector)
  * @private
  */

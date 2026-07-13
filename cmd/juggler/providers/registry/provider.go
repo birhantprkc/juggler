@@ -13,7 +13,7 @@ import (
 // Message represents a unified conversation message using discriminated union via Type field.
 // This matches the frontend Message type exactly - the frontend sends these directly to Go providers.
 type Message struct {
-	Type string `json:"type"` // "user", "assistant", "thinking", "tool-use", "tool-result", "context-item", "context-item-updated", "system-reminder", "error", "system"
+	Type string `json:"type"` // "user", "assistant", "thinking", "tool-use", "tool-result", "context-item", "context-item-updated", "guidance", "system-reminder", "error", "system"
 
 	// Content field - used by user, assistant, context-item, context-item-updated, system-reminder, tool-result
 	Content string `json:"content,omitempty"`
@@ -124,19 +124,6 @@ const (
 	ToolChoiceNone = "none" // model must not call any tool
 )
 
-// ToolMessageRequest represents a request with tool support
-type ToolMessageRequest struct {
-	MessageRequest
-	SystemContext SystemContext
-}
-
-// SystemContext contains system prompt components
-type SystemContext struct {
-	BasePrompt      string
-	CodebaseContext string
-	Tools           []ToolDefinition
-}
-
 // ToolDefinition defines a tool the LLM can use
 type ToolDefinition struct {
 	Name        string          `json:"name"`
@@ -160,7 +147,6 @@ const (
 	ContentBlockTypeRedactedThinking ContentBlockType = "redacted_thinking"
 	ContentBlockTypeToolUse          ContentBlockType = "tool_use"
 	ContentBlockTypeToolResult       ContentBlockType = "tool_result"
-	ContentBlockTypeCitation         ContentBlockType = "citation"
 	ContentBlockTypeImage            ContentBlockType = "image"
 	ContentBlockTypeCode             ContentBlockType = "code"
 	ContentBlockTypeCodeResult       ContentBlockType = "code_result"
@@ -324,11 +310,6 @@ type ToolResult struct {
 	ResultStatus ResultStatus `json:"resultStatus"` // Outcome: "success", "error", "denied", "cancelled"
 	Category     string       `json:"category"`     // Tool category: "read", "write", "meta"
 }
-
-// ToolExecutor is a function that executes a tool and returns the result.
-// This allows the server to handle tool execution with frontend communication.
-// The executor receives a tool_use chunk and must return the tool result.
-type ToolExecutor func(chunk StreamChunk) (*ToolResult, error)
 
 // ShouldContinueResult is returned by ShouldContinueCallback
 type ShouldContinueResult struct {

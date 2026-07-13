@@ -14,9 +14,22 @@
  * @module utils/attachments
  */
 
+import { formatBytes } from './format.js';
+
 /**
  * @typedef {{id:string, mime:string, filename:string, bytes:number, width:number, height:number}} AssetRef
  */
+
+/**
+ * Coerce a synced list field into a plain array. The value arrives either as a
+ * plain array (embedded JSON synced from the Go worker) or, defensively, as a
+ * Y.Array; anything else yields an empty array.
+ * @param {any} raw
+ * @returns {any[]} Plain array of the (still possibly Y.Map) entries.
+ */
+function toPlainList(raw) {
+  return typeof raw?.toArray === 'function' ? raw.toArray() : (Array.isArray(raw) ? raw : []);
+}
 
 /**
  * Normalize a user item's `attachments` field into plain AssetRef objects.
@@ -24,9 +37,7 @@
  * @returns {AssetRef[]} Plain attachment refs (empty if none).
  */
 export function normalizeAttachments(raw) {
-  if (!raw) return [];
-  const list = typeof raw.toArray === 'function' ? raw.toArray() : (Array.isArray(raw) ? raw : []);
-  return list
+  return toPlainList(raw)
     .map((/** @type {any} */ ref) => (ref && typeof ref.get === 'function')
       ? { id: ref.get('id'), mime: ref.get('mime'), filename: ref.get('filename'), bytes: ref.get('bytes'), width: ref.get('width'), height: ref.get('height') }
       : ref)
@@ -55,9 +66,7 @@ export function normalizeAttachments(raw) {
  * @returns {TextFileSnapshot[]} Plain text-file snapshots (empty if none).
  */
 export function normalizeTextFiles(raw) {
-  if (!raw) return [];
-  const list = typeof raw.toArray === 'function' ? raw.toArray() : (Array.isArray(raw) ? raw : []);
-  return list
+  return toPlainList(raw)
     .map((/** @type {any} */ t) => (t && typeof t.get === 'function')
       ? { filename: t.get('filename'), content: t.get('content'), bytes: t.get('bytes') }
       : t)
@@ -102,9 +111,5 @@ export function normalizeDraft(raw) {
  */
 export function formatAttachmentBytes(bytes) {
   if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return '';
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
-  const mb = kb / 1024;
-  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  return formatBytes(bytes);
 }

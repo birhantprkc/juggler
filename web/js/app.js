@@ -8,17 +8,12 @@
  */
 
 import LLMState from './services/llm-state.js';
-import AnimationService from './services/animation-service.js';
 import ConnectionManager from './services/connection-manager.js';
 import DisconnectionOverlay from './components/disconnection-overlay.js';
 import UIEventManager from './services/ui-event-manager.js';
 import StrategySwitcher from './services/strategy-switcher.js';
-import strategyRegistry from './registries/strategy-registry.js';
-import contextItemRegistry from './registries/context-item-registry.js';
-import commandRegistry from './registries/command-registry.js';
 import wsService from './services/websocket.js';
-import { reloadRegistries } from './registries/reload-registries.js';
-import { markRegistriesReady } from './registries/registry-ready.js';
+import { reloadRegistries, initAllRegistries } from './registries/reload-registries.js';
 import actionExecutor from './services/action-executor.js';
 import workerManager from './services/worker-manager.js';
 import providersCache from './services/providers-cache.js';
@@ -50,8 +45,6 @@ class JugglerApp {
     // Services
     /** @type {import('./services/llm-state.js').default|null} @private */
     this._llmState = null;
-    /** @type {AnimationService|null} @private */
-    this._animationService = null;
     /** @type {ConnectionManager|null} @private */
     this._connectionManager = null;
     /** @type {UIEventManager|null} @private */
@@ -92,24 +85,14 @@ class JugglerApp {
       return;
     }
 
-    // Signal registries-ready once the initial init attempt settles — even on
-    // failure, so the system-prompt gate can never permanently hang a turn.
-    try {
-      // Initialize strategy registry (must be first - strategies control the entire flow)
-      await strategyRegistry.init();
+    // Boot all capability registries in dependency order and signal
+    // registries-ready once the attempt settles — even on failure, so the
+    // system-prompt gate can never permanently hang a turn.
+    await initAllRegistries();
 
-      // Initialize strategy switcher (Shift+Tab keyboard shortcut)
-      this._strategySwitcher = new StrategySwitcher();
-      this._strategySwitcher.init();
-
-      // Initialize context item registry
-      await contextItemRegistry.init();
-
-      // Initialize command registry (for slash commands)
-      await commandRegistry.init();
-    } finally {
-      markRegistriesReady();
-    }
+    // Initialize strategy switcher (Shift+Tab keyboard shortcut)
+    this._strategySwitcher = new StrategySwitcher();
+    this._strategySwitcher.init();
 
     // Listen for plugin file changes (hot reload)
     wsService.on('plugin-changed', async () => {
@@ -210,9 +193,6 @@ class JugglerApp {
     // Initialize LLM state manager
     this._llmState = new LLMState();
 
-    // Initialize basic services (no dependencies)
-    this._animationService = new AnimationService();
-
     // Create temporary placeholder for managers that need session
     // These will be properly initialized after session is created
     /** @type {ResponseHandler|null} @private */
@@ -232,7 +212,6 @@ class JugglerApp {
       // Services for Conversation instances. conversationArea and
       // conversationControls come from each conversation's own tab.
       services: {
-        animationService: this._animationService,
         llmState: this._llmState,
         actionExecutor: actionExecutor,
         wsService: wsService

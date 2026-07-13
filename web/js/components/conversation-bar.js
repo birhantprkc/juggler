@@ -26,7 +26,6 @@
 
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from '../model/session.js';
 import { MAX_CONVERSATION_NAME_LENGTH } from '../utils/constants.js';
-import { escapeHtml } from '../../sdk/lib/html.js';
 import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
@@ -694,7 +693,7 @@ class ConversationBar extends HTMLElement {
       // The tooltip-manager appends the platform-correct combo (e.g. " (⌘⌫)")
       // from this shortcut id — no hard-coded key text in the markup.
       binButton.setAttribute('data-shortcut-id', 'bin-conversation');
-      binButton.setAttribute('aria-label', `Move ${escapeHtml(name)} to bin`);
+      binButton.setAttribute('aria-label', `Move ${name} to bin`);
       binButton.innerHTML = BIN_ICON_SVG;
       tab.appendChild(binButton);
 
@@ -703,7 +702,7 @@ class ConversationBar extends HTMLElement {
         this._binConversation(conv.id);
       });
     } else {
-      binButton.setAttribute('aria-label', `Move ${escapeHtml(name)} to bin`);
+      binButton.setAttribute('aria-label', `Move ${name} to bin`);
     }
 
     // Sync the running / awaiting-approval indicator classes for this tab.

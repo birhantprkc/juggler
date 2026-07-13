@@ -14,7 +14,7 @@
  * @module utils/window-title
  */
 
-import { windowControlURL } from '../../sdk/lib/window-control.js';
+import { isDesktopWindow, postWindowControl } from '../../sdk/lib/window-control.js';
 
 /**
  * Derive the window title from the session's project path. The path is the
@@ -46,11 +46,9 @@ export function windowTitleForProject(projectPath, home = '') {
  * @returns {void}
  */
 export function updateWindowTitle(projectPath, home = '') {
-  if (document.documentElement.dataset.windowMode !== '1') return;
+  if (!isDesktopWindow()) return;
   const title = windowTitleForProject(projectPath, home);
   const query = '?title=' + encodeURIComponent(title)
     + '&project=' + encodeURIComponent(projectPath || '');
-  const url = windowControlURL('title', query);
-  if (!url) return; // no native host (browser tab) — nothing to title
-  fetch(url, { method: 'POST' }).catch(() => { /* one-way; nothing to recover from */ });
+  postWindowControl('title', query);
 }

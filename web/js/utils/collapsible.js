@@ -32,6 +32,21 @@ const SLACK_PX = 24;
 const expandedState = new Map();
 
 /**
+ * Paint a `.collapsible-toggle` button into its expanded/collapsed appearance:
+ * the chevron icon, the "Show less"/"Show more" label, and the `aria-expanded`
+ * state. Shared by the live toggle handler and `expandCollapsibleContaining` so
+ * both render an identical button.
+ * @param {Element} btn - The toggle button.
+ * @param {boolean} expanded - Whether the block is currently expanded.
+ */
+function paintToggle(btn, expanded) {
+  btn.innerHTML =
+    (expanded ? EXPAND_LESS_SVG : EXPAND_MORE_SVG) +
+    `<span>${expanded ? 'Show less' : 'Show more'}</span>`;
+  btn.setAttribute('aria-expanded', String(expanded));
+}
+
+/**
  * Clamp `contentEl` and attach a Show more / Show less toggle when — and only
  * when — its natural height exceeds the threshold. Idempotent: safe to call on
  * every render of the same element; a previously-inserted toggle is removed and
@@ -74,10 +89,7 @@ export function applyCollapsible(contentEl, { key = '', thresholdPx = DEFAULT_TH
   const paint = () => {
     contentEl.classList.toggle('is-collapsed', !expanded);
     contentEl.classList.toggle('is-expanded', expanded);
-    btn.innerHTML =
-      (expanded ? EXPAND_LESS_SVG : EXPAND_MORE_SVG) +
-      `<span>${expanded ? 'Show less' : 'Show more'}</span>`;
-    btn.setAttribute('aria-expanded', String(expanded));
+    paintToggle(btn, expanded);
   };
   paint();
 
@@ -120,8 +132,7 @@ export function expandCollapsibleContaining(node) {
 
   const btn = contentEl.nextElementSibling;
   if (btn && btn.classList.contains('collapsible-toggle')) {
-    btn.innerHTML = EXPAND_LESS_SVG + '<span>Show less</span>';
-    btn.setAttribute('aria-expanded', 'true');
+    paintToggle(btn, true);
   }
 
   const key = contentEl.dataset.collapsibleKey;

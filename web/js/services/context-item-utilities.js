@@ -19,6 +19,7 @@ import { createContextItemMessage } from '../../sdk/lib/message.js';
 import { convertToYType } from '../model/item-accessor.js';
 import { hashString } from '../utils/hash.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { animateContextItemRefresh } from './animation-service.js';
 
 /**
  * @typedef {import('../model/message-thread.js').default} MessageThread
@@ -149,7 +150,7 @@ export async function executeContextItem(mt, conv, itemTypeId, params, options =
  * @returns {Promise<void>}
  */
 export async function refreshContextItem(mt, conv, itemId) {
-  /** @type {any} */ (conv)._animationService.animateContextItemRefresh(itemId);
+  animateContextItemRefresh(itemId);
   const contextItem = mt.getContextItem(itemId);
   if (!contextItem) {
     console.error(`[ESSENTIAL] [ContextItemOrchestrator] Context item not found: ${itemId}`);

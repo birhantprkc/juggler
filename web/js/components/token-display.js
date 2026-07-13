@@ -2,18 +2,10 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
+import { formatTokens as fmtTokens } from '../utils/format.js';
+
 /** Uncached delta above this earns the `cache-warn` treatment (tokens). */
 const UNCACHED_WARN_TOKENS = 5000;
-
-/**
- * Compact format: 2k+ → "Nk", below that the raw count with thousands sep.
- * @param {number} n
- * @returns {string} Formatted count
- */
-function fmtTokens(n) {
-  if (n >= 2000) return Math.floor(n / 1000) + 'k';
-  return n.toLocaleString();
-}
 
 /**
  * Footer token-status pill. All numbers are real-from-blob; there is no

@@ -53,6 +53,10 @@ class ExploreCodeContextItem extends ContextItem {
           description: {
             type: 'string',
             description: 'Short human-readable description of what this exploration does (e.g. "find all files importing auth module"). Shown to the user in the conversation.'
+          },
+          timeout: {
+            type: 'number',
+            description: 'Optional execution timeout in milliseconds (1000–120000, default 30000).'
           }
         },
         required: ['code']

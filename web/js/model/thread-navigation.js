@@ -10,6 +10,8 @@
  * MessageThread instances.
  */
 
+import { TOOL_STATES } from '../../sdk/lib/message.js';
+
 /**
  * Extract message IDs of newly inserted items from a Yjs delta.
  * @param {Array<any>} delta - Yjs delta array
@@ -132,7 +134,9 @@ export function hasPendingApprovalInTree(items) {
     const type = item.get('type');
     if (type === 'tool-action') {
       const state = item.get('state');
-      if (state === 'pending' || state === 'awaiting_approval') return true;
+      // 'awaiting_approval' is a legacy/defensive alias for PENDING that some
+      // callers still stamp; treat it as pending here too.
+      if (state === TOOL_STATES.PENDING || state === 'awaiting_approval') return true;
     } else if (type === 'thread') {
       if (hasPendingApprovalInTree(item.get('items'))) return true;
     }
@@ -162,7 +166,7 @@ export function hasUnsettledToolInTree(items) {
     const type = item.get('type');
     if (type === 'tool-action') {
       const state = item.get('state');
-      if (state !== 'completed' && state !== 'cancelled') return true;
+      if (state !== TOOL_STATES.COMPLETED && state !== TOOL_STATES.CANCELLED) return true;
     } else if (type === 'thread') {
       if (hasUnsettledToolInTree(item.get('items'))) return true;
     }

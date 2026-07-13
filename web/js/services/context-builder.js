@@ -61,18 +61,6 @@ export class ContextBuilder {
   }
 
   /**
-   * Build context from a MessageThread
-   * @param {import('../model/message-thread.js').default} messageThread - Message thread
-   * @param {import('../model/session.js').default} session - Session instance
-   * @param {number} contextWindow - Context window size
-   * @returns {Promise<ContextBuilder>} Complete context builder
-   * @static
-   */
-  static async fromMessageThread(messageThread, session, contextWindow) {
-    return new ContextBuilder({ messageThread, session, contextWindow });
-  }
-
-  /**
    * Prepare messages for sending to LLM
    * - Renders context items (populates content from context item instances)
    * - Filters UI-only messages (error, unknown types)

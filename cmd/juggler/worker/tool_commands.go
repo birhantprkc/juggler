@@ -387,6 +387,20 @@ func (w *ConversationWorker) sweepStaleToolCommands() {
 // tool-action — the same recovery shape as a worker-side cancel
 // (cancelToolsInArray) — so the reducer feeds an isError tool-result to the
 // provider and a parked CLI unblocks (doc.go: "degrade to a recoverable error,
+// clearToolCommandBookkeeping drops every watchdog/dedup entry for a toolUseID
+// at a full-reset site (user-triggered retry, escalation-to-failed). Leaving any
+// of the five maps populated wedges the re-drive: a stale inFlightToolCommands /
+// inFlightDispatchedAt makes the staleness sweep think a command is still
+// outstanding, and a stale toolCommandRetries / toolCommandTimeouts count
+// prematurely trips the escalation caps on the next run.
+func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
+	delete(w.commandedToolActions, id)
+	delete(w.inFlightToolCommands, id)
+	delete(w.toolCommandRetries, id)
+	delete(w.inFlightDispatchedAt, id)
+	delete(w.toolCommandTimeouts, id)
+}
+
 // never an infinite wait"). All bookkeeping for the id is cleared.
 func (w *ConversationWorker) escalateStaleToolCommand(id string) {
 	w.log.Error("[worker] tool-command for %s in %s went unacknowledged %d×; failing the tool to unblock the turn",
@@ -403,9 +417,6 @@ func (w *ConversationWorker) escalateStaleToolCommand(id string) {
 		},
 		"runningStartedAt": nil,
 	})
-	delete(w.inFlightToolCommands, id)
-	delete(w.inFlightDispatchedAt, id)
-	delete(w.toolCommandTimeouts, id)
-	delete(w.commandedToolActions, id)
+	w.clearToolCommandBookkeeping(id)
 	w.needsReconcile = true
 }

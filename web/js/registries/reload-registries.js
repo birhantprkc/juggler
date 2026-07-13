@@ -63,24 +63,37 @@ async function waitForLocalQuiescence() {
   }
 }
 
+/**
+ * Initialize the three capability registries in dependency order (strategies
+ * first — they gate the whole flow), then flip the registries-ready gate.
+ *
+ * The single shared boot/rebuild sequence: first-boot (app.js / engine-app.js)
+ * and hot-reload (rebuildRegistriesNow) both call it, so the order and the ready
+ * signal never drift. markRegistriesReady() runs even when an init throws, so a
+ * broken plugin can't permanently hang the system-prompt gate; it is idempotent
+ * after the first call, so the gate stays resolved across reloads.
+ * @returns {Promise<void>}
+ */
+export async function initAllRegistries() {
+  try {
+    await strategyRegistry.init();
+    await contextItemRegistry.init();
+    await commandRegistry.init();
+  } finally {
+    markRegistriesReady();
+  }
+}
+
 /** @returns {Promise<void>} */
 async function rebuildRegistriesNow() {
   resetExtensionsCache();
   resetUserCommandsCache();
   strategyRegistry.reset();
   contextItemRegistry.reset();
-  contextItemRegistry.invalidateCache();
   commandRegistry.reset();
-  try {
-    await strategyRegistry.init();
-    await contextItemRegistry.init();
-    await commandRegistry.init();
-  } finally {
-    // Idempotent after the first init site; the gate stays resolved across
-    // reloads (reset/re-init is deferred to local quiescence, so no turn
-    // assembles a prompt against a half-reset registry set).
-    markRegistriesReady();
-  }
+  // reset/re-init is deferred to local quiescence, so no turn assembles a
+  // prompt against a half-reset registry set.
+  await initAllRegistries();
   // UI listens for this DOM event to refresh; the engine worker has no document
   // and reloads its registries directly, so the dispatch is viewer-only.
   if (typeof document !== 'undefined') {

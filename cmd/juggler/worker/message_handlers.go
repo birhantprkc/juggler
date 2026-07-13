@@ -276,8 +276,9 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	// undo/redo history navigation.
 	w.suppressReconcileAfterHistoryNavUntilMs = 0
 
-	// Set thread context for this request
-	w.thread.itemID = msg.ThreadItemID
+	// Set thread context for this request. Validate the target thread BEFORE
+	// mutating w.thread, so an early return (completed thread / missing items
+	// array) can't leave w.thread pointing at a half-set thread from this request.
 	if msg.ThreadItemID != "" {
 		// Guard: reject messages to completed threads
 		if threadYMap := w.doc.GetThreadYMap(msg.ThreadItemID); threadYMap != nil {
@@ -287,12 +288,15 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 			}
 		}
 
-		w.thread.itemsArray = w.doc.GetThreadItemsArray(msg.ThreadItemID)
-		if w.thread.itemsArray == nil {
+		itemsArray := w.doc.GetThreadItemsArray(msg.ThreadItemID)
+		if itemsArray == nil {
 			w.sendError(fmt.Sprintf("Thread item %s not found", msg.ThreadItemID), "")
 			return
 		}
+		w.thread.itemID = msg.ThreadItemID
+		w.thread.itemsArray = itemsArray
 	} else {
+		w.thread.itemID = ""
 		w.thread.itemsArray = nil
 	}
 
@@ -497,8 +501,7 @@ func (w *ConversationWorker) handleCancel() {
 		// the thread, then rest — don't silently re-drive the interrupted work.
 		w.promotePendingItems(threadID)
 		w.sendStatus("idle", "")
-		w.thread.itemID = ""
-		w.thread.itemsArray = nil
+		w.resetThreadContext()
 	}
 }
 
@@ -994,6 +997,30 @@ func (w *ConversationWorker) handleClearHistory() {
 	w.clearPendingItems("")
 }
 
+// resetToolActionAndRedrive is the shared tail of the retry handlers: it writes
+// the given field reset onto the tool-action (recursively, so sub-thread tools
+// are found), drops all in-flight/retry/timeout bookkeeping so a wedged command
+// can't block the retry, then re-requests the LLM for the owning thread and
+// re-commands the tool via driveToolActions. Callers supply only the field map
+// that distinguishes a re-ask (state="") from a re-run (state="approved").
+func (w *ConversationWorker) resetToolActionAndRedrive(toolUseID string, fields map[string]any) {
+	w.doc.UpdateToolActionFieldsRecursive(toolUseID, fields)
+
+	// Drop the dedup entry so driveToolActions re-dispatches even though the
+	// tool was already commanded at its prior state, plus all outstanding
+	// in-flight/retry/timeout bookkeeping so a wedged command doesn't block.
+	w.clearToolCommandBookkeeping(toolUseID)
+
+	// Signal that the reducer should dispatch CallLLM once the tool reaches a
+	// terminal state again. "" targets the root thread.
+	threadID, _ := w.doc.FindThreadIDForToolUseID(toolUseID)
+	w.requestLLM(threadID)
+
+	// The reset is driven by the worker: driveToolActions pushes the new state
+	// to the engine and re-commands the tool so the retry actually runs.
+	w.driveToolActions()
+}
+
 // handleRetryToolApproval re-asks a completed tool-action (e.g.
 // AskUserQuestion) by resetting it to the *unevaluated* state ("") and
 // clearing every derived field: the result and approvalResponse (so the prior
@@ -1015,35 +1042,16 @@ func (w *ConversationWorker) handleRetryToolApproval(payload json.RawMessage) {
 
 	// Empty state = "not yet evaluated". The frontend reducer's empty-state
 	// branch re-runs handleNewToolAction, which rebuilds approvalOptions +
-	// displayData and writes 'pending'.
-	w.doc.UpdateToolActionFieldsRecursive(msg.ToolUseID, map[string]any{
+	// displayData and writes 'pending'. Clearing the derived fields (result,
+	// approvalResponse, approvalOptions, displayData) makes the re-ask look
+	// brand-new so a fresh approval form is derived from the immutable toolInput.
+	w.resetToolActionAndRedrive(msg.ToolUseID, map[string]any{
 		"state":            StateUnevaluated,
 		"result":           nil,
 		"approvalResponse": nil,
 		"approvalOptions":  nil,
 		"displayData":      nil,
 	})
-
-	// The tool returned to "" (unevaluated); re-command it from scratch by
-	// dropping its dedup entry so driveToolActions re-dispatches evaluate-tool.
-	// Also drop any outstanding in-flight/retry bookkeeping so a wedged command
-	// doesn't block the re-ask.
-	delete(w.commandedToolActions, msg.ToolUseID)
-	delete(w.inFlightToolCommands, msg.ToolUseID)
-	delete(w.toolCommandRetries, msg.ToolUseID)
-
-	// Signal that the reducer should dispatch CallLLM once the re-asked tool
-	// completes. While the tool sits in a non-terminal state the reducer rests;
-	// when the user answers and the tool reaches 'completed', the reducer
-	// re-fires and continues the turn.
-	threadID, _ := w.doc.FindThreadIDForToolUseID(msg.ToolUseID)
-	w.requestLLM(threadID)
-
-	// Re-asking is driven by the worker: driveToolActions pushes the reset
-	// (state="") to the engine and commands evaluate-tool, so handleNewToolAction
-	// re-runs and rebuilds the approval form. This is the cancel→rerun fallback
-	// the user relies on when a tool wedged.
-	w.driveToolActions()
 }
 
 // handleMoveContextItemMessageToEnd moves a context item placeholder message to the end of items
@@ -1124,7 +1132,6 @@ func (w *ConversationWorker) handleRetryToolAction(payload json.RawMessage) {
 	// Set state='approved' and clear result. Writing 'approved' (the
 	// "ready to run" state) lets the frontend reducer atomically
 	// claim it → 'running' → execute exactly once.
-	// Search recursively: the tool-action may be inside a sub-thread.
 	//
 	// Clear runningStartedAt too: it anchors the properties panel's "Running…
 	// Xs" elapsed digit and is re-stamped by the frontend's claimRunning on the
@@ -1132,35 +1139,11 @@ func (w *ConversationWorker) handleRetryToolAction(payload json.RawMessage) {
 	// writer) means a re-run's elapsed timer restarts from zero rather than
 	// carrying on from the prior run — and if the engine is slow to re-claim,
 	// the viewer shows a plain "Running…" instead of a stale climbing number.
-	w.doc.UpdateToolActionFieldsRecursive(msg.ToolUseID, map[string]any{
+	w.resetToolActionAndRedrive(msg.ToolUseID, map[string]any{
 		"state":            StateApproved,
 		"result":           nil,
 		"runningStartedAt": nil,
 	})
-
-	// The tool was reset to approved for a re-run; drop its dedup entry so
-	// driveToolActions re-dispatches execute-tool even though it was already
-	// commanded at "approved" on the original run. Also drop any outstanding
-	// in-flight/retry bookkeeping so a wedged command doesn't block the re-run.
-	delete(w.commandedToolActions, msg.ToolUseID)
-	delete(w.inFlightToolCommands, msg.ToolUseID)
-	delete(w.toolCommandRetries, msg.ToolUseID)
-
-	// Find which thread owns the tool-action so requestLLM targets the
-	// right thread. "" = root thread.
-	threadID, _ := w.doc.FindThreadIDForToolUseID(msg.ToolUseID)
-
-	// Signal that the reducer should dispatch CallLLM when the tool
-	// completes. If the strategy loop is already running (activity=
-	// "calling_llm"), requestLLM returns false — the loop's internal
-	// waitForToolsComplete handles the re-run.
-	w.requestLLM(threadID)
-
-	// The reset tool-action (state=approved) is executed by the engine on the
-	// worker's command. driveToolActions pushes the reset state and commands
-	// execute-tool so the re-run actually runs — the core of the user's
-	// "cancel + rerun does nothing" complaint.
-	w.driveToolActions()
 }
 
 // handleUpdateToolActionForRetry updates approval options and display data for retry

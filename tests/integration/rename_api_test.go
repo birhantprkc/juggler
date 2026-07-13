@@ -37,7 +37,7 @@ func renameTestRig(t *testing.T) (*core.SessionManager, func(method, path string
 	helpers.AssertNoError(t, err)
 	t.Cleanup(func() { manager.Shutdown() })
 
-	api := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil)
+	api := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 	r := mux.NewRouter()
 	r.HandleFunc("/api/session/conversations/{convId}/name", api.HandleRenameConversation).Methods("PATCH")
 

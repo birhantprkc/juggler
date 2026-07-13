@@ -96,7 +96,6 @@ class Conversation {
    * @param {string} name - Display name
    * @param {Session} session - Parent session
    * @param {object} services - Required services
-   * @param {import('../services/animation-service.js').default} services.animationService
    * @param {import('../services/llm-state.js').default} services.llmState
    * @param {import('../services/action-executor.js').default} services.actionExecutor - Action executor for cancellation
    * @param {import('../services/websocket.js').default} services.wsService - WebSocket service for cancellation
@@ -154,9 +153,6 @@ class Conversation {
     /** @type {number} - Current iteration in agentic loop */
     this._iterationCount = 0;
 
-    /** @type {string|null} @private - Transaction ID for current LLM call (changes on retry) */
-    this._transactionId = null;
-
     // Permission system - controls auto-approval of actions.
     // permissions is a getter that reads from Yjs metadata (no stored field).
 
@@ -179,13 +175,9 @@ class Conversation {
     // Each conversation owns its own ResponseHandler so streaming state
     // can't bleed across conversations.
 
-    /** @type {import('../services/animation-service.js').default} @private */
-    this._animationService = services.animationService;
-
     /** @type {ResponseHandler} */
     this._responseHandler = new ResponseHandler({
-      conversation: this,
-      llmState: services.llmState
+      conversation: this
     });
 
     // State change listeners for event-based approval waiting
@@ -764,17 +756,6 @@ class Conversation {
   // ========================================================================
   // Message Editing (Pure Yjs CRDT operations)
   // ========================================================================
-
-  /**
-   * Get Yjs state for sync (future use for real-time collaboration)
-   * @returns {Promise<Uint8Array|null>} Yjs state or null if not available
-   */
-  async getYjsState() {
-    if (!workerManager.isWorkerReady(this.id)) {
-      return null;
-    }
-    return await workerManager.getYjsState(this.id);
-  }
 
   /**
    * Get response handler
@@ -1484,12 +1465,6 @@ class Conversation {
   }
 
 
-  /**
-   * Abort controller for cancelling strategy execution
-   * @type {AbortController|null}
-   *     */
-  _abortController = null;
-
   /** @type {Set<Function>} */
   _stopHandlers = new Set();
 
@@ -1569,24 +1544,16 @@ class Conversation {
    * @param {number} inputTokens - Input tokens used
    * @param {number} outputTokens - Output tokens generated
    * @param {number} cachedTokens - Prompt tokens served from cache (OpenAI)
-   * @param {string} [transactionId] - Transaction ID for stale response detection
+   * @param {string} [transactionId] - Transaction ID; the Go worker owns turn flow, accepted for call-site parity
    * @param {string} [stopReason] - LLM stop reason; the Go worker owns turn flow, accepted for call-site parity
    */
   async handleResponse(messageThread, blocks, inputTokens = 0, outputTokens = 0, cachedTokens = 0, transactionId, stopReason) {
     void blocks;
     void stopReason;
+    void transactionId;
     // Check if this conversation is still processing
     if (!this._llmState.isConversationProcessing(this.id)) {
       console.warn('[Conversation] handleResponse called but conversation not processing');
-      return;
-    }
-
-    // Verify transaction ID matches (use backend's ID from streaming, not frontend's)
-    if (transactionId && this._transactionId && transactionId !== this._transactionId) {
-      console.warn('[Conversation] handleResponse transaction ID mismatch', {
-        received: transactionId,
-        expected: this._transactionId
-      });
       return;
     }
 
@@ -1727,11 +1694,6 @@ class Conversation {
   }
 
   /**
-   * Stop all processing for this conversation (actions, LLM calls, etc.).
-   * For a user-visible cancellation, use addCancellationMessage() instead,
-   * which stops processing and posts a cancellation message.
-   */
-  /**
    * Fire only the registered stop handlers — e.g. the plan strategy aborting
    * its _driveExecution controller — WITHOUT the rest of stopProcessing's
    * teardown. The engine calls this when the worker reports the conversation
@@ -1743,6 +1705,11 @@ class Conversation {
     for (const fn of this._stopHandlers) fn();
   }
 
+  /**
+   * Stop all processing for this conversation (actions, LLM calls, etc.).
+   * For a user-visible cancellation, use addCancellationMessage() instead,
+   * which stops processing and posts a cancellation message.
+   */
   stopProcessing() {
     // Call all registered stop handlers (e.g. plan strategy aborting its drive controller).
     for (const fn of this._stopHandlers) fn();
@@ -1753,11 +1720,6 @@ class Conversation {
     // Cancel worker if active
     if (workerManager.isWorkerReady(this.id)) {
       workerManager.cancel(this.id);
-    }
-
-    // Abort the strategy's execution (main thread fallback)
-    if (this._abortController) {
-      this._abortController.abort();
     }
   }
 
@@ -1852,15 +1814,14 @@ class Conversation {
     this._handleCancellation();
   }
 
-  /**
-   * Set the LLM model configuration for this conversation
-   * @param {ModelConfig|null} config - Model configuration (provider and model)
-   */
-
   // ========================================================================
   // CONFIGURATION (MODEL, STRATEGY, PERMISSIONS)
   // ========================================================================
 
+  /**
+   * Set the LLM model configuration for this conversation
+   * @param {ModelConfig|null} config - Model configuration (provider and model)
+   */
   async setModelConfig(config) {
     const root = this._rootMessageThread;
     const changed = root.modelConfig?.provider !== config?.provider ||
@@ -1966,28 +1927,6 @@ class Conversation {
     };
   }
 
-  /**
-   * Create a deep clone of this conversation with a new ID
-   * Delegates to Session which has access to ID generation and services
-   * @returns {Conversation} Cloned conversation
-   */
-  clone() {
-    return this._session.cloneConversation(this);
-  }
-
-  /**
-   * Create conversation from JSON data (identity only - all state comes from Yjs)
-   * @param {{id: string, name: string, created?: string}} data - Conversation identity
-   * @param {Session} session - Parent session
-   * @param {import('./session.js').ConversationServices} services - Services object
-   * @returns {Conversation} Conversation instance
-   */
-  static fromJSON(data, session, services) {
-    const conv = new Conversation(data.id, data.name, session, services, { skipBuiltInContextItems: true });
-    conv.created = data.created || new Date().toISOString();
-    return conv;
-  }
-
   // ========================================================================
   // UI INTERACTION
   // ========================================================================
@@ -2030,18 +1969,7 @@ class Conversation {
     const message = hint
       ? `Can't send: ${label} is not available — ${hint}. Re-enable it in Provider Settings or pick another model.`
       : `Can't send: ${label} is not available. Re-enable it in Provider Settings or pick another model.`;
-    const showConfirm = /** @type {any} */ (window).showConfirm;
-    if (typeof showConfirm !== 'function') {
-      this.showWarning(message, 8000);
-      return;
-    }
-    const goToSettings = await showConfirm(message, 'Model unavailable', {
-      confirmText: 'Go to provider settings',
-      cancelText: 'Cancel',
-    });
-    if (goToSettings && typeof (/** @type {any} */ (window).openSettings) === 'function') {
-      /** @type {any} */ (window).openSettings('providers');
-    }
+    await this._offerProviderSettings(message, 'Model unavailable');
   }
 
   /**
@@ -2054,12 +1982,23 @@ class Conversation {
   async _showNoProviderConfigured() {
     const message =
       'No AI provider is configured yet — add an API key (or enable Claude Code) in Provider Settings to start chatting.';
+    await this._offerProviderSettings(message, 'No provider configured');
+  }
+
+  /**
+   * Show a message with an offer to jump to Provider Settings, falling back to a
+   * toast warning if the confirm dialog isn't wired up.
+   * @param {string} message - Body text for the confirm dialog / toast
+   * @param {string} title - Confirm-dialog title
+   * @private
+   */
+  async _offerProviderSettings(message, title) {
     const showConfirm = /** @type {any} */ (window).showConfirm;
     if (typeof showConfirm !== 'function') {
       this.showWarning(message, 8000);
       return;
     }
-    const goToSettings = await showConfirm(message, 'No provider configured', {
+    const goToSettings = await showConfirm(message, title, {
       confirmText: 'Go to provider settings',
       cancelText: 'Cancel',
     });
@@ -2161,19 +2100,23 @@ class Conversation {
     this._doc.activateSync(opts);
   }
 
-  /**
-   * Clean up resources when conversation is destroyed
-   */
-
   // ========================================================================
   // CLEANUP AND DESTRUCTION
   // ========================================================================
 
+  /**
+   * Clean up resources when conversation is destroyed
+   */
   destroy() {
     // Stop any active LLM processing
     if (this._llmState && this._llmState.isConversationProcessing(this.id)) {
       this._llmState.stop(this.id);
     }
+
+    // Unregister the tab from LLM state — this tears down the per-conversation
+    // Yjs metadata observer registered in setTabElement(). Without it the
+    // observer (and its captured conversation) leak for the app's lifetime.
+    this._llmState?.unregisterConversationTab?.(this.id);
 
 
 
@@ -2199,66 +2142,6 @@ class Conversation {
     // No need to clear items - destroy() is final cleanup, worker will be terminated
   }
 
-  /**
-   * Select default provider/model if not already set
-   * Fetches from config API and falls back to first available provider with first available model
-   * @returns {Promise<void>}
-   */
-  async selectDefaultProvider() {
-    // Skip if already configured
-    if (this.modelConfig) {
-      return;
-    }
-
-    // Try to get from config first
-    try {
-      const configResponse = await fetch('/api/config');
-      if (configResponse.ok) {
-        const config = await configResponse.json();
-        const modelStr = config.model || '';
-
-        // Parse model string (format: "provider/model-name"). The
-        // model part may itself contain "/", so split on the first
-        // slash only.
-        if (modelStr) {
-          const i = modelStr.indexOf('/');
-          if (i > 0 && i < modelStr.length - 1) {
-            await this.setModelConfig({
-              provider: modelStr.slice(0, i),
-              model: modelStr.slice(i + 1)
-            });
-            return;
-          }
-        }
-      }
-    } catch (error) {
-      console.warn(`[ESSENTIAL] [Conversation] Failed to fetch config: ${error}`);
-    }
-
-    // Fall back to first available provider
-    try {
-      const providers = providersCache.hasReceived()
-        ? providersCache.get()
-        : await providersCache.waitForFirst();
-
-      const availableProvider = providers.find(/**
-                                                * @param {any} p
-                                                * @returns {boolean} True if provider is available
-                                                */
-        (p) => p.available);
-      if (availableProvider && availableProvider.modelsWithContext && availableProvider.modelsWithContext.length > 0) {
-        await this.setModelConfig({
-          provider: availableProvider.name,
-          model: availableProvider.modelsWithContext[0]?.id
-        });
-        return;
-      }
-    } catch (error) {
-      console.warn(`[ESSENTIAL] [Conversation] Failed to read providers: ${error}`);
-    }
-
-    throw new Error('No provider/model available');
-  }
 }
 
 // Export class

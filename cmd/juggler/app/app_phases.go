@@ -312,7 +312,7 @@ func (a *App) initEngineWatcher() error {
 			return
 		}
 		a.printInteractiveBanner()
-		a.server.StartWatchers()
+		a.server.StartBackgroundServices()
 	}()
 	return nil
 }

@@ -45,7 +45,6 @@ class ReplaceTextContextItem extends EditBase {
 
   /**
    * Get tool definitions for Edit action
-   * Returns two tools: Edit (primary) and edit (alias)
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */
   static getToolDefinitions() {

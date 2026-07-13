@@ -89,6 +89,23 @@ export class StatusMessageBuilder {
       return `${seconds}s`;
     }
   }
+
+  /**
+   * Join a status label with the optional elapsed-time suffix. Shared by the
+   * builders whose message is just "<label> · <elapsed>".
+   * @param {string} label - The status label (authored without ellipsis)
+   * @param {{elapsedTime?: number}} [data] - Optional data with elapsed time
+   * @returns {string} Formatted status message
+   * @private
+   */
+  static _withElapsed(label, data = {}) {
+    const parts = [label];
+    if (data.elapsedTime !== undefined) {
+      parts.push(this._formatElapsedTime(data.elapsedTime));
+    }
+    return parts.join(' · ');
+  }
+
   /**
    * Builds status message for streaming response
    * @param {StreamingStatusData} data - Streaming status information
@@ -141,14 +158,7 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildPreparingStatus(data = {}) {
-    const parts = ['Preparing request'];
-
-    // Add elapsed time if available
-    if (data.elapsedTime !== undefined) {
-      parts.push(this._formatElapsedTime(data.elapsedTime));
-    }
-
-    return parts.join(' · ');
+    return this._withElapsed('Preparing request', data);
   }
 
   /**
@@ -157,14 +167,7 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildWaitingStatus(data = {}) {
-    const parts = ['Waiting for response'];
-
-    // Add elapsed time if available
-    if (data.elapsedTime !== undefined) {
-      parts.push(this._formatElapsedTime(data.elapsedTime));
-    }
-
-    return parts.join(' · ');
+    return this._withElapsed('Waiting for response', data);
   }
 
   /**
@@ -173,18 +176,8 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildUploadingStatus(data) {
-    const parts = [];
-
-    // Format payload size
     const sizeKB = Math.ceil(data.payloadSize / 1024);
-    parts.push(`Uploading context ${sizeKB.toLocaleString()} KB`);
-
-    // Add elapsed time if available
-    if (data.elapsedTime !== undefined) {
-      parts.push(this._formatElapsedTime(data.elapsedTime));
-    }
-
-    return parts.join(' · ');
+    return this._withElapsed(`Uploading context ${sizeKB.toLocaleString()} KB`, data);
   }
 
   /**
@@ -193,14 +186,7 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildProcessingToolsStatus(data = {}) {
-    const parts = ['Processing tools'];
-
-    // Add elapsed time if available
-    if (data.elapsedTime !== undefined) {
-      parts.push(this._formatElapsedTime(data.elapsedTime));
-    }
-
-    return parts.join(' · ');
+    return this._withElapsed('Processing tools', data);
   }
 
   /**
@@ -209,14 +195,7 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildExecutingActionStatus(data = {}) {
-    const parts = ['Running action'];
-
-    // Add elapsed time if available
-    if (data.elapsedTime !== undefined) {
-      parts.push(this._formatElapsedTime(data.elapsedTime));
-    }
-
-    return parts.join(' · ');
+    return this._withElapsed('Running action', data);
   }
 
   /**
@@ -225,33 +204,7 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildRetryStatus(data) {
-    const parts = [];
-
-    // Build retry message with attempt counter
-    parts.push(`Retrying attempt ${data.attempt}/${data.maxRetries}`);
-
-    // Add elapsed time if available
-    if (data.elapsedTime !== undefined) {
-      parts.push(this._formatElapsedTime(data.elapsedTime));
-    }
-
-    return parts.join(' · ');
-  }
-
-  /**
-   * Formats retry reason for display
-   * @param {string} reason - Reason code to format
-   * @returns {string} Formatted reason string
-   * @private
-   */
-  static _formatRetryReason(reason) {
-    /** @type {{[key: string]: string}} */
-    const reasonMap = {
-      'timeout': 'timeout',
-      'network': 'network error',
-      'error': 'error'
-    };
-    return reasonMap[reason] || reason;
+    return this._withElapsed(`Retrying attempt ${data.attempt}/${data.maxRetries}`, data);
   }
 
   /**
@@ -281,14 +234,7 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildCustomStatus(message, data = {}) {
-    const parts = [message];
-
-    // Add elapsed time if available
-    if (data.elapsedTime !== undefined) {
-      parts.push(this._formatElapsedTime(data.elapsedTime));
-    }
-
-    return parts.join(' · ');
+    return this._withElapsed(message, data);
   }
 
   /**

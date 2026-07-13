@@ -66,7 +66,6 @@ class ReadFileContextItem extends ContextItem {
 
   /**
    * Get tool definitions for Read action
-   * Returns two tools: Read (primary) and read (alias)
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */
   static getToolDefinitions() {

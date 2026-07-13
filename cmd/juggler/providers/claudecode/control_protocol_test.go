@@ -291,6 +291,15 @@ func TestControlProtocol_ToolsCallsMatchedFIFOInOrder(t *testing.T) {
 	}
 }
 
+// recordPendingToolCall runs recordPendingToolCallLocked on the actor goroutine.
+// Production dispatch already runs on the actor and calls the Locked form
+// directly; this wrapper exists only so tests can park a call from outside.
+func (cp *controlProtocol) recordPendingToolCall(requestID string, jrpc JSONRPCMessage) error {
+	var err error
+	cp.runOnActor(func() { err = cp.recordPendingToolCallLocked(requestID, jrpc) })
+	return err
+}
+
 // TestControlProtocol_DeliverToolResultStashesWhenCallNotYetParked locks
 // in the result-before-call race: when the worker hands us a result for a
 // position whose tools/call hasn't arrived yet, we stash it in FIFO order and let

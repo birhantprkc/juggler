@@ -835,9 +835,7 @@ func (w *ConversationWorker) run(ctx context.Context) {
 		// and set needsReconcile again (e.g., child thread completes →
 		// parent needs dispatch). Loop until the reducer is quiet.
 		// Bounded to prevent spin loops from observer re-triggering.
-		for i := 0; i < 10 && w.needsReconcile; i++ {
-			w.tryReconcile()
-		}
+		w.drainReconcile()
 	}
 }
 
@@ -869,8 +867,7 @@ func (w *ConversationWorker) recoverWorkerPanic(msgType string) {
 
 	// Reset thread context so the error appears in the root conversation,
 	// not inside the failed thread.
-	w.thread.itemID = ""
-	w.thread.itemsArray = nil
+	w.resetThreadContext()
 
 	w.sendError(fmt.Sprintf("Internal error: %v", r), "")
 }
@@ -1051,7 +1048,7 @@ func (w *ConversationWorker) handleClearUndoStacks(payload json.RawMessage) {
 	_ = json.Unmarshal(payload, &msg)
 
 	w.tracker.ClearHistory()
-	w.send(map[string]any{
+	w.reply(map[string]any{
 		"type":  "ack",
 		"ackId": msg.AckID,
 	})
@@ -1078,7 +1075,7 @@ func (w *ConversationWorker) handleGetTransaction(payload json.RawMessage) {
 			}
 		}
 	}
-	w.send(ack)
+	w.reply(ack)
 }
 
 // =============================================================================
@@ -1236,116 +1233,6 @@ func (w *ConversationWorker) sendReadyWithMetadata(metadata map[string]any) {
 		"metadata": metadata,
 	}
 	w.send(msg)
-}
-
-// extractErrorSummary extracts a short user-facing message from a raw error string.
-// It looks for embedded JSON with a "message" field, and optionally appends a (hint: ...) suffix.
-// Falls back to the original string if no structured message is found.
-func extractErrorSummary(raw string) string {
-	// Try to find an embedded JSON object and extract a "message" field
-	start, end := findBalancedJSONObject(raw)
-	if start >= 0 && end > 0 {
-		jsonStr := raw[start:end]
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(jsonStr), &parsed); err == nil {
-			if userMessage := extractMessageFromParsed(parsed); userMessage != "" {
-				// Append hint suffix if present in the raw string
-				if hint := extractHintSuffix(raw); hint != "" {
-					userMessage += " " + hint
-				}
-				return userMessage
-			}
-		}
-	}
-
-	// Fallback: return the raw string as-is
-	return raw
-}
-
-// findBalancedJSONObject locates the first embedded JSON object in raw by
-// brace-balancing. It returns the [start, end) byte range of the object, or a
-// start of -1 (no opening brace) / an end of -1 (no balanced closing brace).
-func findBalancedJSONObject(raw string) (start, end int) {
-	start = -1
-	for i, ch := range raw {
-		if ch == '{' {
-			start = i
-			break
-		}
-	}
-
-	if start < 0 {
-		return -1, -1
-	}
-
-	// Find balanced closing brace
-	depth := 0
-	end = -1
-	for i := start; i < len(raw); i++ {
-		switch raw[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				end = i + 1
-			}
-		}
-		if end > 0 {
-			break
-		}
-	}
-
-	return start, end
-}
-
-// extractMessageFromParsed digs a user-facing message out of a parsed error
-// object, preferring a top-level "message" over a nested "error.message".
-// Returns "" if neither is present.
-func extractMessageFromParsed(parsed map[string]any) string {
-	var userMessage string
-
-	// Check top-level "message"
-	if msg, ok := parsed["message"].(string); ok && msg != "" {
-		userMessage = msg
-	}
-
-	// Check nested "error.message"
-	if userMessage == "" {
-		if errObj, ok := parsed["error"].(map[string]any); ok {
-			if msg, ok := errObj["message"].(string); ok && msg != "" {
-				userMessage = msg
-			}
-		}
-	}
-
-	return userMessage
-}
-
-// extractHintSuffix returns the "(hint: ...)" span from raw, including the
-// surrounding parentheses, or "" if no complete hint is present.
-func extractHintSuffix(raw string) string {
-	hintStart := -1
-	for i := 0; i <= len(raw)-6; i++ {
-		if raw[i:i+6] == "(hint:" {
-			hintStart = i
-			break
-		}
-	}
-	if hintStart < 0 {
-		return ""
-	}
-	hintEnd := -1
-	for i := hintStart; i < len(raw); i++ {
-		if raw[i] == ')' {
-			hintEnd = i + 1
-			break
-		}
-	}
-	if hintEnd <= 0 {
-		return ""
-	}
-	return raw[hintStart:hintEnd]
 }
 
 func (w *ConversationWorker) sendError(message, stack string) {

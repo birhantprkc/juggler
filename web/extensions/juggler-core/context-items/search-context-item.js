@@ -5,6 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { grep } from 'juggler/ops';
+import { formatPathForStatus } from 'juggler/item-utils';
 import { smartTruncate } from 'juggler/ui';
 
 /**
@@ -69,7 +70,6 @@ class SearchContextItem extends ContextItem {
 
   /**
    * Get tool definitions for Grep action
-   * Returns two tools: Grep (primary) and grep (alias)
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */
   static getToolDefinitions() {
@@ -410,7 +410,7 @@ class SearchContextItem extends ContextItem {
 
     const pattern = String(toolInput?.pattern || 'unknown');
     const path = toolInput?.path ? String(toolInput.path) : null;
-    const pathSuffix = path ? ` in ${path}` : '';
+    const pathSuffix = path ? ` in ${formatPathForStatus(path, this.session?.projectPath)}` : '';
 
     let summary;
     /** @type {import('juggler/context-item').ResultStatus|undefined} */

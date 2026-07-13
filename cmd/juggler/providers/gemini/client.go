@@ -87,11 +87,6 @@ func (c *Client) Name() string {
 	return "gemini"
 }
 
-// GetModel returns the current model name
-func (c *Client) GetModel() string {
-	return c.model
-}
-
 // prepareRequest builds the common request components for both SendMessage and StreamMessage
 func (c *Client) prepareRequest(req provider.MessageRequest) (*genai.GenerateContentConfig, []*genai.Content, error) {
 	config := buildGeminiConfig(req.Tools, req.ToolChoice)
@@ -449,7 +444,7 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 					// silent (parent ctx still alive). Surface as a transient stall
 					// so the worker's transient classifier retries the turn.
 					if idle.Fired() && ctx.Err() == nil {
-						return false, fmt.Errorf("gemini stream stalled: no data for %s — connection may have dropped", utils.StreamIdleTimeout)
+						return false, utils.StallError("gemini", utils.StreamIdleTimeout)
 					}
 					if gapiErr, ok := err.(*googleapi.Error); ok && (gapiErr.Code == http.StatusTooManyRequests || gapiErr.Code == http.StatusServiceUnavailable) {
 						// Retryable. Back off, then signal the outer loop to retry.

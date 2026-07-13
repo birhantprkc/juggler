@@ -12,15 +12,10 @@
 
 import LLMState from './services/llm-state.js';
 import ConnectionManager from './services/connection-manager.js';
-import strategyRegistry from './registries/strategy-registry.js';
-import contextItemRegistry from './registries/context-item-registry.js';
-import commandRegistry from './registries/command-registry.js';
-import { reloadRegistries } from './registries/reload-registries.js';
-import { markRegistriesReady } from './registries/registry-ready.js';
+import { reloadRegistries, initAllRegistries } from './registries/reload-registries.js';
 import wsService from './services/websocket.js';
 import actionExecutor from './services/action-executor.js';
 import workerManager from './services/worker-manager.js';
-import AnimationService from './services/animation-service.js';
 
 /**
  * Headless engine app that handles tool execution and context rendering.
@@ -55,13 +50,7 @@ class EngineApp {
     // Initialize registries (needed for context items, tools, strategies).
     // Signal readiness once the initial init attempt settles — even on failure,
     // so the system-prompt gate can never permanently hang a turn.
-    try {
-      await strategyRegistry.init();
-      await contextItemRegistry.init();
-      await commandRegistry.init();
-    } finally {
-      markRegistriesReady();
-    }
+    await initAllRegistries();
 
     // Listen for extension file/config changes. The reload path defers any
     // registry reset until local turns are idle, so tools are never removed
@@ -74,13 +63,11 @@ class EngineApp {
 
     // Initialize services
     this._llmState = new LLMState();
-    const animationService = new AnimationService();
 
     this._connectionManager = new ConnectionManager({
       llmState: this._llmState,
       onServerMessage: (data) => this._handleServerMessage(data),
       services: {
-        animationService,
         llmState: this._llmState,
         actionExecutor,
         wsService

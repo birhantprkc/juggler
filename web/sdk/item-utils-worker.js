@@ -8,6 +8,7 @@
 export {
   formatFileSize,
   formatDisplayPath,
+  formatPathForStatus,
   basename,
   formatFileContentForLLM,
   normalizeFilePath,

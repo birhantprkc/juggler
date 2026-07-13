@@ -56,7 +56,7 @@ func (a *CompletionsAPI) HandlePathCompletions(w http.ResponseWriter, r *http.Re
 		results = []ops.FileMatch{}
 	}
 
-	writeJSON(w, r, 0, fileCompletionsResponse{Results: results})
+	WriteJSON(w, r, 0, fileCompletionsResponse{Results: results})
 }
 
 // pathExistsResponse is the JSON response shape for HandlePathExists.
@@ -72,7 +72,7 @@ type pathExistsResponse struct {
 func (a *CompletionsAPI) HandlePathExists(w http.ResponseWriter, r *http.Request) {
 	raw := r.URL.Query()["paths"]
 	if len(raw) == 0 {
-		writeJSON(w, r, 0, pathExistsResponse{Existing: []string{}})
+		WriteJSON(w, r, 0, pathExistsResponse{Existing: []string{}})
 		return
 	}
 
@@ -90,7 +90,7 @@ func (a *CompletionsAPI) HandlePathExists(w http.ResponseWriter, r *http.Request
 			existing = append(existing, p)
 		}
 	}
-	writeJSON(w, r, 0, pathExistsResponse{Existing: existing})
+	WriteJSON(w, r, 0, pathExistsResponse{Existing: existing})
 }
 
 // resolveForExists turns a user-supplied path into an absolute path for an
@@ -127,7 +127,7 @@ func (a *CompletionsAPI) HandleFileCompletions(w http.ResponseWriter, r *http.Re
 
 	workingDir := a.pathProvider()
 	if workingDir == "" {
-		writeJSON(w, r, 0, fileCompletionsResponse{Results: []ops.FileMatch{}})
+		WriteJSON(w, r, 0, fileCompletionsResponse{Results: []ops.FileMatch{}})
 		return
 	}
 	var searcher ops.PathSearcher
@@ -143,5 +143,5 @@ func (a *CompletionsAPI) HandleFileCompletions(w http.ResponseWriter, r *http.Re
 		results = []ops.FileMatch{}
 	}
 
-	writeJSON(w, r, 0, fileCompletionsResponse{Results: results})
+	WriteJSON(w, r, 0, fileCompletionsResponse{Results: results})
 }

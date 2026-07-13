@@ -94,11 +94,14 @@ func TestModelsUseResponsesAPI(t *testing.T) {
 }
 
 func TestForceResponsesAPIQuirk(t *testing.T) {
-	client := &Client{
-		model:  "gpt-5.5",
-		quirks: Quirks{ForceResponsesAPI: true},
+	// A Chat-Completions model name normally routes to Chat Completions...
+	plain := &Client{model: "gpt-5.5"}
+	if plain.usesResponsesAPI() {
+		t.Fatal("non-codex model without the quirk should route to Chat Completions")
 	}
-	if !client.quirks.ForceResponsesAPI && !IsResponsesAPIModel(client.model) {
+	// ...but the ForceResponsesAPI quirk overrides that routing.
+	forced := &Client{model: "gpt-5.5", quirks: Quirks{ForceResponsesAPI: true}}
+	if !forced.usesResponsesAPI() {
 		t.Fatal("forced Responses API quirk should route non-codex model names to Responses")
 	}
 }

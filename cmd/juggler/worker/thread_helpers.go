@@ -8,6 +8,14 @@ import (
 	ycrdt "github.com/skyterra/y-crdt"
 )
 
+// resetThreadContext re-roots the worker's active thread scope: subsequent
+// getTarget* / insertTarget* calls address the root conversation, not a
+// sub-thread. Clears both fields together so a stale itemsArray can never
+// outlive a cleared itemID.
+func (w *ConversationWorker) resetThreadContext() {
+	w.thread = threadContext{}
+}
+
 // getTargetItems returns items from the thread's nested array when in thread mode,
 // or from the root items array otherwise.
 func (w *ConversationWorker) getTargetItems() []ConversationItem {

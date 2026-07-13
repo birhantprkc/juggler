@@ -69,10 +69,10 @@ func threadMsg(itemID, result string) ConversationItem {
 
 // TestDecideNextAction_Empty: no items → None regardless of root/activity.
 func TestDecideNextAction_Empty(t *testing.T) {
-	if got := decideNextAction(nil, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(nil, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("empty/root: expected None, got %s", got)
 	}
-	if got := decideNextAction(nil, ActivityNone, false); got != ActionNone {
+	if got := decideNextAction(nil, ActivityNone, false, false); got != ActionNone {
 		t.Errorf("empty/nested: expected None, got %s", got)
 	}
 }
@@ -80,7 +80,7 @@ func TestDecideNextAction_Empty(t *testing.T) {
 // TestDecideNextAction_CallingLLM: any state → None if an LLM call is in progress.
 func TestDecideNextAction_CallingLLM(t *testing.T) {
 	items := []ConversationItem{userMsg("hi")}
-	if got := decideNextAction(items, ActivityCallingLLM, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityCallingLLM, true, false); got != ActionNone {
 		t.Errorf("calling_llm guard: expected None, got %s", got)
 	}
 }
@@ -88,13 +88,13 @@ func TestDecideNextAction_CallingLLM(t *testing.T) {
 // TestDecideNextAction_LastIsUser: user message → CallLLM only when activity="awaiting_llm".
 func TestDecideNextAction_LastIsUser(t *testing.T) {
 	items := []ConversationItem{userMsg("hello")}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionCallLLM {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionCallLLM {
 		t.Errorf("user/root/awaiting: expected CallLLM, got %s", got)
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, false); got != ActionCallLLM {
+	if got := decideNextAction(items, ActivityAwaitingLLM, false, false); got != ActionCallLLM {
 		t.Errorf("user/nested/awaiting: expected CallLLM, got %s", got)
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("user/root/idle: expected None, got %s", got)
 	}
 }
@@ -106,13 +106,13 @@ func TestDecideNextAction_LastIsAssistantText_Root(t *testing.T) {
 		userMsg("hi"),
 		assistantMsg("hello there"),
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("assistant-text/root: expected None, got %s", got)
 	}
 	if got := decideNextAction(items, ActivityAwaitingLLM, true, true); got != ActionCallLLM {
 		t.Errorf("assistant-text/root/explicit-continuation: expected CallLLM, got %s", got)
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionGoIdle {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionGoIdle {
 		t.Errorf("assistant-text/root/stale-awaiting: expected GoIdle, got %s", got)
 	}
 }
@@ -130,10 +130,10 @@ func TestDecideNextAction_LastIsAssistantText_Nested(t *testing.T) {
 		userMsg("do thing"),
 		assistantMsg("did thing"),
 	}
-	if got := decideNextAction(items, ActivityNone, false); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, false, false); got != ActionNone {
 		t.Errorf("assistant-text/nested/idle: expected None, got %s", got)
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, false); got != ActionGoIdle {
+	if got := decideNextAction(items, ActivityAwaitingLLM, false, false); got != ActionGoIdle {
 		t.Errorf("assistant-text/nested/stale-awaiting: expected GoIdle, got %s", got)
 	}
 	if got := decideNextAction(items, ActivityAwaitingLLM, false, true); got != ActionCallLLM {
@@ -148,7 +148,7 @@ func TestDecideNextAction_BatchPending(t *testing.T) {
 		assistantMsg("running"),
 		toolAction("call_1", StatePending),
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionNone {
 		t.Errorf("pending tool/root: expected None, got %s", got)
 	}
 }
@@ -161,12 +161,12 @@ func TestDecideNextAction_BatchApproved(t *testing.T) {
 		assistantMsg("running"),
 		toolAction("call_1", StateApproved),
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionNone {
 		t.Errorf("approved tool/root: expected None, got %s", got)
 	}
 
 	items[2].State = StateRunning
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionNone {
 		t.Errorf("running tool/root: expected None, got %s", got)
 	}
 }
@@ -179,7 +179,7 @@ func TestDecideNextAction_BatchUnsetState(t *testing.T) {
 		assistantMsg("running"),
 		{Type: ItemTypeToolAction, ToolUseID: "call_1", ToolName: "bash"}, // State=""
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionNone {
 		t.Errorf("unset-state tool/root: expected None, got %s", got)
 	}
 }
@@ -193,7 +193,7 @@ func TestDecideNextAction_BatchAllCompleted_Awaiting(t *testing.T) {
 		toolAction("call_1", StateCompleted),
 		toolAction("call_2", StateCompleted),
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionCallLLM {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionCallLLM {
 		t.Errorf("all-completed/awaiting: expected CallLLM, got %s", got)
 	}
 }
@@ -207,7 +207,7 @@ func TestDecideNextAction_BatchAllCompleted_Idle(t *testing.T) {
 		toolAction("call_1", StateCompleted),
 		toolAction("call_2", StateCompleted),
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("all-completed/idle: expected None, got %s", got)
 	}
 }
@@ -220,7 +220,7 @@ func TestDecideNextAction_BatchAllCompleted_CallingLLM(t *testing.T) {
 		assistantMsg("running"),
 		toolAction("call_1", StateCompleted),
 	}
-	if got := decideNextAction(items, ActivityCallingLLM, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityCallingLLM, true, false); got != ActionNone {
 		t.Errorf("all-completed/calling: expected None, got %s", got)
 	}
 }
@@ -234,7 +234,7 @@ func TestDecideNextAction_BatchMixed(t *testing.T) {
 		toolAction("call_1", StateCompleted),
 		toolAction("call_2", StateCancelled),
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionGoIdle {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionGoIdle {
 		t.Errorf("mixed batch/awaiting: expected GoIdle, got %s", got)
 	}
 }
@@ -279,7 +279,7 @@ func TestDecideNextAction_BatchAllCancelled_Root(t *testing.T) {
 		toolAction("call_1", StateCancelled),
 		toolAction("call_2", StateCancelled),
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionGoIdle {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionGoIdle {
 		t.Errorf("all-cancelled/root: expected GoIdle, got %s", got)
 	}
 }
@@ -293,7 +293,7 @@ func TestDecideNextAction_BatchAllCancelled_Nested(t *testing.T) {
 		assistantMsg("running"),
 		toolAction("call_1", StateCancelled),
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, false); got != ActionGoIdle {
+	if got := decideNextAction(items, ActivityAwaitingLLM, false, false); got != ActionGoIdle {
 		t.Errorf("all-cancelled/nested: expected GoIdle, got %s", got)
 	}
 }
@@ -306,7 +306,7 @@ func TestDecideNextAction_BatchAllCancelled_Idle(t *testing.T) {
 		assistantMsg("running"),
 		toolAction("call_1", StateCancelled),
 	}
-	if got := decideNextAction(items, ActivityNone, false); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, false, false); got != ActionNone {
 		t.Errorf("all-cancelled/idle: expected None, got %s", got)
 	}
 }
@@ -321,7 +321,7 @@ func TestDecideNextAction_OldIncompleteToolBlocksNewLLMCall(t *testing.T) {
 		toolAction("old", StateApproved), // user-retried old tool, still in flight
 		userMsg("turn 2"),                // new user message
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionNone {
 		t.Errorf("old incomplete tool: expected None, got %s", got)
 	}
 }
@@ -334,7 +334,7 @@ func TestDecideNextAction_ThreadItemWithResult_Awaiting(t *testing.T) {
 		assistantMsg("delegating"),
 		threadMsg("child-1", "child is done"),
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionCallLLM {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionCallLLM {
 		t.Errorf("thread-with-result/awaiting: expected CallLLM, got %s", got)
 	}
 }
@@ -347,7 +347,7 @@ func TestDecideNextAction_ThreadItemWithResult_Idle(t *testing.T) {
 		assistantMsg("delegating"),
 		threadMsg("child-1", "child is done"),
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("thread-with-result/idle: expected None, got %s", got)
 	}
 }
@@ -360,7 +360,7 @@ func TestDecideNextAction_ThreadItemNoResult(t *testing.T) {
 		assistantMsg("delegating"),
 		threadMsg("child-1", ""),
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("thread-no-result: expected None, got %s", got)
 	}
 }
@@ -377,7 +377,7 @@ func TestDecideNextAction_ThreadItemExplicitNull(t *testing.T) {
 			Result: json.RawMessage("null"),
 		},
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("thread null-result: expected None, got %s", got)
 	}
 }
@@ -389,10 +389,10 @@ func TestDecideNextAction_MetaToolResult(t *testing.T) {
 		userMsg("compact"),
 		{Type: ItemTypeMetaToolResult, Content: "compacted"},
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionCallLLM {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionCallLLM {
 		t.Errorf("meta-tool-result/awaiting: expected CallLLM, got %s", got)
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("meta-tool-result/idle: expected None, got %s", got)
 	}
 }
@@ -407,10 +407,10 @@ func TestDecideNextAction_IgnoresThinkingAndErrors(t *testing.T) {
 		{Type: ItemTypeError, Content: "something weird"},
 	}
 	// Effective last item is the user → CallLLM when awaiting, None when idle.
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionCallLLM {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionCallLLM {
 		t.Errorf("trailing thinking+error/root/awaiting: expected CallLLM, got %s", got)
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("trailing thinking+error/root/idle: expected None, got %s", got)
 	}
 }
@@ -424,10 +424,10 @@ func TestDecideNextAction_IgnoresContextItems(t *testing.T) {
 		{Type: "tree", Content: "project tree"},
 		userMsg("hi"),
 	}
-	if got := decideNextAction(items, ActivityAwaitingLLM, true); got != ActionCallLLM {
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionCallLLM {
 		t.Errorf("context-items + user/awaiting: expected CallLLM, got %s", got)
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("context-items + user/idle: expected None, got %s", got)
 	}
 }
@@ -438,7 +438,7 @@ func TestDecideNextAction_OnlyContextItems(t *testing.T) {
 	items := []ConversationItem{
 		{Type: "system-prompt", Content: "you are helpful"},
 	}
-	if got := decideNextAction(items, ActivityNone, true); got != ActionNone {
+	if got := decideNextAction(items, ActivityNone, true, false); got != ActionNone {
 		t.Errorf("only context items: expected None, got %s", got)
 	}
 }

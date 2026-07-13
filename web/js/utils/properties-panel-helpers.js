@@ -70,15 +70,25 @@ export function createCopyableText(text, className = 'properties-panel-text', { 
  *   {@link createCopyableText} (e.g. `{ language: 'bash' }` to syntax-highlight).
  */
 export function addSubsection(wrapper, label, text, className = 'properties-panel-code', options = {}) {
-  const section = document.createElement('properties-panel-subsection');
+  const section = labeledSubsection(label);
+  section.appendChild(createCopyableText(text, className, options));
+  wrapper.appendChild(section);
+}
 
+/**
+ * Build a `<properties-panel-subsection>` with a leading `.properties-panel-subtitle`
+ * heading, ready for the caller to append its body. Shared scaffolding for the
+ * labeled-subsection variants.
+ * @param {string} label
+ * @returns {HTMLElement} The subsection element (label already appended).
+ */
+function labeledSubsection(label) {
+  const section = document.createElement('properties-panel-subsection');
   const labelEl = document.createElement('h4');
   labelEl.className = 'properties-panel-subtitle';
   labelEl.textContent = label;
   section.appendChild(labelEl);
-
-  section.appendChild(createCopyableText(text, className, options));
-  wrapper.appendChild(section);
+  return section;
 }
 
 /**
@@ -91,12 +101,7 @@ export function addSubsection(wrapper, label, text, className = 'properties-pane
  * @param {string} text
  */
 export function addLlmDescription(wrapper, label, text) {
-  const section = document.createElement('properties-panel-subsection');
-
-  const labelEl = document.createElement('h4');
-  labelEl.className = 'properties-panel-subtitle';
-  labelEl.textContent = label;
-  section.appendChild(labelEl);
+  const section = labeledSubsection(label);
 
   const textEl = document.createElement('div');
   textEl.className = 'llm-description';

@@ -3,8 +3,8 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { openExternalURL } from '../../sdk/lib/window-control.js';
+import { createButton } from '../../sdk/lib/html.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
-import { wireExternalLinks } from '../utils/external-links.js';
 import { startInstall, requestRestart } from '../services/updater-control.js';
 
 /**
@@ -340,9 +340,6 @@ class UpdateNotice extends HTMLElement {
         : 'A newer version is now available.';
       body.appendChild(p);
     }
-    // Hand any sanitized links to the system browser. The sanitizer only keeps
-    // http(s) hrefs, so match every remaining anchor.
-    wireExternalLinks(body, 'a[href]');
 
     // Edge case 18: the viewed server was started outside the app, so an app
     // update won't touch it. Say so plainly instead of implying "Restart
@@ -513,11 +510,11 @@ class UpdateNotice extends HTMLElement {
    * @returns {HTMLButtonElement} The constructed footer button.
    */
   _button(label, extraClass, onClick) {
-    const btn = document.createElement('button');
-    btn.className = 'update-notice__button' + (extraClass ? ' ' + extraClass : '');
-    btn.textContent = label;
-    btn.addEventListener('click', onClick);
-    return btn;
+    return createButton(
+      label,
+      'update-notice__button' + (extraClass ? ' ' + extraClass : ''),
+      onClick,
+    );
   }
 
   /**

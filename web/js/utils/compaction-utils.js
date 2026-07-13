@@ -20,10 +20,9 @@ import {
 
 /**
  * Default summarization prompt used by the compact commands.
- * @param {number} [_messageCount] - Number of messages being summarized (unused)
  * @returns {string} Summarization prompt text
  */
-export function defaultSummarizationPrompt(_messageCount) {
+export function defaultSummarizationPrompt() {
   return `You are creating a handoff summary of the conversation so far. Another instance of yourself will use ONLY this summary (plus the most recent messages) to continue the work seamlessly, so completeness matters more than brevity — never drop information you cannot reconstruct later.
 
 First, in <analysis> tags, walk the conversation chronologically: note each user request, each significant action you took, every error hit and how it was resolved, and what is in flight right now. This is your scratchpad.
@@ -192,7 +191,7 @@ export function foldConversationIntoSummaryThread(
   threadMsg.forceTool = 'return_result';
   Object.assign(threadMsg, threadExtra);
 
-  const userMsg = createUserMessage(defaultSummarizationPrompt(snapshots.length));
+  const userMsg = createUserMessage(defaultSummarizationPrompt());
 
   // Insert where the first content item was, so the thread lands among the
   // content rather than before the preserved leading context items.
@@ -249,9 +248,9 @@ export function maybePromoteHandoffThread(mt) {
           if (idx < 0) return;
           mt.deleteAt(idx);
           const msg = /** @type {any} */ (createUserMessage(result));
-          // Mint an id so the message is addressable/selectable, then reinsert
-          // at the thread's old slot (right after the preserved context items).
-          msg.itemId = mt.conversation._nextItemId();
+          // insertItem mints an itemId (via _ensureItemId) so the message is
+          // addressable/selectable; reinsert at the thread's old slot (right
+          // after the preserved context items).
           mt.insertItem(idx, msg);
         });
       } finally {

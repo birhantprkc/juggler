@@ -61,6 +61,70 @@ import strategyRegistry from '../../js/registries/strategy-registry.js';
 import providersCache from '../../js/services/providers-cache.js';
 
 
+/**
+ * Select a default provider/model for a conversation when none is set.
+ * Test-only helper: fetches from the config API and falls back to the first
+ * available provider with a model. (Production code never auto-selects here —
+ * the UI drives model selection.)
+ * @param {any} conversation - Conversation to configure
+ * @returns {Promise<void>}
+ */
+async function selectDefaultProvider(conversation) {
+  // Skip if already configured
+  if (conversation.modelConfig) {
+    return;
+  }
+
+  // Try to get from config first
+  try {
+    const configResponse = await fetch('/api/config');
+    if (configResponse.ok) {
+      const config = await configResponse.json();
+      const modelStr = config.model || '';
+
+      // Parse model string (format: "provider/model-name"). The model part may
+      // itself contain "/", so split on the first slash only.
+      if (modelStr) {
+        const i = modelStr.indexOf('/');
+        if (i > 0 && i < modelStr.length - 1) {
+          await conversation.setModelConfig({
+            provider: modelStr.slice(0, i),
+            model: modelStr.slice(i + 1)
+          });
+          return;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`[ESSENTIAL] [TestExecutor] Failed to fetch config: ${error}`);
+  }
+
+  // Fall back to first available provider
+  try {
+    const providers = providersCache.hasReceived()
+      ? providersCache.get()
+      : await providersCache.waitForFirst();
+
+    const availableProvider = providers.find(/**
+                                              * @param {any} p
+                                              * @returns {boolean} True if provider is available
+                                              */
+      (p) => p.available);
+    if (availableProvider && availableProvider.modelsWithContext && availableProvider.modelsWithContext.length > 0) {
+      await conversation.setModelConfig({
+        provider: availableProvider.name,
+        model: availableProvider.modelsWithContext[0]?.id
+      });
+      return;
+    }
+  } catch (error) {
+    console.warn(`[ESSENTIAL] [TestExecutor] Failed to read providers: ${error}`);
+  }
+
+  throw new Error('No provider/model available');
+}
+
+
 class TestExecutor {
   /**
    * @param {TaskDefinition} taskDef - Task definition
@@ -432,8 +496,8 @@ class TestExecutor {
       });
       logger.info(`Conversation created: ${convId} with REQUESTED provider: ${this.conversation.modelConfig.provider}, model: ${this.conversation.modelConfig.model}`);
     } else {
-      // Use Conversation's built-in method to select default provider
-      await this.conversation.selectDefaultProvider();
+      // Select a default provider/model (test-only helper)
+      await selectDefaultProvider(this.conversation);
       logger.info(`Conversation created: ${convId} with DEFAULT provider: ${this.conversation.modelConfig?.provider}, model: ${this.conversation.modelConfig?.model}`);
     }
   }

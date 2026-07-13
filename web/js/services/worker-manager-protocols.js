@@ -45,13 +45,12 @@ import {
  */
 export async function handleRenderContextItemsRequest(wm, conversationId, data) {
   if (!wm._onContextRequest) return;
-  const c = await ensureEngineConversationLoaded(wm, conversationId);
-  // Apply any batched/deferred syncs before rendering so the callback sees the
-  // turn's items (e.g. the just-synced user message / context items). Without
-  // this the callback's "requested context-item not in local view" guard bails
-  // without responding — and, context being engine-only, that wedges the turn.
-  // Mirrors handleExecuteTool's ensure-load + flushPendingSyncs.
-  if (c) flushPendingSyncs(c);
+  // loadAndFlush applies any batched/deferred syncs before rendering so the
+  // callback sees the turn's items (e.g. the just-synced user message / context
+  // items). Without this the callback's "requested context-item not in local
+  // view" guard bails without responding — and, context being engine-only, that
+  // wedges the turn.
+  await loadAndFlush(wm, conversationId);
   wm._onContextRequest(data, conversationId);
 }
 
@@ -116,8 +115,7 @@ export function sendToolsResult(wm, conversationId, requestId, tools) {
  */
 export async function handleBuildSubthreadSpec(wm, conversationId, data) {
   if (!wm._onSubthreadSpecRequest) return;
-  const c = await ensureEngineConversationLoaded(wm, conversationId);
-  if (c) flushPendingSyncs(c);
+  await loadAndFlush(wm, conversationId);
   wm._onSubthreadSpecRequest(data, conversationId);
 }
 
@@ -148,8 +146,7 @@ export function sendBuildSubthreadSpecResponse(wm, conversationId, requestId, sp
  */
 export async function handleSubthreadError(wm, conversationId, data) {
   if (!wm._onSubthreadErrorRequest) return;
-  const c = await ensureEngineConversationLoaded(wm, conversationId);
-  if (c) flushPendingSyncs(c);
+  await loadAndFlush(wm, conversationId);
   wm._onSubthreadErrorRequest(data, conversationId);
 }
 
@@ -209,7 +206,7 @@ export async function handleRunStrategyHook(wm, conversationId, data) {
   const requestId = /** @type {string|undefined} */ (data.requestId);
 
   const conversation = await ensureEngineConversationLoaded(wm, conversationId);
-  const root = conversation?._rootMessageThread;
+  const root = conversation?.rootMessageThread;
 
   // Run the hook on the WORKER's authoritative strategy. The engine's synced
   // copy of currentStrategyId can lag (it auto-loaded an earlier snapshot, or
@@ -241,9 +238,7 @@ export async function handleRunStrategyHook(wm, conversationId, data) {
       };
     }
     try {
-      await strategy?.[hook]?.(data.previousStrategyId || null);
-    } catch (err) {
-      console.error(`[worker-manager] strategy ${hook} threw for ${conversationId}:`, err);
+      await runStrategyHookGuarded(strategy, hook, data.previousStrategyId, conversationId);
     } finally {
       if (strategy && original) strategy.injectGuidance = original;
     }
@@ -254,8 +249,22 @@ export async function handleRunStrategyHook(wm, conversationId, data) {
   // onWorkerIdle (fire-and-forget): runs normally. Its effects — e.g. plan
   // execution spawning sub-threads — re-enter through the worker, so there is
   // nothing to capture or reply.
+  await runStrategyHookGuarded(strategy, hook, data.previousStrategyId, conversationId);
+}
+
+/**
+ * Run a strategy lifecycle hook, swallowing (and logging) any error it throws so
+ * a misbehaving hook can never wedge the worker's turn. Shared by both the
+ * onActivate and onWorkerIdle paths of handleRunStrategyHook.
+ * @param {any} strategy - The active strategy instance (may be undefined)
+ * @param {string} hook - Hook name ('onActivate' | 'onWorkerIdle')
+ * @param {string|null|undefined} previousStrategyId
+ * @param {string} conversationId - For the error log only
+ * @returns {Promise<void>}
+ */
+async function runStrategyHookGuarded(strategy, hook, previousStrategyId, conversationId) {
   try {
-    await strategy?.[hook]?.(data.previousStrategyId || null);
+    await strategy?.[hook]?.(previousStrategyId || null);
   } catch (err) {
     console.error(`[worker-manager] strategy ${hook} threw for ${conversationId}:`, err);
   }
@@ -277,6 +286,23 @@ function flushPendingSyncs(c) {
 }
 
 /**
+ * Ensure the engine's copy of a conversation is loaded, then flush its batched-
+ * but-unapplied syncs so any state the worker pushed ahead of this command is
+ * visible. The shared preamble for every worker-driven engine command
+ * (render-context-items, build-subthread-spec, subthread-error, evaluate-tool,
+ * execute-tool, cancel-tool). Returns the loaded conversation, or null if it
+ * could not be loaded.
+ * @param {any} wm - WorkerManager instance
+ * @param {string} conversationId
+ * @returns {Promise<any>} The loaded conversation, or null
+ */
+async function loadAndFlush(wm, conversationId) {
+  const c = await ensureEngineConversationLoaded(wm, conversationId);
+  if (c) flushPendingSyncs(c);
+  return c;
+}
+
+/**
  * Find the message thread (root or nested) that holds a given tool-action.
  * The worker addresses tool-commands by toolUseId only; the engine resolves
  * which thread owns it.
@@ -293,9 +319,10 @@ function findThreadForTool(c, toolUseId) {
 
 /**
  * Engine handler for the worker's `evaluate-tool` command: evaluate a newly
- * created tool-action (approval-gate or auto-approve) by id. The
- * command-driven counterpart to the reactive reducer's empty-state branch.
- * Idempotent with that branch via the shared `_handlingNewToolAction` guard.
+ * created tool-action (approval-gate or auto-approve) by id. The worker is the
+ * sole driver of the tool lifecycle (the engine has no reactive tool reducer);
+ * the `_handlingNewToolAction` guard makes this idempotent against a re-driven
+ * command for the same tool.
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @param {string} toolUseId
@@ -307,14 +334,13 @@ export async function handleEvaluateTool(wm, conversationId, toolUseId) {
   }
   // The boolean return is the ack outcome the worker gates its dedup on:
   // false → "could not act, re-drive me"; true → "handled, latch it".
-  const c = await ensureEngineConversationLoaded(wm, conversationId);
+  const c = await loadAndFlush(wm, conversationId);
   if (!c) return false;
-  flushPendingSyncs(c);
   const mt = findThreadForTool(c, toolUseId);
   if (!mt) return false;
-  // Synchronous guard shared with the reactive reducer: don't launch a second
-  // concurrent evaluation while one is in flight for this tool. The in-flight
-  // evaluation will produce the result, so this is "handled", not a retry.
+  // Synchronous guard: don't launch a second concurrent evaluation while one is
+  // in flight for this tool (e.g. a re-driven command). The in-flight evaluation
+  // will produce the result, so this is "handled", not a retry.
   if (c._handlingNewToolAction.has(toolUseId)) return true;
   c._handlingNewToolAction.add(toolUseId);
   try {
@@ -327,10 +353,11 @@ export async function handleEvaluateTool(wm, conversationId, toolUseId) {
 
 /**
  * Engine handler for the worker's `execute-tool` command: claim an approved
- * tool-action (approved→running) and run its side effect by id. The
- * command-driven counterpart to the reactive reducer's approved branch; the
- * claimRunning compare-and-set makes it idempotent with that branch (only one
- * caller wins the claim, so the tool executes exactly once).
+ * tool-action (approved→running) and run its side effect by id. The worker is
+ * the sole driver of the tool lifecycle (the engine has no reactive tool
+ * reducer); the claimRunning compare-and-set makes this idempotent against a
+ * re-driven command (only one caller wins the claim, so the tool executes
+ * exactly once).
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @param {string} toolUseId
@@ -344,9 +371,8 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
   // false → "could not act (conv/tool not loaded yet), re-drive me"; true →
   // "handled" — claimed and ran to a terminal result, or already running/terminal
   // (claimRunning lost the CAS), neither of which should be re-driven.
-  const c = await ensureEngineConversationLoaded(wm, conversationId);
+  const c = await loadAndFlush(wm, conversationId);
   if (!c) { sendEngineTrace(wm, conversationId, 'execute-noact', { toolUseId, reason: 'conv-not-loaded' }); return false; }
-  flushPendingSyncs(c);
   const mt = findThreadForTool(c, toolUseId);
   if (!mt) { sendEngineTrace(wm, conversationId, 'execute-noact', { toolUseId, reason: 'no-thread' }); return false; }
   const ymap = mt.getToolAction(toolUseId);
@@ -420,7 +446,7 @@ export async function handleCancelTool(wm, conversationId, toolUseId) {
   if (!isEngine()) {
     throw new Error('cancel-tool received in a viewer — tool execution runs only in the engine');
   }
-  const c = await ensureEngineConversationLoaded(wm, conversationId);
+  const c = await loadAndFlush(wm, conversationId);
   if (!c) { sendEngineTrace(wm, conversationId, 'cancel-noconv', { toolUseId }); return; }
   // hit=false means this engine had NO registered in-flight execution for the id
   // — the tool was flagged running in the doc but nothing was actually executing

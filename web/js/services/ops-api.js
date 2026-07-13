@@ -302,7 +302,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @typedef {object} ShellExecuteParams
  * @property {string} [command] - Shell command to execute (max 10000 chars)
  * @property {string} [code] - Python code to execute (alternative to command)
- * @property {number} [timeout] - Timeout in milliseconds (default 120000, max 1200000)
+ * @property {number} [timeout] - Timeout in milliseconds (default 30000, max 1200000)
  * @property {string} [cwd] - Working directory for command
  */
 
@@ -466,14 +466,22 @@ export async function readFileEditLines(params) {
   if (!params.path) {
     throw new TypeError('path is required');
   }
-  if (typeof params.startLine !== 'number' || params.startLine < 1) {
-    throw new TypeError('startLine must be a positive number');
-  }
-  if (typeof params.endLine !== 'number' || params.endLine < params.startLine) {
-    throw new TypeError('endLine must be a number >= startLine');
-  }
-  if (params.newContent === undefined || params.newContent === null) {
-    throw new TypeError('newContent is required');
+  if (params.edits !== undefined) {
+    // Batch mode: validate the edits array, skip the single-edit fields.
+    if (!Array.isArray(params.edits) || params.edits.length === 0) {
+      throw new TypeError('edits must be a non-empty array');
+    }
+  } else {
+    // Single-edit mode: startLine/endLine/newContent are required.
+    if (typeof params.startLine !== 'number' || params.startLine < 1) {
+      throw new TypeError('startLine must be a positive number');
+    }
+    if (typeof params.endLine !== 'number' || params.endLine < params.startLine) {
+      throw new TypeError('endLine must be a number >= startLine');
+    }
+    if (params.newContent === undefined || params.newContent === null) {
+      throw new TypeError('newContent is required');
+    }
   }
   return callOp('read-file', 'editFileLines', params);
 }
@@ -1228,42 +1236,3 @@ export async function mcpGetConfig(signal) {
 export async function mcpSetConfig(params, signal) {
   return callOp('mcp', 'setConfig', params, signal);
 }
-
-// ============================================================================
-// Exports Summary
-// ============================================================================
-
-/**
- * Available operations by handler:
- *
- * read-file:
- *   - readFileLoad(params)
- *   - writeFileOp(params)
- *   - readFileEdit(params)
- *   - readFileEditLines(params)
- *
- * tree:
- *   - treeGetTree(params)
- *   - treeExpandDirectory(params)
- *
- * grep:
- *   - grepSearch(params)
- *   - grepFindSymbol(params)
- *
- * python (shell):
- *   - shellExecute(params)
- *   - shellExecuteStreaming(params) (via WebSocket)
- *   - shellStartBackground(params)
- *   - shellGetOutput(params)
- *   - shellKill(params)
- *
- * webfetch:
- *   - webFetch(params)
- *
- * websearch:
- *   - webSearch(params)
- *
- * os:
- *   - osOpenPath(params)
- *   - osRevealPath(params)
- */

@@ -236,7 +236,6 @@ class ConnectionManager {
     }
 
     // Create session instance
-    // @ts-ignore - apiService is typed as APIService but Session expects ApiService (naming mismatch)
     this._session = new Session(apiService);
 
     // CRITICAL: Set services BEFORE loading

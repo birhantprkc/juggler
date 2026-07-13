@@ -230,20 +230,10 @@ func (a *appState) run(specs []windowSpec) error {
 	var initial *winEntry
 	var rest []windowSpec
 	for i, s := range specs {
-		serverURL, proc, err := s.resolve()
-		if err != nil {
-			if locked, ok := err.(*lockedProjectError); ok {
-				initial = a.buildLockedProjectWindow(s, locked.message(), "")
-				rest = specs[i+1:]
-				break
-			}
-			logf("restore: skipping %+v: %v", s.entry(), err)
-			continue
+		if initial = a.tryBuildInitial(s); initial != nil {
+			rest = specs[i+1:]
+			break
 		}
-		saved, hasSaved := fetchWindowState(serverURL)
-		initial = a.buildWindow(s, serverURL, proc, saved, hasSaved, "")
-		rest = specs[i+1:]
-		break
 	}
 	if initial == nil {
 		serverURL, proc, err := windowSpec{}.resolve()
@@ -299,6 +289,23 @@ func (a *appState) run(specs []windowSpec) error {
 			"the GUI event loop exited before the initial window ever became visible"), err)
 	}
 	return err
+}
+
+// tryBuildInitial resolves spec's server and builds a window for it, returning
+// the entry on success or nil when the project can't be resolved (logged and
+// skipped). A locked project resolves to a locked-project placeholder window,
+// which is still a non-nil entry.
+func (a *appState) tryBuildInitial(spec windowSpec) *winEntry {
+	serverURL, proc, err := spec.resolve()
+	if err != nil {
+		if locked, ok := err.(*lockedProjectError); ok {
+			return a.buildLockedProjectWindow(spec, locked.message(), "")
+		}
+		logf("restore: skipping %+v: %v", spec.entry(), err)
+		return nil
+	}
+	saved, hasSaved := fetchWindowState(serverURL)
+	return a.buildWindow(spec, serverURL, proc, saved, hasSaved, "")
 }
 
 // startupSpecs decides which windows to open at launch. An explicit --url or
@@ -372,15 +379,7 @@ func (a *appState) focusAnyWindow() bool {
 			}
 		}
 	})
-	if match == nil {
-		return false
-	}
-	application.InvokeAsync(func() {
-		match.win.Restore() // un-minimise if needed
-		match.win.Show()
-		match.win.Focus()
-	})
-	return true
+	return focusEntry(match)
 }
 
 // focusWindowBySpec raises and focuses the open window viewing the given
@@ -396,13 +395,20 @@ func (a *appState) focusWindowBySpec(spec windowSpec) bool {
 			}
 		}
 	})
-	if match == nil {
+	return focusEntry(match)
+}
+
+// focusEntry un-minimises, shows and focuses the given window entry, returning
+// true when e is non-nil. Shared raise/restore tail for the focus-any and
+// focus-by-spec helpers.
+func focusEntry(e *winEntry) bool {
+	if e == nil {
 		return false
 	}
 	application.InvokeAsync(func() {
-		match.win.Restore() // un-minimise if needed
-		match.win.Show()
-		match.win.Focus()
+		e.win.Restore() // un-minimise if needed
+		e.win.Show()
+		e.win.Focus()
 	})
 	return true
 }
@@ -937,19 +943,25 @@ func (a *appState) notifyWindowCloseRequested(e *winEntry) {
 // event to every live window before app-wide termination.
 func (a *appState) notifyAllWindowsCloseRequested() {
 	var wins []*winEntry
-	a.reg(func(st *regState) {
-		ids := make([]string, 0, len(st.windows))
-		for id := range st.windows {
-			ids = append(ids, id)
-		}
-		sort.Slice(ids, func(i, j int) bool { return winNum(ids[i]) < winNum(ids[j]) })
-		for _, id := range ids {
-			wins = append(wins, st.windows[id])
-		}
-	})
+	a.reg(func(st *regState) { wins = sortedWindows(st) })
 	for _, e := range wins {
 		a.notifyWindowCloseRequested(e)
 	}
+}
+
+// sortedWindows returns the open window entries in stable open order
+// (ascending window number). Must be called while holding the reg lock.
+func sortedWindows(st *regState) []*winEntry {
+	ids := make([]string, 0, len(st.windows))
+	for id := range st.windows {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return winNum(ids[i]) < winNum(ids[j]) })
+	wins := make([]*winEntry, 0, len(ids))
+	for _, id := range ids {
+		wins = append(wins, st.windows[id])
+	}
+	return wins
 }
 
 // persistWorkspace records the current open-window set asynchronously.
@@ -965,16 +977,11 @@ func (a *appState) persistWorkspaceSync() { a.persistWorkspaceTo(true) }
 func (a *appState) persistWorkspaceTo(sync bool) {
 	var specs []windowSpec
 	a.reg(func(st *regState) {
-		ids := make([]string, 0, len(st.windows))
-		for id := range st.windows {
-			ids = append(ids, id)
-		}
-		sort.Slice(ids, func(i, j int) bool { return winNum(ids[i]) < winNum(ids[j]) })
-		for _, id := range ids {
+		for _, w := range sortedWindows(st) {
 			// Only project windows are restorable; a URL window points at an
 			// externally-supplied/ephemeral address that won't be valid next
 			// launch, so never persist it (load() ignores them too).
-			if s := st.windows[id].spec; !s.isURL() {
+			if s := w.spec; !s.isURL() {
 				specs = append(specs, s)
 			}
 		}

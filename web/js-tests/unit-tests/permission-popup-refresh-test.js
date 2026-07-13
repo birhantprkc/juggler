@@ -87,6 +87,10 @@ export async function runTests(_ctx) {
       assert(!!innerPopup, 'inner popup is rendered when opening');
       innerPopup.setAttribute('data-permission-controls', 'true');
       document.body.appendChild(innerPopup);
+      // presentPopup records the relocated surface on the instance so render()
+      // and _renderAllowedPaths() reconcile into THIS control's popup (not a
+      // sibling's). Mirror that here since we bypass openPopup()'s rAF.
+      el._livePopup = innerPopup;
 
       const buttonBefore = el.querySelector('.permission-btn');
       assert(!!buttonBefore, 'controls have an anchor button while open');
@@ -135,6 +139,9 @@ export async function runTests(_ctx) {
       assert(!!popup, 'popup rendered when opening');
       popup.setAttribute('data-permission-controls', 'true');
       document.body.appendChild(popup);
+      // See the note above: record the relocated surface on the instance, as
+      // presentPopup does, so _renderAllowedPaths() finds it.
+      el._livePopup = popup;
 
       /**
        * @param {string} p Path entry path to look up.

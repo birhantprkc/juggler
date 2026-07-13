@@ -204,25 +204,18 @@ class ToolExecutor {
     // Execute write tools SEQUENTIALLY to enforce approval order
     /** @type {Array<{index: number, result: ToolOutcome}>} */
     const writeResults = [];
-    for (const t of writeTools) {
+    for (let wi = 0; wi < writeTools.length; wi++) {
+      const t = /** @type {{index: number, toolCall: ToolCall}} */ (writeTools[wi]);
       try {
         const resolvedName = resolveToolName(t.toolCall.name);
         const result = await this._executeSingleTool(t.toolCall, resolvedName, responseHandler, messageThread);
         writeResults.push({ index: t.index, result });
 
-        // If cancelled, cancel remaining write tools
+        // If cancelled, synthesize cancelled outcomes for the remaining write tools
         if (result.resultStatus === 'cancelled') {
-          const remainingTools = writeTools.slice(writeTools.indexOf(t) + 1);
-          for (const remaining of remainingTools) {
-            writeResults.push({
-              index: remaining.index,
-              result: {
-                toolName: remaining.toolCall.name,
-                success: false,
-                resultStatus: /** @type {ResultStatus} */ ('cancelled'),
-                content: 'Cancelled: previous tool was cancelled'
-              }
-            });
+          for (let wj = wi + 1; wj < writeTools.length; wj++) {
+            const remaining = /** @type {{index: number, toolCall: ToolCall}} */ (writeTools[wj]);
+            writeResults.push({ index: remaining.index, result: this._cancelledOutcome(remaining.toolCall) });
           }
           break;
         }
@@ -234,13 +227,15 @@ class ToolExecutor {
       }
     }
 
-    // Merge results in original order
+    // Merge results in original order. Look each tool's category up by its own
+    // recorded index (not the post-sort array position) so the correlation holds
+    // regardless of how reads/writes interleaved.
     const allResults = [...readResults, ...writeResults];
     allResults.sort((a, b) => a.index - b.index);
 
-    return allResults.map((r, i) => ({
+    return allResults.map((r) => ({
       ...r.result,
-      category: toolCategories.get(resolveToolName(/** @type {ToolCall} */ (toolCalls[i]).name))
+      category: toolCategories.get(resolveToolName(/** @type {ToolCall} */ (toolCalls[r.index]).name))
     }));
   }
 
@@ -275,21 +270,17 @@ class ToolExecutor {
   async _executeAllSequential(toolCalls, responseHandler, messageThread) {
     /** @type {ToolOutcome[]} */
     const results = [];
-    for (const toolCall of toolCalls) {
+    for (let i = 0; i < toolCalls.length; i++) {
+      const toolCall = /** @type {ToolCall} */ (toolCalls[i]);
       try {
         const resolvedName = resolveToolName(toolCall.name);
         const result = await this._executeSingleTool(toolCall, resolvedName, responseHandler, messageThread);
         results.push(result);
 
         if (result.resultStatus === 'cancelled') {
-          // Cancel remaining tools
-          for (let i = results.length; i < toolCalls.length; i++) {
-            results.push({
-              toolName: /** @type {ToolCall} */ (toolCalls[i]).name,
-              success: false,
-              resultStatus: /** @type {ResultStatus} */ ('cancelled'),
-              content: 'Cancelled: previous tool was cancelled'
-            });
+          // Synthesize cancelled outcomes for every tool after this one
+          for (let j = i + 1; j < toolCalls.length; j++) {
+            results.push(this._cancelledOutcome(/** @type {ToolCall} */ (toolCalls[j])));
           }
           break;
         }
@@ -298,6 +289,22 @@ class ToolExecutor {
       }
     }
     return results;
+  }
+
+  /**
+   * Build the synthetic "cancelled" outcome for a tool that never ran because an
+   * earlier tool in the same sequential batch was cancelled.
+   * @param {ToolCall} toolCall - The skipped tool call
+   * @returns {ToolOutcome} A cancelled outcome
+   * @private
+   */
+  _cancelledOutcome(toolCall) {
+    return {
+      toolName: toolCall.name,
+      success: false,
+      resultStatus: /** @type {ResultStatus} */ ('cancelled'),
+      content: 'Cancelled: previous tool was cancelled'
+    };
   }
 
   /**

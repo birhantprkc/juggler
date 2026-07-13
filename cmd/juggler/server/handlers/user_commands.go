@@ -141,7 +141,7 @@ func (api *UserCommandsAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		}
 		return commands[i].Name < commands[j].Name
 	})
-	writeJSON(w, r, 0, commands)
+	WriteJSON(w, r, 0, commands)
 }
 
 // HandlePut creates or overwrites a command file for {scope}/{name}. It
@@ -161,7 +161,7 @@ func (api *UserCommandsAPI) HandlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if fieldErrors := validateWriteRequest(name, req); len(fieldErrors) > 0 {
-		writeJSON(w, r, http.StatusBadRequest, map[string]any{"errors": fieldErrors})
+		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"errors": fieldErrors})
 		return
 	}
 
@@ -174,7 +174,7 @@ func (api *UserCommandsAPI) HandlePut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, fmt.Sprintf("could not write command: %v", err))
 		return
 	}
-	writeJSON(w, r, 0, UserCommand{
+	WriteJSON(w, r, 0, UserCommand{
 		Name:        name,
 		Scope:       scope,
 		Path:        path,
@@ -199,7 +199,7 @@ func (api *UserCommandsAPI) HandleDelete(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusInternalServerError, fmt.Sprintf("could not delete command: %v", err))
 		return
 	}
-	writeJSON(w, r, 0, map[string]bool{"deleted": true})
+	WriteJSON(w, r, 0, map[string]bool{"deleted": true})
 }
 
 // validateWriteRequest returns a field→message map of validation errors (empty

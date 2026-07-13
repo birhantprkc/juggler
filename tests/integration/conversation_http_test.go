@@ -37,7 +37,7 @@ func TestConversationHTTP_SaveAndLoadViaHTTP(t *testing.T) {
 	convID := "conv_http_test"
 
 	// Create HTTP API (nil workerManager + nil closer fine for this test - no deletions)
-	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil)
+	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 
 	// Create router
 	router := mux.NewRouter()
@@ -113,7 +113,7 @@ func TestConversationHTTP_LoadNonexistent(t *testing.T) {
 	helpers.AssertNoError(t, err)
 	defer manager.Shutdown()
 
-	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil)
+	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 	router := mux.NewRouter()
 	router.HandleFunc("/api/session/conversations/{convId}", sessionAPI.HandleGetConversation).Methods("GET")
 
@@ -144,7 +144,7 @@ func TestConversationHTTP_SaveOverwrite(t *testing.T) {
 
 	convID := "conv_overwrite"
 
-	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil)
+	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 	router := mux.NewRouter()
 	router.HandleFunc("/api/session/conversations/{convId}", sessionAPI.HandleGetConversation).Methods("GET")
 	router.HandleFunc("/api/session/conversations/{convId}", sessionAPI.HandleUpdateConversation).Methods("PUT")
@@ -202,7 +202,7 @@ func TestConversationHTTP_RejectJSONFormat(t *testing.T) {
 	helpers.AssertNoError(t, err)
 	defer manager.Shutdown()
 
-	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil)
+	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 	router := mux.NewRouter()
 	router.HandleFunc("/api/session/conversations/{convId}", sessionAPI.HandleUpdateConversation).Methods("PUT")
 

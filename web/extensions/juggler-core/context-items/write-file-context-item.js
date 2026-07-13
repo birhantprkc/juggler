@@ -66,7 +66,6 @@ class WriteFileContextItem extends EditBase {
 
   /**
    * Get tool definitions for Write action
-   * Returns two tools: Write (primary) and write (alias)
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */
   static getToolDefinitions() {

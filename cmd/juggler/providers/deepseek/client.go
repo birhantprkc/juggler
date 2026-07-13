@@ -5,8 +5,6 @@
 package deepseek
 
 import (
-	"strings"
-
 	"juggler/cmd/juggler/providers/openaibase"
 )
 
@@ -20,7 +18,7 @@ func Register() {
 		EnvVarName:         "DEEPSEEK_API_KEY",
 		APIKeyURL:          "https://platform.deepseek.com/api_keys",
 		DisplayProvider:    "DeepSeek",
-		Filter:             isDeepSeekChatModel,
+		Filter:             openaibase.PrefixModelFilter("deepseek-", "-embedding", "-vision", "-tts"),
 		ContextWindowCaps:  contextWindowCaps,
 		MaxOutputCaps:      maxOutputCaps,
 		UsageStatsOverride: usageStats,
@@ -30,18 +28,4 @@ func Register() {
 			IncludeFrequencyPenalty: true,
 		},
 	})
-}
-
-// isDeepSeekChatModel filters to DeepSeek chat models, excluding embedding/vision variants.
-func isDeepSeekChatModel(modelID string) bool {
-	id := strings.ToLower(modelID)
-	if !strings.HasPrefix(id, "deepseek-") {
-		return false
-	}
-	for _, suffix := range []string{"-embedding", "-vision", "-tts"} {
-		if strings.HasSuffix(id, suffix) {
-			return false
-		}
-	}
-	return true
 }

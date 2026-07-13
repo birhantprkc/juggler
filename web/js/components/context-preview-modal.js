@@ -66,7 +66,7 @@ class ContextPreviewModal extends HTMLElement {
 
     // Build context from messageThread
     const contextWindow = messageThread.conversation.contextWindow || 200000;
-    const builder = await ContextBuilder.fromMessageThread(messageThread, session, contextWindow);
+    const builder = new ContextBuilder({ messageThread, session, contextWindow });
 
     // Render text with sections for UI preview
     const { text, sections } = await builder.renderTextWithSections();

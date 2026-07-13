@@ -18,6 +18,7 @@ import { reloadRegistries } from '../registries/reload-registries.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { focusWhenShown } from '../utils/focus.js';
 
 /**
  * Set of built-in / extension command ids a user command may not shadow. User
@@ -195,7 +196,7 @@ export function openCommandEditor(options = {}) {
     updatePreview();
     updatePathHint();
     validateName();
-    setTimeout(() => nameInput.focus(), 50);
+    focusWhenShown(nameInput, { delay: 50 });
   });
 }
 

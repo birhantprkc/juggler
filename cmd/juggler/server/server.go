@@ -27,22 +27,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Timeout configuration for request processing.
-// These timeouts form a hierarchy: RequestTimeout > ToolExecutionTimeout > CallbackTimeout
-// Each inner operation must complete within its parent's timeout window.
+// Timeout configuration for background provider/model operations.
 const (
-	// RequestTimeout is the maximum time for a complete LLM request/response cycle.
-	// This includes multiple tool calls and LLM iterations.
-	RequestTimeout = 10 * time.Minute
-
-	// ToolExecutionTimeout is the maximum time to wait for a single tool execution.
-	// Must be less than RequestTimeout to allow cleanup.
-	ToolExecutionTimeout = 5 * time.Minute
-
-	// CallbackTimeout is the maximum time to wait for frontend callbacks
-	// (e.g., shouldContinue decisions). Uses a default if frontend doesn't respond.
-	CallbackTimeout = 30 * time.Second
-
 	// ProviderInitTimeout bounds a single upstream model-list call. Kept short
 	// so that a slow / hung upstream cannot accumulate live TLS connections
 	// across repeated UI-driven /api/providers requests.
@@ -171,7 +157,7 @@ type Server struct {
 
 	// updateChecker polls the remote version manifest (juggler.studio) and holds
 	// the latest "new version available" decision in memory. Created in New; its
-	// poll loop is started by StartWatchers (production only — skipped in test
+	// poll loop is started by StartBackgroundServices (production only — skipped in test
 	// mode so the suite never reaches the network). nil only before New finishes.
 	updateChecker *updatecheck.Checker
 
@@ -262,7 +248,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to create system prompt preset store: %w", err)
 	}
 
-	extensionsAPI := createExtensionsAPI(s, cfg.ProjectPath, cfg.AssetsFromDisk)
+	extensionsAPI := createExtensionsAPI(cfg.AssetsFromDisk)
 
 	staticVersion := generateStaticVersion()
 	recents, _ := core.NewRecentsStore()

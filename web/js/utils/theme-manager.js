@@ -7,7 +7,8 @@
  * Persists theme preference in localStorage
  */
 
-import { windowControlURL } from '../../sdk/lib/window-control.js';
+import { postWindowControl } from '../../sdk/lib/window-control.js';
+import { onDocumentReady } from './document-ready.js';
 
 const THEME_KEY = 'juggler-theme';
 const THEMES = {
@@ -71,9 +72,11 @@ function applyTheme(theme) {
   // paint and doesn't refresh it from CSS variable changes, so the strip
   // under the transparent macOS titlebar (rendered by the html canvas)
   // stays at the load-time colour. An inline style write bypasses that
-  // cache. Keep these in sync with --bg-primary in styles.css.
-  const bgPrimary = theme === 'light' ? '#fff' : '#0d1117';
-  document.documentElement.style.background = bgPrimary;
+  // cache. Read the value back from the just-applied theme's --bg-primary
+  // rather than hard-coding it, so this can't drift from styles.css.
+  const bgPrimary = getComputedStyle(document.documentElement)
+    .getPropertyValue('--bg-primary').trim();
+  if (bgPrimary) document.documentElement.style.background = bgPrimary;
   // Tell the Go side so it can repaint the NSWindow chrome (background,
   // opacity, titlebar appearance). Without this the NSWindow stays at its
   // load-time colour and a light page on a dark window flashes dark during
@@ -82,10 +85,7 @@ function applyTheme(theme) {
   // Only the desktop app that owns this native window can repaint it, via its
   // loopback nativeCtl endpoint. windowControlURL is null for a browser tab or
   // any page without a native host, so we skip the fetch.
-  const url = windowControlURL('theme', '?theme=' + encodeURIComponent(theme));
-  if (url) {
-    fetch(url, { method: 'POST' }).catch(() => { /* one-way; nothing to recover from */ });
-  }
+  postWindowControl('theme', '?theme=' + encodeURIComponent(theme));
 }
 
 /**
@@ -110,11 +110,5 @@ function initTheme() {
 }
 
 // Auto-initialize when module loads. Theming is a viewer affordance; the engine
-// worker has no document to theme, so skip the auto-init off the main thread.
-if (typeof document !== 'undefined') {
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initTheme);
-  } else {
-    initTheme();
-  }
-}
+// worker has no document to theme, so onDocumentReady skips off the main thread.
+onDocumentReady(initTheme);

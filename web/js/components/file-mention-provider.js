@@ -150,7 +150,7 @@ export const fileMentionProvider = {
  * @param {string} text
  * @returns {string[]} Unique candidate paths in order of first appearance
  */
-export function extractFileMentions(text) {
+function extractFileMentions(text) {
   const seen = new Set();
   const paths = [];
 

@@ -366,9 +366,10 @@ func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
 	w.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
 }
 
-// setPendingEntryThreadID records the threadItemId on a claimed entry so
-// advanceClaimedPendingEntry can find the thread Y.Map on the next scan.
-func (w *ConversationWorker) setPendingEntryThreadID(ownerThreadID, id, threadItemID string) {
+// updatePendingEntry locks the CRDT, resolves the pending entry by id, and runs
+// mutate inside a single transaction. It is a no-op if the entry no longer
+// exists (already GC'd).
+func (w *ConversationWorker) updatePendingEntry(ownerThreadID, id string, mutate func(ymap *ycrdt.YMap)) {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
 	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
@@ -376,62 +377,46 @@ func (w *ConversationWorker) setPendingEntryThreadID(ownerThreadID, id, threadIt
 		return
 	}
 	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
-		ymap.Set("threadItemId", threadItemID)
+		mutate(ymap)
 	}, w.doc.authorID)
+}
+
+// setPendingEntryThreadID records the threadItemId on a claimed entry so
+// advanceClaimedPendingEntry can find the thread Y.Map on the next scan.
+func (w *ConversationWorker) setPendingEntryThreadID(ownerThreadID, id, threadItemID string) {
+	w.updatePendingEntry(ownerThreadID, id, func(ymap *ycrdt.YMap) {
+		ymap.Set("threadItemId", threadItemID)
+	})
 }
 
 // setPendingEntryItemsBefore records the items length at dispatch time
 // for continue requests.
 func (w *ConversationWorker) setPendingEntryItemsBefore(ownerThreadID, id string, itemsBefore int) {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
-	if !ok {
-		return
-	}
-	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+	w.updatePendingEntry(ownerThreadID, id, func(ymap *ycrdt.YMap) {
 		ymap.Set("itemsBefore", ycrdt.Number(itemsBefore))
-	}, w.doc.authorID)
+	})
 }
 
 func (w *ConversationWorker) writePendingEntryError(ownerThreadID, id, errMsg string) {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
-	if !ok {
-		return
-	}
-	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+	w.updatePendingEntry(ownerThreadID, id, func(ymap *ycrdt.YMap) {
 		ymap.Set("error", errMsg)
 		ymap.Set("status", "error")
 		ymap.Set("completedAt", ycrdt.Number(time.Now().UnixMilli()))
-	}, w.doc.authorID)
+	})
 }
 
 func (w *ConversationWorker) writePendingEntryCancelled(ownerThreadID, id, errMsg string) {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
-	if !ok {
-		return
-	}
-	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+	w.updatePendingEntry(ownerThreadID, id, func(ymap *ycrdt.YMap) {
 		if errMsg != "" {
 			ymap.Set("error", errMsg)
 		}
 		ymap.Set("status", "cancelled")
 		ymap.Set("completedAt", ycrdt.Number(time.Now().UnixMilli()))
-	}, w.doc.authorID)
+	})
 }
 
 func (w *ConversationWorker) writePendingEntryCompletedThread(ownerThreadID, id, threadItemID, result string) {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	_, ymap, ok := w.pendingEntryByIDLocked(ownerThreadID, id)
-	if !ok {
-		return
-	}
-	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+	w.updatePendingEntry(ownerThreadID, id, func(ymap *ycrdt.YMap) {
 		resultMap := ycrdt.NewYMap(nil)
 		if threadItemID != "" {
 			resultMap.Set("threadItemId", threadItemID)
@@ -442,7 +427,7 @@ func (w *ConversationWorker) writePendingEntryCompletedThread(ownerThreadID, id,
 		ymap.Set("result", resultMap)
 		ymap.Set("status", "completed")
 		ymap.Set("completedAt", ycrdt.Number(time.Now().UnixMilli()))
-	}, w.doc.authorID)
+	})
 }
 
 // gcPendingEntry removes a terminal entry from the Y.Array. The index is

@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -111,41 +113,62 @@ type Client struct {
 	maxOutputTokens int
 }
 
-// EnhanceError adds helpful hints to common API errors
-func (c *Client) EnhanceError(err error) error {
+// enhanceError adds helpful, human-oriented hints to common API errors. It
+// prefers the typed *openai.Error fields (HTTP status, error code) and falls
+// back to substring checks for signals that non-OpenAI-compatible gateways
+// surface only in the raw message text.
+func (c *Client) enhanceError(err error) error {
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case http.StatusUnauthorized:
+			return fmt.Errorf("%w (hint: your API key may be invalid)", err)
+		case http.StatusTooManyRequests:
+			return fmt.Errorf("%w (hint: rate limit reached, please wait)", err)
+		}
+		if apiErr.Code == "insufficient_quota" {
+			return fmt.Errorf("%w (hint: your account may be out of credits)", err)
+		}
+	}
+
+	// Fallback: some providers report these signals only in the message text.
 	errMsg := err.Error()
-
-	// Check for authentication issues
-	if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "Unauthorized") {
+	switch {
+	case strings.Contains(errMsg, "401") || strings.Contains(errMsg, "Unauthorized"):
 		return fmt.Errorf("%w (hint: your API key may be invalid)", err)
-	}
-
-	// Check for rate limiting
-	if strings.Contains(errMsg, "429") || strings.Contains(errMsg, "Too Many Requests") {
+	case strings.Contains(errMsg, "429") || strings.Contains(errMsg, "Too Many Requests"):
 		return fmt.Errorf("%w (hint: rate limit reached, please wait)", err)
-	}
-
-	// Check for quota/billing issues
-	if strings.Contains(errMsg, "insufficient_quota") || strings.Contains(errMsg, "quota") ||
-		strings.Contains(errMsg, "Insufficient balance") || strings.Contains(errMsg, "no resource package") {
+	case strings.Contains(errMsg, "insufficient_quota") || strings.Contains(errMsg, "quota") ||
+		strings.Contains(errMsg, "Insufficient balance") || strings.Contains(errMsg, "no resource package"):
 		return fmt.Errorf("%w (hint: your account may be out of credits)", err)
-	}
-
-	// Check for model availability
-	if strings.Contains(errMsg, "model") && strings.Contains(errMsg, "does not exist") {
+	case strings.Contains(errMsg, "model") && strings.Contains(errMsg, "does not exist"):
 		return fmt.Errorf("%w (hint: the specified model may not be available)", err)
 	}
 
 	return err
 }
 
-// GetClient returns the underlying OpenAI SDK client
-func (c *Client) GetClient() *openai.Client {
-	return c.client
-}
-
 // ModelFilterFunc is a function that filters model IDs
 type ModelFilterFunc func(modelID string) bool
+
+// PrefixModelFilter builds a filter admitting models whose (lower-cased) id
+// begins with prefix, minus any ending in one of excludeSuffixes (e.g.
+// "-embedding", "-vision"). Shared by the prefix-scoped OpenAI-compatible
+// providers (zai, deepseek, …).
+func PrefixModelFilter(prefix string, excludeSuffixes ...string) ModelFilterFunc {
+	return func(modelID string) bool {
+		id := strings.ToLower(modelID)
+		if !strings.HasPrefix(id, prefix) {
+			return false
+		}
+		for _, suffix := range excludeSuffixes {
+			if strings.HasSuffix(id, suffix) {
+				return false
+			}
+		}
+		return true
+	}
+}
 
 // ContextWindowFunc returns context window and max output tokens for a model
 type ContextWindowFunc func(modelID string) (contextWindow int, maxOutputTokens int)
@@ -255,16 +278,18 @@ func NewClientFromProviderConfig(cfg provider.Config, baseURL string, quirks Qui
 	})
 }
 
-// GetModel returns the current model name
-func (c *Client) GetModel() string {
-	return c.model
-}
-
 // IsResponsesAPIModel returns true if the model requires the Responses API instead of Chat Completions.
 func IsResponsesAPIModel(model string) bool {
 	modelLower := strings.ToLower(model)
 	// Codex and GPT-5.6 model ids require the Responses API.
 	return strings.Contains(modelLower, "codex") || strings.HasPrefix(modelLower, "gpt-5.6")
+}
+
+// usesResponsesAPI reports whether this client's calls route through the
+// Responses API rather than Chat Completions — either because the model id
+// requires it or because the ForceResponsesAPI quirk is set.
+func (c *Client) usesResponsesAPI() bool {
+	return c.quirks.ForceResponsesAPI || IsResponsesAPIModel(c.model)
 }
 
 // convertToolsToResponsesAPI converts provider.ToolDefinition to Responses API tool format
@@ -297,7 +322,7 @@ func convertToolsToResponsesAPI(tools []provider.ToolDefinition) []responses.Too
 }
 
 // transformMessagesToResponsesInput converts unified Message[] to Responses API input format
-func transformMessagesToResponsesInput(messages []provider.Message, systemPrompt string) responses.ResponseNewParamsInputUnion {
+func transformMessagesToResponsesInput(messages []provider.Message) responses.ResponseNewParamsInputUnion {
 	var inputItems responses.ResponseInputParam
 
 	// System prompt is set separately on params; here we build input items
@@ -366,13 +391,6 @@ func transformMessagesToResponsesInput(messages []provider.Message, systemPrompt
 	}
 }
 
-// functionCallAccumulator tracks a function call being assembled from streaming chunks
-type functionCallAccumulator struct {
-	id   string
-	name string
-	args strings.Builder
-}
-
 // fallbackMaxOutputTokens caps generation when the client wasn't told the
 // model's real limit (Config.MaxOutputTokens == 0). A conservative
 // unset-default; real per-model caps come through the descriptor's
@@ -419,7 +437,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	// Build request params - Model is a string type
 	params := responses.ResponseNewParams{
 		Model: c.model,
-		Input: transformMessagesToResponsesInput(req.Messages, req.SystemPrompt),
+		Input: transformMessagesToResponsesInput(req.Messages),
 	}
 	if !c.quirks.ForceResponsesAPI {
 		params.Temperature = openai.Float(1.0)
@@ -487,7 +505,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	}
 
 	// Track function calls being assembled (keyed by item ID)
-	functionCalls := make(map[string]*functionCallAccumulator)
+	functionCalls := make(map[string]*toolCallAccumulator)
 
 	// Process the stream - events are ResponseStreamEventUnion
 	for stream.Next() {
@@ -501,7 +519,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			item := evt.AsResponseOutputItemAdded()
 			if item.Item.Type == "function_call" {
 				fc := item.Item.AsFunctionCall()
-				functionCalls[item.Item.ID] = &functionCallAccumulator{
+				functionCalls[item.Item.ID] = &toolCallAccumulator{
 					id:   fc.CallID,
 					name: fc.Name,
 				}
@@ -526,7 +544,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			// Function call arguments delta
 			delta := evt.AsResponseFunctionCallArgumentsDelta()
 			if fc, exists := functionCalls[delta.ItemID]; exists {
-				fc.args.WriteString(delta.Delta)
+				fc.argsBuilder.WriteString(delta.Delta)
 				progress.Add(delta.Delta)
 			}
 
@@ -565,7 +583,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	if err := stream.Err(); err != nil {
 		if idle.Fired() && ctx.Err() == nil {
-			return nil, fmt.Errorf("openai stream stalled: no data for %s — connection may have dropped", utils.StreamIdleTimeout)
+			return nil, utils.StallError("openai", utils.StreamIdleTimeout)
 		}
 		return nil, err // Don't enhance - let retry wrapper handle it
 	}
@@ -576,23 +594,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	// Stream tool_use blocks to frontend
 	for _, fc := range functionCalls {
-		var input map[string]any
-		argsStr := fc.args.String()
-		if argsStr == "" {
-			argsStr = "{}"
-		}
-		if err := json.Unmarshal([]byte(argsStr), &input); err != nil {
-			return nil, fmt.Errorf("LLM generated invalid JSON for tool %s (id: %s): %w\nRaw args: %s", fc.name, fc.id, err, argsStr)
-		}
-
-		block := provider.StreamChunk{
-			Type:      provider.ContentBlockTypeToolUse,
-			ToolUseID: fc.id,
-			ToolName:  fc.name,
-			ToolInput: input,
-		}
-
-		if _, err := callback(block); err != nil {
+		if err := emitToolCall(fc, callback); err != nil {
 			return nil, err
 		}
 	}
@@ -705,6 +707,29 @@ type toolCallAccumulator struct {
 	argsBuilder strings.Builder
 }
 
+// emitToolCall unmarshals one accumulator's streamed arguments and emits its
+// tool_use stream chunk. Empty arguments are treated as an empty object so a
+// no-argument tool call still emits (rather than failing JSON parsing).
+func emitToolCall(acc *toolCallAccumulator, callback provider.StructuredStreamCallback) error {
+	argsStr := acc.argsBuilder.String()
+	if argsStr == "" {
+		argsStr = "{}"
+	}
+	var input map[string]any
+	if err := json.Unmarshal([]byte(argsStr), &input); err != nil {
+		return fmt.Errorf("LLM generated invalid JSON for tool %s (id: %s): %w\nRaw args: %s", acc.name, acc.id, err, argsStr)
+	}
+	if _, err := callback(provider.StreamChunk{
+		Type:      provider.ContentBlockTypeToolUse,
+		ToolUseID: acc.id,
+		ToolName:  acc.name,
+		ToolInput: input,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
 // flushToolCalls emits a tool_use stream chunk for every accumulator, in
 // ascending index order. The map is keyed on the wire-side index, which OpenAI
 // itself streams as contiguous {0..N-1} but other openaibase-derived
@@ -718,19 +743,7 @@ func flushToolCalls(buffers map[int]*toolCallAccumulator, callback provider.Stru
 	sort.Ints(indices)
 
 	for _, idx := range indices {
-		acc := buffers[idx]
-		var input map[string]any
-		argsStr := acc.argsBuilder.String()
-		if err := json.Unmarshal([]byte(argsStr), &input); err != nil {
-			return fmt.Errorf("LLM generated invalid JSON for tool %s (id: %s): %w\nRaw args: %s", acc.name, acc.id, err, argsStr)
-		}
-		block := provider.StreamChunk{
-			Type:      provider.ContentBlockTypeToolUse,
-			ToolUseID: acc.id,
-			ToolName:  acc.name,
-			ToolInput: input,
-		}
-		if _, err := callback(block); err != nil {
+		if err := emitToolCall(buffers[idx], callback); err != nil {
 			return err
 		}
 	}
@@ -929,14 +942,14 @@ func (c *Client) streamMessage(ctx context.Context, req provider.MessageRequest,
 	var result *provider.StreamResult
 	var err error
 
-	if c.quirks.ForceResponsesAPI || IsResponsesAPIModel(c.model) {
+	if c.usesResponsesAPI() {
 		result, err = c.streamMessageResponses(ctx, req, callback)
 	} else {
 		result, err = c.streamMessageChatCompletions(ctx, req, callback)
 	}
 
 	if err != nil {
-		return nil, c.EnhanceError(err)
+		return nil, c.enhanceError(err)
 	}
 	return result, nil
 }
@@ -1093,7 +1106,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 
 	if err := stream.Err(); err != nil {
 		if idle.Fired() && ctx.Err() == nil {
-			return nil, fmt.Errorf("openai stream stalled: no data for %s — connection may have dropped", utils.StreamIdleTimeout)
+			return nil, utils.StallError("openai", utils.StreamIdleTimeout)
 		}
 		return nil, err // Don't enhance - let retry wrapper handle it
 	}

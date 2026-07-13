@@ -39,11 +39,12 @@ export async function fetchFileCompletions(query) {
   if (_currentController) {
     _currentController.abort();
   }
-  _currentController = new AbortController();
+  const controller = new AbortController();
+  _currentController = controller;
 
   try {
     const url = `/api/completions/files?q=${encodeURIComponent(query)}`;
-    const resp = await fetch(url, { signal: _currentController.signal });
+    const resp = await fetch(url, { signal: controller.signal });
     if (!resp.ok) return [];
     /** @type {{results: Array<{path: string}>}} */
     const data = await resp.json();
@@ -52,7 +53,9 @@ export async function fetchFileCompletions(query) {
     if (e instanceof Error && e.name === 'AbortError') return [];
     return [];
   } finally {
-    _currentController = null;
+    // Only clear the shared controller if a newer request hasn't replaced it —
+    // an unconditional null would clobber the in-flight successor's controller.
+    if (_currentController === controller) _currentController = null;
   }
 }
 

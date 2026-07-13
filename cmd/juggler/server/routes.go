@@ -34,7 +34,7 @@ import (
 
 // createExtensionsAPI constructs the unified manifest-driven ExtensionsAPI, the
 // single owner of extension discovery and the on-disk locations they live in.
-func createExtensionsAPI(s *Server, projectPath string, assetsFromDisk bool) *handlers.ExtensionsAPI {
+func createExtensionsAPI(assetsFromDisk bool) *handlers.ExtensionsAPI {
 	var builtinFS fs.FS
 	builtinDir := "" // disk path of web/ when serving assets from disk, so builtin extensions expose revealable files
 	if assetsFromDisk {
@@ -123,13 +123,7 @@ func (s *Server) wireWorkerManager() {
 
 	// Path resolution and binary persistence routed through the actor to keep
 	// rename ↔ save serialisation correct across project switches.
-	s.workerManager.SetPathProvider(func(convID string) (string, bool) {
-		sm := s.SessionManager()
-		if sm == nil {
-			return "", false
-		}
-		return sm.ConvDir(convID)
-	})
+	s.workerManager.SetPathProvider(s.convDir)
 	s.workerManager.SetSaveBinary(func(convID string, data []byte) error {
 		sm := s.SessionManager()
 		if sm == nil {
@@ -191,13 +185,7 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 		// is never marshaled by the cost estimator. A missing asset is logged
 		// and skipped (the part is dropped at transform time) rather than
 		// failing the whole turn.
-		assetStore := worker.NewAssetStore(func(convID string) (string, bool) {
-			sm := s.SessionManager()
-			if sm == nil {
-				return "", false
-			}
-			return sm.ConvDir(convID)
-		})
+		assetStore := worker.NewAssetStore(s.convDir)
 		for i := range req.Messages {
 			for j := range req.Messages[i].Parts {
 				part := &req.Messages[i].Parts[j]
@@ -881,9 +869,11 @@ func serveSandboxProjectFile(w http.ResponseWriter, r *http.Request, diskPath st
 		http.NotFound(w, r)
 		return
 	}
-	ct := "text/javascript; charset=utf-8"
-	if strings.EqualFold(path.Ext(diskPath), ".json") {
-		ct = "application/json; charset=utf-8"
+	// Reuse the shared web-asset MIME map, defaulting to JavaScript since
+	// sandbox project files are imported as ES modules.
+	ct := staticAssetContentType(diskPath)
+	if ct == "" {
+		ct = "text/javascript; charset=utf-8"
 	}
 	w.Header().Set("Content-Type", ct)
 	http.ServeContent(w, r, filepath.Base(diskPath), info.ModTime(), f)

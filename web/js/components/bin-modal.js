@@ -4,6 +4,7 @@
 
 import { formatRelativeDateTime } from '../utils/format.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { showAlert, showConfirm } from './modal-dialog.js';
 import JugglerElement from './juggler-element.js';
 
 /**
@@ -157,7 +158,7 @@ class BinModal extends JugglerElement {
       await this._session.restoreConversation(row.id);
     } catch (e) {
       console.error('[BinModal] restore failed:', e);
-      await /** @type {any} */ (window).showAlert(
+      await showAlert(
         `Failed to restore: ${/** @type {any} */ (e)?.message || e}`,
         'Restore failed'
       );
@@ -171,7 +172,7 @@ class BinModal extends JugglerElement {
    */
   async _onDelete(row) {
     if (!this._session) return;
-    const confirmed = await /** @type {any} */ (window).showConfirm(
+    const confirmed = await showConfirm(
       `Permanently delete "${row.name || 'Untitled'}"?\n\nThis cannot be undone.`,
       'Delete Conversation',
       { confirmText: 'Delete', cancelText: 'Cancel', danger: true }
@@ -181,7 +182,7 @@ class BinModal extends JugglerElement {
       await this._session.deleteBinnedConversation(row.id);
     } catch (e) {
       console.error('[BinModal] delete failed:', e);
-      await /** @type {any} */ (window).showAlert(
+      await showAlert(
         `Failed to delete: ${/** @type {any} */ (e)?.message || e}`,
         'Delete failed'
       );
@@ -195,7 +196,7 @@ class BinModal extends JugglerElement {
    */
   async _onEmptyBin() {
     if (!this._session) return;
-    const confirmed = await /** @type {any} */ (window).showConfirm(
+    const confirmed = await showConfirm(
       'Permanently delete every conversation in the bin?\n\nThis cannot be undone.',
       'Empty Bin',
       { confirmText: 'Empty Bin', cancelText: 'Cancel', danger: true }
@@ -205,7 +206,7 @@ class BinModal extends JugglerElement {
       await this._session.emptyBin();
     } catch (e) {
       console.error('[BinModal] empty bin failed:', e);
-      await /** @type {any} */ (window).showAlert(
+      await showAlert(
         `Failed to empty the bin: ${/** @type {any} */ (e)?.message || e}`,
         'Empty Bin failed'
       );

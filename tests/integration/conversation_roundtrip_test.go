@@ -53,7 +53,7 @@ func TestConversationRoundTrip(t *testing.T) {
 	helpers.AssertNoError(t, err)
 
 	// Create HTTP API (nil workerManager is fine for this test - no deletions)
-	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil)
+	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 
 	// Create router
 	router := mux.NewRouter()

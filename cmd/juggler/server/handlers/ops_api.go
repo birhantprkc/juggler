@@ -103,7 +103,7 @@ func (api *OpsAPI) routeOperation(ctx context.Context, toolID, operation string,
 
 // sendSuccess sends a success response
 func (api *OpsAPI) sendSuccess(w http.ResponseWriter, r *http.Request, data any) {
-	writeJSON(w, r, 0, OperationResponse{
+	WriteJSON(w, r, 0, OperationResponse{
 		Success: true,
 		Data:    data,
 	})
@@ -111,7 +111,7 @@ func (api *OpsAPI) sendSuccess(w http.ResponseWriter, r *http.Request, data any)
 
 // sendError sends an error response
 func (api *OpsAPI) sendError(w http.ResponseWriter, r *http.Request, message string, statusCode int) {
-	writeJSON(w, r, statusCode, OperationResponse{
+	WriteJSON(w, r, statusCode, OperationResponse{
 		Success: false,
 		Error:   message,
 	})
@@ -120,7 +120,7 @@ func (api *OpsAPI) sendError(w http.ResponseWriter, r *http.Request, message str
 // sendOperationError sends an operation error response (HTTP 200 with success=false)
 // Operation errors like "search string not found" are not server errors
 func (api *OpsAPI) sendOperationError(w http.ResponseWriter, r *http.Request, message string) {
-	writeJSON(w, r, http.StatusOK, OperationResponse{
+	WriteJSON(w, r, http.StatusOK, OperationResponse{
 		Success: false,
 		Error:   message,
 	})

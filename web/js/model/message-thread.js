@@ -40,6 +40,20 @@ import { normalizeDraft, normalizeAttachments, normalizeTextFiles } from '../uti
  * @typedef {import('../../sdk/lib/message.js').ToolActionResult} ToolActionResult
  */
 
+/**
+ * Filter out corrupt (non-Y.Map) entries from a raw items array, warning per drop.
+ * @param {Array<any>|null|undefined} raw - Raw entries from a Y.Array.toArray()
+ * @param {string} label - Noun for the warning ("item" / "pending item")
+ * @returns {Array<any>} Only the well-formed Y.Map entries
+ */
+function filterCorruptItems(raw, label) {
+  return /** @type {Array<any>} */ ((raw || []).filter((/** @type {any} */ item) => {
+    if (item && typeof item === 'object' && typeof item.get === 'function') return true;
+    console.warn(`[MessageThread] Skipping corrupt ${label} (not a Y.Map):`, item);
+    return false;
+  }));
+}
+
 export default class MessageThread {
   /**
    * @param {import('./conversation.js').default} conversation - Parent conversation
@@ -148,34 +162,22 @@ export default class MessageThread {
    * @returns {import('./conversation.js').ModelConfig|null} Resolved model config from thread chain
    */
   getEffectiveModelConfig() {
-    if (this.threadItemId) {
-      // Check this thread's own override
-      const raw = this.container.get('modelConfig');
-      if (raw) {
-        if (typeof raw.toJSON === 'function') return raw.toJSON();
-        return raw;
-      }
-      // Walk up to parent
-      const parentContainer = this.conversation.findParentContainer(this.threadItemId);
-      if (parentContainer) {
-        // Parent is another thread — check its modelConfig
-        const parentRaw = parentContainer.get('modelConfig');
-        if (parentRaw) {
-          if (typeof parentRaw.toJSON === 'function') return parentRaw.toJSON();
-          return parentRaw;
-        }
-        // Continue walking up: create a temporary resolution for parent
-        const parentId = parentContainer.get('itemId');
-        if (parentId) {
-          const parentThread = new MessageThread(this.conversation, parentContainer, parentId);
-          return parentThread.getEffectiveModelConfig();
-        }
-      }
-      // Fell through to root — use conversation metadata
+    // Walk parent containers iteratively — never construct a MessageThread for
+    // ancestors (mirrors getEffectiveStrategyId; keeps hot paths allocation-
+    // light). A Y.Map override is unwrapped via toJSON(); a plain object passes
+    // through.
+    let container = this.threadItemId ? this.container : null;
+    let itemId = this.threadItemId;
+    while (container && itemId) {
+      const raw = container.get('modelConfig');
+      if (raw) return typeof raw.toJSON === 'function' ? raw.toJSON() : raw;
+      const parent = this.conversation.findParentContainer(itemId);
+      if (!parent) break; // parent is the root — fall through to metadata
+      container = parent;
+      itemId = parent.get('itemId');
     }
     // Root level — conversation-level DEFAULT (`defaultModelConfig`).
-    const meta = this.conversation._doc.metadata;
-    const config = meta.get('defaultModelConfig');
+    const config = this.conversation._doc.metadata.get('defaultModelConfig');
     return config !== undefined ? config : null;
   }
 
@@ -287,12 +289,7 @@ export default class MessageThread {
   get items() {
     const arr = this.yarray;
     if (!arr) return [];
-    const raw = arr.toArray() || [];
-    return /** @type {Array<any>} */ (raw.filter((/** @type {any} */ item) => {
-      if (item && typeof item === 'object' && typeof item.get === 'function') return true;
-      console.warn('[MessageThread] Skipping corrupt item (not a Y.Map):', item);
-      return false;
-    }));
+    return filterCorruptItems(arr.toArray(), 'item');
   }
 
   /** @returns {number} Item count */
@@ -312,12 +309,7 @@ export default class MessageThread {
   get pendingItems() {
     const arr = this.container.get('pendingItems');
     if (!arr) return [];
-    const raw = arr.toArray() || [];
-    return /** @type {Array<any>} */ (raw.filter((/** @type {any} */ item) => {
-      if (item && typeof item === 'object' && typeof item.get === 'function') return true;
-      console.warn('[MessageThread] Skipping corrupt pending item (not a Y.Map):', item);
-      return false;
-    }));
+    return filterCorruptItems(arr.toArray(), 'pending item');
   }
 
   /**
@@ -358,15 +350,6 @@ export default class MessageThread {
     return /** @type {ToolActionMessage|undefined} */ (
       this.items.find(m => isToolActionMessage(/** @type {Message} */ (m)) && m.get('toolUseId') === toolUseId)
     );
-  }
-
-  /**
-   * Get tool message by ID (alias for getToolAction).
-   * @param {string} toolUseId - Tool use ID to find
-   * @returns {ToolActionMessage|undefined} The message, or undefined
-   */
-  getToolMessage(toolUseId) {
-    return this.getToolAction(toolUseId);
   }
 
   /**
@@ -754,21 +737,14 @@ export default class MessageThread {
   }
 
   /**
-   * Insert a plain object item at a specific index (converts to Y.Map)
+   * Insert a plain object item at a specific index (converts to Y.Map).
+   * Routes through `_ensureItemId` so the item is always addressable/selectable.
    * @param {number} index - Index to insert at
    * @param {any} item - Plain object item
    */
   insertItem(index, item) {
+    this._ensureItemId(item);
     this.insertAt(index, plainToYMap(item));
-  }
-
-  /**
-   * Update message content at a specific index
-   * @param {number} index - Index of message to update
-   * @param {string} content - New content
-   */
-  updateMessageContent(index, content) {
-    this.updateItemField(index, 'content', content);
   }
 
   // ── Tool-action lifecycle ────────────────────────────────────────────
@@ -1509,11 +1485,10 @@ export default class MessageThread {
 
 /**
  * Create a message thread for a column.
- * When called with no container/threadItemId, returns the conversation's root MessageThread
- * (so all root contexts share the same instance).
+ * Both `container` and `threadItemId` are required; passing either as falsy throws.
  * @param {import('./conversation.js').default} conversation
- * @param {*} [container] - Y.Map container (defaults to conversation._doc.root)
- * @param {string|null} [threadItemId] - Thread item ID
+ * @param {*} container - Y.Map container for the thread
+ * @param {string} threadItemId - Thread item ID
  * @returns {MessageThread} Column-scoped message thread
  */
 export function createMessageThread(conversation, container, threadItemId) {

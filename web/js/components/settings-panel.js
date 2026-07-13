@@ -10,8 +10,8 @@
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
 import { modelLabel, modelLabelFromList } from '../model/model-display.js';
+import { formatBytes, formatTimeAgo } from '../utils/format.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
-import { wireExternalLinks } from '../utils/external-links.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import wsService from '../services/websocket.js';
@@ -49,24 +49,7 @@ const LOGS_POLL_MS = 2000;
  */
 const LOGS_VIEWER_MAX_CHARS = 512 * 1024;
 
-/**
- * Format a byte count as a short human-readable size for the log picker
- * (e.g. "0 B", "9.4 KB", "12 MB"). Values below 10 keep one decimal.
- * @param {number} bytes
- * @returns {string} The formatted size, or '' for invalid input.
- */
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) return '';
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let val = bytes / 1024;
-  let i = 0;
-  while (val >= 1024 && i < units.length - 1) {
-    val /= 1024;
-    i++;
-  }
-  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
-}
+
 
 /**
  * One WAN tunnel mode this server's build registered, as reported by
@@ -131,23 +114,6 @@ function clientDeviceLabel(ua) {
   else if (/Firefox\//.test(ua)) br = 'Firefox';
   else if (/Safari\//.test(ua)) br = 'Safari';
   return [br, os].filter(Boolean).join(' · ');
-}
-
-/**
- * Short relative "connected N ago" string from a unix-ms timestamp.
- * @param {number} ms
- * @returns {string} A short "N min ago"-style string, or '' for a falsy input.
- */
-function clientConnectedAgo(ms) {
-  if (!ms) return '';
-  const diff = Date.now() - ms;
-  if (diff < 45000) return 'just now';
-  const mins = Math.round(diff / 60000);
-  if (mins < 60) return `${mins} min ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs} hr${hrs === 1 ? '' : 's'} ago`;
-  const days = Math.round(hrs / 24);
-  return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
 /**
@@ -440,7 +406,7 @@ class SettingsPanel extends HTMLElement {
                         <button class="settings-tab active" data-tab="providers">Provider API Keys</button>
                         <button class="settings-tab" data-tab="default-model">Default model</button>
                         <button class="settings-tab" data-tab="connectivity">Connectivity</button>
-                        <button class="settings-tab" data-tab="context-items">Extensions</button>
+                        <button class="settings-tab" data-tab="extensions">Extensions</button>
                         <button class="settings-tab" data-tab="mcp">MCP servers</button>
                         <button class="settings-tab" data-tab="notifications">Notifications</button>
                         <button class="settings-tab" data-tab="info-cards">Info cards</button>
@@ -481,8 +447,8 @@ class SettingsPanel extends HTMLElement {
                         </div>
                     </section>
 
-                    <section class="settings-tab-content" id="tab-context-items">
-                        <plugin-catalog></plugin-catalog>
+                     <section class="settings-tab-content" id="tab-extensions">
+                         <plugin-catalog></plugin-catalog>
                     </section>
 
                     <section class="settings-tab-content" id="tab-mcp">
@@ -624,6 +590,11 @@ class SettingsPanel extends HTMLElement {
    */
   switchTab(tabName) {
     if (!tabName) return;
+
+    // Back-compat: the Extensions tab was historically the "context-items" tab
+    // (it hosts <plugin-catalog>). Accept the old id so any saved/deep-linked
+    // caller still lands on the right tab.
+    if (tabName === 'context-items') tabName = 'extensions';
 
     this.currentTab = tabName;
 
@@ -971,8 +942,6 @@ class SettingsPanel extends HTMLElement {
       keyLink.rel = 'noopener noreferrer';
       keyLink.className = 'get-api-key-link';
       keyLink.textContent = 'Get API Key \u2192';
-      // Route through the loopback opener (see wireExternalLinks).
-      wireExternalLinks(keyLink);
       infoColumn.appendChild(keyLink);
     }
 
@@ -2042,7 +2011,7 @@ class SettingsPanel extends HTMLElement {
         li.appendChild(originEl);
 
         // Device + connected-since, muted. Either may be absent.
-        const parts = [clientDeviceLabel(c.userAgent), clientConnectedAgo(c.connectedAt)].filter(Boolean);
+        const parts = [clientDeviceLabel(c.userAgent), formatTimeAgo(c.connectedAt)].filter(Boolean);
         if (parts.length) {
           const meta = document.createElement('span');
           meta.className = 'connectivity-client-meta';
@@ -2293,7 +2262,6 @@ class SettingsPanel extends HTMLElement {
         link.rel = 'noopener noreferrer';
         link.className = 'connectivity-url';
         link.textContent = part;
-        wireExternalLinks(link);
         hint.appendChild(link);
       } else if (part) {
         hint.appendChild(document.createTextNode(part));
@@ -2361,7 +2329,6 @@ class SettingsPanel extends HTMLElement {
     urlLink.rel = 'noopener noreferrer';
     urlLink.className = 'connectivity-url';
     urlLink.textContent = url;
-    wireExternalLinks(urlLink);
     const qrHost = document.createElement('div');
     qrHost.className = 'connectivity-qr';
     qrHost.setAttribute('role', 'img');

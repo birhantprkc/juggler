@@ -6,10 +6,22 @@ import { windowControlURL } from '../../sdk/lib/window-control.js';
 import { getTheme } from '../utils/theme-manager.js';
 
 /**
+ * The full session payload returned by GET /api/session. Mirrors the shape
+ * Session._doLoad consumes — id/projectPath/platform/home/providerInfo/
+ * conversationOrder/activeConversationId/messageHistory/metadata — so the
+ * concrete APIService is assignable to the Session constructor's structural
+ * ApiService type (they share this getSession return).
  * @typedef {object} SessionContext
- * @property {ContextItemData[]} contextItems - Array of context item data objects
- * @property {Message[]} messages - Array of conversation messages
+ * @property {string} id - Session ID
  * @property {string} projectPath - Project root directory path
+ * @property {string} [platform] - Platform (darwin/linux/windows)
+ * @property {string} [home] - Backend user-home directory (e.g. /Users/jules)
+ * @property {object[]} [conversations] - Conversations JSON (legacy v4 format with embedded data)
+ * @property {string[]} [conversationOrder] - Conversation IDs in order (v4 binary storage)
+ * @property {string} activeConversationId - Active conversation ID
+ * @property {{provider: string, model: string, contextWindow: number}} providerInfo - Provider information
+ * @property {string[]} [messageHistory] - Session-level message history for input navigation
+ * @property {Record<string, any>} [metadata] - General-purpose key-value store for frontend flags
  */
 
 /**

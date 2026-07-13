@@ -39,6 +39,33 @@ export function windowControlURL(endpoint, query = '') {
 }
 
 /**
+ * POST to a native window-control endpoint — best-effort, one-way, fire-and-
+ * forget. A no-op when this page has no native host to control (a browser tab,
+ * where windowControlURL returns null). Failures are swallowed: these signals
+ * drive the native window and have nothing to recover from.
+ * @param {string} endpoint - 'theme' | 'title' | 'attention' | 'open' | ...
+ * @param {string} [query] - optional query string including the leading '?'
+ * @returns {void}
+ */
+export function postWindowControl(endpoint, query = '') {
+  const url = windowControlURL(endpoint, query);
+  if (url) void fetch(url, { method: 'POST' }).catch(() => {});
+}
+
+/**
+ * Whether this page is hosted in a native desktop-app window (window-mode) as
+ * opposed to a plain browser tab. Reads the `windowMode` document flag the host
+ * bakes onto <html>, which drives the browser-tab vs desktop-window UX split
+ * (title reporting, dock-bounce vs tab-title badge). Distinct from
+ * {@link hasNativeHost}, which reports whether a control endpoint exists.
+ * @returns {boolean} True when running as a native desktop-app window.
+ */
+export function isDesktopWindow() {
+  return typeof document !== 'undefined'
+    && document.documentElement.dataset.windowMode === '1';
+}
+
+/**
  * Whether this page is hosted in a native desktop-app window (as opposed to a
  * plain browser tab). Used to gate native-only affordances like the folder
  * picker's "Browse…" button.
