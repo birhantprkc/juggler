@@ -907,6 +907,31 @@ class Session {
 
       const data = await this._apiService.getSession();
 
+      // Populate session-level state BEFORE initialising the worker manager and
+      // registering approval callbacks. Session-scoped permission rules
+      // (sessionPermissionRules in metadata) and the project root (projectPath)
+      // are read by isPermitted → getRulesFor → getSessionRules the moment the
+      // engine can receive approval requests from workers. If these fields are
+      // still at their constructor defaults ({}/undefined) when the first
+      // evaluate-tool arrives, every session-scoped auto-approve rule is
+      // invisible — the command is wrongly flagged for approval, and the
+      // suggestion engine offers to add the very rule the user already has.
+      if (data.projectPath) {
+        this.projectPath = data.projectPath;
+      }
+      if (data.platform) {
+        this.platform = data.platform;
+      }
+      if (data.home) {
+        this.home = data.home;
+      }
+      if (data.messageHistory) {
+        this.messageHistory = data.messageHistory;
+      } else {
+        this.messageHistory = [];
+      }
+      this.metadata = data.metadata || {};
+
       // Initialize worker manager with session config (Pass session for conversation access)
       if (!this._workerManagerInitialized) {
         workerManager.init({
@@ -1016,27 +1041,6 @@ class Session {
       // silently discards; worse, createConversation awaits a worker Yjs sync,
       // so a flaky/absent worker connection would hang the whole load and
       // strand the UI with no picker and nowhere to type.
-
-      // Update project path and platform
-      if (data.projectPath) {
-        this.projectPath = data.projectPath;
-      }
-      if (data.platform) {
-        this.platform = data.platform;
-      }
-      if (data.home) {
-        this.home = data.home;
-      }
-
-      // Update message history
-      if (data.messageHistory) {
-        this.messageHistory = data.messageHistory;
-      } else {
-        this.messageHistory = [];
-      }
-
-      // Update metadata
-      this.metadata = data.metadata || {};
 
       // Refresh all context items to get fresh content (data from storage is stale)
       this._refreshAllContextItems();
