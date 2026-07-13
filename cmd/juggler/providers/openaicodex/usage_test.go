@@ -61,6 +61,26 @@ func TestBuildUsageStatsParsesWindows(t *testing.T) {
 	assertStat(4, "Code Review", "code_review", 2, 6000, 0)
 }
 
+func TestBuildUsageStatsPrimaryWeeklyWindow(t *testing.T) {
+	stats := buildUsageStats(usageResponse{
+		RateLimit: usageRateLimit{
+			PrimaryWindow: usageWindow{
+				UsedPercent:        floatPtr(2),
+				ResetAt:            7000,
+				LimitWindowSeconds: 7 * 24 * 60 * 60,
+			},
+		},
+	}, time.Unix(0, 0))
+
+	if len(stats.Stats) != 1 {
+		t.Fatalf("got %d stats, want 1: %+v", len(stats.Stats), stats.Stats)
+	}
+	stat := stats.Stats[0]
+	if stat.Name != "Week (7d)" || stat.WindowSecs != 7*24*60*60 || stat.ResetsAt == nil || stat.ResetsAt.Unix() != 7000 {
+		t.Fatalf("unexpected stat: %+v", stat)
+	}
+}
+
 func TestBuildUsageStatsSkipsAbsentWindows(t *testing.T) {
 	stats := buildUsageStats(usageResponse{
 		RateLimit: usageRateLimit{

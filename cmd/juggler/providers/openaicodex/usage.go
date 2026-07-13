@@ -101,15 +101,52 @@ func buildUsageStats(parsed usageResponse, now time.Time) provider.UsageStats {
 		stats.Stats = append(stats.Stats, stat)
 	}
 
-	addWindow("Session (5h)", "primary", parsed.RateLimit.PrimaryWindow)
-	addWindow("Week (7d)", "weekly", parsed.RateLimit.SecondaryWindow)
+	addWindow(windowName(parsed.RateLimit.PrimaryWindow, "Session (5h)"), "primary", parsed.RateLimit.PrimaryWindow)
+	addWindow(windowName(parsed.RateLimit.SecondaryWindow, "Week (7d)"), "weekly", parsed.RateLimit.SecondaryWindow)
 	for _, item := range parsed.AdditionalRateLimit {
 		if item.LimitName == "" {
 			continue
 		}
-		addWindow(item.LimitName+" (5h)", "model", item.RateLimit.PrimaryWindow)
-		addWindow(item.LimitName+" (7d)", "model", item.RateLimit.SecondaryWindow)
+		addWindow(item.LimitName+windowSuffix(item.RateLimit.PrimaryWindow, "5h"), "model", item.RateLimit.PrimaryWindow)
+		addWindow(item.LimitName+windowSuffix(item.RateLimit.SecondaryWindow, "7d"), "model", item.RateLimit.SecondaryWindow)
 	}
 	addWindow("Code Review", "code_review", parsed.CodeReviewRateLimit.PrimaryWindow)
 	return stats
+}
+
+func windowName(w usageWindow, fallback string) string {
+	switch windowDuration(w) {
+	case "":
+		return fallback
+	case "5h":
+		return "Session (5h)"
+	case "7d":
+		return "Week (7d)"
+	default:
+		return "Window (" + windowDuration(w) + ")"
+	}
+}
+
+func windowSuffix(w usageWindow, fallback string) string {
+	if duration := windowDuration(w); duration != "" {
+		return " (" + duration + ")"
+	}
+	return " (" + fallback + ")"
+}
+
+func windowDuration(w usageWindow) string {
+	const (
+		hour = 60 * 60
+		day  = 24 * hour
+	)
+	switch {
+	case w.LimitWindowSeconds <= 0:
+		return ""
+	case w.LimitWindowSeconds%day == 0:
+		return fmt.Sprintf("%dd", w.LimitWindowSeconds/day)
+	case w.LimitWindowSeconds%hour == 0:
+		return fmt.Sprintf("%dh", w.LimitWindowSeconds/hour)
+	default:
+		return fmt.Sprintf("%dm", w.LimitWindowSeconds/60)
+	}
 }
