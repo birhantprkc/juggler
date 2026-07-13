@@ -396,6 +396,15 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("invalid new_str parameter: %w", err)
 	}
 
+	// Reject a no-op edit: old_str and new_str are identical, so the replace
+	// would rewrite the file with unchanged content and report success — a
+	// silent no-op that hides a mistake from the model (e.g. it copied the
+	// wrong block, or forgot to adjust new_str after editing old_str).
+	// Surfaces this as an error so the model can self-correct.
+	if oldStr == newStr {
+		return nil, fmt.Errorf("old_str and new_str are identical, this edit is a no-op")
+	}
+
 	// Optional: dryRun mode - validate everything but don't write
 	dryRun, _ := params["dryRun"].(bool)
 

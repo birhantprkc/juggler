@@ -83,6 +83,45 @@ func TestWriteFilePreservesMode(t *testing.T) {
 	})
 }
 
+// TestEditFileRejectsIdenticalOldNewStr asserts that an edit where old_str and
+// new_str are identical is rejected as an error rather than silently rewriting
+// the file with unchanged content and reporting success. The check fires before
+// dryRun too, so the JS approval plugin's validate() rejects it before an
+// approval modal is ever shown.
+func TestEditFileRejectsIdenticalOldNewStr(t *testing.T) {
+	dir := t.TempDir()
+	ops := NewFileOperations(NewPathScope(dir, nil))
+
+	const name = "file.txt"
+	abs := filepath.Join(dir, name)
+	seed := "line one\nline two\nline three\n"
+	if err := os.WriteFile(abs, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Same content under both the normal and dryRun paths.
+	for _, dryRun := range []bool{false, true} {
+		_, err := ops.Execute(context.Background(), "editFile", map[string]any{
+			"path":    name,
+			"old_str": "line two",
+			"new_str": "line two",
+			"dryRun":  dryRun,
+		})
+		if err == nil {
+			t.Fatalf("dryRun=%v: expected editFile with identical old_str/new_str to fail, got nil", dryRun)
+		}
+	}
+
+	// The file must be untouched (the non-dryRun call must not have written).
+	got, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != seed {
+		t.Fatalf("file mutated despite rejected edit: %q", string(got))
+	}
+}
+
 // TestWriteEditFailOnReadOnlyDir asserts that an OS-level write failure (EACCES
 // from a read-only parent directory) is surfaced as a non-nil error from both
 // writeFile and editFile, rather than silently swallowed — and that a failed
