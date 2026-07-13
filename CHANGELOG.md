@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-13
+
 - Assistant replies now support Markdown, HTML, and mixed Markdown/HTML content, including declarative inline SVG
 - Added a /handoff command which summarises the current conversation into a new tab
 - Added auto-update for Windows
