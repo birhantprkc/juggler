@@ -32,11 +32,12 @@ const serverStartTimeout = 20 * time.Second
 // owns stopping it); a reused server returns nil.
 func discoverOrSpawnServer(project string) (string, *exec.Cmd, error) {
 	if abs := expandProject(project); abs != "" {
-		if locked, info, _ := core.CheckProjectLocked(abs); locked && info != nil {
+		if locked, info, _ := core.CheckProjectLocked(abs); locked {
 			if ok, _ := core.VerifyInstance(info, abs); ok {
 				logf("reusing running server for %s at %s:%d", abs, info.Host, info.Port)
 				return net.JoinHostPort(info.Host, strconv.Itoa(info.Port)), nil, nil
 			}
+			return "", nil, newLockedProjectError(abs, info)
 		}
 	}
 	logf("spawning new server for project=%q", project)

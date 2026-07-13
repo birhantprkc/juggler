@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	"html"
 	"log/slog"
 	"net/url"
 	"os"
@@ -231,6 +232,11 @@ func (a *appState) run(specs []windowSpec) error {
 	for i, s := range specs {
 		serverURL, proc, err := s.resolve()
 		if err != nil {
+			if locked, ok := err.(*lockedProjectError); ok {
+				initial = a.buildLockedProjectWindow(s, locked.message(), "")
+				rest = specs[i+1:]
+				break
+			}
 			logf("restore: skipping %+v: %v", s.entry(), err)
 			continue
 		}
@@ -410,6 +416,14 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme string) {
 	go func() {
 		serverURL, proc, err := spec.resolve()
 		if err != nil {
+			if locked, ok := err.(*lockedProjectError); ok {
+				application.InvokeAsync(func() {
+					e := a.buildLockedProjectWindow(spec, locked.message(), inheritedTheme)
+					a.showWindow(e)
+					go a.warnIfWindowNeverVisible(e, "opened locked project")
+				})
+				return
+			}
 			logf("open window failed to resolve %+v: %v", spec, err)
 			return
 		}
@@ -551,6 +565,45 @@ func (a *appState) setWindowProject(e *winEntry, project string) {
 	if changed {
 		a.persistWorkspace()
 	}
+}
+
+// buildLockedProjectWindow opens an empty native window containing a clear
+// recovery explanation when an OS-level project lock cannot be verified. It has
+// no server or spawned process, so closing it cannot affect another session.
+func (a *appState) buildLockedProjectWindow(spec windowSpec, message, inheritedTheme string) *winEntry {
+	id := <-a.ids
+	startupTheme := normaliseTheme(inheritedTheme)
+	if startupTheme == "" {
+		a.reg(func(st *regState) { startupTheme = st.lastTheme })
+	}
+	bgTheme := startupTheme
+	if bgTheme == "" {
+		bgTheme = "dark"
+	}
+	page := "data:text/html;charset=utf-8," + url.QueryEscape(`<!doctype html><meta charset="utf-8"><title>Project locked</title><style>body{margin:0;padding:48px;background:#0d1117;color:#e6edf3;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}main{max-width:720px;margin:auto}h1{margin-top:0}pre{white-space:pre-wrap;font:inherit}</style><main><h1>Project locked</h1><pre>`+html.EscapeString(message)+`</pre></main>`)
+	win := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:            "Project locked — Juggler",
+		URL:              page,
+		Width:            defaultWindowWidth,
+		Height:           defaultWindowHeight,
+		MinWidth:         minWindowWidth,
+		MinHeight:        minWindowHeight,
+		InitialPosition:  application.WindowCentered,
+		Hidden:           platformWindowHidden,
+		Frameless:        platformFrameless,
+		BackgroundColour: themeColours[bgTheme],
+		Mac:              application.MacWindow{TitleBar: application.MacTitleBar{AppearsTransparent: true, HideTitle: true, HideToolbarSeparator: true, FullSizeContent: true}},
+		Linux:            application.LinuxWindow{WebviewGpuPolicy: application.WebviewGpuPolicyNever},
+		Windows:          application.WindowsWindow{DisableFramelessWindowDecorations: false},
+	})
+	if win == nil {
+		fatalf("Window.NewWithOptions returned nil for locked project %s", id)
+	}
+	e := &winEntry{id: id, win: win, spec: spec, currentTheme: startupTheme, saveCh: make(chan struct{}, 1), stopSave: make(chan struct{})}
+	a.reg(func(st *regState) { st.windows[id] = e })
+	a.persistWorkspace()
+	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) { a.handleWindowClosed(e) })
+	return e
 }
 
 // buildWindow constructs a WebviewWindow viewing serverURL and registers it,

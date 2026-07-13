@@ -253,7 +253,14 @@ func VerifyInstance(info *InstanceInfo, expectedProjectPath string) (bool, error
 		return false, nil
 	}
 
-	// Verify it's the same project
+	// Verify this is precisely the process that wrote instance.json. A reused
+	// PID or another Juggler server on the recorded port must never be treated as
+	// the lock holder for this project.
+	if health.PID != info.PID {
+		return false, nil
+	}
+
+	// Verify it's the same project.
 	if health.ProjectPath != expectedProjectPath {
 		return false, nil
 	}

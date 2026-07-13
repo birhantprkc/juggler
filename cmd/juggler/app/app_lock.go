@@ -27,6 +27,14 @@ func (a *App) acquireInstance() error {
 	}
 	lock := core.NewInstanceLock(a.projectPath)
 	a.lock = lock
+	// The server normally takes ownership and releases this lock during Shutdown.
+	// Register a startup-failure backstop now: any later phase can fail before the
+	// server exists, and its cleanup must not leave the lock held by this process.
+	a.pushCleanup(func() {
+		if a.lock != nil {
+			_ = a.lock.Release()
+		}
+	})
 
 	res, err := lock.TryAcquire(a.cfg.Server.Port, a.cfg.Server.Host)
 	if err != nil {
@@ -48,8 +56,9 @@ func (a *App) acquireInstance() error {
 	}
 
 	// Lock ownership transfers to the server (via Config.BootLock) so that
-	// runtime project switches can release it before acquiring a new one; the
-	// server owns its release, so no cleanup is registered here.
+	// runtime project switches can release it before acquiring a new one. The
+	// cleanup registered above remains an idempotent backstop for startup errors
+	// and abnormal paths which bypass server construction.
 	return nil
 }
 
