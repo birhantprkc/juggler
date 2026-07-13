@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Assistant replies now support Markdown, HTML, and mixed Markdown/HTML content, including declarative inline SVG
 - Added a /handoff command which summarises the current conversation into a new tab
 - Added auto-update for Windows
 

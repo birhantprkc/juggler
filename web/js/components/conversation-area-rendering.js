@@ -38,7 +38,7 @@ import {
 } from '../../sdk/lib/message.js';
 import { wrapWithIcon } from '../utils/icon-message-renderer.js';
 import { normalizeAttachments } from '../utils/attachments.js';
-import { renderMarkdownWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
+import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
 import { stripLLMTags } from '../utils/content-utils.js';
 import { createCopyButton } from '../../sdk/lib/copy-button.js';
 
@@ -333,7 +333,7 @@ export function ensureThreadResult(area, messageList, footer) {
       existing.dataset.result = text;
       const body = /** @type {HTMLElement|null} */ (existing.querySelector('.thread-result-body'));
       if (body) {
-        body.innerHTML = renderMarkdownWrapped(stripLLMTags(text), { escapeXml: true });
+        body.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
         decorateCodeBlocks(body);
       }
     }
@@ -437,7 +437,7 @@ export function ensureThreadResult(area, messageList, footer) {
 
   const body = document.createElement('div');
   body.className = 'thread-result-body markdown';
-  body.innerHTML = renderMarkdownWrapped(stripLLMTags(text), { escapeXml: true });
+  body.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
   decorateCodeBlocks(body);
   content.appendChild(header);
   content.appendChild(body);

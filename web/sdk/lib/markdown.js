@@ -150,10 +150,10 @@ function externalizeLinks(html) {
  * checkboxes; its attributes are still filtered against ALLOWED_ATTRS.
  */
 const ALLOWED_TAGS = new Set([
-  'a', 'abbr', 'b', 'blockquote', 'br', 'code', 'del', 'div', 'em',
-  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'input', 'kbd',
-  'li', 'ol', 'p', 'pre', 's', 'span', 'strong', 'sub', 'sup',
-  'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
+  'a', 'abbr', 'b', 'blockquote', 'br', 'circle', 'code', 'defs', 'del', 'div', 'ellipse', 'em', 'g',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'input', 'kbd', 'line', 'lineargradient', 'li',
+  'ol', 'p', 'path', 'polygon', 'pre', 'radialgradient', 'rect', 's', 'small', 'span', 'stop', 'strong',
+  'sub', 'sup', 'svg', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
 ]);
 
 /**
@@ -165,6 +165,13 @@ const ALLOWED_TAGS = new Set([
 const ALLOWED_ATTRS = new Set([
   'href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel', 'type',
   'checked', 'disabled', 'align', 'colspan', 'rowspan', 'start', 'width', 'height',
+  // Declarative SVG geometry and paint attributes. We intentionally exclude
+  // `style`, `href`/`xlink:href` for SVG elements, `foreignObject`, animation,
+  // filters, and every event-handler attribute.
+  'viewbox', 'xmlns', 'x', 'y', 'x1', 'x2', 'y1', 'y2', 'cx', 'cy', 'r', 'rx', 'ry',
+  'd', 'points', 'transform', 'fill', 'fill-opacity', 'fill-rule', 'stroke',
+  'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-opacity', 'opacity',
+  'offset', 'stop-color', 'stop-opacity', 'gradientunits', 'gradienttransform',
 ]);
 
 /**
@@ -178,7 +185,9 @@ const ALLOWED_ATTRS = new Set([
  * bug). This pass is the real boundary: it parses the HTML into an inert
  * `<template>` (scripts don't run, images don't load, custom elements do NOT
  * upgrade), drops disallowed tags to visible escaped text, strips disallowed and
- * event-handler attributes, then re-serialises. Runs last so nothing downstream
+ * event-handler attributes, then re-serialises. It permits a deliberately small,
+ * declarative inline-SVG subset for assistant illustrations; executable SVG and
+ * external-resource features remain excluded. Runs last so nothing downstream
  * can reintroduce raw markup.
  * @param {string} html - Rendered (and URL-scrubbed) HTML.
  * @returns {string} HTML containing only allowlisted tags and attributes.
@@ -214,7 +223,8 @@ function sanitizeRenderedHtml(html) {
       }
       for (const attr of Array.from(el.attributes)) {
         const name = attr.name.toLowerCase();
-        if (name.startsWith('on') || !ALLOWED_ATTRS.has(name)) {
+        const svgUrl = (name === 'href' || name === 'src') && el.namespaceURI === 'http://www.w3.org/2000/svg';
+        if (name.startsWith('on') || svgUrl || !ALLOWED_ATTRS.has(name)) {
           el.removeAttribute(attr.name);
         }
       }
@@ -315,4 +325,24 @@ export function decorateCodeBlocks(root) {
 export function renderMarkdownWrapped(content, options = {}) {
   const html = renderMarkdown(content, options);
   return `<div class="markdown">${html}</div>`;
+}
+
+/**
+ * Render an assistant reply as Markdown with allowlisted inline HTML enabled.
+ * The standard post-parse sanitizer still removes unsafe elements, attributes,
+ * and URL schemes before callers assign the result to `innerHTML`.
+ * @param {string} content - Assistant-authored Markdown and/or HTML.
+ * @returns {string} Sanitized rendered HTML.
+ */
+export function renderAssistantContent(content) {
+  return renderMarkdown(content, { escapeXml: false });
+}
+
+/**
+ * Render an assistant reply with the standard Markdown wrapper.
+ * @param {string} content - Assistant-authored Markdown and/or HTML.
+ * @returns {string} Sanitized rendered HTML wrapped in `div.markdown`.
+ */
+export function renderAssistantContentWrapped(content) {
+  return `<div class="markdown">${renderAssistantContent(content)}</div>`;
 }

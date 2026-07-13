@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import BaseMessage from './base-message.js';
-import { renderMarkdownWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
+import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
 import { stripThinkingTags } from '../utils/content-utils.js';
 import '../utils/icon-message-renderer.js';
 
@@ -38,7 +38,7 @@ class AssistantMessage extends BaseMessage {
    * @private
    */
   _formatContent(content) {
-    return renderMarkdownWrapped(this._cleanContent(content), { escapeXml: true });
+    return renderAssistantContentWrapped(this._cleanContent(content));
   }
 
   /**

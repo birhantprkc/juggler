@@ -67,6 +67,8 @@ export async function runTests(_ctx) {
 
   await test('default preset body is neutral (no opinionated guidance)', () => {
     const content = getDefaultIdentityText();
+    assert(content.includes('## Responses'), 'default body should describe response formats');
+    assert(content.includes('Markdown, HTML'), 'default body should permit HTML responses');
     assert(content.includes('## Code'), 'default body should carry working-style guidance');
     assert(content.includes('`file_path:line_number`'), 'default body should carry the code-reference convention');
     assert(!content.includes('Git Workflow'), 'default body must not carry git rules');

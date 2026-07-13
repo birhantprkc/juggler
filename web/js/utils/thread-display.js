@@ -2,7 +2,7 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import { renderMarkdownWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
+import { renderAssistantContentWrapped, renderMarkdownWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
 import { stripLLMTags } from './content-utils.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { hasPendingApprovalInTree, isThreadClosed } from '../model/thread-navigation.js';
@@ -143,7 +143,7 @@ export function paintThreadSummary(el, text, opts) {
   const showSummary = status ? status.kind === 'closed' : !!text;
   if (showSummary) {
     el.className = 'thread-summary';
-    el.innerHTML = renderMarkdownWrapped(stripLLMTags(text), { escapeXml: true });
+    el.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
     decorateCodeBlocks(el);
     return;
   }

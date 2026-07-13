@@ -21,7 +21,7 @@
  *    delta-patch closure with the panel's observer dispatch.
  */
 
-import { renderMarkdown, decorateCodeBlocks } from '../../../sdk/lib/markdown.js';
+import { renderAssistantContent, renderMarkdown, decorateCodeBlocks } from '../../../sdk/lib/markdown.js';
 import { stripThinkingTags } from '../../utils/content-utils.js';
 import { badgeForItem } from '../../utils/item-badge.js';
 import { getThreadDisplayContent, getThreadStatus, paintThreadSummary } from '../../utils/thread-display.js';
@@ -233,7 +233,7 @@ export function renderMessage(host, container, message) {
         return true;
       };
     } else {
-      markdownEl.innerHTML = renderMarkdown(msgContent);
+      markdownEl.innerHTML = renderAssistantContent(msgContent);
       decorateCodeBlocks(markdownEl);
     }
     content.appendChild(markdownEl);

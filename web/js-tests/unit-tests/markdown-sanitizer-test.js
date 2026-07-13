@@ -34,7 +34,7 @@ export async function runTests(_ctx) {
   /** @type {string[]} */
   const errors = [];
 
-  const { renderMarkdown } = await import('../../sdk/lib/markdown.js');
+  const { renderMarkdown, renderAssistantContent } = await import('../../sdk/lib/markdown.js');
 
   /**
    * @param {string} label
@@ -78,6 +78,44 @@ export async function runTests(_ctx) {
     const html = renderMarkdown('```\n<script>alert(1)</script>\n```');
     assert(html.includes('<code'), `code block should render: ${html}`);
     assert(!/<script>(?!&lt;)/.test(html), `script inside fence must be escaped: ${html}`);
+  });
+
+  run('allows safe HTML in assistant content', () => {
+    const html = renderAssistantContent('<h2>Overview</h2><p><strong>Ready</strong></p>');
+    assert(html.includes('<h2>Overview</h2>'), `heading should render: ${html}`);
+    assert(html.includes('<strong>Ready</strong>'), `inline HTML should render: ${html}`);
+  });
+
+  run('sanitizes unsafe HTML in assistant content', () => {
+    const html = renderAssistantContent('<a href="javascript:alert(1)" onclick="alert(1)">x</a><script>alert(2)</script>');
+    assert(!/href="javascript:/i.test(html), `javascript URL must not survive: ${html}`);
+    assert(!/\bonclick=/i.test(html), `event handler must not survive: ${html}`);
+    assert(!html.includes('<script>'), `script must not survive: ${html}`);
+  });
+
+  run('allows declarative inline SVG in assistant content', () => {
+    const html = renderAssistantContent(
+      '<svg width="120" height="80" viewBox="0 0 120 80" xmlns="http://www.w3.org/2000/svg">' +
+      '<defs><linearGradient id="sky"><stop offset="0%" stop-color="#1a2a6c"/>' +
+      '<stop offset="100%" stop-color="#fdbb2d"/></linearGradient></defs>' +
+      '<rect width="120" height="80" fill="url(#sky)"/><circle cx="60" cy="40" r="15" fill="#fff"/>' +
+      '</svg>'
+    );
+    assert(html.includes('<svg'), `SVG should render: ${html}`);
+    assert(html.includes('<linearGradient'), `gradient should render: ${html}`);
+    assert(html.includes('fill="url(#sky)"'), `paint reference should survive: ${html}`);
+    assert(html.includes('<circle'), `shape should render: ${html}`);
+  });
+
+  run('sanitizes executable and external SVG features', () => {
+    const html = renderAssistantContent(
+      '<svg onload="alert(1)"><script>alert(1)</script><foreignObject><div>x</div></foreignObject>' +
+      '<use href="https://example.com/shape.svg#star"/><circle onclick="alert(2)" r="5"/></svg>'
+    );
+    assert(!html.includes('<script'), `script must not survive: ${html}`);
+    assert(!html.includes('<foreignObject'), `foreignObject must not survive: ${html}`);
+    assert(!/\bonload=|\bonclick=/i.test(html), `event handlers must not survive: ${html}`);
+    assert(!/<use\b/i.test(html), `external SVG reference must not survive: ${html}`);
   });
 
   run('plain markdown still works', () => {
