@@ -5,16 +5,13 @@
 package server
 
 import (
-	"context"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"math/big"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,8 +19,6 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"juggler/cmd/juggler/core"
-	"juggler/cmd/juggler/osactivity"
 	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/server/handlers"
 	"juggler/cmd/juggler/worker"
@@ -145,253 +140,6 @@ func (s *Server) wireWorkerManager() {
 		}
 		return nil
 	})
-}
-
-// createLLMCaller creates a function that workers can use to call the
-// LLM directly. The closure captures the per-server conversationCache so
-// Conversation handles are reused across turns for the same (convID,
-// provider, model) triple. The cache also owns shutdown semantics: conv
-// delete → cc.CloseConversation(convID); server shutdown → cc.Shutdown.
-func (s *Server) createLLMCaller() worker.LLMCallFunc {
-	return func(ctx context.Context, request json.RawMessage, chunkHandler func(worker.StreamChunk)) (*worker.LLMResponse, error) {
-		// Wait for the hidden engine WebView to be connected before the turn
-		// starts, so it is ready before the provider streams any tool_use. Fails
-		// the turn with a clear error rather than letting tool requests be
-		// silently dropped to a missing engine. No-op (returns true) in tests and
-		// the test-pool, where the engine is an always-on iframe.
-		if !s.ensureEngineReady() {
-			return nil, fmt.Errorf("engine is not available — tools cannot execute (the engine WebView did not connect in time)")
-		}
-
-		// Parse worker request
-		var req struct {
-			SystemPrompt   string               `json:"systemPrompt"`
-			Messages       []provider.Message   `json:"messages"`
-			Tools          []ToolDefinition     `json:"tools"`
-			ConversationID string               `json:"conversationId"`
-			ThreadID       string               `json:"threadId"`
-			ModelConfig    ModelConfig          `json:"modelConfig"`
-			TransactionID  string               `json:"transactionId"`
-			ToolChoice     *provider.ToolChoice `json:"toolChoice,omitempty"`
-		}
-		if err := json.Unmarshal(request, &req); err != nil {
-			return nil, fmt.Errorf("failed to parse LLM request: %w", err)
-		}
-
-		// Resolve image attachments: the worker→caller JSON carries only an
-		// asset reference (AssetID + mime + dims), never the bytes. Load the
-		// bytes from the per-conversation asset store here, in memory, just
-		// before Submit, so raw image data never travels in the request JSON and
-		// is never marshaled by the cost estimator. A missing asset is logged
-		// and skipped (the part is dropped at transform time) rather than
-		// failing the whole turn.
-		assetStore := worker.NewAssetStore(s.convDir)
-		for i := range req.Messages {
-			for j := range req.Messages[i].Parts {
-				part := &req.Messages[i].Parts[j]
-				if part.AssetID == "" || len(part.Data) > 0 {
-					continue
-				}
-				data, mime, err := assetStore.Get(req.ConversationID, part.AssetID)
-				if err != nil {
-					jlog.Error("LLM caller: could not resolve asset %s for conversation %s: %v", part.AssetID, req.ConversationID, err)
-					continue
-				}
-				part.Data = data
-				if part.Mime == "" {
-					part.Mime = mime
-				}
-			}
-		}
-
-		// Get credentials
-		creds, err := core.NewCredentialsStore()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get credentials: %w", err)
-		}
-		credential, err := creds.GetProviderCredential(req.ModelConfig.Provider)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get credentials: %w", err)
-		}
-
-		// Open (or reuse) the per-conversation handle. The cache binds
-		// state to (convID, providerName, model); a mid-conversation
-		// model switch closes the old handle and opens a fresh one. The
-		// turn's ThreadID rides on the MessageRequest below — a stateful
-		// provider (claudecode) keys its per-thread session off it.
-		conv, err := s.conversationCache.GetOrOpen(ctx, req.ConversationID, req.ModelConfig.Provider, req.ModelConfig.Model, credential)
-		if err != nil {
-			return nil, fmt.Errorf("open conversation: %w", err)
-		}
-
-		// Convert tools
-		providerTools := make([]provider.ToolDefinition, len(req.Tools))
-		for i, tool := range req.Tools {
-			providerTools[i] = provider.ToolDefinition{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: tool.InputSchema,
-			}
-		}
-
-		mreq := provider.MessageRequest{
-			Messages:       req.Messages,
-			SystemPrompt:   req.SystemPrompt,
-			Tools:          providerTools,
-			ConversationID: req.ConversationID,
-			ThreadID:       req.ThreadID,
-			ToolChoice:     req.ToolChoice,
-		}
-
-		// Adapter that bridges Provider's StructuredStreamCallback to the
-		// worker's chunk-handler shape and accumulates structured blocks
-		// so the worker can post-process tool_use blocks once the turn
-		// completes (text/thinking are visible mid-stream via chunks).
-		var blocks []provider.ContentBlock
-		cb := func(chunk provider.StreamChunk) (*provider.ToolResult, error) {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			// Status chunks are transient (rate-limit retries, parking
-			// notes). Surface to worker as a chunk; don't accumulate.
-			if chunk.Type == provider.ContentBlockTypeStatus {
-				chunkHandler(worker.StreamChunk{Type: chunk.Type, Content: chunk.Content})
-				return nil, nil
-			}
-			// Progress chunks carry a running output-token estimate for the
-			// UI's mid-stream spinner. Transient — never accumulated.
-			if chunk.Type == provider.ContentBlockTypeProgress {
-				out, _ := chunk.Metadata["outputTokens"].(int)
-				chunkHandler(worker.StreamChunk{Type: chunk.Type, OutputTokens: out})
-				return nil, nil
-			}
-			// Usage chunks carry the mid-stream input-token anchor (and any
-			// cache hit/TTL the provider has reported so far). Transient —
-			// never accumulated; the end-of-turn write overwrites with
-			// final numbers.
-			if chunk.Type == provider.ContentBlockTypeUsage {
-				in, _ := chunk.Metadata["inputTokens"].(int)
-				cached, _ := chunk.Metadata["cachedTokens"].(int)
-				var ttlMs int64
-				switch v := chunk.Metadata["cacheTTLMs"].(type) {
-				case int64:
-					ttlMs = v
-				case int:
-					ttlMs = int64(v)
-				}
-				chunkHandler(worker.StreamChunk{
-					Type:         chunk.Type,
-					InputTokens:  in,
-					CachedTokens: cached,
-					CacheTTLMs:   ttlMs,
-				})
-				return nil, nil
-			}
-			chunkHandler(worker.StreamChunk{Type: chunk.Type, Content: chunk.Content})
-			// Coalesce adjacent text/thinking deltas into a single block so the
-			// transaction JSON records one block per logical content block, not
-			// one per streamed delta. Tool_use and other discrete chunks always
-			// start a fresh block.
-			if n := len(blocks); n > 0 &&
-				(chunk.Type == provider.ContentBlockTypeText || chunk.Type == provider.ContentBlockTypeThinking) &&
-				blocks[n-1].Type == chunk.Type {
-				blocks[n-1].Content += chunk.Content
-			} else {
-				blocks = append(blocks, provider.ContentBlock(chunk))
-			}
-			return nil, nil
-		}
-
-		// Submit drives the solicited turn. The provider derives fresh-turn
-		// vs tool-result-continuation from req.Messages' trailing entries
-		// itself, so there is no separate delivery call at this layer.
-		//
-		// Wrap the call in an osactivity assertion so macOS does not
-		// App-Nap us mid-request. Refcounted, so nested HTTP calls in
-		// providers that also assert compose without leaking. Released
-		// in defer regardless of how the call returns (success, error,
-		// panic), so we can never leave the assertion held when idle.
-		osactivity.Begin()
-		defer osactivity.End()
-
-		result, err := conv.Submit(ctx, mreq, cb)
-		if err != nil {
-			return nil, err
-		}
-
-		// Convert accumulated blocks to the worker's LLMResponseBlock shape.
-		responseBlocks := make([]worker.LLMResponseBlock, 0, len(blocks))
-		for _, block := range blocks {
-			var toolInput json.RawMessage
-			if block.ToolInput != nil {
-				toolInput, _ = json.Marshal(block.ToolInput)
-			}
-			responseBlocks = append(responseBlocks, worker.LLMResponseBlock{
-				Type:     block.Type,
-				Content:  block.Content,
-				ID:       block.ToolUseID,
-				Name:     block.ToolName,
-				Input:    toolInput,
-				Metadata: block.Metadata,
-			})
-		}
-
-		return &worker.LLMResponse{
-			Blocks:           responseBlocks,
-			InputTokens:      result.InputTokens,
-			OutputTokens:     result.OutputTokens,
-			CachedTokens:     result.CachedTokens,
-			CacheWriteTokens: result.CacheWriteTokens,
-			StopReason:       result.StopReason,
-			TransactionID:    req.TransactionID,
-			CacheTTLMs:       conv.CacheTTL().Milliseconds(),
-		}, nil
-	}
-}
-
-// workerTurnSink routes a Conversation's autonomous turns to the owning worker
-// as `provider-turn` inbound messages. One per conversation, built by the
-// cache's turn-sink factory at open time and Subscribe()d onto the handle.
-// DeliverTurn may be called from a provider-owned goroutine (claudecode's
-// always-on stdout reader); Manager.HandleMessage hops onto the manager actor
-// and the worker's inbound FIFO, so this is safe to call off the worker
-// goroutine. A nil sendCallback is passed so no client callback is registered
-// for this system-injected message.
-type workerTurnSink struct {
-	convID  string
-	manager *worker.Manager
-}
-
-func (s *workerTurnSink) DeliverTurn(turn provider.ProviderTurn) {
-	blocks := make([]worker.LLMResponseBlock, 0, len(turn.Blocks))
-	for _, b := range turn.Blocks {
-		var input json.RawMessage
-		if b.ToolInput != nil {
-			input, _ = json.Marshal(b.ToolInput)
-		}
-		blocks = append(blocks, worker.LLMResponseBlock{
-			Type:     b.Type,
-			Content:  b.Content,
-			ID:       b.ToolUseID,
-			Name:     b.ToolName,
-			Input:    input,
-			Metadata: b.Metadata,
-		})
-	}
-	payload, err := json.Marshal(worker.ProviderTurnMessage{
-		Type:             "provider-turn",
-		Blocks:           blocks,
-		StopReason:       turn.Result.StopReason,
-		InputTokens:      turn.Result.InputTokens,
-		OutputTokens:     turn.Result.OutputTokens,
-		CachedTokens:     turn.Result.CachedTokens,
-		CacheWriteTokens: turn.Result.CacheWriteTokens,
-		Autonomous:       turn.Autonomous,
-	})
-	if err != nil {
-		return
-	}
-	s.manager.HandleMessage(s.convID, "provider-turn", payload, nil)
 }
 
 // setupSessionRoutes configures session-related routes
@@ -640,6 +388,14 @@ func (s *Server) setupRoutes() {
 	// Captured so the absolute-project-path route below can reuse it. Serves the
 	// web root, so a request path of "/js/foo.js" maps to web/js/foo.js.
 	var staticFileServer http.Handler
+	// registerStatic mounts each prefix under the cache-busting version path,
+	// stripping the version back off before staticFileServer sees the request.
+	// staticFileServer is captured by reference, so each caller assigns it first.
+	registerStatic := func(prefixes ...string) {
+		for _, prefix := range prefixes {
+			s.router.PathPrefix(vPrefix + prefix).Handler(http.StripPrefix(vPrefix, staticFileServer))
+		}
+	}
 	if s.assetsFromDisk {
 		// Assets-from-disk: serve files directly from disk for live reload
 		staticDir, err := s.findStaticDir()
@@ -648,17 +404,13 @@ func (s *Server) setupRoutes() {
 			jlog.Error("Falling back to embedded files")
 			staticFS, _ := fs.Sub(web.Files, ".")
 			staticFileServer = staticAssetHandler(http.FileServer(http.FS(staticFS)))
-			for _, prefix := range prodPrefixes {
-				s.router.PathPrefix(vPrefix + prefix).Handler(http.StripPrefix(vPrefix, staticFileServer))
-			}
+			registerStatic(prodPrefixes...)
 			s.serveEmbeddedTestAssets(vPrefix)
 		} else {
 			jlog.Info("🔧 Dev mode: serving static files from %s", staticDir)
 			staticFileServer = staticAssetHandler(http.FileServer(http.Dir(staticDir)))
 			// Disk has js-tests/ alongside everything else, so serve it from disk too.
-			for _, prefix := range append(prodPrefixes, "/js-tests/") {
-				s.router.PathPrefix(vPrefix + prefix).Handler(http.StripPrefix(vPrefix, staticFileServer))
-			}
+			registerStatic(append(prodPrefixes, "/js-tests/")...)
 		}
 	} else {
 		// Production mode: serve embedded files
@@ -667,9 +419,7 @@ func (s *Server) setupRoutes() {
 			jlog.Error("Could not load static files: %v", err)
 		}
 		staticFileServer = staticAssetHandler(http.FileServer(http.FS(staticFS)))
-		for _, prefix := range prodPrefixes {
-			s.router.PathPrefix(vPrefix + prefix).Handler(http.StripPrefix(vPrefix, staticFileServer))
-		}
+		registerStatic(prodPrefixes...)
 		s.serveEmbeddedTestAssets(vPrefix)
 	}
 
@@ -790,133 +540,4 @@ func (s *Server) serveEmbeddedTestAssets(vPrefix string) {
 	}
 	fileServer := staticAssetHandler(http.FileServer(http.FS(testFS)))
 	s.router.PathPrefix(vPrefix + "/js-tests/").Handler(http.StripPrefix(vPrefix, fileServer))
-}
-
-// sandboxImportRoot normalises the project path for the explore_code sandbox's
-// absolute-path module loader: forward slashes so it matches the worker's
-// origin-resolved import URLs on every OS (a Windows ProjectPath uses
-// backslashes, but the sandbox and its URLs are POSIX-style throughout).
-func sandboxImportRoot(projectPath string) string {
-	return filepath.ToSlash(projectPath)
-}
-
-// sandboxImportPath aligns a request URL path with sandboxImportRoot. A POSIX
-// project root is itself absolute ("/Users/…"), so the worker's origin+spec
-// already yields a matching "/Users/…/web/…" path. A Windows drive-letter root
-// ("C:/…") has no leading slash, so the worker resolves it against the origin as
-// "/C:/…/web/…"; drop that synthetic leading slash so the prefix lines up.
-func sandboxImportPath(urlPath, root string) string {
-	if len(root) >= 2 && root[1] == ':' {
-		return strings.TrimPrefix(urlPath, "/")
-	}
-	return urlPath
-}
-
-// sandboxProjectFile maps an explore_code sandbox import URL to a real file on
-// disk inside the project root, or reports ok=false. The sandbox worker resolves
-// user code's `import('<projectRoot>/rel/path')` against its http origin, so the
-// request path is the absolute project path. We serve it only when it (a) stays
-// strictly inside the project root and (b) is an importable module, so the
-// ACAO=* response never exposes arbitrary project files (secrets, source) to a
-// cross-origin reader — only JavaScript/JSON modules the sandbox can import().
-func (s *Server) sandboxProjectFile(urlPath string) (string, bool) {
-	root := sandboxImportRoot(s.ProjectPath())
-	if root == "" {
-		return "", false
-	}
-	p := path.Clean(sandboxImportPath(urlPath, root))
-	// Clean has collapsed any "..", so a path still under the root cannot escape
-	// it. Reject the root itself and anything outside it.
-	if p != root && !strings.HasPrefix(p, root+"/") {
-		return "", false
-	}
-	if !sandboxImportableExt(p) {
-		return "", false
-	}
-	diskPath := filepath.FromSlash(p)
-	info, err := os.Stat(diskPath)
-	if err != nil || info.IsDir() {
-		return "", false
-	}
-	return diskPath, true
-}
-
-// sandboxImportableExt reports whether p has an extension the sandbox may load
-// over HTTP. Restricted to browser-importable module types so the ACAO=* static
-// route can never be used to read non-module project files cross-origin.
-func sandboxImportableExt(p string) bool {
-	switch strings.ToLower(path.Ext(p)) {
-	case ".js", ".mjs", ".cjs", ".json":
-		return true
-	default:
-		return false
-	}
-}
-
-// serveSandboxProjectFile writes a project file resolved by sandboxProjectFile.
-// It sets an explicit JavaScript/JSON MIME because .mjs/.cjs are absent from
-// Go's mime table and a module import() requires a JavaScript media type — a
-// sniffed text/plain would make the browser reject the module.
-func serveSandboxProjectFile(w http.ResponseWriter, r *http.Request, diskPath string) {
-	f, err := os.Open(diskPath)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil || info.IsDir() {
-		http.NotFound(w, r)
-		return
-	}
-	// Reuse the shared web-asset MIME map, defaulting to JavaScript since
-	// sandbox project files are imported as ES modules.
-	ct := staticAssetContentType(diskPath)
-	if ct == "" {
-		ct = "text/javascript; charset=utf-8"
-	}
-	w.Header().Set("Content-Type", ct)
-	http.ServeContent(w, r, filepath.Base(diskPath), info.ModTime(), f)
-}
-
-// staticAssetContentType returns a stable Content-Type for the web-asset
-// extensions the app serves, or "" to defer to the file server's own detection.
-//
-// http.FileServer derives the type from mime.TypeByExtension, which consults the
-// host MIME database — and on Windows that comes from the registry, where .mjs is
-// frequently mapped to text/plain (and other web types are unreliable too). A
-// module script served as text/plain is rejected by the browser's strict MIME
-// check, which silently breaks the app's entire ES-module graph (e.g.
-// web/js/vendor/yjs.mjs) while leaving unrelated standalone modules loading — so
-// we set these types explicitly rather than trust the OS. Mirrors the explicit
-// Content-Type in serveSandboxProjectFile.
-func staticAssetContentType(p string) string {
-	switch strings.ToLower(path.Ext(p)) {
-	case ".js", ".mjs", ".cjs":
-		return "text/javascript; charset=utf-8"
-	case ".json", ".map":
-		return "application/json; charset=utf-8"
-	case ".css":
-		return "text/css; charset=utf-8"
-	case ".svg":
-		return "image/svg+xml"
-	case ".wasm":
-		return "application/wasm"
-	default:
-		return ""
-	}
-}
-
-// staticAssetHandler wraps a static file server, forcing a stable Content-Type
-// for known web-asset extensions so serving is correct regardless of the host
-// MIME database. See staticAssetContentType. http.ServeContent (used by
-// http.FileServer) only sniffs a type when Content-Type is unset, so a header we
-// set here is preserved.
-func staticAssetHandler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if ct := staticAssetContentType(r.URL.Path); ct != "" {
-			w.Header().Set("Content-Type", ct)
-		}
-		next.ServeHTTP(w, r)
-	})
 }

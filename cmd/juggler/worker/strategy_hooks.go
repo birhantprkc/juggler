@@ -107,10 +107,7 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 	// Drop any stale reply left buffered by a prior timed-out activation, so the
 	// requestID match below can't trip over it (mirrors callLLM draining
 	// llmResponseChan).
-	select {
-	case <-w.strategyHookResultChan:
-	default:
-	}
+	drainStaleReply(w.strategyHookResultChan)
 	requestID := generateRequestID()
 	w.dispatchStrategyHook(requestID, "onActivate", current, activated)
 	guidance, ok := w.waitForStrategyHook(requestID, StrategyHookTimeout)
@@ -167,32 +164,17 @@ func (w *ConversationWorker) dispatchCancelStrategyExecution() {
 // context/tools wait loop: it keeps servicing inbound messages and doc/batcher
 // signals while it waits, so the single run goroutine never deadlocks.
 func (w *ConversationWorker) waitForStrategyHook(requestID string, timeout time.Duration) ([]GuidanceItem, bool) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	for {
-		select {
-		case raw := <-w.strategyHookResultChan:
-			var resp StrategyHookResponse
-			if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
-				w.tape.Record("strategy-hook-response", map[string]any{"req": requestID, "guidance": len(resp.Guidance)})
-				return resp.Guidance, true
-			}
-		case msg := <-w.inbound:
-			w.handleMessageInWait(msg)
-			if w.loadState() == StateCancelling {
-				return nil, false
-			}
-		case <-w.doc.UpdateSignal():
-			w.batcher.Schedule()
-		case <-w.batcher.TimerChan():
-			w.batcher.Flush()
-		case <-timer.C:
-			w.log.Error("[worker] onActivate hook timed out (req %s) — activation deferred to next turn", requestID)
-			w.tape.Record("strategy-hook-timeout", map[string]any{"req": requestID})
-			return nil, false
-		case <-w.done:
-			return nil, false
+	match := func(raw json.RawMessage) ([]GuidanceItem, bool) {
+		var resp StrategyHookResponse
+		if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
+			w.tape.Record("strategy-hook-response", map[string]any{"req": requestID, "guidance": len(resp.Guidance)})
+			return resp.Guidance, true
 		}
+		return nil, false
 	}
+	onTimeout := func() {
+		w.log.Error("[worker] onActivate hook timed out (req %s) — activation deferred to next turn", requestID)
+		w.tape.Record("strategy-hook-timeout", map[string]any{"req": requestID})
+	}
+	return waitForEngineReply(w, w.strategyHookResultChan, timeout, match, onTimeout)
 }

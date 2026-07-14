@@ -94,13 +94,10 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 		return false
 	}
 
-	requestID := generateRequestID()
 	// Drop any stale reply buffered by a previously timed-out request so the
 	// requestID match below can't trip over it (mirrors callLLM/maybeActivate).
-	select {
-	case <-w.subthreadSpecResultChan:
-	default:
-	}
+	drainStaleReply(w.subthreadSpecResultChan)
+	requestID := generateRequestID()
 	w.dispatchBuildSubthreadSpec(requestID, toolUseID, toolName, toolInput)
 	spec, ok := w.waitForSubthreadSpec(requestID, SubthreadSpecTimeout)
 	if !ok || spec == nil {
@@ -147,38 +144,27 @@ func (w *ConversationWorker) dispatchBuildSubthreadSpec(requestID, toolUseID, to
 // error/timeout/cancellation. Keeps servicing inbound + doc/batcher signals so
 // the single run goroutine never deadlocks (mirrors waitForStrategyHook).
 func (w *ConversationWorker) waitForSubthreadSpec(requestID string, timeout time.Duration) (*SubthreadSpec, bool) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	for {
-		select {
-		case raw := <-w.subthreadSpecResultChan:
-			var resp BuildSubthreadSpecResponse
-			if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
-				if resp.Error != "" {
-					w.log.Info("[worker] build-subthread-spec (%s): engine reported %q — running inline", requestID, resp.Error)
-					return nil, false
-				}
-				w.tape.Record("build-subthread-spec-response", map[string]any{"req": requestID, "delegated": resp.Spec != nil})
-				return resp.Spec, true
+	match := func(raw json.RawMessage) (*SubthreadSpec, bool) {
+		var resp BuildSubthreadSpecResponse
+		if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
+			if resp.Error != "" {
+				w.log.Info("[worker] build-subthread-spec (%s): engine reported %q — running inline", requestID, resp.Error)
+				// Matched, but degrade to inline: a nil spec is the caller's
+				// "run the tool normally" signal (tryDelegateTool treats
+				// spec == nil identically to !ok), so stopping here with a nil
+				// spec preserves the original (nil, false) outcome.
+				return nil, true
 			}
-		case msg := <-w.inbound:
-			w.handleMessageInWait(msg)
-			if w.loadState() == StateCancelling {
-				return nil, false
-			}
-		case <-w.doc.UpdateSignal():
-			w.batcher.Schedule()
-		case <-w.batcher.TimerChan():
-			w.batcher.Flush()
-		case <-timer.C:
-			w.log.Info("[worker] build-subthread-spec timed out (req %s) — running tool inline", requestID)
-			w.tape.Record("build-subthread-spec-timeout", map[string]any{"req": requestID})
-			return nil, false
-		case <-w.done:
-			return nil, false
+			w.tape.Record("build-subthread-spec-response", map[string]any{"req": requestID, "delegated": resp.Spec != nil})
+			return resp.Spec, true
 		}
+		return nil, false
 	}
+	onTimeout := func() {
+		w.log.Info("[worker] build-subthread-spec timed out (req %s) — running tool inline", requestID)
+		w.tape.Record("build-subthread-spec-timeout", map[string]any{"req": requestID})
+	}
+	return waitForEngineReply(w, w.subthreadSpecResultChan, timeout, match, onTimeout)
 }
 
 // resolveDelegatedThreadResult guarantees a delegated child that ended WITHOUT
@@ -257,11 +243,8 @@ func (w *ConversationWorker) requestSubthreadErrorFallback(toolName string, tool
 	if !w.ensureEngineReady() {
 		return ""
 	}
+	drainStaleReply(w.subthreadErrorResultChan)
 	requestID := generateRequestID()
-	select {
-	case <-w.subthreadErrorResultChan:
-	default:
-	}
 	reason := "the sub-agent ended without returning a result"
 	data, err := json.Marshal(SubthreadErrorRequest{
 		Type:      "subthread-error",
@@ -281,32 +264,18 @@ func (w *ConversationWorker) requestSubthreadErrorFallback(toolName string, tool
 // waitForSubthreadError blocks until the engine answers requestID with the
 // fallback text, or the timeout elapses. Returns "" on no-fallback/timeout.
 func (w *ConversationWorker) waitForSubthreadError(requestID string, timeout time.Duration) string {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	for {
-		select {
-		case raw := <-w.subthreadErrorResultChan:
-			var resp SubthreadErrorResponse
-			if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
-				return resp.Result
-			}
-		case msg := <-w.inbound:
-			w.handleMessageInWait(msg)
-			if w.loadState() == StateCancelling {
-				return ""
-			}
-		case <-w.doc.UpdateSignal():
-			w.batcher.Schedule()
-		case <-w.batcher.TimerChan():
-			w.batcher.Flush()
-		case <-timer.C:
-			w.tape.Record("subthread-error-timeout", map[string]any{"req": requestID})
-			return ""
-		case <-w.done:
-			return ""
+	match := func(raw json.RawMessage) (string, bool) {
+		var resp SubthreadErrorResponse
+		if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
+			return resp.Result, true
 		}
+		return "", false
 	}
+	onTimeout := func() {
+		w.tape.Record("subthread-error-timeout", map[string]any{"req": requestID})
+	}
+	result, _ := waitForEngineReply(w, w.subthreadErrorResultChan, timeout, match, onTimeout)
+	return result
 }
 
 // displayToolName returns a human-friendly tool name for the default result
