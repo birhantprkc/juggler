@@ -112,6 +112,19 @@ export const tests = [
     true
   ),
 
+  // Un-awaited Promise in the return value: grep/glob/fs/import() are async, so
+  // returning one un-awaited leaves a Promise the host can't structured-clone.
+  // That must be caught and reported (naming the offending path), NOT left to
+  // hang until the sandbox timeout — the same "report, don't hang" contract as
+  // the parse-error case above.
+  exploreTest(
+    'explore-unawaited-promise',
+    'explore_code: un-awaited Promise in return reported without timeout',
+    'return { hits: grep("func main") };',
+    'Return value .hits is a Promise that was never awaited. grep(), glob(), fs.*, and import() are async; await them before returning, e.g. return { x: await grep(...) } or await Promise.all([...]).',
+    true
+  ),
+
   // Absolute-path import: an LLM-natural `import('/abs/path/web/...')`
   // must resolve. The sandbox's import map rewrites the project-root
   // prefix to /v<ver>/, served same-origin with ACAO=*. Without the

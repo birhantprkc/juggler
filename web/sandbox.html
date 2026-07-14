@@ -127,6 +127,47 @@ function compileErrMsg(e) {
   return v8 ? ("Cannot declare a const variable twice: '" + v8[1] + "'.") : m;
 }
 
+// Walk the script's return value for the first thenable (a Promise, or a
+// promise-like with a then method) and describe where it sits, e.g. .hits.foo
+// or [0]. Bounded and cycle-safe so a huge or self-referential result can't
+// itself hang the error path we run it from. (No backticks anywhere in this
+// worker source: it is a template-literal string in sandbox.html.)
+function findThenablePath(root) {
+  const seen = new Set();
+  const stack = [{ v: root, path: '' }];
+  let budget = 20000;
+  while (stack.length && budget-- > 0) {
+    const { v, path } = stack.pop();
+    if (v === null || (typeof v !== 'object' && typeof v !== 'function')) continue;
+    if (typeof v.then === 'function') return path || '(the returned value)';
+    if (typeof v === 'function' || seen.has(v)) continue;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) stack.push({ v: v[i], path: path + '[' + i + ']' });
+    } else {
+      for (const k of Object.keys(v)) stack.push({ v: v[k], path: path + '.' + k });
+    }
+  }
+  return '';
+}
+
+// A return value posts to the host via structured clone (postMessage), which
+// throws DataCloneError on values it can't clone. The overwhelmingly common
+// cause is an un-awaited Promise left in the result (grep, glob, fs.*, and
+// import() are all async), so name the offending path and the fix. Anything
+// else non-cloneable (a bare function, a class instance) falls back to the raw
+// clone-error text. Without this the throw is swallowed in the resolve callback
+// and NO result is ever posted, so the run silently hangs to the timeout.
+function returnValueErrMsg(e, value) {
+  const at = findThenablePath(value);
+  if (at) {
+    return 'Return value ' + at + ' is a Promise that was never awaited. '
+      + 'grep(), glob(), fs.*, and import() are async; await them before returning, '
+      + 'e.g. return { x: await grep(...) } or await Promise.all([...]).';
+  }
+  return 'Return value could not be serialised: ' + errMsg(e);
+}
+
 // The iframe posts {type:'init', code, timeoutMs, capabilities, projectRoot,
 // origin} plus a MessagePort on the worker's first 'message'. All further
 // traffic is on the port: capability calls go out as {kind, method, args, id};
@@ -220,7 +261,17 @@ self.addEventListener('message', (event) => {
   );
 
   Promise.race([run, timeout]).then(
-    (result) => port.postMessage({ kind: 'result', ok: true, result: result === undefined ? null : result }),
+    (result) => {
+      const value = result === undefined ? null : result;
+      // postMessage structured-clones the value; a Promise (or other
+      // non-cloneable) throws DataCloneError synchronously here. Catch it and
+      // report a specific error instead of letting it hang to the timeout.
+      try {
+        port.postMessage({ kind: 'result', ok: true, result: value });
+      } catch (err) {
+        port.postMessage({ kind: 'result', ok: false, error: returnValueErrMsg(err, value) });
+      }
+    },
     (err) => port.postMessage({ kind: 'result', ok: false, error: errMsg(err) })
   );
 });
