@@ -35,6 +35,42 @@ function prettyTimeout(ms) {
 }
 
 /**
+ * Format a shell command for the properties panel by putting each chained
+ * sub-command on its own line, split at top-level `&&` operators with the `&&`
+ * moved to the start of the continuation line, e.g. `cd /foo && cat bar` →
+ * "cd /foo\n&& cat bar". Only `&&` operators outside quotes are split, so an
+ * `&&` inside a quoted string is left untouched. Commands without a top-level
+ * `&&` are returned unchanged.
+ * @param {string} command - The raw shell command
+ * @returns {string} The command with `&&`-chained sub-commands on separate lines
+ */
+function formatCommandForDisplay(command) {
+  const segments = [];
+  let start = 0;
+  let quote = ''; // '', "'", '"', or '`'
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    // A top-level `&&` (exactly two ampersands, not part of a longer run).
+    if (ch === '&' && command[i + 1] === '&' && command[i - 1] !== '&' && command[i + 2] !== '&') {
+      segments.push(command.slice(start, i).trim());
+      start = i + 2;
+      i++; // skip the second '&'
+    }
+  }
+  if (segments.length === 0) return command;
+  segments.push(command.slice(start).trim());
+  return segments.filter(Boolean).map((seg, idx) => (idx === 0 ? seg : `&& ${seg}`)).join('\n');
+}
+
+/**
  * ExecuteContextItem - Execute shell commands
  *
  * Executes shell commands via backend API.
@@ -803,7 +839,7 @@ class ExecuteContextItem extends ContextItem {
    */
   renderToolActionDetails(wrapper, ctx) {
     const { input, helpers, toolAction } = ctx;
-    helpers.addSubsection(wrapper, 'Command', input.command || '', 'properties-panel-code', { language: 'bash' });
+    helpers.addSubsection(wrapper, 'Command', formatCommandForDisplay(input.command || ''), 'properties-panel-code', { language: 'bash' });
     if (input.description) {
       helpers.addLlmDescription(wrapper, 'Description', String(input.description));
     }
