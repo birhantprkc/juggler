@@ -6,6 +6,11 @@ If Juggler has an angle, it's that it's for people who want to be more hands-on 
 
 More blurb on the website: [https://juggler.studio](https://juggler.studio)
 
+<p align="center">
+  <img src="https://juggler.studio/assets/screenshot-main.webp" alt="Juggler's Miller-column workbench: tool calls, item properties and nested sub-threads" width="880">
+</p>
+<p align="center"><em>Tool calls, item properties and nested sub-threads laid out in a Finder-style Miller column view.</em></p>
+
 And here's the TL;DR:
 
 - **It is a proper GUI.** This is not a console app. It's all about graphical visual navigation, inspection, and control.
@@ -72,11 +77,27 @@ The core app manages the document and orchestration. Almost all the objects that
 
 Not every LLM workflow wants to live as a headless Python script skulking in a terminal. If an orchestration idea needs its own UI, controls, or visualisation, Juggler is a platform for that.
 
+<p align="center">
+  <img src="https://juggler.studio/assets/screenshot-extensions.webp" alt="Juggler's LLM-facing tools defined as extensions" width="760">
+</p>
+<p align="center"><em>Everything's a plugin — even the read/write/bash tools are defined in extensions you can inspect, fork, or replace.</em></p>
+
 #### A desktop app with a multi-client architecture
 
 Juggler looks like a native desktop app, but underneath it is a local webserver serving a live collaborative session. The app is just one client. A browser tab can be another. A different machine can be another.
 
 That means you can run the server where the code lives — local workstation, dev box, server farm - and attach views from wherever is convenient.
+
+<p align="center">
+  <img src="https://juggler.studio/assets/screenshot-browser.webp" alt="One Juggler session with multiple synced clients" width="760">
+</p>
+<p align="center"><em>One session, many clients — the desktop app and browser views stay in sync.</em></p>
+
+<p align="center">
+  <img src="https://juggler.studio/assets/screenshot-large.webp" alt="Juggler on a large desktop screen" width="600">
+  <img src="https://juggler.studio/assets/screenshot-mobile.webp" alt="Juggler in a phone browser" width="170">
+</p>
+<p align="center"><em>Big screen or pocket-sized: the same live session, whether it's the desktop app or a remote browser on your phone.</em></p>
 
 #### Model support
 
