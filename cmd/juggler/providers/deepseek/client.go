@@ -26,6 +26,7 @@ func Register() {
 		Quirks: openaibase.Quirks{
 			IncludePresencePenalty:  true,
 			IncludeFrequencyPenalty: true,
+			EchoReasoningContent:    true,
 		},
 	})
 }

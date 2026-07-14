@@ -88,6 +88,15 @@ type Quirks struct {
 	// reject these; deepseek/zai accept them.
 	IncludePresencePenalty  bool
 	IncludeFrequencyPenalty bool
+
+	// EchoReasoningContent replays a prior assistant turn's chain-of-thought
+	// back to the API under the non-standard `reasoning_content` key. DeepSeek's
+	// thinking mode rejects a continued turn (e.g. the request that follows a
+	// tool call) with 400 "The `reasoning_content` in the thinking mode must be
+	// passed back to the API" when the reasoning is missing. Most other vendors
+	// have no such requirement (and OpenAI/OpenRouter would ignore it), so this
+	// stays off by default and is enabled only where the API demands it.
+	EchoReasoningContent bool
 }
 
 // Config holds configuration for OpenAI-compatible providers
@@ -831,7 +840,7 @@ func buildResponsesUserContent(msg provider.Message) responses.ResponseInputMess
 }
 
 // Groups consecutive assistant messages with their tool calls.
-func transformMessages(messages []provider.Message, useDeveloperRole bool, systemPrompt string) []openai.ChatCompletionMessageParamUnion {
+func transformMessages(messages []provider.Message, useDeveloperRole, echoReasoning bool, systemPrompt string) []openai.ChatCompletionMessageParamUnion {
 	apiMessages := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages)+1)
 
 	// Add system prompt first if provided
@@ -843,30 +852,38 @@ func transformMessages(messages []provider.Message, useDeveloperRole bool, syste
 		}
 	}
 
-	// Track assistant message accumulation (text + tool calls grouped together)
+	// Track assistant message accumulation (text + tool calls grouped together).
+	// pendingReasoning holds the turn's chain-of-thought, replayed back to the
+	// API when echoReasoning is set (see Quirks.EchoReasoningContent).
 	var pendingAssistantText strings.Builder
+	var pendingReasoning strings.Builder
 	var pendingToolCalls []openai.ChatCompletionMessageToolCallUnionParam
 
 	flushAssistant := func() {
 		if pendingAssistantText.Len() > 0 || len(pendingToolCalls) > 0 {
+			assistantMsg := openai.ChatCompletionAssistantMessageParam{}
 			if len(pendingToolCalls) > 0 {
-				assistantMsg := openai.ChatCompletionAssistantMessageParam{
-					ToolCalls: pendingToolCalls,
-				}
-				if pendingAssistantText.Len() > 0 {
-					assistantMsg.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
-						OfString: openai.String(pendingAssistantText.String()),
-					}
-				}
-				apiMessages = append(apiMessages, openai.ChatCompletionMessageParamUnion{
-					OfAssistant: &assistantMsg,
-				})
-			} else {
-				apiMessages = append(apiMessages, openai.AssistantMessage(pendingAssistantText.String()))
+				assistantMsg.ToolCalls = pendingToolCalls
 			}
-			pendingAssistantText.Reset()
-			pendingToolCalls = nil
+			if pendingAssistantText.Len() > 0 {
+				assistantMsg.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
+					OfString: openai.String(pendingAssistantText.String()),
+				}
+			}
+			// DeepSeek's thinking mode requires the turn's reasoning to be
+			// echoed back under the non-standard `reasoning_content` key.
+			if echoReasoning && pendingReasoning.Len() > 0 {
+				assistantMsg.SetExtraFields(map[string]any{
+					"reasoning_content": pendingReasoning.String(),
+				})
+			}
+			apiMessages = append(apiMessages, openai.ChatCompletionMessageParamUnion{
+				OfAssistant: &assistantMsg,
+			})
 		}
+		pendingAssistantText.Reset()
+		pendingReasoning.Reset()
+		pendingToolCalls = nil
 	}
 
 	for _, msg := range messages {
@@ -889,8 +906,13 @@ func transformMessages(messages []provider.Message, useDeveloperRole bool, syste
 			pendingAssistantText.WriteString(msg.Content)
 
 		case "thinking":
-			// Thinking blocks are internal model state — skip; OpenAI has no
-			// native thinking channel to send them to.
+			// Thinking blocks are internal model state. OpenAI has no native
+			// thinking channel, so they are normally dropped — but DeepSeek's
+			// thinking mode requires the reasoning be replayed on the next
+			// request, so accumulate it when echoReasoning is set.
+			if echoReasoning {
+				pendingReasoning.WriteString(msg.Content)
+			}
 
 		case "tool-use":
 			// Accumulate with pending assistant message
@@ -962,7 +984,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 	}
 
 	// Transform unified Message[] to OpenAI format
-	apiMessages := transformMessages(req.Messages, c.quirks.UseDeveloperRole, req.SystemPrompt)
+	apiMessages := transformMessages(req.Messages, c.quirks.UseDeveloperRole, c.quirks.EchoReasoningContent, req.SystemPrompt)
 
 	// Log the SDK request payload for debugging
 	jlog.Trace("[openai REQUEST] model=%s, messages=%d, tools=%d", c.model, len(apiMessages), len(req.Tools))
