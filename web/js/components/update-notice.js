@@ -325,7 +325,7 @@ class UpdateNotice extends HTMLElement {
     if (vm.upToDate) {
       const p = document.createElement('p');
       p.textContent = vm.currentVersion
-        ? `You're on the latest version (v${vm.currentVersion}).`
+        ? `You're on the latest version (${vm.currentVersion}).`
         : "You're on the latest version.";
       body.appendChild(p);
       return body;
