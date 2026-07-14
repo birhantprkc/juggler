@@ -796,8 +796,16 @@ class JugglerApp {
    *   came from (null = root). When omitted/undefined the vantage is unknown and
    *   we fall back to interrupting whichever sub-thread is the live processing
    *   column — so a bare Escape interrupts a running child rather than closing it.
+   * @param {{polite?: boolean, toggle?: boolean}} [opts] - When `polite` is true,
+   *   request a non-destructive Pause instead of a hard cancel: the current step
+   *   finishes and records its real result, then the worker rests at idle before
+   *   the next LLM turn. Nothing is cancelled, interrupted, or closed, so the
+   *   vantage routing below is skipped entirely (polite is vantage-uniform). When
+   *   `toggle` is also true (the Pause button, NOT shift+Escape), a polite request
+   *   that arrives while a Pause is already pending cancels it instead — clicking
+   *   Pause twice turns it back off.
    */
-  async cancelLLMOperation(focusedThreadId = undefined) {
+  async cancelLLMOperation(focusedThreadId = undefined, { polite = false, toggle = false } = {}) {
     if (!this._connectionManager) {
       console.error('[Juggler] Cannot cancel: connection manager not initialized');
       return;
@@ -812,6 +820,23 @@ class JugglerApp {
     const conversation = session.getVisibleConversation();
     if (!conversation) {
       console.error('[Juggler] Cannot cancel: no visible conversation');
+      return;
+    }
+
+    // Polite stop (Pause): non-destructive, vantage-uniform. Return BEFORE any
+    // destructive branch — it must not cancel approvals, kill actions, stamp a
+    // "Cancelled" message, or close sub-threads. The worker latches it and rests
+    // at idle at the next boundary; the local cue keeps the Pause button active.
+    if (polite) {
+      // Toggle sources (the Pause button) cancel a pause that is already pending:
+      // a second click turns Pause back off. Non-toggle sources (shift+Escape)
+      // only ever request a pause — pressing the shortcut again re-affirms the
+      // pending pause rather than cancelling it.
+      if (toggle && conversation.isPolitePending()) {
+        conversation.cancelPoliteStop();
+      } else {
+        conversation.requestPoliteStop();
+      }
       return;
     }
 

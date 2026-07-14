@@ -254,6 +254,14 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		return
 	}
 
+	// Reaching here the worker is idle: an explicit send or Continue is an
+	// unambiguous "resume now" that clears any pending polite stop (Pause), so a
+	// latch that settled the worker but wasn't consumed can never suppress this
+	// user-initiated turn (D6, §10.5). Defensive: the boundary that drove idle
+	// already Swap(false)'d the latch, but a send arriving in the same idle
+	// window must win regardless.
+	w.clearPolitePending()
+
 	// Guard: empty message (no text AND no attachments) with no incomplete
 	// tools = nothing to do.
 	if input.isEmpty() && !msg.IsContinuation && !w.hasIncompleteTools() {
@@ -429,6 +437,12 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 }
 
 func (w *ConversationWorker) handleCancel() {
+	// A hard cancel supersedes any pending polite stop (Pause): the user escalated
+	// from "finish then pause" to "stop now", so drop the latch before the
+	// destructive teardown below runs (D6, D7). Clearing it here also means the
+	// next turn after the cancel is never spuriously suppressed.
+	w.clearPolitePending()
+
 	// Unwind any engine-driven strategy execution (e.g. plan onWorkerIdle's
 	// _driveExecution loop): the worker cancels the turn/tools below, but the
 	// driver loop lives in the engine and must abort its controller so it stops

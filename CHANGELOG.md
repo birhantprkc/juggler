@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Recovered locked project sessions safely and explained unrecoverable lock conflicts.
+- Added Pause (shift+Escape / footer button): finish the current step, then rest at idle — nothing cancelled.
 
 ## [0.3.6] - 2026-07-13
 

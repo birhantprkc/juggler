@@ -710,8 +710,13 @@ class ConversationTab extends HTMLElement {
                 && typeof (/** @type {any} */ (activeCol).getMessageThread) === 'function')
                 ? (/** @type {any} */ (activeCol).getMessageThread()?.threadItemId ?? null)
                 : null;
+              // Shift+Escape = polite stop (Pause): finish the current step then
+              // rest at idle, cancelling nothing. No `toggle` flag — unlike the
+              // footer Pause button, pressing Shift+Escape again while a Pause is
+              // pending re-affirms it rather than turning it off. Plain Escape =
+              // hard cancel, and (per D7) escalates a pending Pause to a full cancel.
               // @ts-ignore
-              window.jugglerApp.cancelLLMOperation(focusedThreadId);
+              window.jugglerApp.cancelLLMOperation(focusedThreadId, { polite: e.shiftKey });
             }
             // Rule 17: escape while navigating the conversation-area → typing mode.
             if (activeCol.tagName === 'CONVERSATION-AREA') this._focusInput();

@@ -14,6 +14,7 @@
  * @property {boolean} [showCloseWithLastMessage] - Whether to show the "Close with last message" button (open thread whose last message is an assistant reply, idle only)
  * @property {boolean} [showDuplicateTab] - Whether to show the duplicate tab button (root thread only)
  * @property {string} [busyItemMessageId] - message-id of the busy thread item, enables clicking footer to select it
+ * @property {boolean} [politePending] - A polite stop (Pause) is in progress: render the Pause button active until the worker rests
  */
 
 /**
@@ -195,7 +196,12 @@ class ConversationFooter extends HTMLElement {
             <footer-processing class="hidden">
                 <juggler-spinner></juggler-spinner>
                 <span class="llm-busy-text"></span>
-                <button class="message-action-btn footer-stop-btn" type="button">
+                <button class="message-action-btn footer-pause-btn" type="button" title="Pause as soon as possible, without cancelling any operations in progress">
+                    <svg class="footer-pause-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M560-200v-560h160v560H560Zm-320 0v-560h160v560H240Z"/></svg>
+                    <juggler-spinner class="footer-pause-spinner" style="--size: 1rem"></juggler-spinner>
+                    <span class="footer-pause-label">Pause</span>
+                </button>
+                <button class="message-action-btn footer-stop-btn" type="button" title="Cancel all pending operations and stop.">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="m336-280-56-56 144-144-144-143 56-56 144 144 143-144 56 56-144 143 144 144-56 56-143-144-144 144Z"/></svg>
                     Stop
                 </button>
@@ -302,6 +308,15 @@ class ConversationFooter extends HTMLElement {
       });
     }
 
+    const pauseBtn = this.querySelector('.footer-pause-btn');
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', (e) => {
+        // Don't let the click bubble to footer-processing's select-item handler.
+        e.stopPropagation();
+        this._pauseOwnColumn();
+      });
+    }
+
     if (this._messageThread) this._updateTokenDisplay();
   }
 
@@ -320,6 +335,25 @@ class ConversationFooter extends HTMLElement {
     if (window.jugglerApp && window.jugglerApp.cancelLLMOperation) {
       // @ts-ignore
       window.jugglerApp.cancelLLMOperation(threadItemId);
+    }
+  }
+
+  /**
+   * Request a polite stop (Pause) for this conversation. Unlike Stop this is
+   * non-destructive and vantage-uniform: the current step finishes and records
+   * its result, then the worker rests at idle before the next LLM turn — nothing
+   * is cancelled and no thread is closed. Routes through the same
+   * cancelLLMOperation entry with the polite flag. Passes `toggle: true` so a
+   * second click while the Pause is still pending turns it back off — the button
+   * is a toggle, unlike the shift+Escape shortcut which only ever requests a pause.
+   * @private
+   */
+  _pauseOwnColumn() {
+    const threadItemId = this._messageThread?.threadItemId ?? null;
+    // @ts-ignore - jugglerApp is added dynamically in app.js
+    if (window.jugglerApp && window.jugglerApp.cancelLLMOperation) {
+      // @ts-ignore
+      window.jugglerApp.cancelLLMOperation(threadItemId, { polite: true, toggle: true });
     }
   }
 
@@ -360,6 +394,19 @@ class ConversationFooter extends HTMLElement {
         } else {
           delete /** @type {HTMLElement} */ (processing).dataset.messageId;
         }
+      }
+      // Pause pending → render the Pause button in a visibly pending state while
+      // the current step finishes: the pause glyph is swapped for a spinner and
+      // the label reads "Pausing…". Purely a transient cue derived from the local
+      // optimistic flag; it clears the moment the worker reaches idle
+      // (state.politePending false), reverting to the plain Pause affordance.
+      const pauseBtn = this.querySelector('.footer-pause-btn');
+      if (pauseBtn) {
+        const pending = !!state.politePending;
+        pauseBtn.classList.toggle('active', pending);
+        pauseBtn.classList.toggle('pending', pending);
+        const pauseLabel = pauseBtn.querySelector('.footer-pause-label');
+        if (pauseLabel) pauseLabel.textContent = pending ? 'Pausing…' : 'Pause';
       }
     } else {
       // Idle state — show appropriate buttons

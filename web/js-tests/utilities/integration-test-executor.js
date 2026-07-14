@@ -22,6 +22,7 @@ import { tests as multiConversationTests } from '../integration-tests/multi-conv
 import { tests as errorRecoveryTests } from '../integration-tests/error-recovery-tests.js';
 import { tests as streamingTests } from '../integration-tests/streaming-tests.js';
 import { tests as cancellationTests } from '../integration-tests/cancellation-tests.js';
+import { tests as politeStopTests } from '../integration-tests/polite-stop-tests.js';
 import { tests as askUserQuestionTests } from '../integration-tests/ask-user-question-tests.js';
 import { tests as exploreCodeTests } from '../integration-tests/explore-code-tests.js';
 import { tests as threadTests } from '../integration-tests/thread-tests.js';
@@ -180,6 +181,7 @@ const ALL_TESTS = [
   ...executeTests,
   ...streamingTests,
   ...cancellationTests,
+  ...politeStopTests,
   ...compactionTests,
   ...multiConversationTests,
   ...errorRecoveryTests,

@@ -163,6 +163,22 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 
 strategyLoop:
 	for {
+		// Polite stop (Pause): every LLM turn begins at the top of this loop, so
+		// this is the boundary where we rest before re-invoking the model. It
+		// catches every in-loop re-entry a mid-turn pause can precede — a sync-tool
+		// continuation, a barren retry, and the end-of-run "queued follow-up"
+		// continuation. In-flight tools from the prior iteration are already
+		// committed to the doc, so promoting any queued messages and returning
+		// leaves a clean, resumable transcript; the deferred cleanup writes idle.
+		// consumePolitePending Swap(false)s the latch so the next user-initiated
+		// turn runs normally (D5, §10.4) and drops the synced pending cue. The
+		// reducer's dispatchCallLLMOnThread handles the between-turn (async-tool)
+		// case; this handles the never-left-the-loop case.
+		if w.consumePolitePending() {
+			w.promotePendingItems(w.thread.itemID)
+			return
+		}
+
 		// Drain any messages queued while this turn was in flight (or while the
 		// previous tool batch awaited approval) into the thread as user messages,
 		// so the upcoming turn sees them. Promote BEFORE findUnstampedUserMsgID

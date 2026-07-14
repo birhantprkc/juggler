@@ -495,9 +495,12 @@ class InputBox extends HTMLElement {
         if (window.jugglerApp && window.jugglerApp.shouldHandleEscape()) {
           // Cancel from THIS box's vantage: a sub-thread box (threadItemId set)
           // interrupts that thread without closing it; the root box (null) stops
-          // everything and closes open sub-threads.
+          // everything and closes open sub-threads. Shift+Escape instead requests
+          // a polite stop (Pause): finish the current step, then rest at idle —
+          // nothing cancelled. (Plain Escape while a Pause is pending escalates
+          // to a hard cancel, per D7.)
           // @ts-ignore - jugglerApp is added dynamically in app.js
-          window.jugglerApp.cancelLLMOperation(this.threadItemId ?? null);
+          window.jugglerApp.cancelLLMOperation(this.threadItemId ?? null, { polite: e.shiftKey });
         } else {
           // No active LLM - save draft to history before clearing
           const currentValue = textarea.value.trim();

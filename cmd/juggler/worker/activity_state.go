@@ -105,6 +105,51 @@ func (w *ConversationWorker) patchProcessingState(mutate func(map[string]any)) {
 	}, w.doc.authorID)
 }
 
+// setPolitePending latches the polite-stop (Pause) AND mirrors it into the
+// synced processingState, so a client that reloads mid-pause restores the
+// "Pausing…" cue instead of reverting to a plain Pause button. The atomic latch
+// stays the source of truth (lock-free reads at the loop boundaries); the
+// published field is its projection. Routing every mutation through these three
+// helpers — plus sendStatus re-emitting the flag from the latch on each busy
+// frame (the frame is rebuilt from scratch) — keeps the two in lockstep.
+func (w *ConversationWorker) setPolitePending() {
+	w.politeStop.Store(true)
+	w.publishPolitePending(true)
+}
+
+// clearPolitePending drops the latch and its published projection. Used by the
+// Pause-button un-toggle (handleUnpause), the explicit-send resume, and the
+// hard-cancel supersede.
+func (w *ConversationWorker) clearPolitePending() {
+	w.politeStop.Store(false)
+	w.publishPolitePending(false)
+}
+
+// consumePolitePending clears the latch at a turn boundary and reports whether
+// it was set. Also drops the published projection immediately so the pending cue
+// disappears even in the window before the resting idle frame lands.
+func (w *ConversationWorker) consumePolitePending() bool {
+	if !w.politeStop.Swap(false) {
+		return false
+	}
+	w.publishPolitePending(false)
+	return true
+}
+
+// publishPolitePending projects the latch into processingState.politePending.
+// A no-op when processingState is absent (worker fully idle) — a pending pause
+// only exists while busy, and sendStatus re-adds the flag from the latch on the
+// next busy frame regardless.
+func (w *ConversationWorker) publishPolitePending(pending bool) {
+	w.patchProcessingState(func(m map[string]any) {
+		if pending {
+			m["politePending"] = true
+		} else {
+			delete(m, "politePending")
+		}
+	})
+}
+
 // hideElapsedAnchor removes startedAt from the doc's processingState. Clients
 // render the spinner's elapsed digit only when startedAt is present, so dropping
 // it makes the timer disappear — used while a turn is parked on a human approval,

@@ -2726,7 +2726,14 @@ juggler-spinner .js-club {
 juggler-spinner .js-pivot:nth-child(2) .js-club { animation-delay: calc(var(--duration) / -3); }
 juggler-spinner .js-pivot:nth-child(3) .js-club { animation-delay: calc(var(--duration) * -2 / 3); }
 
-juggler-spinner svg {
+/* Scoped through .js-club (not a bare `juggler-spinner svg`) on purpose: it
+   raises specificity to (0,1,2) so a container's own icon rule can't reach in
+   and resize the clubs. Notably `.message-action-btn svg { width:1rem }` is
+   (0,1,1) and WOULD otherwise win when the spinner sits inside such a button
+   (e.g. the footer Pause button), blowing every club up to a full 1rem square
+   and piling them in the centre. The svg always lives inside .js-club, so this
+   still matches all three. */
+juggler-spinner .js-club svg {
     display: block;
     width: 100%;
     height: 100%;

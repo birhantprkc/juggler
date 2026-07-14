@@ -1396,9 +1396,33 @@ footer-processing[data-message-id] {
     cursor: pointer;
 }
 
-/* Right-align the Stop button, keeping the spinner + status text on the left. */
-.footer-stop-btn {
+/* Right-align the Pause + Stop pair, keeping the spinner + status text on the
+   left. margin-left:auto on the first (Pause) pushes the whole group right; Stop
+   then follows immediately after it via footer-processing's gap. */
+.footer-pause-btn {
     margin-left: auto;
+}
+
+/* Pause pending: the current step is finishing before the worker rests. A
+   transient active appearance, cleared the moment the conversation reaches idle. */
+.footer-pause-btn.active {
+    border-color: var(--accent-blue, #58a6ff);
+    color: var(--accent-blue, #58a6ff);
+}
+
+/* Pause pending: swap the static pause glyph for a spinner + "Pausing…" label.
+   A plain display swap is all it takes — the spinner's negative-delay cascade is
+   phase-correct whenever it starts, so revealing it from display:none is fine. */
+.footer-pause-spinner {
+    display: none;
+}
+
+.footer-pause-btn.pending .footer-pause-icon {
+    display: none;
+}
+
+.footer-pause-btn.pending .footer-pause-spinner {
+    display: inline-block;
 }
 
 footer-idle {

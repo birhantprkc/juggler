@@ -1276,6 +1276,7 @@ export class IntegrationTestHarness {
    * @param {number} [condition.itemCount] - Expected item count
    * @param {number} [condition.contextItemCount] - Expected context item count
    * @param {string} [condition.processingStatus] - Expected processing status
+   * @param {boolean} [condition.politePending] - Expected synced pause-pending cue (processingState.politePending)
    * @param {boolean} [condition.hasThreadItem] - Whether any thread item exists
    * @param {boolean} [condition.hasCompactionBarrier] - Whether compaction barrier exists
    * @param {number} [condition.completedThreadCount] - Minimum count of completed threads (with results)
@@ -1313,6 +1314,13 @@ export class IntegrationTestHarness {
       if (condition.processingStatus !== undefined) {
         const ps = this._conversation?.getMetadata('processingState');
         if (ps?.status !== condition.processingStatus) goalsMet = false;
+      }
+      if (condition.politePending !== undefined) {
+        // Server-authoritative pause-pending cue: the worker publishes
+        // processingState.politePending while the latch is set on a busy frame,
+        // so this is what a reloaded client rehydrates from.
+        const ps = this._conversation?.getMetadata('processingState');
+        if ((ps?.politePending === true) !== condition.politePending) goalsMet = false;
       }
       if (condition.hasThreadItem !== undefined) {
         const has = items.some(item => item.get('type') === 'thread');

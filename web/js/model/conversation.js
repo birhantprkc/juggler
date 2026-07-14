@@ -527,7 +527,9 @@ class Conversation {
 
   /**
    * Current worker processing state from the Yjs doc metadata.
-   * Includes `activity` ('' | 'calling_llm' | 'awaiting_llm') and `status`.
+   * Includes `activity` ('' | 'calling_llm' | 'awaiting_llm'), `status`, and
+   * `politePending` (true while a Pause latch is set on a busy frame — the
+   * server-authoritative source for the "Pausing…" cue across reloads).
    * Read-only — the worker is the sole writer.
    * @returns {{activity?: string, status?: string, [key: string]: unknown} | undefined} Plain object snapshot of the worker's processingState, or undefined when nothing has been written yet
    */
@@ -1469,6 +1471,16 @@ class Conversation {
   _stopHandlers = new Set();
 
   /**
+   * Optimistic "Pause pending" cue. True from a polite-stop request until the
+   * worker next settles to idle (see isPolitePending, which self-clears it).
+   * Local-only: it drives the Pause button's active appearance without a server
+   * round-trip. The settled state is ordinary idle — nothing distinguishes a
+   * paused conversation from any other idle one once the current step drains.
+   * @type {boolean}
+   */
+  _politePending = false;
+
+  /**
    * Finish processing and clean up
    *     */
   _finishProcessing() {
@@ -1721,6 +1733,66 @@ class Conversation {
     if (workerManager.isWorkerReady(this.id)) {
       workerManager.cancel(this.id);
     }
+  }
+
+  /**
+   * Request a polite stop (Pause): let the current step finish and record its
+   * real result, then rest at idle before the next LLM turn. Deliberately does
+   * NOT call stopProcessing / cancelAllActions / cancelAllPendingApprovals /
+   * addCancellationMessage — polite is uniformly non-destructive; it interrupts
+   * nothing and leaves every thread open. It only sends the `pause` message and
+   * flips the optimistic local cue so the Pause button renders active until the
+   * worker settles.
+   */
+  requestPoliteStop() {
+    if (!workerManager.isWorkerReady(this.id)) return;
+    workerManager.pause(this.id);
+    this._politePending = true;
+  }
+
+  /**
+   * Cancel a pending polite stop (Pause) — the inverse of requestPoliteStop.
+   * Clears the worker's pause latch (so the current turn continues to its next
+   * boundary rather than resting at idle) and drops the optimistic local cue (so
+   * the Pause button reverts to its plain state). A no-op unless a polite stop is
+   * actually pending, which is what makes the button a toggle: press to pause,
+   * press again to un-pause. Deliberately NOT reachable from shift+Escape — that
+   * shortcut only ever requests a pause, never cancels one.
+   */
+  cancelPoliteStop() {
+    // Key off isPolitePending() (which consults the synced worker flag), not the
+    // raw local field — after a reload _politePending is false but the pause may
+    // still be genuinely pending in the synced processingState, and the toggle
+    // must still cancel it.
+    if (!this.isPolitePending()) return;
+    if (workerManager.isWorkerReady(this.id)) workerManager.unpause(this.id);
+    this._politePending = false;
+  }
+
+  /**
+   * Whether a polite stop is in progress. Server-authoritative: the worker
+   * publishes `processingState.politePending` while the pause latch is set on a
+   * busy frame, so this survives a page reload (the local `_politePending` cue is
+   * reset to false on reload). The synced flag is the truth; `_politePending` is
+   * only the optimistic pre-sync cue that covers the window between the click and
+   * the worker's first frame carrying the flag.
+   *
+   * Self-clears the local cue once the turn is no longer active — i.e. the worker
+   * reached the ordinary idle it rests at after the current step drains — so a
+   * later Continue never inherits a stale pending cue.
+   * @returns {boolean} true while a polite stop is pending (current step still finishing)
+   */
+  isPolitePending() {
+    // Synced truth wins. Keep the local cue in step so paths that read
+    // _politePending directly stay consistent after a reload-driven rehydrate.
+    if (this.processingState?.politePending === true) {
+      this._politePending = true;
+      return true;
+    }
+    if (this._politePending && !this.isTurnActive()) {
+      this._politePending = false;
+    }
+    return this._politePending;
   }
 
   /**

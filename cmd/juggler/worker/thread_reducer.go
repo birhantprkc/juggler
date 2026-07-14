@@ -454,11 +454,21 @@ func (w *ConversationWorker) tryReconcile() {
 				w.dispatchCallLLMOnThread(currentThreadID)
 				return
 			}
-			w.promotePendingItems(currentThreadID)
-			w.sendStatus("idle", "")
+			w.restPromotingQueue(currentThreadID)
 			return
 		}
 	}
+}
+
+// restPromotingQueue is the promote-and-idle exit: it drains any queued
+// ("interject while busy") messages into the thread as ordinary user items and
+// rests at idle. Shared by the reducer's ActionGoIdle rest branch and the polite
+// stop (Pause) boundaries — a polite stop reaches the SAME exit a hard stop
+// reaches via finalizeCancellation's tail, so queued messages simply become
+// normal user bubbles sitting at idle with no polite-specific handling (D4).
+func (w *ConversationWorker) restPromotingQueue(threadItemID string) {
+	w.promotePendingItems(threadItemID)
+	w.sendStatus("idle", "")
 }
 
 // dispatchCallLLMOnThread is the reducer's action handler for ActionCallLLM.
@@ -475,6 +485,19 @@ func (w *ConversationWorker) dispatchCallLLMOnThread(threadItemID string) {
 	// hitting Continue kicks it off".
 	if w.loadState() != StateIdle {
 		w.needsReconcile = true
+		return
+	}
+
+	// Polite stop (Pause): the user asked to rest before the next LLM turn. This
+	// is the sole entry into runStrategyLoop, and the reducer only reaches
+	// ActionCallLLM once every tool in the batch is terminal — so in-flight work
+	// has already drained and committed its real results (D1, D3). Consume the
+	// latch and take the shared promote-and-idle exit instead of driving a fresh
+	// turn; the transcript is a clean, resumable prefix. consumePolitePending
+	// Swap(false)s the latch so the NEXT, user-initiated turn isn't also
+	// suppressed (D6, V5), and drops the synced pending cue.
+	if w.consumePolitePending() {
+		w.restPromotingQueue(threadItemID)
 		return
 	}
 

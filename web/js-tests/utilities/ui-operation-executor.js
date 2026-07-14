@@ -268,6 +268,26 @@ export async function executeUIOperation(harness, op) {
       break;
     }
 
+    case 'pause': {
+      // Polite stop (Pause): non-destructive. Routes through the same model-level
+      // entry the footer Pause button and shift+Escape use (requestPoliteStop) —
+      // it only sends the `pause` message and flips the optimistic local cue. The
+      // worker latches it and rests at idle at the next boundary; nothing is
+      // cancelled, no approval is rejected, no thread is closed.
+      harness.conversation.requestPoliteStop();
+      break;
+    }
+
+    case 'cancel-pause': {
+      // Toggle Pause back off: cancel a pending polite stop. Routes through the
+      // same model-level entry the footer Pause button's second click uses
+      // (cancelPoliteStop) — it sends the `unpause` message and clears the local
+      // pending cue, so the worker drops the latch and the turn continues to its
+      // next boundary. A no-op unless a polite stop is actually pending.
+      harness.conversation.cancelPoliteStop();
+      break;
+    }
+
     case 'wait-for-mock-paused': {
       // Wait for the worker to reach a paused mock response.
       // Deterministic: worker writes processingState.status='mock-paused' as

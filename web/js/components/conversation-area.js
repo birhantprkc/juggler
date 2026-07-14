@@ -2139,7 +2139,8 @@ class ConversationArea extends HTMLElement {
       showCloseThread,
       showCloseWithLastMessage,
       showDuplicateTab,
-      busyItemMessageId: itemBusy?.messageId
+      busyItemMessageId: itemBusy?.messageId,
+      politePending: !!this._conversation?.isPolitePending?.()
     });
   }
 

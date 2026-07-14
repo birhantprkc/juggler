@@ -510,6 +510,28 @@ class WorkerManager {
   }
 
   /**
+   * Request a polite stop (Pause): let the current step finish and record its
+   * real result, then rest at idle before the next LLM turn. Non-destructive —
+   * the worker latches this and cancels nothing. Distinct WS message type so the
+   * hot mid-turn wait-loop selects can branch on Type without parsing a payload.
+   * @param {string} conversationId - Conversation ID
+   */
+  pause(conversationId) {
+    this.sendToWorker(conversationId, { type: 'pause' });
+  }
+
+  /**
+   * Cancel a pending polite stop (Pause): clear the worker's pause latch so the
+   * current turn continues to its next boundary instead of resting at idle. Sent
+   * when the Pause button is toggled back off before the pause takes effect.
+   * Symmetric to pause; a no-op on the worker if the latch was already consumed.
+   * @param {string} conversationId - Conversation ID
+   */
+  unpause(conversationId) {
+    this.sendToWorker(conversationId, { type: 'unpause' });
+  }
+
+  /**
    * Create a sub-thread on the worker (strategy-driven).
    * Blocks until the thread completes and returns its result.
    * @param {string} conversationId - Conversation ID
