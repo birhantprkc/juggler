@@ -1338,15 +1338,25 @@ class Conversation {
       // Capture input box before command runs — commands may change the active column
       const inputBox = this._getInputBox();
       const boundBefore = this._inputBoxThreadId(inputBox);
+      // Clear the box BEFORE running the command, not after. A command like
+      // /handoff clones the conversation part-way through execute(), and the
+      // clone is taken from the source's persisted draft — so if the command
+      // text is still sitting in the box when the snapshot happens, it
+      // reappears prefilled in the new conversation's input. Clearing first
+      // means the clone captures an empty draft. Gated on the same pattern
+      // slashCommandHandler.execute() treats as handled (`/foo`, not a bare
+      // "/" or "/123"), so genuinely-unhandled input still falls through to a
+      // normal send and survives a validation failure in the box. Guarded so a
+      // scheduled send firing on a hidden thread doesn't wipe the visible
+      // column's in-progress draft. (A command that sets a draft — 'draft' run
+      // mode's setDraft side effect — runs after this, so it isn't clobbered.)
+      if (/^\/[a-zA-Z]/.test(userMessage)
+          && inputBox && typeof (/** @type {any} */ (inputBox).clearInput) === 'function'
+          && boundBefore === this._targetThreadId(messageThread, threadItemId)) {
+        /** @type {any} */ (inputBox).clearInput();
+      }
       const result = await slashCommandHandler.execute(userMessage, messageThread);
       if (result.handled) {
-        // Only clear the box if it is (still) showing the thread we sent to —
-        // a scheduled send fired on a hidden thread must not wipe the visible
-        // column's in-progress draft.
-        if (inputBox && typeof (/** @type {any} */ (inputBox).clearInput) === 'function'
-            && boundBefore === this._targetThreadId(messageThread, threadItemId)) {
-          /** @type {any} */ (inputBox).clearInput();
-        }
         if (result.message) {
           this.showWarning(result.message, 3000);
         }

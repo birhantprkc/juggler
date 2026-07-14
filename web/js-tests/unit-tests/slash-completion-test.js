@@ -96,11 +96,18 @@ export async function runTests() {
         `fetch("cl") must return only cl* commands, got ${JSON.stringify(filtered)}`);
       assert(filtered.includes('clear'), `fetch("cl") must still offer /clear, got ${JSON.stringify(filtered)}`);
 
-      // The pinned "New command…" row is always last, carrying the typed query.
+      // The pinned "New command…" row is last, carrying the typed query.
       const withRow = await slashCommandProvider.fetch('standup');
       const pinned = withRow[withRow.length - 1];
       assert(pinned && pinned.action === 'new-command' && pinned.query === 'standup',
         `fetch must pin a New command row carrying the query, got ${JSON.stringify(pinned)}`);
+
+      // …but it is suppressed when the query exactly names an existing command —
+      // creating a duplicate /clear is impossible, so no dead-end create row.
+      const exact = await slashCommandProvider.fetch('clear');
+      assert(exact.every((c) => c.action !== 'new-command'),
+        `fetch("clear") must not offer a New command row for an existing name, got ${JSON.stringify(exact.map((c) => c.action || c.name))}`);
+      assert(realNames(exact).includes('clear'), 'fetch("clear") must still offer /clear itself');
 
       // insert() splices text only — "/name " with a trailing space, no send.
       assert(slashCommandProvider.insert({ name: 'clear' }) === '/clear ',

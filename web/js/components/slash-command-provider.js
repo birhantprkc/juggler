@@ -17,8 +17,10 @@ import { openCommandEditor } from './command-editor-dialog.js';
  * an accepted `@` mention only splices text.
  *
  * User-defined commands appear alongside built-ins with a small provenance badge
- * ("user"/"project"). A pinned "New command…" row is always offered last so that
- * typing a name that does not exist becomes the discovery path for creating one.
+ * ("user"/"project"). A pinned "New command…" row is offered last so that typing
+ * a name that does not exist becomes the discovery path for creating one — but it
+ * is suppressed when the query exactly names an existing command, since creating
+ * a duplicate is impossible.
  * @module components/slash-command-provider
  */
 
@@ -49,14 +51,18 @@ export const slashCommandProvider = {
   async fetch(query) {
     await slashCommandHandler.init();
     const q = query.toLowerCase();
+    const commands = slashCommandHandler.getCommands();
     // Items are opaque to the menu, and the list mixes real commands with a
     // synthetic "New command…" row, so it is typed loosely.
-    const matches = /** @type {any[]} */ (slashCommandHandler.getCommands()
+    const matches = /** @type {any[]} */ (commands
       .filter(c => c.name.toLowerCase().startsWith(q) || (c.label?.toLowerCase().startsWith(q) ?? false))
       .sort((a, b) => a.name.localeCompare(b.name)));
     // Pin a "New command…" row at the end so an unmatched query (e.g. /standup)
     // becomes the create path. It carries the current query to pre-fill the name.
-    matches.push({ ...NEW_COMMAND_SENTINEL, query });
+    // Suppress it when the query already names an existing command (built-in or
+    // user) — creating a duplicate is impossible, so the row would be a dead end.
+    const nameTaken = q !== '' && commands.some(c => c.name.toLowerCase() === q);
+    if (!nameTaken) matches.push({ ...NEW_COMMAND_SENTINEL, query });
     return matches;
   },
 
