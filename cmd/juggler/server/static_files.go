@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -212,41 +213,53 @@ func (s *Server) loadIndexTemplate() error {
 	return nil
 }
 
+// readWebAsset reads a static asset by its forward-slash path relative to the
+// web root. When assets-from-disk is active it reads from the on-disk web dir
+// (so live edits take effect) and falls back to the embedded copy on any miss;
+// otherwise it reads straight from fallbackFS. relPath is used verbatim as the
+// embedded FS key and, split on '/', as the on-disk path segments.
+func (s *Server) readWebAsset(relPath string, fallbackFS fs.FS) ([]byte, error) {
+	if s.assetsFromDisk {
+		if staticDir, derr := s.findStaticDir(); derr == nil {
+			segs := append([]string{staticDir}, strings.Split(relPath, "/")...)
+			if content, rerr := os.ReadFile(filepath.Join(segs...)); rerr == nil {
+				return content, nil
+			}
+		}
+	}
+	return fs.ReadFile(fallbackFS, relPath)
+}
+
+// serveTemplatedHTML writes body as a no-cache HTML response after substituting
+// each {{.Key}} placeholder with its value — a lightweight stand-in for
+// html/template used by the static pages that only need literal string
+// substitution. setHeaders installs the page-specific security headers.
+func serveTemplatedHTML(w http.ResponseWriter, body string, vars map[string]string, setHeaders func()) {
+	for k, v := range vars {
+		body = strings.ReplaceAll(body, "{{."+k+"}}", v)
+	}
+	setHeaders()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+	_, _ = w.Write([]byte(body))
+}
+
 // serveEngine serves the engine page for the hidden headless browser.
 // External access is harmless — the engine page only exposes a WS upgrade
 // path which is itself loopback-gated in handleWebSocket.
 func (s *Server) serveEngine(w http.ResponseWriter, r *http.Request) {
-	var content []byte
-	var err error
-
-	if s.assetsFromDisk {
-		// Assets-from-disk: load from disk for live reload
-		staticDir, findErr := s.findStaticDir()
-		if findErr == nil {
-			content, err = os.ReadFile(filepath.Join(staticDir, "engine.html"))
-		}
-		if err != nil || findErr != nil {
-			// Fall back to embedded
-			content, err = web.Files.ReadFile("engine.html")
-		}
-	} else {
-		content, err = web.Files.ReadFile("engine.html")
-	}
-
+	content, err := s.readWebAsset("engine.html", web.Files)
 	if err != nil {
 		http.Error(w, "Engine page not found", http.StatusNotFound)
 		return
 	}
 
 	nonce := generateCSPNonce()
-	html := strings.ReplaceAll(string(content), "{{.StaticVersion}}", s.staticVersion)
-	html = strings.ReplaceAll(html, "{{.CSPNonce}}", nonce)
-	html = strings.ReplaceAll(html, "{{.APIToken}}", s.apiToken)
-
-	setHTMLSecurityHeaders(w, nonce)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
-	_, _ = w.Write([]byte(html))
+	serveTemplatedHTML(w, string(content), map[string]string{
+		"StaticVersion": s.staticVersion,
+		"CSPNonce":      nonce,
+		"APIToken":      s.apiToken,
+	}, func() { setHTMLSecurityHeaders(w, nonce) })
 }
 
 // serveHeadlessTest serves the headless test page (only registered by RegisterTestRoutes)
@@ -254,33 +267,19 @@ func (s *Server) serveHeadlessTest(w http.ResponseWriter, r *http.Request) {
 	// With assets-from-disk, read from disk so edits take effect without
 	// rebuilding. juggler-test runs with --assets-from-disk, so tests never use
 	// baked-in files.
-	var content []byte
-	var err error
-	if s.assetsFromDisk {
-		if staticDir, derr := s.findStaticDir(); derr == nil {
-			content, err = os.ReadFile(filepath.Join(staticDir, "js-tests", "headless-test.html"))
-		} else {
-			err = derr
-		}
-	}
-	if content == nil {
-		content, err = web.TestFiles.ReadFile("js-tests/headless-test.html")
-	}
+	content, err := s.readWebAsset("js-tests/headless-test.html", web.TestFiles)
 	if err != nil {
 		http.Error(w, "Headless test runner not found", http.StatusNotFound)
 		return
 	}
 
 	nonce := generateCSPNonce()
-	html := strings.ReplaceAll(string(content), "{{.StaticVersion}}", s.staticVersion)
-	html = strings.ReplaceAll(html, "{{.CSPNonce}}", nonce)
-
-	// Allow same-origin framing so the /test-pool host page can tile N copies
-	// of this page in iframes.
-	setHTMLSecurityHeadersFramed(w, nonce, true, "")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
-	_, _ = w.Write([]byte(html))
+	serveTemplatedHTML(w, string(content), map[string]string{
+		"StaticVersion": s.staticVersion,
+		"CSPNonce":      nonce,
+		// Allow same-origin framing so the /test-pool host page can tile N copies
+		// of this page in iframes.
+	}, func() { setHTMLSecurityHeadersFramed(w, nonce, true, "") })
 }
 
 // serveTestPool serves a tiling host page that mounts N copies of
@@ -335,21 +334,7 @@ func (s *Server) serveTestPool(w http.ResponseWriter, r *http.Request) {
 // untrusted code inside a sandboxed iframe with its own CSP, isolating it from
 // the host page. See setSandboxSecurityHeaders for the served CSP.
 func (s *Server) serveSandbox(w http.ResponseWriter, r *http.Request) {
-	var content []byte
-	var err error
-
-	if s.assetsFromDisk {
-		staticDir, findErr := s.findStaticDir()
-		if findErr == nil {
-			content, err = os.ReadFile(filepath.Join(staticDir, "sandbox.html"))
-		}
-		if err != nil || findErr != nil {
-			content, err = web.Files.ReadFile("sandbox.html")
-		}
-	} else {
-		content, err = web.Files.ReadFile("sandbox.html")
-	}
-
+	content, err := s.readWebAsset("sandbox.html", web.Files)
 	if err != nil {
 		http.Error(w, "Sandbox page not found", http.StatusNotFound)
 		return
@@ -367,14 +352,11 @@ func (s *Server) serveSandbox(w http.ResponseWriter, r *http.Request) {
 	// same way, so a backslash projectRoot would mismatch when joined or prefix-
 	// stripped against those forward-slash paths.
 	projectRoot := filepath.ToSlash(s.ProjectPath())
-	html := strings.ReplaceAll(string(content), "{{.CSPNonce}}", nonce)
-	html = strings.ReplaceAll(html, "{{.StaticVersion}}", s.staticVersion)
-	html = strings.ReplaceAll(html, "{{.ProjectRoot}}", template.JSEscapeString(projectRoot))
-
-	setSandboxSecurityHeaders(w, nonce, requestOrigin(r))
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
-	_, _ = w.Write([]byte(html))
+	serveTemplatedHTML(w, string(content), map[string]string{
+		"CSPNonce":      nonce,
+		"StaticVersion": s.staticVersion,
+		"ProjectRoot":   template.JSEscapeString(projectRoot),
+	}, func() { setSandboxSecurityHeaders(w, nonce, requestOrigin(r)) })
 }
 
 // serveFavicon serves the logo SVG directly as the favicon. Serving the bytes
@@ -383,18 +365,7 @@ func (s *Server) serveSandbox(w http.ResponseWriter, r *http.Request) {
 // cross-path redirect — e.g. a request proxied over the juggler.studio P2P
 // DataChannel — still gets the icon.
 func (s *Server) serveFavicon(w http.ResponseWriter, r *http.Request) {
-	var content []byte
-	var err error
-	if s.assetsFromDisk {
-		if staticDir, derr := s.findStaticDir(); derr == nil {
-			content, err = os.ReadFile(filepath.Join(staticDir, "resources", "juggler-logo.svg"))
-		} else {
-			err = derr
-		}
-	}
-	if content == nil {
-		content, err = web.Files.ReadFile("resources/juggler-logo.svg")
-	}
+	content, err := s.readWebAsset("resources/juggler-logo.svg", web.Files)
 	if err != nil {
 		http.Error(w, "favicon not found", http.StatusNotFound)
 		return

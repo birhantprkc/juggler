@@ -6,13 +6,9 @@ package openaicodex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"sort"
-	"time"
 
 	"juggler/cmd/juggler/providers/openaibase"
 	provider "juggler/cmd/juggler/providers/registry"
@@ -69,32 +65,13 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 	query.Set("client_version", codexClientVersion)
 	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build OpenAI Codex models request: %w", err)
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	if bearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+bearerToken)
-	}
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list models from OpenAI Codex: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("OpenAI Codex /models returned %d: %s", resp.StatusCode, string(body))
-	}
-
 	var parsed codexModelsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("failed to decode OpenAI Codex models response: %w", err)
+	if err := utils.GetJSON(ctx, endpoint.String(), utils.JSONGetOptions{
+		Bearer:  bearerToken,
+		Headers: headers,
+		Label:   "OpenAI Codex /models",
+	}, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to list models from OpenAI Codex: %w", err)
 	}
 
 	sort.SliceStable(parsed.Models, func(i, j int) bool {

@@ -6,6 +6,7 @@ package openaibase
 
 import (
 	"context"
+	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/providers/utils"
@@ -182,7 +183,11 @@ func (c *openAICompatClient) Name() string { return c.desc.Name }
 // (every turn is one HTTP request that carries its own history) so the
 // handle just owns the per-turn dispatch.
 func (c *openAICompatClient) OpenConversation(ctx context.Context, convID string) (provider.Conversation, error) {
-	return &conversation{client: c.Client, convID: convID}, nil
+	// CacheTTL 5m: OpenAI's prefix cache is automatic with a sliding ~5–10 min
+	// TTL; 5m is the conservative end so the UI's cached-anchor expires before
+	// the upstream cache does rather than displaying a phantom hit. Embedding
+	// derived providers inherit this.
+	return &provider.StatelessConversation{ConvID: convID, TTL: 5 * time.Minute, Dispatch: c.streamMessage}, nil
 }
 
 func (c *openAICompatClient) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, error) {

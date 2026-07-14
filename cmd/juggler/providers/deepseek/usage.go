@@ -6,14 +6,12 @@ package deepseek
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strconv"
 	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/utils"
 )
 
 // usageEndpoint is the DeepSeek prepaid-balance endpoint. It sits at the API
@@ -35,35 +33,14 @@ type balanceInfo struct {
 // remaining balance rather than a rate-limit window, so each stat is a raw money
 // value (no percentage meter).
 func usageStats(ctx context.Context, credential string, headers map[string]string) (provider.UsageStats, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, usageEndpoint, nil)
-	if err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to build DeepSeek balance request: %w", err)
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	if credential != "" {
-		req.Header.Set("Authorization", "Bearer "+credential)
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
-	}
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to fetch DeepSeek balance: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return provider.UsageStats{}, fmt.Errorf("DeepSeek /user/balance returned %d: %s", resp.StatusCode, string(body))
-	}
-
 	var parsed balanceResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to decode DeepSeek balance response: %w", err)
+	if err := utils.GetJSON(ctx, usageEndpoint, utils.JSONGetOptions{
+		Bearer:   credential,
+		Headers:  headers,
+		Defaults: map[string]string{"Accept": "application/json"},
+		Label:    "DeepSeek /user/balance",
+	}, &parsed); err != nil {
+		return provider.UsageStats{}, err
 	}
 	return buildUsageStats(parsed, time.Now()), nil
 }

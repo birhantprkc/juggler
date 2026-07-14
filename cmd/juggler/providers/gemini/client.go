@@ -356,7 +356,8 @@ func convertMessagesToGeminiContents(messages []provider.Message, allowImages bo
 // request that carries its full history — so the handle just owns the
 // model identity + per-turn dispatch.
 func (c *Client) OpenConversation(ctx context.Context, convID string) (provider.Conversation, error) {
-	return &conversation{client: c, convID: convID}, nil
+	// TTL 0: gemini doesn't expose a TTL-bounded prefix cache through this client.
+	return &provider.StatelessConversation{ConvID: convID, Dispatch: c.streamMessage}, nil
 }
 
 // streamMessage sends a message and streams the response with structured chunks.
@@ -716,22 +717,6 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 	// documented auth mechanism.
 	const url = "https://generativelanguage.googleapis.com/v1beta/models"
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("x-goog-api-key", c.apiKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list models from Gemini: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to list models from Gemini: HTTP %d", resp.StatusCode)
-	}
-
 	var result struct {
 		Models []struct {
 			Name                       string   `json:"name"`
@@ -742,8 +727,12 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 		} `json:"models"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to parse models response: %w", err)
+	if err := utils.GetJSON(ctx, url, utils.JSONGetOptions{
+		Headers: map[string]string{"x-goog-api-key": c.apiKey},
+		Client:  c.httpClient,
+		Label:   "Gemini /models",
+	}, &result); err != nil {
+		return nil, fmt.Errorf("failed to list models from Gemini: %w", err)
 	}
 
 	var modelInfos []provider.ModelInfo

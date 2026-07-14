@@ -105,10 +105,10 @@ func (w *ConversationWorker) driveToolActions() {
 	// actually commanded before, at this same state.
 	var toDispatch []toolCmd
 	for _, c := range cmds {
-		if prev, ok := w.commandedToolActions[c.id]; ok && prev == c.state {
+		if prev, ok := w.tools.commandedAt(c.id); ok && prev == c.state {
 			continue // engine confirmed it handled this state (positive ack)
 		}
-		if prev, ok := w.inFlightToolCommands[c.id]; ok && prev == c.state {
+		if prev, ok := w.tools.inFlightAt(c.id); ok && prev == c.state {
 			continue // dispatched, awaiting the engine's ack — don't re-spam it
 		}
 		toDispatch = append(toDispatch, c)
@@ -134,8 +134,7 @@ func (w *ConversationWorker) driveToolActions() {
 		// re-dispatches. (This replaced an optimistic latch straight into
 		// commandedToolActions, which wedged the tool forever if the single
 		// command was dropped or no-op'd by the engine.)
-		w.inFlightToolCommands[c.id] = c.state
-		w.inFlightDispatchedAt[c.id] = time.Now()
+		w.tools.markInFlight(c.id, c.state, time.Now())
 		w.dispatchToolCommand(c.action, c.id)
 	}
 	// A command is now outstanding: arm the watchdog so a silently-dropped command
@@ -238,7 +237,7 @@ func (w *ConversationWorker) reevaluatePendingToolsOnStrategyChange() {
 			"approvalOptions":  nil,
 			"displayData":      nil,
 		})
-		delete(w.commandedToolActions, id)
+		w.tools.clearCommanded(id)
 	}
 	if len(ids) > 0 {
 		w.tape.Record("strategy-switch-reevaluate", map[string]any{
@@ -293,7 +292,7 @@ func (w *ConversationWorker) disarmAckWatchdog() {
 // disarmAckWatchdogIfDrained disarms the watchdog once no tool-command remains in
 // flight, so an idle worker has no pending wakeups.
 func (w *ConversationWorker) disarmAckWatchdogIfDrained() {
-	if len(w.inFlightToolCommands) == 0 {
+	if w.tools.inFlightCount() == 0 {
 		w.disarmAckWatchdog()
 	}
 }
@@ -318,7 +317,7 @@ func (w *ConversationWorker) sweepStaleToolCommands() {
 	// The timer fired; clear the handle so armAckWatchdog can re-arm below.
 	w.ackWatchdog = nil
 
-	if len(w.inFlightToolCommands) == 0 {
+	if w.tools.inFlightCount() == 0 {
 		return
 	}
 
@@ -341,35 +340,31 @@ func (w *ConversationWorker) sweepStaleToolCommands() {
 
 	now := time.Now()
 	var escalate []string
-	for id, dispatchedState := range w.inFlightToolCommands {
-		sentAt, ok := w.inFlightDispatchedAt[id]
-		if !ok {
+	for _, c := range w.tools.inFlightSnapshot() {
+		if c.dispatchedAt.IsZero() {
 			// Missing timestamp (shouldn't happen): stamp it and wait one cycle.
-			w.inFlightDispatchedAt[id] = now
+			w.tools.restamp(c.id, now)
 			continue
 		}
-		if now.Sub(sentAt) < w.ackTimeout {
+		if now.Sub(c.dispatchedAt) < w.ackTimeout {
 			continue // not stale yet
 		}
 
-		if cur, present := states[id]; !present || cur != dispatchedState {
+		if cur, present := states[c.id]; !present || cur != c.state {
 			// Engine acted (claimed/ran/removed) — only the ack was lost. Drop the
 			// stale bookkeeping; the normal reconcile handles the rest. Never re-drive.
-			delete(w.inFlightToolCommands, id)
-			delete(w.inFlightDispatchedAt, id)
+			w.tools.clearInFlight(c.id)
 			continue
 		}
 
-		n := w.toolCommandTimeouts[id] + 1
-		w.toolCommandTimeouts[id] = n
+		n := w.tools.bumpTimeouts(c.id)
 		if n > maxToolCommandTimeouts {
-			escalate = append(escalate, id)
+			escalate = append(escalate, c.id)
 			continue
 		}
 		w.log.Error("[worker] engine never acked tool-command for %s (state=%q) in %s within %s; re-driving (%d/%d)",
-			id, dispatchedState, w.conversationID, w.ackTimeout, n, maxToolCommandTimeouts)
-		delete(w.inFlightToolCommands, id)
-		delete(w.inFlightDispatchedAt, id)
+			c.id, c.state, w.conversationID, w.ackTimeout, n, maxToolCommandTimeouts)
+		w.tools.clearInFlight(c.id)
 		w.needsReconcile = true
 	}
 
@@ -377,9 +372,18 @@ func (w *ConversationWorker) sweepStaleToolCommands() {
 		w.escalateStaleToolCommand(id)
 	}
 
-	if len(w.inFlightToolCommands) > 0 {
+	if w.tools.inFlightCount() > 0 {
 		w.armAckWatchdog()
 	}
+}
+
+// clearToolCommandBookkeeping drops every dedup/in-flight/escalation field for a
+// toolUseId at a full-reset site (user-triggered retry, escalation-to-failed).
+// Leaving any field populated wedges the re-drive: a stale in-flight latch makes
+// the staleness sweep think a command is still outstanding, and a stale
+// retry/timeout count prematurely trips the escalation caps on the next run.
+func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
+	w.tools.clear(id)
 }
 
 // escalateStaleToolCommand fails a tool whose engine command went unacknowledged
@@ -387,26 +391,12 @@ func (w *ConversationWorker) sweepStaleToolCommands() {
 // tool-action — the same recovery shape as a worker-side cancel
 // (cancelToolsInArray) — so the reducer feeds an isError tool-result to the
 // provider and a parked CLI unblocks (doc.go: "degrade to a recoverable error,
-// clearToolCommandBookkeeping drops every watchdog/dedup entry for a toolUseID
-// at a full-reset site (user-triggered retry, escalation-to-failed). Leaving any
-// of the five maps populated wedges the re-drive: a stale inFlightToolCommands /
-// inFlightDispatchedAt makes the staleness sweep think a command is still
-// outstanding, and a stale toolCommandRetries / toolCommandTimeouts count
-// prematurely trips the escalation caps on the next run.
-func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
-	delete(w.commandedToolActions, id)
-	delete(w.inFlightToolCommands, id)
-	delete(w.toolCommandRetries, id)
-	delete(w.inFlightDispatchedAt, id)
-	delete(w.toolCommandTimeouts, id)
-}
-
 // never an infinite wait"). All bookkeeping for the id is cleared.
 func (w *ConversationWorker) escalateStaleToolCommand(id string) {
 	w.log.Error("[worker] tool-command for %s in %s went unacknowledged %d×; failing the tool to unblock the turn",
-		id, w.conversationID, w.toolCommandTimeouts[id])
+		id, w.conversationID, w.tools.timeoutCount(id))
 	w.tape.Record("tool-command-timeout-escalate", map[string]any{
-		"id": id, "timeouts": w.toolCommandTimeouts[id],
+		"id": id, "timeouts": w.tools.timeoutCount(id),
 	})
 	w.doc.UpdateToolActionFieldsRecursive(id, map[string]any{
 		"state": StateCompleted,

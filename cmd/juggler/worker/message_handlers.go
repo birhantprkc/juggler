@@ -652,11 +652,7 @@ func (w *ConversationWorker) handleResyncToOrigin() {
 	// commanded again against the new engine instance. Drop in-flight/retry
 	// bookkeeping too: any command awaiting an ack from the previous engine will
 	// never be answered, so it must not block re-driving against the new one.
-	w.commandedToolActions = make(map[string]string)
-	w.inFlightToolCommands = make(map[string]string)
-	w.toolCommandRetries = make(map[string]int)
-	w.inFlightDispatchedAt = make(map[string]time.Time)
-	w.toolCommandTimeouts = make(map[string]int)
+	w.tools.resetAll()
 	// No command is in flight against the new engine yet; disarm the watchdog (the
 	// drive below re-arms it if it dispatches).
 	w.disarmAckWatchdog()
@@ -740,11 +736,7 @@ func (w *ConversationWorker) resetRunningToolsForReattach() {
 			"state":            StateApproved,
 			"runningStartedAt": nil,
 		})
-		delete(w.commandedToolActions, id)
-		delete(w.inFlightToolCommands, id)
-		delete(w.toolCommandRetries, id)
-		delete(w.inFlightDispatchedAt, id)
-		delete(w.toolCommandTimeouts, id)
+		w.tools.clear(id)
 	}
 }
 
@@ -775,30 +767,27 @@ func (w *ConversationWorker) handleToolCommandAck(payload json.RawMessage) {
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
 	}
-	state, inFlight := w.inFlightToolCommands[msg.ToolUseID]
+	state, inFlight := w.tools.inFlightAt(msg.ToolUseID)
 	if !inFlight {
 		// Stale or duplicate ack, or the tool already moved on — nothing to do.
 		return
 	}
-	delete(w.inFlightToolCommands, msg.ToolUseID)
-	delete(w.inFlightDispatchedAt, msg.ToolUseID)
+	w.tools.clearInFlight(msg.ToolUseID)
 	// An ack arrived, so the silent-ack watchdog has nothing to do for this id;
 	// disarm once nothing else is in flight (no idle wakeups).
 	defer w.disarmAckWatchdogIfDrained()
 
 	if msg.OK {
-		w.commandedToolActions[msg.ToolUseID] = state
-		delete(w.toolCommandRetries, msg.ToolUseID)
-		delete(w.toolCommandTimeouts, msg.ToolUseID)
+		w.tools.markCommanded(msg.ToolUseID, state)
+		w.tools.clearCounts(msg.ToolUseID)
 		return
 	}
 
-	n := w.toolCommandRetries[msg.ToolUseID] + 1
-	w.toolCommandRetries[msg.ToolUseID] = n
+	n := w.tools.bumpRetries(msg.ToolUseID)
 	if n > maxToolCommandRetries {
 		w.log.Error("[worker] tool-command %s for %s no-op'd %d×; latching to stop re-drive (recovery deferred to reattach)",
 			msg.Action, msg.ToolUseID, n)
-		w.commandedToolActions[msg.ToolUseID] = state
+		w.tools.markCommanded(msg.ToolUseID, state)
 		return
 	}
 	// Re-drive: with both maps cleared for this id, the next reconcile re-dispatches

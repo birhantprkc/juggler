@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/providers/utils"
@@ -598,7 +599,10 @@ func (c *Client) finalizeCurrentBlock(
 // per turn carries its own history) so the handle just owns the model
 // identity + per-turn dispatch.
 func (c *Client) OpenConversation(ctx context.Context, convID string) (provider.Conversation, error) {
-	return &conversation{client: c, convID: convID}, nil
+	// CacheTTL 5m: the ephemeral cache_control breakpoints buildMessageParams
+	// writes default to Anthropic's 5-minute TTL, so the UI treats a warm anchor
+	// as stale after 5 minutes of inactivity.
+	return &provider.StatelessConversation{ConvID: convID, TTL: 5 * time.Minute, Dispatch: c.streamMessage}, nil
 }
 
 // streamMessage streams a message to Claude API.

@@ -21,40 +21,33 @@ import (
 // (dispatchCallLLMOnThread): a failed claim means another turn is already
 // running, so the reducer leaves the work for the next reconcile tick.
 func (w *ConversationWorker) claimLLM(threadItemID string) bool {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	var claimed bool
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		raw := w.doc.metadata.Get("processingState")
-		existing, _ := fromYcrdt(raw).(map[string]any)
-		if existing != nil {
-			activity, _ := existing["activity"].(string)
-			// Succeed from null or "awaiting_llm"; fail if already "calling_llm".
-			if activity != ActivityNone && activity != ActivityAwaitingLLM {
-				return // already claimed for an LLM call
+	return w.patchProcessingStateIf(
+		func(existing map[string]any) bool {
+			if existing != nil {
+				activity, _ := existing["activity"].(string)
+				// Succeed from null or "awaiting_llm"; fail if already "calling_llm".
+				if activity != ActivityNone && activity != ActivityAwaitingLLM {
+					return false // already claimed for an LLM call
+				}
 			}
-		}
-		updated := map[string]any{}
-		for k, v := range existing {
-			updated[k] = v
-		}
-		now := time.Now().UnixMilli()
-		updated["activity"] = ActivityCallingLLM
-		updated["claimedAt"] = now
-		updated["threadItemId"] = threadItemID
-		// Keep status/message/startedAt fields as-is so the UI doesn't
-		// briefly flicker through an intermediate state; sendStatus will
-		// shortly overwrite them with the first loop phase.
-		if _, hasStatus := updated["status"]; !hasStatus {
-			updated["status"] = "preparing"
-		}
-		if _, hasStarted := updated["startedAt"]; !hasStarted {
-			updated["startedAt"] = now
-		}
-		w.doc.metadata.Set("processingState", toYcrdt(updated))
-		claimed = true
-	}, w.doc.authorID)
-	return claimed
+			return true
+		},
+		func(updated map[string]any) {
+			now := time.Now().UnixMilli()
+			updated["activity"] = ActivityCallingLLM
+			updated["claimedAt"] = now
+			updated["threadItemId"] = threadItemID
+			// Keep status/message/startedAt fields as-is so the UI doesn't
+			// briefly flicker through an intermediate state; sendStatus will
+			// shortly overwrite them with the first loop phase.
+			if _, hasStatus := updated["status"]; !hasStatus {
+				updated["status"] = "preparing"
+			}
+			if _, hasStarted := updated["startedAt"]; !hasStarted {
+				updated["startedAt"] = now
+			}
+		},
+	)
 }
 
 // releaseLLM clears the doc-native claim without touching any other
@@ -62,38 +55,39 @@ func (w *ConversationWorker) claimLLM(threadItemID string) bool {
 // path goes through sendStatus("idle", "") which ALSO clears the claim;
 // releaseLLM is used by error paths and the init-time reconciliation.
 func (w *ConversationWorker) releaseLLM() {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		raw := w.doc.metadata.Get("processingState")
-		existing, _ := fromYcrdt(raw).(map[string]any)
-		if existing == nil {
-			return
-		}
-		if _, has := existing["activity"]; !has {
-			return
-		}
-		updated := map[string]any{}
-		for k, v := range existing {
-			updated[k] = v
-		}
-		delete(updated, "activity")
-		delete(updated, "claimedAt")
-		w.doc.metadata.Set("processingState", toYcrdt(updated))
-	}, w.doc.authorID)
+	w.patchProcessingStateIf(
+		func(existing map[string]any) bool {
+			if existing == nil {
+				return false
+			}
+			_, has := existing["activity"]
+			return has
+		},
+		func(updated map[string]any) {
+			delete(updated, "activity")
+			delete(updated, "claimedAt")
+		},
+	)
 }
 
-// patchProcessingState applies mutate to a shallow copy of the doc's
-// processingState map inside a single transaction and writes it back. No-op when
-// processingState is absent. Shared write preamble (lock + read + clone + set)
-// for the small field-level updates below, so the boilerplate lives in one place.
-func (w *ConversationWorker) patchProcessingState(mutate func(map[string]any)) {
+// patchProcessingStateIf is the shared compare-and-set preamble (lock + read +
+// gate + clone + mutate + set) for every doc-native processingState transition.
+// It reads the current processingState (possibly nil) and passes it to cond; if
+// cond returns false the transaction is a no-op and the call returns false.
+// Otherwise it shallow-clones the map (starting empty when absent — callers whose
+// cond accepts nil create fresh state), applies mutate, writes it back inside the
+// single Yjs transaction, and returns true.
+func (w *ConversationWorker) patchProcessingStateIf(
+	cond func(existing map[string]any) bool,
+	mutate func(updated map[string]any),
+) bool {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
+	var applied bool
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		raw := w.doc.metadata.Get("processingState")
 		existing, _ := fromYcrdt(raw).(map[string]any)
-		if existing == nil {
+		if !cond(existing) {
 			return
 		}
 		updated := map[string]any{}
@@ -102,7 +96,17 @@ func (w *ConversationWorker) patchProcessingState(mutate func(map[string]any)) {
 		}
 		mutate(updated)
 		w.doc.metadata.Set("processingState", toYcrdt(updated))
+		applied = true
 	}, w.doc.authorID)
+	return applied
+}
+
+// patchProcessingState applies mutate to a shallow copy of the doc's
+// processingState map inside a single transaction and writes it back. No-op when
+// processingState is absent — the plain field-level updates below never create
+// fresh state, only edit an existing busy frame.
+func (w *ConversationWorker) patchProcessingState(mutate func(map[string]any)) {
+	w.patchProcessingStateIf(func(existing map[string]any) bool { return existing != nil }, mutate)
 }
 
 // setPolitePending latches the polite-stop (Pause) AND mirrors it into the
@@ -266,19 +270,13 @@ func (w *ConversationWorker) isActivelyRunning() bool {
 // turn. This distinguishes a fresh Continue click after an assistant message
 // from stale awaiting_llm activity left after deleted tools/threads.
 func (w *ConversationWorker) markExplicitContinuation(threadItemID string) {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		raw := w.doc.metadata.Get("processingState")
-		existing, _ := fromYcrdt(raw).(map[string]any)
-		updated := map[string]any{}
-		for k, v := range existing {
-			updated[k] = v
-		}
-		updated["explicitContinuation"] = true
-		updated["threadItemId"] = threadItemID
-		w.doc.metadata.Set("processingState", toYcrdt(updated))
-	}, w.doc.authorID)
+	w.patchProcessingStateIf(
+		func(map[string]any) bool { return true },
+		func(updated map[string]any) {
+			updated["explicitContinuation"] = true
+			updated["threadItemId"] = threadItemID
+		},
+	)
 }
 
 // isExplicitContinuation reports whether the one-shot continuation marker
@@ -299,29 +297,19 @@ func (w *ConversationWorker) isExplicitContinuation(threadItemID string) bool {
 // consumeExplicitContinuation returns and clears the one-shot continuation
 // marker if it targets the thread currently being dispatched.
 func (w *ConversationWorker) consumeExplicitContinuation(threadItemID string) bool {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	var consumed bool
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		raw := w.doc.metadata.Get("processingState")
-		existing, _ := fromYcrdt(raw).(map[string]any)
-		if existing == nil {
-			return
-		}
-		flag, _ := existing["explicitContinuation"].(bool)
-		target, _ := existing["threadItemId"].(string)
-		if !flag || target != threadItemID {
-			return
-		}
-		updated := map[string]any{}
-		for k, v := range existing {
-			updated[k] = v
-		}
-		delete(updated, "explicitContinuation")
-		w.doc.metadata.Set("processingState", toYcrdt(updated))
-		consumed = true
-	}, w.doc.authorID)
-	return consumed
+	return w.patchProcessingStateIf(
+		func(existing map[string]any) bool {
+			if existing == nil {
+				return false
+			}
+			flag, _ := existing["explicitContinuation"].(bool)
+			target, _ := existing["threadItemId"].(string)
+			return flag && target == threadItemID
+		},
+		func(updated map[string]any) {
+			delete(updated, "explicitContinuation")
+		},
+	)
 }
 
 // requestLLM atomically transitions activity to "awaiting_llm",
@@ -331,28 +319,21 @@ func (w *ConversationWorker) consumeExplicitContinuation(threadItemID string) bo
 // calling_llm (child→parent handoff). Returns false if activity is
 // already awaiting_llm (another request is pending).
 func (w *ConversationWorker) requestLLM(threadItemID string) bool {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	var requested bool
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		raw := w.doc.metadata.Get("processingState")
-		existing, _ := fromYcrdt(raw).(map[string]any)
-		if existing != nil {
-			activity, _ := existing["activity"].(string)
-			if activity == ActivityAwaitingLLM || activity == ActivityCallingLLM {
-				return // another request already pending or LLM already in progress
+	return w.patchProcessingStateIf(
+		func(existing map[string]any) bool {
+			if existing != nil {
+				activity, _ := existing["activity"].(string)
+				if activity == ActivityAwaitingLLM || activity == ActivityCallingLLM {
+					return false // another request already pending or LLM already in progress
+				}
 			}
-		}
-		updated := map[string]any{}
-		for k, v := range existing {
-			updated[k] = v
-		}
-		updated["activity"] = ActivityAwaitingLLM
-		updated["threadItemId"] = threadItemID
-		w.doc.metadata.Set("processingState", toYcrdt(updated))
-		requested = true
-	}, w.doc.authorID)
-	return requested
+			return true
+		},
+		func(updated map[string]any) {
+			updated["activity"] = ActivityAwaitingLLM
+			updated["threadItemId"] = threadItemID
+		},
+	)
 }
 
 // getProcessingThreadItemID reads the threadItemId from processingState.
@@ -375,17 +356,11 @@ func (w *ConversationWorker) getProcessingThreadItemID() string {
 // when the strategy loop dispatches async tools and returns without
 // blocking — the reducer will re-dispatch when tools complete.
 func (w *ConversationWorker) transitionToAwaitingLLM() {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		raw := w.doc.metadata.Get("processingState")
-		existing, _ := fromYcrdt(raw).(map[string]any)
-		updated := map[string]any{}
-		for k, v := range existing {
-			updated[k] = v
-		}
-		updated["activity"] = ActivityAwaitingLLM
-		updated["status"] = "processing_tools"
-		w.doc.metadata.Set("processingState", toYcrdt(updated))
-	}, w.doc.authorID)
+	w.patchProcessingStateIf(
+		func(map[string]any) bool { return true },
+		func(updated map[string]any) {
+			updated["activity"] = ActivityAwaitingLLM
+			updated["status"] = "processing_tools"
+		},
+	)
 }

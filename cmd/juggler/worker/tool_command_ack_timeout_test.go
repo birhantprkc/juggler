@@ -45,10 +45,10 @@ func TestToolCommandAckTimeout_SilentDropRedrives(t *testing.T) {
 	}
 
 	// Engine stays silent (no ack). The command goes stale.
-	if _, ok := w.inFlightDispatchedAt["tu-1"]; !ok {
+	if _, ok := w.tools.dispatchedAt("tu-1"); !ok {
 		t.Fatal("expected an in-flight dispatch timestamp after driveToolActions")
 	}
-	w.inFlightDispatchedAt["tu-1"] = time.Now().Add(-2 * w.ackTimeout)
+	w.tools.restamp("tu-1", time.Now().Add(-2*w.ackTimeout))
 	w.sweepStaleToolCommands()
 
 	// The sweep cleared the in-flight latch and flagged a reconcile; the run loop
@@ -100,7 +100,7 @@ func TestToolCommandAckTimeout_RunningToolNotRedriven(t *testing.T) {
 		"state":            StateRunning,
 		"runningStartedAt": time.Now().Format(time.RFC3339),
 	})
-	w.inFlightDispatchedAt["tu-1"] = time.Now().Add(-2 * w.ackTimeout)
+	w.tools.restamp("tu-1", time.Now().Add(-2*w.ackTimeout))
 	w.sweepStaleToolCommands()
 
 	// Branch 2: the doc state advanced past the dispatched state, so the sweep
@@ -110,7 +110,7 @@ func TestToolCommandAckTimeout_RunningToolNotRedriven(t *testing.T) {
 	if got := h.executeCount("tu-1"); got != 1 {
 		t.Fatalf("running tool was re-driven by the watchdog: want 1 execute-tool, got %d (double exec)", got)
 	}
-	if n := w.toolCommandTimeouts["tu-1"]; n != 0 {
+	if n := w.tools.timeoutCount("tu-1"); n != 0 {
 		t.Fatalf("running tool wrongly counted as a silent timeout: want 0, got %d", n)
 	}
 	if it, ok := findToolItem(w.getTargetItems(), "tu-1"); !ok || it.State != StateRunning {
@@ -136,10 +136,10 @@ func TestToolCommandAckTimeout_PersistentSilenceEscalatesToError(t *testing.T) {
 	// being in-flight (escalated) or we exceed the cap's worth of iterations.
 	for i := 0; i <= maxToolCommandTimeouts+1; i++ {
 		w.driveToolActions()
-		if _, ok := w.inFlightToolCommands["tu-1"]; !ok {
+		if _, ok := w.tools.inFlightAt("tu-1"); !ok {
 			break // escalated — no longer in-flight
 		}
-		w.inFlightDispatchedAt["tu-1"] = time.Now().Add(-2 * w.ackTimeout)
+		w.tools.restamp("tu-1", time.Now().Add(-2*w.ackTimeout))
 		w.sweepStaleToolCommands()
 	}
 	h.flush(t)
@@ -151,7 +151,7 @@ func TestToolCommandAckTimeout_PersistentSilenceEscalatesToError(t *testing.T) {
 	if it.State != StateCompleted {
 		t.Fatalf("persistent silence should terminate the tool: want state=completed, got %q", it.State)
 	}
-	if _, stillInFlight := w.inFlightToolCommands["tu-1"]; stillInFlight {
+	if _, stillInFlight := w.tools.inFlightAt("tu-1"); stillInFlight {
 		t.Fatal("escalated tool must not remain in-flight")
 	}
 
@@ -187,8 +187,8 @@ func TestToolCommandAckTimeout_WatchdogDisarmsWhenDrained(t *testing.T) {
 
 	ackOK, _ := json.Marshal(map[string]any{"action": "execute-tool", "toolUseId": "tu-1", "ok": true})
 	w.dispatchMessage(workerMessage{Type: "tool-command-ack", Payload: ackOK, OriginClient: "engine"})
-	if len(w.inFlightToolCommands) != 0 {
-		t.Fatalf("positive ack should drain in-flight, got %d", len(w.inFlightToolCommands))
+	if n := w.tools.inFlightCount(); n != 0 {
+		t.Fatalf("positive ack should drain in-flight, got %d", n)
 	}
 	if w.ackWatchdog != nil {
 		t.Fatal("watchdog should disarm once in-flight drains")

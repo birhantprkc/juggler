@@ -263,47 +263,14 @@ type ConversationWorker struct {
 	// dispatches the action at the top level.
 	needsReconcile bool
 
-	// commandedToolActions tracks the last lifecycle state for which this
-	// worker dispatched an engine tool-command (evaluate-tool / execute-tool),
-	// keyed by toolUseId. driveToolActions consults it to re-command only on a
-	// state change, so a tool isn't re-dispatched on every reconcile tick. The
-	// rerun handlers delete the entry so a reset tool is re-commanded, and
-	// handleResyncToOrigin clears the whole map so a freshly attached engine is
-	// re-commanded from scratch. An entry lands here ONLY on a positive ack from
-	// the engine (handleToolCommandAck) — dispatching a command alone does not
-	// latch it (see inFlightToolCommands).
-	commandedToolActions map[string]string
-
-	// inFlightToolCommands tracks tool-commands dispatched to the engine but not
-	// yet acknowledged, keyed by toolUseId → the state they were dispatched at. A
-	// re-drive dedups against this so the worker doesn't re-spam a command while
-	// its ack is outstanding, but an in-flight entry is NOT "done": only a positive
-	// ack promotes it into commandedToolActions; a negative ack clears it and the
-	// next reconcile re-dispatches. This is the fix for the fire-and-forget wedge,
-	// where the old optimistic latch into commandedToolActions left a tool stuck
-	// non-terminal forever if its one command was dropped or no-op'd by the engine.
-	// Reset alongside commandedToolActions on reattach.
-	inFlightToolCommands map[string]string
-
-	// toolCommandRetries bounds the negative-ack re-drive loop per toolUseId so a
-	// command the engine can never satisfy can't spin forever; on exceeding the cap
-	// the worker latches and logs, deferring recovery to the next engine reattach.
-	toolCommandRetries map[string]int
-
-	// inFlightDispatchedAt records when each in-flight tool-command was sent to the
-	// engine, keyed by toolUseId. The ack watchdog uses it to detect a command the
-	// engine acknowledged NEITHER by executing it NOR by reporting it could not act
-	// — the silent-drop wedge that handleToolCommandAck cannot see, because that
-	// handler only runs when an ack actually arrives. Cleared in lockstep with
-	// inFlightToolCommands.
-	inFlightDispatchedAt map[string]time.Time
-
-	// toolCommandTimeouts bounds the silent-timeout re-drive loop per toolUseId
-	// (parallel to toolCommandRetries, which bounds the negative-ack loop). On
-	// exceeding maxToolCommandTimeouts the worker stops re-driving and escalates the
-	// tool to a terminal error result so the parked turn unblocks instead of hanging
-	// forever.
-	toolCommandTimeouts map[string]int
+	// tools consolidates all per-toolUseId tool-command bookkeeping — the dedup
+	// latch (positively-acked state), the in-flight latch and its dispatch stamp,
+	// and the negative-ack / silent-ack escalation counts — into one map of
+	// *toolCommandState (see tool_command_state.go). Consulted by driveToolActions
+	// (dedup), handleToolCommandAck (promote/re-drive), and sweepStaleToolCommands
+	// (silent-ack recovery). The struct keeps the fields that must move together in
+	// lockstep, so a partial reset can't wedge the re-drive.
+	tools *toolCommandTracker
 
 	// ackWatchdog fires ackTimeout after a tool-command goes in-flight, waking the
 	// run loop (via ackWatchdogC) to sweepStaleToolCommands. nil when nothing is in
@@ -445,11 +412,7 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 		strategyHookResultChan:    make(chan json.RawMessage, 1),
 		subthreadSpecResultChan:   make(chan json.RawMessage, 1),
 		subthreadErrorResultChan:  make(chan json.RawMessage, 1),
-		commandedToolActions:      make(map[string]string),
-		inFlightToolCommands:      make(map[string]string),
-		toolCommandRetries:        make(map[string]int),
-		inFlightDispatchedAt:      make(map[string]time.Time),
-		toolCommandTimeouts:       make(map[string]int),
+		tools:                     newToolCommandTracker(),
 		ackWatchdogC:              make(chan struct{}, 1),
 		ackTimeout:                defaultAckTimeout,
 		deliveryPumps:             make(map[string]*taskDeliveryPump),

@@ -6,10 +6,7 @@ package openrouter
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
 
 	"juggler/cmd/juggler/providers/openaibase"
 	provider "juggler/cmd/juggler/providers/registry"
@@ -56,31 +53,13 @@ type openRouterModelsResponse struct {
 // SDK's Models.List does not surface context_length, so we hit the REST
 // endpoint to get authoritative context windows for each model.
 func listModels(ctx context.Context, apiKey string, headers map[string]string) ([]provider.ModelInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build OpenRouter models request: %w", err)
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list models from OpenRouter: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("OpenRouter /models returned %d", resp.StatusCode)
-	}
-
 	var parsed openRouterModelsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("failed to decode OpenRouter models response: %w", err)
+	if err := utils.GetJSON(ctx, baseURL+"/models", utils.JSONGetOptions{
+		Bearer:  apiKey,
+		Headers: headers,
+		Label:   "OpenRouter /models",
+	}, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to list models from OpenRouter: %w", err)
 	}
 
 	infos := make([]provider.ModelInfo, 0, len(parsed.Data))

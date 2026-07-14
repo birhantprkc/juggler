@@ -5,8 +5,10 @@
 package ops
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"juggler/internal/atomicio"
 )
@@ -87,6 +89,50 @@ func (l *pathLocker) lock(path string) func() {
 // instances. It is package-level because the ops handler builds a new instance
 // per request, so the coordinator can't live on the instance.
 var fileMutationLock = newPathLocker()
+
+// openForMutation prepares an existing file for an in-place edit: it sanitises
+// path against the scope, takes the per-file mutation lock, requires the target
+// to be an existing (non-directory) file, and returns its CRLF-normalized
+// content. It is the shared front half of editFile/editFileLines — the exact
+// hazard the mutation lock guards is that two edits read the same base bytes and
+// one is lost, so every read-modify-write must run under this lock.
+//
+// On success the caller owns unlock and must `defer unlock()` across the whole
+// read→write window. On any error unlock is already called and returned nil, so
+// the caller only propagates err.
+func (ops *FileOperations) openForMutation(path string) (absPath string, info os.FileInfo, content string, unlock func(), err error) {
+	// JS approval is the policy gate; backend sanitises only.
+	absPath, err = ops.scope.Sanitize(path)
+	if err != nil {
+		return "", nil, "", nil, fmt.Errorf("invalid path '%s': %w", path, err)
+	}
+
+	// Serialize the whole read-modify-write against concurrent edits of the same
+	// file: otherwise two edits read the same base bytes and one is lost (see
+	// pathLocker).
+	unlock = fileMutationLock.lock(absPath)
+
+	info, statErr := os.Stat(absPath)
+	if statErr != nil {
+		unlock()
+		if os.IsNotExist(statErr) {
+			return "", nil, "", nil, fmt.Errorf("file does not exist: %s. Use write-file action to create new files", path)
+		}
+		return "", nil, "", nil, fmt.Errorf("failed to access file '%s': %w", path, statErr)
+	}
+	if info.IsDir() {
+		unlock()
+		return "", nil, "", nil, fmt.Errorf("cannot edit directory: %s. Provide a file path instead", path)
+	}
+
+	raw, readErr := os.ReadFile(absPath)
+	if readErr != nil {
+		unlock()
+		return "", nil, "", nil, fmt.Errorf("failed to read file '%s': %w. Check file permissions", path, readErr)
+	}
+
+	return absPath, info, strings.ReplaceAll(string(raw), "\r\n", "\n"), unlock, nil
+}
 
 // writeFileAtomic writes data to path via a temp file in the same directory
 // followed by an atomic rename. Unlike os.WriteFile (which truncates at open

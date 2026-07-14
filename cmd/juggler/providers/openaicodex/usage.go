@@ -6,13 +6,11 @@ package openaicodex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/utils"
 )
 
 type usageResponse struct {
@@ -39,41 +37,20 @@ type usageWindow struct {
 }
 
 func usageStats(ctx context.Context, bearerToken string, headers map[string]string) (provider.UsageStats, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/usage", nil)
-	if err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to build OpenAI Codex usage request: %w", err)
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	if bearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+bearerToken)
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
-	}
-	if req.Header.Get("User-Agent") == "" {
-		// The ChatGPT backend serves an HTML 403 challenge to Go's default
-		// User-Agent on /usage, while the Codex CLI/browser-like clients receive
-		// JSON. Keep this endpoint probe browser-shaped.
-		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0")
-	}
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to fetch OpenAI Codex usage: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return provider.UsageStats{}, fmt.Errorf("OpenAI Codex /usage returned %d: %s", resp.StatusCode, string(body))
-	}
-
 	var parsed usageResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to decode OpenAI Codex usage response: %w", err)
+	if err := utils.GetJSON(ctx, baseURL+"/usage", utils.JSONGetOptions{
+		Bearer:  bearerToken,
+		Headers: headers,
+		Defaults: map[string]string{
+			"Accept": "application/json",
+			// The ChatGPT backend serves an HTML 403 challenge to Go's default
+			// User-Agent on /usage, while the Codex CLI/browser-like clients
+			// receive JSON. Keep this endpoint probe browser-shaped.
+			"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+		},
+		Label: "OpenAI Codex /usage",
+	}, &parsed); err != nil {
+		return provider.UsageStats{}, err
 	}
 	return buildUsageStats(parsed, time.Now()), nil
 }

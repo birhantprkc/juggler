@@ -5,7 +5,6 @@
 package ops
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -625,74 +624,31 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 			pipeWriter.Close()
 		}()
 
-		var (
-			headBytes int64
-			totalRead int64
-			truncated bool
-		)
-		tail := newTailRing(outputTailLimit)
+		// Head/tail-capped, UTF-8-safe forwarder: publishes output to the
+		// registry live up to outputHeadLimit bytes, then retains only the last
+		// outputTailLimit bytes; the dropped middle is flushed once at stream end
+		// (see suffix() below) so the final registry output matches the capped
+		// head+tail the non-streaming cappedBuffer produces.
+		fwd := newCappedForwarder(outputHeadLimit, outputTailLimit, func(s string) {
+			appendShellOutput(shellID, s)
+		})
 
 		readerDone := make(chan struct{})
 		go func() {
 			defer close(readerDone)
-			reader := bufio.NewReader(pipeReader)
-			buf := make([]byte, 4096)
-			// carry holds a multi-byte UTF-8 rune split across two reads, so
-			// the published output never contains an invalid half (which the
-			// UI would render as U+FFFD). See utf8SafeChunk.
-			var carry []byte
-			forward := func(emit []byte) {
-				if len(emit) == 0 {
-					return
-				}
-				totalRead += int64(len(emit))
-				if headBytes < outputHeadLimit {
-					room := outputHeadLimit - int(headBytes)
-					if len(emit) <= room {
-						appendShellOutput(shellID, string(emit))
-						headBytes += int64(len(emit))
-					} else {
-						// Straddles the head limit: publish the head portion,
-						// retain the rest in the tail ring.
-						appendShellOutput(shellID, string(emit[:room]))
-						headBytes += int64(room)
-						truncated = true
-						tail.write(emit[room:])
-					}
-				} else {
-					truncated = true
-					tail.write(emit)
-				}
-			}
-			for {
-				n, readErr := reader.Read(buf)
-				if n > 0 {
-					var emit []byte
-					emit, carry = utf8SafeChunk(carry, buf[:n], false)
-					forward(emit)
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			forward(carry) // flush any trailing partial rune at stream end
+			fwd.drain(pipeReader, nil)
 		}()
 
 		// Wait for the process to exit, then for the reader to drain fully before
-		// touching the cap accounting (happens-before its final writes).
+		// reading the cap accounting (happens-before its final writes).
 		err := <-cmdDone
 		<-readerDone
 		pipeReader.Close()
 
 		// Flush the retained tail (and the dropped-middle marker) so the final
 		// registry output is the capped head+tail, matching the old behaviour.
-		if truncated {
-			tailBytes := tail.bytes()
-			omitted := totalRead - headBytes - int64(len(tailBytes))
-			if omitted < 0 {
-				omitted = 0
-			}
-			appendShellOutput(shellID, truncationMarker(omitted)+string(tailBytes))
+		if suffix := fwd.suffix(); suffix != "" {
+			appendShellOutput(shellID, suffix)
 		}
 
 		// Determine final status
@@ -992,74 +948,19 @@ func (ops *ShellOperations) ExecuteStreaming(
 	// middle) so the child process never blocks on a full pipe, and clients are
 	// never flooded with tens of thousands of chunks. The retained tail is
 	// delivered once, appended to the completion chunk below.
-	var (
-		headBytes int64
-		totalRead int64
-		truncated bool
-	)
-	tail := newTailRing(outputTailLimit)
+	// Head/tail-capped, UTF-8-safe forwarder: forwards output chunks live up to
+	// outputHeadLimit bytes, then retains only the last outputTailLimit bytes.
+	// fwd.suffix() yields the dropped-middle marker + retained tail, appended to
+	// the completion chunk below; signalFirstByte fires the moment output first
+	// appears so the watchdog can stand down.
+	fwd := newCappedForwarder(outputHeadLimit, outputTailLimit, func(s string) {
+		output <- ShellStreamChunk{ShellID: shellID, Data: s}
+	})
 
 	// Stream output chunks
 	readerWG.Go(func() {
-		reader := bufio.NewReader(pipeReader)
-		buf := make([]byte, 4096)
-		// carry holds the trailing bytes of a multi-byte UTF-8 rune split across
-		// two reads; utf8SafeChunk prepends it to the next read so we never
-		// forward an invalid half (which would render as U+FFFD).
-		var carry []byte
-		forward := func(emit []byte) {
-			if len(emit) == 0 {
-				return
-			}
-			totalRead += int64(len(emit))
-			if headBytes < outputHeadLimit {
-				room := outputHeadLimit - int(headBytes)
-				if len(emit) <= room {
-					output <- ShellStreamChunk{ShellID: shellID, Data: string(emit)}
-					headBytes += int64(len(emit))
-				} else {
-					// Straddles the head limit: forward the head portion,
-					// retain the rest in the tail ring.
-					output <- ShellStreamChunk{ShellID: shellID, Data: string(emit[:room])}
-					headBytes += int64(room)
-					truncated = true
-					tail.write(emit[room:])
-				}
-			} else {
-				truncated = true
-				tail.write(emit)
-			}
-		}
-		for {
-			n, err := reader.Read(buf)
-			if n > 0 {
-				signalFirstByte()
-				var emit []byte
-				emit, carry = utf8SafeChunk(carry, buf[:n], false)
-				forward(emit)
-			}
-			if err != nil {
-				break
-			}
-		}
-		forward(carry) // flush any trailing partial rune left when the stream ended
+		fwd.drain(pipeReader, signalFirstByte)
 	})
-
-	// truncationSuffix builds the trailing data appended to the completion
-	// chunk: a notice plus the retained tail, or "" when nothing was dropped.
-	// Safe to call only after readerWG.Wait() (happens-before the reader's
-	// final writes to headBytes/totalRead/tail).
-	truncationSuffix := func() string {
-		if !truncated {
-			return ""
-		}
-		tailBytes := tail.bytes()
-		omitted := totalRead - headBytes - int64(len(tailBytes))
-		if omitted < 0 {
-			omitted = 0
-		}
-		return truncationMarker(omitted) + string(tailBytes)
-	}
 
 	// Watchdog: while the command is silent and unfinished, surface *why*.
 	// A short filesystem-access probe runs in its own goroutine; a pending
@@ -1179,7 +1080,7 @@ func (ops *ShellOperations) ExecuteStreaming(
 		}
 		output <- ShellStreamChunk{
 			ShellID: shellID,
-			Data:    truncationSuffix(),
+			Data:    fwd.suffix(),
 			Done:    true,
 			Error:   errMsg,
 		}
@@ -1197,7 +1098,7 @@ func (ops *ShellOperations) ExecuteStreaming(
 		}
 		output <- ShellStreamChunk{
 			ShellID:  shellID,
-			Data:     truncationSuffix(),
+			Data:     fwd.suffix(),
 			Done:     true,
 			ExitCode: exitCode,
 		}

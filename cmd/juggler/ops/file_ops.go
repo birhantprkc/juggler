@@ -421,39 +421,12 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 	// matching so flexible fallback edits remain surgical and unambiguous.
 	replaceAll, _ := params["replace_all"].(bool)
 
-	// JS approval is the policy gate; backend sanitises only.
-	absPath, err := ops.scope.Sanitize(path)
+	// Sanitise, lock, and read the existing file (see openForMutation).
+	absPath, fileInfo, currentContentStr, unlock, err := ops.openForMutation(path)
 	if err != nil {
-		return nil, fmt.Errorf("invalid path '%s': %w", path, err)
+		return nil, err
 	}
-
-	// Serialize the whole read-modify-write against concurrent edits of the same
-	// file: otherwise two edits read the same base bytes and one is lost (see
-	// pathLocker).
-	unlock := fileMutationLock.lock(absPath)
 	defer unlock()
-
-	// Check if file exists
-	fileInfo, statErr := os.Stat(absPath)
-	if statErr != nil {
-		if os.IsNotExist(statErr) {
-			return nil, fmt.Errorf("file does not exist: %s. Use write-file action to create new files", path)
-		}
-		return nil, fmt.Errorf("failed to access file '%s': %w", path, statErr)
-	}
-
-	// Check if it's a directory
-	if fileInfo.IsDir() {
-		return nil, fmt.Errorf("cannot edit directory: %s. Provide a file path instead", path)
-	}
-
-	// Read current file content
-	currentContent, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file '%s': %w. Check file permissions", path, err)
-	}
-
-	currentContentStr := strings.ReplaceAll(string(currentContent), "\r\n", "\n")
 
 	var newContentStr string
 	var matchStrategy string
@@ -601,39 +574,14 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 		}
 	}
 
-	// JS approval is the policy gate; backend sanitises only.
-	absPath, err := ops.scope.Sanitize(path)
+	// Sanitise, lock, and read the existing file (see openForMutation).
+	absPath, fileInfo, currentContentStr, unlock, err := ops.openForMutation(path)
 	if err != nil {
-		return nil, fmt.Errorf("invalid path '%s': %w", path, err)
+		return nil, err
 	}
-
-	// Serialize the whole read-modify-write against concurrent edits of the same
-	// file: otherwise two edits read the same base bytes and one is lost (see
-	// pathLocker).
-	unlock := fileMutationLock.lock(absPath)
 	defer unlock()
 
-	// Check if file exists
-	fileInfo, statErr := os.Stat(absPath)
-	if statErr != nil {
-		if os.IsNotExist(statErr) {
-			return nil, fmt.Errorf("file does not exist: %s. Use write-file action to create new files", path)
-		}
-		return nil, fmt.Errorf("failed to access file '%s': %w", path, statErr)
-	}
-
-	// Check if it's a directory
-	if fileInfo.IsDir() {
-		return nil, fmt.Errorf("cannot edit directory: %s. Provide a file path instead", path)
-	}
-
-	// Read current file content
-	currentContent, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file '%s': %w. Check file permissions", path, err)
-	}
-
-	lines := strings.Split(strings.ReplaceAll(string(currentContent), "\r\n", "\n"), "\n")
+	lines := strings.Split(currentContentStr, "\n")
 	totalLines := len(lines)
 
 	// Determine endLine: optional. If not provided, defaults to totalLines. If provided, must be > 0.
@@ -732,8 +680,8 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 	if dryRun {
 		return map[string]any{
 			"path":       path,
-			"oldContent": string(currentContent), // Full old file
-			"newContent": newFileContent,         // Full new file with edits applied
+			"oldContent": currentContentStr, // Full old file (CRLF-normalized, matching newContent)
+			"newContent": newFileContent,    // Full new file with edits applied
 			"dryRun":     true,
 		}, nil
 	}

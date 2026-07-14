@@ -6,13 +6,11 @@ package openrouter
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/utils"
 )
 
 // OpenRouter exposes a money balance, not a rate-limit window. /credits gives
@@ -49,12 +47,22 @@ type keyData struct {
 // unavailable — e.g. when that endpoint requires a management key.
 func usageStats(ctx context.Context, credential string, headers map[string]string) (provider.UsageStats, error) {
 	var credits creditsResponse
-	if err := getJSON(ctx, creditsURL, credential, headers, &credits); err == nil {
+	if err := utils.GetJSON(ctx, creditsURL, utils.JSONGetOptions{
+		Bearer:   credential,
+		Headers:  headers,
+		Defaults: map[string]string{"Accept": "application/json"},
+		Label:    "OpenRouter /credits",
+	}, &credits); err == nil {
 		return buildFromCredits(credits.Data, time.Now()), nil
 	} else {
 		creditsErr := err
 		var key keyResponse
-		if kerr := getJSON(ctx, keyURL, credential, headers, &key); kerr != nil {
+		if kerr := utils.GetJSON(ctx, keyURL, utils.JSONGetOptions{
+			Bearer:   credential,
+			Headers:  headers,
+			Defaults: map[string]string{"Accept": "application/json"},
+			Label:    "OpenRouter /auth/key",
+		}, &key); kerr != nil {
 			return provider.UsageStats{}, fmt.Errorf("OpenRouter usage unavailable (credits: %v; auth/key: %w)", creditsErr, kerr)
 		}
 		return buildFromKey(key.Data, time.Now()), nil
@@ -108,36 +116,4 @@ func clampPercent(v float64) float64 {
 		return 100
 	}
 	return v
-}
-
-func getJSON(ctx context.Context, url, credential string, headers map[string]string, dst any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to build request: %w", err)
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	if credential != "" {
-		req.Header.Set("Authorization", "Bearer "+credential)
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
-	}
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s returned %d: %s", url, resp.StatusCode, string(body))
-	}
-	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
-	}
-	return nil
 }

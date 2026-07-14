@@ -6,14 +6,12 @@ package zai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/utils"
 )
 
 // usageEndpoint is the GLM Coding Plan quota endpoint. It lives at the API host
@@ -50,38 +48,17 @@ type usageLimit struct {
 // authenticates with the raw API key in the Authorization header (no "Bearer"
 // prefix), unlike the chat completions endpoint.
 func usageStats(ctx context.Context, credential string, headers map[string]string) (provider.UsageStats, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, usageEndpoint, nil)
-	if err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to build Z.AI usage request: %w", err)
-	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-	if credential != "" {
-		req.Header.Set("Authorization", credential)
-	}
-	if req.Header.Get("Accept-Language") == "" {
-		req.Header.Set("Accept-Language", "en-US,en")
-	}
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to fetch Z.AI usage: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return provider.UsageStats{}, fmt.Errorf("Z.AI quota/limit returned %d: %s", resp.StatusCode, string(body))
-	}
-
 	var parsed usageResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return provider.UsageStats{}, fmt.Errorf("failed to decode Z.AI usage response: %w", err)
+	if err := utils.GetJSON(ctx, usageEndpoint, utils.JSONGetOptions{
+		RawAuthorization: credential,
+		Headers:          headers,
+		Defaults: map[string]string{
+			"Accept-Language": "en-US,en",
+			"Content-Type":    "application/json",
+		},
+		Label: "Z.AI quota/limit",
+	}, &parsed); err != nil {
+		return provider.UsageStats{}, err
 	}
 	return buildUsageStats(parsed, time.Now()), nil
 }
