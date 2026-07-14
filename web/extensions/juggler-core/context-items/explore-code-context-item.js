@@ -56,7 +56,7 @@ class ExploreCodeContextItem extends ContextItem {
           },
           timeout: {
             type: 'number',
-            description: 'Optional execution timeout in milliseconds (1000–120000, default 30000).'
+            description: 'Optional execution timeout in milliseconds (1000–600000, default 120000).'
           }
         },
         required: ['code']
@@ -79,8 +79,8 @@ class ExploreCodeContextItem extends ContextItem {
     }
     if (toolInput.timeout !== undefined) {
       const timeout = Number(toolInput.timeout);
-      if (isNaN(timeout) || timeout < 1000 || timeout > 120000) {
-        return { valid: false, error: 'timeout must be between 1000 and 120000 ms' };
+      if (isNaN(timeout) || timeout < 1000 || timeout > 600000) {
+        return { valid: false, error: 'timeout must be between 1000 and 600000 ms' };
       }
     }
     return { valid: true, params: toolInput };
@@ -96,7 +96,7 @@ class ExploreCodeContextItem extends ContextItem {
    */
   async execute(params) {
     const code = /** @type {string} */ (params.code);
-    const timeoutMs = params.timeout ? Number(params.timeout) : 30000;
+    const timeoutMs = params.timeout ? Number(params.timeout) : 120000;
 
     const fs = new ReadOnlyFileSystem(this.getAllowedPaths());
     const { grep, glob } = this._createSearchHelpers();
