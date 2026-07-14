@@ -62,12 +62,22 @@ export function applyColumnWidthPx(element, storageKey, px, minWidthRem = COL_MI
  * @param {HTMLElement} element - The column element (must be position: relative).
  * @param {string} storageKey - localStorage key under which width is persisted.
  * @param {number} [minWidthRem] - Minimum width in rem (defaults to COL_MIN_WIDTH_REM).
+ * @param {number} [defaultWidthRem] - Initial width (rem) to apply when nothing
+ *   is persisted yet. Applied as an inline style only (NOT persisted), so it
+ *   gives new users a sensible fixed width instead of the flex-fill default —
+ *   which otherwise makes the column resize to fill the page as sibling columns
+ *   are shown/hidden. The first drag replaces it with a persisted width.
  */
-export function setupColumnResize(element, storageKey, minWidthRem = COL_MIN_WIDTH_REM) {
+export function setupColumnResize(
+  element,
+  storageKey,
+  minWidthRem = COL_MIN_WIDTH_REM,
+  defaultWidthRem = undefined,
+) {
   const handle = element.querySelector('col-resize-handle');
   if (!handle) return;
 
-  _loadColumnWidth(element, storageKey, minWidthRem);
+  _loadColumnWidth(element, storageKey, minWidthRem, defaultWidthRem);
 
   // Prevent resize-handle clicks from bubbling to the column-container's
   // click handler, which would change active column and scroll into view.
@@ -121,15 +131,26 @@ export function setupColumnResize(element, storageKey, minWidthRem = COL_MIN_WID
  * @param {HTMLElement} element
  * @param {string} storageKey
  * @param {number} minWidthRem
+ * @param {number} [defaultWidthRem] - Non-persisted fallback width (rem) when
+ *   nothing valid is stored under `storageKey`.
  */
-function _loadColumnWidth(element, storageKey, minWidthRem) {
+function _loadColumnWidth(element, storageKey, minWidthRem, defaultWidthRem = undefined) {
   try {
     const saved = localStorage.getItem(storageKey);
-    if (!saved) return;
-    const rem = parseFloat(saved);
-    if (!Number.isFinite(rem) || rem <= 0) return;
-    applyColumnWidthRem(element, storageKey, rem, minWidthRem);
+    if (saved) {
+      const rem = parseFloat(saved);
+      if (Number.isFinite(rem) && rem > 0) {
+        applyColumnWidthRem(element, storageKey, rem, minWidthRem);
+        return;
+      }
+    }
   } catch {
     // localStorage unavailable
+  }
+  // No usable saved width — apply the caller's default without persisting it, so
+  // it stays a plain default (the first drag is what writes to localStorage).
+  if (typeof defaultWidthRem === 'number') {
+    const clamped = Math.max(minWidthRem, Math.min(COL_MAX_WIDTH_REM, defaultWidthRem));
+    element.style.width = `${clamped}rem`;
   }
 }
