@@ -88,6 +88,13 @@ func startEngine(app *application.App, srv *server.Server, requestQuit func()) {
 	// come up and making the user wait out engineConnectTimeout for a terse log
 	// line. Preflight is conservative — a "" result is not a guarantee — so the
 	// timeout below still backstops every other cause on every OS.
+	// On a Linux host that blocks the unprivileged user namespaces WebKitGTK's
+	// bwrap sandbox needs, disable that sandbox before the WebView is created so
+	// the engine comes up instead of aborting the process with a cgo SIGTRAP.
+	// No-op off Linux, on an unrestricted host, or when the user set the var.
+	if note := webviewenv.PrepareLinuxWebKit(); note != "" {
+		jlog.Info("[engine] %s", note)
+	}
 	if problem := webviewenv.Preflight(); problem != "" {
 		jlog.Error("[engine] %s", webviewenv.UnavailableMessage(problem))
 		requestQuit()

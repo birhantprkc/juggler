@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"juggler/internal/jlog"
+	"juggler/internal/webviewenv"
 )
 
 func main() {
@@ -39,6 +40,13 @@ func main() {
 	initAppLogging()
 	defer jlog.Close()
 	logf("start: url=%q project=%q args=%v", *urlFlag, *project, os.Args)
+	// Before any GTK/WebKit init: on a Linux host that blocks the unprivileged
+	// user namespaces WebKitGTK's bwrap sandbox needs, disable that sandbox so
+	// the window can come up instead of aborting with a cgo SIGTRAP. No-op off
+	// Linux, on an unrestricted host, or when the user set the var themselves.
+	if note := webviewenv.PrepareLinuxWebKit(); note != "" {
+		logf("%s", note)
+	}
 	app := newAppState(devMode)
 
 	// Build the application — and acquire the single-instance lock — BEFORE
