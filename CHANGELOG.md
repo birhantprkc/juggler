@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-14
+
 - Recovered locked project sessions safely and explained unrecoverable lock conflicts.
 - Added Pause (shift+Escape / footer button): stop the LLM loop as soon as possible without cancelling in-flight operation.
 
