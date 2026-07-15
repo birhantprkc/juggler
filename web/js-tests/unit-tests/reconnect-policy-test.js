@@ -13,8 +13,9 @@
  *   - an intentional teardown or an expected failed-probe close does NOT;
  *   - the backoff timer fires whatever re-establish primitive the current
  *     transport installed (not a hardcoded socket reconnect);
- *   - studio's primitive reloads ONLY once /api/health answers, and otherwise
- *     re-arms the same loop instead of reloading into a dead link.
+ *   - studio's primitive reloads directly (its only recovery), throttled by
+ *     the rate-limiter, and re-arms the same loop instead of storming when the
+ *     reload is throttled or the link already recovered.
  * @module unit-tests/reconnect-policy-test
  */
 
@@ -154,56 +155,46 @@ export async function runTests(_ctx) {
     assert(reestablished === 1, `the death path drives the same re-establish primitive; got ${reestablished}`);
   });
 
-  await run('studio re-establish reloads only once the server is reachable', async () => {
+  await run('studio re-establish reloads directly to recover (no health probe over the dead tunnel)', async () => {
     const svc = new WebSocketService();
     svc._shouldReloadOnReconnect = () => true; // bypass the rate-limiter
     let reloaded = 0;
+    let fetched = 0;
     svc._reloadPage = () => { reloaded++; };
     const origFetch = globalThis.fetch;
-    // @ts-ignore - test stub
-    globalThis.fetch = async () => ({ ok: true });
+    // @ts-ignore - test stub: recovery must NOT depend on any fetch (it would be
+    // tunneled through the dead DataChannel and 504 forever).
+    globalThis.fetch = async () => { fetched++; return { ok: true }; };
     try {
       await svc._reloadWhenReachable();
     } finally {
       globalThis.fetch = origFetch;
     }
-    assert(reloaded === 1, `reachable server → reload to recover; got ${reloaded}`);
+    assert(reloaded === 1, `link death → reload to recover; got ${reloaded}`);
+    assert(fetched === 0, `recovery must not probe the network (circular over studio); got ${fetched} fetches`);
   });
 
-  await run('studio re-establish re-arms the loop instead of reloading a dead link', async () => {
+  await run('studio re-establish re-arms the loop instead of reloading when throttled', async () => {
     const svc = new WebSocketService();
-    svc._shouldReloadOnReconnect = () => true;
+    svc._shouldReloadOnReconnect = () => false; // rate-limiter says "too soon"
     let reloaded = 0;
     let rearmed = 0;
     svc._reloadPage = () => { reloaded++; };
     svc._reconnect = () => { rearmed++; };
-    const origFetch = globalThis.fetch;
-    // @ts-ignore - test stub: probe fails (server still unreachable)
-    globalThis.fetch = async () => { throw new Error('network down'); };
-    try {
-      await svc._reloadWhenReachable();
-    } finally {
-      globalThis.fetch = origFetch;
-    }
-    assert(reloaded === 0, 'must NOT reload while the server is unreachable (no reload storm)');
-    assert(rearmed === 1, `unreachable probe re-arms the same backoff loop; got ${rearmed}`);
+    await svc._reloadWhenReachable();
+    assert(reloaded === 0, 'must NOT reload while throttled (no reload storm)');
+    assert(rearmed === 1, `throttled reload re-arms the same backoff loop; got ${rearmed}`);
   });
 
-  await run('studio re-establish aborts cleanly if the link recovered mid-probe', async () => {
+  await run('studio re-establish aborts cleanly if the link already recovered', async () => {
     const svc = new WebSocketService();
     svc._shouldReloadOnReconnect = () => true;
+    svc.connected = true; // link came back before the primitive ran
     let reloaded = 0;
     let rearmed = 0;
     svc._reloadPage = () => { reloaded++; };
     svc._reconnect = () => { rearmed++; };
-    const origFetch = globalThis.fetch;
-    // @ts-ignore - test stub: probe succeeds, but the link came back while awaiting
-    globalThis.fetch = async () => { svc.connected = true; return { ok: true }; };
-    try {
-      await svc._reloadWhenReachable();
-    } finally {
-      globalThis.fetch = origFetch;
-    }
+    await svc._reloadWhenReachable();
     assert(reloaded === 0, 'no reload once the link is already back');
     assert(rearmed === 0, 'no needless re-arm once connected');
   });

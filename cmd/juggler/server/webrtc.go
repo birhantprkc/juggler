@@ -167,7 +167,16 @@ func (s *Server) acceptWebRTCOfferWithICEConfig(ctx context.Context, offer webrt
 			})
 		})
 		pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateDisconnected {
+			// Only Failed/Closed are terminal. Disconnected is TRANSIENT — ICE
+			// enters it after a few missed consent/STUN responses (a brief Wi-Fi
+			// hiccup, a NAT rebind, a momentary CPU stall) and recovers back to
+			// Connected on its own; pion only escalates to Failed (~25s later) if
+			// the path is genuinely dead. Tearing the DataChannel down on
+			// Disconnected killed otherwise-recoverable sessions after ~a minute
+			// (worse over the TURN-less studio path, which has no relay to smooth
+			// a blip, and worse on Firefox, which trips Disconnected sooner). Ride
+			// it out and let ICE either recover or escalate to Failed.
+			if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 				cancelPC()
 				client.Close()
 			}

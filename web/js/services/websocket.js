@@ -913,31 +913,38 @@ class WebSocketService {
   }
 
   /**
-   * Studio re-establish primitive: probe the server, and reload only once it
-   * answers. A reload is studio's sole recovery (it re-runs the external
-   * bootstrap handshake), so reloading while the link is still down would loop
-   * through a blank failed-bootstrap page. Instead we keep probing on the
-   * shared backoff schedule until the server is reachable, then reload to
-   * recover. The reload is additionally rate-limited by _shouldReloadOnReconnect
-   * so a flapping server can't drive a reload storm.
+   * Studio re-establish primitive: reload the page to re-run the external
+   * bootstrap's WebRTC handshake. A reload is studio's sole recovery — app-side
+   * JS cannot rebuild the DataChannel once it dies.
+   *
+   * We deliberately do NOT probe /api/health (or any other endpoint) first.
+   * Over studio the service worker tunnels EVERY same-origin request from this
+   * page — /api/health included — through the very DataChannel that just died,
+   * so the probe can only ever return an instant 504. Gating the reload on it
+   * therefore wedged the session in an endless health-check loop that never
+   * recovered (the reachability signal it waited for was unreachable by
+   * construction). There is no out-of-band path to juggler.studio from here to
+   * probe instead, and a reload's success depends on the P2P host being
+   * reachable — which cannot be known without redoing the handshake anyway.
+   *
+   * So reload directly, relying on two existing storm-guards: this loop is only
+   * ever entered on a real link death, _shouldReloadOnReconnect throttles reloads
+   * to once per 60s (sessionStorage-backed, survives the reload), and a reload
+   * against a still-dead host ends on bootstrap's static "connection isn't
+   * possible" panel (no auto-retry) — so it cannot storm. When throttled we
+   * re-arm the shared backoff loop instead, keeping the disconnection overlay
+   * countdown alive until a reload is allowed again.
    * @returns {Promise<void>}
    * @private
    */
   async _reloadWhenReachable() {
-    let reachable = false;
-    try {
-      const resp = await fetch('/api/health', { cache: 'no-store' });
-      reachable = resp.ok;
-    } catch {
-      reachable = false;
-    }
     if (this.connected || this._intentionalDisconnect) return;
-    if (reachable && this._shouldReloadOnReconnect()) {
+    if (this._shouldReloadOnReconnect()) {
       this._reloadPage();
       return;
     }
-    // Not reachable yet (or reload throttled) — back off and probe again
-    // through the same loop that drives the disconnection overlay countdown.
+    // Reload throttled (link is flapping) — re-arm the same backoff loop that
+    // drives the disconnection overlay countdown rather than reload-storming.
     this._reconnect();
   }
 

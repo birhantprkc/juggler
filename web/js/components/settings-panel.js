@@ -13,6 +13,7 @@ import { modelLabel, modelLabelFromList } from '../model/model-display.js';
 import { formatBytes, formatTimeAgo } from '../utils/format.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
+import { createCopyButton } from '../../sdk/lib/copy-button.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import wsService from '../services/websocket.js';
 import { allInfoCards, isCardEnabled, setCardEnabled, INFO_CARDS_CHANGED_EVENT } from '../services/info-cards-manager.js';
@@ -2614,7 +2615,8 @@ class SettingsPanel extends HTMLElement {
 
   /**
    * Build a connectivity URL block: a clickable link (routed through the
-   * loopback opener) alongside an inline QR code for the same URL.
+   * loopback opener) with a copy-to-clipboard button, alongside an inline QR
+   * code for the same URL.
    * @param {string} url - The URL to link to and encode as a QR code
    * @returns {HTMLElement} The URL block element to append to a control column.
    * @private
@@ -2622,18 +2624,23 @@ class SettingsPanel extends HTMLElement {
   _buildConnectivityURLBlock(url) {
     const urlBlock = document.createElement('div');
     urlBlock.className = 'connectivity-url-block';
+    const urlRow = document.createElement('div');
+    urlRow.className = 'connectivity-url-row';
     const urlLink = document.createElement('a');
     urlLink.href = url;
     urlLink.target = '_blank';
     urlLink.rel = 'noopener noreferrer';
     urlLink.className = 'connectivity-url';
     urlLink.textContent = url;
+    const copyBtn = createCopyButton(url, 'connectivity-url-copy', 'Copy URL to clipboard');
+    urlRow.appendChild(urlLink);
+    urlRow.appendChild(copyBtn);
     const qrHost = document.createElement('div');
     qrHost.className = 'connectivity-qr';
     qrHost.setAttribute('role', 'img');
     qrHost.setAttribute('aria-label', 'QR code');
     loadQRCodeSVG(qrHost, url);
-    urlBlock.appendChild(urlLink);
+    urlBlock.appendChild(urlRow);
     urlBlock.appendChild(qrHost);
     return urlBlock;
   }

@@ -2120,7 +2120,8 @@ properties-panel-controls:empty {
 .properties-panel-filepath-btn.copied::after,
 .thread-result-copy-btn.copied::after,
 .message-copy-button.copied::after,
-.code-copy-button.copied::after {
+.code-copy-button.copied::after,
+settings-panel .connectivity-url-copy.copied::after {
     content: "Copied";
     position: absolute;
     top: calc(100% + 0.25rem);
@@ -2173,7 +2174,8 @@ properties-panel-controls:empty {
     .properties-panel-filepath-btn.copied::after,
     .thread-result-copy-btn.copied::after,
     .message-copy-button.copied::after,
-    .code-copy-button.copied::after {
+    .code-copy-button.copied::after,
+    settings-panel .connectivity-url-copy.copied::after {
         animation: none;
         opacity: 1;
         transform: none;
@@ -5197,13 +5199,48 @@ settings-panel .connectivity-url-list .connectivity-url-block {
     margin-top: 0;
 }
 
+settings-panel .connectivity-url-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    max-width: 100%;
+    margin-bottom: 0.5rem;
+}
+
 settings-panel .connectivity-url {
     display: block;
     font-size: 0.875rem;
     color: var(--accent-blue, #58a6ff);
     word-break: break-all;
     text-align: center;
-    margin-bottom: 0.5rem;
+}
+
+settings-panel .connectivity-url-copy {
+    position: relative;
+    flex: 0 0 auto;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0.25rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 0.25rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 150ms ease, color 150ms ease;
+}
+
+settings-panel .connectivity-url-copy svg {
+    width: 0.875rem;
+    height: 0.875rem;
+}
+
+settings-panel .connectivity-url-copy:hover {
+    background: var(--bg-raised);
+    color: var(--text-primary);
 }
 
 settings-panel .connectivity-qr {
