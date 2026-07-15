@@ -1651,6 +1651,7 @@ properties-panel-section {
     min-height: 0;
     gap: 1rem;
     overflow-y: auto;
+    padding-right: 0.5rem;
 }
 
 /* Mirror .message-with-icon: the row top-aligns (so a wrapping title doesn't

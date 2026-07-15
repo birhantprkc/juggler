@@ -1344,9 +1344,13 @@ class PlanContextItem extends ContextItem {
     if (planData && planData.steps && planData.steps.length > 0) {
       // Plan view lives in its own subsection (direct child of the panel
       // section) so the shared subsection-sibling rule draws a divider before
-      // it, separating it from the preceding Action subsection.
+      // it, separating it from the preceding Action subsection. We deliberately
+      // do NOT add the .context-item-expanded-content class here: that class
+      // gives a child flex:1 + its own overflow-y:auto, which would capture the
+      // scroll inside the subsection on small screens. Without it the plan
+      // content takes its natural height and the enclosing section scrolls as a
+      // single unit — matching how every other tool-action panel behaves.
       const planSection = document.createElement('properties-panel-subsection');
-      planSection.classList.add('context-item-expanded-content');
       planSection.appendChild(this._createPlanDetailView(planData));
       wrapper.appendChild(planSection);
       return { skipResultSection: true };
