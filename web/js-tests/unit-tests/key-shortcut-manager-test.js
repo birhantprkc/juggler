@@ -87,7 +87,7 @@ export async function runTests(_ctx) {
   await run('all() lists the expected command ids', () => {
     const ids = keyShortcutManager.all().map((d) => d.id);
     for (const id of ['jump-to-attention', 'new-conversation', 'bin-conversation',
-      'toggle-file-editing', 'undo', 'redo', 'zoom-in', 'zoom-out', 'strategy-switch']) {
+      'toggle-file-editing', 'pause-conversation', 'undo', 'redo', 'zoom-in', 'zoom-out', 'strategy-switch']) {
       assert(ids.includes(id), `expected shortcut "${id}" in the table`);
     }
   });

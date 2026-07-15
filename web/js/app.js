@@ -19,6 +19,7 @@ import workerManager from './services/worker-manager.js';
 import providersCache from './services/providers-cache.js';
 import { setupHeaderControls } from './utils/header-controls.js';
 import { registerConversationShortcuts } from './services/shortcut-bindings.js';
+import { markSeen } from './services/tips-manager.js';
 import { updateWindowTitle } from './utils/window-title.js';
 import { initAttention } from './utils/attention-manager.js';
 import scheduledSendService from './services/scheduled-send-service.js';
@@ -836,6 +837,9 @@ class JugglerApp {
         conversation.cancelPoliteStop();
       } else {
         conversation.requestPoliteStop();
+        // Learn-by-doing: retire the onboarding tip the moment the shift+Escape
+        // shortcut is actually used (not the Pause button, which is toggle:true).
+        if (!toggle) markSeen('pause-conversation');
       }
       return;
     }

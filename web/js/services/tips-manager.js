@@ -51,6 +51,7 @@ const SHORTCUT_TIPS = [
   { id: 'jump-to-attention', body: 'Jump straight to whichever conversation is waiting on you, landing on its pending approval.' },
   { id: 'new-conversation', body: 'Spin up another conversation and switch to it — run several in parallel.' },
   { id: 'toggle-file-editing', body: 'Flip between letting the agent edit files freely and asking you first.' },
+  { id: 'pause-conversation', body: 'Pause after the current step finishes — a non-destructive stop, instead of a hard cancel.' },
   { id: 'bin-conversation', body: 'Clear a conversation out of the way — you can restore it from the Bin anytime.' },
 ];
 

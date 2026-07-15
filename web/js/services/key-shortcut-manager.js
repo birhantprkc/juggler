@@ -209,6 +209,19 @@ const SHORTCUT_DEFS = [
     allowInInput: true,
   },
   {
+    id: 'pause-conversation',
+    label: 'Pause conversation',
+    description: 'Stops as soon as possible without interrupting any tool'
+      + ' uses or in-flight LLM responses.',
+    category: 'Conversations',
+    // Dispatched externally: the Escape keydown handlers in conversation-tab.js and
+    // input-box.js route Shift+Escape through cancelLLMOperation({polite:true}). The
+    // manager lists it (Settings, tooltips, onboarding tip) but never dispatches it.
+    defaultBinding: { shift: true, key: 'Escape' },
+    allowInInput: true,
+    external: true,
+  },
+  {
     id: 'find-in-conversation',
     label: 'Find in conversation',
     description: 'Open the find bar to search for text in the current conversation.',
