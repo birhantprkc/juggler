@@ -24,6 +24,7 @@ function domUnavailable(name) {
 export const createEmptyState = () => domUnavailable('createEmptyState');
 export const createTextBlock = () => domUnavailable('createTextBlock');
 export const createCodeBlock = () => domUnavailable('createCodeBlock');
+export const createFileContentBlock = () => domUnavailable('createFileContentBlock');
 // Style injection is a no-op without a document, not an error: context items
 // call it defensively during construction.
 export const injectFileContentStyles = () => {};

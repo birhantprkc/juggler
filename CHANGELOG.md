@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Made sure .md files are previewed as markdown, not syntax-highlighted text
+
 ## [0.3.8] - 2026-07-15
 
 - Added a generic openAI provider which can use any URL

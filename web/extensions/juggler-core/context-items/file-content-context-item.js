@@ -5,7 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile, getTree, stat } from 'juggler/ops';
-import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createCodeBlock, createTextBlock, injectFileContentStyles, basename } from 'juggler/item-utils';
+import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createFileContentBlock, injectFileContentStyles, basename } from 'juggler/item-utils';
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { buildPickerPanel } from 'juggler/ui';
@@ -458,16 +458,11 @@ class FileContentContextItem extends ContextItem {
         return;
       }
 
-      const language = r.language || 'text';
-      if (language === 'markdown') {
-        body.appendChild(createTextBlock(r.content || ''));
-      } else {
-        body.appendChild(createCodeBlock({
-          content: r.content || '',
-          language,
-          lineNumberStart: r.lineOffset || 1,
-        }));
-      }
+      body.appendChild(createFileContentBlock({
+        content: r.content || '',
+        language: r.language || 'text',
+        lineNumberStart: r.lineOffset || 1,
+      }));
     }).catch(err => {
       console.error('[FileContentContextItem] properties panel fetch failed:', err);
       body.replaceChildren(createElement('div', 'file-content-not-found',

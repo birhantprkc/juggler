@@ -300,6 +300,25 @@ export function createCodeBlock(options) {
 }
 
 /**
+ * Render pinned/tool file content for the properties panel: markdown files go
+ * through the standard markdown formatter ({@link createTextBlock}); everything
+ * else through the syntax-highlighted {@link createCodeBlock}. Single source of
+ * truth for the read/write/dropped/pinned file items so the markdown special
+ * case stays consistent across all of them.
+ * @param {object} [options]
+ * @param {string} [options.content] - File body
+ * @param {string} [options.language='text'] - Detected language identifier
+ * @param {number} [options.lineNumberStart] - First line number (code blocks only)
+ * @returns {HTMLElement} A text block for markdown, else a code block
+ */
+export function createFileContentBlock({ content = '', language = 'text', lineNumberStart } = {}) {
+  if (language === 'markdown') {
+    return createTextBlock(content || '');
+  }
+  return createCodeBlock({ content: content || '', language, lineNumberStart });
+}
+
+/**
  * Normalize the file_path → path alias that LLMs sometimes emit.
  * Mutates params in place and returns it for convenience.
  * @param {Record<string, any>} params

@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { formatFileContentForLLM, createCodeBlock, injectFileContentStyles } from 'juggler/item-utils';
+import { formatFileContentForLLM, createFileContentBlock, injectFileContentStyles } from 'juggler/item-utils';
 import { createElement, addFilePath } from 'juggler/ui';
 
 injectFileContentStyles();
@@ -151,7 +151,7 @@ class DroppedFileContextItem extends ContextItem {
       return container;
     }
 
-    container.appendChild(createCodeBlock({
+    container.appendChild(createFileContentBlock({
       content,
       language: this._languageFromFilename(this.data.filename || ''),
       lineNumberStart: 1

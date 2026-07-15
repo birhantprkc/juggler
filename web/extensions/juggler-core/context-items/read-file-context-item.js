@@ -5,7 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile } from 'juggler/ops';
-import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createCodeBlock, normalizeFilePath, injectFileContentStyles, basename } from 'juggler/item-utils';
+import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createFileContentBlock, normalizeFilePath, injectFileContentStyles, basename } from 'juggler/item-utils';
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { smartTruncate } from 'juggler/ui';
@@ -289,14 +289,11 @@ class ReadFileContextItem extends ContextItem {
       return container;
     }
 
-    // File content using shared code block with CSS grid line numbers
-    const language = data.language || 'text';
-    const codeBlock = createCodeBlock({
+    container.appendChild(createFileContentBlock({
       content: data.content || '',
-      language,
+      language: data.language || 'text',
       lineNumberStart: data.lineOffset || 1,
-    });
-    container.appendChild(codeBlock);
+    }));
 
     return container;
   }

@@ -5,7 +5,7 @@
 
 import EditBase from './edit-base.js';
 import { readFile, writeFile } from 'juggler/ops';
-import { formatDisplayPath, normalizeFilePath, createCodeBlock, basename } from 'juggler/item-utils';
+import { formatDisplayPath, normalizeFilePath, createFileContentBlock, basename } from 'juggler/item-utils';
 
 /** @type {Record<string, string>} */
 const LANG_MAP = {
@@ -369,7 +369,7 @@ class WriteFileContextItem extends EditBase {
       const ext = filePath.split('.').pop()?.toLowerCase() || '';
       const section = document.createElement('div');
       section.className = 'context-item-expanded-content';
-      section.appendChild(createCodeBlock({
+      section.appendChild(createFileContentBlock({
         content: input.content,
         language: LANG_MAP[ext] || 'text',
         lineNumberStart: 1,
