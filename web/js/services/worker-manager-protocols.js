@@ -31,13 +31,13 @@ import {
  *
  * Like every other engine command handler (handleExecuteTool, handleCancelTool,
  * handleRunStrategyHook), this first ensures the engine has actually LOADED the
- * conversation. The context callback bails without responding when the
- * conversation isn't in session.conversations yet, and — because context
- * rendering is engine-only — that bail has no other client to fall back to, so
- * it would wedge the worker's requestContextAndTools for the whole turn. A
- * freshly-created conversation (e.g. /thread) or a cold engine can have its
- * first context request arrive before the auto-load finishes; awaiting the load
- * here closes that race.
+ * conversation. Context rendering is engine-only, so this callback is the sole
+ * responder and MUST always reply — an unanswered request wedges the worker's
+ * requestContextAndTools for the whole 30s ContextTimeout. Awaiting the load
+ * here (a freshly-created conversation or cold engine can have its first context
+ * request arrive before auto-load finishes) narrows that race; the callback
+ * itself closes it by waiting briefly for still-in-flight item syncs and then
+ * responding regardless (see setOnContextRequest in session-worker-callbacks.js).
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @param {any} data - Worker message payload

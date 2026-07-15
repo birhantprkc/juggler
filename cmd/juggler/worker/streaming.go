@@ -386,7 +386,17 @@ func (w *ConversationWorker) waitForContextAndTools(timeout time.Duration, needC
 		case <-w.livenessC():
 			w.detectFrozenGap()
 		case <-timer.C:
-			return nil, nil, fmt.Errorf("context/tools request timed out")
+			// Report which half never answered — the context reply is engine-only
+			// (single responder), so a wedge is almost always the context side.
+			// Naming it turns an opaque timeout into an actionable diagnosis.
+			var missing []string
+			if contextResult == nil {
+				missing = append(missing, "context")
+			}
+			if toolsResult == nil {
+				missing = append(missing, "tools")
+			}
+			return nil, nil, fmt.Errorf("context/tools request timed out after %s (no %s response)", timeout, strings.Join(missing, "+"))
 		case <-w.done:
 			return nil, nil, fmt.Errorf("worker stopped")
 		}

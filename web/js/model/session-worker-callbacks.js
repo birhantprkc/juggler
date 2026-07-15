@@ -17,6 +17,20 @@ import workerManager from '../services/worker-manager.js';
 
 /** Fallback context-window size when the model config hasn't reported one yet. */
 const DEFAULT_CONTEXT_WINDOW = 128000;
+
+/**
+ * How long the engine's context callback waits for a requested context item
+ * whose yjs-sync from the worker is still in flight (the post-reload race)
+ * before rendering without it. Context rendering is ENGINE-ONLY, so this
+ * callback is the sole responder and MUST always reply: a silent bail has no
+ * other client to answer and wedges the worker's turn for the full 30s
+ * ContextTimeout, surfacing to the user as
+ * "Failed to get context/tools: context/tools request timed out". Kept far
+ * below that timeout so a genuinely dead engine still surfaces promptly.
+ */
+const CONTEXT_SYNC_WAIT_MS = 3000;
+/** Poll interval while waiting for in-flight context-item syncs to arrive. */
+const CONTEXT_SYNC_POLL_MS = 100;
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import { generateToolDefinitions } from '../services/tool-generator.js';
@@ -176,34 +190,54 @@ export function setupWorkerCallbacks(session) {
     const req = /** @type {any} */ (request);
     const conv = session.conversations.get(conversationId);
     if (!conv) {
-      // Don't respond if we don't own this conversation — another client
-      // (the originator) has the authoritative state. Responding here wins
-      // the worker's cap-1 reply channel and silently drops the originator's
-      // full response, blanking the LLM context.
-      console.debug(`[ContextCallback] bail: no local conversation ${conversationId} (req=${req.requestId})`);
+      // Context rendering is ENGINE-ONLY: this callback is the sole responder,
+      // so it must ALWAYS reply. handleRenderContextItemsRequest already awaited
+      // the engine's load of this conversation (loadAndFlush); if it's still
+      // absent the load genuinely failed and waiting cannot help. Respond with
+      // empty context so the turn proceeds degraded rather than leaving the
+      // worker's reply channel unfed — an unanswered request wedges the turn for
+      // the full 30s ContextTimeout and surfaces as
+      // "Failed to get context/tools: context/tools request timed out".
+      console.warn(`[ContextCallback] conv ${conversationId} not loaded (req=${req.requestId}); responding empty so the turn is not wedged`);
+      workerManager.sendRenderContextItemsResponse(conversationId, req.requestId, [], '');
       return;
     }
-    // Same race-mitigation: if any requested context-item isn't in our
-    // local contextItems yet (e.g. yjs-sync hasn't reached this view), bail
-    // and let the originating client answer. Message items aren't context
-    // items and are always skipped — both worker-minted ids (`msg_TIMESTAMP_NUM`)
-    // and viewer-minted ids (`msg-TIMESTAMP-RANDOM`, from conversation._nextItemId,
-    // e.g. a strategy-injected system-reminder). Both schemes are covered, or a
-    // viewer-injected message id would fail this guard and wedge the turn.
+
     const requestedIds = req.itemIds || [];
-    // Requested ids may name context items in any thread — a sub-thread turn
-    // requests its own (and inherited) items, whose ids never live in root — so
-    // resolve presence against every thread. Checking root alone would fail this
-    // guard for a sub-thread item, bail, and wedge the turn.
-    const allContextItems = conv.getAllMessageThreads().flatMap((/** @type {any} */ t) => t.contextItems);
-    const localIds = new Set(allContextItems.map((/** @type {any} */ f) => f.id));
-    for (const id of requestedIds) {
-      if (id.startsWith('msg_') || id.startsWith('msg-')) continue;
-      if (!localIds.has(id)) {
-        console.debug(`[ContextCallback] bail: conv ${conversationId} missing context-item ${id} (req=${req.requestId}, have ${localIds.size} local items)`);
-        return;
+    // Resolve requested-item presence across EVERY thread — a sub-thread turn
+    // requests its own (and inherited) items, whose ids never live on root.
+    // Message items aren't context items and are always skipped: both worker-
+    // minted ids (`msg_TIMESTAMP_NUM`) and viewer-minted ids (`msg-TIMESTAMP-RANDOM`,
+    // from conversation._nextItemId, e.g. a strategy-injected system-reminder).
+    const isMessageId = (/** @type {string} */ id) => id.startsWith('msg_') || id.startsWith('msg-');
+    const missingContextIds = () => {
+      const localIds = new Set(
+        conv.getAllMessageThreads().flatMap((/** @type {any} */ t) => t.contextItems).map((/** @type {any} */ f) => f.id)
+      );
+      return requestedIds.filter((/** @type {string} */ id) => !isMessageId(id) && !localIds.has(id));
+    };
+
+    // A requested item can be missing purely because its yjs-sync from the
+    // worker is still in flight — the post-reload race: the app reloaded, the
+    // engine is re-hydrating, and the item's sync hasn't landed yet. Wait
+    // briefly, re-flushing batched syncs each tick, for it to arrive. We do NOT
+    // bail: context is engine-only, so bailing wedges the turn (see above). After
+    // the budget we render whatever HAS synced — the render loop below simply
+    // skips any still-missing id, and it'll be present on the next turn.
+    let missing = missingContextIds();
+    if (missing.length > 0) {
+      const deadline = Date.now() + CONTEXT_SYNC_WAIT_MS;
+      while (missing.length > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, CONTEXT_SYNC_POLL_MS));
+        /** @type {any} */ (conv)._doc?.flushPendingUpdates?.();
+        missing = missingContextIds();
+      }
+      if (missing.length > 0) {
+        console.warn(`[ContextCallback] conv ${conversationId} rendering without ${missing.length} not-yet-synced item(s) [${missing.join(', ')}] after ${CONTEXT_SYNC_WAIT_MS}ms (req=${req.requestId}); turn proceeds rather than wedging`);
       }
     }
+
+    const allContextItems = conv.getAllMessageThreads().flatMap((/** @type {any} */ t) => t.contextItems);
 
     try {
       // Build proper contextParams with helpers
