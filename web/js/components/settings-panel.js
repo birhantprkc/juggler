@@ -1208,7 +1208,7 @@ class SettingsPanel extends HTMLElement {
       status.textContent = 'Saving…';
       try {
         const response = await fetch('/api/config', {
-          method: 'POST',
+          method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ollama_host: value }),
         });
@@ -1276,7 +1276,7 @@ class SettingsPanel extends HTMLElement {
       status.textContent = 'Saving…';
       try {
         const response = await fetch('/api/config', {
-          method: 'POST',
+          method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ claudecode_binary_path: value }),
         });

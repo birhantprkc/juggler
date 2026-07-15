@@ -5,7 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Fix for deepseek thinking handling
+- Fix for deepseek thinking, and Ollama
 - Headless Linux servers now auto-relaunch under xvfb-run when no display exists
 - Linux no-display errors now give exact, distro-specific install commands
 
