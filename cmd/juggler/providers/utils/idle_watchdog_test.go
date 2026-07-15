@@ -93,3 +93,27 @@ func TestIdleWatchdog_ResetAfterFireIsSafe(t *testing.T) {
 		t.Fatal("Fired() should remain true after firing")
 	}
 }
+
+func TestEffectiveStreamIdleTimeout_FallsBackToDefault(t *testing.T) {
+	// No resolver registered (the default state) ⇒ the package default applies.
+	SetStreamIdleTimeoutResolver(nil)
+	if got := EffectiveStreamIdleTimeout(); got != StreamIdleTimeout {
+		t.Fatalf("with no resolver, got %v, want default %v", got, StreamIdleTimeout)
+	}
+
+	// A resolver returning a non-positive value is ignored — the default wins,
+	// so a blank/invalid user setting can never shrink the window to zero.
+	SetStreamIdleTimeoutResolver(func() time.Duration { return 0 })
+	t.Cleanup(func() { SetStreamIdleTimeoutResolver(nil) })
+	if got := EffectiveStreamIdleTimeout(); got != StreamIdleTimeout {
+		t.Fatalf("with a zero resolver, got %v, want default %v", got, StreamIdleTimeout)
+	}
+}
+
+func TestEffectiveStreamIdleTimeout_ResolverOverrides(t *testing.T) {
+	SetStreamIdleTimeoutResolver(func() time.Duration { return 600 * time.Second })
+	t.Cleanup(func() { SetStreamIdleTimeoutResolver(nil) })
+	if got := EffectiveStreamIdleTimeout(); got != 600*time.Second {
+		t.Fatalf("got %v, want the resolver's 600s override", got)
+	}
+}

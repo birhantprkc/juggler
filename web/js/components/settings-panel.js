@@ -431,6 +431,7 @@ class SettingsPanel extends HTMLElement {
 
                         <div class="settings-form" id="provider-form">
                             <div id="provider-fields-container"></div>
+                            <div id="global-provider-settings"></div>
                         </div>
                     </section>
 
@@ -749,6 +750,7 @@ class SettingsPanel extends HTMLElement {
       // Generate provider form fields dynamically (only on initial load)
       if (renderFields) {
         this.renderProviderFields();
+        this.renderGlobalProviderSettings();
         this.renderDefaultModelField();
         this.renderConnectivityFields();
       }
@@ -790,6 +792,108 @@ class SettingsPanel extends HTMLElement {
       // API key provider - show input field
       this._buildApiKeyProviderField(provider, container);
     }
+  }
+
+  /**
+   * Render global provider settings that apply across every provider, shown
+   * beneath the per-provider list. Currently just the stream idle timeout: the
+   * window a streaming provider waits for the next event before declaring the
+   * connection dead ("stream stalled: no data for 3m0s"). Raising it helps
+   * gateways whose cold starts exceed the 180s default. Persists to
+   * credentials.json via PUT /api/config; the server reads it live.
+   * @private
+   */
+  renderGlobalProviderSettings() {
+    const container = this.querySelector('#global-provider-settings');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const heading = document.createElement('div');
+    heading.className = 'settings-section-heading';
+    heading.textContent = 'All providers';
+    container.appendChild(heading);
+
+    const fieldGroup = document.createElement('div');
+    fieldGroup.className = 'settings-group provider-field';
+
+    const infoColumn = document.createElement('div');
+    infoColumn.className = 'provider-info';
+    const nameLabel = document.createElement('div');
+    nameLabel.className = 'provider-name';
+    nameLabel.textContent = 'Stream idle timeout';
+    infoColumn.appendChild(nameLabel);
+    const description = document.createElement('div');
+    description.className = 'provider-description';
+    description.textContent =
+      'Seconds to wait for the next stream event before treating the connection ' +
+      'as dropped ("stream stalled"). Raise it for gateways with slow cold ' +
+      'starts. Leave blank for the default (180).';
+    infoColumn.appendChild(description);
+
+    const controlColumn = document.createElement('div');
+    controlColumn.className = 'provider-control';
+
+    const row = document.createElement('div');
+    const inputWrapper = document.createElement('div');
+    inputWrapper.className = 'provider-input-wrapper';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'stream-idle-timeout-input';
+    input.inputMode = 'numeric';
+    input.placeholder = '180';
+    input.autocomplete = 'off';
+    input.setAttribute('autocorrect', 'off');
+    input.setAttribute('autocapitalize', 'off');
+    input.spellcheck = false;
+    input.value = /** @type {any} */ (this.config).streamIdleTimeout || '';
+    inputWrapper.appendChild(input);
+    row.appendChild(inputWrapper);
+
+    const status = document.createElement('div');
+    status.className = 'key-source-hint';
+    row.appendChild(status);
+
+    const save = async () => {
+      const value = input.value.trim();
+      if (value === (/** @type {any} */ (this.config).streamIdleTimeout || '')) return;
+      if (value !== '' && !/^\d+$/.test(value)) {
+        status.textContent = 'Enter a whole number of seconds.';
+        return;
+      }
+      if (value !== '' && parseInt(value, 10) <= 0) {
+        status.textContent = 'Must be greater than zero.';
+        return;
+      }
+      status.textContent = 'Saving…';
+      try {
+        const response = await fetch('/api/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stream_idle_timeout: value }),
+        });
+        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        /** @type {any} */ (this.config).streamIdleTimeout = value;
+        status.textContent = value ? `Saved. Waiting up to ${value}s.` : 'Saved. Using default (180s).';
+      } catch (e) {
+        console.error('[SettingsPanel] Failed to save stream idle timeout:', e);
+        status.textContent = 'Failed to save.';
+      }
+    };
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        save();
+        input.blur();
+      }
+    });
+
+    controlColumn.appendChild(row);
+    fieldGroup.appendChild(infoColumn);
+    fieldGroup.appendChild(controlColumn);
+    container.appendChild(fieldGroup);
   }
 
   /**

@@ -35,6 +35,7 @@ import (
 	"juggler/cmd/juggler/providers/openaicompat"
 	"juggler/cmd/juggler/providers/openrouter"
 	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/streamidle"
 	"juggler/cmd/juggler/providers/zai"
 	jugglertest "juggler/cmd/juggler/testing"
 	"juggler/internal/jlog"
@@ -55,6 +56,7 @@ func registerProviders() {
 	openaicompat.Register()
 	openrouter.Register()
 	zai.Register()
+	streamidle.Register()
 }
 
 // TestResult represents a single test result from the browser

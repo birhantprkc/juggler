@@ -27,7 +27,39 @@ import (
 // token on a large prompt; the providers' own keepalive/ping events reset it
 // well before then in practice. A package var so tests can shrink it. Mirrors
 // claudecode's own streamIdleTimeout, which already guards the CLI transport.
+//
+// This is the DEFAULT/fallback; the effective per-stream value comes from
+// EffectiveStreamIdleTimeout, which a user setting can override at runtime
+// (e.g. a gateway whose cold starts exceed 3 minutes).
 var StreamIdleTimeout = 180 * time.Second
+
+// streamIdleTimeoutResolver, when non-nil, supplies the effective idle timeout
+// at stream-arm time — the hook a user-configured override registers so the
+// setting is read live (no restart) without this low-level package importing
+// the credentials store. nil (tests, one-shot tools) ⇒ StreamIdleTimeout.
+var streamIdleTimeoutResolver func() time.Duration
+
+// SetStreamIdleTimeoutResolver installs the live resolver consulted by
+// EffectiveStreamIdleTimeout. Passing nil clears it (restoring the default).
+// Called once at startup; not safe to race against active streams.
+func SetStreamIdleTimeoutResolver(fn func() time.Duration) {
+	streamIdleTimeoutResolver = fn
+}
+
+// EffectiveStreamIdleTimeout returns the idle window a streaming provider
+// should arm its watchdog with. It consults the registered resolver (a user
+// setting) and falls back to StreamIdleTimeout when no resolver is set or it
+// returns a non-positive value. Each provider arm-site calls this once per
+// stream and reuses the result for both NewIdleWatchdog and StallError, so the
+// reported timeout matches the one that actually fired.
+func EffectiveStreamIdleTimeout() time.Duration {
+	if streamIdleTimeoutResolver != nil {
+		if d := streamIdleTimeoutResolver(); d > 0 {
+			return d
+		}
+	}
+	return StreamIdleTimeout
+}
 
 // IdleWatchdog cancels a context when a streaming provider reports no progress
 // within an idle window. The caller arms it around an SDK stream loop, calls

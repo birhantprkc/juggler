@@ -33,6 +33,7 @@ import (
 	"juggler/cmd/juggler/providers/openaicodex"
 	"juggler/cmd/juggler/providers/openaicompat"
 	"juggler/cmd/juggler/providers/openrouter"
+	"juggler/cmd/juggler/providers/streamidle"
 	"juggler/cmd/juggler/providers/zai"
 	"juggler/cmd/juggler/server"
 	"juggler/internal/enginehost"
@@ -149,6 +150,10 @@ func registerProviders() {
 	openaicompat.Register()
 	openrouter.Register()
 	zai.Register()
+
+	// Not a provider: install the resolver for the user-configurable stream
+	// idle timeout so every provider's watchdog reads the setting live.
+	streamidle.Register()
 }
 
 // startParentWatchdog self-terminates the process if the parent dies — e.g. the

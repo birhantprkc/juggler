@@ -4467,6 +4467,13 @@ settings-panel .settings-section-heading:first-child {
     margin-top: 0;
 }
 
+/* Global provider settings sit below the per-provider list, so their heading is
+   the first child of its own container and would otherwise hit the reset above
+   despite not being at the top of the panel. Restore the standard top gap. */
+settings-panel #global-provider-settings .settings-section-heading {
+    margin-top: 1.25rem;
+}
+
 /* Give the label its full width and let the key sit right after it (content
    width), instead of the default 40%/60% split that strands the key far right. */
 settings-panel .shortcut-row {

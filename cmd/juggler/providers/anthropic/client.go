@@ -333,7 +333,8 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 	// stalled mid-response). Each event resets it; see utils.StreamIdleTimeout.
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	idle := utils.NewIdleWatchdog(utils.StreamIdleTimeout, cancel)
+	idleTimeout := utils.EffectiveStreamIdleTimeout()
+	idle := utils.NewIdleWatchdog(idleTimeout, cancel)
 	defer idle.Stop()
 
 	// Create streaming request - this preserves block generation order
@@ -507,7 +508,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 		// Word it so the worker's transient classifier retries (it matches
 		// "stream stalled" / "connection may have dropped").
 		if idle.Fired() && ctx.Err() == nil {
-			return nil, utils.StallError("anthropic", utils.StreamIdleTimeout)
+			return nil, utils.StallError("anthropic", idleTimeout)
 		}
 		return nil, fmt.Errorf("anthropic streaming error: %w", err)
 	}

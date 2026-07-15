@@ -420,7 +420,8 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 		retry, attemptErr := func() (retry bool, err error) {
 			streamCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
-			idle := utils.NewIdleWatchdog(utils.StreamIdleTimeout, cancel)
+			idleTimeout := utils.EffectiveStreamIdleTimeout()
+			idle := utils.NewIdleWatchdog(idleTimeout, cancel)
 			defer idle.Stop()
 
 			// lastToolUseBlock receives standalone ThoughtSignature parts streamed after their FunctionCall.
@@ -445,7 +446,7 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 					// silent (parent ctx still alive). Surface as a transient stall
 					// so the worker's transient classifier retries the turn.
 					if idle.Fired() && ctx.Err() == nil {
-						return false, utils.StallError("gemini", utils.StreamIdleTimeout)
+						return false, utils.StallError("gemini", idleTimeout)
 					}
 					if gapiErr, ok := err.(*googleapi.Error); ok && (gapiErr.Code == http.StatusTooManyRequests || gapiErr.Code == http.StatusServiceUnavailable) {
 						// Retryable. Back off, then signal the outer loop to retry.

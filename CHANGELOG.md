@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added a generic openAI provider which can use any URL
+- Made the provider connection timeout customisable
 - Attached images now render again instead of showing as broken links
 - Fix for deepseek thinking, and Ollama
 - Headless Linux servers now auto-relaunch under xvfb-run when no display exists

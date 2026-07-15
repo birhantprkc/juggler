@@ -23,6 +23,7 @@ const (
 	claudecodeBinaryPathKey    = "claudecode_binary_path"
 	openaiCompatibleBaseURLKey = "openai_compatible_base_url"
 	openaiCompatibleHeadersKey = "openai_compatible_headers"
+	streamIdleTimeoutKey       = "stream_idle_timeout" // mirrors streamidle.CredKey
 )
 
 // ConfigAPI handles configuration-related HTTP requests. It reads the
@@ -104,6 +105,7 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"claudecodeBinaryPath":    c.credStore.GetRawKey(claudecodeBinaryPathKey),
 		"openaiCompatibleBaseURL": c.credStore.GetRawKey(openaiCompatibleBaseURLKey),
 		"openaiCompatibleHeaders": c.credStore.GetRawKey(openaiCompatibleHeadersKey),
+		"streamIdleTimeout":       c.credStore.GetRawKey(streamIdleTimeoutKey),
 	}
 
 	WriteJSON(w, r, 0, response)
@@ -194,6 +196,18 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if s, ok := v.(string); ok {
 			if err := c.credStore.SetRawKey(openaiCompatibleHeadersKey, strings.TrimSpace(s)); err != nil {
 				jlog.Error("Failed to save OpenAI-compatible headers: %v", err)
+			}
+		}
+	}
+
+	// Handle the global stream idle timeout (raw credential, whole seconds). The
+	// streamidle resolver reads it live at each stream start, so a new value
+	// takes effect on the next turn without a restart. Blank/invalid clears the
+	// override (the provider watchdog falls back to its 180s default).
+	if v, ok := req[streamIdleTimeoutKey]; ok {
+		if s, ok := v.(string); ok {
+			if err := c.credStore.SetRawKey(streamIdleTimeoutKey, strings.TrimSpace(s)); err != nil {
+				jlog.Error("Failed to save stream idle timeout: %v", err)
 			}
 		}
 	}

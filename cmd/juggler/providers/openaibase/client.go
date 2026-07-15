@@ -485,7 +485,8 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	// silent. Each event resets it; see utils.StreamIdleTimeout.
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	idle := utils.NewIdleWatchdog(utils.StreamIdleTimeout, cancel)
+	idleTimeout := utils.EffectiveStreamIdleTimeout()
+	idle := utils.NewIdleWatchdog(idleTimeout, cancel)
 	defer idle.Stop()
 
 	stream := c.client.Responses.NewStreaming(streamCtx, params, opts...)
@@ -592,7 +593,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	if err := stream.Err(); err != nil {
 		if idle.Fired() && ctx.Err() == nil {
-			return nil, utils.StallError("openai", utils.StreamIdleTimeout)
+			return nil, utils.StallError("openai", idleTimeout)
 		}
 		return nil, err // Don't enhance - let retry wrapper handle it
 	}
@@ -1036,7 +1037,8 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 	// silent. Each event resets it; see utils.StreamIdleTimeout.
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	idle := utils.NewIdleWatchdog(utils.StreamIdleTimeout, cancel)
+	idleTimeout := utils.EffectiveStreamIdleTimeout()
+	idle := utils.NewIdleWatchdog(idleTimeout, cancel)
 	defer idle.Stop()
 
 	stream := c.client.Chat.Completions.NewStreaming(streamCtx, params, option.WithJSONSet(c.quirks.MaxTokensParamName, maxTokens))
@@ -1128,7 +1130,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 
 	if err := stream.Err(); err != nil {
 		if idle.Fired() && ctx.Err() == nil {
-			return nil, utils.StallError("openai", utils.StreamIdleTimeout)
+			return nil, utils.StallError("openai", idleTimeout)
 		}
 		return nil, err // Don't enhance - let retry wrapper handle it
 	}
