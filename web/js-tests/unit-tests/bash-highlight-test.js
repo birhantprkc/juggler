@@ -95,5 +95,59 @@ export async function runTests(_ctx) {
     assert(el.querySelectorAll('.bash-command-operator').length === 4, 'angle brackets should be shell operators');
   });
 
+  // === formatCommandForDisplay: newline-splitting for the properties panel ===
+
+  const { formatCommandForDisplay } = await import('../../extensions/juggler-core/context-items/execute-context-item.js');
+
+  /**
+   * @param {string} label
+   * @param {string} input
+   * @param {string} expected
+   */
+  const check = (label, input, expected) => {
+    run(label, () => {
+      const got = formatCommandForDisplay(input);
+      assert(got === expected, `input ${JSON.stringify(input)}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(got)}`);
+    });
+  };
+
+  // `&&` — newline goes BEFORE the operator, so it starts the continuation line.
+  check('&& splits with newline before the operator',
+    'cd /foo && cat bar', 'cd /foo\n&& cat bar');
+  check('multiple && operators each start a new line',
+    'a && b && c', 'a\n&& b\n&& c');
+
+  // `;` — newline goes AFTER the operator, so the `;` stays at end of its line.
+  check('; splits with newline after the operator',
+    'make build; rm bar', 'make build;\nrm bar');
+  check('multiple ; operators end their respective lines',
+    'a; b; c', 'a;\nb;\nc');
+
+  // `&&` and `;` can mix freely in the same command.
+  check('mixed && and ; split at the right place for each',
+    'cd /foo && cat bar; rm baz', 'cd /foo\n&& cat bar;\nrm baz');
+  check('mixed ; and &&',
+    'a; b && c', 'a;\nb\n&& c');
+
+  // Operators inside quoted strings must NOT split.
+  check('quoted && is not split',
+    'echo "a && b"', 'echo "a && b"');
+  check('quoted ; is not split',
+    "echo 'a; b'", "echo 'a; b'");
+  check('quoted && after a real && still splits only the real one',
+    'echo "x && y" && cat out', 'echo "x && y"\n&& cat out');
+
+  // A command with no top-level operator is returned unchanged.
+  check('plain command is unchanged',
+    'echo hello world', 'echo hello world');
+  check('pipe-only command is unchanged',
+    'make test 2>&1 | tail -40', 'make test 2>&1 | tail -40');
+
+  // A trailing operator leaves an empty segment that is dropped.
+  check('trailing && is dropped',
+    'pwd &&', 'pwd');
+  check('trailing ; is dropped',
+    'pwd;', 'pwd');
+
   return { passed, failed, errors };
 }

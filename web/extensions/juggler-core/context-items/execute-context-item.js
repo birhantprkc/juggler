@@ -36,17 +36,26 @@ function prettyTimeout(ms) {
 
 /**
  * Format a shell command for the properties panel by putting each chained
- * sub-command on its own line, split at top-level `&&` operators with the `&&`
- * moved to the start of the continuation line, e.g. `cd /foo && cat bar` →
- * "cd /foo\n&& cat bar". Only `&&` operators outside quotes are split, so an
- * `&&` inside a quoted string is left untouched. Commands without a top-level
- * `&&` are returned unchanged.
+ * sub-command on its own line. Splits at top-level operators (those outside
+ * quotes), with the newline placed according to the operator:
+ *   - `&&` — the newline goes BEFORE the operator, so it starts the
+ *     continuation line: `cd /foo && cat bar` → "cd /foo\n&& cat bar".
+ *   - `;`  — the newline goes AFTER the operator, so the `;` stays at the end
+ *     of its line: `make build; rm bar` → "make build;\nrm bar".
+ * Operators inside a quoted string are left untouched. Commands without a
+ * top-level `&&` or `;` are returned unchanged.
  * @param {string} command - The raw shell command
- * @returns {string} The command with `&&`-chained sub-commands on separate lines
+ * @returns {string} The command with chained sub-commands on separate lines
  */
 function formatCommandForDisplay(command) {
+  // Scan for top-level operators (those outside quotes), slicing the command
+  // into segments. Each segment records the operator that PRECEDED it (null for
+  // the first); a run like `;;` counts as a single boundary.
+  /** @type {Array<{op: '&&'|';'|null, text: string}>} */
   const segments = [];
   let start = 0;
+  /** @type {'&&'|';'|null} */
+  let op = null;
   let quote = ''; // '', "'", '"', or '`'
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
@@ -60,14 +69,35 @@ function formatCommandForDisplay(command) {
     }
     // A top-level `&&` (exactly two ampersands, not part of a longer run).
     if (ch === '&' && command[i + 1] === '&' && command[i - 1] !== '&' && command[i + 2] !== '&') {
-      segments.push(command.slice(start, i).trim());
+      segments.push({ op, text: command.slice(start, i) });
+      op = '&&';
       start = i + 2;
-      i++; // skip the second '&'
+      i++; // skip the second '&' (the loop's i++ skips to `start`)
+      continue;
+    }
+    // A top-level `;` (a run like `;;` is one boundary).
+    if (ch === ';') {
+      segments.push({ op, text: command.slice(start, i) });
+      op = ';';
+      while (command[i + 1] === ';') i++;
+      start = i + 1;
     }
   }
-  if (segments.length === 0) return command;
-  segments.push(command.slice(start).trim());
-  return segments.filter(Boolean).map((seg, idx) => (idx === 0 ? seg : `&& ${seg}`)).join('\n');
+  segments.push({ op, text: command.slice(start) });
+  if (segments.length <= 1) return command;
+
+  // Render each segment on its own line: `&&` prefixes its line, while `;`
+  // suffixes the PREVIOUS line. Empty segments (surrounding whitespace or a
+  // trailing operator) are dropped, so a dangling `;`/`&&` simply disappears.
+  /** @type {string[]} */
+  const lines = [];
+  for (const { op: sep, text } of segments) {
+    const trimmed = text.trim();
+    if (!trimmed) continue;
+    if (sep === ';' && lines.length) lines[lines.length - 1] += ';';
+    lines.push(sep === '&&' ? `&& ${trimmed}` : trimmed);
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -868,5 +898,7 @@ class ExecuteContextItem extends ContextItem {
     return String(plain?.fullResult?.result?.task_id || '');
   }
 }
+
+export { formatCommandForDisplay };
 
 export default ExecuteContextItem;
