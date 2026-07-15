@@ -32,6 +32,7 @@ import (
 	"juggler/cmd/juggler/providers/ollama"
 	"juggler/cmd/juggler/providers/openai"
 	"juggler/cmd/juggler/providers/openaicodex"
+	"juggler/cmd/juggler/providers/openaicompat"
 	"juggler/cmd/juggler/providers/openrouter"
 	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/providers/zai"
@@ -51,6 +52,7 @@ func registerProviders() {
 	ollama.Register()
 	openai.Register()
 	openaicodex.Register()
+	openaicompat.Register()
 	openrouter.Register()
 	zai.Register()
 }

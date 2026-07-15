@@ -93,6 +93,42 @@ func TestModelsUseResponsesAPI(t *testing.T) {
 	}
 }
 
+// TestCustomHeaderOverridesUserAgent verifies that a User-Agent supplied via
+// Config.Headers replaces the openai-go SDK's default User-Agent on the wire.
+// This is what lets the OpenAI-compatible provider satisfy gateways that
+// require a specific User-Agent: the SDK sets its default first, then applies
+// caller headers via WithHeader (a Set/overwrite), so ours wins.
+func TestCustomHeaderOverridesUserAgent(t *testing.T) {
+	var userAgent string
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		userAgent = r.Header.Get("User-Agent")
+		var body bytes.Buffer
+		_ = json.NewEncoder(&body).Encode(map[string]any{"object": "list", "data": []map[string]any{}})
+		header := make(http.Header)
+		header.Set("Content-Type", "application/json")
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(&body)}, nil
+	})}
+
+	client, err := NewClient(Config{
+		APIKey:     "test-key",
+		Headers:    map[string]string{"User-Agent": "my-gateway-client/1.0"},
+		Model:      "gpt-4o",
+		BaseURL:    "https://example.test",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := client.ListModelsWithInfo(context.Background(), func(string) bool { return true }, func(string) (int, int) {
+		return 128000, 16384
+	}, nil, "test"); err != nil {
+		t.Fatalf("ListModelsWithInfo: %v", err)
+	}
+	if userAgent != "my-gateway-client/1.0" {
+		t.Fatalf("User-Agent = %q, want custom value overriding the SDK default", userAgent)
+	}
+}
+
 func TestForceResponsesAPIQuirk(t *testing.T) {
 	// A Chat-Completions model name normally routes to Chat Completions...
 	plain := &Client{model: "gpt-5.5"}

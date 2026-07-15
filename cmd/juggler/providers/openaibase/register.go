@@ -65,10 +65,15 @@ type Descriptor struct {
 	UsageStatsOverride func(ctx context.Context, credential string, headers map[string]string) (provider.UsageStats, error)
 
 	// openaibase.Client options
-	BaseURL       string        // Static base URL.
-	BaseURLFunc   func() string // If set, resolved at NewClient time (overrides BaseURL).
-	Quirks        Quirks        // Per-vendor request-shape divergences. Zero value = standard OpenAI.
-	Headers       map[string]string
+	BaseURL     string        // Static base URL.
+	BaseURLFunc func() string // If set, resolved at NewClient time (overrides BaseURL).
+	Quirks      Quirks        // Per-vendor request-shape divergences. Zero value = standard OpenAI.
+	Headers     map[string]string
+	// HeadersFunc resolves the static (per-provider) headers at NewClient time,
+	// overriding Headers when set. Use for user-configured headers (e.g. a
+	// gateway that requires a custom User-Agent) that aren't known at
+	// registration. Merged under any per-request cfg.Headers, same as Headers.
+	HeadersFunc   func() map[string]string
 	APIKeyDefault string // Fallback when cfg.APIKey is empty (keyless providers).
 }
 
@@ -109,7 +114,11 @@ func Register(d Descriptor) {
 		if d.BaseURLFunc != nil {
 			baseURL = d.BaseURLFunc()
 		}
-		cfg.Headers = mergeHeaders(d.Headers, cfg.Headers)
+		staticHeaders := d.Headers
+		if d.HeadersFunc != nil {
+			staticHeaders = d.HeadersFunc()
+		}
+		cfg.Headers = mergeHeaders(staticHeaders, cfg.Headers)
 		base, err := NewClientFromProviderConfig(cfg, baseURL, d.Quirks)
 		if err != nil {
 			return nil, err

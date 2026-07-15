@@ -1011,9 +1011,113 @@ class SettingsPanel extends HTMLElement {
     controlColumn.appendChild(inputWrapper);
     controlColumn.appendChild(sourceHint);
 
+    // OpenAI-compatible: expose the gateway base URL and optional custom
+    // request headers (JSON), so one provider covers any Chat-Completions
+    // gateway. Saved as raw credentials; the backend re-fetches models on save.
+    if (provider.name === 'openai-compatible') {
+      controlColumn.appendChild(this._buildOpenAICompatRows());
+    }
+
     fieldGroup.appendChild(infoColumn);
     fieldGroup.appendChild(controlColumn);
     container.appendChild(fieldGroup);
+  }
+
+  /**
+   * Build the base-URL and custom-headers rows for the OpenAI-compatible
+   * provider. Base URL saves as `openai_compatible_base_url`; headers save as
+   * `openai_compatible_headers` (a JSON object string). Both persist via
+   * /api/config on blur or Enter; empty clears the override.
+   * @returns {HTMLElement} The rows wrapper to append to the control column.
+   * @private
+   */
+  _buildOpenAICompatRows() {
+    const wrapper = document.createElement('div');
+
+    /**
+     * @param {string} key - config key posted to /api/config
+     * @param {string} configField - camelCase field on this.config
+     * @param {string} placeholder - input placeholder
+     * @param {(v: string) => string|null} validate - returns an error string or null
+     * @returns {HTMLElement} The input row element.
+     */
+    const buildRow = (key, configField, placeholder, validate) => {
+      const row = document.createElement('div');
+      const inputWrapper = document.createElement('div');
+      inputWrapper.className = 'provider-input-wrapper';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = placeholder;
+      input.autocomplete = 'off';
+      input.setAttribute('autocorrect', 'off');
+      input.setAttribute('autocapitalize', 'off');
+      input.spellcheck = false;
+      input.value = /** @type {any} */ (this.config)[configField] || '';
+      inputWrapper.appendChild(input);
+      row.appendChild(inputWrapper);
+
+      const status = document.createElement('div');
+      status.className = 'key-source-hint';
+      row.appendChild(status);
+
+      const save = async () => {
+        const value = input.value.trim();
+        if (value === (/** @type {any} */ (this.config)[configField] || '')) return;
+        const err = validate(value);
+        if (err) {
+          status.textContent = err;
+          return;
+        }
+        status.textContent = 'Saving…';
+        try {
+          const response = await fetch('/api/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ [key]: value }),
+          });
+          if (!response.ok) throw new Error(`Server returned ${response.status}`);
+          /** @type {any} */ (this.config)[configField] = value;
+          status.textContent = value ? 'Saved.' : 'Cleared.';
+        } catch (e) {
+          console.error(`[SettingsPanel] Failed to save ${key}:`, e);
+          status.textContent = 'Failed to save.';
+        }
+      };
+
+      input.addEventListener('blur', save);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          save();
+          input.blur();
+        }
+      });
+      return row;
+    };
+
+    wrapper.appendChild(buildRow(
+      'openai_compatible_base_url', 'openaiCompatibleBaseURL',
+      'https://gateway.example.com/v1', () => null,
+    ));
+    wrapper.appendChild(buildRow(
+      'openai_compatible_headers', 'openaiCompatibleHeaders',
+      '{"User-Agent": "my-app/1.0"}',
+      (v) => {
+        if (v === '') return null;
+        try {
+          const parsed = JSON.parse(v);
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            return 'Headers must be a JSON object.';
+          }
+          return null;
+        } catch {
+          return 'Invalid JSON.';
+        }
+      },
+    ));
+
+    return wrapper;
   }
 
   /**
