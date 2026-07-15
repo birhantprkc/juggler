@@ -15,6 +15,7 @@ import (
 	"testing/fstest"
 
 	"juggler/cmd/juggler/server/handlers"
+	"juggler/internal/userpaths"
 	"juggler/internal/userpaths/userpathstest"
 )
 
@@ -131,9 +132,9 @@ func TestExtInitRefusesExisting(t *testing.T) {
 }
 
 // TestExtLinkCreatesSymlink scaffolds a dev extension, links it, and asserts the
-// symlink lands in ~/.juggler/extensions pointing back at the dev dir.
+// symlink lands in the config dir's extensions/ folder pointing back at the dev dir.
 func TestExtLinkCreatesSymlink(t *testing.T) {
-	home := userpathstest.Isolate(t)
+	userpathstest.Isolate(t)
 
 	devDir := filepath.Join(t.TempDir(), "dev-ext")
 	if code := extInit([]string{devDir}); code != 0 {
@@ -144,7 +145,7 @@ func TestExtLinkCreatesSymlink(t *testing.T) {
 		t.Fatalf("extLink exit code = %d, want 0", code)
 	}
 
-	link := filepath.Join(home, ".juggler", "extensions", "dev-ext")
+	link := filepath.Join(userpaths.ConfigDir(), "extensions", "dev-ext")
 	target, err := os.Readlink(link)
 	if err != nil {
 		t.Fatalf("expected symlink at %s: %v", link, err)

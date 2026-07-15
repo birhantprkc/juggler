@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Made sure .md files are previewed as markdown, not syntax-highlighted text
+- Followed XDG Base Directory spec for config/cache on Linux
 
 ## [0.3.8] - 2026-07-15
 

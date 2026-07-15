@@ -16,6 +16,7 @@ import (
 	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/internal/userpaths"
 	"juggler/internal/userpaths/userpathstest"
 )
 
@@ -57,8 +58,8 @@ func TestHandleProviderUsageStatsBestEffort(t *testing.T) {
 		return fakeUsageProvider{name: errName, err: errors.New("upstream unavailable")}, nil
 	})
 
-	home := userpathstest.Isolate(t)
-	jugglerDir := filepath.Join(home, ".juggler")
+	userpathstest.Isolate(t)
+	jugglerDir := userpaths.ConfigDir()
 	if err := os.MkdirAll(jugglerDir, 0700); err != nil {
 		t.Fatalf("mkdir credentials dir: %v", err)
 	}
