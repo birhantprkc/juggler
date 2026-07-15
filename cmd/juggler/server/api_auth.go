@@ -77,6 +77,21 @@ func hostAllowed(r *http.Request) bool {
 	return net.ParseIP(host) != nil
 }
 
+// isAssetGetRequest reports whether r is a GET for a content-addressed asset
+// (GET /api/session/conversations/<id>/assets/<sha>). These are loaded by the
+// browser as <img src>, which — unlike fetch() — cannot carry the custom
+// X-Juggler-Token header, so the token rides as a ?token= query param instead
+// (mirroring the WebSocket upgrade in websocket_loop.go). The relaxation is
+// scoped to exactly this read-only, non-tool route; the sensitive surface
+// (/api/ops/call, …) still demands the header and its forced CORS preflight.
+func isAssetGetRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	p := r.URL.Path
+	return strings.HasPrefix(p, "/api/session/conversations/") && strings.Contains(p, "/assets/")
+}
+
 // apiAuthMiddleware enforces the per-instance token and Host allowlist on the
 // sensitive /api surface (§S.1 + §S.2). It is a no-op in test mode — the browser
 // integration harness drives the server headlessly over many synthetic origins
@@ -97,7 +112,13 @@ func (s *Server) apiAuthMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "Forbidden: host not allowed", http.StatusForbidden)
 			return
 		}
-		if r.Header.Get("X-Juggler-Token") != s.apiToken {
+		token := r.Header.Get("X-Juggler-Token")
+		if token == "" && isAssetGetRequest(r) {
+			// <img src> loads can't set a custom header — accept the token as a
+			// query param for this read-only route (see isAssetGetRequest).
+			token = r.URL.Query().Get("token")
+		}
+		if token != s.apiToken {
 			http.Error(w, "Unauthorized: missing or invalid session token", http.StatusUnauthorized)
 			return
 		}

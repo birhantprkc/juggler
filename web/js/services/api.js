@@ -567,12 +567,20 @@ class APIService {
 
   /**
    * URL of the GET route that streams a stored asset's bytes (for rendering).
+   *
+   * The bytes are loaded by the browser as an `<img src>`, which cannot carry
+   * the `X-Juggler-Token` header the fetch() shim adds to /api requests. So the
+   * per-instance token rides as a `?token=` query param instead — exactly as
+   * the WebSocket dial does (services/websocket.js) — and the server accepts it
+   * for this read-only asset route (see isAssetGetRequest in api_auth.go).
    * @param {string} conversationId - Conversation ID
    * @param {string} sha - Asset id (content hash) = AssetRef.id
-   * @returns {string} The asset GET URL.
+   * @returns {string} The asset GET URL (token-bearing when a token is present).
    */
   assetURL(conversationId, sha) {
-    return `${this.baseURL}/session/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(sha)}`;
+    const url = `${this.baseURL}/session/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(sha)}`;
+    const token = /** @type {{__jugglerToken?: string}} */ (globalThis).__jugglerToken;
+    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
   }
 
 }

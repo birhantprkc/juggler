@@ -33,6 +33,7 @@ func newAuthTestServer(t *testing.T) (*Server, *bool) {
 	s.router.HandleFunc("/api/ops/call", hit).Methods("POST")
 	s.router.HandleFunc("/api/health", hit).Methods("GET")
 	s.router.HandleFunc("/api/session/window-state", hit).Methods("GET", "PUT")
+	s.router.HandleFunc("/api/session/conversations/{convId}/assets/{sha}", hit).Methods("GET")
 	s.router.HandleFunc("/", hit).Methods("GET")
 	return s, &reached
 }
@@ -87,6 +88,62 @@ func TestAPIAuthAllowsCorrectToken(t *testing.T) {
 	}
 	if !*reached {
 		t.Fatal("handler must run for a correctly-tokened, same-host ops/call")
+	}
+}
+
+// TestAPIAuthAssetGetAcceptsQueryToken covers the <img src> path: an asset GET
+// carries no X-Juggler-Token header (image loads can't set one), so the token
+// rides as a ?token= query param and is accepted for this read-only route.
+func TestAPIAuthAssetGetAcceptsQueryToken(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	const sha = "82203b2013a5381d5f1ae5ec3f85a0edf91bb7e65a82a91684a9aa1fc53e9da9"
+	req := httptest.NewRequest(http.MethodGet, "/api/session/conversations/conv_x/assets/"+sha+"?token="+testAPIToken, nil)
+	req.Host = "localhost"
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !*reached {
+		t.Fatalf("query-token asset GET: got %d reached=%v, want 200 reached=true", rec.Code, *reached)
+	}
+}
+
+// TestAPIAuthAssetGetRejectsMissingToken confirms the query-param relaxation is
+// still a gate: an asset GET with neither header nor ?token= is rejected 401.
+func TestAPIAuthAssetGetRejectsMissingToken(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	const sha = "82203b2013a5381d5f1ae5ec3f85a0edf91bb7e65a82a91684a9aa1fc53e9da9"
+	req := httptest.NewRequest(http.MethodGet, "/api/session/conversations/conv_x/assets/"+sha, nil)
+	req.Host = "localhost"
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("untokened asset GET: got %d, want 401", rec.Code)
+	}
+	if *reached {
+		t.Fatal("handler must not run for an untokened asset GET")
+	}
+}
+
+// TestAPIAuthQueryTokenIgnoredOffAssetRoute confirms the ?token= fallback is
+// scoped to the asset route only: a POST /api/ops/call with the token in the
+// query string (but no header) is still rejected, preserving the header-only
+// gate — and its forced CORS preflight — on the sensitive tool surface.
+func TestAPIAuthQueryTokenIgnoredOffAssetRoute(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/ops/call?token="+testAPIToken, nil)
+	req.Host = "localhost"
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("query-token ops/call: got %d, want 401", rec.Code)
+	}
+	if *reached {
+		t.Fatal("handler must not run for a query-token-only ops/call")
 	}
 }
 
