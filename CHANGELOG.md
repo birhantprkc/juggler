@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-15
+
 - Added a generic openAI provider which can use any URL
 - Made the provider connection timeout customisable
 - Attached images now render again instead of showing as broken links
