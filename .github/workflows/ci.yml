@@ -87,10 +87,14 @@ jobs:
       - name: Download Go modules
         run: go mod download
 
+      # Node 22+ is required: it is the engine-host floor (enginehost.MinNodeMajor
+      # — Node 22 is the first release with a stable WebSocket global), so it is
+      # what TestNodeEngineHostBootsAndConnects probes. On an older Node that test
+      # skips and the node engine host goes untested; keep this at/above the floor.
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install npm dependencies
         run: npm install
