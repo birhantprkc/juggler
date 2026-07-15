@@ -978,12 +978,15 @@ func (ops *FileOperations) stat(params map[string]any) (any, error) {
 		return nil, err
 	}
 
-	pathResult, err := ops.scope.Resolve(path)
+	// User-initiated metadata checks accompany @-mention/file-picker pins, which
+	// may refer to paths outside the project. LLM file operations remain scoped.
+	userInitiated, _ := params["userInitiated"].(bool)
+	absPath, err := ops.scope.ResolveUserInitiated(path, userInitiated)
 	if err != nil {
 		return nil, err
 	}
 
-	fileInfo, statErr := os.Stat(pathResult.AbsPath)
+	fileInfo, statErr := os.Stat(absPath)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			return map[string]any{

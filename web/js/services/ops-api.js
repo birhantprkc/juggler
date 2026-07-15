@@ -501,7 +501,7 @@ export async function readFileGetHash(params, allowedPaths) {
 
 /**
  * Get file/directory metadata without reading content
- * @param {{path: string}} params
+ * @param {{path: string, userInitiated?: boolean}} params
  * @param {string[]} [allowedPaths] - Standing allowed-paths grant (top-level transport)
  * @returns {Promise<{path: string, exists: boolean, isFile?: boolean, isDirectory?: boolean, size?: number, modified?: number}>} File/directory metadata
  */

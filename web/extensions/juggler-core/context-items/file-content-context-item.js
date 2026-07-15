@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { readFile, getTree } from 'juggler/ops';
+import { readFile, getTree, stat } from 'juggler/ops';
 import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createCodeBlock, createTextBlock, injectFileContentStyles, basename } from 'juggler/item-utils';
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
@@ -284,6 +284,20 @@ class FileContentContextItem extends ContextItem {
    * @private
    */
   async _doFetch(path) {
+    // Completion paths conventionally carry a trailing slash for directories,
+    // but a user may type or paste an absolute directory path without one.
+    // Probe first in that ambiguous case so folders never reach `readFile`.
+    let isDirectory = path.endsWith('/');
+    if (!isDirectory) {
+      try {
+        const metadata = await stat({ path, userInitiated: true });
+        isDirectory = metadata.isDirectory === true;
+      } catch (err) {
+        // Preserve the read operation's existing error/result behavior when
+        // metadata is unavailable (for example, a deleted path).
+      }
+    }
+
     // A pin is always user-initiated: the user explicitly chose this path via
     // @-mention or the file picker, so it may legitimately point outside the
     // project root (a sibling repo, an absolute path, …). Pass `userInitiated`
@@ -291,7 +305,7 @@ class FileContentContextItem extends ContextItem {
     // working-directory containment check — for relative `../…` mentions as
     // well as absolute ones. Without it an out-of-root mention fails as "path
     // is outside working directory".
-    if (path.endsWith('/')) {
+    if (isDirectory) {
       try {
         const r = await getTree({ path, depth: 2, maxTokens: 4000, userInitiated: true });
         return {

@@ -230,11 +230,34 @@ export const pinResolvesLiveAndPersistsNoBytes = {
   }
 };
 
+// A directory typed or pasted without its conventional trailing slash must still
+// be fetched as a tree. The completion UI supplies a slash, but raw text (and
+// absolute Finder paths) does not.
+/** @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition} */
+export const sendMessageTreatsDirectoryMentionWithoutTrailingSlashAsFolder = {
+  name: 'send-message-treats-directory-mention-without-trailing-slash-as-folder',
+  description: 'A directory @-mention without trailing slash reaches the LLM as a directory listing',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('Read the folder.')
+  ],
+
+  operations: [
+    {
+      type: 'send-message',
+      message: 'Review @mentioned-directory please.'
+    },
+    { type: 'validate-context-snapshot', expectedContent: ['child.txt'] }
+  ]
+};
+
 // Export all tests
 export const tests = [
   atMentionAddsFileContentItem,
   atMentionDeduplicates,
   sendMessageCreatesFileItemsForAllMentions,
   sendMessageHandlesPunctuationAndBareAt,
-  pinResolvesLiveAndPersistsNoBytes
+  pinResolvesLiveAndPersistsNoBytes,
+  sendMessageTreatsDirectoryMentionWithoutTrailingSlashAsFolder
 ];
