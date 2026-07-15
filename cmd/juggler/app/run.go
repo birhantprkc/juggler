@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -33,6 +34,7 @@ import (
 	"juggler/cmd/juggler/providers/openrouter"
 	"juggler/cmd/juggler/providers/zai"
 	"juggler/cmd/juggler/server"
+	"juggler/internal/enginehost"
 	"juggler/internal/webviewenv"
 	"juggler/web"
 )
@@ -64,6 +66,14 @@ func Run(cfg Config) int {
 		return runExtCommand(os.Args[2:])
 	}
 
+	// `juggler doctor` prints the engine-host probe table (display, node, xvfb,
+	// chosen mode) and exits, without booting a server — the first thing to run
+	// when the engine won't start on a headless host. Like `ext`, dispatch it
+	// before flag parsing and the banner so it behaves as a plain utility.
+	if len(os.Args) > 1 && os.Args[1] == "doctor" {
+		return runDoctor(os.Args[2:])
+	}
+
 	// Determine terminal-vs-icon launch first, before anything writes to stdout.
 	// On Windows an icon launch detaches the console Windows allocated for us as
 	// a side effect (see launchedFromTerminal), so this must run early.
@@ -83,13 +93,13 @@ func Run(cfg Config) int {
 		return 0
 	}
 
-	// A headless Linux host (no DISPLAY/WAYLAND_DISPLAY) cannot bring up the
-	// hidden engine webview, but a virtual framebuffer satisfies it completely.
-	// When xvfb-run is installed, re-exec under it instead of failing the
-	// engine preflight later (JUGGLER_NO_XVFB=1 opts out). This must run before
-	// any lock, port, or GTK state exists — on success it never returns.
-	if note := webviewenv.MaybeRelaunchUnderXvfb(); note != "" {
-		fmt.Fprintln(os.Stderr, note)
+	// When Node is unavailable, retain the established WebKit fallback: a
+	// headless Linux host can bring up the hidden engine webview under Xvfb. Node
+	// hosts skip this relaunch entirely so auto mode is not forced back onto GTK.
+	if runtime.GOOS != "linux" || os.Getenv(enginehost.EnvVar) == "webview" || !probeNode().OK {
+		if note := webviewenv.MaybeRelaunchUnderXvfb(); note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
 	}
 
 	// --assets-from-disk is a developer flag that serves the web/ tree off disk;

@@ -162,6 +162,58 @@ func detectLinuxHost(goos string, lookPath func(string) (string, error)) linuxHo
 	return h
 }
 
+// HostInfo reports the Linux host facts the engine-host diagnostics need: the
+// detected package manager (or ""), whether xvfb-run is already on PATH, and
+// the exact per-distro commands that install the Xvfb framebuffer and Node.js.
+// Off Linux it is the zero value.
+type HostInfo struct {
+	PackageManager string // "apt-get", "dnf", "pacman", "zypper", or ""
+	HasXvfb        bool   // xvfb-run is on PATH
+	XvfbInstall    string // exact command to install Xvfb ("" if pm unknown)
+	NodeInstall    string // exact command to install Node.js ("" if pm unknown)
+}
+
+// DetectHost probes this Linux host for its package manager and for xvfb-run,
+// and derives the install commands. Only meaningful on Linux.
+func DetectHost() HostInfo {
+	h := detectLinuxHost(runtime.GOOS, exec.LookPath)
+	return HostInfo{
+		PackageManager: h.pm,
+		HasXvfb:        h.hasXvfb,
+		XvfbInstall:    xvfbInstallCommand(h.pm),
+		NodeInstall:    nodeInstallCommand(h.pm),
+	}
+}
+
+// UserNamespacesRestricted reports whether this host blocks the unprivileged
+// user namespaces WebKitGTK's bwrap sandbox needs (see sandboxRestricted). It
+// is exported for `juggler doctor`; always false off Linux.
+func UserNamespacesRestricted() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	return sandboxRestricted()
+}
+
+// nodeInstallCommand returns the exact command that installs Node.js for the
+// detected package manager, or "" when no known package manager was found. The
+// distro package can lag the engine's minimum (Node 22); the diagnostics that
+// print this also state the version floor.
+func nodeInstallCommand(pm string) string {
+	switch pm {
+	case "apt-get":
+		return "sudo apt-get install -y nodejs"
+	case "dnf":
+		return "sudo dnf install -y nodejs"
+	case "pacman":
+		return "sudo pacman -S --needed nodejs"
+	case "zypper":
+		return "sudo zypper install -y nodejs"
+	default:
+		return ""
+	}
+}
+
 // xvfbInstallCommand returns the exact command that installs the Xvfb virtual
 // framebuffer for the detected package manager (the package name differs per
 // distro family), or "" when no known package manager was found.

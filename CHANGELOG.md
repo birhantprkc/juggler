@@ -8,6 +8,7 @@ of changes; this project follows semantic versioning.
 - Fix for deepseek thinking, and Ollama
 - Headless Linux servers now auto-relaunch under xvfb-run when no display exists
 - Linux no-display errors now give exact, distro-specific install commands
+- On headless linux servers without GTK, it will now fall back to using node/bun as its javascript engine
 
 ## [0.3.7] - 2026-07-14
 
