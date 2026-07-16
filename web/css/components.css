@@ -4193,10 +4193,15 @@ settings-panel #connectivity-form .provider-description {
 }
 
 settings-panel .settings-container {
+    /* Centre with inset+auto margins rather than translate(-50%, -50%): the
+       percentage translate offsets by half the element's own (fractional) size,
+       landing the composited layer on a half-pixel. WebKit then resamples the
+       whole layer to place it, softening all text/borders (Blink snaps it, so
+       Chrome looks fine). inset:0 + margin:auto centres with no transform, so
+       no compositing layer and no blur. */
     position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
+    inset: 0;
+    margin: auto;
     padding-top: 0.3rem;
     width: 92%;
     max-width: 82rem;
