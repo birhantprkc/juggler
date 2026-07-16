@@ -486,10 +486,11 @@ class SettingsPanel extends HTMLElement {
     this.innerHTML = `
             <modal-backdrop class="settings-backdrop" id="settings-backdrop"></modal-backdrop>
             <modal-panel class="settings-container">
+                <button class="close-button" id="settings-close" title="Close" aria-label="Close">×</button>
                 <nav class="settings-tabs">
                     <div class="settings-tabs-scroll">
                         <button class="settings-tab active" data-tab="providers">Provider API Keys</button>
-                        <button class="settings-tab" data-tab="default-model">Default model</button>
+                        <button class="settings-tab" data-tab="default-model">Provider settings</button>
                         <button class="settings-tab" data-tab="connectivity">Connectivity</button>
                         <button class="settings-tab" data-tab="extensions">Extensions</button>
                         <button class="settings-tab" data-tab="mcp">MCP servers</button>
@@ -499,7 +500,6 @@ class SettingsPanel extends HTMLElement {
                         <button class="settings-tab" data-tab="shortcuts">Keyboard shortcuts</button>
                         <button class="settings-tab" data-tab="logs">Logs</button>
                     </div>
-                    <button class="close-button" id="settings-close" title="Close" aria-label="Close">×</button>
                 </nav>
 
                 <div class="settings-loading" id="settings-loading">
@@ -517,21 +517,16 @@ class SettingsPanel extends HTMLElement {
 
                         <div class="settings-form" id="provider-form">
                             <div id="provider-fields-container"></div>
-                            <div id="global-provider-settings"></div>
                         </div>
                     </section>
 
                     <section class="settings-tab-content" id="tab-default-model">
-                        <p class="settings-description">
-                            The model assigned to each new conversation when it is created.
-                            Changing it never affects conversations that already exist.
-                            <br/>
-                            Stored in <code>~/.juggler/default-model.json</code>.
-                        </p>
-
+                        <div class="settings-section-heading">Default model</div>
                         <div class="settings-form" id="default-model-form">
                             <div id="default-model-field-container"></div>
                         </div>
+
+                        <div class="settings-form" id="global-provider-settings"></div>
                     </section>
 
                      <section class="settings-tab-content" id="tab-extensions">
@@ -888,7 +883,8 @@ class SettingsPanel extends HTMLElement {
 
   /**
    * Render global provider settings that apply across every provider, shown
-   * beneath the per-provider list. Currently just the stream idle timeout: the
+   * as a section on the Provider settings tab. Currently just the stream idle
+   * timeout: the
    * window a streaming provider waits for the next event before declaring the
    * connection dead ("stream stalled: no data for 3m0s"). Raising it helps
    * gateways whose cold starts exceed the 180s default. Persists to
@@ -902,7 +898,7 @@ class SettingsPanel extends HTMLElement {
 
     const heading = document.createElement('div');
     heading.className = 'settings-section-heading';
-    heading.textContent = 'All providers';
+    heading.textContent = 'Stream idle timeout';
     container.appendChild(heading);
 
     const fieldGroup = document.createElement('div');
@@ -912,7 +908,7 @@ class SettingsPanel extends HTMLElement {
     infoColumn.className = 'provider-info';
     const nameLabel = document.createElement('div');
     nameLabel.className = 'provider-name';
-    nameLabel.textContent = 'Stream idle timeout';
+    nameLabel.textContent = 'Seconds to wait';
     infoColumn.appendChild(nameLabel);
     const description = document.createElement('div');
     description.className = 'provider-description';
