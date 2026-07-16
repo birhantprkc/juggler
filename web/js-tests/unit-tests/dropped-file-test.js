@@ -16,6 +16,9 @@
  *     `file.size` BEFORE any read (so a gigabyte drop is rejected without being
  *     allocated), and a binary-content gate. Both reject-with-warning and do
  *     NOT stage the file; a valid small text file IS staged.
+ *  4. input-box._handleFiles image-size gate: a dropped image is rejected when
+ *     it exceeds the send target's per-provider limit (model-aware), so an
+ *     image the provider would reject never enters the conversation.
  * @module unit-tests/dropped-file-test
  */
 
@@ -60,6 +63,31 @@ function fileWithSize(name, content, size) {
   const file = new window.File([content], name, { type: 'text/plain' });
   Object.defineProperty(file, 'size', { value: size, configurable: true });
   return file;
+}
+
+/**
+ * Build an image File whose reported `size` is overridden without allocating
+ * bytes — lets us simulate a large image drop from a one-byte payload. The
+ * image-size gate reads `file.size`, so the override alone drives acceptance or
+ * rejection.
+ * @param {string} name
+ * @param {number} size
+ * @returns {File} An image/png File with a forced size.
+ */
+function imageWithSize(name, size) {
+  const file = new window.File(['x'], name, { type: 'image/png' });
+  Object.defineProperty(file, 'size', { value: size, configurable: true });
+  return file;
+}
+
+/**
+ * Stub the model this input box will send to, so {@link _maxImageBytes}
+ * resolves a specific provider without a live conversation.
+ * @param {any} box
+ * @param {string} provider
+ */
+function stubModel(box, provider) {
+  box._messageThread = { getEffectiveModelConfig: () => ({ provider, model: 'm' }) };
 }
 
 /**
@@ -206,6 +234,60 @@ export async function runTests() {
       assert(warned, `expected a binary warning, got ${JSON.stringify(warnings)}`);
       assert(/text file/i.test(warnings[0]), `warning should mention text: ${warnings[0]}`);
       assert(box._pendingTextFiles.length === 0, 'binary file must not be staged');
+    } finally {
+      container.remove();
+    }
+  });
+
+  // ── 4. _handleFiles image-size guard (model-aware) ────────────────────────
+
+  await test('an image over the current model\'s per-image limit is rejected', async () => {
+    const { box, container, warnings } = mountInputBox();
+    try {
+      stubModel(box, 'anthropic'); // 5 MB per-image limit
+      let uploads = 0;
+      box._uploadAndAdd = () => { uploads++; };
+      box._handleFiles([imageWithSize('big.png', 6 * 1024 * 1024)]);
+      assert(warnings.length === 1, `expected one size warning, got ${JSON.stringify(warnings)}`);
+      assert(/too large/i.test(warnings[0]), `warning should mention size: ${warnings[0]}`);
+      assert(/5 MB per image/.test(warnings[0]), `warning should state the model's 5 MB limit: ${warnings[0]}`);
+      assert(uploads === 0, 'oversized image must not be uploaded');
+      assert(box._pendingAttachments.length === 0, 'oversized image must not be staged');
+    } finally {
+      container.remove();
+    }
+  });
+
+  await test('an image under the current model\'s limit is accepted', async () => {
+    const { box, container, warnings } = mountInputBox();
+    try {
+      stubModel(box, 'anthropic');
+      let uploads = 0;
+      box._uploadAndAdd = () => { uploads++; };
+      box._handleFiles([imageWithSize('ok.png', 3 * 1024 * 1024)]);
+      assert(warnings.length === 0, `no warning expected, got ${JSON.stringify(warnings)}`);
+      assert(uploads === 1, `expected the image to be uploaded, got ${uploads}`);
+    } finally {
+      container.remove();
+    }
+  });
+
+  await test('the limit is model-aware: 6 MB is fine on a provider without a specific cap', async () => {
+    const { box, container, warnings } = mountInputBox();
+    try {
+      // The SAME 6 MB image that anthropic rejects is accepted here, because an
+      // unmapped provider falls back to the generous upload ceiling (25 MB).
+      stubModel(box, 'text-co');
+      let uploads = 0;
+      box._uploadAndAdd = () => { uploads++; };
+      box._handleFiles([imageWithSize('big.png', 6 * 1024 * 1024)]);
+      assert(warnings.length === 0, `no warning expected on fallback provider, got ${JSON.stringify(warnings)}`);
+      assert(uploads === 1, `expected the image to be uploaded, got ${uploads}`);
+
+      // ...but the fallback ceiling still applies: 30 MB is rejected.
+      box._handleFiles([imageWithSize('huge.png', 30 * 1024 * 1024)]);
+      assert(warnings.length === 1, `expected the fallback ceiling to reject 30 MB, got ${JSON.stringify(warnings)}`);
+      assert(uploads === 1, '30 MB image must not be uploaded');
     } finally {
       container.remove();
     }

@@ -34,8 +34,33 @@ const MAX_TEXTAREA_HEIGHT_PX = 400;
  */
 const MAX_MESSAGE_CHARS = 100_000;
 
-/** Reject any single image attachment larger than this (bytes). */
+/**
+ * Fallback per-image byte ceiling — a generous upload-safety limit used when
+ * the send target's provider has no specific, documented image cap (see
+ * {@link PROVIDER_MAX_IMAGE_BYTES}), or when the model is automatic and the
+ * provider isn't known client-side.
+ */
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Per-provider hard limit on a single image's byte size, keyed by the provider
+ * `name` from the providers list. Each mirrors that vendor's documented API
+ * ceiling. Enforced at drop/paste/pick time so an oversized image is rejected
+ * locally instead of being uploaded, attached, and rejected by the provider at
+ * send time — where, because the attachment is now part of the conversation
+ * history, EVERY subsequent turn re-sends it and fails the same way ("image too
+ * big") until the user rewinds past the message. This is purely a size gate;
+ * model *capability* is still never gated client-side (an incapable model
+ * rejects at send time). Providers absent here fall back to
+ * {@link MAX_ATTACHMENT_BYTES}.
+ * @type {Record<string, number>}
+ */
+const PROVIDER_MAX_IMAGE_BYTES = {
+  anthropic: 5 * 1024 * 1024, // Claude API: 5 MB per image
+  claudecode: 5 * 1024 * 1024, // Claude via Claude Code — same vision limit
+  openai: 20 * 1024 * 1024, // OpenAI vision: 20 MB per image
+  gemini: 20 * 1024 * 1024, // Gemini inline data: 20 MB request cap
+};
 
 /** Reject a send whose attachments sum past this aggregate (bytes). */
 const MAX_TURN_ATTACHMENT_BYTES = 50 * 1024 * 1024;
@@ -1201,13 +1226,32 @@ class InputBox extends HTMLElement {
   // ========================================================================
 
   /**
+   * The per-image byte ceiling for the model this input box will send to.
+   * Resolves the effective provider (thread override → conversation default)
+   * and returns its documented per-image limit ({@link PROVIDER_MAX_IMAGE_BYTES}),
+   * falling back to {@link MAX_ATTACHMENT_BYTES} when the provider has no
+   * specific limit or the model is automatic (provider unknown client-side).
+   * @returns {number} Max bytes for a single image attachment.
+   * @private
+   */
+  _maxImageBytes() {
+    const cfg = this._messageThread?.getEffectiveModelConfig?.()
+      || this._conversation?.modelConfig
+      || null;
+    const provider = cfg && cfg.provider ? cfg.provider : '';
+    return PROVIDER_MAX_IMAGE_BYTES[provider] || MAX_ATTACHMENT_BYTES;
+  }
+
+  /**
    * Validate and upload a set of dropped/pasted/picked files, pushing each
    * successful upload onto _pendingAttachments. Non-image files are ignored;
    * oversized files (single or aggregate) are rejected with a warning.
    *
-   * Image attachments are staged regardless of the current model — capability
-   * is not gated client-side. A model that can't accept images rejects the
-   * request at send time and that provider error surfaces as the turn error.
+   * Image attachments are staged regardless of the current model's *capability*
+   * — that is never gated client-side; a model that can't accept images rejects
+   * the request at send time. Image *size* IS gated here, to the send target's
+   * per-provider limit ({@link _maxImageBytes}), so an image the provider would
+   * reject never enters the conversation in the first place.
    * @param {FileList|File[]} fileList
    * @private
    */
@@ -1215,11 +1259,13 @@ class InputBox extends HTMLElement {
     const files = Array.from(fileList).filter((f) => f.type && f.type.startsWith('image/'));
     if (files.length === 0) return;
 
+    const maxPerImage = this._maxImageBytes();
+
     for (const file of files) {
-      if (file.size > MAX_ATTACHMENT_BYTES) {
+      if (file.size > maxPerImage) {
         this.showWarning(
           `"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB, ` +
-          `max ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB per image).`
+          `max ${maxPerImage / 1024 / 1024} MB per image for the current model).`
         );
         continue;
       }
