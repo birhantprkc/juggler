@@ -164,6 +164,41 @@ func spawnEnv(bin string, extra []string) []string {
 	return env
 }
 
+// thinkingSpawnExtras returns the extra spawn-env entries for the current turn:
+// the test extras plus, when this turn's thinking level maps to a budget, a
+// MAX_THINKING_TOKENS entry the claude CLI reads to size its thinking budget. It
+// also records the level actually spawned (spawnedThinkingLevel) so a later turn
+// with a different level knows to recycle the CLI. "off"/absent levels omit the
+// var entirely — the CLI then uses its default (no forced thinking), matching
+// the Anthropic provider's treatment of "off".
+func (c *Client) thinkingSpawnExtras() []string {
+	c.spawnedThinkingLevel = c.thinkingLevel
+	extras := testExtraSpawnEnv
+	if budget, ok := maxThinkingTokensForLevel(c.thinkingLevel); ok {
+		extras = append(append([]string(nil), extras...), fmt.Sprintf("MAX_THINKING_TOKENS=%d", budget))
+	}
+	return extras
+}
+
+// maxThinkingTokensForLevel maps a canonical thinking level to the
+// MAX_THINKING_TOKENS budget the claude CLI reads at spawn. ok=false for
+// "off"/absent/unknown levels, so the CLI is spawned without the var (its
+// default: no forced thinking budget).
+func maxThinkingTokensForLevel(level string) (int, bool) {
+	switch provider.NormalizeThinkingLevel(level) {
+	case provider.ThinkingLow:
+		return 2048, true
+	case provider.ThinkingMedium:
+		return 8192, true
+	case provider.ThinkingHigh:
+		return 16384, true
+	case provider.ThinkingMax:
+		return 32768, true
+	default:
+		return 0, false
+	}
+}
+
 // augmentPathEnv returns environ with dir prepended to its PATH entry (matched
 // case-insensitively for Windows' "Path"), creating one if absent. It is a
 // no-op when dir is empty/"." or already the leading PATH element.
@@ -565,7 +600,7 @@ func (c *Client) spawnCLIPipes(args []string) error {
 
 	cmd := claudeCommand(context.Background(), bin, args)
 	cmd.Dir = c.workingDir
-	cmd.Env = spawnEnv(bin, testExtraSpawnEnv)
+	cmd.Env = spawnEnv(bin, c.thinkingSpawnExtras())
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

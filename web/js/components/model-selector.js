@@ -22,12 +22,29 @@ const VIEW_STATE_STORAGE_KEY = 'juggler-model-view-state';
 /** The list view-states a provider header toggle cycles through. */
 const VIEW_STATES = ['none', 'top', 'all'];
 
+/** Canonical thinking levels in display order. */
+const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
+
+/**
+ * Full labels for the popup segmented control.
+ * @type {Record<string, string>}
+ */
+const THINKING_LABELS = { off: 'Off', low: 'Low', medium: 'Med', high: 'High', max: 'Max' };
+
+/**
+ * Compact labels for the model-button chip (kept short so the button stays narrow).
+ * @type {Record<string, string>}
+ */
+const THINKING_CHIP = { off: 'off', low: 'low', medium: 'med', high: 'high', max: 'max' };
+
 /**
  * Model selector component with provider and model dropdown menu
  * @typedef {object} ModelInfo
  * @property {string} id - Model ID
  * @property {number} contextWindow - Context window size
  * @property {string} [displayName] - Provider-supplied human label, when the provider exposes one
+ * @property {string[]} [thinkingLevels] - Canonical thinking levels the model supports; absent/empty ⇒ no thinking control
+ * @property {string} [defaultThinkingLevel] - Level used when a turn carries none (presentation only)
  * @typedef {object} Provider
  * @property {string} name - Provider name (e.g., "anthropic")
  * @property {string} displayName - Display name (e.g., "Anthropic (API)")
@@ -724,7 +741,73 @@ class ModelSelector extends HTMLElement {
                 <div class="model-current-name">${escapeHtml(modelLabelText)}</div>
                 <div class="model-current-sub">${escapeHtml(subParts.join(' · '))}</div>
             </div>
+            ${this._generateThinkingControl(resolved, modelEntry)}
             ${this._generateUsageSection(resolved.provider)}`;
+  }
+
+  /**
+   * Segmented control for the current model's thinking level, rendered only
+   * when the model advertises `thinkingLevels`. "Default" (no explicit level) is
+   * always offered first and, when picked, deletes the `thinking` key; the
+   * advertised levels follow in canonical order. The active segment reflects the
+   * effective config's `thinking` (Default when absent or unsupported). Clicks
+   * are dispatched via `data-thinking-level` in `_attachDropdownListener`.
+   * @param {import('../model/model-config.js').ResolvedConfig|null} resolved
+   * @param {ModelInfo} [modelEntry]
+   * @returns {string} HTML, or '' when the model exposes no thinking control.
+   * @private
+   */
+  _generateThinkingControl(resolved, modelEntry) {
+    const levels = modelEntry?.thinkingLevels || [];
+    if (levels.length === 0) return '';
+
+    const active = resolved?.thinking && levels.includes(resolved.thinking) ? resolved.thinking : '';
+    const def = modelEntry?.defaultThinkingLevel;
+    const defaultLabel = def ? `Default (${THINKING_LABELS[def] || def})` : 'Default';
+
+    const seg = (/** @type {string} */ level, /** @type {string} */ label) => {
+      const isActive = level === active;
+      return `<button type="button" class="thinking-seg${isActive ? ' active' : ''}" data-thinking-level="${escapeHtml(level)}" role="radio" aria-checked="${isActive}">${escapeHtml(label)}</button>`;
+    };
+
+    const ordered = THINKING_LEVELS.filter(l => levels.includes(l));
+    const segments = [seg('', defaultLabel), ...ordered.map(l => seg(l, THINKING_LABELS[l] || l))];
+
+    return `
+            <div class="model-thinking">
+                <div class="model-thinking-label">Thinking</div>
+                <div class="thinking-segmented" role="radiogroup" aria-label="Thinking level">${segments.join('')}</div>
+            </div>`;
+  }
+
+  /**
+   * Write a thinking-level choice into the same scope the model selection writes
+   * to. `level === ''` means Default → delete the `thinking` key (never store
+   * `thinking: ''`). Spread-and-rewrite the whole config atomically (never mutate
+   * the Y.Map field-by-field — see the race note in conversation.js). Keeps the
+   * dropdown open and refreshes the info column so the active segment moves; the
+   * button chip refreshes on close.
+   * @param {string} level - '' for Default, else a canonical level.
+   * @private
+   */
+  _setThinkingLevel(level) {
+    const eff = this._currentConfig;
+    if (!eff || !eff.provider || !eff.model) return;
+
+    /** @type {{provider: string, model: string, thinking?: string}} */
+    const next = { provider: eff.provider, model: eff.model };
+    if (level) next.thinking = level;
+
+    if (this._messageThread) {
+      this._messageThread.modelConfig = next;
+    } else if (this.conversation) {
+      this.conversation.setModelConfig(next);
+    } else {
+      return;
+    }
+
+    this._currentConfig = next;
+    this._updateDropdownContent();
   }
 
   /**
@@ -888,6 +971,16 @@ class ModelSelector extends HTMLElement {
   _attachDropdownListener(dropdown) {
     dropdown.addEventListener('click', (e) => {
       const target = /** @type {Element} */(e.target);
+
+      // Thinking-level segment: a tweak, not a commit-and-go action, so keep the
+      // dropdown open (unlike a model pick, which closes it). '' = Default.
+      const seg = target.closest('.thinking-seg');
+      if (seg) {
+        e.stopPropagation();
+        this._setThinkingLevel(seg.getAttribute('data-thinking-level') || '');
+        return;
+      }
+
       const item = target.closest('.menu-item, .provider-view-toggle');
       if (!item) return;
 
@@ -1072,25 +1165,49 @@ class ModelSelector extends HTMLElement {
     // Remember this concrete pick for the "Recent" quick-access section.
     recentModels.record(providerName, modelName);
 
-    // Write to thread if bound, otherwise the conversation.
-    if (this._messageThread) {
-      this._messageThread.modelConfig = {
-        provider: providerName,
-        model: modelName
-      };
-    } else {
-      this.conversation.setModelConfig({
-        provider: providerName,
-        model: modelName
-      });
+    // Preserve the current thinking level onto the new model iff the new model
+    // advertises it; otherwise drop it — a level the new model can't honour must
+    // not linger. (This is the kind of rule that regresses silently.)
+    /** @type {{provider: string, model: string, thinking?: string}} */
+    const nextConfig = { provider: providerName, model: modelName };
+    const curThinking = this._currentConfig?.thinking;
+    if (curThinking) {
+      const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
+      if ((modelEntry?.thinkingLevels || []).includes(curThinking)) {
+        nextConfig.thinking = curThinking;
+      }
     }
 
-    this._currentConfig = { provider: providerName, model: modelName };
+    // Write to thread if bound, otherwise the conversation.
+    if (this._messageThread) {
+      this._messageThread.modelConfig = nextConfig;
+    } else {
+      this.conversation.setModelConfig(nextConfig);
+    }
+
+    this._currentConfig = nextConfig;
     this.provider = providerName;
     this.model = modelName;
     this.render();
 
     this.closeDropdown();
+  }
+
+  /**
+   * Compact thinking-level pill for the model button. Shown only when the
+   * effective config has a concrete level that the selected model advertises;
+   * an absent level (provider default) yields no chip, so the button never grows
+   * for non-reasoning models.
+   * @returns {string} HTML for the chip, or ''.
+   * @private
+   */
+  _thinkingChipHTML() {
+    const level = this._currentConfig?.thinking;
+    if (!level) return '';
+    const prov = this.providers.find(p => p.name === this.provider);
+    const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
+    if (!(modelEntry?.thinkingLevels || []).includes(level)) return '';
+    return `<span class="thinking-chip" title="Thinking: ${escapeHtml(level)}">${escapeHtml(THINKING_CHIP[level] || level)}</span>`;
   }
 
   render() {
@@ -1130,7 +1247,7 @@ class ModelSelector extends HTMLElement {
 
     this.innerHTML = `
             <button class="model-selector-button input-ctrl-btn${hasOverride ? ' has-override' : ''}${modelUnavailable ? ' model-unavailable' : ''}${noModelSelected ? ' pulse' : ''}" id="model-button" title="LLM Model">
-                <span class="icon-auto-awesome"></span>${modelDisplay}${hasOverride ? '<span class="override-dot"></span>' : ''}
+                <span class="icon-auto-awesome"></span>${modelDisplay}${this._thinkingChipHTML()}${hasOverride ? '<span class="override-dot"></span>' : ''}
             </button>
 
             <nav class="dropdown-menu provider-dropdown ${this.dropdownOpen ? 'show' : ''}" id="provider-dropdown">

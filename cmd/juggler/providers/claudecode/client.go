@@ -61,6 +61,17 @@ type Client struct {
 	// plain string is safe — no mutex (project concurrency rule).
 	turnWaitingPhase string
 
+	// thinkingLevel is the canonical thinking level of the turn currently being
+	// dispatched (normalized; "" ⇒ provider default). Set at the top of
+	// dispatchTurn from req.ThinkingLevel and read by spawnCLIPipes to inject
+	// MAX_THINKING_TOKENS. spawnedThinkingLevel records the level the live CLI
+	// was actually spawned with, so a turn whose level differs recycles the CLI
+	// (the budget is read once at spawn, not per-message). Both mutated only
+	// under the `own` token (single turn at a time), so plain fields are safe —
+	// no mutex (project concurrency rule).
+	thinkingLevel        string
+	spawnedThinkingLevel string
+
 	// onAutonomousTurn, when non-nil, receives every turn the persistent CLI
 	// emits while no Submit is in flight (scheduled wake / monitor). The
 	// always-on stdout reader surfaces these via the background drain
@@ -360,6 +371,18 @@ func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, 
 	// Default spinner label for the post-boot wait; startFreshSession overrides
 	// it for a cold start that carries prior history (see turnWaitingPhase).
 	c.turnWaitingPhase = phaseWaiting
+
+	// Thinking level rides per-turn, but the CLI reads MAX_THINKING_TOKENS once
+	// at spawn. If a live CLI is already running under a different level, recycle
+	// it so the new budget takes effect. tearDownLiveCLI preserves
+	// sessionUUID/history, so this is a warm-history cold-cache restart (the
+	// resume machinery re-warms), not a cold start.
+	c.thinkingLevel = provider.NormalizeThinkingLevel(req.ThinkingLevel)
+	if c.activeSession != nil && c.activeSession.hasLiveCLI() && c.spawnedThinkingLevel != c.thinkingLevel {
+		jlog.Info("claudecode: thinking level changed %q→%q — recycling CLI session conv=%s",
+			c.spawnedThinkingLevel, c.thinkingLevel, shortID(req.ConversationID))
+		c.activeSession.tearDownLiveCLI()
+	}
 
 	// Cold-start path: no in-memory session yet, but a sidecar from a
 	// prior juggler run may exist on disk. Load so the first turn after

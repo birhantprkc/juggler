@@ -5,7 +5,8 @@
 /**
  * Helpers for the `modelConfig` shape stored on threads / conversations. A
  * modelConfig is either null/undefined (inherit from parent / unset) or a
- * concrete { provider, model } pair.
+ * concrete { provider, model } pair, optionally carrying a `thinking` level
+ * ('off'|'low'|'medium'|'high'|'max'; absent ⇒ provider default).
  *
  * `resolveConfig` annotates a config with its availability status against the
  * current provider list so UI code has one place to check.
@@ -18,11 +19,12 @@
  */
 
 /**
- * @typedef {{provider: string, model: string}} ConcreteModelConfig
+ * @typedef {{provider: string, model: string, thinking?: string}} ConcreteModelConfig
  * @typedef {ConcreteModelConfig | null | undefined} ModelConfigShape
  * @typedef {{
  *   provider: string,
  *   model: string,
+ *   thinking?: string,
  *   status: 'ok'|'unconfigured'|'unknown-model'|'unavailable-provider'
  * }} ResolvedConfig
  */
@@ -36,7 +38,10 @@
 export function resolveConfig(cfg, providers) {
   if (!cfg) return null;
   const status = checkAvailability(cfg.provider, cfg.model, providers);
-  return { provider: cfg.provider, model: cfg.model, status };
+  // Carry `thinking` through unchanged (may be undefined). It's a tweak on the
+  // concrete pair, not part of availability — the UI decides whether the
+  // selected model actually advertises the level.
+  return { provider: cfg.provider, model: cfg.model, thinking: cfg.thinking, status };
 }
 
 /**

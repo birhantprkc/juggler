@@ -142,6 +142,10 @@ type SerializedConversation struct {
 type ModelConfig struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// Thinking is the optional canonical thinking/reasoning-effort level
+	// ("off","low","medium","high","max"); empty ⇒ provider default. It rides
+	// atomically with the (Provider, Model) pair through the thread tree.
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // WorkerConfig contains worker configuration

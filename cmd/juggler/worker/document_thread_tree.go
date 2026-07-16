@@ -239,14 +239,16 @@ func (cd *ConversationDocument) extractModelConfigFromMap(raw any) *ModelConfig 
 	case *ycrdt.YMap:
 		provider, _ := v.Get("provider").(string)
 		model, _ := v.Get("model").(string)
+		thinking, _ := v.Get("thinking").(string)
 		if provider != "" && model != "" {
-			return &ModelConfig{Provider: provider, Model: model}
+			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking}
 		}
 	case map[string]any:
 		provider, _ := v["provider"].(string)
 		model, _ := v["model"].(string)
+		thinking, _ := v["thinking"].(string)
 		if provider != "" && model != "" {
-			return &ModelConfig{Provider: provider, Model: model}
+			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking}
 		}
 	}
 	return nil
@@ -349,8 +351,9 @@ func (cd *ConversationDocument) resolveEffectiveModelConfig(threadItemID string)
 	if mc, ok := converted.(map[string]any); ok {
 		provider, _ := mc["provider"].(string)
 		model, _ := mc["model"].(string)
+		thinking, _ := mc["thinking"].(string)
 		if provider != "" && model != "" {
-			return &ModelConfig{Provider: provider, Model: model}
+			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking}
 		}
 	}
 	return nil

@@ -291,7 +291,56 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 		}
 	}
 
+	// Extended thinking. Anthropic forbids a forced tool_choice (type "tool" or
+	// "any") together with thinking — a hard 400 — so a forced-tool turn (e.g.
+	// /compact forcing return_result) wins and drops thinking for that turn.
+	// Temperature is never set here, which thinking also requires.
+	if budget, ok := thinkingBudgetForLevel(c.model, req.ThinkingLevel); ok && !forcesTool(req.ToolChoice) {
+		params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
+	}
+
 	return params
+}
+
+// forcesTool reports whether a ToolChoice compels the model to call a tool
+// (mode "tool" or "any"). Only these two modes conflict with extended thinking;
+// "auto"/"none"/nil do not.
+func forcesTool(tc *provider.ToolChoice) bool {
+	return tc != nil && (tc.Mode == provider.ToolChoiceTool || tc.Mode == provider.ToolChoiceAny)
+}
+
+// thinkingBudgetForLevel maps a canonical thinking level to an Anthropic
+// budget_tokens value for the given model. It returns (budget, true) when
+// thinking should be enabled for this turn, or (0, false) for "off"/absent/
+// unknown levels and models that don't support extended thinking. The budget is
+// clamped to stay a safe margin (~4k answer headroom) below the model's
+// max_tokens ceiling, since Anthropic requires budget_tokens < max_tokens.
+func thinkingBudgetForLevel(model, level string) (int64, bool) {
+	if !SupportsThinking(model) {
+		return 0, false
+	}
+	var budget int
+	switch provider.NormalizeThinkingLevel(level) {
+	case provider.ThinkingLow:
+		budget = 2048
+	case provider.ThinkingMedium:
+		budget = 8192
+	case provider.ThinkingHigh:
+		budget = 16384
+	case provider.ThinkingMax:
+		budget = 32768
+	default: // "off", absent, or unknown ⇒ no thinking param (current behaviour)
+		return 0, false
+	}
+	const answerHeadroom = 4096
+	maxBudget := GetMaxOutputTokens(model) - answerHeadroom
+	if maxBudget < 1024 { // Anthropic requires budget_tokens ≥ 1024
+		return 0, false
+	}
+	if budget > maxBudget {
+		budget = maxBudget
+	}
+	return int64(budget), true
 }
 
 // setRollingCacheBreakpoint places an ephemeral cache_control breakpoint on the
@@ -649,13 +698,22 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 			inputModalities = []string{"text", "image"}
 		}
 
+		var thinkingLevels []string
+		var defaultThinkingLevel string
+		if SupportsThinking(model.ID) {
+			thinkingLevels = []string{provider.ThinkingOff, provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax}
+			defaultThinkingLevel = provider.ThinkingOff
+		}
+
 		modelInfos = append(modelInfos, provider.ModelInfo{
-			ID:              model.ID,
-			DisplayName:     utils.FirstNonEmpty(model.DisplayName, utils.ModelDisplayName(model.ID)),
-			ContextWindow:   contextWindow,
-			MaxOutputTokens: GetMaxOutputTokens(model.ID),
-			FromAPI:         false, // Hardcoded fallback
-			InputModalities: inputModalities,
+			ID:                   model.ID,
+			DisplayName:          utils.FirstNonEmpty(model.DisplayName, utils.ModelDisplayName(model.ID)),
+			ContextWindow:        contextWindow,
+			MaxOutputTokens:      GetMaxOutputTokens(model.ID),
+			FromAPI:              false, // Hardcoded fallback
+			InputModalities:      inputModalities,
+			ThinkingLevels:       thinkingLevels,
+			DefaultThinkingLevel: defaultThinkingLevel,
 		})
 	}
 

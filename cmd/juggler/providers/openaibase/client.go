@@ -120,6 +120,10 @@ type Client struct {
 	model           string
 	quirks          Quirks
 	maxOutputTokens int
+	// thinkingSpec is this model's reasoning-effort support, resolved once at
+	// construction from the descriptor's ThinkingSpecFn. Zero value ⇒ no
+	// reasoning control (the request omits the effort param).
+	thinkingSpec ThinkingSpec
 }
 
 // enhanceError adds helpful, human-oriented hints to common API errors. It
@@ -188,7 +192,7 @@ type ContextWindowFunc func(modelID string) (contextWindow int, maxOutputTokens 
 type ModalitiesFunc func(modelID string) []string
 
 // ListModelsWithInfo returns detailed model information using custom filter and context window functions
-func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterFunc, contextWindowFunc ContextWindowFunc, modalitiesFunc ModalitiesFunc, providerName string) ([]provider.ModelInfo, error) {
+func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterFunc, contextWindowFunc ContextWindowFunc, modalitiesFunc ModalitiesFunc, thinkingSpecFunc ThinkingSpecFunc, providerName string) ([]provider.ModelInfo, error) {
 	// Fetch models from API
 	page, err := c.client.Models.List(ctx)
 	if err != nil {
@@ -210,6 +214,14 @@ func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterF
 			inputModalities = modalitiesFunc(model.ID)
 		}
 
+		var thinkingLevels []string
+		var defaultThinkingLevel string
+		if thinkingSpecFunc != nil {
+			spec := thinkingSpecFunc(model.ID)
+			thinkingLevels = spec.Levels
+			defaultThinkingLevel = spec.Default
+		}
+
 		modelInfos = append(modelInfos, provider.ModelInfo{
 			ID:              model.ID,
 			DisplayName:     utils.ModelDisplayName(model.ID),
@@ -217,8 +229,10 @@ func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterF
 			MaxOutputTokens: maxOutputTokens,
 			// This path always uses fallback context windows; API-sourced
 			// windows come from a per-provider ListModelsOverride instead.
-			FromAPI:         false,
-			InputModalities: inputModalities,
+			FromAPI:              false,
+			InputModalities:      inputModalities,
+			ThinkingLevels:       thinkingLevels,
+			DefaultThinkingLevel: defaultThinkingLevel,
 		})
 	}
 
@@ -470,6 +484,12 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 		if tc, ok := convertToolChoiceResponses(req.ToolChoice); ok {
 			params.ToolChoice = tc
 		}
+	}
+
+	// Reasoning effort. Omitted (ok=false) for non-reasoning models and absent/
+	// unsupported levels, keeping the request byte-identical to today.
+	if effort, ok := c.thinkingSpec.effortFor(req.ThinkingLevel); ok {
+		params.Reasoning.Effort = openai.ReasoningEffort(effort)
 	}
 
 	// Create streaming request
@@ -1020,6 +1040,12 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 		if tc, ok := convertToolChoiceChat(req.ToolChoice); ok {
 			params.ToolChoice = tc
 		}
+	}
+
+	// Reasoning effort. Omitted (ok=false) for non-reasoning models and absent/
+	// unsupported levels, keeping the request byte-identical to today.
+	if effort, ok := c.thinkingSpec.effortFor(req.ThinkingLevel); ok {
+		params.ReasoningEffort = openai.ReasoningEffort(effort)
 	}
 
 	// Honour the model's real output cap when the descriptor supplied one (the

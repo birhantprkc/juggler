@@ -99,6 +99,31 @@ func GetMaxOutputTokens(model string) int {
 	}
 }
 
+// SupportsThinking reports whether an Anthropic model supports extended
+// thinking (a reasoning budget). Claude 3.7 Sonnet and all Claude 4.x models
+// do; the original Claude 3 and Claude 3.5 models do not. Substring match so
+// dated API ids (claude-sonnet-4-5-20250929, claude-3-7-sonnet-20250219) are
+// covered.
+func SupportsThinking(model string) bool {
+	m := strings.ToLower(model)
+	if strings.Contains(m, "3-7-sonnet") || strings.Contains(m, "claude-3.7") {
+		return true
+	}
+	// Claude 4.x, family-first ("sonnet-4", "opus-4-1", "sonnet-4-5") and the
+	// version-first short aliases ("claude-4-sonnet", "claude-4.5-sonnet").
+	markers := []string{
+		"sonnet-4", "opus-4", "haiku-4",
+		"4-sonnet", "4-opus", "4-haiku",
+		"4.5-sonnet", "4.5-opus", "4.5-haiku", "4.1-opus",
+	}
+	for _, marker := range markers {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // SupportsImageInput reports whether an Anthropic model accepts image input.
 // Every Claude 3.x and Claude 4.x model is multimodal; older text-only models
 // (Claude 2, instant) are not in our catalog. Conservative substring match so

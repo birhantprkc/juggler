@@ -28,6 +28,13 @@ type ModelWithContext struct {
 	MaxOutputTokens int      `json:"maxOutputTokens"`
 	FromAPI         bool     `json:"fromAPI"`                   // True if from API, false if hardcoded fallback
 	InputModalities []string `json:"inputModalities,omitempty"` // e.g. ["text","image"]; empty/omitted means text-only
+	// ThinkingLevels lists the canonical thinking levels this model supports
+	// ("off","low","medium","high","max"); empty/omitted ⇒ the UI hides the
+	// thinking control for this model.
+	ThinkingLevels []string `json:"thinkingLevels,omitempty"`
+	// DefaultThinkingLevel is the level the provider uses when a turn carries
+	// none — presentation only, lets the UI label "Default (medium)".
+	DefaultThinkingLevel string `json:"defaultThinkingLevel,omitempty"`
 }
 
 // ProviderStatus is one provider's published state.
@@ -123,12 +130,14 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 				if err == nil {
 					for _, modelInfo := range modelInfos {
 						modelsWithContext = append(modelsWithContext, ModelWithContext{
-							ID:              modelInfo.ID,
-							DisplayName:     modelInfo.DisplayName,
-							ContextWindow:   modelInfo.ContextWindow,
-							MaxOutputTokens: modelInfo.MaxOutputTokens,
-							FromAPI:         modelInfo.FromAPI,
-							InputModalities: modelInfo.InputModalities,
+							ID:                   modelInfo.ID,
+							DisplayName:          modelInfo.DisplayName,
+							ContextWindow:        modelInfo.ContextWindow,
+							MaxOutputTokens:      modelInfo.MaxOutputTokens,
+							FromAPI:              modelInfo.FromAPI,
+							InputModalities:      modelInfo.InputModalities,
+							ThinkingLevels:       modelInfo.ThinkingLevels,
+							DefaultThinkingLevel: modelInfo.DefaultThinkingLevel,
 						})
 					}
 				} else {

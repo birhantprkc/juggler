@@ -133,6 +133,10 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			ConversationID: req.ConversationID,
 			ThreadID:       req.ThreadID,
 			ToolChoice:     req.ToolChoice,
+			// Normalize here so an unknown/garbage stored level degrades to the
+			// provider default rather than reaching a provider verbatim. Rides
+			// per-turn; deliberately NOT part of the conversation-cache key.
+			ThinkingLevel: provider.NormalizeThinkingLevel(req.ModelConfig.Thinking),
 		}
 
 		// Adapter that bridges Provider's StructuredStreamCallback to the

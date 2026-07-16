@@ -89,6 +89,45 @@ type MessageRequest struct {
 	ThreadID       string                 // Optional: scopes the turn to a thread ("" = root); stateful providers may keep a per-thread session, stateless ones ignore it
 	ShouldContinue ShouldContinueCallback // Optional: called after each turn to check if loop should continue
 	ToolChoice     *ToolChoice            // Optional: constrain which tool the model must call this turn. Nil = auto.
+
+	// ThinkingLevel selects how much extended reasoning / "thinking" the model
+	// does this turn, from a provider-agnostic vocabulary:
+	//   "" (absent) — the provider default (byte-identical to pre-feature
+	//                 behaviour: no thinking parameter is sent)
+	//   "off"       — thinking explicitly disabled
+	//   "low" / "medium" / "high" / "max" — increasing reasoning effort/budget
+	// Each provider advertises the subset it supports per model (ModelInfo.
+	// ThinkingLevels) and maps the canonical level to its native parameter at
+	// its own boundary (Anthropic thinking budget, OpenAI reasoning_effort,
+	// claudecode MAX_THINKING_TOKENS, …). A level a provider/model doesn't
+	// support is ignored silently — same contract as ToolChoice. Per-turn (not
+	// on Config) by design, so flicking the level never churns the conversation
+	// cache handle.
+	ThinkingLevel string
+}
+
+// Canonical thinking/reasoning-effort levels. Providers translate these into
+// their native parameters; the empty string means "provider default" (no
+// thinking parameter sent). See MessageRequest.ThinkingLevel.
+const (
+	ThinkingOff    = "off"
+	ThinkingLow    = "low"
+	ThinkingMedium = "medium"
+	ThinkingHigh   = "high"
+	ThinkingMax    = "max"
+)
+
+// NormalizeThinkingLevel maps an arbitrary input to a canonical thinking level,
+// returning "" (provider default) for anything unrecognised — including the
+// empty string. Providers and the server call this so an unknown/garbage value
+// degrades to the default rather than being forwarded verbatim.
+func NormalizeThinkingLevel(s string) string {
+	switch s {
+	case ThinkingOff, ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingMax:
+		return s
+	default:
+		return ""
+	}
 }
 
 // ToolChoice constrains which tool (if any) the model must call on a turn.
@@ -346,6 +385,15 @@ type ModelInfo struct {
 	// must treat absence as text-only and never force-populate "text" for
 	// every model. Set only for models with verified non-text input support.
 	InputModalities []string
+	// ThinkingLevels lists the canonical thinking/reasoning-effort levels this
+	// model supports ("off","low","medium","high","max"). Empty/nil ⇒ the model
+	// exposes no thinking control and the UI hides the selector. Providers map
+	// each canonical level to their native parameter at their own boundary.
+	ThinkingLevels []string
+	// DefaultThinkingLevel names the level the provider uses when the request
+	// carries none. Presentation only (lets the UI label "Default (medium)").
+	// Empty when unknown.
+	DefaultThinkingLevel string
 }
 
 // UsageStat is one provider-specific quota/plan usage signal normalised for UI

@@ -59,6 +59,7 @@ const CANCEL_CEILING_MS = 5000;
  * @typedef {object} ModelConfig
  * @property {string} [provider] - Provider name (e.g., 'anthropic', 'openai', 'google')
  * @property {string} [model] - Model identifier (e.g., 'claude-sonnet-4-20250514')
+ * @property {string} [thinking] - Optional canonical thinking level ('off'|'low'|'medium'|'high'|'max'); absent ⇒ provider default. Inherits atomically with the model down the thread tree.
  */
 
 /**

@@ -24,6 +24,7 @@ func Register() {
 		ContextWindowCaps: contextWindowCaps,
 		MaxOutputCaps:     maxOutputCaps,
 		InputModalitiesFn: inputModalities,
+		ThinkingSpecFn:    openaibase.OpenAIThinkingSpec,
 		Quirks: openaibase.Quirks{
 			UseDeveloperRole:   true,
 			MaxTokensParamName: "max_completion_tokens",

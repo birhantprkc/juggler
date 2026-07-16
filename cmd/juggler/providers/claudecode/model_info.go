@@ -64,11 +64,19 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 	// opus/sonnet/haiku map to multimodal Claude families (image input). "fable"
 	// is left text-only by convention until its image support is verified.
 	imageInput := []string{"text", "image"}
+	// All four base families support extended thinking via the CLI's
+	// MAX_THINKING_TOKENS budget (low..max pin an explicit budget). We do NOT
+	// advertise "off" and leave DefaultThinkingLevel empty on purpose: with no
+	// budget set the CLI decides adaptively — extended thinking is triggered by
+	// "think"-family keywords in the prompt, not forced off — so "Default" is the
+	// honest label, and an "off" choice couldn't be honoured distinctly (we don't
+	// send MAX_THINKING_TOKENS=0; its disabling semantics are unverified).
+	thinking := []string{provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax}
 	bases := []provider.ModelInfo{
-		{ID: "opus", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput},
-		{ID: "sonnet", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false, InputModalities: imageInput},
-		{ID: "haiku", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput},
-		{ID: "fable", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false},
+		{ID: "opus", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinking},
+		{ID: "sonnet", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinking},
+		{ID: "haiku", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinking},
+		{ID: "fable", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false, ThinkingLevels: thinking},
 	}
 	out := make([]provider.ModelInfo, 0, len(bases))
 	for _, base := range bases {

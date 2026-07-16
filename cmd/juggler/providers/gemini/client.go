@@ -97,6 +97,14 @@ func (c *Client) prepareRequest(req provider.MessageRequest) (*genai.GenerateCon
 		}
 	}
 
+	// Thinking budget. Omitted for non-2.5 models and absent/unsupported levels,
+	// leaving the request byte-identical to today. A positive budget also asks
+	// the model to return its thoughts so they stream as thinking.
+	if budget, ok := geminiThinkingSpecFor(c.model).budgetFor(req.ThinkingLevel); ok {
+		b := budget
+		config.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: &b, IncludeThoughts: b > 0}
+	}
+
 	contents, err := convertMessagesToGeminiContents(req.Messages, SupportsImageInput(c.model))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to convert messages: %w", err)
@@ -749,13 +757,17 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 				inputModalities = []string{"text", "image"}
 			}
 
+			spec := geminiThinkingSpecFor(model.Name)
+
 			modelInfos = append(modelInfos, provider.ModelInfo{
-				ID:              model.Name,
-				DisplayName:     utils.FirstNonEmpty(model.DisplayName, utils.ModelDisplayName(model.Name)),
-				ContextWindow:   contextWindow,
-				MaxOutputTokens: model.OutputTokenLimit,
-				FromAPI:         model.InputTokenLimit > 0,
-				InputModalities: inputModalities,
+				ID:                   model.Name,
+				DisplayName:          utils.FirstNonEmpty(model.DisplayName, utils.ModelDisplayName(model.Name)),
+				ContextWindow:        contextWindow,
+				MaxOutputTokens:      model.OutputTokenLimit,
+				FromAPI:              model.InputTokenLimit > 0,
+				InputModalities:      inputModalities,
+				ThinkingLevels:       spec.levels,
+				DefaultThinkingLevel: spec.def,
 			})
 		}
 	}

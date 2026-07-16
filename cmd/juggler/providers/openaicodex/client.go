@@ -35,6 +35,7 @@ func Register() {
 		DisplayProvider:    "OpenAI Codex",
 		ListModelsOverride: listModels,
 		UsageStatsOverride: usageStats,
+		ThinkingSpecFn:     openaibase.OpenAIThinkingSpec,
 		Quirks: openaibase.Quirks{
 
 			MaxTokensParamName: "max_completion_tokens",
@@ -94,12 +95,15 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 		if maxOutputTokens == 0 {
 			maxOutputTokens = DefaultMaxOutputTokens
 		}
+		spec := openaibase.OpenAIThinkingSpec(model.Slug)
 		infos = append(infos, provider.ModelInfo{
-			ID:              model.Slug,
-			DisplayName:     utils.ModelDisplayName(model.Slug) + " (ChatGPT plan)",
-			ContextWindow:   contextWindow,
-			MaxOutputTokens: maxOutputTokens,
-			FromAPI:         true,
+			ID:                   model.Slug,
+			DisplayName:          utils.ModelDisplayName(model.Slug) + " (ChatGPT plan)",
+			ContextWindow:        contextWindow,
+			MaxOutputTokens:      maxOutputTokens,
+			FromAPI:              true,
+			ThinkingLevels:       spec.Levels,
+			DefaultThinkingLevel: spec.Default,
 		})
 	}
 	if len(infos) == 0 {
@@ -123,12 +127,15 @@ func withStaticFallbackModels(infos []provider.ModelInfo) []provider.ModelInfo {
 	sort.Strings(ids)
 
 	for _, id := range ids {
+		spec := openaibase.OpenAIThinkingSpec(id)
 		infos = append(infos, provider.ModelInfo{
-			ID:              id,
-			DisplayName:     utils.ModelDisplayName(id) + " (ChatGPT plan)",
-			ContextWindow:   ModelContextWindows[id],
-			MaxOutputTokens: DefaultMaxOutputTokens,
-			FromAPI:         false,
+			ID:                   id,
+			DisplayName:          utils.ModelDisplayName(id) + " (ChatGPT plan)",
+			ContextWindow:        ModelContextWindows[id],
+			MaxOutputTokens:      DefaultMaxOutputTokens,
+			FromAPI:              false,
+			ThinkingLevels:       spec.Levels,
+			DefaultThinkingLevel: spec.Default,
 		})
 	}
 	return infos

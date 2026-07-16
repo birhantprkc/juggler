@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added per-model thinking-level control to the model chooser
 - Added Agent Skills: discovery across native roots, plus a skill tool to load them on demand
 - Added ACP client support
 - Added workarounds for some Firefox bugs when using the WAN client

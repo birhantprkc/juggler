@@ -32,7 +32,7 @@ types (see `ConversationDocument` constructor):
 | Key | Type | Description |
 |---|---|---|
 | `items` | `Y.Array<Y.Map>` | Ordered conversation flow. Each entry is an item Y.Map (see §2). Created lazily via `MessageThread.ensureYarray()`. |
-| `modelConfig` | `Y.Map` \| object | Active model selection: `{providerId, modelId, ...overrides}`. Mirrored on each thread container; the root copy is the conversation default. |
+| `modelConfig` | `Y.Map` \| object | Active model selection: `{providerId, modelId, ...overrides}`. Optional `thinking` override (`'off'\|'low'\|'medium'\|'high'\|'max'`; absent ⇒ provider default) rides atomically with the pair. Mirrored on each thread container; the root copy is the conversation default. |
 | `draft` | `Y.Map` \| object | Unsent input-box draft as one record: `{text, attachments}` (staged image `AssetRef`s). Stored as a single object so text and attachments persist or clear together — never half. Root draft lives in `metadata.draft`; per-thread drafts live on the thread container. |
 
 Note: the conversation **name** is **not** stored in the Y.Doc. It lives on
@@ -122,7 +122,7 @@ A nested sub-conversation.
 | `result` | string \| null | Set by `return_result`. Null while in flight. |
 | `items` | `Y.Array<Y.Map>` | The nested conversation. Every thread is isolated. A sub-thread is born empty (no `SYSTEM_1`); its system prompt is sourced from the root thread at LLM-call time. |
 | `resultSpec` | string | Optional. The caller's contract (from `create_thread`) for what the thread's `return_result` summary must contain. Stored at creation, surfaced at the top of the thread column, and appended to the thread's seed message. Absent when the caller omitted it. |
-| `modelConfig` | object | Per-thread override of the root model. |
+| `modelConfig` | object | Per-thread override of the root model. May carry an optional `thinking` level (`'off'\|'low'\|'medium'\|'high'\|'max'`) that overrides atomically with the model. |
 | `draft` | `Y.Map` \| object | Per-thread unsent input draft as one record: `{text, attachments}`. |
 | `needsStrategyRun` | boolean | One-shot flag: the worker auto-runs the strategy loop for this thread, then clears it. Set by plugins that create a self-driving thread (e.g. `/compact`). |
 | `noAutoSelect` | boolean | The UI must not auto-select into this thread on creation (e.g. `/compact` folds in place). |

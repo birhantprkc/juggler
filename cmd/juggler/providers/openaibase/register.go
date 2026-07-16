@@ -55,6 +55,12 @@ type Descriptor struct {
 	// ListModelsWithInfo (e.g. ["text","image"]). nil ⇒ all models text-only.
 	InputModalitiesFn ModalitiesFunc
 
+	// ThinkingSpecFn looks up a model's reasoning-effort support (advertised
+	// levels + native mapping). nil ⇒ the provider exposes no thinking control
+	// on any model (non-reasoning vendors, or passthrough gateways that would
+	// 400 on an unexpected reasoning param).
+	ThinkingSpecFn ThinkingSpecFunc
+
 	// ListModelsOverride, if non-nil, replaces the standard
 	// SDK Models.List + Filter + ContextWindowFn flow. Use for providers
 	// whose model catalog lives at a custom HTTP endpoint.
@@ -132,6 +138,11 @@ func Register(d Descriptor) {
 				base.maxOutputTokens = maxOut
 			}
 		}
+		// Resolve this model's reasoning-effort support once, so the per-turn
+		// request builder can map req.ThinkingLevel without re-classifying.
+		if d.ThinkingSpecFn != nil {
+			base.thinkingSpec = d.ThinkingSpecFn(cfg.Model)
+		}
 		client := &openAICompatClient{
 			Client:     base,
 			desc:       d,
@@ -207,7 +218,7 @@ func (c *openAICompatClient) ListModelsWithInfo(ctx context.Context) ([]provider
 	if filter == nil {
 		filter = func(string) bool { return true }
 	}
-	return c.Client.ListModelsWithInfo(ctx, filter, c.desc.ContextWindowFn, c.desc.InputModalitiesFn, c.desc.DisplayProvider)
+	return c.Client.ListModelsWithInfo(ctx, filter, c.desc.ContextWindowFn, c.desc.InputModalitiesFn, c.desc.ThinkingSpecFn, c.desc.DisplayProvider)
 }
 
 type usageOpenAICompatClient struct {
