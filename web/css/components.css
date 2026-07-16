@@ -4056,6 +4056,51 @@ settings-panel .key-source-hint {
     padding-left: 0.125rem;
 }
 
+/* OpenAI-compatible provider: labelled Base URL / headers sub-fields, each with
+   its own transient save-status line. The saved value stays visible in the
+   input, so the status note is a light confirmation rather than the only proof
+   the save landed. */
+settings-panel .openai-compat-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    margin-top: 0.625rem;
+}
+
+settings-panel .provider-subfield {
+    position: relative; /* anchor for the floating save-status note */
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+settings-panel .provider-subfield-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+/* Floats over the top-right of the field (on the label line) so it claims no
+   layout space of its own — the row height stays fixed whether or not a note is
+   showing. pointer-events: none keeps it from intercepting clicks on the label. */
+settings-panel .provider-subfield-status {
+    position: absolute;
+    top: 0;
+    right: 0.125rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    pointer-events: none;
+    transition: color 150ms ease;
+}
+
+settings-panel .provider-subfield-status[data-kind="ok"] {
+    color: var(--accent-green, #3fb950);
+}
+
+settings-panel .provider-subfield-status[data-kind="error"] {
+    color: var(--accent-red, #f85149);
+}
+
 /* About Modal Component */
 about-modal {
     display: none;

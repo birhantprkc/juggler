@@ -82,6 +82,41 @@ type CredentialsStore struct {
 // Example: {"anthropic_api_key": "sk-...", "gemini_api_key": "..."}
 type Credentials map[string]string
 
+// credFileLocks serialises read-modify-write sequences per credentials file.
+// Save() alone is atomic (temp+rename) so the file never tears, but a
+// load→modify→save across two concurrent callers can still lose updates: each
+// loads a snapshot missing the other's write, mutates its own key, then the
+// last atomic rename wins — silently dropping the other key. That is exactly
+// how configuring the OpenAI-compatible provider (settings posts one
+// PUT /api/config per field, un-awaited) could report "Saved." for every field
+// yet persist none. Every mutating method holds the per-path lock across the
+// whole sequence. Keyed by file path (not one global lock) so unrelated stores
+// don't contend, and so the multiple CredentialsStore instances a process
+// creates for the same file (NewCredentialsStore hands out a fresh struct per
+// call) still share one lock.
+//
+// The lock is a 1-capacity channel used as a binary semaphore (the codebase
+// forbids sync.Mutex): acquire by sending, release by receiving. credFileGate
+// guards creation of the per-path locks the same way.
+var (
+	credFileGate  = make(chan struct{}, 1)
+	credFileLocks = map[string]chan struct{}{}
+)
+
+// credFileLock returns the semaphore guarding read-modify-write on path,
+// creating it on first use. Acquire with `lock <- struct{}{}`, release with
+// `<-lock`.
+func credFileLock(path string) chan struct{} {
+	credFileGate <- struct{}{}
+	defer func() { <-credFileGate }()
+	lock, ok := credFileLocks[path]
+	if !ok {
+		lock = make(chan struct{}, 1)
+		credFileLocks[path] = lock
+	}
+	return lock
+}
+
 // NewCredentialsStore creates a new credentials store
 // Credentials are stored in ~/.juggler/credentials.json
 func NewCredentialsStore() (*CredentialsStore, error) {
@@ -264,6 +299,10 @@ func (s *CredentialsStore) SetAPIKey(providerName string, apiKey string) error {
 
 	configKeyName := info.ConfigKeyName
 
+	lock := credFileLock(s.filePath)
+	lock <- struct{}{}
+	defer func() { <-lock }()
+
 	// Load current credentials
 	creds, err := s.loadForWrite()
 	if err != nil {
@@ -386,6 +425,10 @@ func (s *CredentialsStore) IsProviderEnabled(providerName string) bool {
 
 // SetProviderEnabled enables or disables a keyless provider
 func (s *CredentialsStore) SetProviderEnabled(providerName string, enabled bool) error {
+	lock := credFileLock(s.filePath)
+	lock <- struct{}{}
+	defer func() { <-lock }()
+
 	creds, err := s.loadForWrite()
 	if err != nil {
 		return err
@@ -425,6 +468,10 @@ func (s *CredentialsStore) GetRawKey(key string) string {
 // SetRawKey stores an arbitrary key-value pair in the credentials file.
 // An empty value deletes the key.
 func (s *CredentialsStore) SetRawKey(key, value string) error {
+	lock := credFileLock(s.filePath)
+	lock <- struct{}{}
+	defer func() { <-lock }()
+
 	creds, err := s.loadForWrite()
 	if err != nil {
 		return err

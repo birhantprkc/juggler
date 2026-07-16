@@ -7,6 +7,8 @@ of changes; this project follows semantic versioning.
 
 - Added Agent Skills: discovery across native roots, plus a skill tool to load them on demand
 - Added ACP client support
+- Added workarounds for some Firefox bugs when using the WAN client
+- Fixed failure to save settings in the generic openAI provider
 - Made sure .md files are previewed as markdown, not syntax-highlighted text
 - Followed XDG Base Directory spec for config/cache on Linux
 

@@ -187,9 +187,13 @@ func TestSetAPIKeyRecoversFromCorruptFile(t *testing.T) {
 	}
 }
 
-// Concurrent saves must never produce a torn/corrupt file. With the old
-// truncate-then-write os.WriteFile, interleaved writers left trailing bytes;
-// atomic temp+rename makes every observable state a complete, valid file.
+// Concurrent writes to distinct keys must (a) never produce a torn/corrupt
+// file and (b) never lose an update. Atomic temp+rename gives (a): the old
+// truncate-then-write os.WriteFile left trailing bytes on interleave. Per-path
+// locking of the load→modify→save sequence gives (b): without it two writers
+// each load a snapshot missing the other's key and the last rename drops it —
+// the bug behind "OpenAI-compatible settings all report Saved but persist none"
+// (issue #19). Non-empty values so blanks aren't treated as deletes.
 func TestSaveAtomicUnderConcurrentWrites(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")
@@ -203,7 +207,7 @@ func TestSaveAtomicUnderConcurrentWrites(t *testing.T) {
 			defer wg.Done()
 			// Mix long and short payloads so a non-atomic write would leave a tail.
 			key := fmt.Sprintf("key_%02d", n)
-			val := strings.Repeat("v", (n%7)*16)
+			val := strings.Repeat("v", (n%7)*16+1)
 			if err := store.SetRawKey(key, val); err != nil {
 				t.Errorf("SetRawKey(%s): %v", key, err)
 			}
@@ -211,8 +215,18 @@ func TestSaveAtomicUnderConcurrentWrites(t *testing.T) {
 	}
 	wg.Wait()
 
-	if _, err := store.Load(); err != nil {
+	creds, err := store.Load()
+	if err != nil {
 		t.Fatalf("file corrupt after concurrent writes: %v", err)
+	}
+	// Every writer's key must survive — a lost update means the read-modify-write
+	// sequences interleaved and one writer clobbered another.
+	for i := 0; i < writers; i++ {
+		key := fmt.Sprintf("key_%02d", i)
+		want := strings.Repeat("v", (i%7)*16+1)
+		if got := creds[key]; got != want {
+			t.Errorf("%s = %q, want %q (lost update under concurrent writes)", key, got, want)
+		}
 	}
 }
 

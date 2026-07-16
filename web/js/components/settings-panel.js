@@ -792,8 +792,13 @@ class SettingsPanel extends HTMLElement {
     this._mcpTab.close();
     this._acpTab.close();
 
-    // Clear any unsaved input fields and update buttons
-    const inputs = this.querySelectorAll('input[type="text"]');
+    // Clear any unsaved secret input fields (API keys) and update buttons.
+    // .settings-value-input marks NON-secret persisted values (gateway base URL,
+    // custom headers, Ollama host, Claude Code path, stream idle timeout): those
+    // must stay visible across a panel close/reopen, since open() only re-fetches
+    // and re-renders on first load — blanking them here left them empty forever
+    // and made a saved value look lost (issue #19).
+    const inputs = this.querySelectorAll('input[type="text"]:not(.settings-value-input)');
     inputs.forEach(input => {
       /** @type {HTMLInputElement} */ (input).value = '';
     });
@@ -928,6 +933,8 @@ class SettingsPanel extends HTMLElement {
     const input = document.createElement('input');
     input.type = 'text';
     input.id = 'stream-idle-timeout-input';
+    // Non-secret persisted value: keep visible across close/reopen (see close()).
+    input.className = 'settings-value-input';
     input.inputMode = 'numeric';
     input.placeholder = '180';
     input.autocomplete = 'off';
@@ -1225,21 +1232,36 @@ class SettingsPanel extends HTMLElement {
    */
   _buildOpenAICompatRows() {
     const wrapper = document.createElement('div');
+    wrapper.className = 'openai-compat-rows';
 
     /**
      * @param {string} key - config key posted to /api/config
      * @param {string} configField - camelCase field on this.config
+     * @param {string} label - visible field label
      * @param {string} placeholder - input placeholder
      * @param {(v: string) => string|null} validate - returns an error string or null
      * @returns {HTMLElement} The input row element.
      */
-    const buildRow = (key, configField, placeholder, validate) => {
+    const buildRow = (key, configField, label, placeholder, validate) => {
       const row = document.createElement('div');
+      row.className = 'provider-subfield';
+
+      const inputId = `openai-compat-${configField}`;
+
+      const labelEl = document.createElement('label');
+      labelEl.className = 'provider-subfield-label';
+      labelEl.textContent = label;
+      labelEl.setAttribute('for', inputId);
+      row.appendChild(labelEl);
+
       const inputWrapper = document.createElement('div');
       inputWrapper.className = 'provider-input-wrapper';
 
       const input = document.createElement('input');
       input.type = 'text';
+      input.id = inputId;
+      // Non-secret persisted value: keep visible across close/reopen (see close()).
+      input.className = 'settings-value-input';
       input.placeholder = placeholder;
       input.autocomplete = 'off';
       input.setAttribute('autocorrect', 'off');
@@ -1250,18 +1272,38 @@ class SettingsPanel extends HTMLElement {
       row.appendChild(inputWrapper);
 
       const status = document.createElement('div');
-      status.className = 'key-source-hint';
+      status.className = 'provider-subfield-status';
       row.appendChild(status);
+
+      /** @type {ReturnType<typeof setTimeout>|undefined} */
+      let statusTimer;
+      /**
+       * @param {string} text
+       * @param {'ok'|'error'|'pending'} [kind]
+       */
+      const setStatus = (text, kind) => {
+        clearTimeout(statusTimer);
+        status.textContent = text;
+        if (kind) status.dataset.kind = kind; else delete status.dataset.kind;
+        // Success is transient — the visible value is the real confirmation, so
+        // the note fades. Errors stay until the next edit.
+        if (kind === 'ok') {
+          statusTimer = setTimeout(() => {
+            status.textContent = '';
+            delete status.dataset.kind;
+          }, 2000);
+        }
+      };
 
       const save = async () => {
         const value = input.value.trim();
         if (value === (/** @type {any} */ (this.config)[configField] || '')) return;
         const err = validate(value);
         if (err) {
-          status.textContent = err;
+          setStatus(err, 'error');
           return;
         }
-        status.textContent = 'Saving…';
+        setStatus('Saving…', 'pending');
         try {
           const response = await fetch('/api/config', {
             method: 'PUT',
@@ -1270,10 +1312,10 @@ class SettingsPanel extends HTMLElement {
           });
           if (!response.ok) throw new Error(`Server returned ${response.status}`);
           /** @type {any} */ (this.config)[configField] = value;
-          status.textContent = value ? 'Saved.' : 'Cleared.';
+          setStatus(value ? 'Saved' : 'Cleared', 'ok');
         } catch (e) {
           console.error(`[SettingsPanel] Failed to save ${key}:`, e);
-          status.textContent = 'Failed to save.';
+          setStatus('Failed to save', 'error');
         }
       };
 
@@ -1290,11 +1332,11 @@ class SettingsPanel extends HTMLElement {
 
     wrapper.appendChild(buildRow(
       'openai_compatible_base_url', 'openaiCompatibleBaseURL',
-      'https://gateway.example.com/v1', () => null,
+      'Base URL', 'https://gateway.example.com/v1', () => null,
     ));
     wrapper.appendChild(buildRow(
       'openai_compatible_headers', 'openaiCompatibleHeaders',
-      '{"User-Agent": "my-app/1.0"}',
+      'Custom headers (JSON, optional)', '{"User-Agent": "my-app/1.0"}',
       (v) => {
         if (v === '') return null;
         try {
@@ -1485,6 +1527,8 @@ class SettingsPanel extends HTMLElement {
     const input = document.createElement('input');
     input.type = 'text';
     input.id = 'ollama-host-input';
+    // Non-secret persisted value: keep visible across close/reopen (see close()).
+    input.className = 'settings-value-input';
     input.placeholder = 'http://localhost:11434';
     input.autocomplete = 'off';
     input.setAttribute('autocorrect', 'off');
@@ -1553,6 +1597,8 @@ class SettingsPanel extends HTMLElement {
     const input = document.createElement('input');
     input.type = 'text';
     input.id = 'claudecode-binary-input';
+    // Non-secret persisted value: keep visible across close/reopen (see close()).
+    input.className = 'settings-value-input';
     input.placeholder = 'CLI path (leave blank for auto)';
     input.autocomplete = 'off';
     input.setAttribute('autocorrect', 'off');
