@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-16
+
 - Added per-model thinking-level control to the model chooser
 - Added Agent Skills: discovery across native roots, plus a skill tool to load them on demand
 - Added ACP client support
