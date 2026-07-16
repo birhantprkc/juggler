@@ -22,7 +22,7 @@ import keyShortcutManager from '../../services/key-shortcut-manager.js';
 import { allTips, isSeen, resetSeen } from '../../services/tips-manager.js';
 
 /** Rotate to the next unseen tip this often (ms). */
-const ROTATE_MS = 15000;
+const ROTATE_MS = 20000;
 
 /**
  * @returns {import('../../services/tips-manager.js').Tip[]} The unseen tips, in order.
