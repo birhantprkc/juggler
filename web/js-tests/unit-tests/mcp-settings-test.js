@@ -14,14 +14,16 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import {
+  configFormToConfig as mcpFormToConfig,
+  upsertConfigEntry as mcpUpsertMap,
+  deleteConfigEntry as mcpDeleteMap,
+  setConfigEntryEnabled as mcpSetEnabledMap,
+  configScopeOf as mcpScopeOf,
+} from '../../js/components/config-tab.js';
+import {
   formatMcpTokenCost,
   validateMcpServerName,
-  mcpFormToConfig,
-  mcpUpsertMap,
-  mcpDeleteMap,
-  mcpSetEnabledMap,
-  mcpScopeOf,
-} from '../../js/components/settings-panel.js';
+} from '../../js/components/settings/subprocess-tabs.js';
 
 /**
  * @typedef {object} TestResult

@@ -25,7 +25,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// Pure config helpers (unit-tested via settings-panel.js re-exports)
+// Pure config helpers (unit-tested directly — see mcp-settings-test.js / acp-settings-test.js)
 // ---------------------------------------------------------------------------
 
 /**

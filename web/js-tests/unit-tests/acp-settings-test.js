@@ -14,14 +14,16 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import {
+  configFormToConfig as acpFormToConfig,
+  upsertConfigEntry as acpUpsertMap,
+  deleteConfigEntry as acpDeleteMap,
+  setConfigEntryEnabled as acpSetEnabledMap,
+  configScopeOf as acpScopeOf,
+} from '../../js/components/config-tab.js';
+import {
   validateAcpAgentName,
-  acpFormToConfig,
-  acpUpsertMap,
-  acpDeleteMap,
-  acpSetEnabledMap,
-  acpScopeOf,
   acpDotClass,
-} from '../../js/components/settings-panel.js';
+} from '../../js/components/settings/subprocess-tabs.js';
 
 /**
  * @typedef {object} TestResult

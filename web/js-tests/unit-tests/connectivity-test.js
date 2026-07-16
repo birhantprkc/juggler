@@ -60,8 +60,9 @@ export async function runTests(_ctx) {
   const mountWith = (connectivity) => {
     const el = /** @type {any} */ (document.createElement('settings-panel'));
     document.body.appendChild(el);
-    el.connectivity = connectivity;
-    el.renderConnectivityFields();
+    const tab = el._tabs.connectivity;
+    tab.connectivity = connectivity;
+    tab.renderConnectivityFields();
     return el;
   };
 
@@ -162,7 +163,7 @@ export async function runTests(_ctx) {
         return /** @type {any} */ ({ ok: true, json: async () => ({ ok: true }) });
       }
       // refreshConnectivity GET — keep state unchanged.
-      return /** @type {any} */ ({ ok: true, json: async () => el.connectivity });
+      return /** @type {any} */ ({ ok: true, json: async () => el._tabs.connectivity.connectivity });
     });
     try {
       const btn = [...el.querySelectorAll('#connectivity-form button')]

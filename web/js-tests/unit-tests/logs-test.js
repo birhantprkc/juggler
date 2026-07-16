@@ -126,7 +126,7 @@ export async function runTests(_ctx) {
       { name: 'app.log', path: '/logs/app.log', group: 'app', content: 'app\n' },
     ]);
     await withPanel(backend, async (el) => {
-      await el._openLogsTab();
+      await el._tabs.logs._openLogsTab();
 
       const picker = el.querySelector('#logs-picker');
       assert(picker, 'picker present');
@@ -135,7 +135,7 @@ export async function runTests(_ctx) {
       const optCount = picker.querySelectorAll('option').length;
       assert(optCount === 3, `one option per file; got ${optCount}`);
 
-      assert(el._selectedLogPath === '/logs/p/server.log', `defaults to server.log; got ${el._selectedLogPath}`);
+      assert(el._tabs.logs._selectedLogPath === '/logs/p/server.log', `defaults to server.log; got ${el._tabs.logs._selectedLogPath}`);
 
       const filepath = el.querySelector('#logs-filepath');
       assert(filepath.querySelector('reveal-button'), 'file-path control carries the reveal control');
@@ -152,12 +152,12 @@ export async function runTests(_ctx) {
       { name: 'server.log', path: '/logs/p/server.log', group: 'server', content: 'line1\n' },
     ]);
     await withPanel(backend, async (el) => {
-      await el._openLogsTab();
+      await el._tabs.logs._openLogsTab();
       const viewer = el.querySelector('#logs-viewer');
       assert(viewer.textContent === 'line1\n', `initial; got ${JSON.stringify(viewer.textContent)}`);
 
       backend.state.set('/logs/p/server.log', 'line1\nline2\n');
-      await el._pollLogTail();
+      await el._tabs.logs._pollLogTail();
       assert(viewer.textContent === 'line1\nline2\n', `appended new bytes; got ${JSON.stringify(viewer.textContent)}`);
     });
   });
@@ -168,10 +168,10 @@ export async function runTests(_ctx) {
       { name: 'app.log', path: '/logs/app.log', group: 'app', content: 'app-content\n' },
     ]);
     await withPanel(backend, async (el) => {
-      await el._openLogsTab();
+      await el._tabs.logs._openLogsTab();
       assert(el.querySelector('#logs-viewer').textContent === 'srv\n', 'starts on server.log');
 
-      el._selectLog('/logs/app.log');
+      el._tabs.logs._selectLog('/logs/app.log');
       await settle();
 
       const viewer = el.querySelector('#logs-viewer');
@@ -183,7 +183,7 @@ export async function runTests(_ctx) {
 
   await run('empty state when there are no logs', async () => {
     await withPanel(makeBackend([]), async (el) => {
-      await el._openLogsTab();
+      await el._tabs.logs._openLogsTab();
       assert(!el.querySelector('#logs-empty').hidden, 'empty message shown');
       assert(el.querySelector('#logs-controls').hidden, 'picker controls hidden');
       assert(el.querySelector('#logs-viewer').hidden, 'viewer hidden');
