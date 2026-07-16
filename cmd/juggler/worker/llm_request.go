@@ -234,6 +234,46 @@ func appendThreadMessages(messages []map[string]any, item ConversationItem) []ma
 	return messages
 }
 
+// appendToolActionResult appends the tool-result message for one tool-action:
+// the real result when the tool completed, or an isError placeholder when it
+// hasn't finished yet (auto-continue raced ahead of execution). The placeholder
+// path also stamps resultFedTurn so a mid-turn engine reattach does NOT
+// reset+re-execute the tool — the resultFedTurn CURE that removes the duplicate
+// re-feed at source (doc.go's "Tool-delivery desync" section, claudecode
+// provider). The stamp self-expires (a later turn carries a higher turnCounter),
+// so a genuinely-stuck tool can still be recovered by a future reattach. Stored
+// as int: y-crdt's YMap.Set accepts Number (=int), and convertToYcrdt leaves an
+// int64 untyped for it (see its float64 case); resetRunningToolsForReattach
+// reads it back numerically.
+func (w *ConversationWorker) appendToolActionResult(messages []map[string]any, item ConversationItem) []map[string]any {
+	if item.State != StateCompleted && item.State != StateCancelled {
+		w.log.Error("WARNING: Tool %s has no result yet — emitting isError tool-result (auto-continue may have raced ahead of execution)", item.ToolUseID)
+		messages = append(messages, map[string]any{
+			"type":      "tool-result",
+			"toolUseId": item.ToolUseID,
+			"content":   "[internal] Tool execution did not complete before message build. Do not fabricate output — wait for the actual result.",
+			"isError":   true,
+		})
+		w.doc.UpdateToolActionFieldsRecursive(item.ToolUseID, map[string]any{
+			"resultFedTurn": int(w.docTurnCounter()),
+		})
+		return messages
+	}
+
+	if rm := buildToolResultMap(item); rm != nil {
+		messages = append(messages, rm)
+	} else {
+		w.log.Error("FATAL: Tool %s Result unmarshal failed", item.ToolUseID)
+		messages = append(messages, map[string]any{
+			"type":      "tool-result",
+			"toolUseId": item.ToolUseID,
+			"content":   "ERROR: Invalid result JSON",
+			"isError":   true,
+		})
+	}
+	return messages
+}
+
 // buildMessages converts conversation items to LLM message format.
 // Uses provider.Message format with discriminated union via Type field.
 func (w *ConversationWorker) buildMessages(contexts []ItemContext) []map[string]any {
@@ -241,7 +281,10 @@ func (w *ConversationWorker) buildMessages(contexts []ItemContext) []map[string]
 
 	items := w.getTargetItems()
 
-	for _, item := range items {
+	// Index-based: the ItemTypeToolAction case consumes a run of same-turn
+	// tool-actions and advances i past them.
+	for i := 0; i < len(items); i++ {
+		item := items[i]
 		switch item.Type {
 		case ItemTypeUser:
 			messages = append(messages, buildUserMessageMap(item))
@@ -249,53 +292,64 @@ func (w *ConversationWorker) buildMessages(contexts []ItemContext) []map[string]
 		case ItemTypeAssistant:
 			messages = append(messages, map[string]any{"type": "assistant", "content": item.Content})
 
+		case ItemTypeThinking:
+			// Replay the turn's chain-of-thought so the provider layer can make
+			// the per-vendor call on what to do with it. Most providers treat it
+			// as internal model state and drop it (gemini, the OpenAI Responses
+			// API, non-reasoning OpenAI-compatible models); Anthropic round-trips
+			// it via a signature carried in providerData. DeepSeek's thinking mode
+			// REQUIRES it be echoed back under `reasoning_content` on a continued
+			// (post-tool-call) turn — omit it and the continuation 400s with "The
+			// `reasoning_content` in the thinking mode must be passed back to the
+			// API". Without this case the reasoning never reaches the provider at
+			// all, so the DeepSeek EchoReasoningContent quirk has nothing to echo.
+			if item.Content != "" {
+				m := map[string]any{"type": "thinking", "content": item.Content}
+				if len(item.ProviderData) > 0 {
+					m["providerData"] = item.ProviderData
+				}
+				messages = append(messages, m)
+			}
+
 		case ItemTypeToolAction:
-			if item.ToolUseID == "" || item.ToolName == "" {
-				w.log.Error("[Worker] WARNING: Tool action skipped - ToolUseID=%q, ToolName=%q", item.ToolUseID, item.ToolName)
-				continue
+			// Batch the run of tool-actions belonging to the SAME turn and emit
+			// every tool_use before any tool_result. A turn with parallel tool
+			// calls stores them as consecutive tool-action items sharing one
+			// TransactionID (insertTargetMessage stamps currentTxnID on all items
+			// produced during a round-trip). Interleaving use/result/use/result
+			// makes transformMessages flush a separate assistant message per
+			// tool-result — and DeepSeek's thinking mode only carries
+			// reasoning_content on the FIRST, so a continued parallel-tool turn
+			// 400s with "The `reasoning_content` ... must be passed back to the
+			// API". Grouping by TransactionID (not mere adjacency) keeps genuinely
+			// SEQUENTIAL calls from separate turns as separate assistant messages,
+			// so we don't misrepresent them as one parallel turn for other
+			// providers. A tool-action with no TransactionID forms a singleton
+			// batch, i.e. the prior interleaved behavior.
+			end := i + 1
+			if item.TransactionID != "" {
+				for end < len(items) && items[end].Type == ItemTypeToolAction &&
+					items[end].TransactionID == item.TransactionID {
+					end++
+				}
 			}
+			batch := items[i:end]
+			i = end - 1 // -1: the loop's i++ advances past the batch.
 
-			messages = append(messages, buildToolUseMap(item))
-
-			// Tool may not have finished yet if auto-continue raced ahead
-			// of tool execution completing. Emit an explicit isError
-			// tool-result so the LLM treats it as a failure rather than
-			// fabricating reasoning from a misleading "in progress" body.
-			// The strategy loop will re-trigger when the tool finishes;
-			// shipping a lying success body here is the worse outcome.
-			if item.State != StateCompleted && item.State != StateCancelled {
-				w.log.Error("WARNING: Tool %s has no result yet — emitting isError tool-result (auto-continue may have raced ahead of execution)", item.ToolUseID)
-				messages = append(messages, map[string]any{
-					"type":      "tool-result",
-					"toolUseId": item.ToolUseID,
-					"content":   "[internal] Tool execution did not complete before message build. Do not fabricate output — wait for the actual result.",
-					"isError":   true,
-				})
-				// We just delivered a (placeholder) result for a tool still in
-				// state=running. Stamp the current turn so a mid-turn engine reattach
-				// does NOT reset+re-execute it — the resultFedTurn CURE that removes the
-				// duplicate re-feed at source (doc.go's "Tool-delivery desync" section,
-				// claudecode provider). The stamp self-expires (a later turn carries a
-				// higher turnCounter), so a genuinely-stuck tool can still be recovered
-				// by a future reattach. Store as int: y-crdt's YMap.Set accepts Number
-				// (=int), and convertToYcrdt leaves an int64 untyped for it (see its
-				// float64 case). resetRunningToolsForReattach reads it back numerically.
-				w.doc.UpdateToolActionFieldsRecursive(item.ToolUseID, map[string]any{
-					"resultFedTurn": int(w.docTurnCounter()),
-				})
-				continue
+			// All tool_use messages first.
+			for _, ta := range batch {
+				if ta.ToolUseID == "" || ta.ToolName == "" {
+					w.log.Error("[Worker] WARNING: Tool action skipped - ToolUseID=%q, ToolName=%q", ta.ToolUseID, ta.ToolName)
+					continue
+				}
+				messages = append(messages, buildToolUseMap(ta))
 			}
-
-			if rm := buildToolResultMap(item); rm != nil {
-				messages = append(messages, rm)
-			} else {
-				w.log.Error("FATAL: Tool %s Result unmarshal failed", item.ToolUseID)
-				messages = append(messages, map[string]any{
-					"type":      "tool-result",
-					"toolUseId": item.ToolUseID,
-					"content":   "ERROR: Invalid result JSON",
-					"isError":   true,
-				})
+			// Then all tool_result messages.
+			for _, ta := range batch {
+				if ta.ToolUseID == "" || ta.ToolName == "" {
+					continue
+				}
+				messages = w.appendToolActionResult(messages, ta)
 			}
 
 		case ItemTypeThread:
