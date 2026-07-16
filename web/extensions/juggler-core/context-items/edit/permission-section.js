@@ -29,8 +29,8 @@ export function renderWriteFilePermissionSection(messageThread) {
     section.innerHTML = `
       <button class="permission-btn input-ctrl-btn write-file-btn ${allowed ? 'allowed' : 'ask'}"
               role="switch" aria-checked="${allowed}"
-              title="Toggle file write permission for this tab" data-shortcut-id="toggle-file-editing">
-        ${allowed ? 'File editing allowed' : 'Ask before editing files'}
+              title="Toggle file write permission for this tab. Writes outside the project and allowed paths always prompt." data-shortcut-id="toggle-file-editing">
+        ${allowed ? 'File editing allowed in allowed paths' : 'Ask before editing files'}
       </button>
     `;
     const btn = section.querySelector('.write-file-btn');

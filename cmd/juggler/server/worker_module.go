@@ -19,17 +19,18 @@ import (
 var workerModuleImportRe = regexp.MustCompile(`(?m)(\b(?:import|export)\s+(?:[^'";]+?\s+from\s+)?|\bimport\s*\(\s*)(['"])([^'"]+)(['"])`)
 
 var workerSDKImports = map[string]string{
-	"juggler/context-item":  "/sdk/context-item.js",
-	"juggler/strategy-type": "/sdk/strategy-type.js",
-	"juggler/command-type":  "/sdk/command-type.js",
-	"juggler/ops":           "/sdk/ops.js",
-	"juggler/sandbox":       "/sdk/sandbox.js",
-	"juggler/ui":            "/sdk/ui-worker.js",
-	"juggler/model":         "/sdk/model.js",
-	"juggler/item-utils":    "/sdk/item-utils-worker.js",
-	"juggler/registry":      "/sdk/registry.js",
-	"juggler/version":       "/sdk/version.js",
-	"juggler/utils/html":    "/sdk/lib/html.js",
+	"juggler/context-item":           "/sdk/context-item.js",
+	"juggler/strategy-type":          "/sdk/strategy-type.js",
+	"juggler/command-type":           "/sdk/command-type.js",
+	"juggler/ops":                    "/sdk/ops.js",
+	"juggler/sandbox":                "/sdk/sandbox.js",
+	"juggler/ui":                     "/sdk/ui-worker.js",
+	"juggler/model":                  "/sdk/model.js",
+	"juggler/item-utils":             "/sdk/item-utils-worker.js",
+	"juggler/registry":               "/sdk/registry.js",
+	"juggler/version":                "/sdk/version.js",
+	"juggler/utils/html":             "/sdk/lib/html.js",
+	"juggler/utils/path-containment": "/sdk/lib/path-containment.js",
 }
 
 // serveWorkerModule serves a JS module transformed for module-worker imports.

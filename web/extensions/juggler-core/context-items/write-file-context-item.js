@@ -74,7 +74,7 @@ class WriteFileContextItem extends EditBase {
       properties: {
         file_path: {
           type: 'string',
-          description: 'The absolute path to the file to write'
+          description: 'The absolute path to the file to write. Must be inside the working directory unless the user explicitly asked for a location outside it.'
         },
         content: {
           type: 'string',
@@ -173,6 +173,12 @@ class WriteFileContextItem extends EditBase {
     const content = /** @type {string} */ (params.content);
     const existingContent = /** @type {string|undefined} */ (params._existingContent);
 
+    // Make an out-of-project target unmistakable: full absolute path as the
+    // title (not `./`-prefixed, which reads as project-relative) plus a warning.
+    const outOfRoot = path && !this._isPathAllowed(path);
+    const title = outOfRoot ? path : formatDisplayPath(path);
+    const message = outOfRoot ? `⚠ Write outside the project folder: ${path}` : '';
+
     if (existingContent !== undefined) {
       // File exists - show diff
       const diffData = {
@@ -182,8 +188,8 @@ class WriteFileContextItem extends EditBase {
         startLineNumber: 1
       };
       return {
-        title: formatDisplayPath(path),
-        message: '',
+        title,
+        message,
         display: { diffData }
       };
     }
@@ -198,8 +204,8 @@ class WriteFileContextItem extends EditBase {
     };
 
     return {
-      title: formatDisplayPath(path),
-      message: '',
+      title,
+      message,
       display: { contentData }
     };
   }
@@ -212,10 +218,16 @@ class WriteFileContextItem extends EditBase {
   async execute(params) {
     const writeParams = /** @type {WriteFileParams} */ (params);
 
-    // Approval is enforced upstream by the JS action-executor flow. If we got
-    // here, the action is approved (modal-approved or standing-permission) and
-    // the backend just executes — no out-of-band trust flag needed.
-    const result = await writeFile(writeParams);
+    // Approval is enforced upstream by the JS action-executor flow. Carry the
+    // standing allowed-paths grant, and mark an out-of-root target as
+    // user-approved (only reachable here via an explicit modal approval), so the
+    // backend's defence-in-depth check admits the write.
+    const { params: sendParams, allowedPaths } = this._authorizeWrite(writeParams);
+    const result = await writeFile(
+      /** @type {import('../../../js/services/ops-api.js').ReadFileWriteParams} */ (sendParams),
+      this.signal,
+      allowedPaths
+    );
 
     return result;
   }

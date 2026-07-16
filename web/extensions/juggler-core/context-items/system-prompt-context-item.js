@@ -854,7 +854,15 @@ class SystemPromptContextItem extends ContextItem {
   buildPrompt() {
     const identityText = this._getEffectiveText();
     const today = (this.conversation?.created || new Date().toISOString()).split('T')[0] || '';
-    const envBlock = buildEnvBlock(this.session?.projectPath || '', this.session?.platform || '', today);
+    const projectPath = this.session?.projectPath || '';
+    if (!projectPath) {
+      // Field diagnostic: an empty working directory makes the env block read
+      // "Working directory: unknown", which invites the model to invent an
+      // absolute path (issue #24). The session should be loaded (projectPath
+      // set) before any prompt is built; log if that invariant is ever violated.
+      console.warn('[SystemPrompt] building env block with empty projectPath — "Working directory: unknown"');
+    }
+    const envBlock = buildEnvBlock(projectPath, this.session?.platform || '', today);
     return identityText + '\n\n' + envBlock;
   }
 }

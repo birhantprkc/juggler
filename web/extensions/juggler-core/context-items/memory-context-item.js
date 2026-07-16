@@ -211,7 +211,11 @@ class MemoryContextItem extends ContextItem {
    * @private
    */
   async _write(path, content) {
-    await writeFile({ path, content });
+    // The memory path is app-configured (never an LLM-invented path), so it is
+    // trusted even when it resolves outside the project root (e.g. a global
+    // ~/.juggler/MEMORY.md). Mark it approved so the backend's out-of-scope
+    // write guard admits it; for the default in-project path this is a no-op.
+    await writeFile({ path, content, outOfRootApproved: true });
     // A successful write is the new last-known-good for transient-failure reads.
     lastGoodMemory.set(path, content);
   }

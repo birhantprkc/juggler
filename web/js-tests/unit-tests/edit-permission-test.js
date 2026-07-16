@@ -63,8 +63,15 @@ export async function runTests(_ctx) {
     });
 
     assert(action.requiresApproval() === true, 'edit action should require approval');
-    assert(action.isPermitted({}) === true,
-      'edit action isPermitted() should return true when writeFile permission is set');
+    // The toggle now grants writes only WITHIN allowed paths. An in-project
+    // path auto-approves; an out-of-root path always prompts; a missing path
+    // prompts (issues #23/#24).
+    assert(action.isPermitted({ path: 'in-project.txt' }) === true,
+      'isPermitted() should be true for an in-project write when writeFile permission is set');
+    assert(action.isPermitted({ path: '/etc/out-of-root.txt' }) === false,
+      'isPermitted() must be false for an out-of-root write even with the toggle on');
+    assert(action.isPermitted({}) === false,
+      'isPermitted() must be false when no path is present (prompt)');
     assert(action.getPermissionKey({}) === 'write-file',
       'edit action should use write-file permission key');
 
@@ -174,9 +181,9 @@ export async function runTests(_ctx) {
       id: EditClass.MANIFEST.id, session, conversation,
       messageThread: conversation.rootMessageThread
     });
-    const suggestions = action.getApprovalSuggestions({});
+    const suggestions = action.getApprovalSuggestions({ path: 'in-project.txt' });
     assert(Array.isArray(suggestions) && suggestions.length === 0,
-      `getApprovalSuggestions should be [] when writes already allowed, got ${JSON.stringify(suggestions)}`);
+      `getApprovalSuggestions should be [] when an in-project write is already allowed, got ${JSON.stringify(suggestions)}`);
     passed++;
   } catch (e) {
     failed++;
@@ -198,25 +205,87 @@ export async function runTests(_ctx) {
       id: EditClass.MANIFEST.id, session, conversation, messageThread: mt
     });
 
-    const suggestions = action.getApprovalSuggestions({});
+    const suggestions = action.getApprovalSuggestions({ path: 'in-project.txt' });
     assert(suggestions.length === 1,
-      `expected exactly one suggestion when writes disabled, got ${suggestions.length}`);
+      `expected exactly one suggestion for an in-project write when writes disabled, got ${suggestions.length}`);
     const s = suggestions[0];
     assert(s.itemType === 'write-file', `suggestion itemType should be write-file, got ${s.itemType}`);
     assert(Array.isArray(s.rules) && s.rules.length === 1 &&
 			s.rules[0].kind === 'boolean' && s.rules[0].value === true,
     `suggestion should carry one boolean:true rule, got ${JSON.stringify(s.rules)}`);
+    assert(!s.allowedPaths, 'in-project suggestion should not carry an allowedPaths grant');
     assert(typeof s.label === 'string' && s.label.length > 0,
       'suggestion must have a non-empty label so the button shows what it remembers');
 
-    // Invariant: applying the suggestion's rules makes the action permitted.
+    // Invariant: applying the suggestion's rules makes the in-project write permitted.
     for (const r of s.rules) mt.addRule(s.itemType, r);
-    assert(action.isPermitted({}) === true,
-      'applying the suggestion rules must make isPermitted() true');
+    assert(action.isPermitted({ path: 'in-project.txt' }) === true,
+      'applying the suggestion rules must make isPermitted() true for an in-project write');
     passed++;
   } catch (e) {
     failed++;
     errors.push(`getApprovalSuggestions when disabled: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 7: an out-of-root write is never auto-approved by the toggle, and its
+  // suggestions offer two tiers narrowest-first: (1) allow file edits + add the
+  // folder to allowed paths (carries allowedPaths), (2) allow file edits only.
+  // =========================================================================
+  try {
+    const conversation = await createTestConversation(session);
+    // createTestConversation sets writeFile=true (the toggle is on).
+    const EditClass = /** @type {any} */ (contextItemRegistry.getByToolName('edit'));
+    const action = new EditClass({
+      id: EditClass.MANIFEST.id, session, conversation,
+      messageThread: conversation.rootMessageThread
+    });
+
+    const outOfRoot = '/tmp/juggler-edit-oob/deep/target.txt';
+    assert(action.isPermitted({ path: outOfRoot }) === false,
+      'out-of-root write must not be auto-approved even with the toggle on');
+
+    const suggestions = action.getApprovalSuggestions({ path: outOfRoot });
+    assert(suggestions.length === 2,
+      `expected two tiers for an out-of-root write, got ${suggestions.length}: ${JSON.stringify(suggestions)}`);
+    const [folderTier, editsTier] = suggestions;
+    assert(Array.isArray(folderTier.allowedPaths) && folderTier.allowedPaths[0] === '/tmp/juggler-edit-oob/deep',
+      `narrowest tier should grant the target folder, got ${JSON.stringify(folderTier.allowedPaths)}`);
+    assert(folderTier.itemType === 'write-file' && folderTier.rules[0].value === true,
+      'folder tier must also carry the file-edit rule');
+    assert(!editsTier.allowedPaths,
+      'second tier should be the plain file-edit toggle with no folder grant');
+
+    // Applying the folder-grant tier makes the out-of-root write permitted.
+    const mt = conversation.rootMessageThread;
+    for (const r of folderTier.rules) mt.addRule(folderTier.itemType, r);
+    for (const p of folderTier.allowedPaths) mt.addAllowedPath(p, { scope: 'conversation' });
+    assert(action.isPermitted({ path: outOfRoot }) === true,
+      'granting the folder must make the out-of-root write permitted');
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`out-of-root two-tier suggestions: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 8: a `..`-escaping relative path is out-of-root and always prompts.
+  // =========================================================================
+  try {
+    const conversation = await createTestConversation(session);
+    const EditClass = /** @type {any} */ (contextItemRegistry.getByToolName('edit'));
+    const action = new EditClass({
+      id: EditClass.MANIFEST.id, session, conversation,
+      messageThread: conversation.rootMessageThread
+    });
+    assert(action.isPermitted({ path: 'sub/in.txt' }) === true,
+      'a non-escaping relative path is in-project and permitted');
+    assert(action.isPermitted({ path: '../escape.txt' }) === false,
+      'a ..-escaping relative path must not be auto-approved');
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`relative escape rejected: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { passed, failed, errors };

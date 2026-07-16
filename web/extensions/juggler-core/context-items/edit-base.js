@@ -5,6 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { formatDisplayPath } from 'juggler/item-utils';
+import { isPathInsideAllowedRoots, canonicalRoot } from 'juggler/utils/path-containment';
 import { renderWriteFilePermissionSection } from './edit/permission-section.js';
 
 /**
@@ -94,43 +95,171 @@ class EditBase extends ContextItem {
   }
 
   /**
-   * Check if write-file actions are auto-approved.
-   *
-   * Looks for an enabled `{kind:'boolean', value:true}` rule under the
-   * shared `write-file` itemType. Any plugin (write-file, replace-text,
-   * the patch variants) gets auto-approval the moment a single such rule
-   * exists, matching the original single-toggle UX.
-   * @override
-   * @param {Record<string, unknown>} _toolInput - Tool input parameters (unused)
-   * @returns {boolean} True if write-file permission is enabled
+   * Extract the target path from a tool input, tolerating the `file_path`
+   * alias LLMs sometimes emit (mirrors {@link normalizeFilePath} without
+   * mutating the caller's object). Returns '' when no usable path is present.
+   * @protected
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @returns {string} The target path, or '' if none
    */
-  isPermitted(_toolInput) {
-    const mt = this.messageThread;
-    if (!mt) return false;
-    return mt.getRulesFor(EDIT_ITEM_TYPE)
-      .some(r => r.kind === 'boolean' && r.value === true && r.scope !== 'session');
+  static _editPath(toolInput) {
+    if (!toolInput || typeof toolInput !== 'object') return '';
+    const p = toolInput.path ?? toolInput.file_path;
+    return typeof p === 'string' ? p : '';
   }
 
   /**
-   * Offer a single "don't ask again" choice: allow file edits for this
-   * conversation. File-write permission is one shared boolean toggle (the
-   * `write-file` itemType), so there is exactly one suggestion and no
-   * escalating breadth — selecting it persists the same `{value:true}` rule
-   * the permission popup toggle sets, satisfying the `isPermitted` invariant.
+   * Does this write target sit inside the project root or the user's standing
+   * allowed-paths grant? A path we can't read is treated as out-of-root so the
+   * write prompts.
+   * @protected
+   * @param {string} path - Target path
+   * @returns {boolean} True if the path is within an allowed root
+   */
+  _isPathAllowed(path) {
+    if (!path) return false;
+    const mt = this.messageThread;
+    if (!mt) return false;
+    return isPathInsideAllowedRoots(
+      path,
+      mt.getAllowedPaths(),
+      this.session?.home || '',
+      this.session?.platform || ''
+    );
+  }
+
+  /**
+   * Wrap a backend edit-family write so the backend's defence-in-depth check
+   * (AuthorizeOutOfScopeWrite) admits it. Returns the params to send and the
+   * standing allowed-paths grant to carry as top-level transport:
+   *  - `allowedPaths` puts the user's grant in the backend PathScope, so a write
+   *    to a granted out-of-project root is treated as in-scope;
+   *  - `outOfRootApproved:true` is added to params ONLY when the target is
+   *    outside those roots. Reaching execute() at all means approval was granted
+   *    — {@link isPermitted} rejects out-of-root standing rules, so an
+   *    out-of-root write can only arrive here via an explicit modal approval, and
+   *    the action-executor throws before execute() otherwise. So this marks a
+   *    genuinely user-approved write without ever trusting a standing rule.
+   * @protected
+   * @param {Record<string, any>} params - Backend op params (must include `path`)
+   * @returns {{params: Record<string, any>, allowedPaths: string[]}} Call inputs
+   */
+  _authorizeWrite(params) {
+    const allowedPaths = this.getAllowedPaths();
+    const path = typeof params?.path === 'string' ? params.path : '';
+    if (path && !this._isPathAllowed(path)) {
+      return { params: { ...params, outOfRootApproved: true }, allowedPaths };
+    }
+    return { params, allowedPaths };
+  }
+
+  /**
+   * Check if write-file actions are auto-approved.
    *
-   * Returns `[]` when writes are already allowed (the approval prompt wouldn't
-   * appear in that case anyway) so the framework shows no redundant button.
+   * TWO conditions must both hold: (1) an enabled `{kind:'boolean', value:true}`
+   * rule exists under the shared `write-file` itemType (the "allow file edits"
+   * toggle), AND (2) the target path resolves inside the project root or the
+   * user's allowed-paths grant. The toggle alone is deliberately NOT sufficient
+   * for an out-of-root write: otherwise one "don't ask again" on an innocuous
+   * in-project write would silently auto-approve writes to `C:\`, `~`, or
+   * anywhere on disk (issues #23/#24). An out-of-root write always prompts until
+   * the user explicitly grants that folder.
    * @override
    * @param {Record<string, unknown>} toolInput - Tool input parameters
-   * @returns {import('juggler/context-item').ApprovalSuggestion[]} One suggestion, or none if already allowed
+   * @returns {boolean} True if the write is auto-approved
+   */
+  isPermitted(toolInput) {
+    const mt = this.messageThread;
+    if (!mt) return false;
+    const toggleOn = mt.getRulesFor(EDIT_ITEM_TYPE)
+      .some(r => r.kind === 'boolean' && r.value === true && r.scope !== 'session');
+    if (!toggleOn) return false;
+    return this._isPathAllowed(EditBase._editPath(toolInput));
+  }
+
+  /**
+   * Collapse an absolute path's home-dir prefix to `~` for display (purely
+   * cosmetic; the persisted grant is the absolute path).
+   * @protected
+   * @param {string} p - Absolute path
+   * @param {string} home - Backend home dir (may be empty)
+   * @returns {string} `~`-collapsed display path
+   */
+  static _tildeify(p, home) {
+    if (!home) return p;
+    const base = home.endsWith('/') ? home.slice(0, -1) : home;
+    if (p === base) return '~';
+    if (p.startsWith(base + '/')) return '~' + p.slice(base.length);
+    return p;
+  }
+
+  /**
+   * Directory portion of a path, handling both `/` and `\` separators (the
+   * backend reports native OS paths).
+   * @protected
+   * @param {string} p - File path
+   * @returns {string} The parent directory, or '' if none
+   */
+  static _dirname(p) {
+    if (!p) return '';
+    const trimmed = p.replace(/[/\\]+$/, '');
+    const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+    return idx <= 0 ? '' : trimmed.slice(0, idx);
+  }
+
+  /**
+   * Offer "don't ask again" choices for a write that isn't yet auto-approved.
+   *
+   * In-root writes (or writes whose path we can't read) need only the shared
+   * "allow file edits" toggle, so there is a single suggestion — same as the
+   * original single-toggle UX.
+   *
+   * An out-of-root write is different: the toggle alone will NOT auto-approve
+   * it (see {@link isPermitted}), so we offer, narrowest first:
+   *   1. allow file edits AND add this file's folder to the allowed paths — the
+   *      grant that actually stops future prompts here (and, since the list is
+   *      shared, widens shell access too). Only offered when the folder
+   *      canonicalises to a grantable absolute root ({@link canonicalRoot}
+   *      returns null for `~`, `$`-bearing, over-broad, or Windows drive paths).
+   *   2. allow file edits only — which will keep prompting for this and other
+   *      out-of-root writes; the label says so.
+   *
+   * Returns `[]` when the write is already permitted (no prompt appears).
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @returns {import('juggler/context-item').ApprovalSuggestion[]} Suggestions, narrowest first
    */
   getApprovalSuggestions(toolInput) {
     if (!this.messageThread || this.isPermitted(toolInput)) return [];
-    return [{
+    /** @type {{kind: 'boolean', value: true, scope: 'conversation'}} */
+    const allowRule = { kind: 'boolean', value: true, scope: 'conversation' };
+    const path = EditBase._editPath(toolInput);
+
+    // In-root (toggle merely off) or path unknown: the write only needs the
+    // file-edit toggle.
+    if (!path || this._isPathAllowed(path)) {
+      return [{ itemType: EDIT_ITEM_TYPE, rules: [allowRule], label: 'file edits' }];
+    }
+
+    // Out-of-root: two tiers.
+    const home = this.session?.home || '';
+    /** @type {import('juggler/context-item').ApprovalSuggestion[]} */
+    const suggestions = [];
+    const folder = canonicalRoot(EditBase._dirname(path), home);
+    if (folder) {
+      suggestions.push({
+        itemType: EDIT_ITEM_TYPE,
+        rules: [allowRule],
+        allowedPaths: [folder],
+        label: `file edits + allow ${EditBase._tildeify(folder, home)}`
+      });
+    }
+    suggestions.push({
       itemType: EDIT_ITEM_TYPE,
-      rules: [{ kind: 'boolean', value: true, scope: 'conversation' }],
-      label: 'file edits'
-    }];
+      rules: [allowRule],
+      label: 'file edits (writes outside the project still prompt)'
+    });
+    return suggestions;
   }
 
   /**
@@ -153,9 +282,14 @@ class EditBase extends ContextItem {
    * @returns {import('juggler/context-item').ApprovalConfig} Approval config
    */
   _buildApprovalConfig(path, diffData) {
+    // When the target is outside the project root + allowed paths, make that
+    // unmistakable: show the full absolute path as the title (not `./`-prefixed,
+    // which would read as project-relative) and a warning message. This is
+    // exactly the case #24 needed the user to notice.
+    const outOfRoot = path && !this._isPathAllowed(path);
     return {
-      title: formatDisplayPath(path),
-      message: '',
+      title: outOfRoot ? path : formatDisplayPath(path),
+      message: outOfRoot ? `⚠ Write outside the project folder: ${path}` : '',
       display: {
         diffData: {
           oldContent: diffData.oldContent,

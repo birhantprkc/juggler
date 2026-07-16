@@ -53,7 +53,7 @@ class ReplaceTextContextItem extends EditBase {
       properties: {
         file_path: {
           type: 'string',
-          description: 'The absolute path to the file to modify'
+          description: 'The absolute path to the file to modify. Must be inside the working directory unless the user explicitly asked for a location outside it.'
         },
         old_string: {
           type: 'string',
@@ -223,9 +223,15 @@ class ReplaceTextContextItem extends EditBase {
     // Normalize params (may have been passed raw toolInput)
     const normalizedParams = this._normalizeParams(/** @type {Record<string, any>} */ (params));
 
+    // Carry the allowed-paths grant and mark an out-of-root target as approved so
+    // the backend's defence-in-depth check admits the edit (see EditBase._authorizeWrite).
+    const { params: sendParams, allowedPaths } = this._authorizeWrite(normalizedParams);
+
     // Call typed ops API
     const result = await editFile(
-      /** @type {import('../../../js/services/ops-api.js').ReadFileEditParams} */ (normalizedParams)
+      /** @type {import('../../../js/services/ops-api.js').ReadFileEditParams} */ (sendParams),
+      this.signal,
+      allowedPaths
     );
 
     return result;

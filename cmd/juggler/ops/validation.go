@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 
@@ -308,6 +309,76 @@ func pathWithinRoot(absPath, root string) bool {
 	}
 	return strings.HasPrefix(absPath+string(filepath.Separator), root) ||
 		strings.HasPrefix(absPath, root)
+}
+
+// pathWithinRootFold is pathWithinRoot with case-insensitive comparison on
+// Windows (NTFS is case-insensitive by default, so C:\Proj and c:\proj are one
+// location). On POSIX platforms it is exactly pathWithinRoot. Both operands are
+// filepath.Clean'd first so native separators compare consistently.
+func pathWithinRootFold(absPath, root string) bool {
+	if runtime.GOOS == "windows" {
+		return pathWithinRoot(strings.ToLower(filepath.Clean(absPath)), strings.ToLower(filepath.Clean(root)))
+	}
+	return pathWithinRoot(absPath, root)
+}
+
+// canonicalizeRoot resolves a root to the same symlink-resolved absolute form as
+// resolveExistingPrefix produces for a target path, so the two compare like with
+// like. A blank root yields "" (ignored by callers).
+func canonicalizeRoot(root string) string {
+	if strings.TrimSpace(root) == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	} else if os.IsNotExist(err) {
+		return resolveExistingPrefix(abs)
+	}
+	return abs
+}
+
+// withinScope reports whether an already-sanitised absolute path resolves inside
+// the working directory OR any allowed root. This is the containment predicate
+// for the write/edit defence-in-depth check (see AuthorizeOutOfScopeWrite):
+// unlike reads, writes are approval-gated in JS and Sanitize does NOT enforce
+// containment, so this is a second, independent boundary. The path and every
+// root are canonicalised the same way as ValidateFilePathWithRoots so the prefix
+// test compares like with like; on Windows the comparison folds case.
+func (s PathScope) withinScope(absPath string) bool {
+	target := resolveExistingPrefix(absPath)
+	if root := canonicalizeRoot(s.root); root != "" && pathWithinRootFold(target, root) {
+		return true
+	}
+	for _, extra := range s.allowedRoots {
+		if root := canonicalizeRoot(extra); root != "" && pathWithinRootFold(target, root) {
+			return true
+		}
+	}
+	return false
+}
+
+// AuthorizeOutOfScopeWrite enforces the write/edit defence-in-depth boundary. A
+// path inside the working directory or an allowed root is always fine. A path
+// OUTSIDE all of them may be written only when the request is explicitly marked
+// user-approved (approved==true) — which the JS layer sets solely on the
+// modal-approved execution path, never from a standing permission rule. This
+// keeps the "JS approval is the policy gate" contract while ensuring a JS bug
+// (or a direct, unapproved op call) can't silently write anywhere on disk.
+// Approved out-of-scope writes are logged for the audit trail (mirroring
+// ResolveUserInitiated). kind is "write" or "edit", used only in the message.
+func (s PathScope) AuthorizeOutOfScopeWrite(absPath, requestedPath, kind string, approved bool) error {
+	if s.withinScope(absPath) {
+		return nil
+	}
+	if !approved {
+		return fmt.Errorf("%s outside project scope requires explicit approval: %q", kind, requestedPath)
+	}
+	jlog.Info("ops: out-of-scope %s approved: %s", kind, absPath)
+	return nil
 }
 
 // ValidateSearchPattern validates a search/grep pattern

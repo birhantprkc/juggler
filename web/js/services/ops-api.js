@@ -102,6 +102,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {string} path - File path (relative to project root, or absolute — JS approval is the gate)
  * @property {string} content - Content to write (max 10MB)
  * @property {boolean} [dryRun] - If true, validate path/parent/writability without modifying the file (used for pre-approval feasibility check)
+ * @property {boolean} [outOfRootApproved] - Marks a write outside the project root + allowed paths as user-approved, satisfying the backend's defence-in-depth check (set only on the modal-approved execution path)
  */
 
 /**
@@ -131,6 +132,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {string} [replace] - Content to replace with (alternative alias)
  * @property {boolean} [dryRun] - If true, return full file content for diff preview without writing
  * @property {boolean} [replace_all] - If true, replace all exact occurrences of old_str
+ * @property {boolean} [outOfRootApproved] - Marks an out-of-scope edit as user-approved for the backend defence-in-depth check (set only on the modal-approved execution path)
  */
 
 /**
@@ -169,6 +171,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {number} [contextLine] - Line number for context validation
  * @property {string} [contextText] - Expected text at context line
  * @property {boolean} [dryRun] - If true, validate but don't write (returns oldContent)
+ * @property {boolean} [outOfRootApproved] - Marks an out-of-scope edit as user-approved for the backend defence-in-depth check (set only on the modal-approved execution path)
  */
 
 /**
@@ -422,9 +425,14 @@ export async function readFileLoad(params, signal, allowedPaths) {
 /**
  * Write content to a file (creates or overwrites)
  * @param {ReadFileWriteParams} params
+ * @param {AbortSignal} [signal] - Abort signal for cancellation
+ * @param {string[]} [allowedPaths] - Standing allowed-paths grant (top-level
+ *   transport). The backend assembles it into the write op's PathScope so a
+ *   user-granted out-of-project root counts as in-scope; combined with the
+ *   `outOfRootApproved` param it forms the write defence-in-depth boundary.
  * @returns {Promise<ReadFileWriteResult>} Write operation result with path and metadata
  */
-export async function writeFileOp(params) {
+export async function writeFileOp(params, signal, allowedPaths) {
   if (!params.path) {
     throw new TypeError('path is required');
   }
@@ -434,15 +442,17 @@ export async function writeFileOp(params) {
   if (typeof params.content !== 'string') {
     throw new TypeError('content must be a string');
   }
-  return callOp('read-file', 'writeFile', params);
+  return callOp('read-file', 'writeFile', params, signal, allowedPaths);
 }
 
 /**
  * Edit file using search-and-replace
  * @param {ReadFileEditParams} params
+ * @param {AbortSignal} [signal] - Abort signal for cancellation
+ * @param {string[]} [allowedPaths] - Standing allowed-paths grant (top-level transport; see writeFileOp)
  * @returns {Promise<ReadFileEditResult>} Edit operation result with file metadata
  */
-export async function readFileEdit(params) {
+export async function readFileEdit(params, signal, allowedPaths) {
   if (!params.path) {
     throw new TypeError('path is required');
   }
@@ -454,15 +464,17 @@ export async function readFileEdit(params) {
   if (params.new_str === undefined && params.newContent === undefined && params.new === undefined && params.replacement === undefined && params.replace === undefined) {
     throw new TypeError('new_str (or alias: newContent, new, replacement, replace) is required');
   }
-  return callOp('read-file', 'editFile', params);
+  return callOp('read-file', 'editFile', params, signal, allowedPaths);
 }
 
 /**
  * Edit file by replacing a line range
  * @param {ReadFileEditLinesParams} params
+ * @param {AbortSignal} [signal] - Abort signal for cancellation
+ * @param {string[]} [allowedPaths] - Standing allowed-paths grant (top-level transport; see writeFileOp)
  * @returns {Promise<ReadFileEditLinesResult>} Line edit operation result with file metadata
  */
-export async function readFileEditLines(params) {
+export async function readFileEditLines(params, signal, allowedPaths) {
   if (!params.path) {
     throw new TypeError('path is required');
   }
@@ -483,7 +495,7 @@ export async function readFileEditLines(params) {
       throw new TypeError('newContent is required');
     }
   }
-  return callOp('read-file', 'editFileLines', params);
+  return callOp('read-file', 'editFileLines', params, signal, allowedPaths);
 }
 
 /**

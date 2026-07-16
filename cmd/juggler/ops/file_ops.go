@@ -322,30 +322,44 @@ func (ops *FileOperations) writeFile(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("failed to stat '%s': %w", path, statErr)
 	}
 
-	// Ensure parent directory exists (creating it under dryRun is fine — it
-	// would happen on the real write anyway, and we want dryRun to surface
-	// "cannot create parent" failures honestly).
-	parentDir := filepath.Dir(absPath)
-	if err := os.MkdirAll(parentDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create parent directory '%s': %w. Check file path and permissions", parentDir, err)
-	}
-
 	if dryRun {
-		// Probe writability by opening O_WRONLY|O_CREATE with the existing
-		// mode bits (or 0644 for new files), then close without modifying
-		// content. For new files we remove the empty placeholder so the
-		// dryRun is observably no-op.
-		mode := os.FileMode(0644)
+		// Side-effect-free validation: a dryRun must NOT touch the filesystem
+		// (issue #23 — the old probe created the parent tree and transiently
+		// O_CREATE'd the target pre-approval). We probe only what we can
+		// observe without mutating anything.
 		if fileExists {
-			mode = info.Mode()
-		}
-		f, err := os.OpenFile(absPath, os.O_WRONLY|os.O_CREATE, mode)
-		if err != nil {
-			return nil, fmt.Errorf("cannot write '%s': %w", path, err)
-		}
-		_ = f.Close()
-		if !fileExists {
-			_ = os.Remove(absPath)
+			// Existing file: open O_WRONLY (no O_CREATE, no O_TRUNC) to check
+			// writability. This modifies neither content, mode, nor mtime.
+			f, openErr := os.OpenFile(absPath, os.O_WRONLY, 0)
+			if openErr != nil {
+				return nil, fmt.Errorf("cannot write '%s': %w", path, openErr)
+			}
+			_ = f.Close()
+		} else {
+			// New file: walk up to the nearest existing ancestor and require
+			// it to be a directory. We deliberately do NOT create parents or
+			// probe with O_CREATE — a lexical/stat check can't prove
+			// writability portably (Windows ACLs), so we accept that some
+			// permission failures surface only at the real (post-approval)
+			// write. That trade beats the old probe's side effects.
+			ancestor := filepath.Dir(absPath)
+			for {
+				ancestorInfo, statErr := os.Stat(ancestor)
+				if statErr == nil {
+					if !ancestorInfo.IsDir() {
+						return nil, fmt.Errorf("cannot write '%s': parent path '%s' is not a directory", path, ancestor)
+					}
+					break
+				}
+				if !os.IsNotExist(statErr) {
+					return nil, fmt.Errorf("cannot write '%s': %w", path, statErr)
+				}
+				parent := filepath.Dir(ancestor)
+				if parent == ancestor {
+					break // reached the filesystem root without finding a real dir
+				}
+				ancestor = parent
+			}
 		}
 		return map[string]any{
 			"path":    path,
@@ -353,6 +367,23 @@ func (ops *FileOperations) writeFile(params map[string]any) (any, error) {
 			"size":    len(content),
 			"dryRun":  true,
 		}, nil
+	}
+
+	// Defence in depth: a real (non-dryRun) write to a path outside the working
+	// directory and every allowed root is refused unless the request is
+	// explicitly marked user-approved. The JS approval flow is the primary gate;
+	// this ensures a JS bug can't silently write anywhere on disk.
+	approved, _ := params["outOfRootApproved"].(bool)
+	if err := ops.scope.AuthorizeOutOfScopeWrite(absPath, path, "write", approved); err != nil {
+		return nil, err
+	}
+
+	// Ensure parent directory exists. This runs only on the real
+	// (post-approval) write — never during dryRun — so pre-approval validation
+	// leaves no directories behind.
+	parentDir := filepath.Dir(absPath)
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create parent directory '%s': %w. Check file path and permissions", parentDir, err)
 	}
 
 	// Write file, preserving the existing file's permissions on a full rewrite
@@ -514,6 +545,14 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 			"matchStrategy": matchStrategy,
 			"dryRun":        true,
 		}, nil
+	}
+
+	// Defence in depth: refuse an out-of-scope edit unless explicitly approved
+	// (see writeFile and AuthorizeOutOfScopeWrite). Runs only on the real write —
+	// the dryRun feasibility probe above already returned.
+	approved, _ := params["outOfRootApproved"].(bool)
+	if err := ops.scope.AuthorizeOutOfScopeWrite(absPath, path, "edit", approved); err != nil {
+		return nil, err
 	}
 
 	// Write updated content
@@ -684,6 +723,14 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 			"newContent": newFileContent,    // Full new file with edits applied
 			"dryRun":     true,
 		}, nil
+	}
+
+	// Defence in depth: refuse an out-of-scope edit unless explicitly approved
+	// (see writeFile and AuthorizeOutOfScopeWrite). Runs only on the real write —
+	// the dryRun feasibility probe above already returned.
+	approved, _ := params["outOfRootApproved"].(bool)
+	if err := ops.scope.AuthorizeOutOfScopeWrite(absPath, path, "edit", approved); err != nil {
+		return nil, err
 	}
 
 	// Write updated content

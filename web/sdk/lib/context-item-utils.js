@@ -46,6 +46,11 @@ export function formatDisplayPath(path) {
   if (path.startsWith('/')) return path;
   // Paths already starting with ./ are shown as-is
   if (path.startsWith('./')) return path;
+  // Windows absolute paths are shown as-is: a drive-letter path (`C:\…` or
+  // `C:/…`) or a UNC path (`\\server\share`). Without this they'd get a `./`
+  // prefix and render as `./C:\build.bat` — reading as project-relative exactly
+  // when the user most needs to see it isn't (issue #24).
+  if (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')) return path;
   // Relative paths get ./ prefix
   return `./${path}`;
 }
@@ -63,16 +68,18 @@ export function formatDisplayPath(path) {
 export function formatPathForStatus(path, projectPath, maxLen = 40) {
   let p = path;
 
-  // Strip project root to get a relative path
+  // Strip project root to get a relative path. Strip either separator so a
+  // native Windows project path leaves no leading `\`.
   if (projectPath && p.startsWith(projectPath)) {
-    p = p.slice(projectPath.length).replace(/^\/+/, '');
+    p = p.slice(projectPath.length).replace(/^[/\\]+/, '');
   }
 
   // Truncate long paths from the start, preserving the tail
   if (p.length > maxLen) {
-    // Find a path separator near the truncation point to cut cleanly
+    // Find a path separator near the truncation point to cut cleanly (either
+    // `/` or a Windows `\`).
     const tail = p.slice(p.length - maxLen);
-    const sepIdx = tail.indexOf('/');
+    const sepIdx = tail.search(/[/\\]/);
     p = '\u2026/' + (sepIdx >= 0 ? tail.slice(sepIdx + 1) : tail);
   }
 

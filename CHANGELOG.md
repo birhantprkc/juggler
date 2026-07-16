@@ -5,6 +5,11 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Write approvals now enforce project-path containment on all platforms
+- Writes outside the project folder always prompt, with a clear warning
+- Pre-approval write validation no longer creates directories or files
+- Windows absolute paths now display correctly in approval dialogs
+
 ## [0.4.0] - 2026-07-16
 
 - Added per-model thinking-level control to the model chooser
