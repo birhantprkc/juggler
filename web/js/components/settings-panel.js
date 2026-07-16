@@ -1373,7 +1373,7 @@ class SettingsPanel extends HTMLElement {
     infoColumn.className = 'provider-info';
     const nameLabel = document.createElement('div');
     nameLabel.className = 'provider-name';
-    nameLabel.textContent = 'New conversations use';
+    nameLabel.textContent = 'Default model for new conversations';
     infoColumn.appendChild(nameLabel);
 
     const controlColumn = document.createElement('div');
