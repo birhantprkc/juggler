@@ -369,6 +369,9 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/user-commands/{scope}/{name}", s.userCommandsAPI.HandlePut).Methods("PUT")
 	api.HandleFunc("/user-commands/{scope}/{name}", s.userCommandsAPI.HandleDelete).Methods("DELETE")
 
+	api.HandleFunc("/skills", s.skillsAPI.HandleList).Methods("GET")
+	api.HandleFunc("/skills/{scope}/{source}/{name}", s.skillsAPI.HandleGet).Methods("GET")
+
 	api.HandleFunc("/version", s.handleVersion).Methods("GET")
 	api.HandleFunc("/update-status", s.handleUpdateStatus).Methods("GET")
 

@@ -7,6 +7,7 @@ import strategyRegistry from './strategy-registry.js';
 import commandRegistry from './command-registry.js';
 import { resetExtensionsCache } from '../services/extensions.js';
 import { resetUserCommandsCache } from '../services/user-commands.js';
+import { resetSkillsCache } from '../services/skills.js';
 import { markRegistriesReady } from './registry-ready.js';
 
 /**
@@ -88,6 +89,7 @@ export async function initAllRegistries() {
 async function rebuildRegistriesNow() {
   resetExtensionsCache();
   resetUserCommandsCache();
+  resetSkillsCache();
   strategyRegistry.reset();
   contextItemRegistry.reset();
   commandRegistry.reset();

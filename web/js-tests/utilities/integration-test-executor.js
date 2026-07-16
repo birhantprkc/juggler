@@ -72,6 +72,7 @@ import { runTests as runMemoryFormatTests } from '../unit-tests/memory-format-te
 import { runTests as runMemoryItemTests } from '../unit-tests/memory-item-test.js';
 import { runTests as runMemorySeedTests } from '../unit-tests/memory-seed-test.js';
 import { runTests as runMemorySystemPromptTests } from '../unit-tests/memory-system-prompt-test.js';
+import { runTests as runSkillItemTests } from '../unit-tests/skill-item-test.js';
 import { runTests as runSystemPromptBuilderTests } from '../unit-tests/system-prompt-builder-test.js';
 import { runTests as runSystemPromptContextItemTests } from '../unit-tests/system-prompt-context-item-test.js';
 import { runTests as runSystemPromptRegistryTests } from '../unit-tests/system-prompt-registry-test.js';
@@ -243,6 +244,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:memory-item', run: runMemoryItemTests },
   { name: 'unit:memory-seed', run: runMemorySeedTests },
   { name: 'unit:memory-system-prompt', run: runMemorySystemPromptTests },
+  { name: 'unit:skill-item', run: runSkillItemTests },
   { name: 'unit:system-prompt-builder', run: runSystemPromptBuilderTests },
   { name: 'unit:system-prompt-context-item', run: runSystemPromptContextItemTests },
   { name: 'unit:system-prompt-registry', run: runSystemPromptRegistryTests },

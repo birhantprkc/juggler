@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added Agent Skills: discovery across native roots, plus a skill tool to load them on demand
 - Added ACP client support
 - Made sure .md files are previewed as markdown, not syntax-highlighted text
 - Followed XDG Base Directory spec for config/cache on Linux

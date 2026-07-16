@@ -343,40 +343,14 @@ func discoverCommands(dir, scope string) []UserCommand {
 // dependency-free and tolerant of the Claude-Code `.claude/commands` format on
 // import (unknown keys are ignored; `argument-hint` maps to argsHint).
 func parseCommandFile(data []byte) (UserCommandFrontmatter, string, error) {
-	text := strings.ReplaceAll(string(data), "\r\n", "\n")
 	var fm UserCommandFrontmatter
-
-	lines := strings.Split(text, "\n")
-	if len(lines) == 0 || strings.TrimRight(lines[0], " \t") != "---" {
-		return fm, strings.TrimLeft(text, "\n"), fmt.Errorf("missing YAML frontmatter (file must begin with a --- line)")
+	fmLines, body, err := splitFrontmatter(data)
+	if err != nil {
+		return fm, body, err
 	}
-	closeIdx := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimRight(lines[i], " \t") == "---" {
-			closeIdx = i
-			break
-		}
-	}
-	if closeIdx < 0 {
-		return fm, "", fmt.Errorf("unterminated frontmatter (missing closing --- line)")
-	}
-
-	for _, line := range lines[1:closeIdx] {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		colon := strings.Index(line, ":")
-		if colon < 0 {
-			continue
-		}
-		key := strings.TrimSpace(line[:colon])
-		value := unquoteScalar(strings.TrimSpace(line[colon+1:]))
+	scanFrontmatterFields(fmLines, func(key, value string) {
 		assignFrontmatterField(&fm, key, value)
-	}
-
-	body := strings.Join(lines[closeIdx+1:], "\n")
-	body = strings.TrimPrefix(body, "\n")
+	})
 	return fm, body, nil
 }
 

@@ -97,6 +97,7 @@ type Server struct {
 	gitStatusAPI      *handlers.GitStatusAPI
 	extensionsAPI     *handlers.ExtensionsAPI
 	userCommandsAPI   *handlers.UserCommandsAPI
+	skillsAPI         *handlers.SkillsAPI
 	configAPI         *handlers.ConfigAPI
 	defaultModelStore *core.DefaultModelStore
 	recentsStore      *core.RecentsStore
@@ -278,6 +279,7 @@ func New(cfg Config) (*Server, error) {
 	s.gitStatusAPI = handlers.NewGitStatusAPI(s.ProjectPath)
 	s.extensionsAPI = extensionsAPI
 	s.userCommandsAPI = handlers.NewUserCommandsAPI(s.ProjectPath)
+	s.skillsAPI = handlers.NewSkillsAPI(s.ProjectPath)
 	s.configAPI = configAPI
 	s.defaultModelStore = defaultModelStore
 	s.systemPromptPresetStore = systemPromptPresetStore
