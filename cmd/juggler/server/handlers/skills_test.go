@@ -18,12 +18,15 @@ import (
 )
 
 // newTestSkillsAPI builds a SkillsAPI with fully isolated roots: JUGGLER_CONFIG_DIR
-// relocates the user-juggler root and HOME relocates the user-agents root, so a
-// test never reads or writes the developer's real ~/.juggler or ~/.agents.
+// relocates the user-juggler root, and HOME + USERPROFILE relocate the user-agents
+// root (os.UserHomeDir reads USERPROFILE on Windows, HOME elsewhere), so a test
+// never reads or writes the developer's real ~/.juggler or ~/.agents.
 func newTestSkillsAPI(t *testing.T, projectDir string) *SkillsAPI {
 	t.Helper()
 	t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir reads USERPROFILE, not HOME
 	return NewSkillsAPI(func() string { return projectDir })
 }
 
