@@ -24,6 +24,7 @@ import (
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/mcp"
 	"juggler/cmd/juggler/ops"
+	"juggler/cmd/juggler/providers/acp"
 	"juggler/cmd/juggler/providers/anthropic"
 	"juggler/cmd/juggler/providers/claudecode"
 	"juggler/cmd/juggler/providers/deepseek"
@@ -119,6 +120,7 @@ func Run(cfg Config) int {
 
 	ops.RegisterAll()
 	mcp.Register()
+	acp.RegisterOps()
 	registerProviders()
 
 	// Self-terminate if our parent dies, so a server spawned by juggler-app (or
@@ -140,6 +142,7 @@ func Run(cfg Config) int {
 // registerProviders registers every built-in provider with the global registry.
 // Called once at startup. Tests that want a subset compose their own calls.
 func registerProviders() {
+	acp.Register()
 	anthropic.Register()
 	claudecode.Register()
 	deepseek.Register()

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/providers/acp"
 	"juggler/cmd/juggler/providers/anthropic"
 	"juggler/cmd/juggler/providers/claudecode"
 	"juggler/cmd/juggler/providers/deepseek"
@@ -46,6 +47,7 @@ import (
 // binary's startup; kept in sync explicitly so juggler-test reports the same
 // model set the runtime serves.
 func registerProviders() {
+	acp.Register()
 	anthropic.Register()
 	claudecode.Register()
 	deepseek.Register()

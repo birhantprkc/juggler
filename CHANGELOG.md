@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added ACP client support
 - Made sure .md files are previewed as markdown, not syntax-highlighted text
 - Followed XDG Base Directory spec for config/cache on Linux
 

@@ -32,7 +32,19 @@ import {
   mcpSetConfig,
   mcpServerControl,
   mcpGetLog,
+  acpListAgents,
+  acpGetConfig,
+  acpSetConfig,
 } from '../services/ops-api.js';
+import {
+  ConfigTabController,
+  configFormToConfig,
+  upsertConfigEntry,
+  deleteConfigEntry,
+  setConfigEntryEnabled,
+  configScopeOf,
+  makeNameValidator,
+} from './config-tab.js';
 
 /** Polling interval (ms) for refreshing the Connectivity tab while it's open. */
 const CONNECTIVITY_POLL_MS = 2000;
@@ -136,6 +148,9 @@ async function loadQRCodeSVG(host, url) {
 /** Polling interval (ms) for refreshing the MCP servers tab while it's open. */
 const MCP_POLL_MS = 2000;
 
+/** Polling interval (ms) for refreshing the ACP agents tab while it's open. */
+const ACP_POLL_MS = 3000;
+
 /**
  * One MCP server's config entry, as stored in a scope's mcp.json map.
  * @typedef {object} McpServerConfig
@@ -162,97 +177,178 @@ export function formatMcpTokenCost(status) {
   return `${n} tool${n === 1 ? '' : 's'}${t ? ` · ~${tok} tokens/request` : ''}`;
 }
 
+// The MCP servers and ACP agents tabs manage the same shape — a scope-keyed map
+// of {command, args, env, enabled} subprocess entries — so their config helpers
+// are shared generics from config-tab.js (see ConfigTabController). These named
+// aliases keep the public surface the unit tests import; each tab differs only
+// in its name validator, spelled out below.
+
+export const mcpFormToConfig = configFormToConfig;
+export const mcpUpsertMap = upsertConfigEntry;
+export const mcpDeleteMap = deleteConfigEntry;
+export const mcpSetEnabledMap = setConfigEntryEnabled;
+export const mcpScopeOf = configScopeOf;
+
+export const acpFormToConfig = configFormToConfig;
+export const acpUpsertMap = upsertConfigEntry;
+export const acpDeleteMap = deleteConfigEntry;
+export const acpSetEnabledMap = setConfigEntryEnabled;
+export const acpScopeOf = configScopeOf;
+
 /**
  * Validate a proposed MCP server name. Names become part of the LLM tool id
- * (`mcp__<name>__<tool>`), so they must be non-empty, free of whitespace and
- * slashes, unique within their scope, and not collide with the built-in
- * `juggler` prefix used by the CLI bridge.
- * @param {string} name - The proposed name (already trimmed by the caller is fine)
- * @param {string[]} [existingNames] - Names already used in the target scope
- * @returns {string} An error message, or '' when the name is valid.
+ * (`mcp__<name>__<tool>`), so "juggler" is reserved for the built-in CLI bridge.
+ * @type {(name: string, existingNames?: string[]) => string}
  */
-export function validateMcpServerName(name, existingNames) {
-  const trimmed = (name || '').trim();
-  if (!trimmed) return 'Name is required.';
-  if (/\s/.test(trimmed)) return 'Name cannot contain spaces.';
-  if (trimmed.includes('/')) return 'Name cannot contain "/".';
-  if (trimmed === 'juggler') return '"juggler" is reserved for the built-in tools.';
-  if ((existingNames || []).includes(trimmed)) return `A server named "${trimmed}" already exists in this scope.`;
-  return '';
+export const validateMcpServerName = makeNameValidator({
+  article: 'A',
+  noun: 'server',
+  reserved: 'juggler',
+  reservedMsg: '"juggler" is reserved for the built-in tools.',
+});
+
+/**
+ * Validate a proposed ACP agent name. Names become the model id under the ACP
+ * provider — not a tool prefix — so no word is reserved (unlike MCP).
+ * @type {(name: string, existingNames?: string[]) => string}
+ */
+export const validateAcpAgentName = makeNameValidator({ article: 'An', noun: 'agent' });
+
+/**
+ * Map an ACP agent's status string to the shared MCP status-dot CSS class
+ * (reused for visual consistency): available→running (green), unavailable→
+ * failed (red), disabled→stopped (grey).
+ * @param {string} status
+ * @returns {'running'|'failed'|'stopped'} The dot class suffix.
+ */
+export function acpDotClass(status) {
+  if (status === 'available') return 'running';
+  if (status === 'unavailable') return 'failed';
+  return 'stopped';
 }
 
 /**
- * Convert the add/edit form's working state into a clean server config entry:
- * empty `args`/`env` are omitted, arg strings are kept verbatim (never split on
- * spaces), blank env keys are dropped, and `enabled` is coerced to a boolean.
- * @param {{command?: string, args?: string[], env?: Record<string,string>, enabled?: boolean}} form - The form's working state
- * @returns {McpServerConfig} The config entry to persist under the server's name.
+ * Best-effort: enable the "acp" provider and refresh the model selector, so a
+ * newly-added agent shows up in the picker immediately. Failure is non-fatal —
+ * the provider can still be toggled on manually in the Provider API Keys tab.
+ * @returns {Promise<void>}
  */
-export function mcpFormToConfig(form) {
-  /** @type {McpServerConfig} */
-  const entry = { command: (form.command || '').trim() };
-  const args = (form.args || []).filter((a) => a !== '' && a !== null && a !== undefined);
-  if (args.length) entry.args = args;
-  /** @type {Record<string, string>} */
-  const env = {};
-  for (const [k, v] of Object.entries(form.env || {})) {
-    const key = (k || '').trim();
-    if (key) env[key] = v === null || v === undefined ? '' : String(v);
+async function ensureAcpProviderEnabled() {
+  try {
+    await fetch('/api/config/provider-enabled', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'acp', enabled: true }),
+    });
+    const modelSelector = document.querySelector('model-selector');
+    if (modelSelector && /** @type {any} */ (modelSelector).refresh) {
+      await /** @type {any} */ (modelSelector).refresh();
+    }
+  } catch {
+    // Non-fatal: the ACP provider can still be enabled manually.
   }
-  if (Object.keys(env).length) entry.env = env;
-  entry.enabled = form.enabled !== false;
-  return entry;
 }
 
 /**
- * Produce the whole-scope map to write back after adding or replacing one
- * server. `mcpSetConfig` rewrites the entire file for a scope, so callers must
- * always send the full map — this clones the current one and sets one key.
- * @param {Record<string, McpServerConfig>} map - The current scope map
- * @param {string} name - Server name to add or replace
- * @param {McpServerConfig} entry - The server's config entry
- * @returns {Record<string, McpServerConfig>} A new map with `name` set to `entry`.
+ * Spec for the "MCP servers" tab: a stdio MCP server is a managed subprocess,
+ * so it reports live status, supports Restart and a stderr Log disclosure, and
+ * its name is a tool prefix (reserved-word validated). See {@link ConfigTabController}.
+ * @type {import('./config-tab.js').ConfigTabSpec}
  */
-export function mcpUpsertMap(map, name, entry) {
-  return { ...(map || {}), [name]: entry };
-}
+const MCP_SPEC = {
+  id: 'mcp',
+  noun: 'server',
+  formHostSelector: '#mcp-form',
+  pollMs: MCP_POLL_MS,
+  loadError: 'Failed to load MCP servers.',
+  ops: {
+    list: async () => (await mcpListServers()).servers || [],
+    getConfig: () => mcpGetConfig(),
+    setConfig: (scope, servers) => mcpSetConfig({ scope, servers }),
+    restart: (name) => mcpServerControl({ server: name, action: 'restart' }),
+    getLog: async (name) => (await mcpGetLog({ server: name })).log,
+  },
+  addLabel: 'Add server',
+  emptyText: 'No MCP servers yet. Add one to give the assistant extra tools — for example a filesystem, GitHub, or database server.',
+  // Importer seam: an "Import from…" button slots in next to Add later.
+  toolbarExtra: (toolbar) => {
+    const soon = document.createElement('span');
+    soon.className = 'mcp-import-soon';
+    soon.textContent = 'Importing from other apps is coming soon.';
+    toolbar.appendChild(soon);
+  },
+  validateName: validateMcpServerName,
+  dotClass: (s) => s.status || 'stopped',
+  dotTitle: (s) => s.status || 'stopped',
+  identityExtras: (s) => {
+    if (!s.serverName) return null;
+    const impl = document.createElement('span');
+    impl.className = 'mcp-impl';
+    impl.textContent = s.serverVersion ? `(${s.serverName} ${s.serverVersion})` : `(${s.serverName})`;
+    return impl;
+  },
+  describe: (s) => formatMcpTokenCost(s),
+  rowError: (s) => (s.status === 'failed' && s.error) ? (String(s.error).split('\n')[0] || '') : '',
+  deleteConfirm: (name) => ({
+    message: `Remove the MCP server "${name}"? Its tools will disappear from conversations.`,
+    title: 'Remove server',
+  }),
+  formAddTitle: 'Add MCP server',
+  namePlaceholder: 'name',
+  nameHintAdd: 'A short id — becomes the tool prefix (mcp__<name>__…). No spaces or “/”.',
+  nameHintEdit: 'Renaming means deleting and re-adding the server.',
+  commandPlaceholder: 'npx',
+  commandHint: 'The executable to launch (stdio transport).',
+  argFirstPlaceholder: '-y',
+  argRestPlaceholder: '@modelcontextprotocol/server-github',
+  envKeyPlaceholder: 'API_TOKEN',
+  saveFailMsg: 'Failed to save the server.',
+};
 
 /**
- * Produce the whole-scope map with one server removed.
- * @param {Record<string, McpServerConfig>} map - The current scope map
- * @param {string} name - Server name to delete
- * @returns {Record<string, McpServerConfig>} A new map without `name`.
+ * Spec for the "ACP agents" tab: an ACP agent is spawned per-conversation with
+ * no persistent process, so status is just PATH-resolvability (no Restart/Log),
+ * its name is a model id (no reserved word), and a successful save auto-enables
+ * the ACP provider. See {@link ConfigTabController}.
+ * @type {import('./config-tab.js').ConfigTabSpec}
  */
-export function mcpDeleteMap(map, name) {
-  const next = { ...(map || {}) };
-  delete next[name];
-  return next;
-}
-
-/**
- * Produce the whole-scope map with one server's `enabled` flag flipped, keeping
- * the rest of that server's config intact.
- * @param {Record<string, McpServerConfig>} map - The current scope map
- * @param {string} name - Server name to toggle
- * @param {boolean} enabled - Desired enabled state
- * @returns {Record<string, McpServerConfig>} A new map with the flag applied.
- */
-export function mcpSetEnabledMap(map, name, enabled) {
-  const src = map || {};
-  return { ...src, [name]: /** @type {McpServerConfig} */ ({ ...(src[name] || {}), enabled }) };
-}
-
-/**
- * Which scope a listed server is edited in: "project" when a project-scope
- * entry of that name exists (project overrides global), else "global".
- * @param {{global?: object, project?: object}} config - The mcpGetConfig result
- * @param {string} name - Server name
- * @returns {'global'|'project'} The scope that owns this server's config.
- */
-export function mcpScopeOf(config, name) {
-  const proj = (config && config.project) || {};
-  return Object.prototype.hasOwnProperty.call(proj, name) ? 'project' : 'global';
-}
+const ACP_SPEC = {
+  id: 'acp',
+  noun: 'agent',
+  formHostSelector: '#acp-form',
+  pollMs: ACP_POLL_MS,
+  loadError: 'Failed to load ACP agents.',
+  ops: {
+    list: async () => (await acpListAgents()).agents || [],
+    getConfig: () => acpGetConfig(),
+    setConfig: (scope, agents) => acpSetConfig({ scope, agents }),
+  },
+  addLabel: 'Add agent',
+  emptyText: 'No ACP agents yet. Add one — for example Gemini CLI in ACP mode — and it will appear as a model in the picker.',
+  validateName: validateAcpAgentName,
+  dotClass: (s) => acpDotClass(s.status),
+  dotTitle: (s) => s.status || 'unavailable',
+  describe: (s) => s.command || '(no command)',
+  rowError: (s) => (s.status === 'unavailable' && s.error) ? s.error : '',
+  deleteConfirm: (name) => ({
+    message: `Remove the ACP agent "${name}"? It will disappear from the model picker.`,
+    title: 'Remove agent',
+  }),
+  formAddTitle: 'Add ACP agent',
+  namePlaceholder: 'gemini',
+  nameHintAdd: 'A short id — becomes the model name in the picker. No spaces or “/”.',
+  nameHintEdit: 'Renaming means deleting and re-adding the agent.',
+  commandPlaceholder: 'gemini',
+  commandHint: 'The agent executable to launch (resolved on PATH).',
+  argFirstPlaceholder: '--experimental-acp',
+  argRestPlaceholder: 'value',
+  envKeyPlaceholder: 'API_KEY',
+  saveFailMsg: 'Failed to save the agent.',
+  // Provider AutoDetect is computed once at startup (sync.Once), so it won't
+  // notice an agent added mid-session; enabling the provider closes that gap.
+  // Only for an enabled agent — a disabled one adds nothing to the picker.
+  onAfterSave: async ({ enabled }) => { if (enabled) await ensureAcpProviderEnabled(); },
+};
 
 /**
  * SettingsPanel - Configuration panel
@@ -305,22 +401,10 @@ class SettingsPanel extends HTMLElement {
     this._onTabScroll = null;
     /** @type {ResizeObserver|null} @private */
     this._tabResizeObserver = null;
-    /** @type {number|undefined} @private - setInterval id for the MCP tab's status poll. */
-    this._mcpPollId = undefined;
-    /** @type {import('../services/ops-api.js').McpServerStatus[]} @private - Live server status (source of truth for rows). */
-    this._mcpServers = [];
-    /** @type {{global: Record<string, McpServerConfig>, project: Record<string, McpServerConfig>, hasProject: boolean}} @private - Raw per-scope config maps (source of truth for editing). */
-    this._mcpConfig = { global: {}, project: {}, hasProject: false };
-    /** @type {any} @private - null = list view; an object = the add/edit form's working state. */
-    this._mcpEditing = null;
-    /** @type {string} @private - Name whose stderr-log disclosure is open ('' = none). */
-    this._mcpLogFor = '';
-    /** @type {string|null} @private - Cached stderr text for the open log disclosure; null = still loading. */
-    this._mcpLogText = null;
-    /** @type {boolean} @private - True while an MCP refresh fetch is in flight (overlap guard). */
-    this._mcpBusy = false;
-    /** @type {string} @private - Inline error from the most recent MCP action, cleared on the next refresh/action. */
-    this._mcpError = '';
+    /** @type {ConfigTabController} @private - "MCP servers" tab (managed stdio subprocesses; Restart + Log). */
+    this._mcpTab = new ConfigTabController(this, MCP_SPEC);
+    /** @type {ConfigTabController} @private - "ACP agents" tab (per-conversation agents; no persistent process). */
+    this._acpTab = new ConfigTabController(this, ACP_SPEC);
     /** @type {(() => void)|null} @private - Live refresh of the MCP tab off the plugin-changed broadcast. */
     this._onMcpChanged = null;
   }
@@ -349,7 +433,7 @@ class SettingsPanel extends HTMLElement {
     // is a backstop for any missed broadcast.
     this._onMcpChanged = () => {
       if (this.currentTab === 'mcp' && this._hasLoadedOnce) {
-        this._refreshMcpServers();
+        this._mcpTab.refresh();
       }
     };
     wsService.on('plugin-changed', this._onMcpChanged);
@@ -360,8 +444,8 @@ class SettingsPanel extends HTMLElement {
     this._connectivityPollId = undefined;
     clearInterval(this._logsPollId);
     this._logsPollId = undefined;
-    clearInterval(this._mcpPollId);
-    this._mcpPollId = undefined;
+    this._mcpTab.stopPolling();
+    this._acpTab.stopPolling();
     if (this._releasePopupOpen) {
       this._releasePopupOpen();
       this._releasePopupOpen = null;
@@ -408,6 +492,7 @@ class SettingsPanel extends HTMLElement {
                         <button class="settings-tab" data-tab="connectivity">Connectivity</button>
                         <button class="settings-tab" data-tab="extensions">Extensions</button>
                         <button class="settings-tab" data-tab="mcp">MCP servers</button>
+                        <button class="settings-tab" data-tab="acp">ACP agents</button>
                         <button class="settings-tab" data-tab="notifications">Notifications</button>
                         <button class="settings-tab" data-tab="info-cards">Info cards</button>
                         <button class="settings-tab" data-tab="shortcuts">Keyboard shortcuts</button>
@@ -458,6 +543,15 @@ class SettingsPanel extends HTMLElement {
                             local subprocesses; their tools appear to the assistant with approval.
                         </p>
                         <div class="settings-form" id="mcp-form"></div>
+                    </section>
+
+                    <section class="settings-tab-content" id="tab-acp">
+                        <p class="settings-description">
+                            Drive external agents that speak the Agent Client Protocol (e.g. Gemini
+                            CLI, Zed agents). Each runs as a local subprocess and appears as a model
+                            in the picker under the ACP provider. The agent runs its own tool loop.
+                        </p>
+                        <div class="settings-form" id="acp-form"></div>
                     </section>
 
                     <section class="settings-tab-content" id="tab-connectivity">
@@ -630,8 +724,8 @@ class SettingsPanel extends HTMLElement {
     this._connectivityPollId = undefined;
     clearInterval(this._logsPollId);
     this._logsPollId = undefined;
-    clearInterval(this._mcpPollId);
-    this._mcpPollId = undefined;
+    this._mcpTab.stopPolling();
+    this._acpTab.stopPolling();
 
     if (tabName === 'connectivity' && this._hasLoadedOnce) {
       this.refreshConnectivity();
@@ -642,11 +736,11 @@ class SettingsPanel extends HTMLElement {
       this._openLogsTab();
       this._logsPollId = setInterval(() => this._pollLogTail(), LOGS_POLL_MS);
     } else if (tabName === 'mcp') {
-      // The MCP tab fetches its own data (via ops), so it works when opened
-      // directly. The poll catches starting→running/failed transitions even if
-      // a plugin-changed broadcast is missed.
-      this._refreshMcpServers();
-      this._mcpPollId = setInterval(() => this._refreshMcpServers(), MCP_POLL_MS);
+      // The MCP/ACP tabs fetch their own data (via ops), so they work when
+      // opened directly; each controller arms its own status poll while shown.
+      this._mcpTab.show();
+    } else if (tabName === 'acp') {
+      this._acpTab.show();
     }
   }
 
@@ -690,20 +784,17 @@ class SettingsPanel extends HTMLElement {
     this._connectivityPollId = undefined;
     clearInterval(this._logsPollId);
     this._logsPollId = undefined;
-    clearInterval(this._mcpPollId);
-    this._mcpPollId = undefined;
     if (this._releasePopupOpen) {
       this._releasePopupOpen();
       this._releasePopupOpen = null;
     }
 
-    // Drop any in-progress MCP add/edit form and open log/error so a reopen
-    // starts fresh at the list — the generic text-input clear below would
-    // otherwise blank the form's fields while leaving its working state set.
-    this._mcpEditing = null;
-    this._mcpLogFor = '';
-    this._mcpLogText = null;
-    this._mcpError = '';
+    // Stop each config tab's poll and drop any in-progress add/edit form and
+    // open log/error so a reopen starts fresh at the list — the generic
+    // text-input clear below would otherwise blank the form's fields while
+    // leaving its working state set.
+    this._mcpTab.close();
+    this._acpTab.close();
 
     // Clear any unsaved input fields and update buttons
     const inputs = this.querySelectorAll('input[type="text"]');
@@ -2802,700 +2893,6 @@ class SettingsPanel extends HTMLElement {
         );
       }
     }
-  }
-
-  // ==========================================================================
-  // MCP servers tab
-  // ==========================================================================
-
-  /**
-   * Fetch live status (source of truth for rows) and the raw per-scope config
-   * (source of truth for editing) together, then re-render the list. Overlapping
-   * poll/broadcast ticks are guarded; while the add/edit form is open the fetched
-   * data is refreshed silently but the form is left untouched so a later Cancel
-   * returns to a fresh list.
-   * @private
-   */
-  async _refreshMcpServers() {
-    if (this._mcpBusy) return;
-    this._mcpBusy = true;
-    try {
-      const [list, cfg] = await Promise.all([mcpListServers(), mcpGetConfig()]);
-      this._mcpServers = (list && list.servers) || [];
-      this._mcpConfig = {
-        global: /** @type {Record<string, McpServerConfig>} */ ((cfg && cfg.global) || {}),
-        project: /** @type {Record<string, McpServerConfig>} */ ((cfg && cfg.project) || {}),
-        hasProject: !!(cfg && cfg.hasProject),
-      };
-      this._mcpError = '';
-    } catch (e) {
-      // Keep the last known state; surface an inline banner instead of throwing.
-      this._mcpError = e instanceof Error ? e.message : 'Failed to load MCP servers.';
-    } finally {
-      this._mcpBusy = false;
-    }
-    if (!this._mcpEditing) this._renderMcpTab();
-  }
-
-  /**
-   * Render the MCP tab: the add/edit form when one is open, else the list.
-   * @private
-   */
-  _renderMcpTab() {
-    const host = /** @type {HTMLElement|null} */ (this.querySelector('#mcp-form'));
-    if (!host) return;
-    host.innerHTML = '';
-    if (this._mcpEditing) {
-      host.appendChild(this._buildMcpForm());
-      return;
-    }
-    if (this._mcpError) host.appendChild(this._buildMcpErrorBanner(this._mcpError));
-    this._renderMcpList(host);
-  }
-
-  /**
-   * Build a dismissible-looking inline error banner (styled like an error hint).
-   * @param {string} message
-   * @returns {HTMLElement} The banner element.
-   * @private
-   */
-  _buildMcpErrorBanner(message) {
-    const banner = document.createElement('div');
-    banner.className = 'key-source-hint mcp-error-hint';
-    banner.style.display = 'block';
-    banner.textContent = message;
-    return banner;
-  }
-
-  /**
-   * Render the list view: a toolbar (Add server + importer seam), then either a
-   * friendly empty state or one row per configured server.
-   * @param {HTMLElement} host
-   * @private
-   */
-  _renderMcpList(host) {
-    const toolbar = document.createElement('div');
-    toolbar.className = 'mcp-toolbar';
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'settings-btn primary small';
-    addBtn.textContent = 'Add server';
-    addBtn.addEventListener('click', () => this._openMcpForm('add'));
-    toolbar.appendChild(addBtn);
-    // Importer seam: an "Import from…" button slots in here next to Add later.
-    const soon = document.createElement('span');
-    soon.className = 'mcp-import-soon';
-    soon.textContent = 'Importing from other apps is coming soon.';
-    toolbar.appendChild(soon);
-    host.appendChild(toolbar);
-
-    const servers = this._mcpServers || [];
-    const hasAny = servers.length
-      || Object.keys(this._mcpConfig.global).length
-      || Object.keys(this._mcpConfig.project).length;
-    if (!hasAny) {
-      const hint = document.createElement('div');
-      hint.className = 'key-source-hint mcp-empty';
-      hint.style.display = 'block';
-      hint.textContent = 'No MCP servers yet. Add one to give the assistant extra tools — for example a filesystem, GitHub, or database server.';
-      host.appendChild(hint);
-      return;
-    }
-
-    const list = document.createElement('div');
-    list.className = 'mcp-list';
-    for (const s of servers) this._buildMcpRow(s, list);
-    host.appendChild(list);
-  }
-
-  /**
-   * Build one server row (status dot, name, tokens, scope chip, controls) and
-   * append it to `list`; when this server's log disclosure is open, a stderr
-   * <pre> is appended right after it.
-   * @param {import('../services/ops-api.js').McpServerStatus} status
-   * @param {HTMLElement} list
-   * @private
-   */
-  _buildMcpRow(status, list) {
-    const name = status.name;
-    const scope = mcpScopeOf(this._mcpConfig, name);
-    const enabled = status.enabled !== false;
-
-    const row = document.createElement('div');
-    row.className = 'settings-group provider-field mcp-row';
-    if (!enabled) row.classList.add('mcp-row-disabled');
-
-    // Left: status + identity + token cost.
-    const info = document.createElement('div');
-    info.className = 'provider-info';
-
-    const nameRow = document.createElement('div');
-    nameRow.className = 'provider-name mcp-name-row';
-    const dot = document.createElement('span');
-    dot.className = `mcp-status-dot status-${status.status || 'stopped'}`;
-    dot.title = status.status || 'stopped';
-    nameRow.appendChild(dot);
-    const nameText = document.createElement('span');
-    nameText.textContent = name;
-    nameRow.appendChild(nameText);
-    if (status.serverName) {
-      const impl = document.createElement('span');
-      impl.className = 'mcp-impl';
-      impl.textContent = status.serverVersion ? `(${status.serverName} ${status.serverVersion})` : `(${status.serverName})`;
-      nameRow.appendChild(impl);
-    }
-    const chip = document.createElement('span');
-    chip.className = 'mcp-scope-chip';
-    chip.textContent = scope === 'project' ? 'project' : 'global';
-    nameRow.appendChild(chip);
-    info.appendChild(nameRow);
-
-    const desc = document.createElement('div');
-    desc.className = 'provider-description';
-    desc.textContent = formatMcpTokenCost(status);
-    info.appendChild(desc);
-
-    if (status.status === 'failed' && status.error) {
-      const err = document.createElement('div');
-      err.className = 'key-source-hint mcp-error-hint';
-      err.style.display = 'block';
-      err.textContent = String(status.error).split('\n')[0] || '';
-      info.appendChild(err);
-    }
-
-    // Right: enable toggle + action buttons.
-    const ctrl = document.createElement('div');
-    ctrl.className = 'provider-control mcp-controls';
-
-    const toggle = document.createElement('label');
-    toggle.className = 'mcp-toggle-wrap';
-    toggle.title = enabled ? 'Enabled' : 'Disabled';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.className = 'provider-toggle';
-    cb.checked = enabled;
-    cb.addEventListener('change', () => this._setMcpEnabled(scope, name, cb.checked));
-    const sw = document.createElement('span');
-    sw.className = 'toggle-switch';
-    toggle.appendChild(cb);
-    toggle.appendChild(sw);
-    ctrl.appendChild(toggle);
-
-    const btnRow = document.createElement('div');
-    btnRow.className = 'mcp-btn-row';
-
-    if (enabled) {
-      const restart = document.createElement('button');
-      restart.type = 'button';
-      restart.className = 'settings-btn small';
-      restart.textContent = 'Restart';
-      if (status.status === 'starting') restart.disabled = true;
-      restart.addEventListener('click', () => this._restartMcpServer(name, restart));
-      btnRow.appendChild(restart);
-    }
-
-    const logsBtn = document.createElement('button');
-    logsBtn.type = 'button';
-    logsBtn.className = 'settings-btn small';
-    logsBtn.textContent = this._mcpLogFor === name ? 'Hide log' : 'Log';
-    logsBtn.addEventListener('click', () => this._toggleMcpLog(name));
-    btnRow.appendChild(logsBtn);
-
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.className = 'settings-btn small';
-    editBtn.textContent = 'Edit';
-    editBtn.addEventListener('click', () => this._openMcpForm('edit', status));
-    btnRow.appendChild(editBtn);
-
-    const delBtn = document.createElement('button');
-    delBtn.type = 'button';
-    delBtn.className = 'settings-btn danger small';
-    delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', () => this._confirmDeleteMcpServer(scope, name));
-    btnRow.appendChild(delBtn);
-
-    ctrl.appendChild(btnRow);
-
-    row.appendChild(info);
-    row.appendChild(ctrl);
-    list.appendChild(row);
-
-    if (this._mcpLogFor === name) {
-      const pre = document.createElement('pre');
-      pre.className = 'mcp-log-view';
-      pre.textContent = this._mcpLogText === null
-        ? 'Loading…'
-        : (this._mcpLogText || 'No output yet.');
-      list.appendChild(pre);
-    }
-  }
-
-  /**
-   * Restart a server's process (transient lifecycle — distinct from the durable
-   * enable/disable toggle), then refresh from authoritative state.
-   * @param {string} name
-   * @param {HTMLButtonElement} btn
-   * @private
-   */
-  async _restartMcpServer(name, btn) {
-    btn.disabled = true;
-    btn.textContent = 'Restarting…';
-    this._mcpError = '';
-    try {
-      await mcpServerControl({ server: name, action: 'restart' });
-    } catch (e) {
-      this._mcpError = e instanceof Error ? e.message : `Failed to restart "${name}".`;
-    }
-    await this._refreshMcpServers();
-  }
-
-  /**
-   * Toggle a server's stderr-log disclosure. Opening fetches the recent stderr
-   * once (bounded server-side) and renders it into a <pre>; re-opening closes it.
-   * @param {string} name
-   * @private
-   */
-  async _toggleMcpLog(name) {
-    if (this._mcpLogFor === name) {
-      this._mcpLogFor = '';
-      this._mcpLogText = null;
-      this._renderMcpTab();
-      return;
-    }
-    this._mcpLogFor = name;
-    this._mcpLogText = null; // loading
-    this._renderMcpTab();
-    try {
-      const { log } = await mcpGetLog({ server: name });
-      if (this._mcpLogFor === name) {
-        this._mcpLogText = log || '';
-        this._renderMcpTab();
-      }
-    } catch {
-      if (this._mcpLogFor === name) {
-        this._mcpLogText = '';
-        this._renderMcpTab();
-      }
-    }
-  }
-
-  /**
-   * Durable enable/disable: write the `enabled` flag into the scope map (whole
-   * map rewritten) and let the manager reconcile. Not a lifecycle action.
-   * @param {'global'|'project'} scope
-   * @param {string} name
-   * @param {boolean} enabled
-   * @private
-   */
-  async _setMcpEnabled(scope, name, enabled) {
-    this._mcpError = '';
-    const src = scope === 'project' ? this._mcpConfig.project : this._mcpConfig.global;
-    try {
-      await mcpSetConfig({ scope, servers: mcpSetEnabledMap(src, name, enabled) });
-    } catch (e) {
-      this._mcpError = e instanceof Error ? e.message : `Failed to update "${name}".`;
-    }
-    await this._refreshMcpServers();
-  }
-
-  /**
-   * Confirm, then delete a server from its scope map (whole map rewritten).
-   * @param {'global'|'project'} scope
-   * @param {string} name
-   * @private
-   */
-  async _confirmDeleteMcpServer(scope, name) {
-    const confirm = /** @type {any} */ (window).showConfirm;
-    if (typeof confirm === 'function') {
-      const ok = await confirm(`Remove the MCP server "${name}"? Its tools will disappear from conversations.`, 'Remove server', { confirmText: 'Remove', danger: true });
-      if (!ok) return;
-    }
-    this._mcpError = '';
-    const src = scope === 'project' ? this._mcpConfig.project : this._mcpConfig.global;
-    try {
-      await mcpSetConfig({ scope, servers: mcpDeleteMap(src, name) });
-    } catch (e) {
-      this._mcpError = e instanceof Error ? e.message : `Failed to remove "${name}".`;
-    }
-    if (this._mcpLogFor === name) { this._mcpLogFor = ''; this._mcpLogText = null; }
-    await this._refreshMcpServers();
-  }
-
-  /**
-   * Open the add/edit form by seeding `_mcpEditing` working state, then render.
-   * @param {'add'|'edit'} mode
-   * @param {import('../services/ops-api.js').McpServerStatus} [status] - The row's status (edit only)
-   * @private
-   */
-  _openMcpForm(mode, status) {
-    this._mcpError = '';
-    if (mode === 'edit' && status) {
-      const name = status.name;
-      const scope = mcpScopeOf(this._mcpConfig, name);
-      const cfg = /** @type {McpServerConfig} */ ((scope === 'project' ? this._mcpConfig.project : this._mcpConfig.global)[name] || {});
-      this._mcpEditing = {
-        mode: 'edit',
-        scope,
-        name,
-        command: cfg.command || '',
-        args: Array.isArray(cfg.args) ? cfg.args.slice() : [],
-        envPairs: Object.entries(cfg.env || {}).map(([key, value]) => ({ key, value: String(value) })),
-        enabled: cfg.enabled !== false,
-        error: '',
-      };
-    } else {
-      this._mcpEditing = {
-        mode: 'add',
-        scope: 'global',
-        name: '',
-        command: '',
-        args: [],
-        envPairs: [],
-        enabled: true,
-        error: '',
-      };
-    }
-    this._renderMcpTab();
-  }
-
-  /**
-   * Build the add/edit form element from `_mcpEditing`. Name and scope are
-   * read-only when editing (rename/move = delete + add in v1). Arg and env rows
-   * are repeatable; env values are masked with a per-field reveal toggle.
-   * @returns {HTMLElement} The form element to mount in the tab.
-   * @private
-   */
-  _buildMcpForm() {
-    const f = this._mcpEditing;
-    const wrap = document.createElement('div');
-    wrap.className = 'mcp-form';
-
-    const title = document.createElement('div');
-    title.className = 'settings-section-heading';
-    title.textContent = f.mode === 'edit' ? `Edit “${f.name}”` : 'Add MCP server';
-    wrap.appendChild(title);
-
-    // Name
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.className = 'mcp-input mcp-name-input';
-    nameInput.placeholder = 'name';
-    nameInput.value = f.name;
-    if (f.mode === 'edit') nameInput.readOnly = true;
-    wrap.appendChild(this._mcpFormField('Name', nameInput,
-      f.mode === 'edit' ? 'Renaming means deleting and re-adding the server.' : 'A short id — becomes the tool prefix (mcp__<name>__…). No spaces or “/”.'));
-
-    // Scope
-    const scopeSelect = document.createElement('select');
-    scopeSelect.className = 'mcp-input mcp-scope-input';
-    const optGlobal = document.createElement('option');
-    optGlobal.value = 'global';
-    optGlobal.textContent = 'Global (all projects)';
-    scopeSelect.appendChild(optGlobal);
-    if (this._mcpConfig.hasProject || f.scope === 'project') {
-      const optProject = document.createElement('option');
-      optProject.value = 'project';
-      optProject.textContent = 'This project only';
-      scopeSelect.appendChild(optProject);
-    }
-    scopeSelect.value = f.scope;
-    if (f.mode === 'edit') scopeSelect.disabled = true;
-    wrap.appendChild(this._mcpFormField('Scope', scopeSelect,
-      f.mode === 'edit' ? 'Moving scope means deleting and re-adding the server.' : ''));
-
-    // Command
-    const cmdInput = document.createElement('input');
-    cmdInput.type = 'text';
-    cmdInput.className = 'mcp-input mcp-command-input';
-    cmdInput.placeholder = 'npx';
-    cmdInput.value = f.command;
-    wrap.appendChild(this._mcpFormField('Command', cmdInput, 'The executable to launch (stdio transport).'));
-
-    // Arguments
-    const argsField = document.createElement('div');
-    argsField.className = 'mcp-form-field';
-    const argsLabel = document.createElement('label');
-    argsLabel.className = 'mcp-field-label';
-    argsLabel.textContent = 'Arguments';
-    argsField.appendChild(argsLabel);
-    const argsList = document.createElement('div');
-    argsList.className = 'mcp-args-list';
-    argsField.appendChild(argsList);
-    const addArg = document.createElement('button');
-    addArg.type = 'button';
-    addArg.className = 'settings-btn small mcp-add-row';
-    addArg.textContent = 'Add argument';
-    addArg.addEventListener('click', () => {
-      f.args = this._readMcpArgs();
-      f.args.push('');
-      this._renderMcpArgsList(argsList);
-    });
-    argsField.appendChild(addArg);
-    wrap.appendChild(argsField);
-    this._renderMcpArgsList(argsList);
-
-    // Environment variables
-    const envField = document.createElement('div');
-    envField.className = 'mcp-form-field';
-    const envLabel = document.createElement('label');
-    envLabel.className = 'mcp-field-label';
-    envLabel.textContent = 'Environment variables';
-    envField.appendChild(envLabel);
-    const envList = document.createElement('div');
-    envList.className = 'mcp-env-list';
-    envField.appendChild(envList);
-    const addEnv = document.createElement('button');
-    addEnv.type = 'button';
-    addEnv.className = 'settings-btn small mcp-add-row';
-    addEnv.textContent = 'Add variable';
-    addEnv.addEventListener('click', () => {
-      f.envPairs = this._readMcpEnvPairs();
-      f.envPairs.push({ key: '', value: '' });
-      this._renderMcpEnvList(envList);
-    });
-    envField.appendChild(addEnv);
-    wrap.appendChild(envField);
-    this._renderMcpEnvList(envList);
-
-    // Enabled
-    const enabledField = document.createElement('div');
-    enabledField.className = 'mcp-form-field mcp-enabled-field';
-    const enabledToggle = document.createElement('label');
-    enabledToggle.className = 'mcp-toggle-wrap';
-    const enabledCb = document.createElement('input');
-    enabledCb.type = 'checkbox';
-    enabledCb.className = 'provider-toggle mcp-enabled-input';
-    enabledCb.checked = f.enabled !== false;
-    const enabledSw = document.createElement('span');
-    enabledSw.className = 'toggle-switch';
-    enabledToggle.appendChild(enabledCb);
-    enabledToggle.appendChild(enabledSw);
-    const enabledText = document.createElement('span');
-    enabledText.className = 'mcp-field-label';
-    enabledText.textContent = 'Enabled';
-    enabledField.appendChild(enabledText);
-    enabledField.appendChild(enabledToggle);
-    wrap.appendChild(enabledField);
-
-    // Inline error
-    if (f.error) {
-      const err = document.createElement('div');
-      err.className = 'key-source-hint mcp-error-hint';
-      err.style.display = 'block';
-      err.textContent = f.error;
-      wrap.appendChild(err);
-    }
-
-    // Actions
-    const actions = document.createElement('div');
-    actions.className = 'mcp-form-actions';
-    const saveBtn = document.createElement('button');
-    saveBtn.type = 'button';
-    saveBtn.className = 'settings-btn primary small';
-    saveBtn.textContent = 'Save';
-    saveBtn.addEventListener('click', () => this._saveMcpForm());
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'settings-btn small';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => {
-      this._mcpEditing = null;
-      this._renderMcpTab();
-    });
-    actions.appendChild(cancelBtn);
-    actions.appendChild(saveBtn);
-    wrap.appendChild(actions);
-
-    return wrap;
-  }
-
-  /**
-   * Build a stacked "label + control (+ hint)" form field.
-   * @param {string} labelText
-   * @param {HTMLElement} control
-   * @param {string} [hintText]
-   * @returns {HTMLElement} The field wrapper element.
-   * @private
-   */
-  _mcpFormField(labelText, control, hintText) {
-    const field = document.createElement('div');
-    field.className = 'mcp-form-field';
-    const label = document.createElement('label');
-    label.className = 'mcp-field-label';
-    label.textContent = labelText;
-    field.appendChild(label);
-    field.appendChild(control);
-    if (hintText) {
-      const hint = document.createElement('div');
-      hint.className = 'mcp-field-hint';
-      hint.textContent = hintText;
-      field.appendChild(hint);
-    }
-    return field;
-  }
-
-  /**
-   * Rebuild the repeatable argument rows into `container` from `_mcpEditing.args`.
-   * @param {HTMLElement} container
-   * @private
-   */
-  _renderMcpArgsList(container) {
-    container.innerHTML = '';
-    /** @type {string[]} */
-    const args = this._mcpEditing.args || [];
-    args.forEach((arg, i) => {
-      const rowEl = document.createElement('div');
-      rowEl.className = 'mcp-repeat-row';
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'mcp-input mcp-arg-input';
-      input.placeholder = i === 0 ? '-y' : '@modelcontextprotocol/server-github';
-      input.value = arg;
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'mcp-remove-row';
-      remove.setAttribute('aria-label', 'Remove argument');
-      remove.textContent = '×';
-      remove.addEventListener('click', () => {
-        this._mcpEditing.args = this._readMcpArgs();
-        this._mcpEditing.args.splice(i, 1);
-        this._renderMcpArgsList(container);
-      });
-      rowEl.appendChild(input);
-      rowEl.appendChild(remove);
-      container.appendChild(rowEl);
-    });
-  }
-
-  /**
-   * Rebuild the repeatable env-var rows into `container` from
-   * `_mcpEditing.envPairs`. Value inputs are masked, with a per-row reveal.
-   * @param {HTMLElement} container
-   * @private
-   */
-  _renderMcpEnvList(container) {
-    container.innerHTML = '';
-    /** @type {Array<{key: string, value: string}>} */
-    const pairs = this._mcpEditing.envPairs || [];
-    pairs.forEach((pair, i) => {
-      const rowEl = document.createElement('div');
-      rowEl.className = 'mcp-repeat-row mcp-env-row';
-      const key = document.createElement('input');
-      key.type = 'text';
-      key.className = 'mcp-input mcp-env-key';
-      key.placeholder = 'API_TOKEN';
-      key.value = pair.key;
-      const value = document.createElement('input');
-      value.type = 'password';
-      value.className = 'mcp-input mcp-env-value';
-      value.placeholder = 'value';
-      value.value = pair.value;
-      value.autocomplete = 'off';
-      const reveal = document.createElement('button');
-      reveal.type = 'button';
-      reveal.className = 'mcp-reveal-btn';
-      reveal.setAttribute('aria-label', 'Reveal value');
-      reveal.textContent = '👁';
-      reveal.addEventListener('click', () => {
-        value.type = value.type === 'password' ? 'text' : 'password';
-      });
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'mcp-remove-row';
-      remove.setAttribute('aria-label', 'Remove variable');
-      remove.textContent = '×';
-      remove.addEventListener('click', () => {
-        this._mcpEditing.envPairs = this._readMcpEnvPairs();
-        this._mcpEditing.envPairs.splice(i, 1);
-        this._renderMcpEnvList(container);
-      });
-      rowEl.appendChild(key);
-      rowEl.appendChild(value);
-      rowEl.appendChild(reveal);
-      rowEl.appendChild(remove);
-      container.appendChild(rowEl);
-    });
-  }
-
-  /**
-   * Read the current argument inputs from the DOM (source of truth between
-   * add/remove operations).
-   * @returns {string[]} The current argument values in row order.
-   * @private
-   */
-  _readMcpArgs() {
-    return Array.from(this.querySelectorAll('.mcp-arg-input'))
-      .map((el) => /** @type {HTMLInputElement} */ (el).value);
-  }
-
-  /**
-   * Read the current env key/value rows from the DOM.
-   * @returns {Array<{key: string, value: string}>} The current env pairs in row order.
-   * @private
-   */
-  _readMcpEnvPairs() {
-    return Array.from(this.querySelectorAll('.mcp-env-row')).map((rowEl) => ({
-      key: /** @type {HTMLInputElement} */ (rowEl.querySelector('.mcp-env-key')).value,
-      value: /** @type {HTMLInputElement} */ (rowEl.querySelector('.mcp-env-value')).value,
-    }));
-  }
-
-  /**
-   * Validate the form, build the config entry, write the whole scope map back,
-   * and (on success) return to a freshly-fetched list. On validation failure the
-   * form stays open with an inline error.
-   * @private
-   */
-  async _saveMcpForm() {
-    const f = this._mcpEditing;
-    if (!f) return;
-
-    // Read every field from the DOM so nothing is lost between row rebuilds.
-    const nameEl = /** @type {HTMLInputElement} */ (this.querySelector('.mcp-name-input'));
-    const scopeEl = /** @type {HTMLSelectElement} */ (this.querySelector('.mcp-scope-input'));
-    const cmdEl = /** @type {HTMLInputElement} */ (this.querySelector('.mcp-command-input'));
-    const enabledEl = /** @type {HTMLInputElement} */ (this.querySelector('.mcp-enabled-input'));
-    const name = f.mode === 'edit' ? f.name : (nameEl ? nameEl.value.trim() : '');
-    const scope = f.mode === 'edit' ? f.scope : (scopeEl ? /** @type {'global'|'project'} */ (scopeEl.value) : 'global');
-    const command = cmdEl ? cmdEl.value.trim() : '';
-    const args = this._readMcpArgs();
-    const envPairs = this._readMcpEnvPairs();
-    const enabled = enabledEl ? enabledEl.checked : true;
-
-    // Persist back into working state so a re-render (on error) keeps input.
-    f.command = command;
-    f.args = args;
-    f.envPairs = envPairs;
-    f.enabled = enabled;
-    if (f.mode !== 'edit') { f.name = name; f.scope = scope; }
-
-    // Validate.
-    if (f.mode !== 'edit') {
-      const targetMap = scope === 'project' ? this._mcpConfig.project : this._mcpConfig.global;
-      const err = validateMcpServerName(name, Object.keys(targetMap || {}));
-      if (err) { f.error = err; this._renderMcpTab(); return; }
-    }
-    if (!command) { f.error = 'Command is required.'; this._renderMcpTab(); return; }
-    for (const p of envPairs) {
-      if (!p.key.trim() && p.value) { f.error = 'Every environment variable needs a name.'; this._renderMcpTab(); return; }
-    }
-
-    /** @type {Record<string, string>} */
-    const env = {};
-    for (const p of envPairs) { const k = p.key.trim(); if (k) env[k] = p.value; }
-    const entry = mcpFormToConfig({ command, args, env, enabled });
-
-    const src = scope === 'project' ? this._mcpConfig.project : this._mcpConfig.global;
-    try {
-      await mcpSetConfig({ scope, servers: mcpUpsertMap(src, name, entry) });
-    } catch (e) {
-      f.error = e instanceof Error ? e.message : 'Failed to save the server.';
-      this._renderMcpTab();
-      return;
-    }
-    this._mcpEditing = null;
-    await this._refreshMcpServers();
   }
 
 }

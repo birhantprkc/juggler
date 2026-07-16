@@ -1236,3 +1236,48 @@ export async function mcpGetConfig(signal) {
 export async function mcpSetConfig(params, signal) {
   return callOp('mcp', 'setConfig', params, signal);
 }
+
+// ============================================================================
+// ACP (Agent Client Protocol) agent configuration
+// ============================================================================
+
+/**
+ * Status of one configured ACP agent. Agents are spawned per-conversation, so
+ * there is no persistent process — "status" is whether the command resolves on
+ * PATH right now.
+ * @typedef {object} AcpAgentStatus
+ * @property {string} name - Configured agent name (also its model id)
+ * @property {'available'|'unavailable'|'disabled'} status - Resolvability/enabled state
+ * @property {string} [error] - Why unavailable (missing/empty command)
+ * @property {boolean} enabled - Whether the agent is enabled in config
+ * @property {string} [command] - The configured launch command
+ */
+
+/**
+ * List configured ACP agents and their live (PATH-resolvable) status.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{agents: AcpAgentStatus[]}>} Configured agents and their status
+ */
+export async function acpListAgents(signal) {
+  return callOp('acp', 'listAgents', {}, signal);
+}
+
+/**
+ * Read the merged ACP config plus the raw per-file agent maps.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{merged: object, global: object, project: object, hasProject: boolean}>} Merged and per-file config
+ */
+export async function acpGetConfig(signal) {
+  return callOp('acp', 'getConfig', {}, signal);
+}
+
+/**
+ * Write agents to the global or project acp.json. Takes effect on the next turn
+ * (the provider reads config afresh when a conversation opens).
+ * @param {{scope?: 'global'|'project', agents: object}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{agents: AcpAgentStatus[]}>} Updated agent list
+ */
+export async function acpSetConfig(params, signal) {
+  return callOp('acp', 'setConfig', params, signal);
+}
