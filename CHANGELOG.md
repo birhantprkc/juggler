@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-17
+
 - Added a Skills marketplace to discover and install Agent Skills from GitHub registries
 - Made lots of fixes/improvements to skill handling and the skill-related items in a conversation
 - Bin now shows its on-disk size on the Bin button and Empty-Bin action
