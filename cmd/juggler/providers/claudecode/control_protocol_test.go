@@ -857,6 +857,47 @@ func TestMakeMCPMatchKey_DistinguishesRealDivergence(t *testing.T) {
 	}
 }
 
+// TestMakeMCPMatchKey_UnicodeEscapeInsensitive guards the second class of
+// benign regeneration drift seen in the logs: a string leaf that reached the
+// worker as a literal "\uXXXX" escape must canonicalise equal to the same leaf
+// carrying the actual rune (which is how the CLI parks it). Without the fold the
+// two are different Go strings, keys diverge, and delivery falls to the lossy
+// same-tool positional pairing (the "tool/request divergence" INFO/ERROR log).
+// Cases are the real payloads: '…', the BOM, '→', '≥', and an astral emoji
+// (surrogate pair). NOTE: the backtick literals are raw — the escaped-side
+// values contain a real backslash ("\\u2026" → the seven bytes \u2026 in JSON),
+// while the literal-side "\uXXXX" is decoded to a rune by json.Unmarshal.
+func TestMakeMCPMatchKey_UnicodeEscapeInsensitive(t *testing.T) {
+	cases := []struct {
+		name     string
+		esc, lit json.RawMessage
+	}{
+		{"ellipsis", json.RawMessage(`{"new_string":"p = '\\u2026/'"}`), json.RawMessage(`{"new_string":"p = '…/'"}`)},
+		{"bom", json.RawMessage(`{"old_string":"/^\\uFEFF?---/"}`), json.RawMessage(`{"old_string":"/^\ufeff?---/"}`)},
+		{"arrow", json.RawMessage(`{"new_string":"Get API Key \\u2192"}`), json.RawMessage(`{"new_string":"Get API Key →"}`)},
+		{"gte", json.RawMessage(`{"new_string":"need \\u2265 %d"}`), json.RawMessage(`{"new_string":"need ≥ %d"}`)},
+		{"surrogate-pair", json.RawMessage(`{"pattern":"\\uD83D\\uDE00"}`), json.RawMessage(`{"pattern":"😀"}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if ka, kb := makeMCPMatchKey("edit", tc.esc), makeMCPMatchKey("edit", tc.lit); ka != kb {
+				t.Errorf("unicode-escape drift must canonicalise equal:\n esc=%q\n lit=%q", ka, kb)
+			}
+		})
+	}
+}
+
+// TestMakeMCPMatchKey_UnicodeFoldKeepsDistinctRunesDistinct is the guard rail on
+// the fold: collapsing escape spelling must NOT collapse different runes. A
+// literal "\u2026" (…) and a literal "\u2192" (→) decode to different
+// characters and must stay different keys.
+func TestMakeMCPMatchKey_UnicodeFoldKeepsDistinctRunesDistinct(t *testing.T) {
+	if makeMCPMatchKey("edit", json.RawMessage(`{"s":"\\u2026"}`)) ==
+		makeMCPMatchKey("edit", json.RawMessage(`{"s":"\\u2192"}`)) {
+		t.Error("different runes must NOT canonicalise equal after unicode fold")
+	}
+}
+
 // TestControlProtocol_ExactKeyRoutesAcrossTypeDriftOutOfOrder is the regression
 // for the cross-file cascade seen in the logs: two concurrent reads of DIFFERENT
 // files are parked (native int offsets), and the worker delivers their results

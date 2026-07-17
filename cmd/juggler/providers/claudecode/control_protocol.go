@@ -194,6 +194,16 @@ type mcpMatchKey string
 // which mis-pairs concurrent same-tool calls (two reads of different files swap
 // results). Different VALUES still produce different keys, so a genuine
 // divergence is still surfaced.
+//
+// Finally it folds literal "\uXXXX" escapes in string leaves to the rune they
+// denote (canonicalizeScalars → decodeLiteralUnicodeEscapes): the CLI parks the
+// actual rune ("…") while the worker-recorded tool_use.input, streamed across
+// input_json_delta fragments, can carry the six-character escape ("\u2026") for
+// the same non-ASCII character. Left unfolded the two spellings are different Go
+// string values, so json.Marshal renders them differently and the keys diverge
+// (the "tool/request divergence" INFO/ERROR log seen on large edit/write/grep
+// payloads containing …, →, —, ≥, the BOM, or emoji). Same class of benign
+// re-serialisation drift as scalar types; folded symmetrically on both sides.
 func makeMCPMatchKey(toolName string, argsJSON json.RawMessage) mcpMatchKey {
 	if len(argsJSON) == 0 {
 		return mcpMatchKey(toolName + "::{}")
@@ -234,10 +244,90 @@ func canonicalizeScalars(v any) any {
 		return strconv.FormatBool(t)
 	case nil:
 		return "null"
+	case string:
+		// Already the canonical form the numeric/bool/nil leaves coerce to —
+		// except a literal "\uXXXX" escape must fold to its rune so it matches the
+		// same leaf carrying the actual character (see decodeLiteralUnicodeEscapes).
+		return decodeLiteralUnicodeEscapes(t)
 	default:
-		// string — already the canonical form the others coerce to.
 		return t
 	}
+}
+
+// decodeLiteralUnicodeEscapes folds every literal "\uXXXX" sequence in s (a
+// backslash, a 'u', four hex digits — six ASCII characters) to the single rune
+// it denotes, combining an adjacent high+low surrogate pair into one astral
+// rune. It exists because a tool-input string leaf can reach the router two ways
+// for the same logical call: the CLI parks the actual rune ("…"), while the
+// worker-recorded tool_use.input — reassembled from input_json_delta fragments —
+// can carry the six-character escape ("\u2026"). Both must canonicalise to one
+// key or exact-key matching fails and the lossy same-tool-name positional
+// fallback fires. Folding is applied to BOTH match sides, so it can never
+// manufacture a false divergence, and the key is match-only (never delivered to
+// the tool), so collapsing escaped and literal spellings of identical runes is
+// safe. Real payloads seen in the logs: '…' (\u2026), '→' (\u2192), '—'
+// (\u2014), '≥' (\u2265), the BOM (\uFEFF), and emoji-range grep patterns.
+func decodeLiteralUnicodeEscapes(s string) string {
+	// Fast path: no "\u" means no escape to fold (the overwhelmingly common case).
+	if !strings.Contains(s, `\u`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if r, size, ok := parseUnicodeEscapeAt(s, i); ok {
+			b.WriteRune(r)
+			i += size
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// parseUnicodeEscapeAt decodes a literal "\uXXXX" escape at s[i], returning the
+// rune, the bytes consumed, and whether an escape was present. A high surrogate
+// immediately followed by a low surrogate is combined into the single astral
+// rune it encodes (12 bytes); a lone or malformed escape decodes to its 16-bit
+// value as-is (6 bytes). Any fixed handling of the malformed case stays
+// symmetric because it runs on both match sides.
+func parseUnicodeEscapeAt(s string, i int) (rune, int, bool) {
+	h, ok := hex4At(s, i)
+	if !ok {
+		return 0, 0, false
+	}
+	if h >= 0xD800 && h <= 0xDBFF { // high surrogate — try to pair with a following low one
+		if l, ok := hex4At(s, i+6); ok && l >= 0xDC00 && l <= 0xDFFF {
+			return 0x10000 + (rune(h)-0xD800)<<10 + (rune(l) - 0xDC00), 12, true
+		}
+	}
+	return rune(h), 6, true
+}
+
+// hex4At returns the value of a "\uXXXX" escape starting at s[i], or ok=false if
+// s[i:] is not a backslash-u followed by four hex digits. JSON only ever emits a
+// lowercase \u; the four hex digits may be either case.
+func hex4At(s string, i int) (uint16, bool) {
+	if i+6 > len(s) || s[i] != '\\' || s[i+1] != 'u' {
+		return 0, false
+	}
+	var v uint16
+	for j := i + 2; j < i+6; j++ {
+		var d uint16
+		switch c := s[j]; {
+		case c >= '0' && c <= '9':
+			d = uint16(c - '0')
+		case c >= 'a' && c <= 'f':
+			d = uint16(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			d = uint16(c-'A') + 10
+		default:
+			return 0, false
+		}
+		v = v<<4 | d
+	}
+	return v, true
 }
 
 // toolNameOf returns the tool name embedded in a match key — the segment before
