@@ -13,10 +13,11 @@ import { escapeHtml } from '../../../sdk/lib/html.js';
 import { renderMarkdown } from '../../../sdk/lib/markdown.js';
 import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
 import { formatBytes } from '../../utils/format.js';
-import { CHECK_SVG, GITHUB_ICON_SVG, DROPDOWN_ARROW_SVG } from '../../utils/icons.js';
+import { CHECK_SVG, GITHUB_ICON_SVG, DROPDOWN_ARROW_SVG, REFRESH_SVG } from '../../utils/icons.js';
 import { markPopupOpen } from '../../utils/popup-manager.js';
 import { presentPopup } from '../../utils/popup-surface.js';
 import { addFilePath } from '../../utils/properties-panel-helpers.js';
+import { skillPreviewShell, openInstalledSkillPreview } from './skill-preview.js';
 import { fetchSkills, resetSkillsCache } from '../../services/skills.js';
 import { reloadRegistries } from '../../registries/reload-registries.js';
 import {
@@ -102,9 +103,12 @@ export class SkillsTab {
     const root = this.root;
     if (!root) return;
     root.innerHTML = `
-      <div class="skills-modeswitch" role="tablist">
-        <button class="skills-mode active" data-mode="discover" role="tab">Discover</button>
-        <button class="skills-mode" data-mode="manage" role="tab">Installed</button>
+      <div class="skills-header">
+        <div class="skills-modeswitch" role="tablist">
+          <button class="skills-mode active" data-mode="discover" role="tab">Discover</button>
+          <button class="skills-mode" data-mode="manage" role="tab">Installed</button>
+        </div>
+        <button class="skills-refresh" data-action="refresh" title="Refresh" aria-label="Refresh">${REFRESH_SVG}</button>
       </div>
       <div class="skills-body" id="skills-body"></div>
       <div class="skills-drawer" id="skills-drawer" hidden></div>
@@ -165,7 +169,24 @@ export class SkillsTab {
   dispose() {}
 
   /**
-   * Load the catalog and the installed-skill list together.
+   * Refresh the active view in the way appropriate to it: Discover re-fetches the
+   * registries over the network; Installed rescans the local skill folders. Wired
+   * to the icon button on the mode-switch row.
+   * @private
+   */
+  _refreshActiveTab() {
+    if (this.mode === 'manage') {
+      this._refreshInstalled();
+    } else {
+      this._loadAll(true);
+    }
+  }
+
+  /**
+   * Load the catalog and the installed-skill list together. Always drops the
+   * installed-skills client cache first so the installed list reflects the disk
+   * on every load (the backend scans disk per request); `refresh` additionally
+   * forces the backend to re-fetch the remote registries over the network.
    * @param {boolean} refresh - Force the backend to re-fetch registries (network).
    * @private
    */
@@ -173,6 +194,7 @@ export class SkillsTab {
     this.loading = true;
     this.loadError = '';
     this._renderBody();
+    resetSkillsCache();
     try {
       const [catalog, installed] = await Promise.all([
         fetchCatalog({ refresh, force: refresh }),
@@ -180,6 +202,27 @@ export class SkillsTab {
       ]);
       this.catalog = catalog;
       this.installed = installed;
+    } catch (err) {
+      this.loadError = extractErrorMessage(err);
+    } finally {
+      this.loading = false;
+      this._renderBody();
+    }
+  }
+
+  /**
+   * Rescan the local skill folders for the Installed view: drop the client cache
+   * and re-fetch GET /api/skills (the backend scans disk live per request). The
+   * remote catalog is untouched — that is Discover's refresh.
+   * @private
+   */
+  async _refreshInstalled() {
+    this.loading = true;
+    this.loadError = '';
+    this._renderBody();
+    resetSkillsCache();
+    try {
+      this.installed = await fetchSkills();
     } catch (err) {
       this.loadError = extractErrorMessage(err);
     } finally {
@@ -286,7 +329,6 @@ export class SkillsTab {
     return `
       <div class="skills-toolbar">
         <input type="text" id="skills-search" class="skills-search" placeholder="Search skills…  ( / )" value="${escapeHtml(this.query)}" />
-        <button class="skills-btn" data-action="refresh" title="Re-fetch all sources">Refresh</button>
         <button class="skills-btn" data-action="add-source" title="Add a GitHub repository (owner/repo) as a skills source">Add source ${DROPDOWN_ARROW_SVG}</button>
       </div>
       <div class="skills-chiprow">${sourceChips}</div>
@@ -331,7 +373,7 @@ export class SkillsTab {
         <div class="skills-card-meta">${escapeHtml(meta)}</div>
         <div class="skills-card-desc">${escapeHtml(e.description || 'No description.')}</div>
         <div class="skills-card-actions">
-          <button class="skills-btn" data-preview="${escapeHtml(e.id)}" title="Preview this skill's SKILL.md and files before installing">Preview</button>
+          <button class="skills-btn" data-preview="${escapeHtml(e.id)}" title="View this skill's SKILL.md and files before installing">Details</button>
           ${installBtn}
         </div>
       </div>
@@ -360,6 +402,7 @@ export class SkillsTab {
         const pathRow = s.path
           ? `<div class="skills-filepath-mount" data-path="${escapeHtml(s.path)}"></div>`
           : '';
+        const ref = `${escapeHtml(s.scope)}:${escapeHtml(s.source)}:${escapeHtml(s.name)}`;
         return `
           <div class="skills-manage-row">
             <div class="skills-manage-main">
@@ -370,7 +413,10 @@ export class SkillsTab {
               <div class="skills-card-desc">${escapeHtml(s.description || 'No description.')}</div>
               ${pathRow}
             </div>
-            <button class="skills-btn danger" data-uninstall="${escapeHtml(s.scope)}:${escapeHtml(s.source)}:${escapeHtml(s.name)}">Uninstall</button>
+            <div class="skills-manage-actions">
+              <button class="skills-btn" data-preview-installed="${ref}" title="View this skill's SKILL.md and files">Details</button>
+              <button class="skills-btn danger" data-uninstall="${ref}">Uninstall</button>
+            </div>
           </div>
         `;
       })
@@ -496,11 +542,13 @@ export class SkillsTab {
       this._renderBody();
     } else if ((node = closest('[data-action]'))) {
       const action = node.dataset.action;
-      if (action === 'refresh') this._loadAll(true);
+      if (action === 'refresh') this._refreshActiveTab();
       else if (action === 'add-source') this._openAddSourceMenu(node);
       else if (action === 'drawer-close') this._closePreview();
     } else if ((node = closest('[data-preview]'))) {
       this._openPreview(node.dataset.preview || '');
+    } else if ((node = closest('[data-preview-installed]'))) {
+      this._openInstalledPreview(node.dataset.previewInstalled || '');
     } else if ((node = closest('[data-install]'))) {
       const entry = this._entryById(node.dataset.install || '');
       if (entry) this._installWithPrompt(entry);
@@ -666,6 +714,19 @@ export class SkillsTab {
   // ── preview drawer ────────────────────────────────────────────────────────
 
   /**
+   * Open the shared installed-skill preview popup for an Installed-tab row.
+   * Reuses {@link openInstalledSkillPreview} — the same modal the conversation
+   * properties panel uses — so the two never drift and no Install button shows.
+   * @param {string} ref - The "<scope>:<source>:<name>" row reference.
+   * @private
+   */
+  _openInstalledPreview(ref) {
+    const [scope, source, name] = (ref || '').split(':');
+    const skill = this.installed.find((s) => s.scope === scope && s.source === source && s.name === name);
+    if (skill) openInstalledSkillPreview(skill);
+  }
+
+  /**
    * Open the preview drawer for a catalog entry and load its body/manifest.
    * @param {string} id - The entry id.
    * @private
@@ -702,8 +763,9 @@ export class SkillsTab {
   }
 
   /**
-   * Wrap preview content in the standard centered-modal chrome (backdrop +
-   * modal-panel), matching bin-modal / about-modal / context-preview.
+   * Wrap preview content in the standard centered-modal chrome. Delegates to the
+   * shared {@link skillPreviewShell} so the Discover drawer, the Installed-tab
+   * popup, and the conversation properties panel all use identical chrome.
    * @param {string} title - Pre-escaped dialog title.
    * @param {string} bodyHtml - Scrollable body markup.
    * @param {string} footerHtml - Footer markup (omitted when empty).
@@ -711,17 +773,7 @@ export class SkillsTab {
    * @private
    */
   _previewShell(title, bodyHtml, footerHtml) {
-    return `
-      <modal-backdrop class="skills-preview-backdrop" data-action="drawer-close"></modal-backdrop>
-      <modal-panel class="skills-preview-panel">
-        <header class="skills-preview-header">
-          <h2 class="skills-preview-title">${title}</h2>
-          <button class="skills-preview-close" data-action="drawer-close" title="Close (Esc)" aria-label="Close">&times;</button>
-        </header>
-        <div class="skills-preview-body">${bodyHtml}</div>
-        ${footerHtml ? `<footer class="skills-preview-footer">${footerHtml}</footer>` : ''}
-      </modal-panel>
-    `;
+    return skillPreviewShell(title, bodyHtml, footerHtml);
   }
 
   /**

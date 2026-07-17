@@ -738,6 +738,10 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
+
+    /* The properties panel inherits the app's monospace font; the explainer is
+       prose, so pin it to the UI (non-fixed-width) font. */
+    font-family: var(--font-ui);
     font-size: 0.82rem;
     line-height: 1.45;
     color: var(--text-secondary);

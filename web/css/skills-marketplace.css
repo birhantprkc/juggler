@@ -33,6 +33,41 @@
   padding-right: 0.6rem;
 }
 
+/* Header row: the Discover/Installed mode switch on the left, the refresh
+   affordance pinned to the right. */
+.skills-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Refresh the active view: re-fetch registries on Discover, rescan local folders
+   on Installed. Icon-only, right-aligned on the header row. */
+.skills-refresh {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  padding: 0.35rem;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.skills-refresh:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.skills-refresh svg {
+  width: 1rem;
+  height: 1rem;
+  display: block;
+}
+
 /* Discover / Installed mode switch */
 .skills-modeswitch {
   display: inline-flex;
@@ -40,7 +75,6 @@
   background: var(--bg-tertiary);
   border-radius: var(--radius-md);
   padding: 0.2rem;
-  align-self: flex-start;
 }
 
 .skills-mode {
@@ -368,6 +402,14 @@
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+/* Trailing action buttons on a manage/standing row (Preview + Uninstall). */
+.skills-manage-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .skills-empty,
@@ -723,8 +765,8 @@
    The settings panel can dock to a ~360px column on mobile. Uses the app's
    primary phone breakpoint (see components.css / plugin-catalog.css). */
 @media (width <= 36rem) {
-  /* Search + Refresh + "Add source" can't share one row at this width — let
-     the search take a full row and the buttons wrap beneath it. */
+  /* Search + "Add source" can't share one row at this width — let the search
+     take a full row and the button wrap beneath it. */
   .skills-toolbar {
     flex-wrap: wrap;
   }
@@ -771,6 +813,7 @@
   .skills-btn:active,
   .skills-chip:active,
   .skills-mode:active,
+  .skills-refresh:active,
   .skills-scope-action:active {
     background: var(--bg-tertiary);
   }

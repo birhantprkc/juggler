@@ -10,6 +10,9 @@
  *  - The system-prompt "## Skills" block (`_buildBlock`): formatting, one-line
  *    description sanitisation + truncation, the 50-skill cap, and byte-stability
  *    (same skills in → identical text out, so it rides the prompt cache).
+ *  - The freeze: seeding snapshots the catalog into `this.data.skills`, and the
+ *    block/panel read that snapshot (not the live catalog) so an existing
+ *    conversation's injected context never moves when skills change on disk.
  *  - The `skill` tool (`execute` + `getSummary`): a fresh load returns the
  *    SKILL.md body plus a resource listing (with SKILL.md itself elided); a
  *    repeat load in the same thread returns an "already loaded" notice; an
@@ -239,7 +242,7 @@ export async function runTests(_ctx) {
     assert(text !== 'skill', 'panel must not be just the bare type name');
     assert(text.includes('pdf-tools'), `panel should list the skill name; got:\n${text}`);
     assert(text.includes('Handle PDFs'), `panel should show the skill description; got:\n${text}`);
-    assert(/injected into the system prompt/i.test(text), 'panel should explain the item is injected');
+    assert(/in the system prompt/i.test(text), 'panel should explain the skills are listed in the system prompt');
   });
 
   await test('properties panel marks a skill loaded once activated in this thread', async () => {
@@ -271,6 +274,51 @@ export async function runTests(_ctx) {
       !/must be implemented by subclass/.test(result.error || ''),
       'seed must not surface the base-class onToolCall error'
     );
+  });
+
+  await test('seeding freezes the available-skills snapshot into the doc (this.data.skills)', async () => {
+    const item = makeItem(oneSkill, oneBody);
+    await item.handleToolCall('skill', {}, { session, conversation });
+    assert(Array.isArray(item.data.skills), 'seed should freeze a skills snapshot into this.data.skills');
+    assert(
+      item.data.skills.length === 1 && item.data.skills[0].name === 'pdf-tools',
+      `snapshot should record the available skills; got: ${JSON.stringify(item.data.skills)}`
+    );
+    assert(item.data.skills[0].scope === 'project' && item.data.skills[0].source === 'juggler',
+      'snapshot must carry scope/source so the skill tool can resolve a load');
+  });
+
+  await test('the FROZEN snapshot, not the live catalog, drives the block and panel', async () => {
+    const item = makeItem([{ name: 'a-skill', description: 'first' }], {});
+    await item.handleToolCall('skill', {}, { session, conversation });
+    // Mutate the live catalog AFTER seeding — a frozen conversation must not move.
+    item._skills = [{ name: 'b-skill', description: 'second' }];
+    const block = await item.createContextText({});
+    assert(block.includes('- a-skill: first'), `block should reflect the frozen snapshot; got:\n${block}`);
+    assert(!block.includes('b-skill'), 'block must not reflect post-seed catalog changes');
+    const container = document.createElement('div');
+    await item._renderPanel(container);
+    const text = container.textContent || '';
+    assert(text.includes('a-skill') && !text.includes('b-skill'),
+      `panel must show the frozen snapshot, not the live catalog; got:\n${text}`);
+  });
+
+  await test('the freeze is write-once: re-seeding keeps the original snapshot', async () => {
+    const item = makeItem([{ name: 'a-skill', description: 'first' }], {});
+    await item.handleToolCall('skill', {}, { session, conversation });
+    item._skills = [{ name: 'b-skill', description: 'second' }];
+    await item.handleToolCall('skill', {}, { session, conversation });
+    assert(
+      item.data.skills.length === 1 && item.data.skills[0].name === 'a-skill',
+      `re-seed must not overwrite the frozen snapshot; got: ${JSON.stringify(item.data.skills)}`
+    );
+  });
+
+  await test('createContextText falls back to a live scan when not seeded (no frozen snapshot)', async () => {
+    const item = makeItem([{ name: 'live-skill', description: 'unfrozen' }]);
+    const block = await item.createContextText({});
+    assert(block.includes('- live-skill: unfrozen'),
+      `unseeded item should fall back to the live list; got:\n${block}`);
   });
 
   return { passed, failed, errors };

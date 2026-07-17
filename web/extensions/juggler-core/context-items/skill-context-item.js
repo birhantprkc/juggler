@@ -24,10 +24,15 @@ import { getAvailableSkills, fetchSkillBody } from '../../../js/services/skills.
  *    executed only through the ordinary read/execute tools under normal
  *    approval. This item adds no new execution or file-access path.
  *
- * The list block is byte-stable across turns (the skills service caches the
- * catalog and only a registry reload drops it), so it rides the prompt cache
- * like memory. The `skill` tool is a `meta`, auto-approved, read-only tool, so
- * it works even under the read-only strategy.
+ * The list block is FROZEN at seed time: when this item auto-instantiates at the
+ * start of a conversation, onToolCall snapshots the available skills into
+ * `this.data.skills` (persisted in the shared conversation doc). Every later read
+ * — the system-prompt block, the `skill` tool's name resolution, and the
+ * properties panel — reads that snapshot, never the live catalog. So the block is
+ * byte-stable across turns, reloads, and viewers, and rides the prompt cache like
+ * memory; editing or deleting a skill on disk changes only NEW conversations,
+ * never an existing one's injected context. The `skill` tool is a `meta`,
+ * auto-approved, read-only tool, so it works even under the read-only strategy.
  * @class
  * @augments ContextItem
  */
@@ -129,17 +134,70 @@ class SkillContextItem extends ContextItem {
   }
 
   /**
-   * No-op: seeding/auto-instantiating the Skills item needs no parameters — the
-   * standing "## Skills" list is built by createContextText() from the skills
-   * catalog, so the auto-instantiate path just needs the item to exist. The real
-   * `skill` tool loads a body through execute(), not this path. Without this
-   * override the base onToolCall() throws and the seed is injected as an error
-   * context-item message. Mirrors MemoryContextItem.onToolCall.
+   * Seed the Skills item by FREEZING the available-skills catalog into the
+   * conversation doc. This runs once, when the item auto-instantiates at the
+   * start of a conversation (via executeContextItem → handleToolCall). The
+   * snapshot it writes to `this.data.skills` is exactly what gets injected into
+   * this conversation's system prompt and shown in the properties panel, for the
+   * life of the conversation — deliberately NOT live, so editing or deleting a
+   * skill on disk never mutates an existing conversation's context or busts its
+   * prompt cache. Write-once: a later reuse (mergeOrReplace) that re-enters here
+   * keeps the original snapshot. Unlike memory (which stores only a path pointer
+   * and reads the file live), skills persist the content itself, because the set
+   * of installed skills is not conversation-scoped state the user edits in place.
    * @param {string} _toolName - Tool name (unused)
    * @param {Record<string, any>} _params - Tool parameters (unused)
    * @returns {Promise<void>}
    */
-  async onToolCall(_toolName, _params) {}
+  async onToolCall(_toolName, _params) {
+    if (!Array.isArray(this.data.skills)) {
+      this.data.skills = await this._snapshotSkills();
+    }
+  }
+
+  /**
+   * Project the live catalog to the minimal, cache-stable record frozen into the
+   * doc: just the fields the block, tool resolution, and panel need. Kept small
+   * so the persisted snapshot stays compact and its serialization is stable.
+   * @returns {Promise<import('../../../js/services/skills.js').SkillMeta[]>} Snapshot rows
+   * @private
+   */
+  async _snapshotSkills() {
+    let skills = /** @type {import('../../../js/services/skills.js').SkillMeta[]} */ ([]);
+    try {
+      skills = await this._listSkills();
+    } catch {
+      skills = [];
+    }
+    return /** @type {any} */ ((skills || []).map((s) => ({
+      name: s.name,
+      description: s.description || '',
+      scope: s.scope,
+      source: s.source,
+      hasScripts: !!s.hasScripts
+    })));
+  }
+
+  /**
+   * The skills this item advertises: the FROZEN snapshot captured at seed time
+   * (`this.data.skills`), so the system-prompt block, the `skill` tool's name
+   * resolution, and the properties panel all reflect exactly what was injected
+   * into THIS conversation — never the live catalog. Falls back to a live scan
+   * only when no snapshot was recorded (a direct call that skipped seeding, e.g.
+   * a unit test), so those paths still work without a doc round-trip.
+   * @returns {Promise<import('../../../js/services/skills.js').SkillMeta[]>} Advertised skills
+   * @private
+   */
+  async _effectiveSkills() {
+    if (Array.isArray(this.data.skills)) {
+      return /** @type {any} */ (this.data.skills);
+    }
+    try {
+      return await this._listSkills();
+    } catch {
+      return [];
+    }
+  }
 
   /** @returns {string} Item title */
   getTitle() {
@@ -216,7 +274,9 @@ class SkillContextItem extends ContextItem {
    */
   async execute(params) {
     const name = String(params.name || '').trim();
-    const skill = (await this._listSkills()).find((s) => s.name === name) || null;
+    // Resolve against the frozen snapshot — the exact set advertised to the model
+    // this conversation — so the tool loads what the "## Skills" block listed.
+    const skill = (await this._effectiveSkills()).find((s) => s.name === name) || null;
     if (!skill) {
       throw new Error(
         `No skill named "${name}" is available. Use an exact name from the "## Skills" list in the system prompt.`
@@ -334,15 +394,16 @@ class SkillContextItem extends ContextItem {
   }
 
   /**
-   * Render the live "## Skills" block for the system prompt. Read through the
-   * (cached) skills service so the list is byte-stable across turns and updates
-   * only on a registry reload.
+   * Render the "## Skills" block for the system prompt from the FROZEN snapshot
+   * captured at seed time, so the block is byte-stable across every turn, reload,
+   * and viewer of this conversation and rides the prompt cache. It reflects the
+   * catalog as it was when the conversation began, not the live catalog.
    * @override
    * @param {object} _contextParams - Runtime execution context (unused)
    * @returns {Promise<string>} Context text, or '' when there are no skills
    */
   async createContextText(_contextParams) {
-    const skills = await this._listSkills();
+    const skills = await this._effectiveSkills();
     return SkillContextItem._buildBlock(skills);
   }
 
@@ -351,7 +412,8 @@ class SkillContextItem extends ContextItem {
    * contributes — the standing "## Skills" list injected into the system prompt
    * every turn, one row per available skill, with the ones already loaded into
    * this conversation marked. Without this override the base renderer shows only
-   * the item type ("skill"). Reads the catalog live and populates async.
+   * the item type ("skill"). Reads the FROZEN snapshot (what was actually
+   * injected), not the live catalog, and populates async.
    * @override
    * @returns {HTMLElement} Panel element
    */
@@ -372,12 +434,9 @@ class SkillContextItem extends ContextItem {
    * @private
    */
   async _renderPanel(container) {
-    let skills = /** @type {any[]} */ ([]);
-    try {
-      skills = await this._listSkills();
-    } catch {
-      skills = [];
-    }
+    // The frozen snapshot — what was actually injected into this conversation —
+    // not the live catalog, so the panel always shows the real contributed list.
+    const skills = /** @type {any[]} */ (await this._effectiveSkills());
     container.textContent = '';
 
     container.appendChild(SkillContextItem._explainer());
@@ -391,7 +450,7 @@ class SkillContextItem extends ContextItem {
       const loaded = this._loadedSet();
       const list = createElement('div', 'skills-manage-list');
       for (const skill of skills) {
-        list.appendChild(SkillContextItem._skillCard(skill, loaded.has(skill.name)));
+        list.appendChild(SkillContextItem._skillCard(skill, loaded.has(skill.name), true));
       }
       container.appendChild(list);
     }
@@ -415,8 +474,8 @@ class SkillContextItem extends ContextItem {
       createElement(
         'p',
         'skill-panel-lead',
-        'Agent Skills are specialized instruction sets the assistant can pull in on demand \u2014 extra ' +
-          'guidance for a particular kind of task, kept out of the way until it\u2019s needed.'
+        'Agent Skills are specialized instruction sets the LLM can load on demand as extra ' +
+          'guidance for a particular kind of task, but kept out of the way until needed.'
       )
     );
     const how = createElement('ul', 'skill-panel-how');
@@ -424,16 +483,15 @@ class SkillContextItem extends ContextItem {
       createElement(
         'li',
         '',
-        'The skills below are listed (name + description) and injected into the system prompt every ' +
-          'turn, so the assistant always knows what it can reach for.'
+        'The skills below are listed (name + description) in the system prompt, so the LLM ' +
+          'knows what it can reach for.'
       )
     );
     how.appendChild(
       createElement(
         'li',
         '',
-        'When a task matches one, the assistant loads it with the skill tool \u2014 that adds the ' +
-          'skill\u2019s full instructions to the conversation as its own item, later in the chat.'
+        'The LLM can choose to load a particular skill with a tool-call if it decides it\'s useful during the chat.'
       )
     );
     how.appendChild(
@@ -472,10 +530,11 @@ class SkillContextItem extends ContextItem {
    * header of a load panel.
    * @param {{name: string, description?: string, scope?: string, source?: string, hasScripts?: boolean}} skill - Skill metadata
    * @param {boolean} [loaded] - Mark the card as already loaded this conversation
+   * @param {boolean} [withPreview] - Append a Details button opening the shared SKILL.md popup
    * @returns {HTMLElement} Card element
    * @private
    */
-  static _skillCard(skill, loaded = false) {
+  static _skillCard(skill, loaded = false, withPreview = false) {
     const row = createElement('div', 'skills-manage-row skill-panel-card');
     const main = createElement('div', 'skills-manage-main');
     const head = createElement('div', 'skills-card-head');
@@ -497,6 +556,24 @@ class SkillContextItem extends ContextItem {
     const desc = SkillContextItem._oneLine(skill.description || '');
     main.appendChild(createElement('div', 'skills-card-desc', desc || 'No description.'));
     row.appendChild(main);
+    // The Details button opens the same modal the settings Installed tab uses — the frozen
+    // snapshot carries scope/source/name, which is all the popup needs to fetch
+    // the SKILL.md body on demand. The popup module pulls in DOM-only utilities
+    // (popup-manager), so it is lazy-imported here — this click handler only ever
+    // runs in the viewer, never in the engine worker that also loads this module.
+    if (withPreview && skill.name && skill.scope && skill.source) {
+      const actions = createElement('div', 'skills-manage-actions');
+      const btn = /** @type {HTMLButtonElement} */ (createElement('button', 'skills-btn', 'Details'));
+      btn.type = 'button';
+      btn.title = "View this skill's SKILL.md and files";
+      btn.addEventListener('click', () => {
+        import('../../../js/components/settings/skill-preview.js')
+          .then((m) => m.openInstalledSkillPreview(/** @type {any} */ (skill)))
+          .catch(() => {});
+      });
+      actions.appendChild(btn);
+      row.appendChild(actions);
+    }
     return row;
   }
 
@@ -544,7 +621,7 @@ class SkillContextItem extends ContextItem {
   async _renderLoadPanel(host, name, ctx) {
     let skill = null;
     try {
-      skill = (await this._listSkills()).find((s) => s.name === name) || null;
+      skill = (await this._effectiveSkills()).find((s) => s.name === name) || null;
     } catch {
       skill = null;
     }
