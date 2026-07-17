@@ -723,7 +723,7 @@
    The settings panel can dock to a ~360px column on mobile. Uses the app's
    primary phone breakpoint (see components.css / plugin-catalog.css). */
 @media (width <= 36rem) {
-  /* Search + Refresh + "+ Add source" can't share one row at this width — let
+  /* Search + Refresh + "Add source" can't share one row at this width — let
      the search take a full row and the buttons wrap beneath it. */
   .skills-toolbar {
     flex-wrap: wrap;

@@ -5,7 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { formatFileSize } from 'juggler/item-utils';
-import { smartTruncate, createElement } from 'juggler/ui';
+import { smartTruncate, createElement, renderMarkdown, decorateCodeBlocks } from 'juggler/ui';
 import { getAvailableSkills, fetchSkillBody } from '../../../js/services/skills.js';
 
 /**
@@ -354,7 +354,10 @@ class SkillContextItem extends ContextItem {
   }
 
   /**
-   * Populate (or refresh) the panel from the live skills catalog.
+   * Populate (or refresh) the standing Skills card from the live catalog: a
+   * plain-language explanation of how skills work, one styled card per available
+   * skill (reusing the settings Skills-page classes), and a "Manage skills"
+   * button into the settings Skills tab.
    * @param {HTMLElement} container - Panel container to fill
    * @returns {Promise<void>}
    * @private
@@ -368,41 +371,238 @@ class SkillContextItem extends ContextItem {
     }
     container.textContent = '';
 
-    container.appendChild(
-      createElement(
-        'div',
-        'skill-panel-note',
-        'Agent Skills the assistant can load on demand. This list (name + description) is injected into the ' +
-          'system prompt every turn; the assistant loads a skill with the skill tool, which adds that skill\u2019s ' +
-          'full instructions to the conversation.'
-      )
-    );
+    container.appendChild(SkillContextItem._explainer());
+
+    const heading = skills.length ? `Available skills (${skills.length})` : 'Available skills';
+    container.appendChild(createElement('div', 'skill-panel-heading', heading));
 
     if (!Array.isArray(skills) || skills.length === 0) {
-      container.appendChild(createElement('div', 'skill-empty', 'No skills available.'));
-      return;
+      container.appendChild(createElement('div', 'skills-empty', 'No skills available yet.'));
+    } else {
+      const loaded = this._loadedSet();
+      const list = createElement('div', 'skills-manage-list');
+      for (const skill of skills) {
+        list.appendChild(SkillContextItem._skillCard(skill, loaded.has(skill.name)));
+      }
+      container.appendChild(list);
     }
 
-    const loaded = this._loadedSet();
-    const list = createElement('ul', 'skill-list');
-    for (const skill of skills) {
-      const li = createElement('li', 'skill-entry');
-      const head = createElement('div', 'skill-entry-head');
-      head.appendChild(createElement('span', 'skill-name', skill.name));
-      if (skill.scope && skill.source) {
-        head.appendChild(createElement('span', 'skill-origin', `${skill.scope}/${skill.source}`));
+    const actions = createElement('div', 'skill-panel-actions');
+    actions.appendChild(SkillContextItem._manageSkillsButton());
+    container.appendChild(actions);
+  }
+
+  /**
+   * The "how skills work" explainer shown atop the standing Skills card: a lead
+   * sentence plus the progressive-disclosure model in plain language, so the
+   * user understands what this item contributes and that the assistant may load
+   * a skill later in the conversation.
+   * @returns {HTMLElement} Explainer block
+   * @private
+   */
+  static _explainer() {
+    const note = createElement('div', 'skill-panel-note');
+    note.appendChild(
+      createElement(
+        'p',
+        'skill-panel-lead',
+        'Agent Skills are specialized instruction sets the assistant can pull in on demand \u2014 extra ' +
+          'guidance for a particular kind of task, kept out of the way until it\u2019s needed.'
+      )
+    );
+    const how = createElement('ul', 'skill-panel-how');
+    how.appendChild(
+      createElement(
+        'li',
+        '',
+        'The skills below are listed (name + description) and injected into the system prompt every ' +
+          'turn, so the assistant always knows what it can reach for.'
+      )
+    );
+    how.appendChild(
+      createElement(
+        'li',
+        '',
+        'When a task matches one, the assistant loads it with the skill tool \u2014 that adds the ' +
+          'skill\u2019s full instructions to the conversation as its own item, later in the chat.'
+      )
+    );
+    how.appendChild(
+      createElement(
+        'li',
+        '',
+        'Loading a skill only adds text. Any scripts or files it bundles are read or run later through ' +
+          'the normal tools, under your usual approval rules.'
+      )
+    );
+    note.appendChild(how);
+    return note;
+  }
+
+  /**
+   * A "Manage skills" button that opens the Skills page of the settings panel.
+   * Shared by the standing card and the per-load panel.
+   * @returns {HTMLElement} Button element
+   * @private
+   */
+  static _manageSkillsButton() {
+    const btn = /** @type {HTMLButtonElement} */ (createElement('button', 'skills-btn skill-manage-btn', 'Manage skills'));
+    btn.type = 'button';
+    btn.addEventListener('click', () => {
+      const open = /** @type {any} */ (window).openSettings;
+      if (typeof open === 'function') {
+        open('skills');
       }
-      if (loaded.has(skill.name)) {
-        head.appendChild(createElement('span', 'skill-loaded', 'loaded'));
-      }
-      li.appendChild(head);
-      const desc = SkillContextItem._oneLine(skill.description || '');
-      if (desc) {
-        li.appendChild(createElement('div', 'skill-desc', desc));
-      }
-      list.appendChild(li);
+    });
+    return btn;
+  }
+
+  /**
+   * Build one skill card in the settings Skills-page style (name, scope/source
+   * and scripts badges, description). Used for both the standing list and the
+   * header of a load panel.
+   * @param {{name: string, description?: string, scope?: string, source?: string, hasScripts?: boolean}} skill - Skill metadata
+   * @param {boolean} [loaded] - Mark the card as already loaded this conversation
+   * @returns {HTMLElement} Card element
+   * @private
+   */
+  static _skillCard(skill, loaded = false) {
+    const row = createElement('div', 'skills-manage-row skill-panel-card');
+    const main = createElement('div', 'skills-manage-main');
+    const head = createElement('div', 'skills-card-head');
+    head.appendChild(createElement('span', 'skills-card-name', skill.name || '(unnamed)'));
+    if (skill.scope && skill.source) {
+      head.appendChild(createElement('span', 'skills-scope-badge', `${skill.scope}-${skill.source}`));
     }
-    container.appendChild(list);
+    if (skill.hasScripts) {
+      const b = createElement('span', 'skills-badge scripts', 'scripts');
+      b.title = 'Bundles scripts that can be run through the normal tools';
+      head.appendChild(b);
+    }
+    if (loaded) {
+      const b = createElement('span', 'skills-badge loaded', 'loaded');
+      b.title = 'Already loaded into this conversation';
+      head.appendChild(b);
+    }
+    main.appendChild(head);
+    const desc = SkillContextItem._oneLine(skill.description || '');
+    main.appendChild(createElement('div', 'skills-card-desc', desc || 'No description.'));
+    row.appendChild(main);
+    return row;
+  }
+
+  /**
+   * A small uppercase section label (reuses the settings Skills-page style).
+   * @param {string} text - Label text
+   * @returns {HTMLElement} Title element
+   * @private
+   */
+  static _sectionTitle(text) {
+    return createElement('div', 'skills-section-title skill-panel-section-title', text);
+  }
+
+  /**
+   * Properties panel for a `skill` load event. Instead of dumping the raw tool
+   * input JSON, pretty-print the loaded skill in the settings Skills-page style:
+   * a header card (name, origin, scripts), its bundled files, the SKILL.md
+   * instructions rendered as markdown, and a "Manage skills" button. Populated
+   * async from the skills service; the generic Result section is suppressed.
+   * @override
+   * @param {HTMLElement} wrapper - Section wrapper to append details into
+   * @param {import('juggler/context-item').ToolActionRenderContext} ctx - Render context
+   * @returns {{skipResultSection: boolean}} Suppress the generic result dump
+   */
+  renderToolActionDetails(wrapper, ctx) {
+    const name = String((ctx && ctx.input && ctx.input.name) || '').trim();
+    const host = createElement('div', 'skill-load-panel');
+    wrapper.appendChild(host);
+    // Fire-and-forget async populate (sync signature, mirrors createPropertiesPanelElement).
+    this._renderLoadPanel(host, name, ctx);
+    return { skipResultSection: true };
+  }
+
+  /**
+   * Populate a `skill` load panel from the live skills service: header card,
+   * bundled-file listing, and the SKILL.md instructions as markdown. Falls back
+   * to the raw injected tool_result text if the body can\u2019t be re-fetched, and
+   * always ends with a "Manage skills" button.
+   * @param {HTMLElement} host - Container to fill
+   * @param {string} name - Loaded skill name (from tool input)
+   * @param {import('juggler/context-item').ToolActionRenderContext} ctx - Render context
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _renderLoadPanel(host, name, ctx) {
+    let skill = null;
+    try {
+      skill = (await this._listSkills()).find((s) => s.name === name) || null;
+    } catch {
+      skill = null;
+    }
+
+    host.textContent = '';
+    host.appendChild(SkillContextItem._skillCard(skill || { name: name || '(unknown skill)' }, false));
+
+    // "already loaded" is a one-line notice from getSummary — surface it, and
+    // skip the (absent) body in that case.
+    const raw = ctx && ctx.toolAction && ctx.toolAction.get ? ctx.toolAction.get('result') : null;
+    const result = raw && raw.toJSON ? raw.toJSON() : (raw || {});
+    const content = (result && (result.content || result.output)) || '';
+    const alreadyLoaded =
+      typeof content === 'string' && /already loaded/i.test(content) && content.indexOf('\n') === -1;
+    if (alreadyLoaded) {
+      host.appendChild(
+        createElement(
+          'div',
+          'skill-load-note',
+          'These instructions were already loaded earlier in this conversation, so they weren\u2019t added again.'
+        )
+      );
+    }
+
+    let body = '';
+    let files = /** @type {any[]} */ ([]);
+    if (skill && !alreadyLoaded) {
+      try {
+        const detail = await this._loadBody(skill.scope, skill.source, skill.name);
+        body = (detail && detail.body) || '';
+        files = (detail && detail.files) || [];
+      } catch {
+        body = '';
+        files = [];
+      }
+    }
+
+    // SKILL.md itself is the body we render below — list only the other resources.
+    const resources = (files || []).filter((f) => f && f.path && f.path !== 'SKILL.md');
+    if (resources.length > 0) {
+      host.appendChild(SkillContextItem._sectionTitle(`Files (${resources.length})`));
+      const list = createElement('div', 'skills-files-list');
+      for (const f of resources) {
+        const fileEl = createElement('div', 'skills-file');
+        fileEl.appendChild(createElement('span', 'skills-file-path', f.path));
+        fileEl.appendChild(createElement('span', 'skills-file-size', formatFileSize(f.size)));
+        list.appendChild(fileEl);
+      }
+      host.appendChild(list);
+    }
+
+    if (body) {
+      const { content: capped } = smartTruncate(body, { maxChars: 20000 });
+      host.appendChild(SkillContextItem._sectionTitle('Instructions'));
+      const md = createElement('div', 'skill-load-body markdown');
+      md.innerHTML = renderMarkdown(capped, { escapeXml: true });
+      decorateCodeBlocks(md);
+      host.appendChild(md);
+    } else if (!alreadyLoaded && content) {
+      // Couldn't re-fetch the body — show the raw injected text as-is.
+      host.appendChild(SkillContextItem._sectionTitle('Instructions'));
+      host.appendChild(createElement('pre', 'skill-load-raw', content));
+    }
+
+    const actions = createElement('div', 'skill-panel-actions');
+    actions.appendChild(SkillContextItem._manageSkillsButton());
+    host.appendChild(actions);
   }
 
   /**

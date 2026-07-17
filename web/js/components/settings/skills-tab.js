@@ -13,7 +13,7 @@ import { escapeHtml } from '../../../sdk/lib/html.js';
 import { renderMarkdown } from '../../../sdk/lib/markdown.js';
 import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
 import { formatBytes } from '../../utils/format.js';
-import { CHECK_SVG, GITHUB_ICON_SVG } from '../../utils/icons.js';
+import { CHECK_SVG, GITHUB_ICON_SVG, DROPDOWN_ARROW_SVG } from '../../utils/icons.js';
 import { markPopupOpen } from '../../utils/popup-manager.js';
 import { presentPopup } from '../../utils/popup-surface.js';
 import { addFilePath } from '../../utils/properties-panel-helpers.js';
@@ -287,7 +287,7 @@ export class SkillsTab {
       <div class="skills-toolbar">
         <input type="text" id="skills-search" class="skills-search" placeholder="Search skills…  ( / )" value="${escapeHtml(this.query)}" />
         <button class="skills-btn" data-action="refresh" title="Re-fetch all sources">Refresh</button>
-        <button class="skills-btn" data-action="add-source" title="Add a GitHub repository (owner/repo) as a skills source">+ Add source</button>
+        <button class="skills-btn" data-action="add-source" title="Add a GitHub repository (owner/repo) as a skills source">Add source ${DROPDOWN_ARROW_SVG}</button>
       </div>
       <div class="skills-chiprow">${sourceChips}</div>
       ${catChips ? `<div class="skills-chiprow skills-catrow">${catChips}</div>` : ''}
@@ -819,7 +819,7 @@ export class SkillsTab {
   // ── add / remove source ───────────────────────────────────────────────────
 
   /**
-   * Open the add-source menu anchored to the "+ Add source" button: a manual URL
+   * Open the add-source menu anchored to the "Add source" button: a manual URL
    * entry plus one-click restore of each default seed (so a user who removed the
    * seeds — even all of them — can get them back). Defaults already configured
    * are shown disabled. Built with the shared menu utility + presentPopup, which
