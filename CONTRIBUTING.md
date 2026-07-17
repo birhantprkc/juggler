@@ -111,26 +111,75 @@ The Wails fork is a git submodule wired in through a `go.mod` `replace`
 directive; the submodule pointer is the source of truth. See
 [`AGENTS.md`](AGENTS.md) for the rebase/update workflow.
 
-## Licensing and sign-off
+## Licensing and contributor agreements
 
-The repo carries two licenses — AGPL-3.0-or-later for the application,
-Apache-2.0 for `web/sdk/**` and `web/extensions/**` (see
-[`LICENSING.md`](LICENSING.md)). Your contribution is licensed under the license
-of the directory it lands in.
+The repo carries two licenses — AGPL-3.0-or-later for the application and
+Apache-2.0 for `web/sdk/**` and `web/extensions/**`; see
+[`LICENSING.md`](LICENSING.md). A contribution remains publicly available under
+the license of the directory it lands in. The contributor agreements also let
+Julian Storer and a qualifying successor license contributions commercially,
+including in proprietary Juggler editions. Contributors retain their copyright.
+
+Contributing involves two separate requirements: a one-time **Contributor
+License Agreement**, which grants distribution and patent rights, and a
+per-commit **Developer Certificate of Origin sign-off**, which certifies the
+provenance of each change.
+
+### Individual Contributor License Agreement
+
+Before your first contribution can be merged, sign
+[Juggler ICLA version 1.0](CLA.md). You sign once, not once per pull request.
+The CLA check comments on your first PR with the exact statement to post from
+your GitHub account. The statement identifies the agreement version and acts as
+your electronic signature. Save the agreement and signing comment for your
+records.
+
+Every author whose commits appear in a PR must be covered. If a force-push adds
+an author who has not signed, the check returns to pending. Unknown or
+unverifiable authors must resolve their coverage before merge.
+
+The ICLA does not transfer ownership. It permits open-source and proprietary
+licensing while committing that a contribution included in the public Project
+will remain available under the open-source license that covered its destination
+when submitted.
+
+### Contributions connected to a company
+
+If an employer or another entity may own your work, both layers must be covered:
+you sign the ICLA, and an authorized representative of the entity executes the
+[Corporate Contributor License Agreement](CCLA.md). Contact
+`julianstorer@gmail.com` to arrange private execution and authorization of your
+GitHub identity. Do not post a signed CCLA, company address, or employee roster
+in a public issue or pull request.
+
+The automated CLA check records individual signatures. Corporate agreements and
+rosters are verified separately; a green individual CLA check does not by
+itself prove company authorization. Tell the maintainer in the PR if corporate
+coverage applies.
+
+Contributor-agreement records are handled as described in
+[`CONTRIBUTOR-AGREEMENT-PRIVACY.md`](CONTRIBUTOR-AGREEMENT-PRIVACY.md).
 
 ### Sign your work
 
 Every commit must carry a `Signed-off-by:` line certifying the
-[Developer Certificate of Origin](DCO) — that you wrote the change, or otherwise
-have the right to submit it under the applicable license:
+[Developer Certificate of Origin 1.1](https://developercertificate.org/) — that
+you wrote the change, or otherwise have the right to submit it under the
+applicable open-source license:
 
 ```bash
 git commit -s
 ```
 
-This appends `Signed-off-by: Your Name <you@example.com>` from your git
-`user.name`/`user.email`. PRs with unsigned commits fail the DCO check and can't
-be merged.
+This appends `Signed-off-by: Your Name <you@example.com>` from your Git
+`user.name` and `user.email`. The sign-off must match that commit’s author name
+and email. If you forgot it, recreate or amend your unmerged commit with a valid
+sign-off before pushing. PRs containing unsigned commits fail the DCO check and
+cannot be merged.
+
+The DCO and ICLA are deliberately separate: DCO records provenance for every
+commit; the ICLA supplies the standing rights needed for open and commercial
+distribution.
 
 ## Reporting bugs
 

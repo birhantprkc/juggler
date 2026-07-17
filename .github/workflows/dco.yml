@@ -1,0 +1,68 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  signoff:
+    name: Every commit is signed off
+    runs-on: ubuntu-latest
+    steps:
+      # Fetch the complete PR history so the check examines every commit rather
+      # than relying on a paginated API result. This pull_request workflow has no
+      # secrets and treats the checked-out repository as untrusted data.
+      - name: Check out pull request
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate Signed-off-by trailers
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t commits < <(git rev-list --reverse "${BASE_SHA}..${HEAD_SHA}")
+          if [ "${#commits[@]}" -eq 0 ]; then
+            echo "No commits found in pull request range." >&2
+            exit 1
+          fi
+
+          failed=0
+          for commit in "${commits[@]}"; do
+            author_name=$(git show -s --format='%an' "${commit}")
+            author_email=$(git show -s --format='%ae' "${commit}")
+            subject=$(git show -s --format='%s' "${commit}")
+            signoffs=$(git show -s --format='%(trailers:key=Signed-off-by,valueonly)' "${commit}")
+
+            if ! printf '%s\n' "${signoffs}" | awk -v expected_name="${author_name}" -v expected_email="${author_email}" '
+              BEGIN { found = 0 }
+              {
+                line = $0
+                sub(/^[[:space:]]*/, "", line)
+                sub(/[[:space:]]*$/, "", line)
+                expected = expected_name " <" expected_email ">"
+                if (tolower(line) == tolower(expected)) {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            '; then
+              echo "::error::${commit} (${subject}) is missing an exact Signed-off-by: ${author_name} <${author_email}> trailer"
+              failed=1
+            fi
+          done
+
+          if [ "${failed}" -ne 0 ]; then
+            echo "Add a matching sign-off with 'git commit -s' and update the affected commit(s)." >&2
+            exit 1
+          fi
+
+          echo "Validated ${#commits[@]} signed-off commit(s)."

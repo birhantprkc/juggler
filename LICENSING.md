@@ -73,10 +73,25 @@ works layered on the extension seams, not modifications of the AGPL code.
 If you want to use Juggler's AGPL code in a way the AGPL doesn't permit,
 contact the author about commercial licensing.
 
-## Contributions
+## Contributions and inbound rights
 
-All contributions require a `Signed-off-by:` line certifying the
-[Developer Certificate of Origin](DCO) — see
-[CONTRIBUTING.md](CONTRIBUTING.md#sign-your-work). A contribution is licensed
-under the license of the directory it lands in (Apache-2.0 for `web/sdk/**`
-and `web/extensions/**`, AGPL-3.0-or-later elsewhere).
+A contribution is publicly licensed under the license of the directory it lands
+in: Apache-2.0 for `web/sdk/**` and `web/extensions/**`, and
+AGPL-3.0-or-later elsewhere.
+
+Outside contributors must also sign [Juggler’s ICLA](CLA.md), and companies that
+may own contributed work must execute the [CCLA](CCLA.md). Contributors retain
+copyright. The agreements give Julian Storer and a qualifying successor the
+rights needed to distribute contributions under the applicable open-source
+license and under commercial or proprietary terms. They also commit that a
+contribution included in this public Project will remain available under the
+open-source license that covered its destination when submitted. Proprietary
+licensing does not withdraw or replace that public license.
+
+Every commit also requires a `Signed-off-by:` line certifying the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/). The
+DCO certifies provenance and permission to submit under the indicated
+open-source license; it does not replace the additional rights granted by the
+contributor agreements. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md#licensing-and-contributor-agreements) for the
+complete process.
