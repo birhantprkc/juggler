@@ -601,6 +601,24 @@ class ContextItem {
   }
 
   /**
+   * Whether re-running a completed tool-action of this type is a meaningful
+   * operation the UI should offer a "Re-run" button for.
+   *
+   * The default (true) suits any tool whose result can differ or is worth
+   * regenerating on re-execution: reads re-read a possibly-changed file,
+   * grep/glob re-scan, bash/thread/monitor re-execute, writes/edits re-apply,
+   * and prompt-driven tools (see {@link rerunRequiresReprompt}) re-ask. Override
+   * to return false for tools whose execution is pure instruction-injection or
+   * idempotent bookkeeping — a skill load, a memory write, a static manual dump,
+   * defining an already-defined command — where re-running changes nothing the
+   * user can observe and the button is just noise.
+   * @returns {boolean} True if the "Re-run" control should be offered
+   */
+  static isRerunnable() {
+    return true;
+  }
+
+  /**
    * Return a UI fragment that lets the user manage this plugin's permission
    * rules. The host inserts the returned element directly into the
    * permission-controls popup, between sibling plugins' sections. Return

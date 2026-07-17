@@ -42,6 +42,15 @@ class DefineCommandContextItem extends ContextItem {
   static RUN_MODES = ['send', 'draft', 'subthread'];
 
   /**
+   * The command is already defined once the action completes — re-running just
+   * redefines the same command, so offer no "Re-run" control.
+   * @returns {boolean} False — re-running this item type is a no-op.
+   */
+  static isRerunnable() {
+    return false;
+  }
+
+  /**
    * Tool definition for define_command.
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */

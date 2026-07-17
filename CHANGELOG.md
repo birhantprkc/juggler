@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Added a Skills marketplace to discover and install Agent Skills from GitHub registries
+- Made lots of fixes/improvements to skill handling and the skill-related items in a conversation
 - Bin now shows its on-disk size on the Bin button and Empty-Bin action
 - Write approvals now enforce project-path containment on all platforms
 - Writes outside the project folder always prompt, with a clear warning

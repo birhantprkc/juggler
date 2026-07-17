@@ -765,9 +765,13 @@ class PropertiesPanel extends HTMLElement {
   _renderToolActionControls(toolAction) {
     const controls = document.createElement('properties-panel-controls');
 
-    // Re-run button (for any completed action that can be re-run)
+    // Re-run button (for any completed action that can be re-run). Gate on the
+    // owning plugin's declaration — items whose re-execution is a no-op (skill
+    // load, memory write, static manual) opt out via isRerunnable()===false.
     const taResult = toolAction.get('result');
-    if (taResult && this._isRetryable(toolAction)) {
+    const ActionClass = this._conversation?.toolActionClass(toolAction.get('toolUseId'));
+    const rerunnable = ActionClass?.isRerunnable?.() !== false;
+    if (taResult && rerunnable && this._isRetryable(toolAction)) {
       const retryBtn = document.createElement('button');
       retryBtn.className = 'properties-panel-btn';
       retryBtn.innerHTML = `

@@ -82,6 +82,15 @@ class MemoryContextItem extends ContextItem {
   }
 
   /**
+   * A memory write is idempotent bookkeeping — re-running replays the same
+   * remember/forget with nothing new to observe, so offer no "Re-run" control.
+   * @returns {boolean} False — re-running this item type is a no-op.
+   */
+  static isRerunnable() {
+    return false;
+  }
+
+  /**
    * Single `memory` tool with a remember/forget action (see class doc for why
    * a single action-keyed tool rather than two tools).
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions

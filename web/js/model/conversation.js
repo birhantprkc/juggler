@@ -688,6 +688,17 @@ class Conversation {
   }
 
   /**
+   * Resolve the context-item plugin class that owns a tool-action. Public
+   * accessor for UI (e.g. the properties panel gating the Re-run control on
+   * {@link ContextItem.isRerunnable}). Delegates to {@link _toolActionClass}.
+   * @param {string} toolUseId
+   * @returns {any} The plugin class, or undefined if not found
+   */
+  toolActionClass(toolUseId) {
+    return this._toolActionClass(toolUseId);
+  }
+
+  /**
    * Resolve the context-item plugin class that owns a tool-action, searching
    * all threads (the tool-action may live in a sub-thread).
    * @param {string} toolUseId

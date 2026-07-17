@@ -106,6 +106,15 @@ class AboutJugglerContextItem extends ContextItem {
   };
 
   /**
+   * The manual is static reference text — re-running returns the identical
+   * dump, so offer no "Re-run" control.
+   * @returns {boolean} False — re-running this item type is a no-op.
+   */
+  static isRerunnable() {
+    return false;
+  }
+
+  /**
    * Get tool definitions for the AboutJuggler action.
    *
    * The description is intentionally tightly scoped so the model reaches for this

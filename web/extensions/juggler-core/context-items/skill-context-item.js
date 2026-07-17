@@ -59,6 +59,15 @@ class SkillContextItem extends ContextItem {
   }
 
   /**
+   * Loading a skill only injects instruction text — re-executing produces the
+   * identical injection, so offer no "Re-run" control.
+   * @returns {boolean} False — re-running this item type is a no-op.
+   */
+  static isRerunnable() {
+    return false;
+  }
+
+  /**
    * The single `skill` tool: load one skill's instructions by name. The name
    * must be one from the Skills list in the system prompt.
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions

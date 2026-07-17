@@ -38,6 +38,15 @@ class TaskStopContextItem extends ContextItem {
   }
 
   /**
+   * Stopping an already-stopped task is a no-op — re-running changes nothing,
+   * so offer no "Re-run" control.
+   * @returns {boolean} False — re-running this item type is a no-op.
+   */
+  static isRerunnable() {
+    return false;
+  }
+
+  /**
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */
   static getToolDefinitions() {
