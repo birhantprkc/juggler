@@ -199,9 +199,10 @@ type updaterStateResponse struct {
 	AppManagedServer bool `json:"appManagedServer"`
 }
 
-// handleUpdaterControl serves /win/<id>/updater?op=state|install|restart. state
-// reports the updater snapshot merged with this window's app-managed-server
-// flag; install kicks the download/stage flow; restart relaunches into a staged
+// handleUpdaterControl serves /win/<id>/updater?op=state|install|check|restart.
+// state reports the updater snapshot merged with this window's app-managed-server
+// flag; install kicks the download/stage flow; check runs a check-only probe
+// (reveal availability, never download); restart relaunches into a staged
 // update, guarded by the same in-flight-turn check as Cmd+Q. All ops are POST.
 func (a *appState) handleUpdaterControl(w http.ResponseWriter, r *http.Request, e *winEntry) {
 	switch r.URL.Query().Get("op") {
@@ -215,6 +216,11 @@ func (a *appState) handleUpdaterControl(w http.ResponseWriter, r *http.Request, 
 		// Fire-and-forget; the overlay guards against a double-start itself. The
 		// page learns the outcome from the pushed snapshot, not this response.
 		go updaterInstall()
+		w.WriteHeader(http.StatusNoContent)
+	case "check":
+		// Check-only probe: reveal availability without starting a download. The
+		// page learns the outcome from the pushed snapshot, not this response.
+		go updaterCheck()
 		w.WriteHeader(http.StatusNoContent)
 	case "restart":
 		a.handleUpdaterRestart(w, r)

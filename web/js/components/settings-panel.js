@@ -19,6 +19,7 @@ import { InfoCardsTab } from './settings/info-cards-tab.js';
 import { LogsTab } from './settings/logs-tab.js';
 import { McpTab, AcpTab } from './settings/subprocess-tabs.js';
 import { SkillsTab } from './settings/skills-tab.js';
+import { UpdatesTab } from './settings/updates-tab.js';
 
 /**
  * The shared payload the shell's loadConfig() fans out to every tab.
@@ -80,6 +81,7 @@ class SettingsPanel extends HTMLElement {
       'info-cards': new InfoCardsTab(this),
       shortcuts: new ShortcutsTab(this),
       logs: new LogsTab(this),
+      updates: new UpdatesTab(this),
     };
   }
 
@@ -130,6 +132,7 @@ class SettingsPanel extends HTMLElement {
                         <button class="settings-tab" data-tab="info-cards">Info cards</button>
                         <button class="settings-tab" data-tab="shortcuts">Keyboard shortcuts</button>
                         <button class="settings-tab" data-tab="logs">Logs</button>
+                        <button class="settings-tab" data-tab="updates">Updates</button>
                     </div>
                 </nav>
 
@@ -234,6 +237,14 @@ class SettingsPanel extends HTMLElement {
                             <div class="logs-filepath" id="logs-filepath"></div>
                             <pre class="logs-viewer" id="logs-viewer" tabindex="0" hidden></pre>
                         </div>
+                    </section>
+
+                    <section class="settings-tab-content" id="tab-updates">
+                        <p class="settings-description">
+                            Control whether Juggler checks for and downloads new versions, and
+                            check for one now.
+                        </p>
+                        <div class="settings-form" id="updates-form"></div>
                     </section>
                 </main>
             </modal-panel>

@@ -128,6 +128,7 @@ import { runTests as runPermissionPopupRefreshTests } from '../unit-tests/permis
 import { runTests as runClipboardTests } from '../unit-tests/clipboard-test.js';
 import { runTests as runConnectivityTests } from '../unit-tests/connectivity-test.js';
 import { runTests as runLogsTests } from '../unit-tests/logs-test.js';
+import { runTests as runUpdatesSettingsTests } from '../unit-tests/updates-settings-test.js';
 import { runTests as runReconnectPolicyTests } from '../unit-tests/reconnect-policy-test.js';
 import { runTests as runPopupBackButtonTests } from '../unit-tests/popup-back-button-test.js';
 import { runTests as runModelDisplayTests } from '../unit-tests/model-display-test.js';
@@ -299,6 +300,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:clipboard', run: runClipboardTests },
   { name: 'unit:connectivity', run: runConnectivityTests },
   { name: 'unit:logs', run: runLogsTests },
+  { name: 'unit:updates-settings', run: runUpdatesSettingsTests },
   { name: 'unit:reconnect-policy', run: runReconnectPolicyTests },
   { name: 'unit:popup-back-button', run: runPopupBackButtonTests },
   { name: 'unit:model-display', run: runModelDisplayTests },

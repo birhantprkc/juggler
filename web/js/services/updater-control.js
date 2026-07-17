@@ -70,6 +70,23 @@ export async function startInstall() {
 }
 
 /**
+ * Run a check-only probe: ask the in-app updater whether a newer release exists
+ * without starting a download. No-op without a native host. The result arrives
+ * via the pushed `juggler:updater-status` snapshot, not a return value — so this
+ * reveals availability (button/dialog update) but never triggers an install.
+ * @returns {Promise<void>}
+ */
+export async function startCheck() {
+  const url = windowControlURL('updater', '?op=check');
+  if (!url) return;
+  try {
+    await fetch(url, { method: 'POST' });
+  } catch {
+    /* transient — the next pushed snapshot reflects reality */
+  }
+}
+
+/**
  * The result of a restart request.
  * @typedef {object} RestartResult
  * @property {'ok'|'busy'|'error'|'absent'} status - The restart outcome.

@@ -36,6 +36,10 @@ func (s *Server) newUpdateChecker() *updatecheck.Checker {
 		OnChange: func(st updatecheck.Status) {
 			s.broadcastToAll(updateStatusMsg{Type: "update-status", Status: st})
 		},
+		// Gate the scheduled poll on the user's update mode: "off" suspends
+		// automatic checking (the ticker keeps running but no-ops), while
+		// "automatic"/"notify" both poll. The manual endpoint bypasses this.
+		Enabled: func() bool { return s.updateMode() != core.UpdateModeOff },
 	})
 }
 

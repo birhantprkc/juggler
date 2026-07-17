@@ -7627,3 +7627,60 @@ update-button .update-btn--attention {
     display: flex;
     gap: 0.35rem;
 }
+
+/* Updates settings tab: version summary, 3-way mode radios, and a manual check
+   row. They share the provider-field card shell, but that shell's default
+   40%/60% info/control grid doesn't fit any of them — these rules fix the
+   columns per row so the version text isn't cramped, the radios sit on a right
+   rail beside their labels, and the check row reads as an action bar. */
+
+/* Version summary has no control column — let its text use the full card width
+   instead of being squeezed into the default 40% info column (which wraps the
+   one-line version string into a cramped ragged block). */
+settings-panel .updates-version-row {
+    display: block;
+}
+
+/* Each mode is a full-width selectable card: label + description take the row,
+   the radio sits on a right rail, vertically centred next to its text instead
+   of marooned in the middle of a wide control column. */
+settings-panel .updates-mode-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    cursor: pointer;
+}
+
+settings-panel .updates-mode-row .provider-control {
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+}
+
+settings-panel .updates-mode-radio {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--accent-color);
+    cursor: pointer;
+}
+
+/* Manual check is an action bar, not a card: drop the card background and grid
+   so an empty status line doesn't render as a stray grey box, and lay it out as
+   status-left / button-right. */
+settings-panel .updates-check-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    background: none;
+    padding: 0.75rem 0.25rem 0;
+    margin-top: 0.25rem;
+}
+
+settings-panel .updates-check-row .provider-info {
+    flex: 1 1 auto;
+}
+
+settings-panel .updates-check-row .provider-control {
+    flex: 0 0 auto;
+    align-items: flex-end;
+}

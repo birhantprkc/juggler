@@ -55,6 +55,13 @@ var updaterSnapshot = func() UpdaterSnapshot { return UpdaterSnapshot{Present: f
 // Default: no-op — there is nothing to install without an overlay.
 var updaterInstall = func() {}
 
+// updaterCheck runs a check-only probe: it asks the updater whether a newer
+// release exists and pushes the resulting snapshot to the page, but never
+// starts a download. It backs the settings tab's "Check for updates" button and
+// (in notify/off mode) the macOS menu, where an explicit check must reveal
+// availability without triggering an auto-download. Default: no-op.
+var updaterCheck = func() {}
+
 // updaterRestart relaunches into the staged update. Synchronous; returns an
 // error when no update is staged or the swap helper failed to spawn (the
 // control handler turns that into a 409/500 and un-authorises the pending quit).

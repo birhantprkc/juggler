@@ -389,6 +389,10 @@ func (s *Server) setupRoutes() {
 
 	api.HandleFunc("/version", s.handleVersion).Methods("GET")
 	api.HandleFunc("/update-status", s.handleUpdateStatus).Methods("GET")
+	api.HandleFunc("/update-status/check", s.handleManualUpdateCheck).Methods("POST")
+
+	api.HandleFunc("/settings", s.handleGetSettings).Methods("GET")
+	api.HandleFunc("/settings", s.handlePutSettings).Methods("PUT")
 
 	// Serve extension containers straight off disk. ExtensionsAPI owns these
 	// paths; a "" path (e.g. no-project mode) simply registers no route.

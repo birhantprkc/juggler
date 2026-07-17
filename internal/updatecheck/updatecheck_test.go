@@ -188,6 +188,45 @@ func TestCheckOnceNotModified(t *testing.T) {
 	}
 }
 
+func TestCheckOnceGateDisabled(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write([]byte(`{"schema":"juggler-version","schemaVersion":1,"latest":"v9.9.9",
+			"notice":{"id":"n1","severity":"info"}}`))
+	}))
+	defer srv.Close()
+
+	c := New(Config{
+		URL:            srv.URL,
+		CurrentVersion: "v0.0.8",
+		Enabled:        func() bool { return false },
+	})
+
+	// Gated: CheckOnce makes no request and leaves the seeded status untouched.
+	if err := c.CheckOnce(context.Background()); err != nil {
+		t.Fatalf("CheckOnce (gated): %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("gated CheckOnce hit server %d times, want 0", hits)
+	}
+	if c.Current().UpdateAvailable {
+		t.Fatal("gated CheckOnce must not flip updateAvailable")
+	}
+
+	// Manual CheckNow bypasses the gate and updates the status.
+	if err := c.CheckNow(context.Background()); err != nil {
+		t.Fatalf("CheckNow: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("CheckNow hit server %d times, want 1", hits)
+	}
+	if !c.Current().UpdateAvailable {
+		t.Fatal("CheckNow must bypass the gate and update status")
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

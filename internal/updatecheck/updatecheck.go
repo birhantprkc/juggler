@@ -179,6 +179,11 @@ type Config struct {
 	Client         *http.Client  // defaults to a client with a 10s timeout
 	Interval       time.Duration // poll interval; defaults to 6h
 	OnChange       func(Status)  // called when the surfaced notice/status changes
+	// Enabled gates the scheduled poll: when non-nil and it returns false,
+	// CheckOnce is a no-op that touches neither the network nor the stored
+	// Status (the user has turned automatic checking off). A nil Enabled means
+	// always-on. The manual path (CheckNow) bypasses this gate entirely.
+	Enabled func() bool
 }
 
 // Checker polls the manifest and holds the latest computed Status in memory.
@@ -247,8 +252,23 @@ func (c *Checker) checkWithTimeout(done <-chan struct{}) {
 // CheckOnce fetches the manifest once, recomputes Status, and fires OnChange if
 // the surfaced notice/version changed. A 304 (ETag match) leaves Status as-is.
 // Network/parse/validation failures return an error and leave the last-good
-// Status untouched.
+// Status untouched. When the Enabled gate is set and returns false it is a
+// no-op (no network, Status untouched) — this is the scheduled-poll entry point.
 func (c *Checker) CheckOnce(ctx context.Context) error {
+	if c.cfg.Enabled != nil && !c.cfg.Enabled() {
+		return nil
+	}
+	return c.checkOnce(ctx)
+}
+
+// CheckNow performs a manual check that always runs, bypassing the Enabled gate
+// — an explicit user "Check for updates" overrides the automatic-off policy.
+func (c *Checker) CheckNow(ctx context.Context) error {
+	return c.checkOnce(ctx)
+}
+
+// checkOnce is the ungated fetch-and-recompute shared by CheckOnce and CheckNow.
+func (c *Checker) checkOnce(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.requestURL(), nil)
 	if err != nil {
 		return err

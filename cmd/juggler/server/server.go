@@ -163,6 +163,12 @@ type Server struct {
 	// mode so the suite never reaches the network). nil only before New finishes.
 	updateChecker *updatecheck.Checker
 
+	// settings owns the global settings document (~/.juggler/settings.json),
+	// the single source of truth for the user's update mode. Created in New; the
+	// update-checker's Enabled gate and the /api/settings handlers read/write
+	// through it. nil only before New finishes (and in bare test Servers).
+	settings *settingsStore
+
 	// engineReadyGate, when set, is called at the start of every LLM turn (and
 	// before a worker-driven strategy hook) to guarantee the hidden engine
 	// WebView is connected before the turn can emit any tool request. Returns
@@ -304,6 +310,7 @@ func New(cfg Config) (*Server, error) {
 	s.seedProjectState(cfg)
 
 	s.hub = newClientHub()
+	s.settings = newSettingsStore()
 	s.updateChecker = s.newUpdateChecker()
 
 	if err := s.loadIndexTemplate(); err != nil {
