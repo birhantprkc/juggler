@@ -2,7 +2,7 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import { formatRelativeDateTime } from '../utils/format.js';
+import { formatRelativeDateTime, formatBytes } from '../utils/format.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { showAlert, showConfirm } from './modal-dialog.js';
 import JugglerElement from './juggler-element.js';
@@ -105,12 +105,24 @@ class BinModal extends JugglerElement {
       empty.classList.remove('hidden');
       empty.textContent = 'Failed to load the bin.';
       list.innerHTML = '';
-      if (emptyBtn) emptyBtn.disabled = true;
+      if (emptyBtn) {
+        emptyBtn.disabled = true;
+        emptyBtn.textContent = 'Empty Bin';
+      }
       return;
     }
 
     list.innerHTML = '';
-    if (emptyBtn) emptyBtn.disabled = binned.length === 0;
+    if (emptyBtn) {
+      emptyBtn.disabled = binned.length === 0;
+      // listBinnedConversations refreshed session.binSizeBytes above; fold the
+      // approximate folder size into the button so "Empty Bin (50 MB)" tells
+      // the user how much they're about to reclaim.
+      const sizeBytes = this._session.binSizeBytes || 0;
+      emptyBtn.textContent = binned.length > 0 && sizeBytes > 0
+        ? `Empty Bin (${formatBytes(sizeBytes)})`
+        : 'Empty Bin';
+    }
     if (binned.length === 0) {
       empty.classList.remove('hidden');
       empty.textContent = 'The bin is empty.';

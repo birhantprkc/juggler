@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Bin now shows its on-disk size on the Bin button and Empty-Bin action
 - Write approvals now enforce project-path containment on all platforms
 - Writes outside the project folder always prompt, with a clear warning
 - Pre-approval write validation no longer creates directories or files

@@ -28,6 +28,7 @@ import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from '../model/session.
 import { MAX_CONVERSATION_NAME_LENGTH } from '../utils/constants.js';
 import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
+import { formatBytes } from '../utils/format.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import './bin-modal.js';
 import './info-rail.js';
@@ -525,16 +526,17 @@ class ConversationBar extends HTMLElement {
       binBtn.className = 'conversation-bin-button';
       binBtn.title = 'View binned conversations';
       binBtn.setAttribute('aria-label', 'Open bin');
-      binBtn.innerHTML = `${BIN_ICON_SVG}<span class="conversation-bin-label">Bin</span><span class="conversation-bin-count" hidden></span>`;
+      binBtn.innerHTML = `${BIN_ICON_SVG}<span class="conversation-bin-label">Bin</span><span class="conversation-bin-size" hidden></span><span class="conversation-bin-count" hidden></span>`;
       binBtn.addEventListener('click', () => this._openBinModal());
       this._cachedElements.set('bin-button', binBtn);
       nav.appendChild(binBtn);
     }
 
-    // Refresh the count badge from session state on every render.
+    // Refresh the count badge + size hint from session state on every render.
+    const count = this._session.binnedCount || 0;
+    const sizeBytes = this._session.binSizeBytes || 0;
     const countEl = /** @type {HTMLElement|null} */ (binBtn.querySelector('.conversation-bin-count'));
     if (countEl) {
-      const count = this._session.binnedCount || 0;
       if (count > 0) {
         countEl.textContent = String(count);
         countEl.hidden = false;
@@ -542,6 +544,26 @@ class ConversationBar extends HTMLElement {
         countEl.textContent = '';
         countEl.hidden = true;
       }
+    }
+    // Approximate folder size, shown only when there's something in the bin
+    // and the server has reported a non-zero tally (it refreshes lazily).
+    const sizeEl = /** @type {HTMLElement|null} */ (binBtn.querySelector('.conversation-bin-size'));
+    if (sizeEl) {
+      if (count > 0 && sizeBytes > 0) {
+        sizeEl.textContent = formatBytes(sizeBytes);
+        sizeEl.hidden = false;
+      } else {
+        sizeEl.textContent = '';
+        sizeEl.hidden = true;
+      }
+    }
+    if (count > 0) {
+      const items = `${count} ${count === 1 ? 'conversation' : 'conversations'}`;
+      binBtn.title = sizeBytes > 0
+        ? `View binned conversations — ${items} (${formatBytes(sizeBytes)})`
+        : `View binned conversations — ${items}`;
+    } else {
+      binBtn.title = 'View binned conversations';
     }
 
     // Convert Map to array for rendering

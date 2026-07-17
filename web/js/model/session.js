@@ -279,6 +279,17 @@ class Session {
      * @type {number}
      */
     this.binnedCount = 0;
+
+    /**
+     * Approximate on-disk size, in bytes, of .juggler/trash/ (all binned
+     * conversations). Server-authoritative but only occasionally refreshed
+     * (a low-priority background monitor recomputes it), so treat it as a
+     * cosmetic hint, not an exact figure. Sourced from GET /api/session and
+     * the bin listing; 0 means unknown/empty. Drives the "(50 MB)" suffix on
+     * the Bin button and the Empty-Bin action.
+     * @type {number}
+     */
+    this.binSizeBytes = 0;
   }
 
   /**
@@ -964,6 +975,7 @@ class Session {
         );
         this._conversationNames = { ...names };
         this.binnedCount = Number(/** @type {any} */(data).binnedCount) || 0;
+        this.binSizeBytes = Number(/** @type {any} */(data).binSizeBytes) || 0;
 
         const services = this.getServices();
         if (!services) {
@@ -1598,6 +1610,9 @@ class Session {
    */
   async listBinnedConversations() {
     const resp = await this._apiService.listBinnedConversations();
+    // Refresh the cached folder size from the same authoritative response so
+    // the Bin button and Empty-Bin action reflect the latest server tally.
+    this.binSizeBytes = Number(/** @type {any} */ (resp)?.binSizeBytes) || 0;
     return (resp && resp.binned) || [];
   }
 
@@ -1619,6 +1634,7 @@ class Session {
   async emptyBin() {
     await this._apiService.emptyBin();
     this.binnedCount = 0;
+    this.binSizeBytes = 0;
   }
 
   /**
@@ -1751,6 +1767,7 @@ class Session {
     );
     this._conversationNames = { ...names };
     this.binnedCount = Number(/** @type {any} */(data).binnedCount) || 0;
+    this.binSizeBytes = Number(/** @type {any} */(data).binSizeBytes) || 0;
     if (data.metadata) {
       this.metadata = data.metadata;
       this._notify('session:metadata-changed', {

@@ -10,9 +10,18 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"time"
 
 	"juggler/internal/jlog"
 )
+
+// binSizeInterval is how often the low-priority background monitor recomputes
+// the on-disk size of .juggler/trash/ as a backstop. Bin contents change
+// rarely and the tally is only cosmetic (a "(50 MB)" hint on the Bin button
+// and Empty-Bin action), so this is deliberately coarse; user-initiated
+// bin/restore/delete/empty operations nudge an immediate recompute on top of
+// it (see kickBinSizeRecompute).
+const binSizeInterval = 5 * time.Minute
 
 // SessionManager owns the in-memory *Session and serializes all access via a
 // single goroutine. Operations are typed closures sent over read/write
@@ -34,6 +43,9 @@ type SessionManager struct {
 	shutdownOnce sync.Once
 	scratchDir   string // non-empty in no-project mode; removed on Shutdown
 	projectPath  string
+	// binSizeKick nudges the background bin-size monitor to recompute now
+	// (buffered/size-1: sends are non-blocking and coalesce).
+	binSizeKick chan struct{}
 }
 
 // sessionState is the mutable cell owned by the actor goroutine. Closures
@@ -41,6 +53,10 @@ type SessionManager struct {
 type sessionState struct {
 	store   *FileSessionStore
 	session *Session
+	// binSizeBytes caches the on-disk size of .juggler/trash/, refreshed by
+	// the background bin-size monitor. Read on the actor; written only via a
+	// task the monitor posts, so it never needs a lock.
+	binSizeBytes int64
 }
 
 // sessionTask is the unit of work the actor goroutine runs.
@@ -94,9 +110,64 @@ func startManager(store *FileSessionStore, projectPath, scratchDir string) *Sess
 		shutdownChan: make(chan struct{}),
 		scratchDir:   scratchDir,
 		projectPath:  projectPath,
+		binSizeKick:  make(chan struct{}, 1),
 	}
 	go m.run()
+	go m.runBinSizeMonitor(store)
 	return m
+}
+
+// runBinSizeMonitor is a low-priority background goroutine that keeps
+// sessionState.binSizeBytes fresh. It recomputes on a coarse ticker and
+// whenever a bin mutation nudges binSizeKick, then posts the result to the
+// actor via writeChan so the cached value is only ever mutated on the actor
+// goroutine. The size walk itself runs here, off the actor, so a large bin
+// never stalls session reads/writes. store is captured directly (its
+// projectPath is immutable and BinSizeBytes touches no in-memory index), so
+// this goroutine shares no mutable state with the actor.
+func (m *SessionManager) runBinSizeMonitor(store *FileSessionStore) {
+	ticker := time.NewTicker(binSizeInterval)
+	defer ticker.Stop()
+
+	recompute := func() {
+		size := store.BinSizeBytes()
+		select {
+		case m.writeChan <- func(s *sessionState) { s.binSizeBytes = size }:
+		case <-m.shutdownChan:
+		}
+	}
+
+	recompute() // seed the cache promptly after startup
+	for {
+		select {
+		case <-ticker.C:
+			recompute()
+		case <-m.binSizeKick:
+			recompute()
+		case <-m.shutdownChan:
+			return
+		}
+	}
+}
+
+// kickBinSizeRecompute nudges the background monitor to recompute the bin
+// size now, without blocking: a full kick channel already means a recompute
+// is pending, so the extra signal is dropped.
+func (m *SessionManager) kickBinSizeRecompute() {
+	select {
+	case m.binSizeKick <- struct{}{}:
+	default:
+	}
+}
+
+// BinSizeBytes returns the most recently cached on-disk size of
+// .juggler/trash/. The value is maintained by the background monitor, so a
+// read is a cheap in-memory lookup — it never triggers a filesystem walk.
+func (m *SessionManager) BinSizeBytes() int64 {
+	v, _ := runRead(m, func(s *sessionState) (int64, error) {
+		return s.binSizeBytes, nil
+	})
+	return v
 }
 
 // run is the actor goroutine that owns the session and all file I/O.
@@ -408,6 +479,9 @@ func (m *SessionManager) BinConversation(convID string) error {
 		}
 		return struct{}{}, nil
 	})
+	if err == nil {
+		m.kickBinSizeRecompute()
+	}
 	return err
 }
 
@@ -426,6 +500,9 @@ func (m *SessionManager) RestoreConversation(convID string) error {
 		}
 		return struct{}{}, nil
 	})
+	if err == nil {
+		m.kickBinSizeRecompute()
+	}
 	return err
 }
 
@@ -444,15 +521,22 @@ func (m *SessionManager) DeleteBinnedConversation(convID string) error {
 	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
 		return struct{}{}, s.store.removeBinnedConversationFiles(convID)
 	})
+	if err == nil {
+		m.kickBinSizeRecompute()
+	}
 	return err
 }
 
 // EmptyBin permanently removes (via OS trash) every conversation currently in
 // .juggler/bin/, returning the ids removed.
 func (m *SessionManager) EmptyBin() ([]string, error) {
-	return runWrite(m, func(s *sessionState) ([]string, error) {
+	ids, err := runWrite(m, func(s *sessionState) ([]string, error) {
 		return s.store.EmptyBin()
 	})
+	if err == nil {
+		m.kickBinSizeRecompute()
+	}
+	return ids, err
 }
 
 // GetRuntimeInfo returns the runtime info for this manager's project.

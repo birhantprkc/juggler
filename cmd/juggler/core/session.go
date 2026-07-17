@@ -7,6 +7,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -656,6 +657,34 @@ func (fs *FileSessionStore) EmptyBin() ([]string, error) {
 		removed = append(removed, id)
 	}
 	return removed, nil
+}
+
+// dirSizeBytes returns the total size, in bytes, of every regular file under
+// root (recursively). A missing directory (an empty bin never creates
+// .juggler/trash) yields 0. Per-entry errors are swallowed rather than
+// aborting the walk, so a file vanishing mid-scan (e.g. a concurrent
+// EmptyBin) still produces a sensible tally instead of nothing.
+func dirSizeBytes(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// BinSizeBytes returns the on-disk size of .juggler/trash/ (all binned
+// conversations). It walks the filesystem and touches none of the store's
+// in-memory indexes, so — unlike the other FileSessionStore methods — it is
+// safe to call off the SessionManager actor goroutine (the periodic bin-size
+// monitor does exactly that).
+func (fs *FileSessionStore) BinSizeBytes() int64 {
+	return dirSizeBytes(fs.binDir())
 }
 
 // lastActivityTime returns the wall-clock time of the most recent real

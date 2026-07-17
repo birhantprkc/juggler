@@ -178,6 +178,7 @@ func (api *SessionAPI) HandleGetSession(w http.ResponseWriter, r *http.Request) 
 		"messageHistory":       sess.MessageHistory,
 		"metadata":             sess.Metadata,
 		"binnedCount":          len(api.manager().ListBinnedConversations()),
+		"binSizeBytes":         api.manager().BinSizeBytes(),
 	}
 
 	WriteJSON(w, r, 0, response)
@@ -705,7 +706,10 @@ func (api *SessionAPI) HandleRestoreConversation(w http.ResponseWriter, r *http.
 // most-recently-modified first.
 func (api *SessionAPI) HandleListBinnedConversations(w http.ResponseWriter, r *http.Request) {
 	list := api.manager().ListBinnedConversations()
-	WriteJSON(w, r, 0, map[string]any{"binned": list})
+	WriteJSON(w, r, 0, map[string]any{
+		"binned":       list,
+		"binSizeBytes": api.manager().BinSizeBytes(),
+	})
 }
 
 // HandleDeleteBinnedConversation permanently removes a single conversation

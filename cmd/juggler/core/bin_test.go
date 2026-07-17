@@ -97,6 +97,40 @@ func TestRestoreConversationRoundTrip(t *testing.T) {
 	}
 }
 
+// BinSizeBytes tallies the on-disk size of everything under .juggler/trash/:
+// zero for an empty bin (no trash dir yet), non-trivial once a conversation
+// carrying a known payload is binned, and back to zero after EmptyBin.
+func TestBinSizeBytesReflectsContents(t *testing.T) {
+	store, _ := newStoreForTest(t)
+
+	if got := store.BinSizeBytes(); got != 0 {
+		t.Fatalf("BinSizeBytes on empty bin = %d, want 0", got)
+	}
+
+	id, _, dir, err := store.CreateConversationFolder("Alpha", "")
+	if err != nil {
+		t.Fatalf("CreateConversationFolder: %v", err)
+	}
+	const payload = 4096
+	if err := os.WriteFile(filepath.Join(dir, "blob.bin"), make([]byte, payload), 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if err := store.BinConversation(id); err != nil {
+		t.Fatalf("BinConversation: %v", err)
+	}
+
+	if got := store.BinSizeBytes(); got < payload {
+		t.Fatalf("BinSizeBytes after binning = %d, want >= %d", got, payload)
+	}
+
+	if _, err := store.EmptyBin(); err != nil {
+		t.Fatalf("EmptyBin: %v", err)
+	}
+	if got := store.BinSizeBytes(); got != 0 {
+		t.Fatalf("BinSizeBytes after EmptyBin = %d, want 0", got)
+	}
+}
+
 // EmptyBin removes every binned conversation; restored ones are untouched.
 func TestEmptyBin(t *testing.T) {
 	store, _ := newStoreForTest(t)
