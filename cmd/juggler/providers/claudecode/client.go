@@ -384,6 +384,30 @@ func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, 
 		c.activeSession.tearDownLiveCLI()
 	}
 
+	// The CLI answers tools/list once at spawn and freezes that snapshot for its
+	// whole lifetime. When MCP servers finish discovery (or start/stop) between
+	// turns, req.Tools changes but the live CLI still advertises its spawn-time
+	// set — so the model can neither see nor call the newly-discovered tools
+	// (it gets "No such tool available"). Recycle the CLI when the tool-set
+	// fingerprint diverges; tearDownLiveCLI preserves sessionUUID/history, so the
+	// resume respawn re-runs tools/list with the current set and the prompt cache
+	// re-warms (a warm-history cold-cache restart, not a cold start).
+	//
+	// Only at a turn boundary (no pending tools). A CLI parked mid-round inside a
+	// tools/call must receive its result to unwedge — tearing it down here would
+	// strand the parked call, and the CLI can't be re-advertised a new tools/list
+	// mid-round anyway. When pendingTools is non-empty the turn either continues
+	// (regimeContinue, must keep the CLI) or soft-resets (regimeResumeDelta, which
+	// tears the CLI down itself); either way the tool-set change lands correctly
+	// on the next boundary spawn. Skipping here keeps that invariant.
+	if c.activeSession != nil && c.activeSession.hasLiveCLI() &&
+		len(c.activeSession.pendingTools) == 0 &&
+		c.activeSession.live.toolSig != hashToolNames(req.Tools) {
+		jlog.Info("claudecode: MCP tool set changed since spawn — recycling CLI session to re-advertise tools/list conv=%s",
+			shortID(req.ConversationID))
+		c.activeSession.tearDownLiveCLI()
+	}
+
 	// Cold-start path: no in-memory session yet, but a sidecar from a
 	// prior juggler run may exist on disk. Load so the first turn after
 	// restart can --resume directly.

@@ -143,6 +143,11 @@ func (c *Client) attachControlProtocol(tools []provider.ToolDefinition) error {
 	}
 	cp.tools = func() ([]json.RawMessage, error) { return marshalled, nil }
 	c.activeSession.live.control = cp
+	// Record the tool-set fingerprint this CLI is being spawned with. The CLI
+	// answers tools/list once and freezes it, so dispatchTurn compares a later
+	// turn's req.Tools against this to decide whether a respawn is needed to
+	// surface newly-discovered (or removed) MCP tools. See hashToolNames.
+	c.activeSession.live.toolSig = hashToolNames(tools)
 	// Launch the continuous stdout reader now that the control protocol is
 	// attached: it demuxes control frames to the actor and forwards content
 	// to s.content. Started before sendInitialize so the CLI's initialize

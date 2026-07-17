@@ -397,6 +397,15 @@ type liveCLI struct {
 	// in-process MCP server via cp.stdin. Nil for one-shot -p sessions
 	// (which exit before they'd hit an MCP call). See control_protocol.go.
 	control *controlProtocol
+
+	// toolSig is the fnv fingerprint (hashToolNames) of the tool-name set this
+	// CLI was spawned with and advertised over tools/list. The CLI freezes that
+	// list for its whole lifetime, so when a later turn's req.Tools set differs
+	// (MCP servers finished discovering, or started/stopped mid-conversation)
+	// dispatchTurn tears this CLI down and respawns so tools/list re-runs with
+	// the current set. Lives on liveCLI (not activeSession) so it dies with the
+	// process it describes and a respawn re-captures it fresh.
+	toolSig uint64
 }
 
 // hasLiveCLI reports whether a CLI process is currently alive and ready to

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -87,6 +88,30 @@ func hashMessages(msgs []provider.Message, n int) []uint64 {
 		out[i] = hashMessage(&msgs[i])
 	}
 	return out
+}
+
+// hashToolNames fingerprints the SET of tool names advertised to a CLI, order-
+// independent. The claude CLI answers tools/list exactly once per spawn and
+// freezes that snapshot for the process's whole lifetime, so a live CLI keeps
+// exposing whatever tools existed at spawn time. When MCP servers finish
+// discovery (or start/stop) mid-conversation, req.Tools changes but the live
+// CLI's frozen list does not — the model can't see or call the new tools until
+// the CLI is respawned. dispatchTurn compares this fingerprint against the live
+// CLI's spawn-time signature and tears the CLI down (preserving the warm resume
+// anchor) when they differ, so the respawn re-runs tools/list with the fresh
+// set. Names are sorted first so a pure reordering of req.Tools does NOT force a
+// needless respawn.
+func hashToolNames(tools []provider.ToolDefinition) uint64 {
+	names := make([]string, len(tools))
+	for i := range tools {
+		names[i] = tools[i].Name
+	}
+	sort.Strings(names)
+	h := fnv.New64a()
+	for _, n := range names {
+		_, _ = fmt.Fprintf(h, "%s\x00", n)
+	}
+	return h.Sum64()
 }
 
 // upstreamCacheTTL is how long the upstream prompt cache (Anthropic's, when

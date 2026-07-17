@@ -784,3 +784,105 @@ func TestCancelParkedTool_ThenRollback_StartsFresh(t *testing.T) {
 		t.Errorf("rollback past the committed prefix must start fresh; got regime=%d", dec.Regime)
 	}
 }
+
+// toolDef builds a minimal provider.ToolDefinition for the tool-set tests.
+func toolDef(name string) provider.ToolDefinition {
+	return provider.ToolDefinition{
+		Name:        name,
+		Description: name,
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}
+}
+
+// TestHashToolNames_OrderIndependentAndSetSensitive pins the two properties the
+// respawn-on-tool-change gate relies on: reordering the same tools yields the
+// SAME fingerprint (so a cosmetic req.Tools shuffle never forces a needless
+// recycle), while adding or removing a tool yields a DIFFERENT one (so a real
+// MCP discovery change is detected).
+func TestHashToolNames_OrderIndependentAndSetSensitive(t *testing.T) {
+	a := []provider.ToolDefinition{toolDef("bash"), toolDef("read")}
+	reordered := []provider.ToolDefinition{toolDef("read"), toolDef("bash")}
+	if hashToolNames(a) != hashToolNames(reordered) {
+		t.Error("hashToolNames must be order-independent; a reordering changed the fingerprint")
+	}
+	grown := []provider.ToolDefinition{toolDef("bash"), toolDef("read"), toolDef("mcp__github__create_issue")}
+	if hashToolNames(a) == hashToolNames(grown) {
+		t.Error("hashToolNames must change when a tool is added")
+	}
+	if hashToolNames(nil) == hashToolNames(a) {
+		t.Error("hashToolNames of empty set must differ from a non-empty set")
+	}
+}
+
+// TestKeepAlive_ToolSetChangeRecyclesCLI is the MCP-discovery-race regression.
+// The claude CLI answers tools/list exactly once per spawn and freezes that
+// snapshot for the process's whole lifetime, so a live CLI keeps advertising its
+// spawn-time tool set. When MCP servers finish discovering mid-conversation,
+// req.Tools grows — and the model must be able to see AND call the new tools on
+// the very next turn, not hit "No such tool available". dispatchTurn detects the
+// tool-set change (hashToolNames vs the live CLI's spawn-time signature) and
+// recycles the CLI so tools/list re-runs with the current set, while --resume
+// keeps the prompt cache warm. A cosmetic reorder of an unchanged set must NOT
+// trigger a recycle.
+func TestKeepAlive_ToolSetChangeRecyclesCLI(t *testing.T) {
+	tracePath := installFakeClaude(t, fakeModeUntilClose, "uuid-toolset")
+	c := mkClient(t, "claude-sonnet-4-6")
+	convID := "conv-toolset"
+	ctx := context.Background()
+
+	base := []provider.ToolDefinition{toolDef("bash"), toolDef("read")}
+
+	// Turn 1: spawn with the base tool set.
+	msgs := []provider.Message{userMsg("turn 1")}
+	if _, err := c.streamMessage(ctx, provider.MessageRequest{
+		ConversationID: convID, SystemPrompt: "sys", Messages: msgs, Tools: base,
+	}, nopCallback()); err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if !c.activeSession.hasLiveCLI() {
+		t.Fatal("turn 1 should leave a live persistent CLI")
+	}
+
+	// Turn 2: the SAME tool set, only reordered — must NOT respawn. The live CLI
+	// already advertises exactly these tools, so a recycle would waste the cache.
+	reordered := []provider.ToolDefinition{toolDef("read"), toolDef("bash")}
+	msgs = append(msgs, assistantMsg("r1"), userMsg("turn 2"))
+	if _, err := c.streamMessage(ctx, provider.MessageRequest{
+		ConversationID: convID, SystemPrompt: "sys", Messages: msgs, Tools: reordered,
+	}, nopCallback()); err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	if got := len(readTrace(t, tracePath)); got != 1 {
+		t.Fatalf("turn 2 with an unchanged (reordered) tool set spawned %d CLIs; want 1 (live CLI reused)", got)
+	}
+
+	// Turn 3: an MCP server finished discovery — req.Tools now carries a NEW tool.
+	// The live CLI's frozen tools/list can't surface it, so dispatchTurn must
+	// recycle and respawn via --resume so tools/list re-advertises the full set.
+	grown := []provider.ToolDefinition{toolDef("bash"), toolDef("read"), toolDef("mcp__github__create_issue")}
+	msgs = append(msgs, assistantMsg("r2"), userMsg("turn 3"))
+	if _, err := c.streamMessage(ctx, provider.MessageRequest{
+		ConversationID: convID, SystemPrompt: "sys", Messages: msgs, Tools: grown,
+	}, nopCallback()); err != nil {
+		t.Fatalf("turn 3: %v", err)
+	}
+
+	trace := readTrace(t, tracePath)
+	if len(trace) != 2 {
+		t.Fatalf("tool-set change spawned %d CLIs total; want 2 (turn 1 spawn + turn 3 recycle)", len(trace))
+	}
+	// The recycle respawn must stay warm: --resume the captured uuid, not a cold start.
+	if trace[1].ResumeID != "uuid-toolset" {
+		t.Errorf("recycle spawn ResumeID = %q, want uuid-toolset (recycle must stay warm)", trace[1].ResumeID)
+	}
+	// The recycled CLI now carries the grown tool-set signature, so the next turn
+	// with the same set won't recycle again.
+	if !c.activeSession.hasLiveCLI() {
+		t.Fatal("turn 3 should leave a live persistent CLI")
+	}
+	if c.activeSession.live.toolSig != hashToolNames(grown) {
+		t.Error("recycled CLI's toolSig does not match the grown tool set")
+	}
+
+	c.dropSession(convID)
+}
