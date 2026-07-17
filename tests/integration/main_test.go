@@ -42,6 +42,15 @@ var testServerPool chan testServerEntry
 // pool shutdown. Empty when unset (e.g. the -short path).
 var testLogDir string
 
+// testSkillsDir is an empty throwaway directory the pool points every
+// subprocess's user-scoped skill discovery at (via JUGGLER_SKILLS_USER_DIR), so
+// a server — which inherits the developer's real $HOME — never discovers their
+// personal ~/.juggler or ~/.agents skills. A discovered skill auto-instantiates
+// a Skills context item into every conversation, which would perturb thread
+// item-count assertions and make tests pass or fail by the host's installed
+// skills. Created in TestMain, removed on pool shutdown.
+var testSkillsDir string
+
 // poolConfig controls the test-pool topology.
 //
 //   - JUGGLER_TEST_WINDOWS=N: number of Wails-window subprocesses (default 1).
@@ -130,6 +139,16 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// Isolate user-scoped skill discovery to an empty dir so the developer's
+	// real ~/.juggler and ~/.agents skills never leak into a test conversation
+	// (see testSkillsDir).
+	if dir, err := os.MkdirTemp("", "juggler-test-skills-*"); err == nil {
+		testSkillsDir = dir
+	} else {
+		fmt.Fprintf(os.Stderr, "cannot create test skills dir: %v\n", err)
+		os.Exit(1)
+	}
+
 	testServerPool = make(chan testServerEntry, cfg.totalSlots())
 	startedPool := &poolHandle{}
 
@@ -209,6 +228,9 @@ func (p *poolHandle) shutdown() {
 		if testLogDir != "" {
 			os.RemoveAll(testLogDir)
 		}
+		if testSkillsDir != "" {
+			os.RemoveAll(testSkillsDir)
+		}
 	})
 }
 
@@ -247,6 +269,12 @@ func startJugglerSubprocess(binary, fixture string, iframes int) (testServerEntr
 	// so the run never writes into the user's real application-log directory.
 	if testLogDir != "" {
 		cmd.Env = append(cmd.Env, "JUGGLER_LOG_DIR="+testLogDir)
+	}
+	// Point user-scoped skill discovery at an empty throwaway dir (see
+	// testSkillsDir) so the developer's real ~/.juggler / ~/.agents skills never
+	// leak in as an auto-instantiated Skills context item and skew item counts.
+	if testSkillsDir != "" {
+		cmd.Env = append(cmd.Env, "JUGGLER_SKILLS_USER_DIR="+testSkillsDir)
 	}
 	// Put the child in its own process group so we can kill the whole group
 	// (parent + any grandchildren) on cleanup. Without this, signals to the

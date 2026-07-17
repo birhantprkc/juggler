@@ -140,7 +140,29 @@ func (api *SkillsAPI) roots() []skillRoot {
 			skillRoot{scope: "project", source: "agents", dir: filepath.Join(project, ".agents", "skills")},
 		)
 	}
-	roots = append(roots, skillRoot{scope: "user", source: "juggler", dir: filepath.Join(userpaths.ConfigDir(), "skills")})
+	return append(roots, userSkillRoots()...)
+}
+
+// userSkillRoots returns the two user-scoped skill roots: user-juggler under the
+// config dir (<ConfigDir>/skills) and user-agents under the home dir
+// ($HOME/.agents/skills).
+//
+// JUGGLER_SKILLS_USER_DIR relocates BOTH beneath a single base
+// (<base>/juggler/skills and <base>/agents/skills), leaving project roots and
+// everything else untouched. The browser integration harness sets it to an empty
+// throwaway dir so a server subprocess — which inherits the developer's real
+// $HOME — never discovers their personal ~/.juggler or ~/.agents skills. Such a
+// skill would auto-instantiate a Skills context item into every conversation and
+// perturb assertions on thread item counts, making tests pass or fail by the
+// host's installed skills. Unset (production), behavior is unchanged.
+func userSkillRoots() []skillRoot {
+	if base := os.Getenv("JUGGLER_SKILLS_USER_DIR"); base != "" {
+		return []skillRoot{
+			{scope: "user", source: "juggler", dir: filepath.Join(base, "juggler", "skills")},
+			{scope: "user", source: "agents", dir: filepath.Join(base, "agents", "skills")},
+		}
+	}
+	roots := []skillRoot{{scope: "user", source: "juggler", dir: filepath.Join(userpaths.ConfigDir(), "skills")}}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		roots = append(roots, skillRoot{scope: "user", source: "agents", dir: filepath.Join(home, ".agents", "skills")})
 	}
