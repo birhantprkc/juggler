@@ -229,5 +229,49 @@ export async function runTests(_ctx) {
     assert(summary.summary.includes('boom'), 'error message must surface');
   });
 
+  // ---- auto-instantiate / seeding path -----------------------------------
+
+  await test('properties panel lists the available skills, not just the type name', async () => {
+    const item = makeItem(oneSkill, oneBody);
+    const container = document.createElement('div');
+    await item._renderPanel(container);
+    const text = container.textContent || '';
+    assert(text !== 'skill', 'panel must not be just the bare type name');
+    assert(text.includes('pdf-tools'), `panel should list the skill name; got:\n${text}`);
+    assert(text.includes('Handle PDFs'), `panel should show the skill description; got:\n${text}`);
+    assert(/injected into the system prompt/i.test(text), 'panel should explain the item is injected');
+  });
+
+  await test('properties panel marks a skill loaded once activated in this thread', async () => {
+    const item = makeItem(oneSkill, oneBody);
+    await item.execute({ name: 'pdf-tools' });
+    const container = document.createElement('div');
+    await item._renderPanel(container);
+    assert(/loaded/i.test(container.textContent || ''), 'an activated skill should be marked loaded in the panel');
+  });
+
+  await test('properties panel shows an empty state when no skills exist', async () => {
+    const item = makeItem([]);
+    const container = document.createElement('div');
+    await item._renderPanel(container);
+    assert(/No skills available/i.test(container.textContent || ''), 'empty catalog should show an empty-state note');
+  });
+
+  await test('seeding via handleToolCall with empty params succeeds (no base onToolCall throw)', async () => {
+    // When ≥1 skill exists the item auto-instantiates and is seeded through
+    // executeContextItem -> handleToolCall('skill', {}). Without a no-op
+    // onToolCall override this hit the base class throw
+    // ("onToolCall() must be implemented by subclass") and injected that error
+    // as a context-item message. Guard the no-op override stays in place.
+    const item = makeItem(oneSkill, oneBody);
+    const ctx = { session, conversation };
+    const result = await item.handleToolCall('skill', {}, ctx);
+    assert(result.success === true, `seed must succeed; got error: ${result.error}`);
+    assert(
+      !/must be implemented by subclass/.test(result.error || ''),
+      'seed must not surface the base-class onToolCall error'
+    );
+  });
+
   return { passed, failed, errors };
 }

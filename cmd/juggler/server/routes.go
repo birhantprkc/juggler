@@ -370,7 +370,22 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/user-commands/{scope}/{name}", s.userCommandsAPI.HandleDelete).Methods("DELETE")
 
 	api.HandleFunc("/skills", s.skillsAPI.HandleList).Methods("GET")
-	api.HandleFunc("/skills/{scope}/{source}/{name}", s.skillsAPI.HandleGet).Methods("GET")
+	// Marketplace routes are registered before the {scope}/{source}/{name}
+	// discovery routes so their literal prefixes (registries, catalog, install)
+	// win in gorilla/mux's registration-order match, and the discovery vars are
+	// constrained to real scopes so a marketplace path can never satisfy them.
+	api.HandleFunc("/skills/registries", s.skillsRegistryAPI.HandleListRegistries).Methods("GET")
+	api.HandleFunc("/skills/registries", s.skillsRegistryAPI.HandleAddRegistry).Methods("POST")
+	// Register the literal /defaults routes before the {id} capture so a removed
+	// default can be listed and restored by its seed id.
+	api.HandleFunc("/skills/registries/defaults", s.skillsRegistryAPI.HandleListDefaultRegistries).Methods("GET")
+	api.HandleFunc("/skills/registries/defaults/{id}", s.skillsRegistryAPI.HandleRestoreDefaultRegistry).Methods("POST")
+	api.HandleFunc("/skills/registries/{id}", s.skillsRegistryAPI.HandleDeleteRegistry).Methods("DELETE")
+	api.HandleFunc("/skills/catalog", s.skillsRegistryAPI.HandleCatalog).Methods("GET")
+	api.HandleFunc("/skills/catalog/entry", s.skillsRegistryAPI.HandleCatalogEntry).Methods("GET")
+	api.HandleFunc("/skills/install", s.skillsRegistryAPI.HandleInstall).Methods("POST")
+	api.HandleFunc("/skills/{scope:project|user}/{source}/{name}", s.skillsAPI.HandleGet).Methods("GET")
+	api.HandleFunc("/skills/{scope:project|user}/{source}/{name}", s.skillsRegistryAPI.HandleUninstall).Methods("DELETE")
 
 	api.HandleFunc("/version", s.handleVersion).Methods("GET")
 	api.HandleFunc("/update-status", s.handleUpdateStatus).Methods("GET")

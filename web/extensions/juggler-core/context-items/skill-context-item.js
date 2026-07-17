@@ -5,7 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { formatFileSize } from 'juggler/item-utils';
-import { smartTruncate } from 'juggler/ui';
+import { smartTruncate, createElement } from 'juggler/ui';
 import { getAvailableSkills, fetchSkillBody } from '../../../js/services/skills.js';
 
 /**
@@ -42,7 +42,6 @@ class SkillContextItem extends ContextItem {
     idPrefix: 'SKILL',
     requiresApproval: false,
     userAddable: false,
-    preventUserDeletion: true,
     autoInstantiate: true,
     syntheticToolName: 'skill',
     contextPosition: /** @type {const} */ ('system')
@@ -119,6 +118,19 @@ class SkillContextItem extends ContextItem {
       return false;
     }
   }
+
+  /**
+   * No-op: seeding/auto-instantiating the Skills item needs no parameters — the
+   * standing "## Skills" list is built by createContextText() from the skills
+   * catalog, so the auto-instantiate path just needs the item to exist. The real
+   * `skill` tool loads a body through execute(), not this path. Without this
+   * override the base onToolCall() throws and the seed is injected as an error
+   * context-item message. Mirrors MemoryContextItem.onToolCall.
+   * @param {string} _toolName - Tool name (unused)
+   * @param {Record<string, any>} _params - Tool parameters (unused)
+   * @returns {Promise<void>}
+   */
+  async onToolCall(_toolName, _params) {}
 
   /** @returns {string} Item title */
   getTitle() {
@@ -323,6 +335,74 @@ class SkillContextItem extends ContextItem {
   async createContextText(_contextParams) {
     const skills = await this._listSkills();
     return SkillContextItem._buildBlock(skills);
+  }
+
+  /**
+   * Properties panel: the user-facing view of exactly what this item
+   * contributes — the standing "## Skills" list injected into the system prompt
+   * every turn, one row per available skill, with the ones already loaded into
+   * this conversation marked. Without this override the base renderer shows only
+   * the item type ("skill"). Reads the catalog live and populates async.
+   * @override
+   * @returns {HTMLElement} Panel element
+   */
+  createPropertiesPanelElement() {
+    const container = createElement('div', 'skill-ci-expanded');
+    // Fire-and-forget async populate (sync signature, mirrors memory/file-content).
+    this._renderPanel(container);
+    return container;
+  }
+
+  /**
+   * Populate (or refresh) the panel from the live skills catalog.
+   * @param {HTMLElement} container - Panel container to fill
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _renderPanel(container) {
+    let skills = /** @type {any[]} */ ([]);
+    try {
+      skills = await this._listSkills();
+    } catch {
+      skills = [];
+    }
+    container.textContent = '';
+
+    container.appendChild(
+      createElement(
+        'div',
+        'skill-panel-note',
+        'Agent Skills the assistant can load on demand. This list (name + description) is injected into the ' +
+          'system prompt every turn; the assistant loads a skill with the skill tool, which adds that skill\u2019s ' +
+          'full instructions to the conversation.'
+      )
+    );
+
+    if (!Array.isArray(skills) || skills.length === 0) {
+      container.appendChild(createElement('div', 'skill-empty', 'No skills available.'));
+      return;
+    }
+
+    const loaded = this._loadedSet();
+    const list = createElement('ul', 'skill-list');
+    for (const skill of skills) {
+      const li = createElement('li', 'skill-entry');
+      const head = createElement('div', 'skill-entry-head');
+      head.appendChild(createElement('span', 'skill-name', skill.name));
+      if (skill.scope && skill.source) {
+        head.appendChild(createElement('span', 'skill-origin', `${skill.scope}/${skill.source}`));
+      }
+      if (loaded.has(skill.name)) {
+        head.appendChild(createElement('span', 'skill-loaded', 'loaded'));
+      }
+      li.appendChild(head);
+      const desc = SkillContextItem._oneLine(skill.description || '');
+      if (desc) {
+        li.appendChild(createElement('div', 'skill-desc', desc));
+      }
+      list.appendChild(li);
+    }
+    container.appendChild(list);
   }
 
   /**

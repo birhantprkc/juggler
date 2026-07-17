@@ -18,6 +18,7 @@ import { ShortcutsTab } from './settings/shortcuts-tab.js';
 import { InfoCardsTab } from './settings/info-cards-tab.js';
 import { LogsTab } from './settings/logs-tab.js';
 import { McpTab, AcpTab } from './settings/subprocess-tabs.js';
+import { SkillsTab } from './settings/skills-tab.js';
 
 /**
  * The shared payload the shell's loadConfig() fans out to every tab.
@@ -74,6 +75,7 @@ class SettingsPanel extends HTMLElement {
       connectivity: new ConnectivityTab(this),
       mcp: new McpTab(this),
       acp: new AcpTab(this),
+      skills: new SkillsTab(this),
       notifications: new NotificationsTab(this),
       'info-cards': new InfoCardsTab(this),
       shortcuts: new ShortcutsTab(this),
@@ -121,6 +123,7 @@ class SettingsPanel extends HTMLElement {
                         <button class="settings-tab" data-tab="default-model">Provider settings</button>
                         <button class="settings-tab" data-tab="connectivity">Connectivity</button>
                         <button class="settings-tab" data-tab="extensions">Extensions</button>
+                        <button class="settings-tab" data-tab="skills">Skills</button>
                         <button class="settings-tab" data-tab="mcp">MCP servers</button>
                         <button class="settings-tab" data-tab="acp">ACP agents</button>
                         <button class="settings-tab" data-tab="notifications">Notifications</button>
@@ -158,8 +161,17 @@ class SettingsPanel extends HTMLElement {
                     </section>
 
                      <section class="settings-tab-content" id="tab-extensions">
-                         <plugin-catalog></plugin-catalog>
-                    </section>
+                          <plugin-catalog></plugin-catalog>
+                     </section>
+
+                      <section class="settings-tab-content" id="tab-skills">
+                          <p class="settings-description">
+                              Discover and install Agent Skills from external registries, or manage
+                              the ones you have. Installing downloads and writes files &mdash; it never
+                              runs anything; a skill's scripts run later only under normal approval.
+                          </p>
+                          <div class="skills-tab" id="skills-tab-root"></div>
+                      </section>
 
                     <section class="settings-tab-content" id="tab-mcp">
                         <p class="settings-description">

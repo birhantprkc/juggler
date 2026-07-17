@@ -98,6 +98,7 @@ type Server struct {
 	extensionsAPI     *handlers.ExtensionsAPI
 	userCommandsAPI   *handlers.UserCommandsAPI
 	skillsAPI         *handlers.SkillsAPI
+	skillsRegistryAPI *handlers.SkillsRegistryAPI
 	configAPI         *handlers.ConfigAPI
 	defaultModelStore *core.DefaultModelStore
 	recentsStore      *core.RecentsStore
@@ -280,6 +281,7 @@ func New(cfg Config) (*Server, error) {
 	s.extensionsAPI = extensionsAPI
 	s.userCommandsAPI = handlers.NewUserCommandsAPI(s.ProjectPath)
 	s.skillsAPI = handlers.NewSkillsAPI(s.ProjectPath)
+	s.skillsRegistryAPI = handlers.NewSkillsRegistryAPI(s.ProjectPath, s.skillsAPI)
 	s.configAPI = configAPI
 	s.defaultModelStore = defaultModelStore
 	s.systemPromptPresetStore = systemPromptPresetStore

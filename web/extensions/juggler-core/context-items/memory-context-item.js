@@ -51,7 +51,6 @@ class MemoryContextItem extends ContextItem {
     idPrefix: 'MEM',
     requiresApproval: false,
     userAddable: false,
-    preventUserDeletion: true,
     autoInstantiate: true,
     watchesFileChanges: true,
     syntheticToolName: 'memory',

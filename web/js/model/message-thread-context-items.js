@@ -85,11 +85,15 @@ export function getContextItems(mt) {
       // Ignore context items that fail to load
     }
   }
-  contextItems.sort((a, b) => {
-    const aUndeletable = /** @type {any} */ (a).preventUserDeletion?.() || false;
-    const bUndeletable = /** @type {any} */ (b).preventUserDeletion?.() || false;
-    return (bUndeletable ? 1 : 0) - (aUndeletable ? 1 : 0);
-  });
+  // Pin system-positioned items (system prompt, memory, skills) to the front.
+  // Keyed on contextPosition, NOT preventUserDeletion: the latter means only
+  // "the user can't delete this" (system prompt alone), and must not double as
+  // the display-ordering signal.
+  const isSystemPositioned = (/** @type {any} */ ci) =>
+    /** @type {any} */ (ci.constructor)?.MANIFEST?.contextPosition === 'system';
+  contextItems.sort(
+    (a, b) => (isSystemPositioned(b) ? 1 : 0) - (isSystemPositioned(a) ? 1 : 0)
+  );
   return contextItems;
 }
 
