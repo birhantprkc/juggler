@@ -23,7 +23,9 @@
  *      no `%VAR%`, no native cmd/PowerShell tokens, no standalone `&`).
  *   3. Repeatedly strip trailing read-only sinks: ` 2>&1`, ` >/dev/null`,
  *      ` 2>/dev/null`, ` >>/dev/null`, ` | <safe-sink>` where `<safe-sink>`
- *      is `cat`, `tail`, `head`, or `wc` with whitelisted args.
+ *      is `cat`, `tail`, `head`, or `wc` with whitelisted args — or `tee`,
+ *      whose file operands (write targets) are gated exactly like a write
+ *      redirect (writeEnabled + inside an allowed path).
  *   4. Strip a leading `cd <path-inside-project> &&` if present.
  *   5. Split on top-level `&&`, `||`, `;` (not splitting inside `( … )` /
  *      `{ …; }` groups). Every sub-segment must be safe; a grouped segment is
@@ -69,7 +71,7 @@ import {
 export { posixNormalize, isPathInsideAllowedRoots, canonicalRoot, isGrantableRoot };
 
 /**
- * @typedef {{type: 'word', text: string, raw: string, start: number, end: number, subst?: string[]}} WordToken
+ * @typedef {{type: 'word', text: string, raw: string, start: number, end: number, subst?: string[], unquotedVar?: boolean}} WordToken
  * @typedef {{type: 'op', text: string, start: number, end: number}} OpToken
  * @typedef {WordToken | OpToken} ShellToken
  * @typedef {{platform: string, allowedRoots: string[], home?: string, patterns?: string[], writeEnabled?: boolean, vars?: Map<string, VarProvenance>}} ApprovalCtx
@@ -267,6 +269,8 @@ export function tokenize(input) {
   let curStart = -1;
   /** @type {string[]} command-substitution inner commands seen in the current word */
   let curSubst = [];
+  /** @type {boolean} whether the current word contains an UNQUOTED expansion (`$NAME`, `${…}`, `$1`, `$@`, `$((…))`) that can word-split / glob at runtime */
+  let curUnquotedVar = false;
   /** @type {Array<{delimiter: string, dashStrip: boolean}>} heredocs whose bodies are consumed at the next newline, FIFO */
   const pendingHeredocs = [];
 
@@ -281,10 +285,12 @@ export function tokenize(input) {
         end: endIdx
       };
       if (curSubst.length > 0) tok.subst = curSubst;
+      if (curUnquotedVar) tok.unquotedVar = true;
       tokens.push(tok);
       cur = '';
       curStart = -1;
       curSubst = [];
+      curUnquotedVar = false;
     }
   };
 
@@ -374,15 +380,80 @@ export function tokenize(input) {
     }
     if (c === '`') return null;
     if (c === '$') {
-      // Bare (unquoted) `$(…)` command substitution: capture it. `$((…))`
-      // arithmetic and bare `$NAME` / `${…}` still bail — an unquoted
-      // variable expansion can re-split into new words/flags, which we
-      // can't reason about statically.
+      // Bare (unquoted) `$(…)` command substitution: capture it structurally
+      // (re-validated only in the pure-assignment path; rejected everywhere
+      // else via its SUBST_SENTINEL).
       if (checkedAt(input, i + 1) === '(' && input[i + 2] !== '(') {
         if (!captureSubst()) return null;
         continue;
       }
-      return null;
+      // Any OTHER unquoted expansion — `$NAME`, `${NAME}`, `$1`, `$$`, `$@`,
+      // `$((expr))` — is kept as LITERAL word text and the word is marked
+      // `unquotedVar`. Unlike a double-quoted expansion, an unquoted one can
+      // word-split / glob-expand at runtime, so a marked word is never trusted
+      // by a builtin handler (see isSegmentSafe / isSafeSinkTail); it can only
+      // be approved by an explicit user glob pattern, whose match is on the
+      // literal command text and is unaffected by word-splitting (the head and
+      // operators are fixed at parse time, before expansion). This mirrors the
+      // double-quoted `$`-handling below, minus the split-safety guarantee.
+      const nx = checkedAt(input, i + 1);
+      if (nx === '(' && input[i + 2] === '(') {
+        // `$((expr))` arithmetic. Scan to the matching `))` by paren depth and
+        // reject a smuggled command substitution / backtick in the body.
+        let depth = 0;
+        let k = i + 1;
+        for (; k < input.length; k++) {
+          const a = checkedAt(input, k);
+          if (a === '(') depth++;
+          else if (a === ')') { depth--; if (depth === 0) break; }
+        }
+        if (depth !== 0 || k >= input.length || checkedAt(input, k) !== ')') return null;
+        const arith = input.slice(i + 3, k - 1);
+        if (arith.includes('`') || arith.includes('$(')) return null;
+        if (curStart === -1) curStart = i;
+        cur += input.slice(i, k + 1);
+        curUnquotedVar = true;
+        i = k + 1;
+        continue;
+      }
+      if (nx === '{') {
+        const close = input.indexOf('}', i + 2);
+        if (close === -1) return null;
+        const body = input.slice(i + 2, close);
+        // Same subscript grammar as the double-quoted `${…}` branch: a bare
+        // name or a literal-number / `@` / `*` / identifier subscript is a pure
+        // value read; anything else (notably a `$(…)` inside the subscript) bails.
+        if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\[(?:[0-9]+|@|\*|[A-Za-z_][A-Za-z0-9_]*)\])?$/.test(body)) return null;
+        if (curStart === -1) curStart = i;
+        cur += input.slice(i, close + 1);
+        curUnquotedVar = true;
+        i = close + 1;
+        continue;
+      }
+      if (nx && /[A-Za-z_]/.test(nx)) {
+        let k = i + 1;
+        while (k < input.length && /[A-Za-z0-9_]/.test(checkedAt(input, k))) k++;
+        if (curStart === -1) curStart = i;
+        cur += input.slice(i, k);
+        curUnquotedVar = true;
+        i = k;
+        continue;
+      }
+      if (nx && /[0-9$?!#*@]/.test(nx)) {
+        // `$1`…`$9`, `$$`, `$?`, `$!`, `$#`, `$*`, `$@` — special parameters.
+        if (curStart === -1) curStart = i;
+        cur += checkedAt(input, i) + nx;
+        curUnquotedVar = true;
+        i += 2;
+        continue;
+      }
+      // Literal `$` (before space / quote / operator / EOL): `$(` and backticks
+      // were handled above, so this is a bare dollar with no expansion. Emit it
+      // literally; it does NOT word-split, so the word is NOT marked.
+      if (curStart === -1) curStart = i;
+      cur += '$';
+      i++;
+      continue;
     }
 
     if (c === "'") {
@@ -604,12 +675,16 @@ class CommandHandler {
    * pipe, so no in-project-path arg is required. Default: not a sink.
    *
    * Override in commands that are unambiguously non-mutating and useful at
-   * the end of a read-only pipeline (cat, head, tail, wc, grep, …).
+   * the end of a read-only pipeline (cat, head, tail, wc, grep, …). The
+   * optional `cfg` carries the redirect policy (allowedRoots + writeEnabled +
+   * home + platform) for the few sinks that WRITE (`tee`) and so must scope
+   * their file operands; read-only sinks ignore it.
    * @param {string[]} args positional + flag args (no head command)
+   * @param {RedirectCfg} [cfg] redirect policy (only needed by writing sinks)
    * @returns {boolean} true if these args are safe in sink position
    */
   // eslint-disable-next-line no-unused-vars
-  static isSafeAsSink(args) { return false; }
+  static isSafeAsSink(args, cfg) { return false; }
 
   /**
    * Output-path domain of this command's stdout. Returns `'inProjectPath'`
@@ -735,8 +810,11 @@ class UnameHandler extends CommandHandler {
 
 class EchoHandler extends CommandHandler {
   static commandName = 'echo';
-  // Tokenizer already rejected $ / backticks. Args may contain anything
-  // else; echo is read-only with respect to the filesystem.
+  // Backticks and `$(…)` substitution are rejected before we get here, and an
+  // unquoted expansion routes the segment to pattern-only approval (see
+  // isSegmentSafe) rather than to this handler; a quoted expansion is opaque
+  // literal text. echo is read-only w.r.t. the filesystem, so any surviving
+  // args are safe.
   /** @returns {boolean} safe */
   static isSafe() { return true; }
 }
@@ -744,7 +822,8 @@ class EchoHandler extends CommandHandler {
 class PrintfHandler extends CommandHandler {
   static commandName = 'printf';
   /**
-   * Same reasoning as echo — no FS effect, tokenizer rejects expansions.
+   * Same reasoning as echo — no FS effect; substitutions/backticks are rejected
+   * earlier and unquoted expansions route to pattern-only approval.
    * @param {string[]} args args
    * @returns {boolean} safe
    */
@@ -1503,12 +1582,16 @@ class TrHandler extends CommandHandler {
 
 class CatHandler extends CommandHandler {
   // `cat` of arbitrary files is a leak risk for `.env`, `.git/config`, etc.
-  // As a top-level command we require an in-project path. As a sink the
-  // input comes from the pipe, so we accept it with no args.
+  // As a top-level command each file operand must be an in-project path. Bare
+  // `cat` (no operand) is a pure stdin→stdout copy that touches no file, so it
+  // is read-only and safe — this is the writer form `cat > <permitted> <<EOF`
+  // reduces to once the heredoc body and the (separately gated) output redirect
+  // are stripped. As a sink the input comes from the pipe, so we accept no args.
   static commandName = 'cat';
   /**
    * cat takes no value flags — every non-flag arg is a file path (`-` is stdin).
-   * Any other flag (`-n`, `-A`, …) marks the shape unsafe (null).
+   * Any other flag (`-n`, `-A`, …) marks the shape unsafe (null). Zero args is a
+   * distinct case (bare stdin→stdout) handled by the callers, not here.
    * @param {string[]} args args
    * @returns {string[] | null} file path args, or null on an unsafe flag / no args
    */
@@ -1525,6 +1608,11 @@ class CatHandler extends CommandHandler {
    * @returns {boolean} safe
    */
   static isSafe(args, ctx) {
+    // Bare `cat` reads stdin and writes stdout — no path operand, nothing to
+    // leak. It is read-only and safe on its own, and is what a permitted-target
+    // writer (`cat > file`, `cat >> file`, heredoc/stdin in) reduces to after
+    // the output redirect is stripped by isStrippableRedirectTarget.
+    if (args.length === 0) return true;
     const paths = CatHandler.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
@@ -1537,6 +1625,70 @@ class CatHandler extends CommandHandler {
    * @returns {boolean} safe sink
    */
   static isSafeAsSink(args) { return args.length === 0; }
+}
+
+/**
+ * `tee [-a] [-i] [-p] [FILE...]` — copy stdin to stdout and to each FILE.
+ *
+ * Unlike the read-only file handlers, tee's operands are WRITE destinations, so
+ * it is gated exactly like an output redirect (see {@link
+ * isStrippableRedirectTarget}): safe only when file-writing is enabled for the
+ * conversation AND every FILE resolves inside the allowed roots. This is the
+ * pipe-sink twin of `cmd > <permitted>` — `make 2>&1 | tee build.log` writes
+ * only where the LLM is already permitted to write. Bare `tee` (no FILE) writes
+ * to stdout alone: a read-only stdin→stdout passthrough, safe on its own and as
+ * a sink regardless of write permission.
+ *
+ * Only the boolean short flags `-a` (append), `-i` (ignore SIGINT), `-p`, their
+ * `--append` / `--ignore-interrupts` long forms, and a `--` terminator are
+ * recognised; any value-taking or unknown flag (e.g. `--output-error=MODE`)
+ * marks the shape unsafe so nothing slips past as a filename.
+ */
+class TeeHandler extends CommandHandler {
+  static commandName = 'tee';
+  /**
+   * Return tee's file operands (its write targets), or null on an unrecognised
+   * flag. Every operand is a path; there are no positional non-path args.
+   * @param {string[]} args args
+   * @returns {string[] | null} file operands, or null on an unsafe flag
+   */
+  static pathArgs(args) {
+    let i = 0;
+    while (i < args.length && checkedAt(args, i).startsWith('-') && checkedAt(args, i) !== '-') {
+      const a = checkedAt(args, i);
+      if (a === '--') { i++; break; }
+      if (a === '--append' || a === '--ignore-interrupts') { i++; continue; }
+      if (!/^-[aip]+$/.test(a)) return null;
+      i++;
+    }
+    return args.slice(i);
+  }
+  /**
+   * @param {string[]} args args
+   * @param {ApprovalCtx | RedirectCfg} ctx ctx
+   * @returns {boolean} safe
+   */
+  static isSafe(args, ctx) {
+    const paths = TeeHandler.pathArgs(args);
+    if (paths === null) return false;
+    // Bare tee: stdin → stdout only, no file written. Read-only.
+    if (paths.length === 0) return true;
+    // Writing to files: gated on write-permission, and every target in-project
+    // — the same policy the `>`/`>>` redirect strip enforces.
+    if (!ctx || !ctx.writeEnabled) return false;
+    for (const p of paths) {
+      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots || [], ctx.home || '', ctx.platform || '')) return false;
+    }
+    return true;
+  }
+  /**
+   * As a pipe sink (`… | tee FILE`) tee still writes FILE, so the same
+   * write-permission + in-project gating applies. `cfg` carries that policy.
+   * @param {string[]} args args
+   * @param {RedirectCfg} [cfg] redirect policy
+   * @returns {boolean} safe sink
+   */
+  static isSafeAsSink(args, cfg) { return TeeHandler.isSafe(args, cfg || {}); }
 }
 
 /**
@@ -3007,9 +3159,10 @@ class XargsHandler extends CommandHandler {
   /**
    * xargs in sink position has the same rules.
    * @param {string[]} args args
+   * @param {RedirectCfg} [cfg] redirect policy, forwarded to the sub-handler
    * @returns {boolean} safe sink
    */
-  static isSafeAsSink(args) {
+  static isSafeAsSink(args, cfg) {
     // Approximate: when called as a sink we have no ctx for path checks.
     // Reject path-shaped pre-args by requiring every pre-arg either start
     // with `-` (matching the sub-handler's whitelist) or be a quoted
@@ -3031,8 +3184,9 @@ class XargsHandler extends CommandHandler {
     const subHandler = COMMAND_HANDLERS.get(sub);
     if (!subHandler) return false;
     // Delegate to the sub-handler's own sink check so `-f FILE` etc. are
-    // still rejected even though we have no ctx in sink position.
-    return subHandler.isSafeAsSink(args.slice(i + 1));
+    // still rejected. Forward cfg so a writing sub-sink (`tee`) can scope its
+    // file operands against the allowed roots.
+    return subHandler.isSafeAsSink(args.slice(i + 1), cfg);
   }
 }
 
@@ -3065,6 +3219,7 @@ const COMMAND_HANDLERS = /** @type {Map<string, typeof CommandHandler>} */ (new 
   [CutHandler.commandName, CutHandler],
   [TrHandler.commandName, TrHandler],
   [CatHandler.commandName, CatHandler],
+  [TeeHandler.commandName, TeeHandler],
   [FileHandler.commandName, FileHandler],
   [StatHandler.commandName, StatHandler],
   [TestHandler.commandName, TestHandler],
@@ -3125,11 +3280,21 @@ function isSafeSinkTail(tokens, cfg = {}) {
   tokens = stripInlineSafeRedirects(tokens, cfg);
   if (tokens.length === 0) return false;
   if (tokens.some(t => t.type === 'op')) return false;
+  // A sink stage is stripped-and-discarded from the pipeline, so it must not
+  // carry anything we can't statically vouch for. Reject the stage (leaving the
+  // pipe unstripped, which fails the segment) if any token holds a command
+  // substitution — `producer | grep $(curl evil)` would otherwise strip the
+  // sink and approve only the producer, never vetting the substitution — or an
+  // unquoted expansion, which can word-split a value into an extra argument
+  // (e.g. `… | grep $x` where `$x` becomes `PATTERN /etc/passwd`, turning a
+  // read-only filter into an out-of-project file read).
+  if (tokens.some(t => t.type === 'word'
+			&& (/** @type {WordToken} */ (t).subst || /** @type {WordToken} */ (t).unquotedVar))) return false;
   const head = /** @type {WordToken} */ (tokens[0]);
   const handler = COMMAND_HANDLERS.get(head.text);
   if (!handler) return false;
   const args = /** @type {WordToken[]} */ (tokens.slice(1)).map(t => t.text);
-  return handler.isSafeAsSink(args);
+  return handler.isSafeAsSink(args, cfg);
 }
 
 /**
@@ -3508,8 +3673,23 @@ function isSegmentSafe(segTokens, ctx) {
 
   const head = /** @type {WordToken} */ (segTokens[0]);
   if (head.type !== 'word') return false;
+  // An unquoted variable expansion in an ARGUMENT (`cmd $x`, `cmd a$x/b`) can
+  // word-split and glob-expand at runtime into additional words or flags. The
+  // builtin handlers below make fine-grained, value-specific decisions (which
+  // paths are in-project, which flags are read-only), so a runtime value they
+  // cannot see could subvert them — a handler must never approve a segment that
+  // carries an unresolved unquoted expansion in its arguments. Such a segment
+  // can still be approved by an explicit user glob pattern (below): a `<cmd> *`
+  // grant is a deliberate blanket trust of that command, and word-splitting
+  // stays within its arguments — it cannot change the literal command head or
+  // inject a shell operator (both fixed at parse time, before expansion), so
+  // matching the literal command text is sound. A double-quoted expansion
+  // (`"$x"`) does not word-split and is NOT marked, so it still resolves through
+  // the handler via recorded provenance.
+  const hasUnquotedVarArg = segTokens.slice(1).some(
+    t => t.type === 'word' && /** @type {WordToken} */ (t).unquotedVar);
   const handler = COMMAND_HANDLERS.get(head.text);
-  if (handler) {
+  if (handler && !hasUnquotedVarArg) {
     // Resolve whole-token variable references (`"$f"` → text `$f`, `"${f}"` →
     // `${f}`) in the ARGUMENTS against recorded provenance: a literal var
     // becomes its captured value; an in-project-path var becomes a

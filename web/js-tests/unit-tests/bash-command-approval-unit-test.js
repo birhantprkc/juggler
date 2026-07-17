@@ -113,8 +113,10 @@ const CASES = [
   // === Tokenizer security edges ===
   { name: 'backtick subshell prompts',
     command: 'echo `whoami`', patterns: ['echo *'], platform: 'darwin', expected: false },
-  { name: '$VAR expansion prompts',
-    command: 'echo $HOME', patterns: ['echo *'], platform: 'darwin', expected: false },
+  { name: 'unquoted $VAR routes to pattern-only approval: no pattern prompts',
+    command: 'echo $HOME', patterns: [], platform: 'darwin', expected: false },
+  { name: 'unquoted $VAR auto-approves under an explicit echo * grant',
+    command: 'echo $HOME', patterns: ['echo *'], platform: 'darwin', expected: true },
   { name: 'newline-separated commands prompt when one segment is unsafe',
     command: 'echo hi\nrm -rf /', patterns: ['echo *'], platform: 'darwin', expected: false },
   { name: 'unterminated heredoc (no body) prompts',
@@ -326,8 +328,10 @@ const CASES = [
   // === control flow: for / while / until / if ===
   { name: 'for loop with $VAR inside double quotes auto-approves',
     command: 'for i in a b c; do echo "$i"; done', patterns: [], platform: 'darwin', expected: true },
-  { name: 'for loop with bare $VAR outside quotes still prompts (re-tokenization risk)',
+  { name: 'for loop with bare $VAR and no pattern prompts (handler will not trust an unquoted expansion)',
     command: 'for i in a b c; do echo $i; done', patterns: [], platform: 'darwin', expected: false },
+  { name: 'for loop with bare $VAR auto-approves under an explicit echo * grant',
+    command: 'for i in a b c; do echo $i; done', patterns: ['echo *'], platform: 'darwin', expected: true },
   { name: 'while true; do ...; done auto-approves when body is safe',
     command: 'while true; do echo hi; done', patterns: [], platform: 'darwin', expected: true },
   { name: 'if/then/else/fi with safe branches auto-approves',
@@ -862,6 +866,40 @@ echo "== js =="; make lint-js 2>&1 | tail -12; echo "js_rc=\${PIPESTATUS[0]}"`,
   { name: 'inline redirect mid-args to allowed path with write enabled auto-approves',
     command: 'grep -l "x" web/js > out.log -r', writeEnabled: true, expected: true },
 
+  // === cat/tee as writers to a permitted target ===
+  // `cat > file <<EOF … EOF` reduces (heredoc stripped, redirect stripped) to a
+  // bare `cat` — a read-only stdin→stdout copy — so it auto-approves whenever
+  // the redirect target is permitted (writeEnabled + in an allowed root).
+  { name: 'cat heredoc into an in-project file with write enabled auto-approves',
+    command: "cat > out.mjs <<'EOF'\nhello\nEOF", writeEnabled: true, expected: true },
+  { name: 'cat heredoc append into a nested in-project file with write enabled auto-approves',
+    command: "cat >> sub/dir/out.mjs <<'EOF'\nhello\nEOF", writeEnabled: true, expected: true },
+  { name: 'cat heredoc writer WITHOUT write enabled stays blocked',
+    command: "cat > out.mjs <<'EOF'\nhello\nEOF", writeEnabled: false, expected: false },
+  { name: 'cat heredoc writer to /tmp outside roots stays blocked',
+    command: "cat > /tmp/out.mjs <<'EOF'\nhello\nEOF", writeEnabled: true, expected: false },
+  { name: 'cat heredoc writer to /tmp WHEN /tmp is an allowed root auto-approves',
+    command: "cat > /tmp/out.mjs <<'EOF'\nhello\nEOF", writeEnabled: true, allowedRoots: ['/tmp'], expected: true },
+  { name: 'bare cat (stdin→stdout) is read-only and auto-approves',
+    command: 'cat', writeEnabled: false, expected: true },
+  // tee writes its file operands, so it is gated like a redirect: permitted only
+  // with write enabled and every target in-project. As a pipe sink it is
+  // stripped and the producer judged on its own.
+  { name: 'pipe to tee an in-project file with write enabled auto-approves',
+    command: 'grep -rn foo web/js | tee out.log', writeEnabled: true, expected: true },
+  { name: 'pipe to tee WITHOUT write enabled stays blocked',
+    command: 'grep -rn foo web/js | tee out.log', writeEnabled: false, expected: false },
+  { name: 'pipe to tee -a append in-project with write enabled auto-approves',
+    command: 'grep -rn foo web/js | tee -a sub/dir/out.log', writeEnabled: true, expected: true },
+  { name: 'pipe to tee a /tmp file outside roots stays blocked',
+    command: 'grep -rn foo web/js | tee /tmp/out.log', writeEnabled: true, expected: false },
+  { name: 'tee heredoc writer into an in-project file with write enabled auto-approves',
+    command: "tee out.log <<'EOF'\nhello\nEOF", writeEnabled: true, expected: true },
+  { name: 'tee with an unknown value flag stays blocked',
+    command: 'grep -rn foo web/js | tee --output-error=warn out.log', writeEnabled: true, expected: false },
+  { name: 'bare tee (stdin→stdout passthrough) is read-only and auto-approves',
+    command: 'grep -rn foo web/js | tee', writeEnabled: false, expected: true },
+
   // === scoped command substitution `NAME=$(producer)` + `"$NAME"` consumer ===
   // The target idiom: grep -l lists in-project files into a var, sed reads it.
   { name: 'find-then-sed via $(grep -l) into "$f" auto-approves',
@@ -891,7 +929,7 @@ echo "== js =="; make lint-js 2>&1 | tail -12; echo "js_rc=\${PIPESTATUS[0]}"`,
     command: 'f=$(git log); cat "$f"', patterns: [], expected: false },
   { name: 'literal var pointing outside roots → blocked',
     command: 'f=/etc/passwd; cat "$f"', patterns: [], expected: false },
-  { name: 'bare unquoted $f re-splits → tokenizer bails → blocked',
+  { name: 'bare unquoted $f is never resolved from provenance (word-split risk) → blocked',
     command: "f=$(grep -rln foo cmd/); sed -n '1p' $f", patterns: [], expected: false },
   { name: 'unknown variable reference → blocked',
     command: 'sed -n \'1p\' "$undefined"', patterns: [], expected: false },
@@ -911,6 +949,36 @@ echo "== js =="; make lint-js 2>&1 | tail -12; echo "js_rc=\${PIPESTATUS[0]}"`,
     command: 'f=$(grep $(cat secrets) cmd/); cat "$f"', patterns: [], expected: false },
   { name: 'backtick substitution still bails',
     command: 'f=`grep -rln foo cmd/`; cat "$f"', patterns: [], expected: false },
+
+  // === unquoted expansion → pattern-only approval ===
+  // A bare `$x`/`${x}`/`$1`/`$@` in an argument keeps its literal text but is
+  // marked as word-split-capable. It is never trusted by a builtin handler; it
+  // can only be approved by an explicit user `<cmd> *` glob, which blesses any
+  // arguments to that literal head. Word-splitting stays within the arguments —
+  // it can neither change the head nor inject a shell operator (both are fixed
+  // at parse time, before expansion) — so matching the literal command text is
+  // sound. `<cmd> *` already blankets out-of-project literals too (e.g. `cat *`
+  // approves `cat /etc/passwd`), so approving `cat $f` under it is consistent.
+  { name: 'gh for-loop over issue numbers auto-approves under gh *',
+    command: `for n in 24 23; do echo "== issue $n =="; gh api repos/o/r/issues/$n --jq '.title'; done`,
+    patterns: ['gh *'], expected: true },
+  { name: 'gh api with unquoted $n but no gh pattern prompts',
+    command: 'gh api repos/o/r/issues/$n', patterns: [], expected: false },
+  { name: 'unquoted ${n} braced form also matches gh *',
+    command: 'gh api repos/o/r/issues/${n}', patterns: ['gh *'], expected: true },
+  { name: 'unquoted $f arg to a handler is NOT rescued by the handler even in-project',
+    command: 'cat $f', patterns: [], expected: false },
+  { name: 'unquoted $f arg to cat auto-approves only under an explicit cat * grant',
+    command: 'cat $f', patterns: ['cat *'], expected: true },
+  { name: 'unquoted var head with no matching pattern prompts',
+    command: '$cmd api foo', patterns: ['gh *'], expected: false },
+  // Sink-tail guard: a stripped `| <sink>` stage must not carry an unquoted
+  // expansion (word-splits a value into an extra file arg) or a command
+  // substitution (would be discarded unvetted with the stripped stage).
+  { name: 'unquoted $y in a grep sink blocks sink-stripping → prompts',
+    command: 'echo hi | grep $y', patterns: [], expected: false },
+  { name: 'command substitution in a grep sink is not stripped-and-ignored → prompts',
+    command: 'echo hi | grep $(whoami)', patterns: [], expected: false },
 
   // === uniq as a read-only pipeline filter / sink ===
   { name: 'grep | sort | uniq -c | sort -rn | head pipeline auto-approves',
@@ -1437,7 +1505,12 @@ export async function runTests() {
   // `cat <<EOF` (no body), an unterminated heredoc (delimiter never appears),
   // and the `<<<` here-string all bail; a *terminated* heredoc does not (its
   // shape is asserted in TOKEN_SHAPES below).
-  const TOKEN_BAILS = ['echo `x`', 'echo $x', 'echo ${x}', 'echo $((1+2)) end', "echo '", 'echo "', 'cat <<EOF', 'cat <<EOF\nbody', 'cat <<<word', 'f=`x`'];
+  // Note: unquoted `$x` / `${x}` / `$((1+2))` no longer bail — they tokenize as
+  // literal word text marked `unquotedVar` (asserted in TOKEN_SHAPES /
+  // UNQUOTED_VAR_FLAGS below). Backticks and `$(…)` command substitution still
+  // do not appear here as bails: `$(…)` is captured (SUBST_CAPTURES), backticks
+  // bail.
+  const TOKEN_BAILS = ['echo `x`', "echo '", 'echo "', 'cat <<EOF', 'cat <<EOF\nbody', 'cat <<<word', 'f=`x`'];
   for (const t of TOKEN_BAILS) {
     if (tokenize(t) !== null) {
       failed++;
@@ -1465,7 +1538,14 @@ export async function runTests() {
     ['cat <<-EOF\n\tbody\n\tEOF', [['word', 'cat']]],
     // A heredoc can co-occur with a pipeline on the same line; the body still
     // begins at the next line.
-    ['cat <<EOF | wc -l\nbody\nEOF', [['word', 'cat'], ['op', '|'], ['word', 'wc'], ['word', '-l']]]
+    ['cat <<EOF | wc -l\nbody\nEOF', [['word', 'cat'], ['op', '|'], ['word', 'wc'], ['word', '-l']]],
+    // Unquoted expansions are kept as literal word text (no longer a bail): the
+    // `$NAME` / `${NAME}` / `$((expr))` text survives verbatim for pattern
+    // matching (which is unaffected by runtime word-splitting).
+    ['echo $x', [['word', 'echo'], ['word', '$x']]],
+    ['echo ${x}', [['word', 'echo'], ['word', '${x}']]],
+    ['echo $((1+2)) end', [['word', 'echo'], ['word', '$((1+2))'], ['word', 'end']]],
+    ['gh api r/$n', [['word', 'gh'], ['word', 'api'], ['word', 'r/$n']]]
   ];
   for (const [cmd, want] of TOKEN_SHAPES) {
     const toks = tokenize(cmd);
@@ -1476,9 +1556,33 @@ export async function runTests() {
     } else passed++;
   }
 
+  // === tokenize marks UNQUOTED expansions (word-split-capable) but not quoted
+  // ones (opaque single word) ===
+  /** @type {Array<[string, number, boolean]>} command, word-token index, expected unquotedVar */
+  const UNQUOTED_VAR_FLAGS = [
+    ['echo $x', 1, true],
+    ['echo ${x}', 1, true],
+    ['echo $((1+2))', 1, true],
+    ['gh api r/$n', 2, true],
+    ['echo "$x"', 1, false],          // double-quoted → not word-split-capable
+    ['echo \\$x', 1, false],          // escaped literal dollar → not an expansion
+    ['echo $', 1, false]              // bare trailing dollar → literal, not an expansion
+  ];
+  for (const [cmd, idx, want] of UNQUOTED_VAR_FLAGS) {
+    const toks = tokenize(cmd);
+    const tok = toks && toks[idx];
+    const got = Boolean(tok && tok.type === 'word' && tok.unquotedVar);
+    if (got !== want) {
+      failed++;
+      errors.push(`tokenize unquotedVar: "${cmd}" token[${idx}] want ${want}, got ${got}`);
+    } else passed++;
+  }
+
   // === tokenize captures `$(…)` command substitution (no longer bails) ===
   // Bare and double-quoted forms capture the inner command on the word's
-  // `subst` field; backticks/bare-vars still bail (asserted above).
+  // `subst` field; backticks still bail (asserted above). Bare variable
+  // expansions no longer bail — they tokenize as marked literal text
+  // (TOKEN_SHAPES / UNQUOTED_VAR_FLAGS above).
   /** @type {Array<[string, number, string[]]>} command, word-token index, expected subst */
   const SUBST_CAPTURES = [
     ['f=$(grep -rln foo cmd/)', 0, ['grep -rln foo cmd/']],
