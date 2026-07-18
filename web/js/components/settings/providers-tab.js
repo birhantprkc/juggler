@@ -9,6 +9,8 @@
 //   warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file or
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
+import { openExternalURL } from '../../../sdk/lib/window-control.js';
+
 /**
  * "Provider API Keys" tab: one field per registered provider — OAuth (bearer),
  * keyless (toggle), or API-key (input + save/delete) — plus the OpenAI-compatible
@@ -108,15 +110,161 @@ export class ProvidersTab {
 
     const status = document.createElement('div');
     status.className = 'key-source-hint';
+    status.id = `${provider.name}-oauth-status`;
     status.style.display = 'block';
     status.textContent = provider.available
       ? (provider.authHint || 'Signed in')
       : (provider.authHint || 'Sign in to continue');
     controlColumn.appendChild(status);
 
+    // Providers with an in-app sign-in (currently GitHub Copilot's device flow)
+    // get Sign in / Sign out controls; others just show the status line.
+    if (provider.signInMethod === 'github_device') {
+      const buttonGroup = document.createElement('div');
+      buttonGroup.className = 'provider-buttons';
+      if (provider.available) {
+        const signOutBtn = document.createElement('button');
+        signOutBtn.type = 'button';
+        signOutBtn.className = 'settings-btn danger small';
+        signOutBtn.textContent = 'Sign out';
+        signOutBtn.title = 'Sign out of the GitHub login stored by Juggler';
+        signOutBtn.addEventListener('click', () => this._copilotSignOut(provider, signOutBtn));
+        buttonGroup.appendChild(signOutBtn);
+      } else {
+        const signInBtn = document.createElement('button');
+        signInBtn.type = 'button';
+        signInBtn.className = 'settings-btn primary small';
+        signInBtn.textContent = 'Sign in with GitHub';
+        signInBtn.addEventListener('click', () => this._copilotSignIn(provider, signInBtn));
+        buttonGroup.appendChild(signInBtn);
+      }
+      controlColumn.appendChild(buttonGroup);
+    }
+
     fieldGroup.appendChild(infoColumn);
     fieldGroup.appendChild(controlColumn);
     container.appendChild(fieldGroup);
+  }
+
+  /**
+   * Run the GitHub OAuth device flow: start it, open the verification page with
+   * the user code (copied to the clipboard), then poll until GitHub authorizes.
+   * On success re-syncs the settings panel and the model selector.
+   * @param {any} provider
+   * @param {HTMLButtonElement} button
+   * @private
+   */
+  async _copilotSignIn(provider, button) {
+    const status = /** @type {HTMLElement|null} */ (this.host.querySelector(`#${provider.name}-oauth-status`));
+    const setStatus = (/** @type {string} */ t) => { if (status) status.textContent = t; };
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Starting\u2026';
+    try {
+      const res = await fetch('/api/providers/copilot/device/start', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to start sign-in');
+
+      const { userCode, verificationUri, deviceCode, interval } = data;
+      try { await navigator.clipboard.writeText(userCode); } catch { /* clipboard is best-effort */ }
+      if (verificationUri) openExternalURL(verificationUri);
+      button.textContent = 'Waiting\u2026';
+      setStatus(`Enter code ${userCode} at ${verificationUri} (opened in your browser, copied to clipboard). Waiting for authorization\u2026`);
+
+      await this._pollCopilotLogin(deviceCode, Number(interval) || 5);
+      setStatus('Signed in with GitHub');
+      await this._refreshAfterAuthChange(provider, true);
+    } catch (err) {
+      setStatus(provider.authHint || 'Sign in to continue');
+      button.disabled = false;
+      button.textContent = originalText;
+      if (window.showAlert) {
+        await window.showAlert(err instanceof Error ? err.message : 'Sign-in failed', 'GitHub Copilot');
+      }
+    }
+  }
+
+  /**
+   * Poll the device-login endpoint until it resolves. Resolves on authorization;
+   * throws on expiry, denial, error, or timeout.
+   * @param {string} deviceCode
+   * @param {number} interval - seconds between polls (GitHub-provided)
+   * @private
+   */
+  async _pollCopilotLogin(deviceCode, interval) {
+    let delayMs = Math.max(2, interval) * 1000;
+    const deadline = Date.now() + 15 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, delayMs));
+      const res = await fetch('/api/providers/copilot/device/poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceCode }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Sign-in check failed');
+      switch (data.status) {
+        case 'authorized': return;
+        case 'pending': break;
+        case 'slow_down': delayMs += 5000; break;
+        case 'expired': throw new Error('The code expired before you authorized. Please try again.');
+        case 'denied': throw new Error('Access was denied on GitHub.');
+        default: throw new Error('Unexpected sign-in status from GitHub.');
+      }
+    }
+    throw new Error('Timed out waiting for authorization.');
+  }
+
+  /**
+   * Sign out of the GitHub login Juggler stored (leaves any editor login alone).
+   * @param {any} provider
+   * @param {HTMLButtonElement} button
+   * @private
+   */
+  async _copilotSignOut(provider, button) {
+    const confirmFn = /** @type {any} */ (window).showConfirm;
+    if (typeof confirmFn === 'function') {
+      const ok = await confirmFn(
+        'Sign out of the GitHub login stored by Juggler? Copilot becomes unavailable until you sign in again (any editor Copilot login on this machine will still be used).',
+        'Sign out',
+        {}
+      );
+      if (!ok) return;
+    }
+    button.disabled = true;
+    try {
+      const res = await fetch('/api/providers/copilot/signout', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Sign out failed');
+      await this._refreshAfterAuthChange(provider, false);
+    } catch (err) {
+      button.disabled = false;
+      if (window.showAlert) {
+        await window.showAlert(err instanceof Error ? err.message : 'Sign out failed', 'GitHub Copilot');
+      }
+    }
+  }
+
+  /**
+   * Re-sync after a sign in/out. Optimistically flips this provider's cached
+   * availability and re-renders the fields so the Sign in/out control updates
+   * immediately (the backend's queued RefreshProviders broadcasts the settled
+   * state shortly after via `providers-update`). Re-rendering is non-destructive:
+   * API-key inputs always render empty and are reconciled by updateAllButtons.
+   * Also refreshes the model selector so the new provider's models appear.
+   * @param {any} provider
+   * @param {boolean} available
+   * @private
+   */
+  async _refreshAfterAuthChange(provider, available) {
+    provider.available = available;
+    provider.authHint = available ? 'Signed in with GitHub' : '';
+    this.renderProviderFields();
+    this.updateAllButtons();
+    const modelSelector = /** @type {any} */ (document.querySelector('model-selector'));
+    if (modelSelector && modelSelector.refresh) {
+      await modelSelector.refresh();
+    }
   }
 
   /**

@@ -5,7 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Added moonshot/KIMI and llama.cpp providers, refactored and fixed other providers like ollama, codex
+- Added moonshot/KIMI, Copilot and llama.cpp providers, refactored and fixed other providers like ollama, codex
 - Made it possible to disable auto-update
 - Fixes for some MCP and extension loading bugs
 
