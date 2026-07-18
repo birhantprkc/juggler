@@ -10,6 +10,14 @@
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
 import { openExternalURL } from '../../../sdk/lib/window-control.js';
+import wsService from '../../services/websocket.js';
+import providersCache from '../../services/providers-cache.js';
+
+// Standard refresh glyph for the OAuth "re-check sign-in" button. Fill is left to
+// CSS (currentColor) so it tracks the button's theme colour.
+const OAUTH_REFRESH_ICON =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" aria-hidden="true">' +
+  '<path d="M482-160q-134 0-228-93t-94-227v-7l-64 64-56-56 160-160 160 160-56 56-64-64v7q0 100 70.5 170T482-240q26 0 51-6t49-18l60 60q-38 22-78 33t-82 11Zm278-161L600-481l56-56 64 64v-7q0-100-70.5-170T478-720q-26 0-51 6t-49 18l-60-60q38-22 78-33t82-11q134 0 228 93t94 227v7l64-64 56 56-160 160Z"/></svg>';
 
 /**
  * "Provider API Keys" tab: one field per registered provider — OAuth (bearer),
@@ -117,11 +125,12 @@ export class ProvidersTab {
       : (provider.authHint || 'Sign in to continue');
     controlColumn.appendChild(status);
 
+    const buttonGroup = document.createElement('div');
+    buttonGroup.className = 'provider-buttons';
+
     // Providers with an in-app sign-in (currently GitHub Copilot's device flow)
-    // get Sign in / Sign out controls; others just show the status line.
+    // get Sign in / Sign out controls; others rely on the refresh button alone.
     if (provider.signInMethod === 'github_device') {
-      const buttonGroup = document.createElement('div');
-      buttonGroup.className = 'provider-buttons';
       if (provider.available) {
         const signOutBtn = document.createElement('button');
         signOutBtn.type = 'button';
@@ -138,12 +147,104 @@ export class ProvidersTab {
         signInBtn.addEventListener('click', () => this._copilotSignIn(provider, signInBtn));
         buttonGroup.appendChild(signInBtn);
       }
-      controlColumn.appendChild(buttonGroup);
     }
+
+    // Every OAuth provider gets a refresh button: the login it depends on lives in
+    // an external app/CLI (or another editor), so re-checking picks up a fresh or
+    // expired sign-in without relaunching Juggler.
+    buttonGroup.appendChild(this._buildOAuthRefreshButton(provider));
+    controlColumn.appendChild(buttonGroup);
 
     fieldGroup.appendChild(infoColumn);
     fieldGroup.appendChild(controlColumn);
     container.appendChild(fieldGroup);
+  }
+
+  /**
+   * Build the refresh (re-check sign-in) button shared by every OAuth provider.
+   * @param {any} provider - Provider info object
+   * @returns {HTMLButtonElement} The refresh button to append to the button group.
+   * @private
+   */
+  _buildOAuthRefreshButton(provider) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'settings-btn icon';
+    btn.title = 'Re-check sign-in';
+    btn.setAttribute('aria-label', `Re-check ${provider.displayName} sign-in`);
+    btn.innerHTML = OAUTH_REFRESH_ICON;
+    btn.addEventListener('click', () => this._refreshOAuthProvider(provider, btn));
+    return btn;
+  }
+
+  /**
+   * Re-check an OAuth provider's external login without relaunching. Asks the
+   * server to recompute providers (which re-reads the CLI token file / re-probes
+   * the editor login) and waits for the settled `providers-update`, then
+   * re-renders this tab so the status line and Sign in/out controls reflect the
+   * fresh availability. Also refreshes the model selector so newly-available
+   * models appear.
+   * @param {any} provider
+   * @param {HTMLButtonElement} button
+   * @private
+   */
+  async _refreshOAuthProvider(provider, button) {
+    const status = /** @type {HTMLElement|null} */ (this.host.querySelector(`#${provider.name}-oauth-status`));
+    const originalStatus = status ? status.textContent : '';
+    button.disabled = true;
+    button.classList.add('spinning');
+    if (status) status.textContent = 'Checking sign-in\u2026';
+    try {
+      const fresh = await this._recheckOAuthProvider(provider.name);
+      if (fresh) {
+        const idx = this.providers.findIndex((p) => p.name === provider.name);
+        if (idx !== -1) this.providers[idx] = fresh;
+      }
+      // Re-render rebuilds this button (dropping the spinning state) and the
+      // status line, so no manual cleanup is needed on the success path.
+      this.renderProviderFields();
+      this.updateAllButtons();
+      const modelSelector = /** @type {any} */ (document.querySelector('model-selector'));
+      if (modelSelector && modelSelector.refresh) {
+        await modelSelector.refresh();
+      }
+    } catch (err) {
+      button.disabled = false;
+      button.classList.remove('spinning');
+      if (status) status.textContent = originalStatus;
+      if (window.showAlert) {
+        await window.showAlert(err instanceof Error ? err.message : 'Refresh failed', provider.displayName);
+      }
+    }
+  }
+
+  /**
+   * Trigger a server provider refresh and resolve with the named provider's fresh
+   * entry from the settled `providers-update`. Resolves with the current cached
+   * list if no push arrives within the timeout, so the caller never hangs.
+   * @param {string} providerName
+   * @returns {Promise<any|undefined>} The provider's fresh entry, or undefined if absent.
+   * @private
+   */
+  async _recheckOAuthProvider(providerName) {
+    const next = new Promise((resolve) => {
+      /** @type {ReturnType<typeof setTimeout>|null} */
+      let timer = null;
+      /** @param {unknown} data */
+      const handler = (data) => {
+        if (timer) clearTimeout(timer);
+        wsService.off('providers-update', handler);
+        resolve(Array.isArray(data) ? data : this.providers);
+      };
+      wsService.on('providers-update', handler);
+      timer = setTimeout(() => {
+        wsService.off('providers-update', handler);
+        resolve(this.providers);
+      }, 4000);
+    });
+    await providersCache.refresh();
+    const list = /** @type {any[]} */ (await next);
+    return list.find((p) => p.name === providerName);
   }
 
   /**
