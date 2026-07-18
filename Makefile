@@ -357,12 +357,18 @@ app-icon-embed:
 ## wails-runtime-embed: Sync the Wails v3 runtime.js bundle into the server
 ## package so go:embed can pick it up (it can't follow symlinks or `..`).
 ## Served at /wails/runtime.js for every client — see wails_runtime.go.
+## The source is an untracked wails build artifact and carries CRLF endings on
+## Windows; we strip CRs so the committed LF copy is byte-identical on every OS
+## (otherwise the build rewrites it and it shows as perpetually modified).
 WAILS_RUNTIME_SRC=3rdparty/wails/v3/internal/assetserver/bundledassets/runtime.js
 WAILS_RUNTIME_EMBED=cmd/juggler/server/wails_runtime.js
 wails-runtime-embed:
-	@if [ -f "$(WAILS_RUNTIME_SRC)" ] && ! cmp -s "$(WAILS_RUNTIME_SRC)" "$(WAILS_RUNTIME_EMBED)" 2>/dev/null; then \
-		cp "$(WAILS_RUNTIME_SRC)" "$(WAILS_RUNTIME_EMBED)"; \
-		echo "Synced $(WAILS_RUNTIME_EMBED) ← $(WAILS_RUNTIME_SRC)"; \
+	@if [ -f "$(WAILS_RUNTIME_SRC)" ]; then \
+		tr -d '\r' < "$(WAILS_RUNTIME_SRC)" > "$(WAILS_RUNTIME_EMBED).tmp"; \
+		if ! cmp -s "$(WAILS_RUNTIME_EMBED).tmp" "$(WAILS_RUNTIME_EMBED)" 2>/dev/null; then \
+			mv "$(WAILS_RUNTIME_EMBED).tmp" "$(WAILS_RUNTIME_EMBED)"; \
+			echo "Synced $(WAILS_RUNTIME_EMBED) ← $(WAILS_RUNTIME_SRC)"; \
+		else rm -f "$(WAILS_RUNTIME_EMBED).tmp"; fi; \
 	fi
 
 ## win-icon: Compile $(APP_ICON_PNG) into a Windows .syso resource for BOTH the
