@@ -8,6 +8,7 @@ of changes; this project follows semantic versioning.
 - Added moonshot/KIMI, Copilot and llama.cpp providers, refactored and fixed other providers like ollama, codex
 - Made it possible to disable auto-update
 - Fixes for some MCP and extension loading bugs
+- Fixed a bug where changing the project folder would leave a stale folder in the javascript that the explore_code uses
 
 ## [0.4.1] - 2026-07-17
 
