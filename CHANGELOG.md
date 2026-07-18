@@ -5,6 +5,10 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added moonshot/KIMI and llama.cpp providers, refactored and fixed other providers like ollama, codex
+- Made it possible to disable auto-update
+- Fixes for some MCP and extension loading bugs
+
 ## [0.4.1] - 2026-07-17
 
 - Added a Skills marketplace to discover and install Agent Skills from GitHub registries
