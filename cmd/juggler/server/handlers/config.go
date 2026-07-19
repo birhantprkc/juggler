@@ -13,6 +13,7 @@ import (
 	"juggler/cmd/juggler/core"
 	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/internal/jlog"
+	"juggler/internal/userpaths"
 )
 
 // Raw credentials.json keys for non-API-key settings persisted via /api/config.
@@ -98,6 +99,10 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{
 		"model": cfg.GetModel(),
 		"keys":  keys,
+		// Platform-correct config directory (XDG on Linux, ~/.juggler on
+		// macOS/Windows) so the settings UI can name the real credentials
+		// path instead of a hardcoded, wrong-on-Linux literal.
+		"configDir": userpaths.ConfigDir(),
 		"server": map[string]any{
 			"host": cfg.Server.Host,
 			"port": cfg.Server.Port,

@@ -144,7 +144,7 @@ class SettingsPanel extends HTMLElement {
                 <main class="settings-content">
                     <section class="settings-tab-content active" id="tab-providers">
                         <p class="settings-description">
-                            Provider keys are stored in <code>~/.juggler/credentials.json</code>.
+                            Provider keys are stored in <code id="credentials-path">~/.juggler/credentials.json</code>.
                         </p>
 
                         <div class="settings-form" id="provider-form">
@@ -452,6 +452,14 @@ class SettingsPanel extends HTMLElement {
       }
 
       const config = await configResponse.json();
+
+      // Show the platform-correct credentials location (XDG on Linux,
+      // ~/.juggler on macOS/Windows) rather than the hardcoded literal.
+      const credsPathEl = this.querySelector('#credentials-path');
+      if (credsPathEl && config.configDir) {
+        credsPathEl.textContent = `${config.configDir}/credentials.json`;
+      }
+
       const providersData = await providersResponse.json();
       const providers = (providersData.providers || []).sort((/** @type {any} */ a, /** @type {any} */ b) =>
         a.displayName.localeCompare(b.displayName)
