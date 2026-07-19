@@ -33,6 +33,12 @@ import { registerContextMenuProvider } from '../services/context-menu-service.js
 import './bin-modal.js';
 import './info-rail.js';
 
+// Leading-edge debounce window for new-conversation creation. Guards against
+// accidental double-activation — most commonly a double-click on the "+"
+// button, where the second click lands before the async create resolves and
+// would spawn a second tab.
+const NEW_CONVERSATION_DEBOUNCE_MS = 500;
+
 // Material "delete" (trash can) icon — the per-tab "move to bin" affordance.
 const BIN_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="1rem" viewBox="0 -960 960 960" width="1rem" fill="currentColor" aria-hidden="true"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
 
@@ -102,6 +108,9 @@ class ConversationBar extends HTMLElement {
 
     /** @type {(() => void)|null} @private */
     this._binActiveHandler = null;
+
+    /** @type {number} @private Timestamp (ms) of the last accepted new-conversation create, for leading-edge debounce */
+    this._lastCreateAt = 0;
   }
 
   connectedCallback() {
@@ -974,6 +983,19 @@ class ConversationBar extends HTMLElement {
     if (!this._session) {
       return;
     }
+
+    // Debounce accidental double-activation (notably a double-click on the "+"
+    // button): the create is async, so the second click lands before the first
+    // `createConversation` resolves and would spawn a second tab. Leading edge —
+    // the first activation acts immediately, repeats within the window are
+    // swallowed. Stamped before the cap check so a double-click at the cap
+    // raises only one alert, and covers every path that funnels here (the "+"
+    // click, the new-conversation shortcut/event), not just the button.
+    const now = Date.now();
+    if (now - this._lastCreateAt < NEW_CONVERSATION_DEBOUNCE_MS) {
+      return;
+    }
+    this._lastCreateAt = now;
 
     // Cap reached: don't create — point the user at archiving instead. The
     // model enforces the same limit (so duplicate/other paths can't exceed it);
