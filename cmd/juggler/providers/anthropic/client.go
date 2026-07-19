@@ -138,8 +138,9 @@ func Register() {
 
 // Client implements provider.Provider for Anthropic Claude
 type Client struct {
-	client *anthropicsdk.Client
-	model  string
+	client          *anthropicsdk.Client
+	model           string
+	maxOutputTokens int64
 }
 
 // NewClient creates a new Anthropic provider
@@ -156,8 +157,9 @@ func NewClient(cfg provider.Config) (provider.Provider, error) {
 	)
 
 	return &Client{
-		client: &client,
-		model:  cfg.Model,
+		client:          &client,
+		model:           cfg.Model,
+		maxOutputTokens: cfg.ModelCapabilities.MaxOutputTokens,
 	}, nil
 }
 
@@ -267,9 +269,32 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 	messages := transformMessages(req.Messages)
 	setRollingCacheBreakpoint(messages)
 
+	// The capability snapshot (c.maxOutputTokens) may carry a *derived* reserve
+	// when the model resolved from window only — e.g. a static-map id the live
+	// list no longer returns (claude-3-opus, real cap 4096) can arrive here with
+	// a 40k reserve. Sending that as max_tokens is a hard 400. The static catalog
+	// is authoritative for the wire ceiling of any model it recognises, so clamp
+	// down to it (min) for known models. Unknown/live-list-only ids keep the
+	// snapshot value. Admission charged reserve = snapshot value, so a wire value
+	// at or below it keeps admission conservative (it over-reserves) — acceptable.
+	maxTokens := c.maxOutputTokens
+	if catalogMax, known := catalogMaxOutputTokens(c.model); known {
+		if maxTokens <= 0 || int64(catalogMax) < maxTokens {
+			maxTokens = int64(catalogMax)
+		}
+	} else if maxTokens <= 0 {
+		maxTokens = int64(GetMaxOutputTokens(c.model))
+	}
+	// A per-request wire output cap (F1: hidden compaction map calls) may only
+	// lower the effective max_tokens — apply it as a min() after the catalog
+	// clamp above. The thinking budget clamps against this value automatically
+	// (thinkingBudgetForLevel takes maxTokens as a parameter).
+	if req.MaxOutputTokens > 0 && req.MaxOutputTokens < maxTokens {
+		maxTokens = req.MaxOutputTokens
+	}
 	params := anthropicsdk.MessageNewParams{
 		Model:     anthropicsdk.Model(c.model),
-		MaxTokens: int64(GetMaxOutputTokens(c.model)),
+		MaxTokens: maxTokens,
 		Messages:  messages,
 	}
 
@@ -295,7 +320,7 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 	// "any") together with thinking — a hard 400 — so a forced-tool turn (e.g.
 	// /compact forcing return_result) wins and drops thinking for that turn.
 	// Temperature is never set here, which thinking also requires.
-	if budget, ok := thinkingBudgetForLevel(c.model, req.ThinkingLevel); ok && !forcesTool(req.ToolChoice) {
+	if budget, ok := thinkingBudgetForLevel(c.model, req.ThinkingLevel, maxTokens); ok && !forcesTool(req.ToolChoice) {
 		params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
 	}
 
@@ -313,13 +338,16 @@ func forcesTool(tc *provider.ToolChoice) bool {
 // budget_tokens value for the given model. It returns (budget, true) when
 // thinking should be enabled for this turn, or (0, false) for "off"/absent/
 // unknown levels and models that don't support extended thinking. The budget is
-// clamped to stay a safe margin (~4k answer headroom) below the model's
-// max_tokens ceiling, since Anthropic requires budget_tokens < max_tokens.
-func thinkingBudgetForLevel(model, level string) (int64, bool) {
+// clamped to stay a safe margin (~4k answer headroom) below the effective
+// max_tokens going on the wire, since Anthropic requires budget_tokens <
+// max_tokens. The wire value is passed in rather than re-derived from the
+// static catalog so a capability snapshot carrying a lower output limit can
+// never push budget_tokens above max_tokens (a hard 400).
+func thinkingBudgetForLevel(model, level string, maxTokens int64) (int64, bool) {
 	if !SupportsThinking(model) {
 		return 0, false
 	}
-	var budget int
+	var budget int64
 	switch provider.NormalizeThinkingLevel(level) {
 	case provider.ThinkingLow:
 		budget = 2048
@@ -332,15 +360,15 @@ func thinkingBudgetForLevel(model, level string) (int64, bool) {
 	default: // "off", absent, or unknown ⇒ no thinking param (current behaviour)
 		return 0, false
 	}
-	const answerHeadroom = 4096
-	maxBudget := GetMaxOutputTokens(model) - answerHeadroom
+	const answerHeadroom int64 = 4096
+	maxBudget := maxTokens - answerHeadroom
 	if maxBudget < 1024 { // Anthropic requires budget_tokens ≥ 1024
 		return 0, false
 	}
 	if budget > maxBudget {
 		budget = maxBudget
 	}
-	return int64(budget), true
+	return budget, true
 }
 
 // setRollingCacheBreakpoint places an ephemeral cache_control breakpoint on the

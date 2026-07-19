@@ -120,6 +120,13 @@ type Client struct {
 	model           string
 	quirks          Quirks
 	maxOutputTokens int
+	// catalogMaxOutput, when set, returns the descriptor catalog's authoritative
+	// per-model output ceiling as (value, true), or (_, false) when the catalog
+	// does not know this model. effectiveMaxOutputTokens clamps the snapshot
+	// value down to it, mirroring the anthropic wire clamp: a capability snapshot
+	// can carry a derived reserve (window-only resolution) or an over-reported
+	// live value above the model's real cap, which is a hard 400 on the wire.
+	catalogMaxOutput func(model string) (int, bool)
 	// thinkingSpec is this model's reasoning-effort support, resolved once at
 	// construction from the descriptor's ThinkingSpecFn. Zero value ⇒ no
 	// reasoning control (the request omits the effort param).
@@ -295,12 +302,13 @@ func NewClientFromProviderConfig(cfg provider.Config, baseURL string, quirks Qui
 	}
 
 	return NewClient(Config{
-		APIKey:      cfg.APIKey,
-		BearerToken: cfg.BearerToken,
-		Headers:     cfg.Headers,
-		Model:       cfg.Model,
-		BaseURL:     baseURL,
-		Quirks:      quirks,
+		APIKey:          cfg.APIKey,
+		BearerToken:     cfg.BearerToken,
+		Headers:         cfg.Headers,
+		Model:           cfg.Model,
+		BaseURL:         baseURL,
+		Quirks:          quirks,
+		MaxOutputTokens: int(cfg.ModelCapabilities.MaxOutputTokens),
 	})
 }
 
@@ -423,6 +431,30 @@ func transformMessagesToResponsesInput(messages []provider.Message) responses.Re
 // ContextWindowFn.
 const fallbackMaxOutputTokens = 8192
 
+func (c *Client) effectiveMaxOutputTokens(req provider.MessageRequest) int {
+	maxTokens := c.maxOutputTokens
+	// The catalog is authoritative for the wire ceiling of a model it knows, so
+	// clamp the snapshot down to it (min). Unknown models keep the snapshot. This
+	// keeps admission conservative: it charged reserve = snapshot, and the wire
+	// value stays at or below that.
+	if c.catalogMaxOutput != nil {
+		if catalogMax, known := c.catalogMaxOutput(c.model); known {
+			if maxTokens <= 0 || catalogMax < maxTokens {
+				maxTokens = catalogMax
+			}
+		}
+	}
+	// A per-request wire output cap (F1: hidden compaction map calls) may only
+	// lower the effective max_tokens — apply it as a min() last.
+	if req.MaxOutputTokens > 0 && (maxTokens <= 0 || int(req.MaxOutputTokens) < maxTokens) {
+		maxTokens = int(req.MaxOutputTokens)
+	}
+	if maxTokens > 0 {
+		return maxTokens
+	}
+	return fallbackMaxOutputTokens
+}
+
 // defaultResponsesInstructions is injected when ForceResponsesAPI is set and
 // the system prompt is blank: those Responses-only catalogs require non-empty
 // instructions on the request.
@@ -462,8 +494,9 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	// Build request params - Model is a string type
 	params := responses.ResponseNewParams{
-		Model: c.model,
-		Input: transformMessagesToResponsesInput(req.Messages),
+		Model:           c.model,
+		Input:           transformMessagesToResponsesInput(req.Messages),
+		MaxOutputTokens: openai.Int(int64(c.effectiveMaxOutputTokens(req))),
 	}
 	if !c.quirks.ForceResponsesAPI {
 		params.Temperature = openai.Float(1.0)
@@ -1056,10 +1089,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 	// default only when it's unset. Not a floor — a model that legitimately
 	// caps below the default (e.g. ollama's 4096) must send its own value, or
 	// ModelInfo.MaxOutputTokens would be a lie relative to the wire.
-	maxTokens := c.maxOutputTokens
-	if maxTokens <= 0 {
-		maxTokens = fallbackMaxOutputTokens
-	}
+	maxTokens := c.effectiveMaxOutputTokens(req)
 
 	// Provider-boundary liveness: guard the SDK stream (no read deadline of its
 	// own) with an idle watchdog that cancels streamCtx if the upstream goes

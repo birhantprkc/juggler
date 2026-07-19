@@ -160,6 +160,10 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 	}
 
 	barrenTurns := 0
+	// recoveryAttempted caps context-window recovery at one fold+retry per
+	// strategy run: if the rebuilt request still does not fit, the error is
+	// terminal rather than a summarize-retry loop.
+	recoveryAttempted := false
 
 strategyLoop:
 	for {
@@ -307,6 +311,49 @@ strategyLoop:
 				w.currentTxnID = ""
 				return
 			}
+
+			var contextLimit *provider.ContextLimitExceededError
+			if errors.As(err, &contextLimit) {
+				// Parse the original request only now that it is needed (a context
+				// limit rejection), not on every successful turn.
+				var originalRequest hiddenLLMRequest
+				_ = json.Unmarshal(llmRequest, &originalRequest)
+				handled, compactErr := w.tryBoundedCompaction(contextLimit, originalRequest.ModelConfig)
+				if handled {
+					w.currentTxnID = ""
+					if compactErr == nil {
+						return
+					}
+					if errors.Is(compactErr, errBoundedCompactionCancelled) {
+						return
+					}
+					err = fmt.Errorf("bounded compaction failed: %w", compactErr)
+				} else if !recoveryAttempted {
+					// Ordinary root / subthread turn: summarize the oldest
+					// foldable history into the doc, then rebuild and retry the
+					// rejected turn once (the loop-top rebuild re-runs admission
+					// on the folded request).
+					recoveryAttempted = true
+					if recErr := w.tryContextRecovery(contextLimit, originalRequest.ModelConfig); recErr != nil {
+						if errors.Is(recErr, errBoundedCompactionCancelled) {
+							w.currentTxnID = ""
+							return
+						}
+						err = fmt.Errorf("context recovery failed: %w", recErr)
+						// When the limit was synthesized from a provider-side
+						// rejection (F2), the recovery error does not carry the
+						// provider's own wording. Surface it on the terminal item
+						// so the user sees why the provider rejected the turn.
+						if contextLimit.Cause != nil {
+							err = fmt.Errorf("%w (provider: %s)", err, contextLimit.Cause.Error())
+						}
+					} else {
+						w.currentTxnID = ""
+						continue strategyLoop
+					}
+				}
+			}
+
 			w.log.Error("❌ LLM error: %s", err.Error())
 			errorData := map[string]any{
 				"duration": duration.Milliseconds(),
@@ -314,6 +361,11 @@ strategyLoop:
 			if mc := w.resolveModelConfig(); mc != nil {
 				errorData["provider"] = mc.Provider
 				errorData["model"] = mc.Model
+			}
+			// A failed bounded compaction / context recovery still leaves its
+			// partial accounting on the durable error item.
+			for k, v := range compactionErrorData(err) {
+				errorData[k] = v
 			}
 			// currentTxnID is still set, so insertTargetMessage stamps the
 			// error item with txnID — the View Transaction button opens the
@@ -568,8 +620,15 @@ func (w *ConversationWorker) findUnstampedUserMsgID() string {
 // Chunks are streamed via the worker's Send method for UI updates.
 // In mock mode, returns the next scripted response instead of calling real LLM.
 func (w *ConversationWorker) callLLM(request json.RawMessage) (*LLMResponse, error) {
+	return w.callLLMWithSink(request, w.queueStreamChunk)
+}
+
+// callLLMWithSink is the transport primitive shared by visible turns and hidden
+// worker operations. A nil sink discards stream chunks while preserving the
+// normal server/cache/provider/admission path and cancellation semantics.
+func (w *ConversationWorker) callLLMWithSink(request json.RawMessage, sink func(StreamChunk)) (*LLMResponse, error) {
 	if w.mock != nil {
-		return w.callLLMMock()
+		return w.callLLMMockWithSink(sink)
 	}
 
 	if w.llmCallFunc == nil {
@@ -593,38 +652,50 @@ func (w *ConversationWorker) callLLM(request json.RawMessage) (*LLMResponse, err
 	go func() {
 		defer cancel()
 		response, err := w.llmCallFunc(ctx, request, func(chunk StreamChunk) {
-			w.queueStreamChunk(chunk)
+			if sink != nil {
+				sink(chunk)
+			}
 		})
-		if err != nil {
-			w.deliverLLMResponse(&LLMResponse{Error: err.Error()})
-			return
-		}
-		w.deliverLLMResponse(response)
+		w.deliverLLMResponse(response, err)
 	}()
 
 	response, err := w.waitForLLMResponse(LLMTimeout)
 	if err != nil {
-		return nil, err
-	}
-
-	if response.Error != "" {
+		var delivered *deliveredLLMError
+		if !errors.As(err, &delivered) {
+			return nil, err
+		}
 		// A system-wake cancelled this call: the connection was dropped while
 		// the machine slept. Surface a clear, retryable message instead of the
 		// provider's raw "context canceled".
 		if w.llmWakeInterrupt.Load() {
 			return nil, fmt.Errorf("LLM request interrupted: the system resumed from sleep and the connection was dropped — please resend")
 		}
-		msg := response.Error
-		switch {
-		case isRateLimitMsg(msg):
-			return nil, &RateLimitError{Wait: parseRetryWaitFromMsg(msg), Message: "LLM error: " + msg}
-		case isTransientMsg(msg):
-			return nil, &TransientError{Wait: TransientRetryWait, Message: "LLM error: " + msg}
-		}
-		return nil, fmt.Errorf("LLM error: %s", msg)
+		return nil, classifyLLMError(err.Error(), err)
+	}
+
+	if response.Error != "" {
+		return nil, classifyLLMError(response.Error, nil)
 	}
 
 	return response, nil
+}
+
+// classifyLLMError retains legacy message-based rate-limit and transient
+// classification while preserving an in-process provider error as the cause.
+// Wire and scripted responses have no concrete cause and continue to use their
+// LLMResponse.Error text.
+func classifyLLMError(msg string, cause error) error {
+	switch {
+	case isRateLimitMsg(msg):
+		return &RateLimitError{Wait: parseRetryWaitFromMsg(msg), Message: "LLM error: " + msg, Cause: cause}
+	case isTransientMsg(msg):
+		return &TransientError{Wait: TransientRetryWait, Message: "LLM error: " + msg, Cause: cause}
+	case cause != nil:
+		return fmt.Errorf("LLM error: %w", cause)
+	default:
+		return fmt.Errorf("LLM error: %s", msg)
+	}
 }
 
 // processLLMResponse handles the LLM response blocks.
@@ -798,19 +869,23 @@ func (w *ConversationWorker) addMetaToolResult(toolUseID, toolName string, toolI
 
 var idCounter atomic.Int64
 
+// IDs carry a fixed-width counter so the estimated size of a request envelope
+// is stable for a given logical request: admission packing, budget preflight,
+// and dispatch each regenerate IDs, and an unpadded counter changes the
+// estimate by a token whenever it crosses a power of ten.
 func generateItemID() string {
 	id := idCounter.Add(1)
-	return fmt.Sprintf("msg_%d_%d", time.Now().UnixMilli(), id)
+	return fmt.Sprintf("msg_%d_%09d", time.Now().UnixMilli(), id)
 }
 
 func generateRequestID() string {
 	id := idCounter.Add(1)
-	return fmt.Sprintf("req_%d_%d", time.Now().UnixMilli(), id)
+	return fmt.Sprintf("req_%d_%09d", time.Now().UnixMilli(), id)
 }
 
 func generateTransactionID() string {
 	id := idCounter.Add(1)
-	return fmt.Sprintf("txn_%d_%d", time.Now().UnixMilli(), id)
+	return fmt.Sprintf("txn_%d_%09d", time.Now().UnixMilli(), id)
 }
 
 // toolSummary extracts a concise one-line summary from tool input JSON for the

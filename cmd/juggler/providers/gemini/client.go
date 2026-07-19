@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"slices"
@@ -33,10 +34,11 @@ func Register() {
 
 // Client implements provider.Provider for Google Gemini
 type Client struct {
-	client     *genai.Client
-	model      string
-	apiKey     string
-	httpClient *http.Client
+	client          *genai.Client
+	model           string
+	apiKey          string
+	httpClient      *http.Client
+	maxOutputTokens int32
 }
 
 // NewClient creates a new Gemini provider
@@ -46,6 +48,16 @@ func NewClient(cfg provider.Config) (provider.Provider, error) {
 	}
 	if cfg.Model == "" {
 		return nil, fmt.Errorf("model is required")
+	}
+	// A garbage live-list value must not make the provider un-initializable —
+	// everything else in the context-window feature degrades gracefully, so clamp
+	// an over-large output cap to the int32 wire ceiling rather than failing here.
+	maxOutputTokens := int32(0)
+	if v := cfg.ModelCapabilities.MaxOutputTokens; v > 0 {
+		if v > math.MaxInt32 {
+			v = math.MaxInt32
+		}
+		maxOutputTokens = int32(v)
 	}
 
 	ctx := context.Background()
@@ -75,10 +87,11 @@ func NewClient(cfg provider.Config) (provider.Provider, error) {
 	}
 
 	return &Client{
-		client:     client,
-		model:      cfg.Model,
-		apiKey:     cfg.APIKey,
-		httpClient: httpClient,
+		client:          client,
+		model:           cfg.Model,
+		apiKey:          cfg.APIKey,
+		httpClient:      httpClient,
+		maxOutputTokens: maxOutputTokens,
 	}, nil
 }
 
@@ -90,6 +103,18 @@ func (c *Client) Name() string {
 // prepareRequest builds the common request components for both SendMessage and StreamMessage
 func (c *Client) prepareRequest(req provider.MessageRequest) (*genai.GenerateContentConfig, []*genai.Content, error) {
 	config := buildGeminiConfig(req.Tools, req.ToolChoice)
+	if c.maxOutputTokens > 0 {
+		config.MaxOutputTokens = c.maxOutputTokens
+	}
+	// A per-request wire output cap (F1: hidden compaction map calls) may only
+	// lower the effective max output — apply it as a min() against the client
+	// value (0 = unset means "no client cap", so the request cap wins there).
+	if req.MaxOutputTokens > 0 && req.MaxOutputTokens <= math.MaxInt32 {
+		reqCap := int32(req.MaxOutputTokens)
+		if config.MaxOutputTokens <= 0 || reqCap < config.MaxOutputTokens {
+			config.MaxOutputTokens = reqCap
+		}
+	}
 
 	if req.SystemPrompt != "" {
 		config.SystemInstruction = &genai.Content{

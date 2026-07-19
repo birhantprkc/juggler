@@ -64,6 +64,20 @@ func GetContextWindow(model string) int {
 // fall back to defaultMaxOutputTokens, which is at or below every known model's
 // ceiling so an unrecognised id can never produce a max_tokens 400.
 func GetMaxOutputTokens(model string) int {
+	if value, known := catalogMaxOutputTokens(model); known {
+		return value
+	}
+	return defaultMaxOutputTokens
+}
+
+// catalogMaxOutputTokens returns the per-model output ceiling and true when the
+// static catalog recognises the model's generation, or (0, false) for ids it
+// does not know (live-list-only or future models). It exists so callers can
+// distinguish a genuinely-known 8192 ceiling (Claude 3.5) from an unknown id
+// that merely defaults to 8192 — GetMaxOutputTokens collapses both, but the
+// wire clamp in buildMessageParams must only override the capability snapshot
+// when the catalog actually knows the model.
+func catalogMaxOutputTokens(model string) (int, bool) {
 	m := strings.ToLower(model)
 
 	isOpus := strings.Contains(m, "opus")
@@ -83,19 +97,19 @@ func GetMaxOutputTokens(model string) int {
 
 	switch {
 	case isOpus && gen4("opus"):
-		return 32000
+		return 32000, true
 	case isSonnet && gen4("sonnet"):
-		return 64000
+		return 64000, true
 	case isHaiku && gen4("haiku"):
-		return 64000
+		return 64000, true
 	case strings.Contains(m, "3-7-sonnet") || strings.Contains(m, "claude-3.7"):
-		return 64000
+		return 64000, true
 	case strings.Contains(m, "3-5-") || strings.Contains(m, "claude-3.5"):
-		return 8192
+		return 8192, true
 	case strings.Contains(m, "claude-3"):
-		return 4096
+		return 4096, true
 	default:
-		return defaultMaxOutputTokens
+		return 0, false
 	}
 }
 

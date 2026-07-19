@@ -7,6 +7,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -89,6 +90,15 @@ type MessageRequest struct {
 	ThreadID       string                 // Optional: scopes the turn to a thread ("" = root); stateful providers may keep a per-thread session, stateless ones ignore it
 	ShouldContinue ShouldContinueCallback // Optional: called after each turn to check if loop should continue
 	ToolChoice     *ToolChoice            // Optional: constrain which tool the model must call this turn. Nil = auto.
+
+	// MaxOutputTokens optionally caps this one request's wire output length
+	// (max_tokens), independent of the client/model default. 0 means "use the
+	// client/model default". Introduced so hidden compaction map calls can be
+	// output-bounded without a runaway final summary being truncated. When set it
+	// may only *lower* the effective wire cap, never raise it: adapters apply it
+	// as a min() against their existing client-level value, and admission charges
+	// the smaller reserve so the wire cap and the admission reserve never diverge.
+	MaxOutputTokens int64
 
 	// ThinkingLevel selects how much extended reasoning / "thinking" the model
 	// does this turn, from a provider-agnostic vocabulary:
@@ -285,24 +295,57 @@ func EstimateTokens(text string) int {
 // flatImageTokenEstimate is the per-image token cost assumed when an image's
 // pixel dimensions are unknown (e.g. webp, which the stdlib can't decode). It
 // is a deliberately generous round number so a missing dimension never
-// under-counts a normal screenshot.
-const flatImageTokenEstimate = 1300
+// under-counts a normal screenshot, and it also floors the pixel heuristic.
+const flatImageTokenEstimate int64 = 1300
+
+// maxFallbackImageTokens caps the dimensionless, byte-derived fallback so a
+// single large attachment with unknown dimensions cannot alone exceed a model
+// window. Vision models cost far less than this per image; the ceiling keeps
+// admission conservative but bounded.
+const maxFallbackImageTokens int64 = 6000
 
 // EstimateImageTokens estimates the prompt-token cost of one image MediaPart.
 // It follows Anthropic's published heuristic — tokens ≈ (width*height)/750 —
-// when the pixel dimensions are known, and falls back to a flat per-image
-// constant when they are not. Non-image parts contribute nothing. This is only
-// a fallback for providers that don't report real usage; raw image bytes are
-// never marshaled (MediaPart.Data is json:"-"), so this is the sole way image
-// cost enters a token estimate.
+// when the pixel dimensions are known, and falls back to a bounded per-image
+// estimate when they are not. Non-image parts contribute nothing.
 func EstimateImageTokens(p MediaPart) int {
+	estimate := estimateImageTokens64(p)
+	if estimate > int64(^uint(0)>>1) {
+		return int(^uint(0) >> 1)
+	}
+	return int(estimate)
+}
+
+// estimateImageTokens64 charges an image by its pixel/tile estimate whenever
+// its dimensions are known, and never by its raw byte length: a compressed
+// image's on-wire bytes bear no relation to its vision-token cost, and charging
+// bytes could hard-fail an image-bearing turn on an otherwise empty context.
+// Only when dimensions are absent does it fall back to a byte-derived charge,
+// floored at the flat estimate and capped so one attachment cannot alone blow
+// the window.
+func estimateImageTokens64(p MediaPart) int64 {
 	if p.Type != "image" {
 		return 0
 	}
 	if p.Width > 0 && p.Height > 0 {
-		return (p.Width * p.Height) / 750
+		width := int64(p.Width)
+		height := int64(p.Height)
+		if width > math.MaxInt64/height {
+			return math.MaxInt64
+		}
+		if pixels := width * height; pixels/750 > flatImageTokenEstimate {
+			return pixels / 750
+		}
+		return flatImageTokenEstimate
 	}
-	return flatImageTokenEstimate
+	byteEstimate := int64(len(p.Data))
+	if byteEstimate < flatImageTokenEstimate {
+		return flatImageTokenEstimate
+	}
+	if byteEstimate > maxFallbackImageTokens {
+		return maxFallbackImageTokens
+	}
+	return byteEstimate
 }
 
 // StreamChunk represents a chunk of streaming content with type information
@@ -511,12 +554,33 @@ type Conversation interface {
 	Close() error
 }
 
+// ModelCapabilities is the immutable model-limit snapshot used when a provider
+// is initialized. Callers should populate it from trusted model metadata rather
+// than from request content.
+type ModelCapabilities struct {
+	ContextWindowTokens    int64
+	MaxOutputTokens        int64
+	ProviderOverheadTokens int64
+}
+
+// BudgetContract defines how shared admission reserves room for a response.
+// A positive OutputReserveTokens overrides MaxOutputTokens. A known context with
+// neither uses a conservative derived reserve. Unknown context fails closed
+// unless AllowUnknownLimits is explicitly set.
+type BudgetContract struct {
+	OutputReserveTokens int64
+	AllowUnknownLimits  bool
+}
+
 // Config contains provider configuration
 type Config struct {
 	APIKey      string
 	BearerToken string
 	Headers     map[string]string
 	Model       string
+
+	ModelCapabilities ModelCapabilities
+	BudgetContract    BudgetContract
 }
 
 // AuthType describes how a provider becomes available.
@@ -558,6 +622,16 @@ type ProviderInfo struct {
 	// CLI subprocess or local daemon). Consumers should treat empty/nil as
 	// "models discovered elsewhere", not as "no models".
 	ModelContextWindows map[string]int
+	// ResolveModelCapabilities optionally supplies static admission capabilities
+	// that cannot be represented by ModelContextWindows alone. The bool is false
+	// for unknown model ids so custom aliases continue to fail closed.
+	ResolveModelCapabilities func(model string) (ModelCapabilities, bool)
+	// AllowUnknownLimits opts the provider out of fail-closed admission when a
+	// model's context window is unknown. Set only for providers that cannot
+	// expose limits and already enforce a safe boundary themselves (e.g.
+	// external agent protocols); their requests dispatch with no admission
+	// check rather than dying with UnknownContextLimitError.
+	AllowUnknownLimits bool
 }
 
 // EffectiveAuthType preserves the legacy convention where an empty

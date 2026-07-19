@@ -7,6 +7,12 @@ of changes; this project follows semantic versioning.
 
 - Refactored subthreads so that they now show their initial items (system prompt, memory, skills etc)
 - Made the key optional in the generic openAI provider so that keyless providers will work
+- Reported real provider context-window and output limits; unknown custom aliases fail closed
+- Rejected oversized model requests before dispatch with enforced context-window admission
+- Enforced Ollama's real serving window (Modelfile num_ctx, conservative default, user override)
+- Summarized oversized compact and handoff histories within bounded model calls
+- Recovered from context-window overflow by folding older history and retrying the turn once
+- Recovered from provider-side context rejections, not just locally predicted ones
 
 ## [0.4.2] - 2026-07-18
 

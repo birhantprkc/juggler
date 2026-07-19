@@ -230,6 +230,10 @@ func (c *Client) deleteSidecar(convID string) {
 // gracefully under claudecode — the model may answer in text and the worker's
 // writeThreadResult fallback turns that into the thread result. If the CLI ever
 // gains a forced-tool option, translate req.ToolChoice here.
+// req.MaxOutputTokens (F1's per-request wire output cap) is likewise ignored:
+// the CLI transport has no per-request max_tokens knob. Admission still charges
+// the smaller reserve, which is safe here — the CLI cannot overshoot its own
+// configured limits (the Anthropic API behind it enforces the model ceiling).
 func (c *Client) streamMessage(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

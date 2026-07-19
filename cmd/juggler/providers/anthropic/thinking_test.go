@@ -52,6 +52,55 @@ func TestBuildMessageParamsThinkingClamped(t *testing.T) {
 	}
 }
 
+// TestBuildMessageParamsThinkingClampedToCapability pins the divergence guard:
+// when the admission capability snapshot carries a lower output limit than the
+// static catalog, the thinking budget clamps against the wire max_tokens (the
+// snapshot), never the catalog — budget_tokens ≥ max_tokens is a hard 400. And
+// when the snapshot leaves no room for even the minimum budget plus answer
+// headroom, thinking drops for that turn instead of erroring.
+func TestBuildMessageParamsThinkingClampedToCapability(t *testing.T) {
+	c := &Client{model: "claude-sonnet-4-5-20250929", maxOutputTokens: 20000}
+	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: provider.ThinkingMax})
+	got := params.Thinking.GetBudgetTokens()
+	if got == nil {
+		t.Fatal("thinking param missing for max level")
+	}
+	if want := int64(20000 - 4096); *got != want {
+		t.Errorf("budget = %d, want %d (clamped to the capability wire value, not the catalog)", *got, want)
+	}
+	if *got >= params.MaxTokens {
+		t.Errorf("budget %d must be < max_tokens %d", *got, params.MaxTokens)
+	}
+
+	c = &Client{model: "claude-sonnet-4-5-20250929", maxOutputTokens: 5000}
+	params = c.buildMessageParams(provider.MessageRequest{ThinkingLevel: provider.ThinkingMax})
+	if got := params.Thinking.GetBudgetTokens(); got != nil {
+		t.Errorf("maxTokens 5000: budget = %d, want thinking dropped (below the 1024 minimum after headroom)", *got)
+	}
+}
+
+// TestBuildMessageParamsThinkingClampsToCatalogWireValue pins the F4 ordering:
+// when the catalog clamps max_tokens below an over-large capability snapshot,
+// the thinking budget follows the clamped (catalog) wire value, not the
+// snapshot — otherwise budget_tokens ≥ max_tokens would be a hard 400.
+func TestBuildMessageParamsThinkingClampsToCatalogWireValue(t *testing.T) {
+	c := &Client{model: "claude-opus-4-20250514", maxOutputTokens: 100000}
+	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: provider.ThinkingMax})
+	if params.MaxTokens != 32000 {
+		t.Fatalf("MaxTokens = %d, want catalog-clamped 32000", params.MaxTokens)
+	}
+	got := params.Thinking.GetBudgetTokens()
+	if got == nil {
+		t.Fatal("thinking param missing")
+	}
+	if want := int64(32000 - 4096); *got != want {
+		t.Errorf("budget = %d, want %d (clamped to the catalog wire value)", *got, want)
+	}
+	if *got >= params.MaxTokens {
+		t.Errorf("budget %d must be < max_tokens %d", *got, params.MaxTokens)
+	}
+}
+
 // TestBuildMessageParamsThinkingOffAbsent pins backward compatibility: "off" and
 // an absent level produce no thinking param at all.
 func TestBuildMessageParamsThinkingOffAbsent(t *testing.T) {

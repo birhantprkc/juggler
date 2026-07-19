@@ -97,11 +97,13 @@ func Register(d Descriptor) {
 	// Data-driven caps: synthesise the per-model (context, maxOutput) lookup and
 	// the static context map from ContextWindowCaps/MaxOutputCaps when the
 	// provider didn't supply the function/map forms directly.
+	capsSynthesised := false
 	if d.ContextWindowFn == nil && (capsConfigured(d.ContextWindowCaps) || capsConfigured(d.MaxOutputCaps)) {
 		cw, mo := d.ContextWindowCaps, d.MaxOutputCaps
 		d.ContextWindowFn = func(model string) (int, int) {
 			return cw.Lookup(model), mo.Lookup(model)
 		}
+		capsSynthesised = true
 	}
 	if d.ContextWindows == nil {
 		d.ContextWindows = d.ContextWindowCaps.Overrides
@@ -121,6 +123,28 @@ func Register(d Descriptor) {
 		APIKeyOptional:      d.APIKeyOptional,
 		ModelContextWindows: d.ContextWindows,
 	}
+	switch {
+	case capsSynthesised:
+		// Static admission resolution vouches only for ids the provider
+		// catalogued in an override; a Default alone never resolves. Defaults
+		// still apply to catalogued ids (and to provider-reported live lists
+		// via ContextWindowFn), but an uncatalogued id — typically a
+		// user-invented alias — fails closed instead of inheriting a
+		// fabricated limit.
+		cw, mo := d.ContextWindowCaps, d.MaxOutputCaps
+		info.ResolveModelCapabilities = func(model string) (provider.ModelCapabilities, bool) {
+			_, cwKnown := cw.LookupKnown(model)
+			_, moKnown := mo.LookupKnown(model)
+			if !cwKnown && !moKnown {
+				return provider.ModelCapabilities{}, false
+			}
+			return capabilitiesFromPair(cw.Lookup(model), mo.Lookup(model))
+		}
+	case d.ContextWindowFn != nil:
+		info.ResolveModelCapabilities = func(model string) (provider.ModelCapabilities, bool) {
+			return capabilitiesFromPair(d.ContextWindowFn(model))
+		}
+	}
 
 	initializer := func(cfg provider.Config) (provider.Provider, error) {
 		if cfg.APIKey == "" && d.APIKeyDefault != "" {
@@ -139,13 +163,16 @@ func Register(d Descriptor) {
 		if err != nil {
 			return nil, err
 		}
-		// Carry the model's real output cap onto the per-turn request so
-		// reasoning models aren't throttled mid-thought by the fallback. The
-		// descriptor already knows it via ContextWindowFn (the same source the
-		// model list advertises).
-		if d.ContextWindowFn != nil {
-			if _, maxOut := d.ContextWindowFn(cfg.Model); maxOut > 0 {
-				base.maxOutputTokens = maxOut
+		// The descriptor's ContextWindowFn is the authoritative per-model output
+		// ceiling for models it knows; hand it to the client so the wire cap is
+		// clamped to it even if the capability snapshot carries a higher value (a
+		// derived reserve, or an over-reported live limit).
+		if fn := d.ContextWindowFn; fn != nil {
+			base.catalogMaxOutput = func(model string) (int, bool) {
+				if _, maxOut := fn(model); maxOut > 0 {
+					return maxOut, true
+				}
+				return 0, false
 			}
 		}
 		// Resolve this model's reasoning-effort support once, so the per-turn
@@ -166,6 +193,20 @@ func Register(d Descriptor) {
 	}
 
 	provider.RegisterProvider(info, initializer)
+}
+
+// capabilitiesFromPair builds ModelCapabilities from a (contextWindow,
+// maxOutputTokens) pair, keeping only positive values and returning ok=false
+// when neither is known. Shared by both ResolveModelCapabilities closures.
+func capabilitiesFromPair(contextWindow, maxOutputTokens int) (provider.ModelCapabilities, bool) {
+	capabilities := provider.ModelCapabilities{}
+	if contextWindow > 0 {
+		capabilities.ContextWindowTokens = int64(contextWindow)
+	}
+	if maxOutputTokens > 0 {
+		capabilities.MaxOutputTokens = int64(maxOutputTokens)
+	}
+	return capabilities, capabilities != (provider.ModelCapabilities{})
 }
 
 // capsConfigured reports whether a ModelCaps carries any data (a default or at

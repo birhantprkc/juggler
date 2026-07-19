@@ -13,7 +13,9 @@ import (
 	"juggler/cmd/juggler/providers/utils"
 )
 
-const baseURL = "https://openrouter.ai/api/v1"
+// baseURL is a var (not a const) so tests can point listModels at a fake
+// server, mirroring creditsURL/keyURL in the usage path.
+var baseURL = "https://openrouter.ai/api/v1"
 
 // Register adds this provider to the global registry. Called explicitly from
 // main; no init()-time side effects.
@@ -69,6 +71,15 @@ func listModels(ctx context.Context, apiKey string, headers map[string]string) (
 			ctxWindow = GetContextWindow(m.ID)
 		}
 		maxOut := m.TopProvider.MaxCompletionTokens
+		// OpenRouter's catalog contains entries whose max_completion_tokens
+		// equals context_length; a cap at/above the window leaves no input room
+		// and is a catalog artifact, not a usable limit. Treat it as unset so the
+		// default output cap applies and the UI model list shows a sane number.
+		// (server-side normalizeOutputLimit is the universal net; this keeps the
+		// listed data itself hygienic.)
+		if ctxWindow > 0 && maxOut >= ctxWindow {
+			maxOut = 0
+		}
 		if maxOut == 0 {
 			maxOut = DefaultMaxOutputTokens
 		}

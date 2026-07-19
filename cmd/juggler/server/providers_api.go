@@ -219,11 +219,10 @@ func (s *Server) fetchUsageStats(ctx context.Context, providerName string, cred 
 	return &stats, nil
 }
 
-// RefreshProviders recomputes the provider list and broadcasts it via WS.
-// Safe to call from any goroutine; the heavy computation is serialised via
-// refreshToken so a flurry of credential changes coalesces into one refresh.
-// In test mode this is a no-op — tests use mock LLM callers and the live
-// model-list calls would hold open enough TLS sockets to exhaust fd limits.
+// RefreshProviders queues a provider-list recomputation. Safe to call from any
+// goroutine. refreshRequests is a dirty latch: bursts coalesce to one queued
+// request, including while a computation is in flight. A request accepted during
+// a computation remains queued for the actor's next pass.
 func (s *Server) RefreshProviders() {
 	if s.testMode {
 		// Tests mock the provider list; nothing will ever populate the cache, so
@@ -233,27 +232,35 @@ func (s *Server) RefreshProviders() {
 		return
 	}
 	select {
-	case s.refreshToken <- struct{}{}:
+	case s.refreshRequests <- struct{}{}:
 	default:
-		// A refresh is already queued; this one's effect will be covered by it.
-		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		list := s.computeProviders(ctx)
-		<-s.refreshToken
-		s.providersList.Store(&list)
-		s.markProvidersReady()
-		s.broadcastToAll(map[string]any{
-			"type":      "providers-update",
-			"providers": list,
-			// This snapshot is the settled, post-compute list — clients that gate
-			// startup decisions (e.g. first-run onboarding) on real provider
-			// availability should trust it, not the pre-compute connect seed.
-			"ready": true,
-		})
-	}()
+}
+
+func (s *Server) runProviderRefreshActor() {
+	for {
+		select {
+		case <-s.shutdownChan:
+			return
+		case <-s.refreshRequests:
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			compute := s.computeProvidersFunc
+			if compute == nil {
+				compute = s.computeProviders
+			}
+			list := compute(ctx)
+			cancel()
+			s.providersList.Store(&list)
+			s.markProvidersReady()
+			s.broadcastToAll(map[string]any{
+				"type":      "providers-update",
+				"providers": list,
+				// This snapshot is the settled, post-compute list — clients that gate
+				// startup decisions on real provider availability should trust it.
+				"ready": true,
+			})
+		}
+	}
 }
 
 // markProvidersReady opens the providers-ready gate exactly once. Called when
@@ -442,6 +449,72 @@ func (s *Server) cachedProviders() []ProviderStatus {
 		return *p
 	}
 	return []ProviderStatus{}
+}
+
+// resolveModelCapabilities returns one immutable capability snapshot for an
+// exact provider/model pair. Published positive live values win. A provider's
+// static capability resolver can fill values that are still unknown before
+// runtime discovery; the context-only map remains the final fallback.
+//
+// The snapshot always carries one effective output limit when the context
+// window is known: model-reported or catalogued limits win, otherwise the
+// shared derived safety reserve is filled in here. Admission charges a
+// reserve from the same snapshot fields, so the reserve and the value placed
+// on the wire can never diverge.
+func (s *Server) resolveModelCapabilities(providerName, model string) provider.ModelCapabilities {
+	info, hasInfo := provider.GetProviderInfo(providerName)
+	capabilities := provider.ModelCapabilities{}
+	if hasInfo {
+		if info.ResolveModelCapabilities != nil {
+			if resolved, found := info.ResolveModelCapabilities(model); found {
+				capabilities = resolved
+			}
+		}
+		if capabilities.ContextWindowTokens <= 0 {
+			if contextWindow, found := info.ModelContextWindows[model]; found && contextWindow > 0 {
+				capabilities.ContextWindowTokens = int64(contextWindow)
+			}
+		}
+	}
+
+	for _, status := range s.cachedProviders() {
+		if status.Name != providerName {
+			continue
+		}
+		for _, candidate := range status.ModelsWithContext {
+			if candidate.ID == model {
+				if candidate.ContextWindow > 0 {
+					capabilities.ContextWindowTokens = int64(candidate.ContextWindow)
+				}
+				if candidate.MaxOutputTokens > 0 {
+					capabilities.MaxOutputTokens = int64(candidate.MaxOutputTokens)
+				}
+				return normalizeOutputLimit(capabilities)
+			}
+		}
+		break
+	}
+	return normalizeOutputLimit(capabilities)
+}
+
+// normalizeOutputLimit fills the derived safety reserve when the window is
+// known but no output limit resolved from any source, and clamps a reported
+// output cap that is at or above the window down to the derived reserve.
+//
+// A reported output cap equal to (or above) the context window leaves zero
+// input room, so admission would reject every request with
+// InvalidOutputReserveError and the model would be permanently unusable. Such a
+// value is a catalog artifact (some OpenRouter entries report
+// max_completion_tokens == context_length), not a usable limit; the derived
+// reserve is the conservative interpretation. This is the universal safety net
+// for any provider that misreports; sources may also clamp at their own layer.
+func normalizeOutputLimit(capabilities provider.ModelCapabilities) provider.ModelCapabilities {
+	if capabilities.ContextWindowTokens > 0 {
+		if capabilities.MaxOutputTokens <= 0 || capabilities.MaxOutputTokens >= capabilities.ContextWindowTokens {
+			capabilities.MaxOutputTokens = provider.ContextSafetyReserve(capabilities.ContextWindowTokens)
+		}
+	}
+	return capabilities
 }
 
 // handleProviders returns the cached provider/model list. The list is

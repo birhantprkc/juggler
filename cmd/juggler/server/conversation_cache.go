@@ -23,13 +23,15 @@ import (
 )
 
 // conversationCacheKey identifies one cached Conversation. Provider, model,
-// and credential are part of the key so a mid-conversation model/auth switch
-// closes the old handle and opens a new one.
+// credential, and immutable model capabilities are part of the key so a
+// mid-conversation configuration switch closes the old handle and opens a new
+// one.
 type conversationCacheKey struct {
 	convID       string
 	providerName string
 	model        string
 	credential   string
+	capabilities provider.ModelCapabilities
 }
 
 // conversationCache stores Conversation handles keyed by (convID,
@@ -88,11 +90,17 @@ func newConversationCache() *conversationCache {
 // one if absent. If a Conversation exists for the same convID but a
 // different (provider, model), the old handle is closed first (the user
 // switched models mid-conversation).
-func (cc *conversationCache) GetOrOpen(ctx context.Context, convID, providerName, model string, credential core.ProviderCredential) (provider.Conversation, error) {
+func (cc *conversationCache) GetOrOpen(ctx context.Context, convID, providerName, model string, credential core.ProviderCredential, capabilities provider.ModelCapabilities) (provider.Conversation, error) {
 	resp := make(chan cacheResult, 1)
 	cc.ops <- cacheOp{
-		kind:       cacheOpGetOrOpen,
-		key:        conversationCacheKey{convID: convID, providerName: providerName, model: model, credential: credential.CacheKey()},
+		kind: cacheOpGetOrOpen,
+		key: conversationCacheKey{
+			convID:       convID,
+			providerName: providerName,
+			model:        model,
+			credential:   credential.CacheKey(),
+			capabilities: capabilities,
+		},
 		credential: credential,
 		respCh:     resp,
 	}
@@ -176,11 +184,14 @@ func (cc *conversationCache) runActor() {
 					delete(entries, k)
 				}
 			}
+			info, _ := provider.GetProviderInfo(op.key.providerName)
 			prov, err := provider.InitializeProvider(op.key.providerName, provider.Config{
-				APIKey:      op.credential.APIKey,
-				BearerToken: op.credential.BearerToken,
-				Headers:     op.credential.Headers,
-				Model:       op.key.model,
+				APIKey:            op.credential.APIKey,
+				BearerToken:       op.credential.BearerToken,
+				Headers:           op.credential.Headers,
+				Model:             op.key.model,
+				ModelCapabilities: op.key.capabilities,
+				BudgetContract:    provider.BudgetContract{AllowUnknownLimits: info.AllowUnknownLimits},
 			})
 			if err != nil {
 				op.respCh <- cacheResult{err: fmt.Errorf("initialize provider %q: %w", op.key.providerName, err)}

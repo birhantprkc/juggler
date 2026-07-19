@@ -49,7 +49,16 @@ func TestGetMaxOutputTokens(t *testing.T) {
 	}
 }
 
-// TestBuildMessageParamsMaxTokensPerModel pins that the request's MaxTokens is
+func TestBuildMessageParamsUsesAdmissionCapability(t *testing.T) {
+	c := &Client{model: "claude-sonnet-4-5-20250929", maxOutputTokens: 12345}
+	params := c.buildMessageParams(provider.MessageRequest{
+		Messages: []provider.Message{{Type: "user", Content: "hi"}},
+	})
+	if params.MaxTokens != 12345 {
+		t.Fatalf("MaxTokens = %d, want admission capability 12345", params.MaxTokens)
+	}
+}
+
 // derived from the model, not a fixed 8192 — in particular that a Claude 3 Opus
 // request stays at its 4096 ceiling (the value the API rejected before) and a
 // Sonnet 4.5 request is allowed its full 64000.
@@ -69,5 +78,72 @@ func TestBuildMessageParamsMaxTokensPerModel(t *testing.T) {
 		if params.MaxTokens != tc.want {
 			t.Errorf("model %q: MaxTokens = %d, want %d", tc.model, params.MaxTokens, tc.want)
 		}
+	}
+}
+
+// TestBuildMessageParamsClampsCapabilityToCatalog pins F4: a capability
+// snapshot carrying a derived reserve above a known model's real output ceiling
+// is clamped down to the catalog value (a static-map-only claude-3-opus resolved
+// from window only can arrive with a 40k reserve; its real cap is 4096, and
+// sending 40k is a hard 400). Unknown ids keep the snapshot value.
+func TestBuildMessageParamsClampsCapabilityToCatalog(t *testing.T) {
+	cases := []struct {
+		name            string
+		model           string
+		maxOutputTokens int64
+		want            int64
+	}{
+		{"known model clamps derived reserve to catalog", "claude-3-opus-20240229", 40000, 4096},
+		{"known model keeps snapshot below catalog", "claude-sonnet-4-5-20250929", 12345, 12345},
+		{"unknown id keeps snapshot verbatim", "future-unmapped-model", 12345, 12345},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Client{model: tc.model, maxOutputTokens: tc.maxOutputTokens}
+			params := c.buildMessageParams(provider.MessageRequest{
+				Messages: []provider.Message{{Type: "user", Content: "hi"}},
+			})
+			if params.MaxTokens != tc.want {
+				t.Fatalf("MaxTokens = %d, want %d", params.MaxTokens, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildMessageParamsHonorsRequestOutputCap pins F1a: a per-request
+// MaxOutputTokens only ever lowers the wire max_tokens (min against the client/
+// catalog value), and the thinking budget follows the tightened value.
+func TestBuildMessageParamsHonorsRequestOutputCap(t *testing.T) {
+	c := &Client{model: "claude-sonnet-4-5-20250929"}
+
+	// Request cap below the catalog ceiling wins.
+	params := c.buildMessageParams(provider.MessageRequest{
+		Messages:        []provider.Message{{Type: "user", Content: "hi"}},
+		MaxOutputTokens: 4096,
+	})
+	if params.MaxTokens != 4096 {
+		t.Fatalf("MaxTokens = %d, want request cap 4096", params.MaxTokens)
+	}
+
+	// Request cap above the effective value is ignored (never raises).
+	params = c.buildMessageParams(provider.MessageRequest{
+		Messages:        []provider.Message{{Type: "user", Content: "hi"}},
+		MaxOutputTokens: 1_000_000,
+	})
+	if params.MaxTokens != 64000 {
+		t.Fatalf("MaxTokens = %d, want catalog 64000 (request cap does not raise)", params.MaxTokens)
+	}
+
+	// Thinking budget clamps against the tightened request cap.
+	params = c.buildMessageParams(provider.MessageRequest{
+		Messages:        []provider.Message{{Type: "user", Content: "hi"}},
+		ThinkingLevel:   provider.ThinkingMax,
+		MaxOutputTokens: 20000,
+	})
+	if params.MaxTokens != 20000 {
+		t.Fatalf("MaxTokens = %d, want request cap 20000", params.MaxTokens)
+	}
+	if got := params.Thinking.GetBudgetTokens(); got == nil || *got != int64(20000-4096) {
+		t.Fatalf("thinking budget = %v, want %d (clamped to request cap)", got, 20000-4096)
 	}
 }

@@ -57,17 +57,26 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 
 		// Parse worker request
 		var req struct {
-			SystemPrompt   string               `json:"systemPrompt"`
-			Messages       []provider.Message   `json:"messages"`
-			Tools          []ToolDefinition     `json:"tools"`
-			ConversationID string               `json:"conversationId"`
-			ThreadID       string               `json:"threadId"`
-			ModelConfig    ModelConfig          `json:"modelConfig"`
-			TransactionID  string               `json:"transactionId"`
-			ToolChoice     *provider.ToolChoice `json:"toolChoice,omitempty"`
+			SystemPrompt    string               `json:"systemPrompt"`
+			Messages        []provider.Message   `json:"messages"`
+			Tools           []ToolDefinition     `json:"tools"`
+			ConversationID  string               `json:"conversationId"`
+			ThreadID        string               `json:"threadId"`
+			ModelConfig     ModelConfig          `json:"modelConfig"`
+			TransactionID   string               `json:"transactionId"`
+			ToolChoice      *provider.ToolChoice `json:"toolChoice,omitempty"`
+			MaxOutputTokens int64                `json:"maxOutputTokens,omitempty"`
 		}
 		if err := json.Unmarshal(request, &req); err != nil {
 			return nil, fmt.Errorf("failed to parse LLM request: %w", err)
+		}
+
+		// Initial model discovery runs asynchronously. Wait before doing dispatch
+		// work so this turn cannot bind its conversation to incomplete startup
+		// metadata. The gate honors the turn context and provider-startup timeout.
+		s.awaitProvidersReady(ctx)
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 
 		// Resolve image attachments: the worker→caller JSON carries only an
@@ -111,7 +120,8 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 		// model switch closes the old handle and opens a fresh one. The
 		// turn's ThreadID rides on the MessageRequest below — a stateful
 		// provider (claudecode) keys its per-thread session off it.
-		conv, err := s.conversationCache.GetOrOpen(ctx, req.ConversationID, req.ModelConfig.Provider, req.ModelConfig.Model, credential)
+		capabilities := s.resolveModelCapabilities(req.ModelConfig.Provider, req.ModelConfig.Model)
+		conv, err := s.conversationCache.GetOrOpen(ctx, req.ConversationID, req.ModelConfig.Provider, req.ModelConfig.Model, credential, capabilities)
 		if err != nil {
 			return nil, fmt.Errorf("open conversation: %w", err)
 		}
@@ -133,6 +143,9 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			ConversationID: req.ConversationID,
 			ThreadID:       req.ThreadID,
 			ToolChoice:     req.ToolChoice,
+			// F1: per-request wire output cap (hidden compaction map calls). 0 =
+			// use the client/model default; adapters apply it as a min().
+			MaxOutputTokens: req.MaxOutputTokens,
 			// Normalize here so an unknown/garbage stored level degrades to the
 			// provider default rather than reaching a provider verbatim. Rides
 			// per-turn; deliberately NOT part of the conversation-cache key.
