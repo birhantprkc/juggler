@@ -520,6 +520,16 @@ func (s *CredentialsStore) GetProviderCredential(providerName string) (ProviderC
 			return ProviderCredential{}, err
 		}
 		if apiKey == "" {
+			// A key-optional provider (an OpenAI-compatible gateway that needs no
+			// auth) stays available keyless, but only once AutoDetect confirms it
+			// is otherwise configured (e.g. its base URL is set) — otherwise every
+			// user who never touches it would see a spurious "couldn't load models".
+			if providerInfo.APIKeyOptional && providerInfo.AutoDetect != nil && providerInfo.AutoDetect() {
+				return ProviderCredential{
+					KeySource: KeySourceNone,
+					AuthHint:  "No key required",
+				}, nil
+			}
 			return ProviderCredential{}, fmt.Errorf("no API key configured for provider: %s", providerName)
 		}
 		return ProviderCredential{

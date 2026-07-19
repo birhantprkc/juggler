@@ -544,6 +544,12 @@ type ProviderInfo struct {
 	ConfigKeyName string // e.g., "anthropic_api_key" - key name in config file
 	EnvVarName    string // e.g., "ANTHROPIC_API_KEY" - environment variable to check as fallback
 	APIKeyURL     string // URL where users can create/manage API keys for this provider
+	// APIKeyOptional marks an AuthTypeAPIKey provider whose key is optional: it
+	// stays available with no key configured, provided AutoDetect reports it is
+	// otherwise configured (e.g. an OpenAI-compatible gateway with a public,
+	// no-auth model list, available once its base URL is set). When true and the
+	// key is empty, the provider is built keyless (no Authorization header).
+	APIKeyOptional bool
 	// AutoDetect optionally checks if the provider is available (e.g., CLI in PATH).
 	// For keyless providers, returns true if usable. Nil means no auto-detection.
 	AutoDetect func() bool

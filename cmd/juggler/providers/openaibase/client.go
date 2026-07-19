@@ -282,9 +282,12 @@ func NewClient(cfg Config) (*Client, error) {
 }
 
 // NewClientFromProviderConfig creates a new OpenAI-compatible client from
-// provider.Config. Validates that credentials and Model are provided (no defaults).
-func NewClientFromProviderConfig(cfg provider.Config, baseURL string, quirks Quirks) (*Client, error) {
-	if cfg.APIKey == "" && cfg.BearerToken == "" {
+// provider.Config. Validates that Model is provided (no default). A credential
+// is required unless allowKeyless is set — used by gateways whose model list
+// and inference need no auth, where an empty key means "send no Authorization
+// header" rather than "misconfigured".
+func NewClientFromProviderConfig(cfg provider.Config, baseURL string, quirks Quirks, allowKeyless bool) (*Client, error) {
+	if cfg.APIKey == "" && cfg.BearerToken == "" && !allowKeyless {
 		return nil, fmt.Errorf("API key or bearer token is required")
 	}
 	if cfg.Model == "" {

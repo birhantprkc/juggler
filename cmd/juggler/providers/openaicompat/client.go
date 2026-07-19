@@ -45,7 +45,7 @@ func Register() {
 	openaibase.Register(openaibase.Descriptor{
 		Name:          "openai-compatible",
 		DisplayName:   "OpenAI-compatible (custom)",
-		Description:   "Any gateway that speaks the OpenAI Chat Completions API. Set the base URL and, if your gateway needs them, custom request headers (JSON) below. Models come from the gateway's /v1/models endpoint.",
+		Description:   "Any gateway that speaks the OpenAI Chat Completions API. Set the base URL and, if your gateway needs them, custom request headers (JSON) below. The API key is optional — leave it blank for gateways that don't require one. Models come from the gateway's /v1/models endpoint.",
 		ConfigKeyName: "openai_compatible_api_key",
 		EnvVarName:    "OPENAI_COMPATIBLE_API_KEY",
 		// No APIKeyURL: the key comes from whichever gateway the user points at.
@@ -54,6 +54,12 @@ func Register() {
 		MaxOutputCaps:     utils.ModelCaps{Default: defaultMaxOutputTokens},
 		BaseURLFunc:       baseURL,
 		HeadersFunc:       headers,
+		// The key is optional: gateways like OpenCode Zen serve a public model
+		// list and need no auth. AutoDetect gates availability on the base URL
+		// being set (not a network probe — the health path of an arbitrary
+		// gateway is unknown), so the provider only lights up once configured.
+		APIKeyOptional: true,
+		AutoDetect:     func() bool { return baseURL() != "" },
 		// Zero-value Quirks: standard OpenAI request shape, the safe default for
 		// an arbitrary compatible gateway.
 	})

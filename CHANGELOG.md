@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Refactored subthreads so that they now show their initial items (system prompt, memory, skills etc)
+- Made the key optional in the generic openAI provider so that keyless providers will work
 
 ## [0.4.2] - 2026-07-18
 

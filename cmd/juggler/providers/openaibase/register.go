@@ -28,6 +28,13 @@ type Descriptor struct {
 	EnvVarName    string
 	APIKeyURL     string
 	AutoDetect    func() bool
+	// APIKeyOptional marks a provider whose API key is optional: it stays
+	// available with no key configured provided AutoDetect reports it is
+	// otherwise usable (e.g. an OpenAI-compatible gateway with a public,
+	// no-auth model list, available once its base URL is set). When true and no
+	// key is present, the client is built keyless — the SDK sends no
+	// Authorization header at all.
+	APIKeyOptional bool
 
 	// Static context-window map exposed via ProviderInfo.ModelContextWindows.
 	// May be nil for providers whose model list is discovered at runtime. When
@@ -111,6 +118,7 @@ func Register(d Descriptor) {
 		EnvVarName:          d.EnvVarName,
 		APIKeyURL:           d.APIKeyURL,
 		AutoDetect:          d.AutoDetect,
+		APIKeyOptional:      d.APIKeyOptional,
 		ModelContextWindows: d.ContextWindows,
 	}
 
@@ -127,7 +135,7 @@ func Register(d Descriptor) {
 			staticHeaders = d.HeadersFunc()
 		}
 		cfg.Headers = mergeHeaders(staticHeaders, cfg.Headers)
-		base, err := NewClientFromProviderConfig(cfg, baseURL, d.Quirks)
+		base, err := NewClientFromProviderConfig(cfg, baseURL, d.Quirks, d.APIKeyOptional)
 		if err != nil {
 			return nil, err
 		}

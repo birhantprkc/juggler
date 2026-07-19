@@ -132,12 +132,22 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func TestNewClientFromProviderConfigRequiresCredential(t *testing.T) {
-	_, err := NewClientFromProviderConfig(provider.Config{Model: "gpt-4o"}, "", Quirks{})
+	_, err := NewClientFromProviderConfig(provider.Config{Model: "gpt-4o"}, "", Quirks{}, false)
 	if err == nil {
 		t.Fatal("expected missing credential error")
 	}
 	if !strings.Contains(err.Error(), "API key or bearer token") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewClientFromProviderConfigAllowsKeyless(t *testing.T) {
+	client, err := NewClientFromProviderConfig(provider.Config{Model: "some-model"}, "https://gateway/v1", Quirks{}, true)
+	if err != nil {
+		t.Fatalf("keyless build should succeed for a key-optional gateway: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected a client")
 	}
 }
 
