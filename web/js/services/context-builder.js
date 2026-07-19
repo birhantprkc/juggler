@@ -100,11 +100,16 @@ export class ContextBuilder {
       helpers: FormattingHelpers
     };
 
-    // The system prompt is a ROOT-level property: the worker always assembles it
-    // from the root thread's context items (session-worker-callbacks.js), and a
-    // sub-thread carries none of its own. Source it from root here too so this
-    // fallback/preview path matches what the worker actually sends.
-    const contextItems = this.conversation.rootMessageThread.contextItems;
+    // The system prompt is assembled from the thread being prepared: root owns
+    // its own, and a sub-thread owns its cloned copy (seeded at creation by the
+    // worker). Fall back to root's items when this thread carries no
+    // system-prompt item yet (first-turn sync race, or a not-yet-seeded thread)
+    // so the prompt is never empty — matching the worker's own fallback in
+    // session-worker-callbacks.js.
+    const ownItems = this.messageThread.contextItems;
+    const contextItems = ownItems.some((/** @type {any} */ f) => f.type === 'system-prompt')
+      ? ownItems
+      : this.conversation.rootMessageThread.contextItems;
 
     // Assemble the system prompt via the shared builder (single source of
     // truth shared with the worker context-request callback).
@@ -187,8 +192,11 @@ export class ContextBuilder {
    * @returns {string} The system prompt
    */
   getSystemPrompt() {
-    // Root-level property — see prepare(): a sub-thread has no system-prompt item.
-    const systemPromptItem = this.conversation.rootMessageThread.contextItems.find(item => item.type === 'system-prompt');
+    // Assemble from the thread being prepared; fall back to root when it owns no
+    // system-prompt item yet (see prepare()).
+    const ownItems = this.messageThread.contextItems;
+    const systemPromptItem = ownItems.find(item => item.type === 'system-prompt')
+      || this.conversation.rootMessageThread.contextItems.find(item => item.type === 'system-prompt');
     if (systemPromptItem) {
       return /** @type {any} */ (systemPromptItem).buildPrompt();
     }

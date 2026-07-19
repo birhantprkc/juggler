@@ -278,6 +278,30 @@ func conversationItemToYMap(item ConversationItem) *ycrdt.YMap {
 	return ymap
 }
 
+// cloneContextItemYMap deep-clones a context-item Y.Map via the generic
+// ToJson round-trip, assigning newID as its itemId. Unlike
+// yMapToConversationItem/conversationItemToYMap — which carry only the named
+// ConversationItem struct fields — this preserves arbitrary plugin `data`,
+// preventUserDeletion, itemType, and any other keys, so a seeded system-prompt/
+// memory/agents-file item keeps its full payload. The round-trip drops
+// nil-valued fields (convertToYcrdt) — harmless, since y-crdt corrupts nils on
+// encode anyway. Callers MUST hold ycrdtMu.
+func cloneContextItemYMap(src *ycrdt.YMap, newID string) *ycrdt.YMap {
+	raw, ok := fromYcrdt(src.ToJson()).(map[string]any)
+	if !ok {
+		return ycrdt.NewYMap(nil)
+	}
+	raw["itemId"] = newID
+	entries := make(map[string]any)
+	for k, v := range raw {
+		if v == nil {
+			continue
+		}
+		entries[k] = convertToYcrdt(v)
+	}
+	return ycrdt.NewYMap(entries)
+}
+
 // yMapToConversationItem converts a *ycrdt.YMap back to a ConversationItem.
 func yMapToConversationItem(m *ycrdt.YMap) ConversationItem {
 	item := ConversationItem{

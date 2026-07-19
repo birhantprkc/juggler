@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Refactored subthreads so that they now show their initial items (system prompt, memory, skills etc)
+
 ## [0.4.2] - 2026-07-18
 
 - Added moonshot/KIMI, Copilot and llama.cpp providers, refactored and fixed other providers like ollama, codex

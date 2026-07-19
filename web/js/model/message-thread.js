@@ -614,9 +614,10 @@ export default class MessageThread {
    */
   assertInvariants() {
     if (this.threadItemId) {
-      // A sub-thread carries NO SYSTEM_1: its system prompt is sourced from the
-      // root thread at LLM-call time. (Legacy docs may still hold one; this
-      // invariant guards freshly-created threads, which assertInvariants runs on.)
+      // A sub-thread MAY own a system-prompt item — its own cloned copy, seeded
+      // from the parent at creation with a FRESH id — but never the canonical
+      // literal SYSTEM_1, which is root-only (cloning with a fresh id is what
+      // avoids duplicate-id collisions across threads).
       if (this.findByItemId('SYSTEM_1') !== null)
         throw new Error(`[${this.threadItemId}] sub-thread must not own SYSTEM_1`);
     } else if (this.findByItemId('SYSTEM_1') === null) {

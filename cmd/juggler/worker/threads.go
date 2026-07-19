@@ -174,10 +174,19 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	}
 	ycrdtMu.Unlock()
 
-	// Insert user message into the child thread's items array. When a
-	// resultSpec is set, append it as an explicit return contract at the point
-	// of action (the child's own first message), mirroring the close-thread
-	// path's return_result instruction.
+	// Seed the new thread's starting context by cloning the parent's standing
+	// items (system prompt, agents files, memory) into the head of the child's
+	// array, each with a fresh id. targetArr is the parent array (root array
+	// when creating at root scope). Continuations already carry their seeds.
+	if !opts.IsContinuation {
+		w.doc.SeedThreadFromParent(targetArr, nestedItems)
+	}
+
+	// Insert user message into the child thread's items array, AFTER the seeds
+	// so the starting context reads top-to-bottom and stays the leading run at
+	// this depth. When a resultSpec is set, append it as an explicit return
+	// contract at the point of action (the child's own first message),
+	// mirroring the close-thread path's return_result instruction.
 	if !opts.IsContinuation && opts.Prompt != "" {
 		content := opts.Prompt
 		if opts.ResultSpec != "" {
@@ -189,7 +198,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 			Content:   content,
 			Timestamp: time.Now().Format(time.RFC3339),
 		}
-		w.doc.InsertMessageIntoArray(nestedItems, 0, msg)
+		w.doc.InsertMessageIntoArray(nestedItems, w.doc.GetItemsLengthFromArray(nestedItems), msg)
 	}
 
 	if opts.ExternalDispatch {

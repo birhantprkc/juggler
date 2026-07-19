@@ -258,14 +258,15 @@ export function createSystemPromptPlaceholder() {
  * Compose the ordered list of items a newly-created SUB-THREAD should be seeded
  * with — just the caller-supplied `initialItems`, nothing built-in.
  *
- * A sub-thread does NOT own a system-prompt placeholder: the worker always
- * assembles the system prompt from the ROOT thread's context items
- * (session-worker-callbacks.js), so a per-sub-thread SYSTEM_1 was never read and
- * only diverged from the LLM/orchestrator creation path (the Go worker's
- * insertThreadCore, which seeds nothing). Only the root thread carries SYSTEM_1
- * (see initBuiltInContextItems / ensureSystemPromptPlaceholder). This helper is
- * kept as the single seam JS thread-creation routes through, even though it is
- * now a pass-through, so a future built-in seed has one home.
+ * A sub-thread's starting context (system prompt, agents files, memory) is
+ * cloned from its PARENT by the worker — eagerly in createThread and lazily on
+ * first turn for client-created threads (SeedThreadFromParent /
+ * SeedThreadIfUnseeded in cmd/juggler/worker). The clone is a full system-prompt
+ * item with a FRESH id (never the canonical SYSTEM_1, which stays root-only via
+ * initBuiltInContextItems / ensureSystemPromptPlaceholder). So this JS helper
+ * seeds nothing built-in itself — the worker is the single owner of the seed
+ * predicate — but is kept as the single seam JS thread-creation routes through,
+ * so a future JS-side built-in seed has one home.
  * @param {{initialItems?: object[]}} [opts]
  * @returns {object[]} Plain messages to insert into the new thread, in order
  */

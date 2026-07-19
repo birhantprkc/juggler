@@ -670,13 +670,17 @@ const (
 	// role (provider.MessageTypeToRole); buildMessages emits them verbatim.
 	ItemTypeSystemReminder = "system-reminder"
 	ItemTypeGuidance       = "guidance"
+	// ItemTypeSystemPrompt is the standing system-prompt context item: root's
+	// canonical SYSTEM_1 and the fresh-id copies seeded into sub-threads. Used
+	// as the idempotency key for seeding (a thread with one has been seeded).
+	ItemTypeSystemPrompt = "system-prompt"
 )
 
 // isConversationalItemType reports whether an item type is conversation history
 // — a message, tool call, sub-thread, or strategy-injected instruction — as
 // opposed to a standing context item (system-prompt, memory, file-content,
 // rule, plan, …). Used to bound the leading run of starting-context items a
-// sub-thread inherits (see GetContextItemIDsForThread): the run ends at the
+// sub-thread is seeded with (see collectSeedItemMaps): the run ends at the
 // first conversational item.
 func isConversationalItemType(t string) bool {
 	switch t {

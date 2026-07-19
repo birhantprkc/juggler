@@ -248,11 +248,26 @@ export function setupWorkerCallbacks(session) {
         ...(req.contextParams || {})
       };
 
-      const contextItems = conv.rootMessageThread.contextItems;
+      // Assemble the system prompt from the PROCESSING thread's own items. The
+      // worker's GetContextItemIDsForThread already sent us exactly that
+      // thread's item ids in req.itemIds (its own seeded system prompt +
+      // agents/memory + tool-produced items); resolve them across all threads.
+      // A root turn's req.itemIds is every root item, so this is identical to
+      // the old root-only path there.
+      const requested = (req.itemIds || [])
+        .map((/** @type {string} */ id) => allContextItems.find((/** @type {any} */ f) => f.id === id))
+        .filter(Boolean);
+      // Sync-race fallback: a sub-thread's cloned system-prompt item is minted
+      // worker-side and may not have synced to the frontend yet. If the
+      // requested set carries no system-prompt item, degrade to root's items so
+      // the turn still gets a system prompt rather than an empty identity. The
+      // exclusion set below is derived from the SAME list, so content is never
+      // double-sent or dropped.
+      const hasSystemPrompt = requested.some((/** @type {any} */ f) => f.type === 'system-prompt');
+      const contextItems = hasSystemPrompt ? requested : conv.rootMessageThread.contextItems;
 
       // Assemble the system prompt via the shared builder — the single source
-      // of truth shared with context-builder.js prepare(). Worker always
-      // processes root context, so use the root thread's strategy.
+      // of truth shared with context-builder.js prepare().
       const systemPositionItems = systemPositionItemsOf(contextItems);
       const extensionContributions = await buildExtensionSystemPromptContributions();
       const systemPrompt = await assembleSystemPrompt({

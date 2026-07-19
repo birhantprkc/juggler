@@ -665,30 +665,18 @@ func (cd *ConversationDocument) getConversationItems() []ConversationItem {
 // for a turn running in the given thread. Reads directly from Y.Maps without
 // converting to structs, avoiding the expensive ToJson+JSON round-trip.
 //
-// A root turn (threadItemID == "") renders every root item — root owns its own
-// conversation. A SUB-THREAD, by contrast, is isolated: it inherits only the
-// basic starting context every thread begins with — the system prompt, the
-// project's agents files (CLAUDE.md / AGENTS.md …), project memory, and any
-// other auto-seeded standing context item — plus its OWN items (context
-// produced by tools running inside it). It does NOT inherit the rest of the
-// parent/root conversation (files the parent read, plans, tool outputs).
-// Inheriting all of it caused sub-threads to redo their parent's work; this is
-// the single gate for that isolation.
+// Every thread — root or sub-thread — renders exactly its OWN items. Root owns
+// its whole conversation; a sub-thread owns its cloned starting context (system
+// prompt, agents files, memory — seeded at creation by SeedThreadFromParent,
+// see collectSeedItemMaps) plus whatever context tools produced inside it. It
+// does NOT inherit the rest of the parent/root conversation (files the parent
+// read, plans, tool outputs) — that isolation is what keeps a sub-thread from
+// redoing its parent's work.
 //
-// The "basic starting context" is the LEADING RUN of standing context items at
-// root — every item that is not conversation history (isConversationalItemType)
-// and was not minted by a tool (no toolUseId), from the top of root up to the
-// first conversational item. That run is exactly what the conversation is
-// auto-seeded with (system prompt, agents files, memory) before the user says
-// anything. preventUserDeletion items (the system prompt) are inherited wherever
-// they sit and are transparent to the run. A standing context item pinned
-// mid-conversation is history, not starting context, and is excluded.
-//
-// Keying on the leading run — not on the narrow (preventUserDeletion ||
-// file-content) predicate this once used — matters because memory is neither
-// tagged preventUserDeletion on its Y.Map nor a file-content type, so the old
-// predicate both dropped memory and, by treating it as an ordinary item, ended
-// the run early and dropped any agents file positioned after it.
+// This function no longer merges any leading run from root: starting context is
+// now materialised into each sub-thread's own items (SeedThreadFromParent at
+// creation; SeedThreadIfUnseeded lazily on first turn for client-created and
+// legacy threads). So "render my own items" is correct for both cases.
 func (cd *ConversationDocument) GetContextItemIDsForThread(threadItemID string) []string {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
@@ -698,12 +686,6 @@ func (cd *ConversationDocument) GetContextItemIDsForThread(threadItemID string) 
 	}
 	seen := make(map[string]bool)
 	var ids []string
-	add := func(id string) {
-		if id != "" && !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
 	collectAll := func(arr *ycrdt.YArray) {
 		if arr == nil {
 			return
@@ -711,30 +693,48 @@ func (cd *ConversationDocument) GetContextItemIDsForThread(threadItemID string) 
 		for _, raw := range arr.ToArray() {
 			if m, ok := raw.(*ycrdt.YMap); ok {
 				id, _ := m.Get("itemId").(string)
-				add(id)
+				if id != "" && !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
 			}
 		}
 	}
 
 	if threadItemID == "" {
 		collectAll(root)
-		return ids
+	} else {
+		collectAll(findThreadItemsArray(root, threadItemID))
 	}
+	return ids
+}
 
-	// Sub-thread turn: inherit the leading run of standing context items from
-	// root, then all of the processing thread's own items. Ancestor
-	// conversations are deliberately not walked — they are not inherited.
+// collectSeedItemMaps returns the Y.Maps in arr that constitute a thread's
+// "starting context": every preventUserDeletion item (position-independent, the
+// system prompt), plus the leading run of standing context items — not
+// conversation history (isConversationalItemType) and not tool-minted (no
+// toolUseId) — from the top of arr up to the first conversational item. That
+// run is exactly what a fresh conversation is auto-seeded with (system prompt,
+// agents files, memory). Order is preserved as encountered. Callers MUST hold
+// ycrdtMu.
+//
+// This is the predicate a sub-thread's seeding clones from its parent; it is
+// the extraction of the leading-run logic GetContextItemIDsForThread once
+// inlined for the inheritance path.
+func collectSeedItemMaps(arr *ycrdt.YArray) []*ycrdt.YMap {
+	if arr == nil {
+		return nil
+	}
+	var maps []*ycrdt.YMap
 	inLeadingRun := true
-	for _, raw := range root.ToArray() {
+	for _, raw := range arr.ToArray() {
 		m, ok := raw.(*ycrdt.YMap)
 		if !ok {
 			continue
 		}
 		if prevent, _ := m.Get("preventUserDeletion").(bool); prevent {
 			// System prompt (and any other sticky item) — position-independent.
-			if id, _ := m.Get("itemId").(string); id != "" {
-				add(id)
-			}
+			maps = append(maps, m)
 			continue
 		}
 		itemType, _ := m.Get("type").(string)
@@ -743,17 +743,104 @@ func (cd *ConversationDocument) GetContextItemIDsForThread(threadItemID string) 
 			inLeadingRun = false
 			continue
 		}
-		// A standing context item (memory, agents file, rule, …). One minted by
-		// a tool carries a toolUseId and is conversation work, not starting
-		// context.
 		if inLeadingRun && m.Get("toolUseId") == nil {
-			if id, _ := m.Get("itemId").(string); id != "" {
-				add(id)
+			maps = append(maps, m)
+		}
+	}
+	return maps
+}
+
+// threadArrayHasSystemPromptItem reports whether arr already contains a
+// system-prompt-typed context item — the idempotency key for seeding (a seeded
+// thread always has its cloned system prompt). Callers MUST hold ycrdtMu.
+func threadArrayHasSystemPromptItem(arr *ycrdt.YArray) bool {
+	if arr == nil {
+		return false
+	}
+	for _, raw := range arr.ToArray() {
+		if m, ok := raw.(*ycrdt.YMap); ok {
+			if t, _ := m.Get("type").(string); t == ItemTypeSystemPrompt {
+				return true
 			}
 		}
 	}
-	collectAll(findThreadItemsArray(root, threadItemID))
-	return ids
+	return false
+}
+
+// seedThreadFromParentLocked clones parentArr's starting-context items
+// (collectSeedItemMaps) into the head (index 0..) of childArr, each with a fresh
+// itemId, preserving order. No-op when the parent has no seed items. Callers
+// MUST hold ycrdtMu.
+func (cd *ConversationDocument) seedThreadFromParentLocked(parentArr, childArr *ycrdt.YArray) {
+	if parentArr == nil || childArr == nil {
+		return
+	}
+	seeds := collectSeedItemMaps(parentArr)
+	if len(seeds) == 0 {
+		return
+	}
+	cd.doc.Transact(func(_ *ycrdt.Transaction) {
+		for i, src := range seeds {
+			clone := cloneContextItemYMap(src, generateItemID())
+			childArr.Insert(ycrdt.Number(i), ycrdt.ArrayAny{clone})
+		}
+	}, cd.txOrigin())
+}
+
+// SeedThreadFromParent clones parentArr's starting-context items into the head
+// of childArr, each with a fresh itemId (see seedThreadFromParentLocked). Called
+// at thread creation (threads.go) so a new sub-thread visibly owns the system
+// prompt, agents files, and memory its parent had. No-op when there are no seed
+// items. Callers must NOT hold ycrdtMu.
+func (cd *ConversationDocument) SeedThreadFromParent(parentArr, childArr *ycrdt.YArray) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	cd.seedThreadFromParentLocked(parentArr, childArr)
+}
+
+// SeedThreadIfUnseeded lazily seeds threadItemID from its parent when it owns no
+// system-prompt-typed item yet — the backstop for sub-threads that never passed
+// through createThread's eager seeding: client-created ones (createSubThread —
+// the /thread command, plugin API) and legacy docs from before seeds were
+// copied at creation. Idempotent (keyed on the system-prompt item), so a seeded
+// thread is never re-seeded. No-op at root, or when the thread/parent array is
+// missing. Callers must NOT hold ycrdtMu.
+func (cd *ConversationDocument) SeedThreadIfUnseeded(threadItemID string) {
+	if threadItemID == "" {
+		return
+	}
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	root := cd.getItems()
+	if root == nil {
+		return
+	}
+	threadYMap := findThreadYMap(root, threadItemID)
+	if threadYMap == nil {
+		return
+	}
+	// Threads populated by RELOCATING a parent's existing items into them opt
+	// out of seeding via noContextSeed. Such a thread already owns a complete,
+	// curated item set that deliberately decided what standing context to keep
+	// and what to move down (foldConversationIntoSummaryThread leaves the leading
+	// run — system prompt, agents files, memory — at the parent). Seeding would
+	// re-inject exactly that context, duplicating it. This is the general
+	// fold/move-into-thread invariant, not a compaction special case: /compact
+	// and /handoff are today's callers, but any future op that moves items into a
+	// sub-thread sets the same flag. Freshly-delegated sub-threads (LLM
+	// create_thread, /thread, plugins) do NOT set it and are seeded normally.
+	if noSeed, _ := threadYMap.Get("noContextSeed").(bool); noSeed {
+		return
+	}
+	childArr, _ := threadYMap.Get("items").(*ycrdt.YArray)
+	if childArr == nil || threadArrayHasSystemPromptItem(childArr) {
+		return
+	}
+	parentArr := root
+	if parentID := cd.findParentThreadID(threadItemID); parentID != "" {
+		parentArr = findThreadItemsArray(root, parentID)
+	}
+	cd.seedThreadFromParentLocked(parentArr, childArr)
 }
 
 // GetItemsLength returns the number of items.

@@ -20,7 +20,13 @@ type ContextResult struct {
 // in parallel, waiting for both responses in a single wait loop. This eliminates
 // the latency of sequential round-trips.
 func (w *ConversationWorker) requestContextAndTools() (*ContextResult, []ToolDefinition, error) {
-	itemIDs := w.doc.GetContextItemIDsForThread(w.getProcessingThreadItemID())
+	threadItemID := w.getProcessingThreadItemID()
+	// Backstop: seed a sub-thread's starting context if it has none yet
+	// (created client-side via createSubThread, or a legacy doc from before
+	// seeds were cloned at creation). Idempotent — a no-op once the thread owns
+	// its system-prompt item, and at root.
+	w.doc.SeedThreadIfUnseeded(threadItemID)
+	itemIDs := w.doc.GetContextItemIDsForThread(threadItemID)
 
 	if len(itemIDs) > 0 {
 		// Pin the requestId so only the reply to THIS request is accepted as

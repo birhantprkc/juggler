@@ -253,7 +253,10 @@ export const threadErrorNotInRootTest = {
       { type: 'user', content: 'Hello' },
       { type: 'assistant', content: 'Hi there.' },
       { type: 'thread', itemId: '$ITEM_4', items: [
-        // Sub-thread carries no SYSTEM_1 — its own message then the error.
+        // Sub-thread is seeded (lazily, on its first turn) with a cloned system
+        // prompt (a fresh id — never the literal SYSTEM_1), then its own message,
+        // then the error.
+        { type: 'system-prompt' },
         { type: 'user', content: 'Do something' },
         { type: 'error' }
       ] }
@@ -759,6 +762,9 @@ export const threadReturnResultNoThinkingItemTest = {
         itemId: '$ITEM_3',
         result: 'Task done summary text',
         items: [
+          // The sub-thread is seeded with a cloned system prompt (fresh id) at
+          // its head, then its own message, then the return_result marker.
+          { type: 'system-prompt' },
           { type: 'user', content: 'Execute the task' },
           { type: 'meta-tool-result' }
         ]

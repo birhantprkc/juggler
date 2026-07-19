@@ -124,7 +124,9 @@ export function setupYjsObservers(c) {
       // SYSTEM_1 (root-only) is NOT reconciled here. It's seeded atomically at
       // root creation (initBuiltInContextItems / ensureSystemPromptPlaceholder)
       // in the same Yjs transaction, so undo/redo/peer-sync stay consistent
-      // without a reactive observer. Sub-threads carry no SYSTEM_1.
+      // without a reactive observer. Sub-threads carry a cloned system-prompt
+      // item (a fresh id, seeded from the parent by the worker), never the
+      // canonical SYSTEM_1.
 
       // React to conversation being cleared: reset processing state.
       // "Cleared" means no user-deletable content remains — the sticky

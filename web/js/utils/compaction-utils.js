@@ -185,6 +185,15 @@ export function foldConversationIntoSummaryThread(
   threadMsg.needsStrategyRun = true;
   // The user did not ask to drill into the new thread.
   threadMsg.noAutoSelect = true;
+  // This thread is populated by RELOCATING the parent's items into it (below),
+  // and this fold deliberately leaves the leading standing-context run — the
+  // sticky system prompt, agents files, memory — at the parent. So the thread
+  // already owns exactly the context it should; the worker must NOT auto-seed
+  // starting context into it (SeedThreadIfUnseeded), which would re-inject the
+  // very items we kept at the parent. This is the general "moved items into a
+  // sub-thread" invariant, independent of noAutoSelect (a tab-selection concern)
+  // — any future move/fold-into-thread operation should set it too.
+  threadMsg.noContextSeed = true;
   // Force the summarization turn to call return_result rather than replying in
   // plain text (providers without forced-tool support fall back to the
   // plain-text → writeThreadResult path).
