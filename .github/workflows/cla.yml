@@ -47,7 +47,7 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
         with:
           custom-pr-sign-comment: 'I have read and agree to Juggler Individual Contributor License Agreement version 1.0 (SHA-256 4cd25fec467ecfc7f5b318e73308e30dfa64c7ff87c9a342a892ce744467dc54) and I hereby sign it electronically'
-          custom-notsigned-prcomment: 'Thank you for contributing. Please read [Juggler ICLA version 1.0]($pathToCLADocument), then post the exact statement below from your own GitHub account. If an employer or another entity may own this work, also tell the maintainer so private CCLA coverage can be arranged.'
+          custom-notsigned-prcomment: 'Thank you for contributing. Please read [Juggler ICLA version 1.0](https://github.com/juggler-ai/juggler/blob/main/CLA.md), then post the exact statement below from your own GitHub account. If an employer or another entity may own this work, also tell the maintainer so private CCLA coverage can be arranged.'
           custom-allsigned-prcomment: 'All individual contributors have signed Juggler ICLA version 1.0. Thank you! Corporate coverage, when applicable, is verified separately.'
 
           # Private, version-specific evidence store. Never reuse this path for a
