@@ -1952,7 +1952,9 @@ class Session {
       Session.AI_ASSISTANT_FILES.map(async (filename) => {
         try {
           const result = await readFileLoad({ path: filename });
-          return result && result.content ? filename : null;
+          return result && result.content
+            ? { filename, contentHash: result.contentHash }
+            : null;
         } catch {
           return null;
         }
@@ -1962,11 +1964,20 @@ class Session {
     // Add discovered files sequentially so each executeContextItem sees a
     // stable thread state (avoids racing duplicate inserts of the same
     // file-content item; the dedup is checked at insert time).
+    //
+    // Dedup by content hash: a common setup symlinks CLAUDE.md → AGENTS.md (or
+    // keeps identical copies), and the insert-time dedup keys on path, so both
+    // paths would otherwise seed the same content twice. The SHA-256 the read
+    // op returns collapses symlinks, hardlinks, and identical copies to one.
     let addedCount = 0;
-    for (const filename of candidates) {
-      if (!filename) continue;
+    const seenHashes = new Set();
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const { filename, contentHash } = candidate;
+      if (contentHash && seenHashes.has(contentHash)) continue;
       try {
         await mt.executeContextItem('file-content', { path: filename });
+        if (contentHash) seenHashes.add(contentHash);
         addedCount++;
       } catch {
         // Skip on failure — best-effort optional operation.
