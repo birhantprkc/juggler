@@ -231,6 +231,17 @@ export async function executeContextItem(mt, itemTypeId, params, options) {
 
 /**
  * @param {any} mt
+ * @param {string} itemTypeId
+ * @param {Record<string, any>} params
+ * @returns {Promise<{id: string|null, type: string, created: boolean, error?: string}>} Result
+ */
+export async function executeContextItemIntoPending(mt, itemTypeId, params) {
+  const { executeContextItemIntoPending: exec } = await import('../services/context-item-utilities.js');
+  return exec(mt, mt.conversation, itemTypeId, params);
+}
+
+/**
+ * @param {any} mt
  * @param {string} itemId
  * @returns {Promise<void>}
  */

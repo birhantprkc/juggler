@@ -869,12 +869,21 @@ class InputBox extends HTMLElement {
     }
 
     // Create context items for all @-mentions AND dropped text files before
-    // sending. Awaited here so these content items land in the thread items
-    // array BEFORE the user message — otherwise the user message (and even the
-    // assistant reply) would be appended ahead of the file content. Dropped
-    // files go through the same executeContextItem path as mentions, differing
-    // only in that they carry inline content (a `dropped-file` snapshot) rather
-    // than a path the server re-reads.
+    // sending. Awaited here so these content items land BEFORE the user message.
+    //
+    // Where they land depends on whether this send will be QUEUED. On an idle
+    // send the reads go straight into the committed items array, landing just
+    // before the about-to-send message. But while a turn is in flight the
+    // message is parked in the worker's pendingItems queue and only promoted at
+    // the next turn boundary — so reads written into items now would be stranded
+    // above the whole in-flight turn's output, with the message promoted far
+    // below. When busy we therefore enqueue the reads onto the SAME pendingItems
+    // queue (ahead of the worker's queued user message), so promotePendingItems
+    // moves the reads and the message into items together, as a contiguous group.
+    //
+    // Dropped files go through the same path as mentions, differing only in that
+    // they carry inline content (a `dropped-file` snapshot) rather than a path
+    // the server re-reads.
     if (this._messageThread) {
       // Parses the raw message text, so it works even if the user submits
       // before setupListeners() runs (paste + Enter immediately after mount) —
@@ -884,10 +893,17 @@ class InputBox extends HTMLElement {
       this._pendingTextFiles = [];
       if (paths.length > 0 || textFiles.length > 0) {
         const mt = this._messageThread;
+        const runFile = busy
+          ? (/** @type {string} */ p) => mt.executeContextItemIntoPending('file-content', { path: p })
+          : (/** @type {string} */ p) => mt.executeContextItem('file-content', { path: p });
+        const runDropped = busy
+          ? (/** @type {{filename:string,content:string}} */ t) =>
+            mt.executeContextItemIntoPending('dropped-file', { filename: t.filename, content: t.content })
+          : (/** @type {{filename:string,content:string}} */ t) =>
+            mt.executeContextItem('dropped-file', { filename: t.filename, content: t.content });
         this._lastMentionPromise = Promise.all([
-          ...paths.map(p => mt.executeContextItem('file-content', { path: p })),
-          ...textFiles.map(t => mt.executeContextItem('dropped-file',
-            { filename: t.filename, content: t.content }))
+          ...paths.map(runFile),
+          ...textFiles.map(runDropped)
         ]);
         await this._lastMentionPromise;
       }

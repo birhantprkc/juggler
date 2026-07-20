@@ -97,7 +97,15 @@ export function ensurePendingMessages(area, messageList) {
 
   let zone = /** @type {HTMLElement|null} */ (messageList.querySelector(`.${PENDING_ZONE_CLASS}`));
 
-  if (!pending || pending.length === 0) {
+  // The queue can also hold @-mention / dropped-file reads enqueued alongside a
+  // message typed while busy (see MessageThread.enqueuePendingItem). Those are
+  // not user messages and have no queued bubble of their own — they surface in
+  // the main list when the worker promotes the group. Only user messages get a
+  // queued bubble here, so the zone is driven purely by the queued user messages
+  // (a queue holding only not-yet-joined reads shows nothing).
+  const pendingUsers = (pending || []).filter((/** @type {any} */ it) => isUserMessage(it));
+
+  if (pendingUsers.length === 0) {
     if (zone) zone.remove();
     return;
   }
@@ -116,12 +124,12 @@ export function ensurePendingMessages(area, messageList) {
   }
 
   // Diff bubbles by message-id; drop any whose pending item is gone.
-  const wantedIds = new Set(pending.map((/** @type {any} */ it) => it.get('itemId')));
+  const wantedIds = new Set(pendingUsers.map((/** @type {any} */ it) => it.get('itemId')));
   for (const child of Array.from(zone.querySelectorAll('[message-id]'))) {
     if (!wantedIds.has(child.getAttribute('message-id'))) child.remove();
   }
   // Create/reposition bubbles in queue order (re-append keeps the label first).
-  for (const item of pending) {
+  for (const item of pendingUsers) {
     const id = item.get('itemId');
     let el = /** @type {HTMLElement|null} */ (zone.querySelector(`[message-id="${id}"]`));
     if (!el) {

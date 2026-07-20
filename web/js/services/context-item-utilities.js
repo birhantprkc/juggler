@@ -143,6 +143,73 @@ export async function executeContextItem(mt, conv, itemTypeId, params, options =
 }
 
 /**
+ * Execute a context item and enqueue its message onto the thread's
+ * `pendingItems` queue rather than the committed `items` array.
+ *
+ * This is the "type while busy" sibling of {@link executeContextItem}: when an
+ * at-mention or dropped file accompanies a message that will be QUEUED (a turn is
+ * in flight), the file read must ride the same queue as its message so the
+ * worker's `promotePendingItems` moves them into `items` together — the read
+ * landing immediately before the message. Executing it into `items` now (as the
+ * idle path does) would strand the read above the in-flight turn's output while
+ * the message is promoted only later.
+ *
+ * The item is read (its `handleToolCall` runs, so file bytes are captured at
+ * send time) but is NOT registered as an active context item — it isn't part of
+ * the conversation or the LLM context until the worker promotes it, at which
+ * point it lands in `items` and `getContextItems` picks it up like any other.
+ * `mergeOrReplace` is deliberately skipped: a queued read has nothing in `items`
+ * to merge with yet, so each mention simply creates a fresh entry.
+ * @param {MessageThread} mt
+ * @param {Conversation} conv
+ * @param {string} itemTypeId
+ * @param {Record<string, any>} params
+ * @returns {Promise<{id: string|null, type: string, created: boolean, error?: string}>} Result
+ */
+export async function executeContextItemIntoPending(mt, conv, itemTypeId, params) {
+  const session = conv._session;
+  /** @type {any} */
+  const ItemClass = contextItemRegistry.get(itemTypeId);
+  if (!ItemClass) {
+    return { id: null, type: itemTypeId, created: false, error: `Unknown context item type: ${itemTypeId}` };
+  }
+
+  // Each user-driven context-item action is its own logical undo step.
+  workerManager.stopUndoCapturing(conv.id);
+
+  const newItemId = generateUniqueItemId(mt, ItemClass);
+  const contextItem = new ItemClass({ id: newItemId, type: itemTypeId, session, conversation: conv, messageThread: mt });
+  /** @type {import('juggler/context-item').ToolCallResult} */
+  let toolResult;
+  try {
+    /** @type {import('juggler/context-item').ToolCallContext} */
+    const ctx = { session, conversation: conv };
+    toolResult = await contextItem.handleToolCall(itemTypeId, params, ctx);
+  } catch (err) {
+    // A failed read is a committed error event (as in executeContextItem): it
+    // reports the problem in the live thread rather than silently queuing nothing.
+    const errorMessage = extractErrorMessage(err);
+    mt.addEvent(createContextItemMessage({ itemType: itemTypeId, error: errorMessage, isNew: true }));
+    return { id: null, type: itemTypeId, created: false, error: errorMessage };
+  }
+
+  if (!toolResult.success) {
+    const errorMessage = toolResult.error || 'Context item execution failed';
+    mt.addEvent(createContextItemMessage({ itemType: itemTypeId, error: errorMessage, isNew: true }));
+    return { id: null, type: itemTypeId, created: false, error: errorMessage };
+  }
+
+  const itemJSON = contextItem.toJSON();
+  mt.enqueuePendingItem(createContextItemMessage({
+    itemId: newItemId,
+    isNew: true,
+    itemType: contextItem.type,
+    data: itemJSON.data
+  }));
+  return { id: newItemId, type: contextItem.type, created: true };
+}
+
+/**
  * Refresh a single context item.
  * @param {MessageThread} mt
  * @param {Conversation} conv

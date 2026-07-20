@@ -3314,3 +3314,68 @@ func TestStatusChunkIgnoredWhenIdle(t *testing.T) {
 		}
 	}
 }
+
+// enqueuePendingItemForTest inserts an arbitrary item onto a thread's pending
+// queue, mimicking the client enqueuing an @-mention / dropped-file read
+// alongside a message typed while busy (web: MessageThread.enqueuePendingItem).
+func enqueuePendingItemForTest(w *ConversationWorker, threadItemID string, item ConversationItem) {
+	ycrdtMu.Lock()
+	arr := w.doc.ensurePendingArrayLocked(threadItemID)
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		arr.Insert(arr.GetLength(), ycrdt.ArrayAny{conversationItemToYMap(item)})
+	}, w.doc.txOrigin())
+	ycrdtMu.Unlock()
+}
+
+// TestPromotePendingKeepsReadGroupedWithMessage verifies the guarantee the
+// "queue reads with the message" fix depends on: when a mid-turn @-mention
+// enqueues a file-content read onto pendingItems ahead of the queued user
+// message, promoting the queue lands the read immediately before its message
+// (grouped, in order) with its context-item payload intact — never separated by
+// the in-flight turn's output.
+func TestPromotePendingKeepsReadGroupedWithMessage(t *testing.T) {
+	w := NewConversationWorker("conv-pending-read-group", "user:test")
+	defer w.doc.Destroy()
+
+	// Some in-flight turn output already sits in items.
+	w.doc.InsertMessage(w.doc.GetItemsLength(), ConversationItem{
+		Type: ItemTypeAssistant, ItemID: "a-1", Content: "working",
+		Timestamp: time.Now().Format(time.RFC3339),
+	})
+
+	// Client enqueues the read first, then the worker queues the user message.
+	enqueuePendingItemForTest(w, "", ConversationItem{
+		Type: "file-content", ItemID: "FILE_1", IsNew: true,
+		Data: json.RawMessage(`{"path":"foo.txt"}`),
+	})
+	w.enqueuePendingMessage("", UserMessageInput{Text: "look at @foo.txt"})
+
+	if n := w.promotePendingItems(""); n != 2 {
+		t.Fatalf("expected 2 items promoted (read + message), got %d", n)
+	}
+	if w.hasPendingItems("") {
+		t.Error("expected the pending queue to be empty after promotion")
+	}
+
+	items := w.doc.GetItems()
+	fileIdx, userIdx := -1, -1
+	for i, it := range items {
+		switch {
+		case it.ItemID == "FILE_1":
+			fileIdx = i
+		case it.Type == ItemTypeUser && it.Content == "look at @foo.txt":
+			userIdx = i
+		}
+	}
+	if fileIdx < 0 || userIdx < 0 {
+		t.Fatalf("promoted items missing: fileIdx=%d userIdx=%d items=%+v", fileIdx, userIdx, items)
+	}
+	// The read must sit immediately before its message — grouped, not separated.
+	if userIdx != fileIdx+1 {
+		t.Errorf("expected the read immediately before the message, got fileIdx=%d userIdx=%d", fileIdx, userIdx)
+	}
+	// The context-item payload survives the promote round-trip.
+	if got := items[fileIdx]; got.Type != "file-content" || !strings.Contains(string(got.Data), "foo.txt") {
+		t.Errorf("read payload lost through promotion: type=%q data=%s", got.Type, string(got.Data))
+	}
+}

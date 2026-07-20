@@ -226,12 +226,22 @@ class ScheduledSendService {
       }
 
       // Mentions and dropped text files become context items BEFORE the user
-      // message, mirroring the input box's own send path.
+      // message, mirroring the input box's own send path — including its
+      // busy-time behaviour: when a turn is in flight the send is queued, so the
+      // reads must ride the same pendingItems queue (via executeContextItemIntoPending)
+      // to stay grouped with the message on promotion rather than landing in the
+      // live items array now while the message is promoted later.
+      const busy = thread.conversation.isProcessing ||
+        (typeof thread.hasBusyItems === 'function' && thread.hasBusyItems());
       const paths = await extractFileMentionsAsync(text);
       if (paths.length > 0 || textFiles.length > 0) {
         await Promise.all([
-          ...paths.map((p) => thread.executeContextItem('file-content', { path: p })),
-          ...textFiles.map((t) => thread.executeContextItem('dropped-file', { filename: t.filename, content: t.content })),
+          ...paths.map((p) => busy
+            ? thread.executeContextItemIntoPending('file-content', { path: p })
+            : thread.executeContextItem('file-content', { path: p })),
+          ...textFiles.map((t) => busy
+            ? thread.executeContextItemIntoPending('dropped-file', { filename: t.filename, content: t.content })
+            : thread.executeContextItem('dropped-file', { filename: t.filename, content: t.content })),
         ]);
       }
 

@@ -299,12 +299,15 @@ export default class MessageThread {
   }
 
   /**
-   * Get the queued (pending) messages for this thread — messages typed while a
-   * turn was in flight, parked in a `pendingItems` Y.Array that is a sibling of
-   * `items` on this container (worker-owned; see worker/pending_items.go). They
-   * are NOT part of the conversation or the LLM context until the worker promotes
-   * them at a turn boundary. Mirrors `items`: filters out corrupt non-Y.Map entries.
-   * @returns {Array<any>} Pending user-message Y.Maps (empty if none queued)
+   * Get the queued (pending) items for this thread — parked in a `pendingItems`
+   * Y.Array that is a sibling of `items` on this container (see
+   * worker/pending_items.go). Mostly the user messages the worker parks when a
+   * send arrives mid-turn, but it can also hold at-mention / dropped-file reads
+   * the client enqueues alongside such a message (see {@link enqueuePendingItem})
+   * so the reads stay grouped with their message through promotion. None of them
+   * are part of the conversation or the LLM context until the worker promotes the
+   * queue at a turn boundary. Mirrors `items`: filters out corrupt non-Y.Map entries.
+   * @returns {Array<any>} Pending item Y.Maps (empty if none queued)
    */
   get pendingItems() {
     const arr = this.container.get('pendingItems');
@@ -458,6 +461,39 @@ export default class MessageThread {
    */
   insertAt(index, ymap) {
     this.ensureYarray().insert(index, [ymap]);
+  }
+
+  /**
+   * Append a message to this thread's `pendingItems` queue, get-or-creating the
+   * array on the container (the same sibling-of-`items` array the worker parks
+   * queued user messages in; see worker/pending_items.go).
+   *
+   * Used to ride at-mention / dropped-file reads alongside a user message that is
+   * being QUEUED while a turn is in flight: enqueuing the reads here (before the
+   * worker appends the queued user message) means `promotePendingItems` moves the
+   * whole group into `items` together — the reads landing as a contiguous block
+   * immediately before their message. If the reads went into `items` directly
+   * (as they do on an idle send), they would land now while the message is
+   * promoted only at the next turn boundary, with the in-flight turn's output
+   * wedged between them.
+   *
+   * The array is get-or-created exactly as the worker does it, so whichever side
+   * writes first wins the key and the other reuses it (the client always writes
+   * before dispatching its send, so the worker's later append sees this array).
+   * @plugin-api
+   * @param {any} message - Plain message object (converted to Y.Map via plainToYMap)
+   */
+  enqueuePendingItem(message) {
+    this._ensureItemId(message);
+    const cdoc = this.conversation._doc;
+    cdoc.doc.transact(() => {
+      let arr = this.container.get('pendingItems');
+      if (!arr) {
+        arr = new Y.Array();
+        this.container.set('pendingItems', arr);
+      }
+      arr.insert(arr.length, [plainToYMap(message)]);
+    }, cdoc.authorId);
   }
 
   /**
@@ -1462,6 +1498,21 @@ export default class MessageThread {
    */
   async executeContextItem(itemTypeId, params, options) {
     return contextItemHelpers.executeContextItem(this, itemTypeId, params, options);
+  }
+
+  /**
+   * Execute a context item and enqueue its message onto this thread's
+   * `pendingItems` queue instead of the committed `items` array. Used for
+   * at-mention / dropped-file reads that accompany a message being QUEUED while a
+   * turn is in flight, so the worker promotes the reads together with the
+   * message (see {@link enqueuePendingItem}).
+   * @plugin-api
+   * @param {string} itemTypeId
+   * @param {Record<string, any>} params
+   * @returns {Promise<{id: string|null, type: string, created: boolean, error?: string}>} Result
+   */
+  async executeContextItemIntoPending(itemTypeId, params) {
+    return contextItemHelpers.executeContextItemIntoPending(this, itemTypeId, params);
   }
 
   /**

@@ -310,6 +310,15 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 
 	// Add user message to doc before signaling the reducer.
 	if !msg.IsContinuation && !input.isEmpty() {
+		// Drain any queued items into this thread FIRST, then append the new user
+		// message after them. The queue is normally empty on an idle send (the
+		// turn boundary already promoted it), but a client that saw us as busy an
+		// instant before we went idle may have enqueued this message's @-mention /
+		// dropped-file reads onto pendingItems (so they'd ride the queue with the
+		// message). Promoting here lands those reads immediately before the user
+		// message instead of stranding them for the next boundary to promote out
+		// of order. Harmless when the queue is empty.
+		w.promotePendingItems(msg.ThreadItemID)
 		w.addUserMessage(input)
 		w.batcher.Flush()
 		w.handleItemsChange()
