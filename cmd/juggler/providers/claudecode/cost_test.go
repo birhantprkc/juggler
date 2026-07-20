@@ -396,3 +396,65 @@ func TestModelAlias(t *testing.T) {
 		}
 	}
 }
+
+// TestSelectModelUsage locks in the attribution that keeps a co-billed
+// background model from clobbering the requested model's learned window — the
+// bug that stuck fable at 200k. The picked entry must always be the model the
+// turn ran as, never whichever entry Go's randomized map order visits last.
+func TestSelectModelUsage(t *testing.T) {
+	fable := &ModelUsageDetail{ContextWindow: 1000000, MaxOutputTokens: 64000}
+	haiku := &ModelUsageDetail{ContextWindow: 200000, MaxOutputTokens: 32000}
+	custom := &ModelUsageDetail{ContextWindow: 500000, MaxOutputTokens: 16000}
+
+	t.Run("fable turn ignores co-billed haiku", func(t *testing.T) {
+		// The real payload: a fable turn also bills a background haiku. Run many
+		// times because map iteration order is randomized — a wrong impl would
+		// pass intermittently.
+		usage := map[string]*ModelUsageDetail{
+			"claude-fable-5-20260101":     fable,
+			"claude-haiku-4-5-background": haiku,
+		}
+		for i := 0; i < 200; i++ {
+			got, ok := selectModelUsage(usage, "fable")
+			if !ok || got != fable {
+				t.Fatalf("iter %d: got %+v ok=%v; want fable's 1M entry every time", i, got, ok)
+			}
+		}
+	})
+
+	t.Run("haiku turn learns haiku not co-billed fable", func(t *testing.T) {
+		usage := map[string]*ModelUsageDetail{
+			"claude-fable-5":   fable,
+			"claude-haiku-4-5": haiku,
+		}
+		if got, ok := selectModelUsage(usage, "haiku"); !ok || got != haiku {
+			t.Fatalf("got %+v ok=%v; want haiku's entry", got, ok)
+		}
+	})
+
+	t.Run("lone entry learned even when family does not match custom alias", func(t *testing.T) {
+		usage := map[string]*ModelUsageDetail{"claude-some-custom-id": custom}
+		if got, ok := selectModelUsage(usage, "my-custom-model"); !ok || got != custom {
+			t.Fatalf("got %+v ok=%v; want the lone custom entry (learn-on-first-turn)", got, ok)
+		}
+	})
+
+	t.Run("multiple entries none matching are ambiguous - learn nothing", func(t *testing.T) {
+		usage := map[string]*ModelUsageDetail{
+			"claude-opus-4":    {ContextWindow: 1000000},
+			"claude-haiku-4-5": haiku,
+		}
+		if got, ok := selectModelUsage(usage, "fable"); ok {
+			t.Fatalf("got %+v ok=true; want no selection when no entry matches and >1 billed", got)
+		}
+	})
+
+	t.Run("empty and nil-only maps select nothing", func(t *testing.T) {
+		if _, ok := selectModelUsage(nil, "fable"); ok {
+			t.Fatal("nil map should select nothing")
+		}
+		if _, ok := selectModelUsage(map[string]*ModelUsageDetail{"claude-fable-5": nil}, "fable"); ok {
+			t.Fatal("nil-only entry should select nothing")
+		}
+	})
+}

@@ -82,6 +82,35 @@ func convertClaudeNativeTool(toolName string, input map[string]any) (string, map
 	return jugglerName, newInput
 }
 
+// canonicalAlias collapses any model string — a bare alias, a full CLI id like
+// "claude-sonnet-4-5-20250929", or a modelUsage map key — to its family alias
+// ("opus" | "haiku" | "fable" | "sonnet") by substring. An unrecognised
+// non-empty value is returned lowercased+trimmed verbatim; an empty value
+// returns "". This is the single source of truth for family matching, shared by
+// modelAlias (which maps the configured model to the --model arg / cache key)
+// and the parser (which must match a modelUsage entry's full id back to the
+// requested alias so it learns each model's window from that model's own
+// entry, never a co-billed background model's).
+//
+// Order matters: check the more specific families before "sonnet" only where
+// substrings could overlap; today the four families are mutually exclusive
+// substrings, so order is not load-bearing, but keep the explicit cases.
+func canonicalAlias(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(model, "opus"):
+		return "opus"
+	case strings.Contains(model, "haiku"):
+		return "haiku"
+	case strings.Contains(model, "fable"):
+		return "fable"
+	case strings.Contains(model, "sonnet"):
+		return "sonnet"
+	default:
+		return model
+	}
+}
+
 // modelAlias maps whatever was configured on the client to the value handed
 // to the CLI's --model arg (also the cache key for self-updated model specs).
 //
@@ -93,21 +122,10 @@ func convertClaudeNativeTool(toolName string, input map[string]any) (string, map
 // resolves or rejects it — far better than quietly running a different model.
 // Only an empty model defaults to "sonnet" (the CLI needs something).
 func (c *Client) modelAlias() string {
-	model := strings.ToLower(strings.TrimSpace(c.model))
-	switch {
-	case strings.Contains(model, "opus"):
-		return "opus"
-	case strings.Contains(model, "haiku"):
-		return "haiku"
-	case strings.Contains(model, "fable"):
-		return "fable"
-	case strings.Contains(model, "sonnet"):
-		return "sonnet"
-	case model == "":
-		return "sonnet"
-	default:
-		return model
+	if alias := canonicalAlias(c.model); alias != "" {
+		return alias
 	}
+	return "sonnet"
 }
 
 // commonArgs builds the CLI flags shared by fresh and resume invocations.

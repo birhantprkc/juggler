@@ -328,11 +328,19 @@ func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResul
 		// alias (matching ListModelsWithInfo's base IDs and the CLI --model arg),
 		// not the raw configured string, or the warm value lands under a key the
 		// list never reads.
-		for _, mu := range msg.ModelUsage {
-			if mu == nil {
-				continue
-			}
-			updateCachedModelInfo(c.modelAlias(), mu.ContextWindow, mu.MaxOutputTokens)
+		//
+		// modelUsage is keyed by FULL model id and a single turn routinely bills
+		// MORE than the requested model — the CLI runs a background model (e.g.
+		// haiku) for quota/summary work and reports its usage alongside. Learning
+		// from every entry stamps the wrong (smaller) window onto the requested
+		// alias, nondeterministically thanks to Go's randomized map iteration;
+		// that is exactly what stuck fable at 200k. selectModelUsage attributes
+		// the report to the model this turn actually ran as. A per-turn flip then
+		// self-heals on the next turn (true window != cached => update + persist +
+		// rebroadcast), so a stuck cache recovers on its own.
+		alias := c.modelAlias()
+		if mu, ok := selectModelUsage(msg.ModelUsage, alias); ok {
+			updateCachedModelInfo(alias, mu.ContextWindow, mu.MaxOutputTokens)
 		}
 		switch msg.Subtype {
 		case "success":

@@ -267,6 +267,42 @@ func getCachedModelInfo(alias string) (provider.ModelInfo, bool) {
 	return info, info.ID != ""
 }
 
+// selectModelUsage picks the single modelUsage entry a turn should learn its
+// window/output limits from, given the canonical alias the turn ran as. The map
+// is keyed by full model id and often carries more than the requested model
+// (the CLI co-bills a background model such as haiku), so we cannot learn from
+// every entry — a co-billed model's smaller window would clobber the requested
+// model's. Rules, in order:
+//
+//   - Prefer the entry whose family (canonicalAlias of its full-id key) matches
+//     the requested alias — that is unambiguously this turn's model.
+//   - Otherwise, if exactly one model was billed, use it: a lone entry is the
+//     turn's model even when its resolved full id doesn't string-match a
+//     verbatim custom alias, so learn-on-first-turn still works for custom ids.
+//   - Otherwise return false: with multiple co-billed models and no family
+//     match, attribution is ambiguous, so learn nothing rather than guess.
+//
+// Pure and side-effect free so the attribution logic is unit-testable without
+// the cache actor.
+func selectModelUsage(modelUsage map[string]*ModelUsageDetail, alias string) (*ModelUsageDetail, bool) {
+	var lone *ModelUsageDetail
+	loneCount := 0
+	for fullID, mu := range modelUsage {
+		if mu == nil {
+			continue
+		}
+		if canonicalAlias(fullID) == alias {
+			return mu, true
+		}
+		lone = mu
+		loneCount++
+	}
+	if loneCount == 1 {
+		return lone, true
+	}
+	return nil, false
+}
+
 func updateCachedModelInfo(alias string, contextWindow, maxOutputTokens int) {
 	if alias == "" || (contextWindow == 0 && maxOutputTokens == 0) {
 		return
