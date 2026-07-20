@@ -5,14 +5,12 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Refactored subthreads so that they now show their initial items (system prompt, memory, skills etc)
-- Made the key optional in the generic openAI provider so that keyless providers will work
-- Reported real provider context-window and output limits; unknown custom aliases fail closed
-- Rejected oversized model requests before dispatch with enforced context-window admission
-- Enforced Ollama's real serving window (Modelfile num_ctx, conservative default, user override)
-- Summarized oversized compact and handoff histories within bounded model calls
-- Recovered from context-window overflow by folding older history and retrying the turn once
-- Recovered from provider-side context rejections, not just locally predicted ones
+- Local and keyless OpenAI-compatible providers now work without an API key
+- Subthreads now show how they were set up (system prompt, memory, skills)
+- Long conversations no longer crash when they outgrow the model's limit — Juggler trims old history and retries automatically
+- Juggler now respects each model's real context and output limits (including Ollama's actual window), so it won't fire off requests that are doomed to fail
+- /compact and /handoff now cope with even very large conversations
+- Fixed Claude Code sessions getting stuck in plan mode when other Claude CLI sessions were open in the same folder
 
 ## [0.4.2] - 2026-07-18
 

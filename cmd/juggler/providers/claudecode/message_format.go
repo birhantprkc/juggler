@@ -140,6 +140,14 @@ func (c *Client) commonArgs(systemPrompt string) []string {
 		args = append(args, "--system-prompt", systemPrompt)
 	}
 	args = append(args, "--model", c.modelAlias())
+	// Without an explicit flag the CLI resolves its permission mode from
+	// settings files shared with the user's own interactive sessions in the
+	// same folder — a plan mode persisted in .claude/settings.local.json would
+	// strand the spawned CLI with every tool blocked and no way out (juggler
+	// disallows ExitPlanMode). A CLI arg outranks all settings sources, so pin
+	// it to default — matching the permissionMode juggler stamps into its
+	// synthetic session entries (synthetic_resume.go).
+	args = append(args, "--permission-mode", "default")
 
 	if mcpConfig, err := c.buildMCPConfig(); err == nil && mcpConfig != "" {
 		args = append(args, "--mcp-config", mcpConfig)
