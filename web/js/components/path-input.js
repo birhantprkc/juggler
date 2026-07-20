@@ -67,6 +67,15 @@ class PathInput extends HTMLElement {
     this._debounce = null;
     /** @type {(() => void)|null} @private */
     this._reposition = null;
+    /**
+     * True when the field was seeded with an initial `value` (a programmatic
+     * prefill, e.g. the current project path) that the user has not yet edited.
+     * While set, focusing the field must NOT auto-open completions — that popup
+     * should only appear once the user actually types. Cleared on the first real
+     * user input.
+     * @type {boolean} @private
+     */
+    this._pristinePrefill = false;
   }
 
   connectedCallback() {
@@ -77,6 +86,7 @@ class PathInput extends HTMLElement {
     this._input = /** @type {HTMLInputElement} */ (this.querySelector('.path-input-field'));
     this._input.placeholder = placeholder;
     this._input.value = initial;
+    this._pristinePrefill = initial.length > 0;
 
     this._input.addEventListener('input', () => this._onInput());
     this._input.addEventListener('paste', (e) => this._onPaste(e));
@@ -85,7 +95,12 @@ class PathInput extends HTMLElement {
       // Small delay so mousedown on a menu item fires first.
       setTimeout(() => this._closeMenu(), 150);
     });
-    this._input.addEventListener('focus', () => this._onInput());
+    this._input.addEventListener('focus', () => {
+      // Don't auto-open completions when focusing a field that only holds an
+      // untouched programmatic prefill — that dropdown is for user typing.
+      if (this._pristinePrefill) return;
+      this._onInput();
+    });
   }
 
   disconnectedCallback() {
@@ -100,6 +115,8 @@ class PathInput extends HTMLElement {
   /** @param {string} v */
   set value(v) {
     if (this._input) this._input.value = v;
+    // Any explicit value change supersedes the initial-prefill suppression.
+    this._pristinePrefill = false;
   }
 
   /** @returns {void} */
@@ -136,6 +153,9 @@ class PathInput extends HTMLElement {
 
   /** @private */
   _onInput() {
+    // Real user input: the prefill is now "touched", so completions behave
+    // normally from here on (including on subsequent focus).
+    this._pristinePrefill = false;
     this._emitChange();
     const val = this._input?.value || '';
     if (this._debounce !== null) clearTimeout(this._debounce);

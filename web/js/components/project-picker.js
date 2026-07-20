@@ -77,7 +77,7 @@ export function buildPickerPanel({
     </div>
     <div class="pp-body">
       <div class="pp-input-row">
-        <path-input ${dirsOnly ? 'dirs-only ' : ''}placeholder="${placeholder}" class="pp-path-input"></path-input>
+        <path-input ${dirsOnly ? 'dirs-only ' : ''}placeholder="${placeholder}"${currentPath ? ` value="${currentPath.replace(/"/g, '&quot;')}"` : ''} class="pp-path-input"></path-input>
         ${dirsOnly && hasNativeHost() ? '<button class="pp-btn pp-btn-browse" type="button">Browse…</button>' : ''}
       </div>
       <div class="pp-status" aria-live="polite"${validate ? '' : ' hidden'}></div>
@@ -303,6 +303,19 @@ export function buildPickerPanel({
   function cancel() {
     if (debounceTimer !== null) clearTimeout(debounceTimer);
     resolve(null);
+  }
+
+  // Pre-populated with the current folder path (via the path-input `value`
+  // attribute above): prime the confirm/validation state so the button reflects
+  // that seeded value straight away, rather than staying disabled until the
+  // user first edits (path-change only fires on user input, not initial value).
+  if (currentPath) {
+    if (validate) {
+      triggerValidation(currentPath);
+    } else {
+      openBtn.disabled = currentPath.trim().length === 0;
+      syncNewWindowBtn();
+    }
   }
 
   focusWhenShown(pathInputEl, { delay: 50 });
