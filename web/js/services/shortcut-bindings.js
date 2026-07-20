@@ -15,6 +15,7 @@ import keyShortcutManager from './key-shortcut-manager.js';
 import {
   createNewConversation,
   binActiveConversation,
+  renameActiveConversation,
   jumpToAttentionConversation,
   toggleActiveFileEditing,
 } from './conversation-commands.js';
@@ -39,6 +40,7 @@ export function registerConversationShortcuts(session) {
   // jump/toggle report whether they acted so an inapplicable press falls through.
   keyShortcutManager.register('new-conversation', () => { createNewConversation(); markSeen('new-conversation'); return true; });
   keyShortcutManager.register('bin-conversation', () => { binActiveConversation(); markSeen('bin-conversation'); return true; });
+  keyShortcutManager.register('rename-conversation', () => { renameActiveConversation(); return true; });
   keyShortcutManager.register('jump-to-attention', () => {
     const acted = jumpToAttentionConversation(session);
     if (acted) markSeen('jump-to-attention');

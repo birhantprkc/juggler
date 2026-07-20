@@ -11,6 +11,7 @@ of changes; this project follows semantic versioning.
 - Juggler now respects each model's real context and output limits (including Ollama's actual window), so it won't fire off requests that are doomed to fail
 - /compact and /handoff now cope with even very large conversations
 - Fixed Claude Code sessions getting stuck in plan mode when other Claude CLI sessions were open in the same folder
+- Added an F2 key shortcut for renaming the current tab (also pressing return when the tab panel has keyboard focus will rename the tab)
 
 ## [0.4.2] - 2026-07-18
 

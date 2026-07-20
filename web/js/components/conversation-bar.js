@@ -94,6 +94,9 @@ class ConversationBar extends HTMLElement {
     /** @type {((e: Event) => void)|null} @private */
     this._focusTabListHandler = null;
 
+    /** @type {((e: MouseEvent) => void)|null} @private */
+    this._barClickHandler = null;
+
     /** @type {((e: KeyboardEvent) => void)|null} @private */
     this._keydownHandler = null;
 
@@ -108,6 +111,9 @@ class ConversationBar extends HTMLElement {
 
     /** @type {(() => void)|null} @private */
     this._binActiveHandler = null;
+
+    /** @type {(() => void)|null} @private */
+    this._renameActiveHandler = null;
 
     /** @type {number} @private Timestamp (ms) of the last accepted new-conversation create, for leading-edge debounce */
     this._lastCreateAt = 0;
@@ -134,6 +140,10 @@ class ConversationBar extends HTMLElement {
       document.removeEventListener('juggler:focus-tab-list', this._focusTabListHandler);
       this._focusTabListHandler = null;
     }
+    if (this._barClickHandler) {
+      this.removeEventListener('click', this._barClickHandler);
+      this._barClickHandler = null;
+    }
     if (this._keydownHandler) {
       document.removeEventListener('keydown', this._keydownHandler);
       this._keydownHandler = null;
@@ -153,6 +163,10 @@ class ConversationBar extends HTMLElement {
     if (this._binActiveHandler) {
       document.removeEventListener('juggler:bin-active-conversation', this._binActiveHandler);
       this._binActiveHandler = null;
+    }
+    if (this._renameActiveHandler) {
+      document.removeEventListener('juggler:rename-active-conversation', this._renameActiveHandler);
+      this._renameActiveHandler = null;
     }
   }
 
@@ -174,11 +188,26 @@ class ConversationBar extends HTMLElement {
   _setupKeyboardNavigation() {
     if (this._keydownHandler || this._focusTabListHandler) return;
 
-    this._focusTabListHandler = () => {
-      this.classList.add('tab-list-focused');
-      this.setAttribute('tabindex', '-1');
-      this.focus({ preventScroll: true });
-      this._scrollActiveTabIntoView();
+    this._focusTabListHandler = () => this._enterTabListFocus();
+
+    // A click on the bar's empty background focuses the tab list — the same
+    // mode ArrowLeft out of the leftmost conversation column enters — so a bar
+    // click becomes a way into keyboard tab navigation (↑/↓ switch, Enter
+    // renames, → enters the conversation, Esc leaves), and fixes a click landing
+    // on inert chrome that left focus somewhere Return couldn't reach.
+    //
+    // The empty area is mostly the info-rail (flex:1, it grows to fill the space
+    // above the Bin), so we can't exclude the rail wholesale — only the things
+    // with their own click behaviour: tabs, the info cards, and any interactive
+    // control (the +, Bin, card buttons/links, the resize handle). A click that
+    // misses all of those — bare rail, gaps, padding — enters tab-list focus.
+    this._barClickHandler = (e) => {
+      const target = /** @type {HTMLElement|null} */ (e.target);
+      if (!target) return;
+      if (target.closest(
+        '.conversation-tab, .info-card, col-resize-handle, button, a, input, textarea, select',
+      )) return;
+      this._enterTabListFocus();
     };
 
     this._keydownHandler = (e) => {
@@ -198,13 +227,22 @@ class ConversationBar extends HTMLElement {
           this._switchAdjacentTab(1);
           break;
         case 'ArrowRight':
+          // Move right, out of the tab list and into the conversation — commit
+          // the selection and focus its composer (same as _enterActiveTab).
+          e.preventDefault();
+          this._enterActiveTab();
+          break;
         case 'Escape':
           e.preventDefault();
           this._exitTabListFocus();
           break;
         case 'Enter':
+          // Return, while the tab bar itself is focused, renames the active
+          // tab (Finder-style). Escape / ArrowRight remain the "leave tab-list
+          // focus" affordances.
           e.preventDefault();
-          this._enterActiveTab();
+          this._exitTabListFocus();
+          this._enterRenameMode(this._session?.visibleConversationId || '');
           break;
       }
     };
@@ -227,13 +265,36 @@ class ConversationBar extends HTMLElement {
       const id = this._session?.visibleConversationId;
       if (id) void this._binConversation(id);
     };
+    // F2 (from the KeyShortcutManager) opens inline rename on the visible tab —
+    // the same UX as clicking the already-active tab.
+    this._renameActiveHandler = () => {
+      const id = this._session?.visibleConversationId;
+      if (id) this._enterRenameMode(id);
+    };
 
     document.addEventListener('juggler:focus-tab-list', this._focusTabListHandler);
+    this.addEventListener('click', this._barClickHandler);
     document.addEventListener('keydown', this._keydownHandler);
     this.addEventListener('focusout', this._focusOutHandler);
     window.addEventListener('juggler:cycle-tab', this._cycleTabHandler);
     document.addEventListener('juggler:new-conversation', this._newConversationHandler);
     document.addEventListener('juggler:bin-active-conversation', this._binActiveHandler);
+    document.addEventListener('juggler:rename-active-conversation', this._renameActiveHandler);
+  }
+
+  /**
+   * Enter tab-list focus mode: the bar itself takes keyboard focus, so ↑/↓
+   * switch tabs, Enter renames the active tab, → enters the conversation, and
+   * Esc leaves. Reached two ways — ArrowLeft out of the leftmost conversation
+   * column (via the juggler:focus-tab-list event) and a click on the bar's
+   * empty background (see the click handler in _setupKeyboardNavigation).
+   * @private
+   */
+  _enterTabListFocus() {
+    this.classList.add('tab-list-focused');
+    this.setAttribute('tabindex', '-1');
+    this.focus({ preventScroll: true });
+    this._scrollActiveTabIntoView();
   }
 
   /** @private */

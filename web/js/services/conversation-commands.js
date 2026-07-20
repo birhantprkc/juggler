@@ -40,6 +40,16 @@ export function binActiveConversation() {
 }
 
 /**
+ * Request inline rename of the currently-visible conversation. Handled by the
+ * conversation bar, which opens the tab's inline name editor — the same UX a
+ * click on the active tab produces.
+ * @returns {void}
+ */
+export function renameActiveConversation() {
+  document.dispatchEvent(new CustomEvent('juggler:rename-active-conversation'));
+}
+
+/**
  * Toggle file-editing permission for the currently-visible conversation.
  * @param {import('../model/session.js').default} session
  * @returns {boolean} True if there was a visible conversation to toggle.

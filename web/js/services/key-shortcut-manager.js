@@ -209,6 +209,20 @@ const SHORTCUT_DEFS = [
     allowInInput: true,
   },
   {
+    id: 'rename-conversation',
+    label: 'Rename conversation',
+    description: 'Rename the current conversation (opens the tab\u2019s inline name '
+      + 'editor). Also on Return when the tab bar itself is focused.',
+    category: 'Conversations',
+    // F2 is the cross-platform rename key (Explorer/most tree views on
+    // Windows/Linux; unclaimed on macOS, so it's safe to bind app-wide). It has
+    // no native meaning in a text field, so allowInInput lets it fire straight
+    // from the composer. The Return alias is dispatched by the conversation bar
+    // itself, scoped to tab-list focus (see conversation-bar.js keydown).
+    defaultBinding: { key: 'F2' },
+    allowInInput: true,
+  },
+  {
     id: 'pause-conversation',
     label: 'Pause conversation',
     description: 'Stops as soon as possible without interrupting any tool'
