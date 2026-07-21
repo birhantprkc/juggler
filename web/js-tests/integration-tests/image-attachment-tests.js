@@ -381,9 +381,72 @@ export const imageOnlySendTest = {
   }
 };
 
+/**
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const pasteAsyncClipboardFallbackTest = {
+  name: 'paste-async-clipboard-fallback',
+  description: 'The async Clipboard fallback (_pasteImagesFromAsyncClipboard) — the WebKit desktop-app paste path — reads a stubbed clipboard image and routes it through _handleFiles (read → getType → File).',
+  fixture: 'unit-test-fixture',
+  llmResponses: [],
+  operations: [],
+
+  async customAssertions(conversation) {
+    const tab = /** @type {any} */ (conversation.getTabElement());
+    const inputBox = tab?.getInputBox?.();
+    if (!inputBox) return; // headless — no UI to drive
+
+    // Stub the async Clipboard API to return exactly one PNG image, as an own
+    // property that shadows the prototype getter; skip if the env forbids it.
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // PNG signature
+    const fakeItem = {
+      types: ['image/png'],
+      getType: async (/** @type {string} */ t) => new Blob([pngBytes], { type: t })
+    };
+    const hadOwn = Object.prototype.hasOwnProperty.call(navigator, 'clipboard');
+    const originalDescriptor = hadOwn ? Object.getOwnPropertyDescriptor(navigator, 'clipboard') : null;
+    try {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { read: async () => [fakeItem] },
+        configurable: true
+      });
+    } catch {
+      return; // Can't stub the clipboard here — nothing to assert.
+    }
+
+    const originalHandleFiles = inputBox._handleFiles;
+    try {
+      /** @type {any[]} */
+      const captured = [];
+      inputBox._handleFiles = (/** @type {FileList|File[]} */ files) => {
+        for (const f of Array.from(files)) captured.push(f);
+      };
+      await inputBox._pasteImagesFromAsyncClipboard();
+      if (captured.length === 0) {
+        throw new Error('async fallback did not deliver any file to _handleFiles');
+      }
+      const file = captured[0];
+      if (!file || typeof file.type !== 'string' || !file.type.startsWith('image/')) {
+        throw new Error(`async fallback delivered a non-image; got ${JSON.stringify(file)}`);
+      }
+      if (!(file.size > 0)) {
+        throw new Error(`pasted image File has no bytes; size=${file && file.size}`);
+      }
+    } finally {
+      inputBox._handleFiles = originalHandleFiles;
+      if (originalDescriptor) {
+        Object.defineProperty(navigator, 'clipboard', originalDescriptor);
+      } else {
+        delete (/** @type {any} */ (navigator)).clipboard;
+      }
+    }
+  }
+};
+
 export const tests = [
   compactionAttachmentStandinTest,
   rewindRestoresAttachmentsTest,
   propertiesPanelShowsAttachmentsTest,
-  imageOnlySendTest
+  imageOnlySendTest,
+  pasteAsyncClipboardFallbackTest
 ];

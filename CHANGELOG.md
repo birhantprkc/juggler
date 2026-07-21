@@ -14,6 +14,7 @@ of changes; this project follows semantic versioning.
 - Fixed Claude Code sessions getting stuck in plan mode when other Claude CLI sessions were open in the same folder
 - Added an F2 key shortcut for renaming the current tab (also pressing return when the tab panel has keyboard focus will rename the tab)
 - Fixed double-insertion of agent.md files if there are synlinks involved
+- Fallback for some image-pasting pasting in desktop app when the clipboard is async
 
 ## [0.4.2] - 2026-07-18
 

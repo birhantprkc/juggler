@@ -16,6 +16,7 @@ import { THREAD_ARROW_SVG, IMAGE_ATTACH_SVG, SEND_ARROW_SVG, PLUS_SVG, CLOCK_SVG
 import { showNotice } from './modal-dialog.js';
 import apiService from '../services/api.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { isDesktopWindow } from '../../sdk/lib/window-control.js';
 
 /**
  * Input box component for sending messages
@@ -418,19 +419,28 @@ class InputBox extends HTMLElement {
     // Paste image data (screenshot, copied image) — upload it and suppress the
     // default paste of those image items (avoids also pasting a filename).
     textarea.addEventListener('paste', (e) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
       /** @type {File[]} */
       const imageFiles = [];
-      for (const item of Array.from(items)) {
+      for (const item of Array.from(e.clipboardData?.items || [])) {
         if (item.kind === 'file' && item.type.startsWith('image/')) {
           const file = item.getAsFile();
           if (file) imageFiles.push(file);
         }
       }
-      if (imageFiles.length === 0) return;
-      e.preventDefault();
-      this._handleFiles(imageFiles);
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        this._handleFiles(imageFiles);
+        return;
+      }
+      // WebKit desktop (WebKitGTK/WKWebView, i.e. the Wails app) routinely leaves
+      // the synchronous paste event without the image file, exposing it only
+      // through the async Clipboard API. Fall back to that — but only in the
+      // desktop window (no clipboard-read permission prompt there) and only for a
+      // text-less paste, so ordinary text pastes never read the clipboard.
+      if (!isDesktopWindow()) return;
+      let hasText = false;
+      try { hasText = !!e.clipboardData?.getData('text/plain'); } catch { /* restricted */ }
+      if (!hasText) void this._pasteImagesFromAsyncClipboard();
     });
 
     // Drag-and-drop image files anywhere onto the message box. The listeners
@@ -1256,6 +1266,40 @@ class InputBox extends HTMLElement {
       || null;
     const provider = cfg && cfg.provider ? cfg.provider : '';
     return PROVIDER_MAX_IMAGE_BYTES[provider] || MAX_ATTACHMENT_BYTES;
+  }
+
+  /**
+   * Fallback image paste for WebKit desktop windows (WebKitGTK/WKWebView, i.e.
+   * the Wails app), whose synchronous `paste` event omits the image file and
+   * exposes it only through the async Clipboard API. Materialises any image
+   * entries as `File`s and routes them through the same {@link _handleFiles}
+   * path as sync paste / drop / picker. Best-effort: a missing API or a
+   * clipboard with no image is a silent no-op, so it can only add successful
+   * pastes, never break one.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _pasteImagesFromAsyncClipboard() {
+    const clipboard = navigator.clipboard;
+    if (!clipboard || typeof clipboard.read !== 'function') return;
+    let clipboardItems;
+    try {
+      clipboardItems = await clipboard.read();
+    } catch {
+      return; // no permission, insecure context, or nothing readable
+    }
+    /** @type {File[]} */
+    const files = [];
+    for (const item of clipboardItems) {
+      const type = Array.from(item.types || []).find((t) => t.startsWith('image/'));
+      if (!type) continue;
+      try {
+        const blob = await item.getType(type);
+        const ext = type.split('/')[1] || 'png';
+        files.push(new window.File([blob], `pasted-image-${files.length + 1}.${ext}`, { type }));
+      } catch { /* skip an entry we can't materialise; keep any others */ }
+    }
+    if (files.length > 0) this._handleFiles(files);
   }
 
   /**
