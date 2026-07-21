@@ -88,11 +88,45 @@ class JugglerApp {
    * @private
    */
   _initDocumentVisibilityPause() {
+    let wasHidden = document.hidden;
     const sync = () => {
-      document.documentElement.toggleAttribute('data-doc-hidden', document.hidden);
+      const hidden = document.hidden;
+      document.documentElement.toggleAttribute('data-doc-hidden', hidden);
+      // On the hidden→visible transition, nudge the on-screen spinner(s) back to
+      // life. WebKit (WKWebView) doesn't reliably schedule a repaint of the
+      // animated layers when animation-play-state flips paused→running as the
+      // window reappears, so a spinner that was visible when we backgrounded can
+      // stay frozen until an unrelated reflow kicks it. A tab switch happens to
+      // fix it because inactive tabs are display:none, so returning to a tab
+      // forces its spinner subtree through display:none→shown — a fresh layout
+      // and paint. Reproduce exactly that minimal kick here so focus alone is
+      // enough. Only runs on a real transition (not initial load / spurious
+      // fires), and only touches spinners that are actually rendered.
+      if (wasHidden && !hidden) this._nudgeVisibleSpinners();
+      wasHidden = hidden;
     };
     document.addEventListener('visibilitychange', sync);
     sync(); // reflect the initial state immediately
+  }
+
+  /**
+   * Force a reflow+repaint on every on-screen busy spinner by toggling it
+   * through display:none and back. `getClientRects().length` skips spinners in
+   * hidden (display:none) tabs, so this only touches the current tab. The
+   * synchronous offsetHeight read between the two writes guarantees the browser
+   * observes the display:none state, restarting and repainting the animation
+   * (the same thing a tab switch does).
+   * @private
+   */
+  _nudgeVisibleSpinners() {
+    document.querySelectorAll('juggler-spinner').forEach((el) => {
+      const spinner = /** @type {HTMLElement} */ (el);
+      if (spinner.getClientRects().length === 0) return; // offscreen / hidden tab
+      const prevDisplay = spinner.style.display;
+      spinner.style.display = 'none';
+      void spinner.offsetHeight; // force reflow while detached from layout
+      spinner.style.display = prevDisplay;
+    });
   }
 
   /** @private */
