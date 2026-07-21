@@ -153,8 +153,11 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		reserve:          reserve,
 		providerOverhead: limitErr.Breakdown.ProviderOverheadTokens,
 		maxSpend:         compactionMaxSpend(sourceTokens, window, limitErr.Breakdown.ProviderOverheadTokens),
-		spend:            provider.SaturatingAdd(limitErr.EstimatedInputTokens, reserve),
-		calls:            1,
+		// The rejected request spans the whole history while maxSpend is sized from
+		// only the folded prefix, so it is seeded as prior* — reported, not enforced
+		// against the prefix-sized ceiling (see boundedCompactionBudget).
+		priorSpend: provider.SaturatingAdd(limitErr.EstimatedInputTokens, reserve),
+		priorCalls: 1,
 	}
 
 	result, err := w.runReducer(compactionKindRecovery, pinnedModel, budget, prefixRecords)

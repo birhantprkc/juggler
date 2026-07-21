@@ -61,8 +61,10 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 		reserve:          limitErr.OutputReserveTokens,
 		providerOverhead: limitErr.Breakdown.ProviderOverheadTokens,
 		maxSpend:         compactionMaxSpend(sourceTokens, limitErr.ContextWindowTokens, limitErr.Breakdown.ProviderOverheadTokens),
-		spend:            provider.SaturatingAdd(limitErr.EstimatedInputTokens, limitErr.OutputReserveTokens),
-		calls:            1,
+		// The rejected request is seeded as prior* — reported, not enforced against
+		// maxSpend (see boundedCompactionBudget).
+		priorSpend: provider.SaturatingAdd(limitErr.EstimatedInputTokens, limitErr.OutputReserveTokens),
+		priorCalls: 1,
 	}
 
 	w.recordCompactionStart(compactionKindFolded, limitErr.ContextWindowTokens, limitErr.OutputReserveTokens, limitErr.Breakdown.ProviderOverheadTokens)

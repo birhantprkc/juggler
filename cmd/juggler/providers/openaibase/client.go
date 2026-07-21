@@ -105,6 +105,15 @@ type Quirks struct {
 	// have no such requirement (and OpenAI/OpenRouter would ignore it), so this
 	// stays off by default and is enabled only where the API demands it.
 	EchoReasoningContent bool
+
+	// ForcedToolChoiceUnsupported downgrades a forced single-tool choice
+	// (ToolChoice{Mode: tool, Name: X}) to auto on the Chat Completions wire.
+	// DeepSeek's thinking models reject a named tool_choice with 400 "Thinking
+	// mode does not support this tool_choice". The tool stays in the request and
+	// the caller's prompt still directs the model to it, so auto elicits the same
+	// call while staying within the thinking-mode contract; a model that answers
+	// in plain text instead is handled by the caller's text fallback.
+	ForcedToolChoiceUnsupported bool
 }
 
 // Config holds configuration for OpenAI-compatible providers
@@ -699,14 +708,16 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 }
 
 // convertToolChoiceChat maps the provider-agnostic ToolChoice onto the Chat
-// Completions tool_choice union. ok=false for nil/auto (the model decides).
-func convertToolChoiceChat(tc *provider.ToolChoice) (openai.ChatCompletionToolChoiceOptionUnionParam, bool) {
+// Completions tool_choice union. ok=false for nil/auto (the model decides). When
+// downgradeForcedTool is set, a forced single tool is mapped to auto (the tool
+// stays offered) for vendors whose thinking mode rejects a named tool_choice.
+func convertToolChoiceChat(tc *provider.ToolChoice, downgradeForcedTool bool) (openai.ChatCompletionToolChoiceOptionUnionParam, bool) {
 	if tc == nil {
 		return openai.ChatCompletionToolChoiceOptionUnionParam{}, false
 	}
 	switch tc.Mode {
 	case provider.ToolChoiceTool:
-		if tc.Name == "" {
+		if tc.Name == "" || downgradeForcedTool {
 			return openai.ChatCompletionToolChoiceOptionUnionParam{}, false
 		}
 		return openai.ChatCompletionToolChoiceOptionUnionParam{
@@ -1085,7 +1096,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 
 	if len(req.Tools) > 0 {
 		params.Tools = convertToolsToOpenAI(req.Tools)
-		if tc, ok := convertToolChoiceChat(req.ToolChoice); ok {
+		if tc, ok := convertToolChoiceChat(req.ToolChoice, c.quirks.ForcedToolChoiceUnsupported); ok {
 			params.ToolChoice = tc
 		}
 	}

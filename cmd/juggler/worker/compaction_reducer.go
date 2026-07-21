@@ -123,7 +123,27 @@ type boundedCompactionBudget struct {
 	maxSpend         int64
 	spend            int64
 	calls            int
-	usage            CompactionUsage
+	// priorSpend and priorCalls account for the rejected original request that
+	// provoked compaction. They are reported (folded into CompactionResult and
+	// BoundedCompactionError) but not enforced against maxSpend, which bounds only
+	// the reducer's own hidden calls over the folded source. maxSpend is sized from
+	// that source alone, which in a recovery fold is just a prefix of the request;
+	// the request itself belongs in prior* so it does not gate the hidden calls.
+	// spend/calls hold only the enforced hidden-call budget and start at zero.
+	priorSpend int64
+	priorCalls int
+	usage      CompactionUsage
+}
+
+// reportedSpend and reportedCalls fold the rejected original request into the
+// accounting surfaced to callers. The prior* terms are report-only; only spend
+// and calls are enforced against maxSpend.
+func (b *boundedCompactionBudget) reportedSpend() int64 {
+	return provider.SaturatingAdd(b.spend, b.priorSpend)
+}
+
+func (b *boundedCompactionBudget) reportedCalls() int {
+	return b.calls + b.priorCalls
 }
 
 type hiddenLLMRequest struct {
@@ -176,22 +196,23 @@ type boundedReducer struct {
 func (r *boundedReducer) run(records []string) (result CompactionResult, err error) {
 	started := time.Now()
 	result = CompactionResult{
-		Calls:             r.budget.calls,
-		EstimatedSpend:    r.budget.spend,
+		Calls:             r.budget.reportedCalls(),
+		EstimatedSpend:    r.budget.reportedSpend(),
 		SourceFingerprint: compactionSourceFingerprint(records),
 	}
 	// Accounting is refreshed on every return path, including panics-free
 	// early exits, so partial accounting always flows to the caller.
 	defer func() {
-		result.Calls = r.budget.calls
-		result.EstimatedSpend = r.budget.spend
+		result.Calls = r.budget.reportedCalls()
+		result.EstimatedSpend = r.budget.reportedSpend()
 		result.Usage = r.budget.usage
 		result.DurationMs = time.Since(started).Milliseconds()
 	}()
 
-	if r.budget.spend > r.budget.maxSpend {
-		return result, r.budget.err(BoundedCompactionSpendBound, 0, fmt.Sprintf("bounded compaction initial spend exceeds %d tokens", r.budget.maxSpend), nil)
-	}
+	// The enforced hidden-call budget (spend) starts at zero; the spend bound is
+	// applied per call in plan() as hidden calls are admitted against maxSpend.
+	// priorSpend (the rejected original request) is report-only and never gates
+	// dispatch.
 
 	// Prove a content-free hidden envelope can fit before any hidden dispatch.
 	empty := r.hiddenCompactionRequest(0, 0, "", false)
@@ -442,8 +463,8 @@ func (b *boundedCompactionBudget) fits(req hiddenLLMRequest) bool {
 
 func (b *boundedCompactionBudget) err(reason BoundedCompactionReason, pass int, message string, cause error) error {
 	return &BoundedCompactionError{
-		Reason: reason, Message: message, Pass: pass, Calls: b.calls,
-		Spend: b.spend, MaxSpend: b.maxSpend, Window: b.window, Usage: b.usage, Cause: cause,
+		Reason: reason, Message: message, Pass: pass, Calls: b.reportedCalls(),
+		Spend: b.reportedSpend(), MaxSpend: b.maxSpend, Window: b.window, Usage: b.usage, Cause: cause,
 	}
 }
 

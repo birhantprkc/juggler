@@ -13,11 +13,11 @@ import (
 )
 
 func TestConvertToolChoiceChat(t *testing.T) {
-	if _, ok := convertToolChoiceChat(nil); ok {
+	if _, ok := convertToolChoiceChat(nil, false); ok {
 		t.Error("nil → auto (ok=false)")
 	}
 
-	tc, ok := convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"})
+	tc, ok := convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"}, false)
 	if !ok {
 		t.Fatal("tool mode must be ok")
 	}
@@ -26,17 +26,40 @@ func TestConvertToolChoiceChat(t *testing.T) {
 		t.Errorf("chat forced-tool JSON = %s", js)
 	}
 
-	if _, ok := convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceTool}); ok {
+	if _, ok := convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceTool}, false); ok {
 		t.Error("nameless tool mode must be unset")
 	}
 
-	tc, _ = convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceAny})
+	tc, _ = convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceAny}, false)
 	if js := mustJSON(t, tc); !strings.Contains(js, "required") {
 		t.Errorf("any → %s, want required", js)
 	}
-	tc, _ = convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceNone})
+	tc, _ = convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceNone}, false)
 	if js := mustJSON(t, tc); !strings.Contains(js, "none") {
 		t.Errorf("none → %s, want none", js)
+	}
+}
+
+// TestConvertToolChoiceChatDowngradesForcedTool pins the ForcedToolChoiceUnsupported
+// path: a named single-tool force is mapped to auto (ok=false) while required and
+// none are left intact, so only the forced-single-tool case a thinking model
+// rejects is relaxed.
+func TestConvertToolChoiceChatDowngradesForcedTool(t *testing.T) {
+	forced := &provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"}
+
+	if _, ok := convertToolChoiceChat(forced, false); !ok {
+		t.Fatal("forced tool must stay forced when the vendor supports it")
+	}
+
+	if tc, ok := convertToolChoiceChat(forced, true); ok {
+		t.Errorf("forced tool must downgrade to auto, got %s", mustJSON(t, tc))
+	}
+
+	if tc, ok := convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceAny}, true); !ok || !strings.Contains(mustJSON(t, tc), "required") {
+		t.Errorf("any must stay required under downgrade, got ok=%v", ok)
+	}
+	if tc, ok := convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceNone}, true); !ok || !strings.Contains(mustJSON(t, tc), "none") {
+		t.Errorf("none must stay none under downgrade, got ok=%v", ok)
 	}
 }
 

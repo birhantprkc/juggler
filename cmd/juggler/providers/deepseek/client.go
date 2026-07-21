@@ -24,9 +24,10 @@ func Register() {
 		UsageStatsOverride: usageStats,
 		BaseURL:            "https://api.deepseek.com/v1",
 		Quirks: openaibase.Quirks{
-			IncludePresencePenalty:  true,
-			IncludeFrequencyPenalty: true,
-			EchoReasoningContent:    true,
+			IncludePresencePenalty:      true,
+			IncludeFrequencyPenalty:     true,
+			EchoReasoningContent:        true,
+			ForcedToolChoiceUnsupported: true,
 		},
 	})
 }
