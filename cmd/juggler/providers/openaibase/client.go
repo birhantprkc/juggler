@@ -290,6 +290,11 @@ func NewClient(cfg Config) (*Client, error) {
 		opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))
 	}
 
+	// Drop empty/whitespace-only SSE frames (proxy keep-alives, empty data
+	// heartbeats) before the SDK's decoder json.Unmarshals them and hard-fails
+	// the stream with "unexpected end of JSON input". No-op on non-SSE responses.
+	opts = append(opts, option.WithMiddleware(sseEmptyFrameFilterMiddleware))
+
 	client := openai.NewClient(opts...)
 
 	quirks := cfg.Quirks
