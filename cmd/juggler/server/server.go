@@ -26,6 +26,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v4"
 )
 
 // Timeout configuration for background provider/model operations.
@@ -146,6 +147,15 @@ type Server struct {
 
 	publicMode atomic.Bool                  // true = accept connections from non-localhost IPs
 	tunnel     atomic.Pointer[activeTunnel] // non-nil when a tunnel is active
+
+	// webrtcCert is this machine's persistent WebRTC identity: the DTLS
+	// certificate presented on every peer connection, loaded once at startup
+	// from the per-user config dir (see webrtc_identity.go) and reused across
+	// restarts so the peer's fingerprint — and therefore any Direct P2P link a
+	// remote client pins to it — stays stable. nil only if load/create failed,
+	// in which case pion mints an ephemeral certificate per connection (the
+	// pre-persistence behaviour).
+	webrtcCert *webrtc.Certificate
 
 	// Per-project state, swapped atomically on project change.
 	projectState atomic.Pointer[projectState]
@@ -319,6 +329,23 @@ func New(cfg Config) (*Server, error) {
 	s.switchToken <- struct{}{}
 
 	s.stats = newWSStats()
+
+	// Load (or mint on first run) this project's persistent WebRTC identity so
+	// peer connections present a stable DTLS fingerprint across restarts. Scoped
+	// per project (stored 0600 in <project>/.juggler, like the instance lock), so
+	// the several servers a user runs — one per project — each keep their own
+	// pinnable identity rather than colliding on a machine-wide one. Anchored to
+	// the launch project, matching how BootLock is keyed; a mid-session
+	// SwitchProject does not re-key it. Best-effort: with no project (window
+	// mode) or on any failure, webrtcCert stays nil and pion mints an ephemeral
+	// per-connection certificate, exactly as before persistence existed.
+	if cfg.ProjectPath != "" {
+		if cert, err := loadOrCreateWebRTCCertificate(webRTCIdentityPath(cfg.ProjectPath)); err != nil {
+			jlog.Info("WebRTC identity unavailable, using ephemeral certificates: %v", err)
+		} else {
+			s.webrtcCert = cert
+		}
+	}
 
 	s.seedProjectState(cfg)
 
