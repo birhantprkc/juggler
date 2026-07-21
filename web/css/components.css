@@ -2774,21 +2774,19 @@ juggler-spinner {
     contain: layout style;
 }
 
+/* Do NOT add `will-change: transform` here (or on .js-club). A permanent layer
+   promotion makes WebKit run these as accelerated compositor animations, and an
+   accelerated animation paused via the hidden-document rule below does not
+   reliably re-commit after the window has been occluded for a long time (e.g.
+   overnight): the layer stays frozen at its last transform even though the CSS
+   is `running` again. Only spinners created after the un-hide would animate.
+   Leaving these on the main-thread animation path resumes cleanly. */
 juggler-spinner .js-pivot {
     position: absolute;
     left: 50%;
     top: 50%;
     width: 0;
     height: 0;
-
-    /* Promote each animated node to its own compositing layer so the per-frame
-       transform is a cheap layer transform, not a repaint of the surrounding
-       UI. This matters most under software compositing (WebviewGpuPolicyNever,
-       and any host without a usable GPU), where an un-layered transform forces
-       WebKit to re-rasterise the region every frame on the main thread — the
-       spinner is the dominant always-running animation, so confining its
-       repaint to a few tiny layers is the biggest win available there. */
-    will-change: transform;
     animation: juggler-spinner-orbit var(--duration) linear infinite;
 }
 
@@ -2801,9 +2799,6 @@ juggler-spinner .js-club {
     height: var(--js-club-h);
     left: calc(var(--js-club-w) / -2);
     top: calc((var(--js-radius) + var(--js-club-h) / 2) * -1);
-
-    /* Own compositing layer — see the note on .js-pivot above. */
-    will-change: transform;
     animation: juggler-spinner-spin var(--duration) linear infinite;
 }
 
