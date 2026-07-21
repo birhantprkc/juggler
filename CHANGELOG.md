@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-21
+
 - User messages now render Markdown you typed or pasted (links, formatting, code) instead of raw source
 - Connectivity settings now let you start LAN access or a WAN tunnel automatically on launch
 - Local and keyless OpenAI-compatible providers now work without an API key
