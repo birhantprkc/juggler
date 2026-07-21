@@ -9,6 +9,7 @@ import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createFileC
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { smartTruncate } from 'juggler/ui';
+import { toolInputPath, dirname, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags } from './path-approval.js';
 
 injectFileContentStyles();
 
@@ -61,7 +62,12 @@ class ReadFileContextItem extends ContextItem {
     version: '1.0.0',
     description: 'Read file content with support for full files, line ranges, tail/head modes',
     author: 'Juggler Team',
-    requiresApproval: false
+    // Reads are approval-gated, but only OUT-OF-ROOT ones ever prompt: isPermitted
+    // auto-approves any read inside the project or a granted allowed path, so the
+    // common case is silent. A read outside those roots (a sibling repo, an
+    // absolute path) prompts once — offering to grant the folder — instead of
+    // hard-failing the model, which otherwise routes around the block via `cat`.
+    requiresApproval: true
   };
 
   /**
@@ -108,6 +114,10 @@ class ReadFileContextItem extends ContextItem {
    */
   _normalizeParams(toolInput) {
     const params = normalizeFilePath(/** @type {Record<string, unknown>} */ ({ ...toolInput }));
+
+    // The backend escape-hatch flags are set by execute() alone, past the
+    // approval gate — never trusted from raw LLM input. See path-approval.js.
+    stripInjectedApprovalFlags(params);
 
     // Convert offset/limit to lineRange for backend
     if (params.offset !== undefined || params.limit !== undefined) {
@@ -158,12 +168,51 @@ class ReadFileContextItem extends ContextItem {
   }
 
   /**
-   * Execute the read file action
+   * A read is auto-approved (no prompt) when its target resolves inside the
+   * project root or a granted allowed path — the overwhelming common case. Only
+   * an out-of-root read requires approval. A read with no readable path is
+   * treated as permitted so validate() can surface the real "missing path" error
+   * instead of a spurious approval prompt.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @returns {boolean} True if the read is auto-approved
+   */
+  isPermitted(toolInput) {
+    if (!this.messageThread) return false;
+    const path = toolInputPath(toolInput, true);
+    if (!path) return true;
+    return isPathAllowed(this, path);
+  }
+
+  /**
+   * Offer a "don't ask again" grant for an out-of-root read: the file's parent
+   * folder. Returns `[]` when the read is already permitted or the folder isn't
+   * safely grantable (the user still gets a one-shot Yes / No then).
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @returns {import('juggler/context-item').ApprovalSuggestion[]} Suggestions
+   */
+  getApprovalSuggestions(toolInput) {
+    if (!this.messageThread || this.isPermitted(toolInput)) return [];
+    const path = toolInputPath(toolInput, true);
+    return folderGrantSuggestions(dirname(path), this.session?.home || '');
+  }
+
+  /**
+   * Execute the read file action.
+   *
+   * Reaching execute() means the read is either in-root (isPermitted) or was
+   * explicitly approved (an out-of-root read only gets here past the approval
+   * gate). For the out-of-root case, mark `outOfRootApproved` so the backend's
+   * containment check admits this one read — mirroring EditBase._authorizeWrite.
    * @param {Record<string, unknown>} params - Prepared params from prepare
    * @returns {Promise<ReadFileResult>} Action result
    */
   async execute(params) {
-    const readParams = /** @type {ReadFileParams} */ (params);
+    const readParams = /** @type {ReadFileParams & {outOfRootApproved?: boolean}} */ ({ ...params });
+    if (readParams.path && !isPathAllowed(this, readParams.path)) {
+      readParams.outOfRootApproved = true;
+    }
     return await readFile(readParams, this.signal, this.getToolAllowedRoots());
   }
 

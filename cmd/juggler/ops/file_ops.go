@@ -68,10 +68,13 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 
 	// User-initiated reads (e.g. an @-mention or file-picker pin) may reference
 	// paths outside the project — relative (../sibling) or absolute. Resolve
-	// honours that escape hatch; LLM tool calls (userInitiated=false) stay
-	// restricted to the working directory.
+	// honours that escape hatch. An LLM read (userInitiated=false) stays
+	// restricted to the working directory unless outOfRootApproved is set, which
+	// the JS approval flow adds only after the user OK'd this specific read
+	// (mirroring the write tool's out-of-scope approval).
 	userInitiated, _ := params["userInitiated"].(bool)
-	absPath, err := ops.scope.ResolveUserInitiated(path, userInitiated)
+	approved, _ := params["outOfRootApproved"].(bool)
+	absPath, err := ops.scope.ResolveRead(path, userInitiated, approved)
 	if err != nil {
 		return nil, err
 	}

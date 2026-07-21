@@ -89,8 +89,13 @@ export default class ReadOnlyStrategyType extends StrategyType {
    * @param {{toolName: string, toolInput: Record<string, unknown>, category: string|undefined, defaultApproval: boolean}} info
    * @returns {'approve'|'require-approval'|'default'} Approval policy
    */
-  getApprovalPolicy({ category }) {
-    if (category === 'read' || category === 'meta') return APPROVAL_POLICY.APPROVE;
+  getApprovalPolicy({ category, defaultApproval }) {
+    if (category === 'meta') return APPROVAL_POLICY.APPROVE;
+    // Read tools are auto-approved EXCEPT when the item itself still wants
+    // approval (an out-of-root read, whose isPermitted is false). Read-only mode
+    // widens the available toolset, not the filesystem boundary, so those defer
+    // to the normal prompt/grant flow rather than being force-approved here.
+    if (category === 'read') return defaultApproval ? APPROVAL_POLICY.DEFAULT : APPROVAL_POLICY.APPROVE;
     return APPROVAL_POLICY.DEFAULT;
   }
 

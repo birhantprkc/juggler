@@ -522,15 +522,20 @@ func (ops *TreeOperations) glob(ctx context.Context, params map[string]any) (any
 		searchPath = p
 	}
 
-	// SECURITY: Validate path
-	pathResult, err := ops.scope.Resolve(searchPath)
+	// SECURITY: Validate path. ResolveRead honours a user-initiated pin and the
+	// JS out-of-root approval (the glob `pattern` is expanded within this
+	// resolved dir and cannot escape it), so an approved out-of-project glob
+	// resolves instead of being rejected.
+	userInitiated, _ := params["userInitiated"].(bool)
+	approved, _ := params["outOfRootApproved"].(bool)
+	absPath, err := ops.scope.ResolveRead(searchPath, userInitiated, approved)
 	if err != nil {
 		return nil, err
 	}
 
 	// Use doublestar for glob matching (supports **)
 	// Root the filesystem at the search path so relative patterns work correctly
-	matches, err := doublestar.Glob(os.DirFS(pathResult.AbsPath), pattern)
+	matches, err := doublestar.Glob(os.DirFS(absPath), pattern)
 	if err != nil {
 		return nil, fmt.Errorf("invalid glob pattern: %w", err)
 	}
@@ -548,7 +553,7 @@ func (ops *TreeOperations) glob(ctx context.Context, params map[string]any) (any
 			break
 		}
 		// Build absolute path for stat
-		absMatch := filepath.Join(pathResult.AbsPath, match)
+		absMatch := filepath.Join(absPath, match)
 
 		info, err := os.Stat(absMatch)
 		if err != nil {

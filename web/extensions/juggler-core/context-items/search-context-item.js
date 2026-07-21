@@ -7,6 +7,7 @@ import ContextItem from 'juggler/context-item';
 import { grep } from 'juggler/ops';
 import { formatPathForStatus } from 'juggler/item-utils';
 import { smartTruncate } from 'juggler/ui';
+import { toolInputPath, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags } from './path-approval.js';
 
 /**
  * @typedef {object} GrepParams
@@ -65,7 +66,10 @@ class SearchContextItem extends ContextItem {
     version: '1.0.0',
     description: 'Search codebase for patterns and symbols',
     author: 'Juggler Team',
-    requiresApproval: false
+    // Approval-gated like read, but only an out-of-root NON-glob `path` prompts:
+    // a search with no path (cwd) or a glob path is confined to the project by
+    // the backend, so isPermitted auto-approves it and the common case is silent.
+    requiresApproval: true
   };
 
   /**
@@ -154,6 +158,12 @@ class SearchContextItem extends ContextItem {
   _normalizeParams(toolInput) {
     const params = /** @type {Record<string, unknown>} */ ({ ...toolInput });
 
+    // The backend escape-hatch flags are set by execute() alone, past the
+    // approval gate — never trusted from raw LLM input. execute() also
+    // whitelists the fields it forwards, so this is defence in depth. See
+    // path-approval.js.
+    stripInjectedApprovalFlags(params);
+
     // Handle grep-style dash params: -A, -B, -C, -i, -n
     if (params['-A'] !== undefined) {
       params.contextAfter = params['-A'];
@@ -209,6 +219,49 @@ class SearchContextItem extends ContextItem {
   }
 
   /**
+   * Does this search `path` contain glob metacharacters? The backend routes such
+   * a path through doublestar over DirFS(projectRoot), which cannot escape the
+   * project — so a glob path is always in-root and never needs approval. Mirrors
+   * the backend's containsGlobChars (`*?[`).
+   * @param {string} p - The search path
+   * @returns {boolean} True if `p` is a glob pattern
+   * @private
+   */
+  static _isGlobPath(p) {
+    return /[*?[]/.test(p);
+  }
+
+  /**
+   * A search is auto-approved unless its `path` is a concrete directory/file
+   * OUTSIDE the project root and every granted allowed path. No path (defaults to
+   * cwd) and glob paths (confined to the project by the backend) are always
+   * permitted, so the common case never prompts.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @returns {boolean} True if the search is auto-approved
+   */
+  isPermitted(toolInput) {
+    if (!this.messageThread) return false;
+    const path = toolInputPath(toolInput);
+    if (!path || SearchContextItem._isGlobPath(path)) return true;
+    return isPathAllowed(this, path);
+  }
+
+  /**
+   * Offer a "don't ask again" grant for an out-of-root search: the search
+   * directory itself. Returns `[]` when already permitted or the directory isn't
+   * safely grantable (the user still gets a one-shot Yes / No then).
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @returns {import('juggler/context-item').ApprovalSuggestion[]} Suggestions
+   */
+  getApprovalSuggestions(toolInput) {
+    if (!this.messageThread || this.isPermitted(toolInput)) return [];
+    const path = toolInputPath(toolInput);
+    return folderGrantSuggestions(path, this.session?.home || '');
+  }
+
+  /**
    * Execute the search action
    * @param {Record<string, unknown>} params - Prepared params from prepare
    * @returns {Promise<SearchResult>} Action result
@@ -225,6 +278,14 @@ class SearchContextItem extends ContextItem {
     if (params.maxCount) searchParams.maxCount = params.maxCount;
     if (params.ignoreCase !== undefined) searchParams.ignoreCase = params.ignoreCase;
     if (params.noIgnore !== undefined) searchParams.noIgnore = params.noIgnore;
+
+    // Reaching execute() past the approval gate means an out-of-root non-glob
+    // path was explicitly approved; mark it so the backend admits this one
+    // search (mirrors the read/write tools' outOfRootApproved).
+    const path = /** @type {string} */ (params.path) || '';
+    if (path && !SearchContextItem._isGlobPath(path) && !isPathAllowed(this, path)) {
+      searchParams.outOfRootApproved = true;
+    }
 
     // @ts-ignore - params validated above
     return await grep(searchParams, this.signal, this.getToolAllowedRoots());

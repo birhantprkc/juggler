@@ -7,6 +7,7 @@ import ContextItem from 'juggler/context-item';
 import { glob } from 'juggler/ops';
 import { formatPathForStatus } from 'juggler/item-utils';
 import { smartTruncate } from 'juggler/ui';
+import { toolInputPath, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags } from './path-approval.js';
 
 /**
  * @typedef {object} GlobParams
@@ -43,7 +44,10 @@ class GlobContextItem extends ContextItem {
     version: '1.0.0',
     description: 'Fast file pattern matching tool that works with any codebase size',
     author: 'Juggler Team',
-    requiresApproval: false
+    // Approval-gated like read: the `pattern` is confined to `path` by the
+    // backend, so only an out-of-root search `path` prompts. No path (cwd) or an
+    // in-project path is auto-approved, so the common case is silent.
+    requiresApproval: true
   };
 
   /**
@@ -94,16 +98,56 @@ class GlobContextItem extends ContextItem {
       return { valid: false, error: 'Parameter "pattern" must be a string' };
     }
 
-    return { valid: true, params: toolInput };
+    // The backend escape-hatch flags (outOfRootApproved/userInitiated) are set by
+    // execute() alone, past the approval gate — never trusted from raw LLM input.
+    // execute() spreads these params, so strip on a copy here. See path-approval.js.
+    return { valid: true, params: stripInjectedApprovalFlags({ ...toolInput }) };
   }
 
   /**
-   * Execute the glob action
+   * A glob is auto-approved unless its `path` (the search directory — the glob
+   * `pattern` is applied within it and cannot escape) is OUTSIDE the project root
+   * and every granted allowed path. No path defaults to cwd and is permitted, so
+   * the common case never prompts.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @returns {boolean} True if the glob is auto-approved
+   */
+  isPermitted(toolInput) {
+    if (!this.messageThread) return false;
+    const path = toolInputPath(toolInput);
+    if (!path) return true;
+    return isPathAllowed(this, path);
+  }
+
+  /**
+   * Offer a "don't ask again" grant for an out-of-root glob: the search
+   * directory. Returns `[]` when already permitted or the directory isn't safely
+   * grantable (the user still gets a one-shot Yes / No then).
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @returns {import('juggler/context-item').ApprovalSuggestion[]} Suggestions
+   */
+  getApprovalSuggestions(toolInput) {
+    if (!this.messageThread || this.isPermitted(toolInput)) return [];
+    const path = toolInputPath(toolInput);
+    return folderGrantSuggestions(path, this.session?.home || '');
+  }
+
+  /**
+   * Execute the glob action.
+   *
+   * Reaching execute() past the approval gate means an out-of-root `path` was
+   * explicitly approved; mark it so the backend admits this one glob (mirrors the
+   * read/search tools' outOfRootApproved).
    * @param {Record<string, unknown>} params - Prepared params from prepare
    * @returns {Promise<GlobResult>} Action result
    */
   async execute(params) {
-    const globParams = /** @type {GlobParams} */ (params);
+    const globParams = /** @type {GlobParams & {outOfRootApproved?: boolean}} */ ({ ...params });
+    if (globParams.path && !isPathAllowed(this, globParams.path)) {
+      globParams.outOfRootApproved = true;
+    }
     return await glob(globParams, this.signal, this.getToolAllowedRoots());
   }
 

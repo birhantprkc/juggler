@@ -37,12 +37,14 @@
  *
  * A plugin returns an escalating list of these (narrowest breadth first) from
  * `getApprovalSuggestions`. The framework renders one button per suggestion;
- * when the user picks one, exactly that suggestion's `rules` are persisted
- * under `itemType`. The contract: after those rules are added,
+ * when the user picks one, exactly that suggestion's `rules` (under `itemType`)
+ * and/or `allowedPaths` are persisted. The contract: after they are added,
  * `isPermitted(toolInput)` MUST return true — a suggestion that doesn't
- * actually cover the command is a bug.
+ * actually cover the call is a bug. A pure path grant (only `allowedPaths`, as a
+ * read offers to widen its filesystem scope) carries no rules and omits
+ * `itemType`.
  * @typedef {object} ApprovalSuggestion
- * @property {string} itemType - Permission itemType the rules belong to (owning plugin id)
+ * @property {string} [itemType] - Permission itemType the rules belong to (owning plugin id). Omitted for a pure `allowedPaths` grant, which has no owning plugin rule.
  * @property {Array<{kind: string, value: any, scope?: 'session'|'conversation'}>} [rules] - Rules to add when this suggestion is chosen
  * @property {string[]} [allowedPaths] - Framework-generic FS roots to add to the conversation's allowed-paths list when this suggestion is chosen. An alternative to `rules` for a command that is rejected only because it reads outside the allowed roots; granting the folders makes `isPermitted` true without wildcarding the command. A suggestion carries `rules` OR `allowedPaths`, never both.
  * @property {string} [label] - Display string summarising what gets approved (e.g. "git push *"); shown on the button when `patterns` is absent

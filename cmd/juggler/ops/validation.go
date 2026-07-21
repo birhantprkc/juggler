@@ -112,6 +112,41 @@ func (s PathScope) ResolveUserInitiated(requestedPath string, userInitiated bool
 	return abs, nil
 }
 
+// ResolveRead resolves a path for a read/search/tree op, honouring two escape
+// hatches over plain containment:
+//   - userInitiated (an @-mention or file-picker pin) resolves outside the
+//     project without approval, exactly as ResolveUserInitiated does; and
+//   - approved (the JS modal-approved execution path — never a standing rule)
+//     admits an out-of-scope read; the access is recorded for the audit trail.
+//     Unlike a write (whose AuthorizeOutOfScopeWrite receives the real approval
+//     flag and so forms an independent backend gate), there is no second check to
+//     run for a read — the JS approval is the sole policy boundary, so this branch
+//     only logs.
+//
+// With neither flag the path is contained to the working directory or an allowed
+// root and an out-of-scope request is rejected with the actionable
+// ValidateFilePath message. This lets the read tool offer the same "approve /
+// grant this folder" flow the write tool has, instead of hard-failing the model.
+func (s PathScope) ResolveRead(requestedPath string, userInitiated, approved bool) (string, error) {
+	if userInitiated {
+		return s.ResolveUserInitiated(requestedPath, true)
+	}
+	if approved {
+		abs, err := s.Sanitize(requestedPath)
+		if err != nil {
+			return "", err
+		}
+		// Record only genuinely out-of-scope reads, matching the write path's
+		// audit line. There is nothing to reject here: reaching this branch means
+		// the JS gate already approved the read.
+		if !s.withinScope(abs) {
+			jlog.Info("ops: out-of-scope read approved: %s", abs)
+		}
+		return abs, nil
+	}
+	return s.ResolveUserInitiated(requestedPath, false)
+}
+
 // resolveExistingPrefix returns absPath with as much symlink resolution as
 // possible: walks up until it finds an existing component, EvalSymlinks that
 // prefix, and re-attaches the missing tail. Used by ValidateFilePath so that

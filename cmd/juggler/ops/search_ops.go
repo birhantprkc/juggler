@@ -99,19 +99,27 @@ func (ops *SearchOperations) grep(ctx context.Context, params map[string]any) (a
 
 	// Get search path (default to working directory)
 	// Supports glob patterns like "src/**/*.go"
+	userInitiated, _ := params["userInitiated"].(bool)
+	approved, _ := params["outOfRootApproved"].(bool)
 	searchPath := ""
 	pathIsGlob := false
 	if path, ok := params["path"].(string); ok && path != "" {
 		if containsGlobChars(path) {
+			// A glob path is expanded via doublestar over DirFS(Root()) below, so
+			// it is inherently confined to the project and needs no containment
+			// check (it cannot reference an out-of-root location).
 			searchPath = path
 			pathIsGlob = true
 		} else {
-			// Validate path is within working directory (or an allowed root)
-			pathResult, err := ops.scope.Resolve(path)
+			// Validate path is within the working directory or an allowed root.
+			// ResolveRead honours a user-initiated pin and the JS out-of-root
+			// approval, so an approved out-of-project search resolves instead of
+			// being rejected.
+			absPath, err := ops.scope.ResolveRead(path, userInitiated, approved)
 			if err != nil {
 				return nil, fmt.Errorf("invalid path: %w", err)
 			}
-			searchPath = pathResult.AbsPath
+			searchPath = absPath
 		}
 	} else {
 		searchPath = ops.scope.Root()
