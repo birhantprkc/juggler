@@ -131,7 +131,13 @@ func spawnServer(project string) (string, *exec.Cmd, error) {
 	if project != "" {
 		args = append(args, "--project", project)
 	}
-	cmd := exec.Command(bin, args...)
+	// bin comes from serverBinPath (JUGGLER_SERVER_BIN override, sibling binary,
+	// or PATH lookup) and args are fixed flags plus a filesystem path passed as
+	// separate argv elements — no shell is invoked and nothing here is
+	// request-derived, so there is nothing to inject. Matches the //nolint:gosec
+	// convention on the other operator-controlled exec.Command sites.
+	// nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.Command(bin, args...) //nolint:gosec // operator-controlled bin+args, no shell
 	// The server discards its console when launched without a terminal, so its
 	// stderr carries only genuine panics / pre-jlog output. Capture that to this
 	// project's per-server crash file (single writer — no interleave with other
