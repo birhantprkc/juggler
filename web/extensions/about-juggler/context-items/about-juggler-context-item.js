@@ -33,7 +33,7 @@ function logLocationFor(platform) {
  */
 function shortcutsMarkdownFor(mac) {
   const lines = [];
-  for (const group of keyShortcutManager.byCategory()) {
+  for (const group of keyShortcutManager.byCategoryForPlatform(mac)) {
     lines.push(`**${group.category}**`, '');
     for (const def of group.shortcuts) {
       const binding = keyShortcutManager.getBinding(def.id);

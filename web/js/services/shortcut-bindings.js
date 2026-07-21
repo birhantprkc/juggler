@@ -41,6 +41,19 @@ export function registerConversationShortcuts(session) {
   keyShortcutManager.register('new-conversation', () => { createNewConversation(); markSeen('new-conversation'); return true; });
   keyShortcutManager.register('bin-conversation', () => { binActiveConversation(); markSeen('bin-conversation'); return true; });
   keyShortcutManager.register('rename-conversation', () => { renameActiveConversation(); return true; });
+  // Prev/next-tab (macOS ⌥⌘↑/↓) reuse the conversation bar's existing cycle path:
+  // the same juggler:cycle-tab event the native Ctrl+Tab accelerator fires, which
+  // moves to the adjacent tab (wrapping) and commits focus to its composer. The
+  // manager only dispatches these on macOS (their `platform: 'mac'` guard), so on
+  // other platforms the registration is inert. Always "handles" the key.
+  keyShortcutManager.register('prev-tab', () => {
+    window.dispatchEvent(new CustomEvent('juggler:cycle-tab', { detail: { direction: 'prev' } }));
+    return true;
+  });
+  keyShortcutManager.register('next-tab', () => {
+    window.dispatchEvent(new CustomEvent('juggler:cycle-tab', { detail: { direction: 'next' } }));
+    return true;
+  });
   keyShortcutManager.register('jump-to-attention', () => {
     const acted = jumpToAttentionConversation(session);
     if (acted) markSeen('jump-to-attention');

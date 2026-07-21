@@ -100,6 +100,30 @@ export async function runTests(_ctx) {
     assert(new Set(cats).size === cats.length, 'each category should appear once');
   });
 
+  await run('prev/next-tab are macOS-only and bound to ⌥⌘↑/↓', () => {
+    const ids = keyShortcutManager.all().map((d) => d.id);
+    assert(ids.includes('prev-tab') && ids.includes('next-tab'), 'tab-nav commands present');
+    const prev = keyShortcutManager.getBinding('prev-tab');
+    const next = keyShortcutManager.getBinding('next-tab');
+    assert(prev.mod && prev.alt && prev.key === 'ArrowUp', 'prev-tab is Mod+Alt+ArrowUp');
+    assert(next.mod && next.alt && next.key === 'ArrowDown', 'next-tab is Mod+Alt+ArrowDown');
+    // Rendered for macOS regardless of host, since the binding only ships there.
+    assert(formatBindingForPlatform(prev, true) === '⌥⌘↑', `prev-tab mac label wrong: ${formatBindingForPlatform(prev, true)}`);
+    assert(formatBindingForPlatform(next, true) === '⌥⌘↓', `next-tab mac label wrong: ${formatBindingForPlatform(next, true)}`);
+  });
+
+  await run('byCategoryForPlatform hides macOS-only commands off macOS', () => {
+    const idsIn = (groups) => groups.flatMap((g) => g.shortcuts.map((s) => s.id));
+    const onMac = idsIn(keyShortcutManager.byCategoryForPlatform(true));
+    const offMac = idsIn(keyShortcutManager.byCategoryForPlatform(false));
+    assert(onMac.includes('prev-tab') && onMac.includes('next-tab'), 'mac listing includes tab-nav');
+    assert(!offMac.includes('prev-tab') && !offMac.includes('next-tab'), 'non-mac listing omits tab-nav');
+    // Non-platform commands appear on both.
+    assert(onMac.includes('undo') && offMac.includes('undo'), 'unrestricted commands appear on both');
+    // byCategory() (unfiltered) still lists everything.
+    assert(idsIn(keyShortcutManager.byCategory()).includes('prev-tab'), 'byCategory keeps platform commands');
+  });
+
   // ── Binding matching (platform-aware) ───────────────────────────────
   await run('undo matches Mod+Z but not Mod+Shift+Z', () => {
     const undo = keyShortcutManager.getBinding('undo');

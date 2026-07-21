@@ -9,7 +9,7 @@
 //   warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file or
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
-import keyShortcutManager from '../../services/key-shortcut-manager.js';
+import keyShortcutManager, { isMac } from '../../services/key-shortcut-manager.js';
 
 /**
  * Keyboard shortcuts tab: every command from the KeyShortcutManager, grouped by
@@ -44,7 +44,7 @@ export class ShortcutsTab {
     if (!container) return;
     container.innerHTML = '';
 
-    for (const group of keyShortcutManager.byCategory()) {
+    for (const group of keyShortcutManager.byCategoryForPlatform(isMac())) {
       const heading = document.createElement('h3');
       heading.className = 'settings-section-heading';
       heading.textContent = group.category;

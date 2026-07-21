@@ -59,6 +59,11 @@
  *   manager still lists it (settings, tooltips) but never dispatches it — the
  *   owner reads {@link KeyShortcutManager#getBinding} and matches itself via
  *   {@link eventMatchesBinding}.
+ * @property {'mac'} [platform] - Restrict this command to a platform family. When
+ *   set, the manager only dispatches it there, and platform-aware listings
+ *   ({@link KeyShortcutManager#byCategoryForPlatform}) hide it elsewhere so it is
+ *   never shown with a binding it does not actually have. Omit for all-platform
+ *   commands.
  */
 
 /** @returns {boolean} True on macOS-family platforms (⌘ is the command modifier). */
@@ -187,6 +192,33 @@ const SHORTCUT_DEFS = [
     description: 'Create a new conversation and switch to it.',
     category: 'Conversations',
     defaultBinding: { mod: true, key: 'n' },
+    allowInInput: true,
+  },
+  {
+    id: 'prev-tab',
+    label: 'Previous conversation',
+    description: 'Switch to the conversation above in the tab list (wraps around).',
+    category: 'Conversations',
+    // macOS only: ⌥⌘↑/↓ is the established "move between tabs" gesture on the Mac
+    // (Discord, others). The Windows/Linux twin, Ctrl+Alt+Up/Down, collides with
+    // Intel's screen-rotation hotkeys (and some Linux workspace switching), so we
+    // leave it unbound off macOS until a non-conflicting combo is chosen. The
+    // `platform` field keeps this out of the dispatcher and the shortcut listings
+    // on other platforms, so it is never advertised with a key it lacks.
+    defaultBinding: { mod: true, alt: true, key: 'ArrowUp' },
+    platform: 'mac',
+    // Works while typing: ⌥⌘↑ has no native text-editing meaning (plain ⌘↑ jumps
+    // to document start, but the Option makes it distinct), so switching tabs
+    // straight from the composer never steals a cursor movement.
+    allowInInput: true,
+  },
+  {
+    id: 'next-tab',
+    label: 'Next conversation',
+    description: 'Switch to the conversation below in the tab list (wraps around).',
+    category: 'Conversations',
+    defaultBinding: { mod: true, alt: true, key: 'ArrowDown' },
+    platform: 'mac',
     allowInInput: true,
   },
   {
@@ -342,13 +374,38 @@ class KeyShortcutManager {
 
   /**
    * Definitions grouped by category, preserving declaration order within and
-   * across groups. Handy for the settings page.
+   * across groups. Handy for the settings page. Includes every command,
+   * regardless of platform — use {@link byCategoryForPlatform} to hide commands
+   * that aren't bound on the target platform.
    * @returns {Array<{category: string, shortcuts: ShortcutDef[]}>} Groups in declaration order.
    */
   byCategory() {
+    return this._groupByCategory([...this._defs.values()]);
+  }
+
+  /**
+   * Like {@link byCategory}, but drops commands restricted to a different
+   * platform (a `platform: 'mac'` command is omitted when `mac` is false), so a
+   * listing never shows a command with a binding it doesn't actually have on the
+   * target platform. Used by the settings tab and the About-Juggler help corpus.
+   * @param {boolean} mac - True to build the macOS listing, false for Windows/Linux.
+   * @returns {Array<{category: string, shortcuts: ShortcutDef[]}>} Groups in declaration order.
+   */
+  byCategoryForPlatform(mac) {
+    const defs = [...this._defs.values()].filter((d) => !d.platform || (d.platform === 'mac') === mac);
+    return this._groupByCategory(defs);
+  }
+
+  /**
+   * Group a definition list by category, preserving declaration order.
+   * @param {ShortcutDef[]} defs
+   * @returns {Array<{category: string, shortcuts: ShortcutDef[]}>} Groups in order.
+   * @private
+   */
+  _groupByCategory(defs) {
     /** @type {Array<{category: string, shortcuts: ShortcutDef[]}>} */
     const groups = [];
-    for (const def of this._defs.values()) {
+    for (const def of defs) {
       let group = groups.find((g) => g.category === def.category);
       if (!group) { group = { category: def.category, shortcuts: [] }; groups.push(group); }
       group.shortcuts.push(def);
@@ -446,6 +503,9 @@ class KeyShortcutManager {
     const editable = isEditableTarget(e.target);
     for (const def of this._defs.values()) {
       if (def.external) continue;
+      // A platform-restricted command is inert off its platform, so its binding
+      // (e.g. ⌥⌘↑) never fires where we deliberately left it unbound.
+      if (def.platform === 'mac' && !isMac()) continue;
       const handler = this._handlers.get(def.id);
       if (!handler) continue;
       if (editable) {
