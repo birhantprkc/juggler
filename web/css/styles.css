@@ -1962,7 +1962,6 @@ user-message article.user {
     font-size: 0.875rem;
     overflow-wrap: break-word;
     position: relative;
-    white-space: pre-wrap;
     margin-left: auto;
     max-width: 85%;
 }
@@ -1984,7 +1983,6 @@ user-message.conversation-item.selected article.user {
    width/height attributes set on the <img>), and click-expands via the
    lightbox. */
 user-message .user-message-text {
-    white-space: pre-wrap;
     overflow-wrap: break-word;
 }
 
@@ -2842,11 +2840,17 @@ thread-column-actions {
     margin: 0.625rem 0;
 }
 
-.markdown p:first-child {
+/* Zero the outer margin on the first/last block of any rendered markdown —
+   paragraph, list, heading, code block — so the content sits flush to its
+   container's padding, whether that's an assistant reply, a thread tile, or a
+   user bubble whose text is now rendered markdown (see user-message.js).
+   Generalised from `p:first-child` so a message that opens or closes with a
+   non-paragraph block doesn't gain a stray leading/trailing gap. */
+.markdown > :first-child {
     margin-top: 0;
 }
 
-.markdown p:last-child {
+.markdown > :last-child {
     margin-bottom: 0;
 }
 

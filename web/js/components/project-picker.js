@@ -122,7 +122,7 @@ export function buildPickerPanel({
     recentsEl.removeAttribute('hidden');
     const label = document.createElement('div');
     label.className = 'pp-recents-label';
-    label.textContent = 'Recent folders';
+    label.textContent = 'Recent sessions';
     recentsEl.appendChild(label);
     for (const path of filtered) {
       const btn = document.createElement('button');
