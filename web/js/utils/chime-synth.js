@@ -278,6 +278,85 @@ export function mapChimeParams(p) {
 let ctx = null;
 
 /**
+ * True while the shared context is suspended *because we parked it for idle*
+ * (no chime playing) — never on Apple, see {@link keepAudioContextWarm}. It tells
+ * the *automatic* wake paths ({@link wakeContext}/{@link rearmAudio}) to leave the
+ * context parked, so only a real chime ({@link playChime}) or an explicit gesture
+ * ({@link unlockAudio}) revives it. Distinct from an OS-driven park (autoplay
+ * `suspended`, or `interrupted`), which those paths still recover. Cleared the
+ * instant the context runs again (see {@link audioContext}'s `onstatechange`), so
+ * a later OS/autoplay suspend can never be misclassified as one we set.
+ * @type {boolean}
+ */
+let idleSuspended = false;
+
+/**
+ * Pending debounced idle-park timer. Each scheduled chime resets it, so a burst
+ * of overlapping chimes parks the context exactly once — after the last chime's
+ * tail rings out — with no per-chime generation bookkeeping.
+ * @type {ReturnType<typeof setTimeout>|null}
+ */
+let idleParkTimer = null;
+
+/**
+ * Whether to keep the shared AudioContext running for the document's life rather
+ * than parking it when idle. True on Apple platforms (macOS/iOS): the app's
+ * whole always-alive + media-element-sink design exists to survive a macOS
+ * WKWebView sleep/wake wedge that silences audio process-wide (see
+ * {@link mediaEl}), and suspending across that transition is exactly what must
+ * be avoided there. Elsewhere (Linux WebKitGTK, Windows WebView2) that wedge
+ * does not exist, so the context is parked when idle to stop its always-on audio
+ * render thread — which otherwise spins for the whole life of the process in
+ * every window even when no chime ever plays.
+ *
+ * Pure: platform/ua are injected (defaulting to navigator) so it is unit-testable.
+ * @param {string} [platform] - navigator.platform equivalent.
+ * @param {string} [ua] - navigator.userAgent equivalent.
+ * @returns {boolean} True to keep the context warm (never idle-suspend).
+ */
+export function keepAudioContextWarm(
+  platform = typeof navigator !== 'undefined' ? navigator.platform || '' : '',
+  ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '',
+) {
+  return /Mac|iPhone|iPad|iPod/i.test(`${platform} ${ua}`);
+}
+
+/**
+ * Whether an automatic/passive wake (the `onstatechange` handler, or a focus/
+ * visibility {@link rearmAudio}) should resume the context. A `running` context
+ * needs nothing. A context WE parked for idleness (`idleParked` && `suspended`)
+ * is left alone — reviving it on focus would defeat idle-suspend and re-spin the
+ * audio render thread; only a real chime or a gesture revives it. Any other
+ * parked state (an autoplay `suspended` we did not set, `interrupted`, `closed`)
+ * is an OS/policy park that should be resumed exactly as before.
+ *
+ * Pure, so the guard is unit-testable without a real AudioContext.
+ * @param {string} state - The context's current state.
+ * @param {boolean} idleParked - Whether we suspended it for idleness.
+ * @returns {boolean} True to attempt resume().
+ */
+export function shouldAutoResume(state, idleParked) {
+  if (state === 'running') return false;
+  if (idleParked && state === 'suspended') return false;
+  return true;
+}
+
+/**
+ * A real chime or an explicit gesture wants audio ready now: drop any deliberate
+ * idle-park and cancel a pending one, so the resume/recover path is free to wake
+ * the context (and a stray park timer can't re-suspend a context we just revived).
+ * @returns {void}
+ * @private
+ */
+function cancelIdlePark() {
+  idleSuspended = false;
+  if (idleParkTimer !== null) {
+    clearTimeout(idleParkTimer);
+    idleParkTimer = null;
+  }
+}
+
+/**
  * Persistent output element and the MediaStream sink feeding it. The chime is
  * routed through an HTMLMediaElement (see {@link audioSink}) rather than straight
  * to `AudioContext.destination`, because a macOS sleep/wake wedges the WKWebView's
@@ -344,7 +423,7 @@ function areport(level, message) {
  * @returns {void}
  */
 export function wakeContext(ac) {
-  if (ac.state === 'running') return;
+  if (!shouldAutoResume(ac.state, idleSuspended)) return;
   const from = ac.state;
   ac.resume().then(
     () => { /* resumed to `running` — the routine case, not reported */ },
@@ -405,6 +484,33 @@ function recreateContext() {
 }
 
 /**
+ * Park the shared context after its motif has finished and the app is idle,
+ * stopping the audio render thread that otherwise spins for the whole life of
+ * the process. Guarded so it only ever parks the *current* running context; the
+ * resulting `suspended` state is flagged {@link idleSuspended} so the automatic
+ * wake paths ({@link wakeContext}/{@link rearmAudio}) leave it parked until a
+ * real chime or gesture revives it. Never armed where {@link keepAudioContextWarm}
+ * is true (Apple platforms). Best-effort: a failed suspend() clears the flag so
+ * nothing is left wedged.
+ * @param {AudioContext} ac - The context whose motif just finished.
+ * @returns {void}
+ * @private
+ */
+function suspendForIdle(ac) {
+  idleParkTimer = null;
+  if (ctx !== ac || ac.state !== 'running' || typeof ac.suspend !== 'function') return;
+  idleSuspended = true;
+  try {
+    const p = ac.suspend();
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => { idleSuspended = false; });
+    }
+  } catch {
+    idleSuspended = false; // suspend() unsupported/threw — treat as never parked
+  }
+}
+
+/**
  * Resolve (lazily creating) the shared AudioContext. Returns null if Web Audio
  * is unavailable. Browsers start the context `suspended` until a user gesture;
  * callers that run inside a gesture should also call {@link unlockAudio}.
@@ -441,9 +547,13 @@ function audioContext() {
   }
   try {
     ac.onstatechange = () => {
+      // Back to running ⇒ no longer our idle-park; drop the flag so a later OS or
+      // autoplay suspend is never misread as one we set (which would wrongly keep
+      // the automatic wake paths from recovering it — see shouldAutoResume).
+      if (ac.state === 'running') idleSuspended = false;
       // Report only the OS parking the session live; routine suspend/resume churn
       // isn't worth an app-log line.
-      if (ac.state === 'interrupted') areport('info', 'audio session parked (onstatechange → interrupted)');
+      else if (ac.state === 'interrupted') areport('info', 'audio session parked (onstatechange → interrupted)');
       wakeContext(ac);
     };
   } catch { /* onstatechange unsettable — play-time recoverThenSchedule still covers it */ }
@@ -459,6 +569,9 @@ function audioContext() {
  * @returns {void}
  */
 export function unlockAudio() {
+  // An explicit gesture means the user wants audio ready now: drop any deliberate
+  // idle-park (and cancel a pending one) so the resume/prime below can wake it.
+  cancelIdlePark();
   let ac = audioContext();
   if (!ac) { areport('error', 'unlockAudio: Web Audio unavailable'); return; }
   // Inside a user gesture we can afford the heavy hammer. If the context is stuck
@@ -575,6 +688,10 @@ export function recoverThenSchedule(ac, schedule, rebuild, { retries = RECOVER_R
  * @returns {void}
  */
 export function playChime(params = {}) {
+  // A real chime revives the context: drop any deliberate idle-park (and cancel a
+  // pending one) so the recover/resume path below may wake it and no stray park
+  // timer re-suspends it out from under this chime.
+  cancelIdlePark();
   const ac = audioContext();
   if (!ac) { areport('error', 'playChime: Web Audio unavailable — chime dropped'); return; }
   const plan = mapChimeParams({ ...CHIME_DEFAULTS, ...params });
@@ -714,10 +831,22 @@ function scheduleChime(ac, { notes, gain, duration, sound }) {
 
   notes.forEach(playNote);
 
+  const motifMs = (duration + 0.1) * 1000 + 50;
+
   // Tear the shared master down once the whole motif has finished.
   setTimeout(() => {
     try {
       master.disconnect();
     } catch { /* already gone */ }
-  }, (duration + 0.1) * 1000 + 50);
+  }, motifMs);
+
+  // Off Apple platforms, park the context once the app falls quiet: (re)arm a
+  // single shared timer for the end of this motif. A newer chime resets it (see
+  // cancelIdlePark / the reset below), so a burst of overlapping chimes parks
+  // exactly once — after the last motif — instead of every chime racing to
+  // suspend a context the next one is about to use.
+  if (!keepAudioContextWarm()) {
+    if (idleParkTimer !== null) clearTimeout(idleParkTimer);
+    idleParkTimer = setTimeout(() => suspendForIdle(ac), motifMs);
+  }
 }
