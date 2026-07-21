@@ -1986,6 +1986,15 @@ user-message .user-message-text {
     overflow-wrap: break-word;
 }
 
+/* Plain (non-Markdown) user text: significant whitespace via pre-wrap, mono
+   font inherited from the conversation area (not overridden here). Only the
+   `.plain` variant gets pre-wrap — a Markdown-rendered bubble must not, or the
+   newlines the renderer emits between block tags render as blank lines.
+   user-message.js adds `.plain` only when the source has no Markdown. */
+user-message .user-message-text.plain {
+    white-space: pre-wrap;
+}
+
 /* Collapse/expand for oversized conversation items (an extremely long user
    message, a long thread summary). Applied by utils/collapsible.js only past a
    height threshold, so ordinary items never carry these classes. The clamped

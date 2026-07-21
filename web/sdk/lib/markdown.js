@@ -283,6 +283,47 @@ export function renderMarkdown(content, options = {}) {
   }
 }
 
+/** @type {RegExp[]} Markdown-construct detectors used by {@link looksLikeMarkdown}. */
+const MARKDOWN_PATTERNS = [
+  /(^|\n)[ \t]{0,3}#{1,6}[ \t]+\S/, //            ATX heading (# .. ######)
+  /(^|\n)[ \t]{0,3}[-*+][ \t]+\S/, //             bullet list item
+  /(^|\n)[ \t]{0,3}\d+[.)][ \t]+\S/, //           ordered list item
+  /(^|\n)[ \t]{0,3}>[ \t]+\S/, //                 blockquote
+  /(^|\n)[ \t]{0,3}(```|~~~)/, //                 fenced code block
+  /(^|\n)[ \t]{0,3}(\*[ \t]*){3,}(\n|$)/, //      thematic break ***
+  /(^|\n)[ \t]{0,3}(-[ \t]*){3,}(\n|$)/, //       thematic break ---
+  /(^|\n)[ \t]{0,3}(_[ \t]*){3,}(\n|$)/, //       thematic break ___
+  /`[^`\n]+`/, //                                 inline code
+  /!?\[[^\]\n]*\]\([^)\n]+\)/, //                 link or image
+  /\*\*[^\s*][^*]*\*\*/, //                        bold  **...**
+  /(^|[^\w_])__[^\s_][^_]*__(?![\w_])/, //         bold  __...__ (word-boundary)
+  /~~[^\s~][^~]*~~/, //                            strikethrough  ~~...~~
+  /(^|[^\w*])\*[^\s*][^*\n]*\*(?![\w])/, //        italic *...* (not a lone/space *)
+  /(^|[^\w_])_[^\s_][^_\n]*_(?![\w])/, //          italic _..._ (intraword _ excluded)
+  /(^|\n)\|.*\|.*\n[ \t]*\|?[ \t:|-]*-{3,}/, //    table (header + separator row)
+];
+
+/**
+ * Conservative test for whether a string contains Markdown worth rendering —
+ * used to decide whether untrusted, human-authored text (e.g. a user message
+ * bubble) should go through the Markdown renderer at all, or be shown verbatim.
+ * Ordinary prose, snake_case identifiers, a lone `*`, or a pasted stack trace
+ * return false, so they are not reflowed into the sans font or reinterpreted as
+ * formatting.
+ *
+ * The patterns mirror the constructs the renderer acts on, and are
+ * boundary-aware where a naive match would fire on plain text: intraword `_` is
+ * literal in Markdown, so `foo_bar_baz` does not count; `*`/`_` emphasis
+ * requires a non-space right after the opening marker, so `2 * 3` and `a > b`
+ * do not count.
+ * @param {string} text - Raw source to test.
+ * @returns {boolean} True if the source contains a Markdown construct.
+ */
+export function looksLikeMarkdown(text) {
+  if (!text) return false;
+  return MARKDOWN_PATTERNS.some((re) => re.test(text));
+}
+
 /**
  * Add our standard copy-to-clipboard button to the corner of every `<pre>`
  * code block inside a freshly-rendered markdown element.

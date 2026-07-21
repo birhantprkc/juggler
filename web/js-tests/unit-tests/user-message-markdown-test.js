@@ -6,9 +6,15 @@
  * User-message Markdown rendering tests.
  *
  * The <user-message> bubble renders its text through renderMarkdownWrapped in
- * `escapeXml: true` mode (the untrusted-input mode also used for thread goals).
- * These cases pin two contracts a future refactor could silently break:
- *  - the bubble DOM shows FORMATTED markdown (emphasis, code, links), and
+ * `escapeXml: true` mode (the untrusted-input mode also used for thread goals),
+ * but ONLY when the source actually contains a Markdown construct. Plain prose
+ * falls back to verbatim `textContent` (mono, whitespace-significant) so typing
+ * ordinary text is never reflowed into the sans font or reinterpreted.
+ * These cases pin the contracts a future refactor could silently break:
+ *  - a message WITH markdown shows FORMATTED output (emphasis, code, links) in
+ *    a `.markdown` wrapper, while
+ *  - a message WITHOUT markdown renders plain (a `.plain` block, no `.markdown`
+ *    wrapper, raw text as `textContent`), and
  *  - user-typed markup is neutralised — a literal custom-element/script tag
  *    becomes inert visible text, never a live element or an executed script,
  *  - while the raw source still round-trips verbatim via the `content` getter,
@@ -95,6 +101,33 @@ export async function runTests(_ctx) {
     assert(!el.querySelector('script'), 'no live <script> may be injected into the bubble');
     // @ts-ignore - test-only sentinel
     assert(typeof window.__userMsgXss === 'undefined', 'script content must never execute');
+    el.remove();
+  });
+
+  run('plain prose renders verbatim, NOT as markdown (mono fallback)', () => {
+    const el = make('just a normal sentence with no formatting at all');
+    const text = el.querySelector('.user-message-text');
+    assert(!!text, 'a .user-message-text block should be rendered');
+    assert(text.classList.contains('plain'), 'plain text should carry the `plain` class (restores pre-wrap/mono)');
+    assert(!text.querySelector('.markdown'), 'plain text must NOT be wrapped in a .markdown block');
+    assert(text.textContent === 'just a normal sentence with no formatting at all', 'plain text renders verbatim as textContent');
+    el.remove();
+  });
+
+  run('snake_case and stray punctuation do not trigger markdown', () => {
+    // Intraword `_` is literal in Markdown; a lone `*`/`>` is not formatting.
+    const el = make('call foo_bar_baz(x) when a > b and 2 * 3 == 6');
+    const text = el.querySelector('.user-message-text');
+    assert(text.classList.contains('plain'), 'identifier/operator text must take the plain path');
+    assert(!text.querySelector('em') && !text.querySelector('strong'), 'no emphasis should be produced from snake_case or a lone *');
+    el.remove();
+  });
+
+  run('a multi-line paste renders plain with whitespace preserved', () => {
+    const el = make('line one\n    indented line two\nline three');
+    const text = el.querySelector('.user-message-text');
+    assert(text.classList.contains('plain'), 'a plain multi-line paste takes the plain path');
+    assert(text.textContent.includes('    indented line two'), 'leading whitespace is preserved verbatim');
     el.remove();
   });
 
