@@ -18,6 +18,7 @@ import { recordTape } from '../utils/event-tape.js';
 // un-upgraded element has no setMessageThread/etc. method).
 import './conversation-area.js';
 import './properties-panel.js';
+import { nudgeSpinners } from './juggler-spinner.js';
 
 /**
  * ConversationTab - Isolated DOM container for a single conversation
@@ -400,6 +401,9 @@ class ConversationTab extends HTMLElement {
     this.classList.add('active');
     this.classList.remove('hidden');
     this._isHidden = false;
+    // Restart any spinner that WebKit froze while this tab was display:none in the
+    // background; it's on-layout now that 'hidden' is off. No-op if none is frozen.
+    nudgeSpinners(this);
 
     if (this._columns[0] && this._conversation) {
       /** @type {any} */ (this._columns[0]).conversation = this._conversation;
