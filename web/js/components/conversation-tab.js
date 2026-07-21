@@ -12,6 +12,7 @@ import { createMessageThread } from '../model/message-thread.js';
 import { isThreadClosed } from '../model/thread-navigation.js';
 import { ColumnSelectionState } from '../utils/column-selection.js';
 import { recordTape } from '../utils/event-tape.js';
+import { nudgeSpinners } from '../utils/spinner-nudge.js';
 // Columns are created via createElement('conversation-area' | 'properties-panel')
 // in _buildConversationColumn. Import the defining modules so the custom elements
 // are registered before this component ever instantiates one (otherwise an
@@ -400,6 +401,9 @@ class ConversationTab extends HTMLElement {
     this.classList.add('active');
     this.classList.remove('hidden');
     this._isHidden = false;
+
+    // Revive a spinner that froze while this tab was hidden during backgrounding.
+    nudgeSpinners(this);
 
     if (this._columns[0] && this._conversation) {
       /** @type {any} */ (this._columns[0]).conversation = this._conversation;
