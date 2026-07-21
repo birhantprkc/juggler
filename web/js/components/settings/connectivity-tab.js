@@ -116,6 +116,20 @@ export class ConnectivityTab {
     this._connectivityPollId = undefined;
     /** @type {{lanEnabled: boolean, lanURLs: string[], tunnelEnabled: boolean, tunnelURL: string, tunnelMode: string, tunnelRelay: boolean, wanModes: WANMode[], clientCount: number, clients: ClientDescriptor[]}} @private */
     this.connectivity = { lanEnabled: false, lanURLs: [], tunnelEnabled: false, tunnelURL: '', tunnelMode: '', tunnelRelay: false, wanModes: [], clientCount: 1, clients: [] };
+    /**
+     * Persisted "Start on launch" preferences (GET/PUT /api/settings
+     * `connectivity`). Fetched once and cached so the 2 s runtime poll — which
+     * rebuilds the form from /api/connectivity — never flickers or refetches
+     * these controls. `wanOnLaunch` is a single mode id ('' = none): only one
+     * WAN tunnel can be armed, so the per-mode toggles are mutually exclusive by
+     * construction.
+     * @type {{lanOnLaunch: boolean, wanOnLaunch: string}} @private
+     */
+    this._launchPrefs = { lanOnLaunch: false, wanOnLaunch: '' };
+    /** @type {boolean} @private - True once GET /api/settings has seeded _launchPrefs. */
+    this._launchPrefsLoaded = false;
+    /** @type {boolean} @private - True while a _loadLaunchPrefs fetch is in flight (dedupes concurrent loads). */
+    this._launchPrefsFetching = false;
     /** @type {string} @private - Inline error from the most recent WAN action, set at the action site and cleared at the start of the next one. */
     this._wanError = '';
     /** @type {boolean} @private - True once the shared loadConfig() has seeded this tab (gates the poll/live-update like the panel's first-load flag did). */
@@ -147,6 +161,9 @@ export class ConnectivityTab {
   onConfigLoaded(data, renderFields) {
     this.connectivity = /** @type {any} */ (data.connectivity);
     this._loaded = true;
+    // Launch prefs live in the global settings document, not the connectivity
+    // payload — fetch them once, out of band. Re-renders when they arrive.
+    void this._loadLaunchPrefs();
     if (renderFields) this.renderConnectivityFields();
   }
 
@@ -154,8 +171,35 @@ export class ConnectivityTab {
   show() {
     this._visible = true;
     if (!this._loaded) return;
+    void this._loadLaunchPrefs();
     this.refreshConnectivity();
     this._connectivityPollId = setInterval(() => this.refreshConnectivity(), CONNECTIVITY_POLL_MS);
+  }
+
+  /**
+   * Fetch the persisted "Start on launch" preferences (GET /api/settings) once
+   * and cache them in _launchPrefs, re-rendering so the controls reflect them.
+   * Renders from the cache thereafter so the connectivity poll never refetches
+   * them. On failure the flag stays clear so a later show() retries; defaults
+   * (all off) render meanwhile.
+   * @private
+   */
+  async _loadLaunchPrefs() {
+    if (this._launchPrefsLoaded || this._launchPrefsFetching) return;
+    this._launchPrefsFetching = true;
+    try {
+      const res = await fetch('/api/settings');
+      if (!res.ok) return;
+      const data = await res.json();
+      const conn = (data && data.connectivity) || {};
+      this._launchPrefs = { lanOnLaunch: !!conn.lanOnLaunch, wanOnLaunch: conn.wanOnLaunch || '' };
+      this._launchPrefsLoaded = true;
+      if (this._loaded) this.renderConnectivityFields();
+    } catch {
+      /* offline — leave defaults; a later show() retries */
+    } finally {
+      this._launchPrefsFetching = false;
+    }
   }
 
   /** Tab hidden: stop the background poll. */
@@ -391,9 +435,97 @@ export class ConnectivityTab {
       ctrl.appendChild(startBtn);
     }
 
+    // "Start on launch" preference — independent of whether LAN is running now.
+    ctrl.appendChild(this._buildLaunchToggle({
+      checked: this._launchPrefs.lanOnLaunch,
+      onChange: (on) => this._setLANOnLaunch(on),
+    }));
+
     row.appendChild(info);
     row.appendChild(ctrl);
     return row;
+  }
+
+  /**
+   * Build a "Start on launch" toggle: a labelled checkbox appended to a row's
+   * control column. The LAN row uses one directly; each WAN mode block uses one
+   * radio-style (only one WAN mode can be armed, since they all write the single
+   * wanOnLaunch preference). Applies to desktop-app launches only — a terminal
+   * launch uses CLI flags.
+   * @param {{checked: boolean, onChange: (checked: boolean) => void}} opts
+   * @returns {HTMLElement} The toggle label element.
+   * @private
+   */
+  _buildLaunchToggle(opts) {
+    const label = document.createElement('label');
+    label.className = 'connectivity-launch-toggle';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'connectivity-launch-checkbox';
+    input.checked = !!opts.checked;
+    input.addEventListener('change', () => opts.onChange(input.checked));
+    const text = document.createElement('span');
+    text.textContent = 'Start on launch';
+    label.appendChild(input);
+    label.appendChild(text);
+    return label;
+  }
+
+  /**
+   * Persist the LAN "Start on launch" preference (optimistic; revert + re-render
+   * on failure). Sends only its own section — the server merges it into the
+   * existing settings document.
+   * @param {boolean} on
+   * @private
+   */
+  async _setLANOnLaunch(on) {
+    const prev = this._launchPrefs.lanOnLaunch;
+    this._launchPrefs = { ...this._launchPrefs, lanOnLaunch: on };
+    if (!(await this._putLaunchPrefs({ lanOnLaunch: on }))) {
+      this._launchPrefs = { ...this._launchPrefs, lanOnLaunch: prev };
+      this.renderConnectivityFields();
+    }
+  }
+
+  /**
+   * Arm (or clear) a WAN mode's "Start on launch" preference. Selecting a mode
+   * sets wanOnLaunch to it; clicking the currently-armed mode clears it to ''.
+   * Because it's a single stored value the mode blocks are mutually exclusive.
+   * Optimistic (re-renders immediately to reflect the single selection); reverts
+   * on failure.
+   * @param {string} mode - The mode id whose toggle was clicked.
+   * @private
+   */
+  async _setWANOnLaunch(mode) {
+    const prev = this._launchPrefs.wanOnLaunch;
+    const next = prev === mode ? '' : mode; // clicking the armed mode clears it
+    this._launchPrefs = { ...this._launchPrefs, wanOnLaunch: next };
+    this.renderConnectivityFields();
+    if (!(await this._putLaunchPrefs({ wanOnLaunch: next }))) {
+      this._launchPrefs = { ...this._launchPrefs, wanOnLaunch: prev };
+      this.renderConnectivityFields();
+    }
+  }
+
+  /**
+   * PUT a partial connectivity settings patch to /api/settings. The server
+   * merges it into the existing document, so sending only the changed field
+   * preserves every other section. Returns true on success.
+   * @param {{lanOnLaunch?: boolean, wanOnLaunch?: string}} connectivity
+   * @returns {Promise<boolean>} True when the server accepted the patch.
+   * @private
+   */
+  async _putLaunchPrefs(connectivity) {
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectivity }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -531,6 +663,14 @@ export class ConnectivityTab {
     } else {
       ctrl.appendChild(this._buildWANUnavailableHint(opts.unavailableHint || `${opts.title} is not available on this machine.`));
     }
+
+    // "Start on launch" preference for this mode — radio-style across the WAN
+    // blocks (arming one clears the others via the single wanOnLaunch value),
+    // shown regardless of whether this mode is currently running or available.
+    ctrl.appendChild(this._buildLaunchToggle({
+      checked: this._launchPrefs.wanOnLaunch === opts.mode,
+      onChange: () => this._setWANOnLaunch(opts.mode),
+    }));
 
     row.appendChild(info);
     row.appendChild(ctrl);

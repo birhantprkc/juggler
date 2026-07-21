@@ -229,7 +229,9 @@ func (a *App) waitForExit() {
 	}
 
 	// Honour startup WAN flags. Only one tunnel can run, so if several were
-	// passed the last one in registration order wins.
+	// passed the last one in registration order wins. An explicit flag always
+	// beats the saved preference; only when no flag is given does a GUI launch
+	// fall back to the saved "Start WAN on launch" mode.
 	if a.server != nil && len(a.flags.startupWAN) > 0 {
 		mode := a.flags.startupWAN[len(a.flags.startupWAN)-1]
 		if len(a.flags.startupWAN) > 1 {
@@ -244,6 +246,14 @@ func (a *App) waitForExit() {
 			} else {
 				startTunnelMode(spec)
 			}
+		}
+	} else if a.server != nil {
+		if spec, ok := savedWANModeToStart(a.isGUILaunch(), a.connectivity.WANOnLaunch, server.TunnelModes()); ok {
+			startTunnelMode(spec)
+		} else if a.isGUILaunch() && a.connectivity.WANOnLaunch != "" {
+			// Saved mode isn't registered or isn't available in this build/machine
+			// — skip it but keep the value on disk so it revives if the mode returns.
+			jlog.Debug("Connectivity: saved WAN mode %q unavailable; not starting", a.connectivity.WANOnLaunch)
 		}
 	}
 
@@ -278,16 +288,56 @@ func (a *App) stdinIsTTY() bool {
 	return isatty.IsTerminal(os.Stdin.Fd())
 }
 
-// resolveLANDefault decides whether LAN access starts enabled. Every launch
-// mode now defaults to localhost-only: LAN exposure with no authentication is
-// opt-in, never a silent default. Only an explicit --public (either value)
-// turns it on at startup; otherwise the user enables it at runtime with the 'p'
-// key once they've decided the network is trusted.
+// resolveLANDefault decides whether LAN access starts enabled. LAN exposure with
+// no authentication is opt-in, never a silent default: an explicit --public
+// (either value) always wins, and otherwise only a GUI launch consults the saved
+// "Start LAN on launch" preference. A terminal launch defaults to localhost-only
+// and the user enables it at runtime with the 'p' key.
 func (a *App) resolveLANDefault() bool {
-	if a.flags.publicSet {
-		return a.flags.public
+	return lanOnLaunch(a.flags.publicSet, a.flags.public, a.isGUILaunch(), a.connectivity.LANOnLaunch)
+}
+
+// lanOnLaunch is the pure LAN-at-launch decision, factored out so the saved
+// preference can be injected in tests rather than read from the real home dir.
+// --public wins (flag beats preference); otherwise a GUI launch honours savedLAN
+// and any non-GUI launch stays localhost-only.
+func lanOnLaunch(publicSet, public, guiLaunch, savedLAN bool) bool {
+	if publicSet {
+		return public
+	}
+	if guiLaunch {
+		return savedLAN
 	}
 	return false
+}
+
+// isGUILaunch reports whether this is a desktop-app/icon launch (no controlling
+// terminal) that isn't the test harness. Only such a launch applies the saved
+// connectivity preferences; a terminal launch uses CLI flags and test mode must
+// not read the developer's real settings.
+func (a *App) isGUILaunch() bool {
+	return !a.flags.hasTerminal && !a.flags.testMode
+}
+
+// savedWANModeToStart returns the tunnel-mode spec to auto-start from the saved
+// "Start WAN on launch" preference, or ok=false. It honours the preference only
+// on a GUI launch, only when savedWAN is non-empty, and only when savedWAN names
+// a registered mode that is currently available. An unknown or unavailable saved
+// mode yields ok=false so the caller skips it, leaving the value on disk to
+// revive if the mode returns. Pure over its specs argument for testability.
+func savedWANModeToStart(guiLaunch bool, savedWAN string, specs []server.TunnelModeSpec) (server.TunnelModeSpec, bool) {
+	if !guiLaunch || savedWAN == "" {
+		return server.TunnelModeSpec{}, false
+	}
+	for _, spec := range specs {
+		if string(spec.Mode) == savedWAN {
+			if spec.IsAvailable() {
+				return spec, true
+			}
+			return server.TunnelModeSpec{}, false
+		}
+	}
+	return server.TunnelModeSpec{}, false
 }
 
 func (a *App) serverURL() string {

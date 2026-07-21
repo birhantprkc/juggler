@@ -110,6 +110,54 @@ func TestHandlePutSettingsOffToOnKicksCheck(t *testing.T) {
 	}
 }
 
+// putSettings issues a PUT /api/settings with body and asserts the status code.
+func putSettings(t *testing.T, s *Server, body string, wantCode int) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.handlePutSettings(rec, httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body)))
+	if rec.Code != wantCode {
+		t.Fatalf("PUT %s: status = %d, want %d (body %s)", body, rec.Code, wantCode, rec.Body.String())
+	}
+}
+
+func TestHandlePutSettingsMergesConnectivityAndUpdates(t *testing.T) {
+	userpathstest.Isolate(t)
+	withTestTunnelModes(t, TunnelModeSpec{Mode: "p2p", New: func(TunnelHost) TunnelProvider { return nil }})
+	s := &Server{settings: newSettingsStore()}
+
+	// A partial PUT must merge, not replace: setting one section leaves the other
+	// untouched. Set updates, then connectivity, and confirm both persist.
+	putSettings(t, s, `{"updates":{"mode":"notify"}}`, http.StatusOK)
+	putSettings(t, s, `{"connectivity":{"lanOnLaunch":true,"wanOnLaunch":"p2p"}}`, http.StatusOK)
+
+	gs := s.settings.get()
+	if gs.Updates.Mode != core.UpdateModeNotify {
+		t.Fatalf("updates clobbered by connectivity PUT: mode=%q", gs.Updates.Mode)
+	}
+	if !gs.Connectivity.LANOnLaunch || gs.Connectivity.WANOnLaunch != "p2p" {
+		t.Fatalf("connectivity not saved: %+v", gs.Connectivity)
+	}
+
+	// A later updates-only PUT must not wipe the connectivity section.
+	putSettings(t, s, `{"updates":{"mode":"off"}}`, http.StatusOK)
+	if gs := s.settings.get(); !gs.Connectivity.LANOnLaunch || gs.Connectivity.WANOnLaunch != "p2p" {
+		t.Fatalf("connectivity clobbered by later updates PUT: %+v", gs.Connectivity)
+	}
+}
+
+func TestHandlePutSettingsInvalidWANMode(t *testing.T) {
+	userpathstest.Isolate(t)
+	withTestTunnelModes(t, TunnelModeSpec{Mode: "p2p", New: func(TunnelHost) TunnelProvider { return nil }})
+	s := &Server{settings: newSettingsStore()}
+	putSettings(t, s, `{"connectivity":{"wanOnLaunch":"p2p"}}`, http.StatusOK)
+
+	// An unregistered mode is rejected with 400 and the stored value is unchanged.
+	putSettings(t, s, `{"connectivity":{"wanOnLaunch":"bogus"}}`, http.StatusBadRequest)
+	if got := s.settings.get().Connectivity.WANOnLaunch; got != "p2p" {
+		t.Fatalf("rejected PUT changed wanOnLaunch to %q, want unchanged p2p", got)
+	}
+}
+
 func TestHandleManualUpdateCheckBypassesOff(t *testing.T) {
 	userpathstest.Isolate(t)
 	srv, hits := manifestTestServer(t, "v9.9.9")

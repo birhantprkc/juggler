@@ -293,6 +293,19 @@ func (a *App) initServer() error {
 		}
 	}
 
+	// Read launch-time connectivity prefs once (read-only at boot). Only a
+	// GUI/desktop-app launch honours them; a terminal launch uses CLI flags and
+	// test mode must never read a developer's real settings.json — isGUILaunch is
+	// false in both cases, so we skip the read and leave the zero value (no
+	// LAN/WAN on launch).
+	if a.isGUILaunch() {
+		if gs, err := core.LoadGlobalSettings(); err != nil {
+			jlog.Debug("Connectivity: settings load failed, ignoring launch prefs: %v", err)
+		} else {
+			a.connectivity = gs.Connectivity
+		}
+	}
+
 	if a.resolveLANDefault() {
 		srv.SetPublicMode(true)
 	}

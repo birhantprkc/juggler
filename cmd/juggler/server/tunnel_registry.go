@@ -119,6 +119,14 @@ func TunnelModes() []TunnelModeSpec {
 	return slices.Clone(tunnelModeRegistry)
 }
 
+// isRegisteredTunnelMode reports whether id names a mode in the registry. Used
+// to validate a persisted wanOnLaunch preference (a generic string) without the
+// caller needing the TunnelMode type or knowledge of which modes a build has.
+func isRegisteredTunnelMode(id string) bool {
+	_, ok := findTunnelMode(TunnelMode(id))
+	return ok
+}
+
 // findTunnelMode returns the spec registered for mode, if any.
 func findTunnelMode(mode TunnelMode) (TunnelModeSpec, bool) {
 	for _, spec := range tunnelModeRegistry {

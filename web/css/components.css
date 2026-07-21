@@ -4952,6 +4952,23 @@ settings-panel .connectivity-wan-error {
     color: var(--accent-red, #f85149);
 }
 
+/* "Start on launch" toggle: a compact labelled checkbox sharing the control
+   column with the Start/Stop button. Muted so it reads as a secondary
+   preference rather than a primary action. */
+settings-panel .connectivity-launch-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+settings-panel .connectivity-launch-checkbox {
+    cursor: pointer;
+}
+
 /* Connected-clients box: a "Connected clients" label on the left, and on the
    right the list of other clients (dot + origin + muted device/time), or a muted
    empty line. Top-align so the label sits level with the first list row. */

@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Connectivity settings now let you start LAN access or a WAN tunnel automatically on launch
 - Local and keyless OpenAI-compatible providers now work without an API key
 - Subthreads now show how they were set up (system prompt, memory, skills)
 - Long conversations no longer crash when they outgrow the model's limit — Juggler trims old history and retries automatically

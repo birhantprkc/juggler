@@ -79,6 +79,51 @@ func TestLoadGlobalSettingsCorruptDefaults(t *testing.T) {
 	}
 }
 
+func TestSaveLoadGlobalSettingsConnectivityRoundTrip(t *testing.T) {
+	userpathstest.Isolate(t)
+	in := &GlobalSettings{
+		Updates:      UpdateSettings{Mode: UpdateModeOff},
+		Connectivity: ConnectivitySettings{LANOnLaunch: true, WANOnLaunch: "p2p"},
+	}
+	if err := SaveGlobalSettings(in); err != nil {
+		t.Fatalf("SaveGlobalSettings: %v", err)
+	}
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if !gs.Connectivity.LANOnLaunch || gs.Connectivity.WANOnLaunch != "p2p" {
+		t.Fatalf("connectivity round-trip = %+v, want {LAN:true, WAN:p2p}", gs.Connectivity)
+	}
+	// Both sections survive a round trip side by side.
+	if gs.Updates.Mode != UpdateModeOff {
+		t.Fatalf("updates alongside connectivity = %q, want off", gs.Updates.Mode)
+	}
+}
+
+func TestLoadGlobalSettingsConnectivityOnlyKeepsUpdateDefault(t *testing.T) {
+	userpathstest.Isolate(t)
+	if err := os.MkdirAll(userpaths.ConfigDir(), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A file with only a connectivity section: the absent updates section must
+	// normalise to the automatic default, and the connectivity keys are read.
+	if err := os.WriteFile(filepath.Join(userpaths.ConfigDir(), "settings.json"),
+		[]byte(`{"connectivity":{"lanOnLaunch":true,"wanOnLaunch":"cloudflared"}}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if !gs.Connectivity.LANOnLaunch || gs.Connectivity.WANOnLaunch != "cloudflared" {
+		t.Fatalf("connectivity not read: %+v", gs.Connectivity)
+	}
+	if gs.Updates.Mode != UpdateModeAutomatic {
+		t.Fatalf("absent updates section = %q, want automatic default", gs.Updates.Mode)
+	}
+}
+
 func TestNormalizeUpdateMode(t *testing.T) {
 	cases := map[string]string{
 		"":          UpdateModeAutomatic,

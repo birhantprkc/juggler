@@ -47,6 +47,12 @@ type App struct {
 	session     *core.SessionManager
 	server      *server.Server
 
+	// connectivity holds launch-time LAN/WAN preferences, read once from the
+	// global settings at boot (see initServer). Populated only on a GUI launch;
+	// the zero value (no LAN, no WAN) is what a terminal or test launch uses, so
+	// the saved toggles never affect those launches.
+	connectivity core.ConnectivitySettings
+
 	serverErrChan chan error
 	cleanups      []func()
 }

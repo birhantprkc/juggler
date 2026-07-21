@@ -20,7 +20,24 @@ import (
 // apply to the user across every project. Built to grow — add new sections as
 // sibling fields; unknown keys are ignored on read, so the format is additive.
 type GlobalSettings struct {
-	Updates UpdateSettings `json:"updates"`
+	Updates      UpdateSettings       `json:"updates"`
+	Connectivity ConnectivitySettings `json:"connectivity"`
+}
+
+// ConnectivitySettings holds launch-time connectivity preferences. They are
+// applied only on a GUI/desktop-app launch (no controlling terminal); a
+// terminal launch controls connectivity through CLI flags instead, so the saved
+// toggles never interfere there. Additive — like GlobalSettings, unknown keys
+// are tolerated on read.
+type ConnectivitySettings struct {
+	// LANOnLaunch starts LAN access at launch when true.
+	LANOnLaunch bool `json:"lanOnLaunch,omitempty"`
+	// WANOnLaunch names the tunnel-mode id to start at launch, or "" for none.
+	// Only one WAN tunnel can ever be active, so this is a single selection
+	// rather than a per-mode toggle. The core does not enumerate which modes
+	// exist — the id is validated against the live TunnelModes() registry when
+	// used, and an unknown/unavailable id simply means "no WAN on launch".
+	WANOnLaunch string `json:"wanOnLaunch,omitempty"`
 }
 
 // UpdateSettings controls how the app looks for and applies new versions.

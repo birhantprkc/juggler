@@ -99,7 +99,11 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		handlers.WriteJSON(w, r, http.StatusServiceUnavailable, map[string]string{"error": "settings unavailable"})
 		return
 	}
-	var incoming core.GlobalSettings
+	// Seed the decode target from the current document so a partial PUT (e.g. the
+	// Updates tab sending only {updates:{mode}}, or the Connectivity tab sending
+	// only {connectivity:{...}}) merges into the existing settings rather than
+	// zeroing the sections it omits. Absent JSON keys keep their current values.
+	incoming := s.settings.get()
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&incoming); err != nil {
 		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
@@ -107,6 +111,11 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// A non-empty mode must be one we recognise; empty normalises to automatic.
 	if incoming.Updates.Mode != "" && !core.IsKnownUpdateMode(incoming.Updates.Mode) {
 		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid update mode"})
+		return
+	}
+	// A non-empty wanOnLaunch must name a registered tunnel mode; "" means none.
+	if incoming.Connectivity.WANOnLaunch != "" && !isRegisteredTunnelMode(incoming.Connectivity.WANOnLaunch) {
+		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid WAN launch mode"})
 		return
 	}
 	prevMode := s.updateMode()

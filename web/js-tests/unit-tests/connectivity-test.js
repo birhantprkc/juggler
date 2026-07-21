@@ -226,6 +226,105 @@ export async function runTests(_ctx) {
     }
   });
 
+  /**
+   * Click a launch toggle (or run any DOM action) and capture the single
+   * PUT /api/settings body it issues. Any other fetch (GET) resolves benignly.
+   * @param {any} el
+   * @param {() => void} doAction
+   * @returns {Promise<any>} parsed PUT body
+   */
+  const captureSettingsPut = async (el, doAction) => {
+    const orig = window.fetch;
+    /** @type {any} */
+    let body = null;
+    window.fetch = /** @type {any} */ (async (url, opts) => {
+      if (typeof url === 'string' && url.startsWith('/api/settings') && opts && opts.method === 'PUT') {
+        body = JSON.parse(opts.body);
+        return /** @type {any} */ ({ ok: true, json: async () => ({}) });
+      }
+      return /** @type {any} */ ({ ok: true, json: async () => el._tabs.connectivity.connectivity });
+    });
+    try {
+      doAction();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      window.fetch = orig;
+    }
+    return body;
+  };
+
+  /**
+   * Find the provider-field row whose provider-name matches title exactly.
+   * @param {any} el
+   * @param {string} title
+   * @returns {any} the row element (or undefined)
+   */
+  const rowByName = (el, title) => [...el.querySelectorAll('#connectivity-form .provider-field')]
+    .find((r) => {
+      const n = r.querySelector('.provider-name');
+      return n && (n.textContent || '').trim() === title;
+    });
+
+  await run('LAN row "Start on launch" checkbox PUTs {connectivity:{lanOnLaunch:true}}', async () => {
+    const el = mountWith(baseIdle());
+    try {
+      const lanRow = rowByName(el, 'LAN access');
+      assert(lanRow, 'LAN access row present');
+      const cb = lanRow.querySelector('.connectivity-launch-checkbox');
+      assert(cb, 'LAN row has a Start-on-launch checkbox');
+      const body = await captureSettingsPut(el, () => {
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change'));
+      });
+      assert(body && body.connectivity && body.connectivity.lanOnLaunch === true,
+        `expected {connectivity:{lanOnLaunch:true}}; got ${JSON.stringify(body)}`);
+    } finally {
+      el.remove();
+    }
+  });
+
+  await run('WAN mode "Start on launch" toggle PUTs {connectivity:{wanOnLaunch:"p2p"}}', async () => {
+    const el = mountWith(baseIdle());
+    try {
+      const p2pRow = rowByName(el, 'Direct P2P');
+      assert(p2pRow, 'P2P mode block present');
+      const cb = p2pRow.querySelector('.connectivity-launch-checkbox');
+      assert(cb, 'P2P block has a Start-on-launch toggle');
+      const body = await captureSettingsPut(el, () => {
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change'));
+      });
+      assert(body && body.connectivity && body.connectivity.wanOnLaunch === 'p2p',
+        `expected {connectivity:{wanOnLaunch:"p2p"}}; got ${JSON.stringify(body)}`);
+    } finally {
+      el.remove();
+    }
+  });
+
+  await run('armed WAN mode renders checked, others unchecked; re-click clears to ""', async () => {
+    const el = mountWith(baseIdle({ relayAvailable: true }));
+    try {
+      const tab = el._tabs.connectivity;
+      tab._launchPrefs = { lanOnLaunch: false, wanOnLaunch: 'p2p' };
+      tab.renderConnectivityFields();
+
+      const p2pCb = rowByName(el, 'Direct P2P').querySelector('.connectivity-launch-checkbox');
+      const relayCb = rowByName(el, 'Cloudflare Tunnel relay').querySelector('.connectivity-launch-checkbox');
+      assert(p2pCb.checked, 'armed mode checkbox is checked');
+      assert(!relayCb.checked, 'the other WAN mode checkbox is unchecked (single selection)');
+
+      const body = await captureSettingsPut(el, () => {
+        p2pCb.checked = false;
+        p2pCb.dispatchEvent(new Event('change'));
+      });
+      assert(body && body.connectivity && body.connectivity.wanOnLaunch === '',
+        `re-clicking the armed mode clears the preference; got ${JSON.stringify(body)}`);
+    } finally {
+      el.remove();
+    }
+  });
+
   await run('active cloudflared tunnel notes that traffic is relayed', async () => {
     const el = mountWith({
       ...baseIdle({ relayAvailable: true }),
