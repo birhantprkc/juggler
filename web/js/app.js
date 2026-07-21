@@ -28,7 +28,6 @@ import { openExternalURL, externalURLFromHref } from '../sdk/lib/window-control.
 import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-installs on import)
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
 import { normalizeAttachments } from './utils/attachments.js';
-import { nudgeSpinners } from './components/juggler-spinner.js';
 
 
 
@@ -89,19 +88,22 @@ class JugglerApp {
    * @private
    */
   _initDocumentVisibilityPause() {
-    const syncPaused = () => {
-      document.documentElement.toggleAttribute('data-doc-hidden', document.hidden);
-    };
+    // While hidden we set data-doc-hidden, which the stylesheet turns into
+    // `animation-play-state: paused !important` on everything (power saving).
+    // The catch: on a Cmd-Tab back to the app, macOS WKWebView fires window
+    // `focus` but NOT `visibilitychange`, so relying on visibilitychange alone
+    // leaves the attribute stuck set — and because the pause is `!important`,
+    // EVERY animation stays frozen, including spinners created after you return
+    // (no display/reflow trick can override `!important`). So the window-`focus`
+    // clear below is load-bearing, not a nicety: focus means we're visible, so
+    // drop the attribute unconditionally and animations resume immediately.
     document.addEventListener('visibilitychange', () => {
-      syncPaused();
-      if (!document.hidden) nudgeSpinners(); // returning visible: un-freeze the visible spinner(s)
+      document.documentElement.toggleAttribute('data-doc-hidden', document.hidden);
     });
-    // A plain app-switch back to Juggler (window stays visible, so document.hidden
-    // never went true and the pause above never ran) fires window 'focus' but not
-    // visibilitychange — yet WebKit can still have stalled the spinner's animation
-    // while we were in the background. Restart the visible spinner(s) here too.
-    window.addEventListener('focus', () => nudgeSpinners());
-    syncPaused(); // reflect the initial state immediately
+    window.addEventListener('focus', () => {
+      document.documentElement.removeAttribute('data-doc-hidden');
+    });
+    document.documentElement.toggleAttribute('data-doc-hidden', document.hidden);
   }
 
   /** @private */

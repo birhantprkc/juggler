@@ -296,8 +296,24 @@ func ValidateFilePathWithRoots(workingDir string, extraRoots []string, requested
 		}
 	}
 
-	result.ErrorMsg = "path is outside working directory (potential directory traversal attack)"
-	return result, fmt.Errorf("path is outside working directory: requested %q resolved to %q, outside %q and %d allowed root(s)", requestedPath, absPath, workingDirAbs, len(roots)-1)
+	// Build an actionable, non-redundant message. Show the resolved form only
+	// when it differs from what was requested (an absolute in-place path prints
+	// once, not the same string twice), and name the roots that WERE in scope
+	// rather than just counting them, so the reader knows exactly what to widen.
+	pathDesc := fmt.Sprintf("%q", absPath)
+	if absPath != requestedPath {
+		pathDesc = fmt.Sprintf("%q (resolved to %q)", requestedPath, absPath)
+	}
+	scopeDesc := fmt.Sprintf("the working directory (%s)", workingDirAbs)
+	if len(roots) > 1 {
+		quoted := make([]string, 0, len(roots)-1)
+		for _, r := range roots[1:] {
+			quoted = append(quoted, fmt.Sprintf("%q", r))
+		}
+		scopeDesc = fmt.Sprintf("%s or any allowed root (%s)", scopeDesc, strings.Join(quoted, ", "))
+	}
+	result.ErrorMsg = "path is outside the working directory"
+	return result, fmt.Errorf("path %s is outside %s; add its folder to the conversation's allowed paths to access it", pathDesc, scopeDesc)
 }
 
 // pathWithinRoot reports whether absPath is the root itself or lives beneath it.
