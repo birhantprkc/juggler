@@ -83,6 +83,14 @@ type Quirks struct {
 	// whose slugs do not contain "codex".
 	ForceResponsesAPI bool
 
+	// OmitResponsesMaxOutputTokens drops the `max_output_tokens` field from
+	// Responses requests. The ChatGPT Codex backend
+	// (chatgpt.com/backend-api/codex/responses) rejects it with 400
+	// "Unsupported parameter: max_output_tokens" — the real Codex CLI never
+	// sends it. The Platform Responses API accepts it, so this stays off by
+	// default and is enabled only for the Codex-plan provider.
+	OmitResponsesMaxOutputTokens bool
+
 	// IncludePresencePenalty / IncludeFrequencyPenalty send the named
 	// penalty params even when they would be zero. Most vendors silently
 	// reject these; deepseek/zai accept them.
@@ -494,9 +502,13 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	// Build request params - Model is a string type
 	params := responses.ResponseNewParams{
-		Model:           c.model,
-		Input:           transformMessagesToResponsesInput(req.Messages),
-		MaxOutputTokens: openai.Int(int64(c.effectiveMaxOutputTokens(req))),
+		Model: c.model,
+		Input: transformMessagesToResponsesInput(req.Messages),
+	}
+	// The ChatGPT Codex backend rejects max_output_tokens (see the quirk);
+	// every other Responses endpoint honours it as the per-request output cap.
+	if !c.quirks.OmitResponsesMaxOutputTokens {
+		params.MaxOutputTokens = openai.Int(int64(c.effectiveMaxOutputTokens(req)))
 	}
 	if !c.quirks.ForceResponsesAPI {
 		params.Temperature = openai.Float(1.0)

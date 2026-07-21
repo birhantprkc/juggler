@@ -94,6 +94,48 @@ func TestResponsesRequestUsesConfiguredMaxOutputTokens(t *testing.T) {
 	}
 }
 
+// TestResponsesRequestOmitsMaxOutputTokensQuirk proves the Codex-plan quirk drops
+// max_output_tokens from the wire. The ChatGPT Codex backend rejects it with 400
+// "Unsupported parameter: max_output_tokens", so the field must be absent (not
+// zero) when the quirk is set.
+func TestResponsesRequestOmitsMaxOutputTokensQuirk(t *testing.T) {
+	var present bool
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		_, present = payload["max_output_tokens"]
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(sseBody(`{"type":"response.output_text.delta","delta":"hi","item_id":"m1","output_index":0,"content_index":0,"sequence_number":1}`))),
+			Request:    r,
+		}, nil
+	})}
+	c, err := NewClient(Config{
+		APIKey:          "test",
+		Model:           "gpt-5-codex",
+		BaseURL:         "https://example.test",
+		HTTPClient:      httpClient,
+		MaxOutputTokens: 32768,
+		Quirks:          Quirks{ForceResponsesAPI: true, OmitResponsesMaxOutputTokens: true},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = c.streamMessage(context.Background(), provider.MessageRequest{
+		Messages: []provider.Message{{Type: "user", Content: "hello"}},
+	}, func(provider.StreamChunk) (*provider.ToolResult, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("streamMessage: %v", err)
+	}
+	if present {
+		t.Fatalf("max_output_tokens present on wire, want omitted for Codex-plan quirk")
+	}
+}
+
 // tracks the model's configured max-output-tokens instead of a hardcoded 8192.
 // Reasoning models (GLM, DeepSeek-R1) spend output budget on chain-of-thought
 // before the answer; an 8192 cap throttles the reasoning itself, producing

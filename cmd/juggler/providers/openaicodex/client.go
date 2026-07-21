@@ -38,8 +38,9 @@ func Register() {
 		ThinkingSpecFn:     openaibase.OpenAIThinkingSpec,
 		Quirks: openaibase.Quirks{
 
-			MaxTokensParamName: "max_completion_tokens",
-			ForceResponsesAPI:  true,
+			MaxTokensParamName:           "max_completion_tokens",
+			ForceResponsesAPI:            true,
+			OmitResponsesMaxOutputTokens: true,
 		},
 	})
 }
