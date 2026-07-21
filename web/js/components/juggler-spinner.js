@@ -50,6 +50,61 @@ class JugglerSpinner extends HTMLElement {
     }
     if (!this.hasAttribute('role')) this.setAttribute('role', 'status');
     if (!this.hasAttribute('aria-label')) this.setAttribute('aria-label', 'Loading');
+    this._observeVisibility();
+  }
+
+  disconnectedCallback() {
+    this._io?.disconnect();
+    this._io = null;
+  }
+
+  /**
+   * Self-heal the WKWebView "stuck spinner" bug at the one deterministic moment
+   * it matters: when this element actually becomes visible to the user.
+   *
+   * WebKit freezes a CSS animation whose element was off-layout (its tab or the
+   * processing footer was display:none) or occluded (the app was backgrounded)
+   * while the animation was declared: when the element is later shown, the
+   * orbit/spin animations resume from the start-time that was fixed while hidden
+   * and never advance — the spinner appears stuck. Reflowing the element once
+   * it is back on-layout (see {@link restart}) rebuilds the animations with a
+   * fresh start-time.
+   *
+   * We do this from the spinner itself rather than asking every caller that
+   * shows one (the processing footer, the Pause button, thread-status rows, the
+   * model selector, …) to remember to nudge it: an IntersectionObserver reports
+   * the exact hidden→shown edge for every show path there is — the `hidden`
+   * class coming off, a background tab being revealed, the node scrolled back
+   * into view — with no caller coordination. Edge-triggered on `isIntersecting`,
+   * so routine status-text updates never restart a spinner that is already
+   * running (which would reset it to frame 0 and make it visibly stutter).
+   * @private
+   */
+  _observeVisibility() {
+    if (typeof IntersectionObserver === 'undefined') return; // headless / ancient engine: no-op
+    let wasVisible = false;
+    this._io = new IntersectionObserver((entries) => {
+      const last = entries[entries.length - 1];
+      if (!last) return;
+      const visible = last.isIntersecting;
+      if (visible && !wasVisible) this.restart();
+      wasVisible = visible;
+    });
+    this._io.observe(this);
+  }
+
+  /**
+   * Force this spinner's CSS animations to restart with a fresh start-time via a
+   * synchronous display none→reflow→restore. All three steps run in one task, so
+   * the hidden frame is never painted and there is no flicker. No-op when the
+   * element has no layout box (still hidden) — it heals when next shown.
+   */
+  restart() {
+    if (this.getClientRects().length === 0) return;
+    const prev = this.style.display;
+    this.style.display = 'none';
+    void this.offsetHeight; // commit the display:none, discarding the frozen animations
+    this.style.display = prev;
   }
 }
 
