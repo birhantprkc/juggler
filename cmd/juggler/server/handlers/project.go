@@ -124,6 +124,14 @@ func (api *ProjectAPI) HandleCheckProject(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// The current project's lock is held by this very instance, not a competing
+	// one, so report it as current instead of falsely blocking in-place
+	// (browser/PWA) switches with "Already open at http://…/".
+	if current := api.pathProvider(); current != "" && current == abs {
+		WriteJSON(w, r, 0, map[string]any{"valid": true, "path": abs, "current": true})
+		return
+	}
+
 	// Check whether another instance already has this project open.
 	if locked, existing, _ := api.checkLockedFn(abs); locked {
 		msg := "Already open in another Juggler instance"
