@@ -24,7 +24,6 @@ import { updateWindowTitle } from './utils/window-title.js';
 import { initAttention } from './utils/attention-manager.js';
 import scheduledSendService from './services/scheduled-send-service.js';
 import { initViewportFit } from './utils/viewport-fit.js';
-import { nudgeSpinners } from './utils/spinner-nudge.js';
 import { openExternalURL, externalURLFromHref } from '../sdk/lib/window-control.js';
 import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-installs on import)
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
@@ -89,17 +88,45 @@ class JugglerApp {
    * @private
    */
   _initDocumentVisibilityPause() {
-    let wasHidden = document.hidden;
-    const sync = () => {
-      const hidden = document.hidden;
-      document.documentElement.toggleAttribute('data-doc-hidden', hidden);
-      // Revive the visible tab's spinner if it froze while backgrounded (hidden
-      // tabs are handled on activation in conversation-tab.setActive).
-      if (wasHidden && !hidden) nudgeSpinners(document);
-      wasHidden = hidden;
+    let paused = false;
+    const setPaused = (/** @type {boolean} */ next) => {
+      if (next === paused) return;
+      paused = next;
+      document.documentElement.toggleAttribute('data-doc-hidden', paused);
+      // On un-pause, WebKit leaves the on-screen spinner frozen when
+      // animation-play-state flips paused→running (what a tab switch quietly
+      // fixes). Nudge the visible spinner(s) once. Spinners in still-hidden tabs
+      // restart on their own when the tab is shown (its display:none→flex
+      // restarts the animation), so they need no help here.
+      if (!paused) this._nudgeVisibleSpinners();
     };
-    document.addEventListener('visibilitychange', sync);
-    sync(); // reflect the initial state immediately
+    // Pause only when the page is genuinely hidden (minimised/occluded) — never
+    // on plain window blur, or a visible-but-unfocused window would show a frozen
+    // spinner. Un-pause on visibilitychange OR window focus: a Cmd-Tab back to
+    // the app doesn't reliably refire visibilitychange on macOS WKWebView, which
+    // would otherwise leave every animation pinned paused — including spinners
+    // created after you return.
+    document.addEventListener('visibilitychange', () => setPaused(document.hidden));
+    window.addEventListener('focus', () => setPaused(false));
+    setPaused(document.hidden); // reflect the initial state
+  }
+
+  /**
+   * Kick on-screen spinners so a frozen one repaints, the same way a tab switch
+   * does. getClientRects() skips spinners in hidden (display:none) tabs, so only
+   * the current tab is touched; the offsetHeight read forces the reflow between
+   * the two writes.
+   * @private
+   */
+  _nudgeVisibleSpinners() {
+    document.querySelectorAll('juggler-spinner').forEach((el) => {
+      const s = /** @type {HTMLElement} */ (el);
+      if (s.getClientRects().length === 0) return;
+      const prev = s.style.display;
+      s.style.display = 'none';
+      void s.offsetHeight;
+      s.style.display = prev;
+    });
   }
 
   /** @private */
