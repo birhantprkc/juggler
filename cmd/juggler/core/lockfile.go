@@ -219,53 +219,99 @@ func CheckProjectLocked(projectPath string) (bool, *InstanceInfo, error) {
 	return true, &info, nil
 }
 
+// instanceHealth is the parsed /api/health/instance response used to verify and
+// classify a lock-holding server.
+type instanceHealth struct {
+	Status         string `json:"status"`
+	ProjectPath    string `json:"projectPath"`
+	PID            int    `json:"pid"`
+	ParentPID      int    `json:"parentPid"`
+	ExitWithParent bool   `json:"exitWithParent"`
+}
+
+// fetchInstanceHealth probes info's /api/health/instance endpoint. It returns
+// (nil, nil) when the instance can't be reached or answers non-OK — i.e. "not a
+// live instance" — so callers treat any failure as "not running" rather than
+// surfacing a transport error.
+func fetchInstanceHealth(info *InstanceInfo) (*instanceHealth, error) {
+	if info == nil {
+		return nil, nil
+	}
+	url := fmt.Sprintf("http://%s:%d/api/health/instance", info.Host, info.Port)
+	client := &http.Client{Timeout: instanceHealthTimeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		// Can't connect - instance probably not running.
+		return nil, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+	var health instanceHealth
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return nil, nil
+	}
+	return &health, nil
+}
+
+// instanceMatches reports whether h is precisely the process that wrote
+// instance.json for expectedProjectPath. A reused PID or another Juggler server
+// on the recorded port must never be treated as the lock holder for this project.
+func instanceMatches(h *instanceHealth, info *InstanceInfo, expectedProjectPath string) bool {
+	return h != nil && h.PID == info.PID && h.ProjectPath == expectedProjectPath
+}
+
 // VerifyInstance checks if an instance is actually running via HTTP health check
 // Returns true if the instance is verified as Juggler running on the expected project path
 func VerifyInstance(info *InstanceInfo, expectedProjectPath string) (bool, error) {
 	if info == nil {
 		return false, nil
 	}
-
-	// Build URL for health/instance endpoint
-	url := fmt.Sprintf("http://%s:%d/api/health/instance", info.Host, info.Port)
-
-	client := &http.Client{Timeout: instanceHealthTimeout}
-
-	resp, err := client.Get(url)
-	if err != nil {
-		// Can't connect - instance probably not running
+	h, err := fetchInstanceHealth(info)
+	if err != nil || h == nil {
 		return false, nil
 	}
-	defer resp.Body.Close()
+	return instanceMatches(h, info, expectedProjectPath), nil
+}
 
-	if resp.StatusCode != http.StatusOK {
-		return false, nil
+// RunningInstanceStatus classifies a lock-holding server for a desktop viewer's
+// reuse decision (see ClassifyRunningInstance).
+type RunningInstanceStatus int
+
+const (
+	// InstanceUnreachable: the lock is held but no matching server answers — a
+	// stale lock, a mismatched pid/project, or a server that isn't responding.
+	// The viewer must neither attach nor blindly spawn into the collision.
+	InstanceUnreachable RunningInstanceStatus = iota
+	// InstanceReusable: a healthy matching server the viewer can attach a window
+	// to.
+	InstanceReusable
+	// InstanceExiting: a matching server started with --exit-with-parent whose
+	// parent has already died (reparented to init/launchd, ppid<=1). Its
+	// parent-watchdog is about to self-terminate it, so the viewer should wait
+	// for it to release the lock and then spawn a fresh server rather than attach
+	// a window that would be left stuck on "connecting" when it vanishes.
+	InstanceExiting
+)
+
+// ClassifyRunningInstance probes a lock-holding server and classifies it for the
+// desktop viewer's reuse decision. It is stricter than VerifyInstance: on top of
+// the identity check it distinguishes a durable server (reusable) from an orphan
+// that is about to self-terminate because the app that owned it has quit — the
+// race behind a "connecting to server" hang on a quick quit-then-relaunch.
+func ClassifyRunningInstance(info *InstanceInfo, expectedProjectPath string) RunningInstanceStatus {
+	h, err := fetchInstanceHealth(info)
+	if err != nil || h == nil {
+		return InstanceUnreachable
 	}
-
-	// Parse response to verify it's the right instance
-	var health struct {
-		Status      string `json:"status"`
-		ProjectPath string `json:"projectPath"`
-		PID         int    `json:"pid"`
+	if !instanceMatches(h, info, expectedProjectPath) {
+		return InstanceUnreachable
 	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
-		return false, nil
+	if h.ExitWithParent && h.ParentPID <= 1 {
+		return InstanceExiting
 	}
-
-	// Verify this is precisely the process that wrote instance.json. A reused
-	// PID or another Juggler server on the recorded port must never be treated as
-	// the lock holder for this project.
-	if health.PID != info.PID {
-		return false, nil
-	}
-
-	// Verify it's the same project.
-	if health.ProjectPath != expectedProjectPath {
-		return false, nil
-	}
-
-	return true, nil
+	return InstanceReusable
 }
 
 // RequestGracefulShutdown asks an existing instance to shut down gracefully

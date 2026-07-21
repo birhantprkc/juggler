@@ -255,6 +255,7 @@ func (a *App) initServer() error {
 		ProjectPath:    a.projectPath,
 		BootLock:       a.lock,
 		ExtraRoutes:    a.config.ExtraRoutes,
+		ExitWithParent: a.flags.exitWithParent,
 	})
 	if err != nil {
 		jlog.Error("Failed to create server: %v", err)

@@ -24,6 +24,12 @@ import (
 // print its bound address before giving up.
 const serverStartTimeout = 20 * time.Second
 
+// orphanDrainTimeout bounds how long we wait for an about-to-exit orphan server
+// (its owning app died on a quick quit→relaunch) to release the project lock
+// before we spawn a fresh one. Generous: the orphan's parent-watchdog polls
+// twice a second and self-exits within ~500ms of the parent dying.
+const orphanDrainTimeout = 3 * time.Second
+
 // discoverOrSpawnServer returns an address to connect to for the given project,
 // reusing an already-running server when one holds the project's instance lock
 // and answers a health probe (so a second "open this project" attaches to the
@@ -33,11 +39,26 @@ const serverStartTimeout = 20 * time.Second
 func discoverOrSpawnServer(project string) (string, *exec.Cmd, error) {
 	if abs := expandProject(project); abs != "" {
 		if locked, info, _ := core.CheckProjectLocked(abs); locked {
-			if ok, _ := core.VerifyInstance(info, abs); ok {
+			switch core.ClassifyRunningInstance(info, abs) {
+			case core.InstanceReusable:
 				logf("reusing running server for %s at %s:%d", abs, info.Host, info.Port)
 				return net.JoinHostPort(info.Host, strconv.Itoa(info.Port)), nil, nil
+			case core.InstanceExiting:
+				// The server holding this project's lock is an orphan about to
+				// self-terminate (its owning app quit on a quick quit→relaunch).
+				// Attaching a window would leave it stuck on "connecting" the moment
+				// the server exits, so wait for it to release the lock and then spawn
+				// a fresh server we own. If it somehow outlives the grace period,
+				// surface it as locked rather than spawn into a collision.
+				logf("server for %s is an exiting orphan; waiting for it to release the lock", abs)
+				if !core.WaitForShutdown(info, orphanDrainTimeout) {
+					logf("orphan server for %s still present after %s; treating as locked", abs, orphanDrainTimeout)
+					return "", nil, newLockedProjectError(abs, info)
+				}
+				// Lock released — fall through to spawn below.
+			default: // core.InstanceUnreachable
+				return "", nil, newLockedProjectError(abs, info)
 			}
-			return "", nil, newLockedProjectError(abs, info)
 		}
 	}
 	logf("spawning new server for project=%q", project)

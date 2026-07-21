@@ -53,8 +53,14 @@ func (s *Server) handleHealthInstance(w http.ResponseWriter, r *http.Request) {
 		"status":      "ok",
 		"projectPath": s.ProjectPath(),
 		"pid":         os.Getpid(),
-		"startedAt":   s.startTime.Format(time.RFC3339),
-		"relaunchGen": relaunchGen,
+		// parentPid + exitWithParent let a discovering viewer detect an
+		// about-to-exit orphan: a --exit-with-parent server whose parent has died
+		// is reparented to init/launchd (ppid<=1) and self-terminates imminently,
+		// so a new viewer must spawn its own server rather than attach to this one.
+		"parentPid":      os.Getppid(),
+		"exitWithParent": s.exitWithParent,
+		"startedAt":      s.startTime.Format(time.RFC3339),
+		"relaunchGen":    relaunchGen,
 	})
 }
 

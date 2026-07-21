@@ -206,6 +206,12 @@ func (a *appState) initApplication() {
 	// Cmd+Q — this hook fires first. The servers' own --exit-with-parent watchdog
 	// is the backstop for crashes/kills that bypass this entirely.
 	a.app.Event.OnApplicationEvent(events.Mac.ApplicationWillTerminate, func(_ *application.ApplicationEvent) {
+		// Mark teardown authoritatively: any termination path that reached here is
+		// really quitting (not just the ShouldQuit-guarded ones). onSecondInstance
+		// reads this to ignore a relaunch hand-off routed to us while we're dying —
+		// servicing it would build a window against a collapsing Cocoa layer and
+		// present the corrupt/blank frame seen on a quick quit-then-relaunch.
+		a.reg(func(st *regState) { st.quitting = true })
 		a.persistWorkspaceSync()
 		a.signalAllServers()
 	})
@@ -331,6 +337,18 @@ func (a *appState) startupSpecs(rawURL, project string) []windowSpec {
 // or opens a fresh window onto it. Runs on the single-instance listener
 // goroutine; all window work is marshalled to the main thread.
 func (a *appState) onSecondInstance(data application.SecondInstanceData) {
+	// If we're already tearing down, do NOT service the hand-off. On a quick
+	// quit-then-relaunch the new process can route its argv to us while our
+	// Cocoa layer is collapsing; any window opened here comes up as a corrupt or
+	// tiny blank frame. Ignore it — the second instance has already exited, so the
+	// user's next launch starts a clean process once we're gone.
+	var quitting bool
+	a.reg(func(st *regState) { quitting = st.quitting })
+	if quitting {
+		logf("second instance: ignoring hand-off during shutdown")
+		return
+	}
+
 	rawURL, project := parseLaunchArgs(data.Args)
 	logf("second instance: url=%q project=%q", rawURL, project)
 

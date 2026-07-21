@@ -117,6 +117,7 @@ type Server struct {
 	workerManager           *worker.Manager      // Go worker manager
 	sessionAPI              *handlers.SessionAPI // Kept so RegisterTestRoutes can wire test-mode hooks
 	extraRoutes             func(r *mux.Router)  // Optional Config.ExtraRoutes hook, invoked at the end of setupRoutes
+	exitWithParent          bool                 // Config.ExitWithParent: server self-terminates when its parent (the viewer) dies; reported on /api/health/instance
 
 	// conversationCache holds the per-conversation Provider.Conversation
 	// handles: one handle per (convID, providerName, model), opened lazily
@@ -205,6 +206,12 @@ type Config struct {
 	// session-token auth (see apiAuthMiddleware). Must not shadow existing
 	// routes.
 	ExtraRoutes func(r *mux.Router)
+
+	// ExitWithParent mirrors the server's --exit-with-parent flag: true when a
+	// parent process (the juggler-app viewer) owns this server's lifetime and it
+	// self-terminates once that parent dies. Surfaced on /api/health/instance so
+	// a discovering viewer can tell an about-to-exit orphan from a durable server.
+	ExitWithParent bool
 }
 
 // New creates a new server
@@ -281,6 +288,7 @@ func New(cfg Config) (*Server, error) {
 	s.assetsFromDisk = cfg.AssetsFromDisk
 	s.bootProjectPath = cfg.ProjectPath
 	s.extraRoutes = cfg.ExtraRoutes
+	s.exitWithParent = cfg.ExitWithParent
 	s.opsAPI = handlers.NewOpsAPI(s.ProjectPath)
 	s.completionsAPI = handlers.NewCompletionsAPI(s.ProjectPath, func() ops.PathSearcher {
 		if fw := s.FileWatcher(); fw != nil {
