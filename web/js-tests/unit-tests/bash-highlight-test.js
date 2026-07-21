@@ -95,6 +95,48 @@ export async function runTests(_ctx) {
     assert(el.querySelectorAll('.bash-command-operator').length === 4, 'angle brackets should be shell operators');
   });
 
+  run('treats a here-doc body as inert text, not shell syntax', () => {
+    const cmd = [
+      "cat > out.mjs <<'EOF'",
+      "import { register } from 'node:module';",
+      "console.log('registered ok');",
+      'EOF',
+      'node out.mjs 2>&1'
+    ].join('\n');
+    const el = render(cmd);
+    // The whole body up to and including the closing delimiter is one inert block.
+    const bodies = [...el.querySelectorAll('.bash-command-heredoc')];
+    assert(bodies.length === 1, 'here-doc body should be a single inert block');
+    assert(bodies[0].textContent === "import { register } from 'node:module';\nconsole.log('registered ok');\nEOF",
+      'here-doc body (with closing delimiter) should be captured verbatim');
+    // Body words must NOT be styled as commands; only cat/node are heads.
+    assert([...el.querySelectorAll('.bash-command-head')].map(n => n.textContent).join(',') === 'cat,node',
+      'only cat and node should be command heads');
+    assert(el.textContent === cmd, 'render changed visible text');
+  });
+
+  run('resumes normal parsing after the here-doc terminator', () => {
+    const el = render('cat <<EOF\nbody line\nEOF\necho done');
+    assert(el.querySelector('.bash-command-heredoc')?.textContent === 'body line\nEOF', 'body should stop at the terminator');
+    assert([...el.querySelectorAll('.bash-command-head')].map(n => n.textContent).join(',') === 'cat,echo',
+      'echo after the terminator should be a command head');
+  });
+
+  run('does not treat the <<< here-string as a here-doc', () => {
+    const el = render('grep x <<< "a && b"');
+    assert(el.querySelectorAll('.bash-command-heredoc').length === 0, 'here-string is not a here-doc body');
+    assert(el.querySelector('.bash-command-head')?.textContent === 'grep', 'grep should still be the command head');
+  });
+
+  run('consumes multiple queued here-doc bodies on one line', () => {
+    const el = render('cat <<A <<B\nbody a; x > y\nA\nbody b | z\nB\necho done');
+    const bodies = [...el.querySelectorAll('.bash-command-heredoc')];
+    assert(bodies.length === 1, 'both bodies are consumed as one contiguous inert block');
+    assert(bodies[0].textContent === 'body a; x > y\nA\nbody b | z\nB', 'both bodies through their terminators are inert');
+    assert([...el.querySelectorAll('.bash-command-head')].map(n => n.textContent).join(',') === 'cat,echo',
+      'operators inside the bodies must not create command heads');
+  });
+
   // === formatCommandForDisplay: newline-splitting for the properties panel ===
 
   const { formatCommandForDisplay } = await import('../../extensions/juggler-core/context-items/execute-context-item.js');

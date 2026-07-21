@@ -148,6 +148,14 @@ pre[class*="language-"] {
   text-underline-offset: 0.14em;
 }
 
+/* Here-doc body: inert stdin data, coloured like a string and never underlined
+   (it spans many lines, so an underline would be noise). */
+.token.bash-command-heredoc {
+  color: var(--syntax-string);
+  text-decoration: none;
+  font-weight: 400;
+}
+
 .bash-command-segment-0 {
   --bash-command-head: var(--bash-segment-0-head);
   --bash-command-arg: var(--bash-segment-0-arg);

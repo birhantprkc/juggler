@@ -32,7 +32,7 @@ const BASH_TWO_CHAR_OPERATORS = new Set(['&&', '||', '|&', ';;', ';&', '<<', '>>
 const BASH_REDIRECT_OPERATORS = new Set(['<', '>', '<<', '>>', '<<<', '<&', '>&', '<>', '>|', '&>']);
 
 /**
- * @typedef {{ kind: 'segment'|'operator', text: string }} BashPiece
+ * @typedef {{ kind: 'segment'|'operator'|'heredoc', text: string }} BashPiece
  */
 
 /**
@@ -83,6 +83,13 @@ function highlightBashCommand(text) {
       return `<span class="token bash-command-operator${redirectClass}">${escapeHtml(piece.text)}</span>`;
     }
 
+    if (piece.kind === 'heredoc') {
+      // The body of a here-document is inert stdin data, not shell syntax:
+      // render it verbatim as a string rather than splitting it into words.
+      previousOperator = '';
+      return `<span class="token bash-command-string bash-command-heredoc">${escapeHtml(piece.text)}</span>`;
+    }
+
     const isRedirectTarget = isRedirectOperator(previousOperator);
     previousOperator = '';
     if (!piece.text.trim()) return escapeHtml(piece.text);
@@ -110,6 +117,8 @@ function splitBashCommand(input) {
   let backtickQuoted = false;
   let parenDepth = 0;
   let braceDepth = 0;
+  /** @type {{ delimiter: string, dashStrip: boolean }[]} here-doc bodies pending at the next newline, FIFO */
+  const pendingHeredocs = [];
 
   const pushSegment = (/** @type {number} */ end) => {
     if (end > segmentStart) pieces.push({ kind: 'segment', text: input.slice(segmentStart, end) });
@@ -189,6 +198,21 @@ function splitBashCommand(input) {
         pieces.push({ kind: 'operator', text: operator });
         i += operator.length;
         segmentStart = i;
+
+        // A here-doc redirection (`<<` / `<<-`, but not the `<<<` here-string)
+        // introduces a body that begins at the next newline: record its
+        // delimiter so we can consume that body as inert text. The delimiter
+        // word itself stays in the normal stream (rendered as the redirect
+        // target); we only look ahead to learn how the body ends.
+        if (operator === '<<') {
+          const hd = scanHeredocDelimiter(input, i);
+          if (hd) pendingHeredocs.push(hd);
+        } else if (operator === '\n' && pendingHeredocs.length > 0) {
+          const bodyEnd = consumeHeredocBodies(input, i, pendingHeredocs);
+          if (bodyEnd > i) pieces.push({ kind: 'heredoc', text: input.slice(i, bodyEnd) });
+          i = bodyEnd;
+          segmentStart = i;
+        }
         continue;
       }
     }
@@ -198,6 +222,82 @@ function splitBashCommand(input) {
 
   pushSegment(input.length);
   return pieces;
+}
+
+/**
+ * Scan the here-end delimiter of a here-doc redirection whose `<<` operator ends
+ * at `j` (so `input[j]` is the character right after `<<`). Handles the optional
+ * `-` (leading-tab-stripping) form and a delimiter word that is unquoted, single-
+ * or double-quoted, or backslash-escaped. Quoting only governs body expansion,
+ * which is irrelevant for display, so the unquoted delimiter text is recorded to
+ * match the closing line. Returns null when no delimiter word follows.
+ * @param {string} input
+ * @param {number} j index just past the `<<` operator
+ * @returns {{ delimiter: string, dashStrip: boolean } | null} The delimiter and whether the tab-stripping form was used, or null when no delimiter follows.
+ */
+function scanHeredocDelimiter(input, j) {
+  let dashStrip = false;
+  if (input[j] === '-') { dashStrip = true; j++; }
+  while (input[j] === ' ' || input[j] === '\t') j++;
+  let delimiter = '';
+  let sawWord = false;
+  while (j < input.length) {
+    const c = input[j];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') break;
+    if (c === ';' || c === '|' || c === '&' || c === '<' || c === '>' || c === '(' || c === ')') break;
+    if (c === "'" || c === '"') {
+      const end = input.indexOf(c, j + 1);
+      if (end === -1) return null;
+      delimiter += input.slice(j + 1, end);
+      j = end + 1;
+      sawWord = true;
+      continue;
+    }
+    if (c === '\\') {
+      if (j + 1 >= input.length) return null;
+      delimiter += input[j + 1];
+      j += 2;
+      sawWord = true;
+      continue;
+    }
+    delimiter += c;
+    j++;
+    sawWord = true;
+  }
+  if (!sawWord || delimiter === '') return null;
+  return { delimiter, dashStrip };
+}
+
+/**
+ * Consume the bodies of every queued here-doc, in FIFO order, starting at the
+ * newline index `nlStart` (the `\n` that opens the first body). Each body runs
+ * up to and including a line equal to its delimiter (with leading tabs stripped
+ * for the `<<-` form); an un-terminated body runs to the end of input. The
+ * queue is drained. Returns the end index of the consumed region, kept just
+ * before the final trailing newline so that newline still splits the following
+ * command from the here-doc block.
+ * @param {string} input
+ * @param {number} nlStart index of the `\n` beginning the first body
+ * @param {{ delimiter: string, dashStrip: boolean }[]} pendingHeredocs drained in place
+ * @returns {number} index just past the consumed here-doc region
+ */
+function consumeHeredocBodies(input, nlStart, pendingHeredocs) {
+  let k = nlStart + 1; // step past the newline that opens the body
+  while (pendingHeredocs.length > 0) {
+    const hd = /** @type {{ delimiter: string, dashStrip: boolean }} */ (pendingHeredocs.shift());
+    while (k < input.length) {
+      const nl = input.indexOf('\n', k);
+      const lineEnd = nl === -1 ? input.length : nl;
+      let line = input.slice(k, lineEnd);
+      if (line.endsWith('\r')) line = line.slice(0, -1);
+      const candidate = hd.dashStrip ? line.replace(/^\t+/, '') : line;
+      k = nl === -1 ? input.length : nl + 1;
+      if (candidate === hd.delimiter || nl === -1) break;
+    }
+  }
+  // Leave the closing newline as a separator operator for the next command.
+  if (k > nlStart && input[k - 1] === '\n') k--;
+  return k;
 }
 
 /**
