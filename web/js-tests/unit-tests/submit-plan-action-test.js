@@ -19,6 +19,7 @@ import {
   assert,
   assertContextGolden
 } from '../utilities/test-helpers.js';
+import contextItemRegistry from '../../js/registries/context-item-registry.js';
 
 
 /**
@@ -724,6 +725,47 @@ export async function runTests(ctx) {
   } catch (e) {
     failed++;
     errors.push(`default title: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Test 16: _getOrCreatePlanContextItem must not depend on a live registry
+  // lookup for its own type.
+  //
+  // The plan tool requires approval, so its submit executes after a long async
+  // gap. If the context-item registry is reloaded in that window (extension
+  // hot-reload, project switch), a `createItem('plan')` lookup for the plan's
+  // own type misses and throws "No context item found for type: plan" — the
+  // plan tool failing on itself. Simulate the reload by removing 'plan' from the
+  // registry, then create a plan item the way execution does. The pre-fix code
+  // (registry lookup) throws here; the fix constructs from `this.constructor`.
+  try {
+    const conversation = await createTestConversation(session);
+    const mt = conversation.rootMessageThread;
+
+    const PlanClass = contextItemRegistry.get('plan');
+    assert(PlanClass !== undefined, 'precondition: plan should be registered');
+    const planItem = new PlanClass({ id: 'PLAN_probe', type: 'plan', session, conversation, messageThread: mt });
+
+    const savedPlanClass = contextItemRegistry.items.get('plan');
+    let created;
+    try {
+      // Registry momentarily loses 'plan' (the reload race).
+      contextItemRegistry.items.delete('plan');
+      created = planItem._getOrCreatePlanContextItem();
+    } finally {
+      contextItemRegistry.items.set('plan', savedPlanClass);
+    }
+
+    assert(created !== undefined && created !== null, 'should create a plan item without a registry lookup');
+    assert(created.type === 'plan', 'created item should be of type plan');
+
+    // With the registry restored, the created plan reads back off the thread.
+    const found = mt.contextItems.find(f => f.type === 'plan');
+    assert(found !== undefined, 'created plan should be attached to the thread');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`registry race resilience: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { passed, failed, errors };

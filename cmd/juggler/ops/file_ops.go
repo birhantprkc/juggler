@@ -141,14 +141,25 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 	lines := strings.Split(fullContent, "\n")
 	totalLines := len(lines)
 
+	// Raw mode returns the exact on-disk bytes: no per-line truncation and no
+	// DefaultMaxLines cap. Sandboxed exploration code (explore_code's read-only
+	// filesystem) processes files programmatically — JSON.parse, hashing, line
+	// counting — so the context-trimming that keeps minified files out of the
+	// LLM prompt would instead corrupt the data (a truncated line + injected
+	// "..." makes JSON.parse fail right at MaxLineLength). Only the LLM-facing
+	// read tool wants the trimmed view.
+	raw, _ := params["raw"].(bool)
+
 	// Truncate lines that exceed MaxLineLength (prevents context bloat from minified files)
-	for i, line := range lines {
-		if len(line) > MaxLineLength {
-			lines[i] = line[:MaxLineLength] + "..."
+	if !raw {
+		for i, line := range lines {
+			if len(line) > MaxLineLength {
+				lines[i] = line[:MaxLineLength] + "..."
+			}
 		}
+		// Rebuild fullContent after potential line truncation
+		fullContent = strings.Join(lines, "\n")
 	}
-	// Rebuild fullContent after potential line truncation
-	fullContent = strings.Join(lines, "\n")
 
 	var resultContent string
 	var readMode string
@@ -251,7 +262,7 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 
 	} else {
 		// Full file mode with default limit
-		if totalLines > DefaultMaxLines {
+		if !raw && totalLines > DefaultMaxLines {
 			// Truncate to first DefaultMaxLines lines
 			readMode = fmt.Sprintf("Lines 1-%d (truncated)", DefaultMaxLines)
 			resultContent = strings.Join(lines[:DefaultMaxLines], "\n")

@@ -13,7 +13,7 @@
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import { FileSystem, Dirent, Stats, FileSystemError } from '../../js/services/fs.js';
+import { FileSystem, ReadOnlyFileSystem, Dirent, Stats, FileSystemError } from '../../js/services/fs.js';
 import path from '../../js/services/path.js';
 
 /**
@@ -157,6 +157,43 @@ export async function runTests(_ctx) {
     // 'utf-8' is the only meaningful encoding but should not crash
     const content = await fs.readFile('src/main.go', 'utf-8');
     assert(content.includes('package main'), 'should still return content');
+  });
+
+  // ========================================================================
+  // ReadOnlyFileSystem.readFile — raw reads for the explore_code sandbox.
+  // Sandboxed code processes files programmatically (JSON.parse, hashing,
+  // counting), so it must get the exact bytes, NOT the LLM-context view that
+  // truncates long lines at MaxLineLength (injecting "...") and caps files at
+  // DefaultMaxLines (2000). Reading a minified JSON file the LLM way returns
+  // the first 2000 chars + "..." and JSON.parse fails "at position 2000".
+  // ========================================================================
+
+  const rofs = new ReadOnlyFileSystem();
+
+  await test('ReadOnlyFileSystem.readFile: large file (>2000 lines) is NOT truncated', async () => {
+    // large-file.txt has 2999 lines. The LLM-facing FileSystem caps it at 2000
+    // (asserted above); the sandbox read must return every line.
+    const content = await rofs.readFile('large-file.txt');
+    const lines = content.split('\n');
+    assert(lines.length > 2001, `raw read should return all ~2999 lines, got ${lines.length}`);
+  });
+
+  await test('ReadOnlyFileSystem.readFile: minified single-line JSON round-trips (JSON.parse works)', async () => {
+    // A minified JSON object whose single line far exceeds MaxLineLength (2000).
+    // The LLM read would truncate the line and inject "...", so JSON.parse would
+    // throw "Expected double-quoted property name ... at position 2000". The raw
+    // sandbox read must return the exact bytes so the parse succeeds.
+    const big = 'z'.repeat(5000);
+    const written = JSON.stringify({ data: big, n: 1 });
+    assert(written.length > 2000 && !written.includes('\n'), 'fixture should be a long single line');
+    await fs.writeFile('_fs_test/minified.json', written);
+
+    const content = await rofs.readFile('_fs_test/minified.json');
+    assert(content === written, `raw read must be byte-exact: got ${content.length} chars, want ${written.length}`);
+    assert(!content.includes('...'), 'raw read must not inject a truncation ellipsis');
+    const parsed = JSON.parse(content); // would throw on truncated content
+    assert(parsed.data.length === 5000, 'parsed value should be intact');
+    assert(parsed.n === 1, 'parsed trailing field should survive');
   });
 
   // ========================================================================

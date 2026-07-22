@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { createItem } from 'juggler/registry';
 import { createElement } from 'juggler/ui';
 import {
   createEmptyState
@@ -994,15 +993,29 @@ class PlanContextItem extends ContextItem {
       return /** @type {PlanContextItem} */ (existing);
     }
 
-    // Create new plan context item using the context item registry
-    const contextItem = createItem({
+    // Create the new plan item directly from our own class rather than a
+    // registry lookup. The plan tool requires approval, so this runs after a
+    // long async gap; if the context-item registry is reloaded in that window
+    // (extension hot-reload, project switch), a `createItem('plan')` lookup can
+    // momentarily miss and throw "No context item found for type: plan" — the
+    // tool then fails even though the plan tool is what's executing. We ARE the
+    // plan class, so `this.constructor` is always present and reset-proof.
+    const PlanClass = /** @type {new (ctx: object) => PlanContextItem} */ (this.constructor);
+    const contextItem = new PlanClass({
       id: `PLAN_${Date.now()}`,
       type: 'plan',
-      data: { title: '', status: 'planning', steps: [] }
-    }, this.session, this.conversation, this.messageThread);
+      session: this.session,
+      conversation: this.conversation,
+      messageThread: this.messageThread,
+    });
+    contextItem.fromJSON({
+      id: contextItem.id,
+      type: 'plan',
+      data: { title: '', status: 'planning', steps: [] },
+    });
 
     this.messageThread.addContextItem(contextItem);
-    return /** @type {PlanContextItem} */ (contextItem);
+    return contextItem;
   }
 
   /**

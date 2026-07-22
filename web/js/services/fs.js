@@ -86,7 +86,7 @@ export class FileSystem {
   /**
    * Read a file's content.
    * @param {string} filePath - Path to file
-   * @param {string|{encoding?: string, offset?: number, limit?: number}} [options] - Encoding string or options object
+   * @param {string|{encoding?: string, offset?: number, limit?: number, raw?: boolean}} [options] - Encoding string or options object. `raw` returns the exact on-disk bytes with no line-length/line-count truncation (see ReadOnlyFileSystem).
    * @returns {Promise<string>} File content as string
    */
   async readFile(filePath, options) {
@@ -98,6 +98,7 @@ export class FileSystem {
         const limit = options.limit || 2000;
         params.lineRange = { start: offset, end: offset + limit - 1 };
       }
+      if (options.raw) params.raw = true;
     }
     const result = await readFileLoad(/** @type {any} */ (params), undefined, this._allowedPaths);
     if (!result.exists) {
@@ -172,6 +173,25 @@ export class FileSystem {
  * Throws on any write operation.
  */
 export class ReadOnlyFileSystem extends FileSystem {
+  /**
+   * Read a file's exact on-disk content. Sandboxed exploration code (explore_code)
+   * processes files programmatically — JSON.parse, hashing, counting lines — so it
+   * needs the real bytes, never the LLM-context view that truncates long lines at
+   * MaxLineLength (injecting "...") or caps the file at DefaultMaxLines. Reading a
+   * minified/single-line JSON file the LLM way returns the first 2000 chars + "...",
+   * making JSON.parse fail "at position 2000". Force raw mode so that can't happen.
+   * @param {string} filePath - Path to file
+   * @param {string|{encoding?: string, offset?: number, limit?: number, raw?: boolean}} [options] - Encoding or options
+   * @returns {Promise<string>} Full, untruncated file content
+   * @override
+   */
+  async readFile(filePath, options) {
+    const opts = typeof options === 'string'
+      ? { encoding: options }
+      : (typeof options === 'object' && options !== null ? options : {});
+    return super.readFile(filePath, { ...opts, raw: true });
+  }
+
   /** @returns {Promise<never>} Always throws */
   async writeFile() {
     throw new FileSystemError('EROFS', 'read-only filesystem');
