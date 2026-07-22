@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	provider "juggler/cmd/juggler/providers/registry"
@@ -137,8 +136,6 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	prefixStart := units[skip].start
 	prefixEnd := units[k-1].end
 	prefixRecords := records[prefixStart:prefixEnd]
-	sourceReq := provider.MessageRequest{Messages: []provider.Message{{Type: "user", Content: strings.Join(prefixRecords, "\n")}}}
-	sourceTokens := provider.EstimateMessageRequestTokenBreakdown(sourceReq, 0).Total
 	// The hidden compaction calls are independent requests against the full
 	// context window: providerOverhead accounts for the provider's fixed overhead
 	// exactly once. Subtracting envelope+suffix from the window would double-count
@@ -152,12 +149,10 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		window:           window,
 		reserve:          reserve,
 		providerOverhead: limitErr.Breakdown.ProviderOverheadTokens,
-		maxSpend:         compactionMaxSpend(sourceTokens, window, limitErr.Breakdown.ProviderOverheadTokens),
-		// The rejected request spans the whole history while maxSpend is sized from
-		// only the folded prefix, so it is seeded as prior* — reported, not enforced
-		// against the prefix-sized ceiling (see boundedCompactionBudget).
-		priorSpend: provider.SaturatingAdd(limitErr.EstimatedInputTokens, reserve),
-		priorCalls: 1,
+		// The rejected original request is seeded into the reported accounting;
+		// spend gates nothing (see boundedCompactionBudget).
+		spend: provider.SaturatingAdd(limitErr.EstimatedInputTokens, reserve),
+		calls: 1,
 	}
 
 	result, err := w.runReducer(compactionKindRecovery, pinnedModel, budget, prefixRecords)
@@ -208,7 +203,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		w.recordCompactionOutcome(compactionKindRecovery, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
 		return &BoundedCompactionError{
 			Reason: BoundedCompactionSourceChanged, Message: "conversation changed during context recovery; nothing was folded",
-			Calls: result.Calls, Spend: result.EstimatedSpend, MaxSpend: budget.maxSpend,
+			Calls: result.Calls, Spend: result.EstimatedSpend,
 			Window: budget.window, Usage: result.Usage,
 		}
 	}
@@ -276,7 +271,6 @@ func (w *ConversationWorker) shrinkOversizedTrailingToolResults(limitErr *provid
 			window:           window,
 			reserve:          reserve,
 			providerOverhead: limitErr.Breakdown.ProviderOverheadTokens,
-			maxSpend:         compactionMaxSpend(contentEst, window, limitErr.Breakdown.ProviderOverheadTokens),
 		}
 		reducer := w.newBoundedReducer(compactionKindShrink, *pinnedModel, budget)
 		shrunk, err := reducer.run([]string{resultPayload.Content})

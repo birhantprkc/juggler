@@ -34,22 +34,18 @@ func (s *stubCompactionDispatcher) dispatchHiddenCompaction(encoded json.RawMess
 }
 
 // newStubBoundedReducer builds a reducer exactly the way the folded-thread
-// orchestrator does: same pinned model, same budget fields, same spend formula,
-// and the rejected original request seeded as prior (reported, not enforced)
-// accounting — so the enforced hidden-call budget (spend/calls) starts at zero.
-func newStubBoundedReducer(records []string, window, reserve, initialSpend int64, stub *stubCompactionDispatcher) *boundedReducer {
-	sourceReq := provider.MessageRequest{Messages: []provider.Message{{Type: "user", Content: strings.Join(records, "\n")}}}
-	sourceTokens := provider.EstimateMessageRequestTokenBreakdown(sourceReq, 0).Total
+// orchestrator does: same pinned model, same budget fields, and the rejected
+// original request seeded into the reported spend/calls accounting.
+func newStubBoundedReducer(_ []string, window, reserve, initialSpend int64, stub *stubCompactionDispatcher) *boundedReducer {
 	return &boundedReducer{
 		conversationID: "test-conv",
 		threadID:       "thread",
 		modelConfig:    ModelConfig{Provider: "test", Model: "test"},
 		budget: boundedCompactionBudget{
-			window:     window,
-			reserve:    reserve,
-			maxSpend:   min(provider.SaturatingMul(sourceTokens, 4), provider.SaturatingMul(window, 8)),
-			priorSpend: initialSpend,
-			priorCalls: 1,
+			window:  window,
+			reserve: reserve,
+			spend:   initialSpend,
+			calls:   1,
 		},
 		dispatcher: stub,
 	}
@@ -194,29 +190,6 @@ func TestBoundedReducerMapCallsCarryOutputCap(t *testing.T) {
 	}
 }
 
-func TestBoundedReducerPreflightSpendBoundRejectsBeforeFirstDispatch(t *testing.T) {
-	records := reducerTestRecords(t, strings.Repeat("large history λ🙂 ", 500))
-	stub := &stubCompactionDispatcher{}
-	stub.handle = func(int, hiddenLLMRequest) (*LLMResponse, error) {
-		t.Fatal("a budget-rejected pass reached the dispatcher")
-		return nil, nil
-	}
-	const initialSpend int64 = 5_000
-	reducer := newStubBoundedReducer(records, 1_200, 300, initialSpend, stub)
-	reducer.budget.maxSpend = initialSpend // no hidden pass fits the ceiling; prior seed is not enforced
-	result, err := reducer.run(records)
-	var bounded *BoundedCompactionError
-	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionSpendBound || bounded.Pass != 1 {
-		t.Fatalf("error = %#v, want spend bound on pass 1", err)
-	}
-	if stub.calls != 0 {
-		t.Fatalf("dispatches = %d, want whole-pass preflight before first dispatch", stub.calls)
-	}
-	if result.Calls != 1 || result.EstimatedSpend != initialSpend || result.Usage != (CompactionUsage{}) {
-		t.Fatalf("partial accounting = %+v, want only the rejected original request", result)
-	}
-}
-
 func TestBoundedReducerPreflightCallBoundRejectsBeforeFirstDispatch(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("large history λ🙂 ", 500))
 	stub := &stubCompactionDispatcher{}
@@ -225,7 +198,7 @@ func TestBoundedReducerPreflightCallBoundRejectsBeforeFirstDispatch(t *testing.T
 		return nil, nil
 	}
 	reducer := newStubBoundedReducer(records, 1_200, 300, 5_000, stub)
-	reducer.budget.calls = boundedCompactionMaxCalls - 1 // one enforced slot left; the pass needs several
+	reducer.budget.calls = boundedCompactionMaxCalls - 1 // one slot left; the pass needs several
 	result, err := reducer.run(records)
 	var bounded *BoundedCompactionError
 	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionCallBound || bounded.Pass != 1 {
@@ -234,10 +207,9 @@ func TestBoundedReducerPreflightCallBoundRejectsBeforeFirstDispatch(t *testing.T
 	if stub.calls != 0 {
 		t.Fatalf("dispatches = %d, want whole-pass preflight before first dispatch", stub.calls)
 	}
-	// Enforced calls stayed at the pre-set 63 (no pass admitted); the reported
-	// total adds the one prior (rejected-request) call.
-	if result.Calls != boundedCompactionMaxCalls {
-		t.Fatalf("partial calls = %d, want 63 enforced (unchanged) + 1 prior", result.Calls)
+	// No pass was admitted, so the call count is unchanged.
+	if result.Calls != boundedCompactionMaxCalls-1 {
+		t.Fatalf("partial calls = %d, want the pre-set %d unchanged", result.Calls, boundedCompactionMaxCalls-1)
 	}
 }
 
@@ -246,8 +218,7 @@ func TestBoundedReducerPassBoundPreservesPartialAccounting(t *testing.T) {
 	// neighbor; the stub shrinks every chunk to 95% of its own estimated size
 	// (measured with the real estimator against the wrapped summary record),
 	// so every map verifiably progresses but the layer never fits within eight
-	// passes. maxSpend is lifted so the spend formula does not mask the
-	// pass-bound mechanics under test.
+	// passes.
 	records := make([]string, 3)
 	for i := range records {
 		records[i] = fmt.Sprintf("<record>%d%s</record>", i, strings.Repeat("x", 6750))
@@ -265,7 +236,6 @@ func TestBoundedReducerPassBoundPreservesPartialAccounting(t *testing.T) {
 		return compactionTextResponse(strings.Repeat("x", max(n-1, 0)), call, 1), nil
 	}
 	reducer := newStubBoundedReducer(records, 4_000, 100, 400, stub)
-	reducer.budget.maxSpend = 1 << 60
 	result, err := reducer.run(records)
 	var bounded *BoundedCompactionError
 	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionPassBound || bounded.Pass != boundedCompactionMaxPasses {
@@ -472,7 +442,7 @@ func TestCanonicalCompactionSplitsUnicodeThroughPackPath(t *testing.T) {
 		conversationID: "test-conv",
 		threadID:       "thread",
 		modelConfig:    ModelConfig{Provider: "test", Model: "test"},
-		budget:         boundedCompactionBudget{window: 900, reserve: 100, maxSpend: 1 << 60},
+		budget:         boundedCompactionBudget{window: 900, reserve: 100},
 	}
 	chunks, err := reducer.packCompactionChunks(0, []string{text})
 	if err != nil {
@@ -496,7 +466,7 @@ func TestCanonicalCompactionSplitsUnicodeThroughPackPath(t *testing.T) {
 
 func TestBoundedCompactionBudgetAllowsExactly64TotalAttempts(t *testing.T) {
 	req := hiddenCompactionRequest("test-conv", "thread", &ModelConfig{Provider: "test", Model: "test"}, 0, 0, "x", false)
-	budget := boundedCompactionBudget{window: 10_000, reserve: 7, maxSpend: 1 << 60, calls: 1, spend: 11}
+	budget := boundedCompactionBudget{window: 10_000, reserve: 7, calls: 1, spend: 11}
 	for attempt := 2; attempt <= boundedCompactionMaxCalls; attempt++ {
 		if err := budget.plan(req, 1); err != nil {
 			t.Fatalf("attempt %d rejected: %v", attempt, err)
@@ -514,7 +484,7 @@ func TestBoundedCompactionBudgetAllowsExactly64TotalAttempts(t *testing.T) {
 
 func TestBoundedCompactionSpendIncludesReserveBeforeDispatch(t *testing.T) {
 	req := hiddenCompactionRequest("test-conv", "thread", &ModelConfig{Provider: "test", Model: "test"}, 0, 0, "payload", false)
-	budget := boundedCompactionBudget{window: 10_000, reserve: 23, maxSpend: 1 << 60, calls: 1, spend: 101}
+	budget := boundedCompactionBudget{window: 10_000, reserve: 23, calls: 1, spend: 101}
 	want := provider.SaturatingAdd(budget.spend, provider.SaturatingAdd(budget.estimate(req), budget.reserve))
 	if err := budget.plan(req, 1); err != nil {
 		t.Fatal(err)
@@ -522,22 +492,14 @@ func TestBoundedCompactionSpendIncludesReserveBeforeDispatch(t *testing.T) {
 	if budget.spend != want {
 		t.Fatalf("spend = %d, want input plus reserve = %d", budget.spend, want)
 	}
-	budget.maxSpend = budget.spend
-	beforeCalls, beforeSpend := budget.calls, budget.spend
-	if err := budget.plan(req, 1); err == nil {
-		t.Fatal("request exceeding spend bound was admitted")
-	}
-	if budget.calls != beforeCalls || budget.spend != beforeSpend {
-		t.Fatalf("rejected request mutated budget to calls=%d spend=%d", budget.calls, budget.spend)
-	}
 }
 
-// TestBoundedReducerPriorRequestSeedIsReportedNotEnforced checks that the
-// rejected-request seed (priorSpend/priorCalls) is folded into the reported
-// accounting but never enforced against maxSpend, which bounds only the hidden
-// calls over the folded source. The recovery shape — a prior seed far larger
-// than a prefix-sized ceiling — must still dispatch and finalize.
-func TestBoundedReducerPriorRequestSeedIsReportedNotEnforced(t *testing.T) {
+// TestBoundedReducerSeededSpendNeverGatesDispatch is the regression pin for the
+// premature-compaction incident: the rejected original request's estimate is
+// seeded into the reported spend/calls accounting and must never gate hidden
+// dispatch. The recovery shape — a seed (full history + reserve) far larger
+// than anything the fold itself will spend — must still dispatch and finalize.
+func TestBoundedReducerSeededSpendNeverGatesDispatch(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("history ", 300))
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(call int, req hiddenLLMRequest) (*LLMResponse, error) {
@@ -546,16 +508,11 @@ func TestBoundedReducerPriorRequestSeedIsReportedNotEnforced(t *testing.T) {
 		}
 		return compactionToolResultResponse(t, "recovered summary", 120, 60), nil
 	}
-	// The rejected request (full history + reserve) dwarfs the prefix-sized
-	// ceiling — the recovery-fold shape.
-	const priorSpend int64 = 128_000
-	reducer := newStubBoundedReducer(records, 8_000, 300, priorSpend, stub)
-	// Prefix-sized ceiling: comfortably admits the single hidden finalization
-	// but sits far below the prior-request seed.
-	reducer.budget.maxSpend = 6_000
+	const seededSpend int64 = 128_000 // dwarfs the 8k window below
+	reducer := newStubBoundedReducer(records, 8_000, 300, seededSpend, stub)
 	result, err := reducer.run(records)
 	if err != nil {
-		t.Fatalf("reducer rejected the fold at the spend bound: %v", err)
+		t.Fatalf("reducer rejected the fold: %v", err)
 	}
 	if result.Summary != "recovered summary" {
 		t.Fatalf("summary = %q, want the folded summary", result.Summary)
@@ -563,32 +520,9 @@ func TestBoundedReducerPriorRequestSeedIsReportedNotEnforced(t *testing.T) {
 	// The rejected request is reported (the CompactionResult contract), added on
 	// top of the one hidden call, without ever gating dispatch.
 	if result.Calls != 2 {
-		t.Fatalf("calls = %d, want prior request plus one hidden call", result.Calls)
+		t.Fatalf("calls = %d, want rejected request plus one hidden call", result.Calls)
 	}
-	if result.EstimatedSpend <= priorSpend {
-		t.Fatalf("spend = %d, want prior %d plus the hidden call", result.EstimatedSpend, priorSpend)
-	}
-}
-
-// TestCompactionMaxSpendBudgetsProviderOverhead pins the spend-ceiling fix: each
-// hidden call re-pays the provider's fixed overhead, so the old content-only
-// ceiling (min(4*content, 8*window)) could sit below a single 40k-overhead
-// call's cost and trip the spend bound the moment reduction began.
-func TestCompactionMaxSpendBudgetsProviderOverhead(t *testing.T) {
-	const overhead int64 = 40_000
-	oldBound := min(provider.SaturatingMul(5_000, 4), provider.SaturatingMul(200_000, 8))
-	if oldBound >= overhead {
-		t.Fatalf("precondition: old bound %d should sit below one %d-overhead call", oldBound, overhead)
-	}
-	got := compactionMaxSpend(5_000, 200_000, overhead)
-	if want := oldBound + overhead*boundedCompactionMaxPasses; got != want {
-		t.Fatalf("compactionMaxSpend = %d, want %d", got, want)
-	}
-	if got <= overhead {
-		t.Fatalf("ceiling %d does not admit even a single %d-overhead call", got, overhead)
-	}
-	// Providers without a fixed overhead keep the original ceiling exactly.
-	if got0 := compactionMaxSpend(5_000, 200_000, 0); got0 != oldBound {
-		t.Fatalf("compactionMaxSpend overhead=0 = %d, want unchanged %d", got0, oldBound)
+	if result.EstimatedSpend <= seededSpend {
+		t.Fatalf("spend = %d, want seed %d plus the hidden call", result.EstimatedSpend, seededSpend)
 	}
 }

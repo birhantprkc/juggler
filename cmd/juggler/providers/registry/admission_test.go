@@ -149,6 +149,51 @@ func TestAdmissionContextLimitUnwrapsProviderCause(t *testing.T) {
 	}
 }
 
+func TestIsProviderContextOverflowErrorRealWorldWordings(t *testing.T) {
+	// The F2 backstop is a substring match over heterogeneous provider wording:
+	// a context-overflow 400 that slips through here never reaches recovery and
+	// the turn dies as a generic error. Pin one real observed wording per
+	// provider so signature drift is caught by a failing line, not an incident.
+	overflow := []struct{ name, wording string }{
+		{"openai code", `Error code: 400 - {"error":{"code":"context_length_exceeded"}}`},
+		{"openai prose", "This model's maximum context length is 128000 tokens. However, your messages resulted in 131065 tokens. Please reduce the length of the messages."},
+		{"openai responses", "Your input exceeds the context window of this model."},
+		{"anthropic long prompt", "prompt is too long: 210522 tokens > 200000 maximum"},
+		{"anthropic max_tokens", "input length and max_tokens exceed context limit: 195726 + 8192 > 200000"},
+		{"deepseek", "This model's maximum context length is 131072 tokens. However, you requested 143220 tokens."},
+		{"gemini", "The input token count (1189051) exceeds the maximum number of tokens allowed (1048575)."},
+		{"xai", "This model's maximum prompt length is 131072 but the request contains 148231 tokens."},
+		{"moonshot", "Your request exceeded model token limit: 262144"},
+		{"llamacpp", "the request exceeds the available context size, try increasing the context size"},
+		{"copilot", "prompt token count of 105220 exceeds the limit of 90000"},
+	}
+	for _, test := range overflow {
+		if !isProviderContextOverflowError(errors.New(test.wording)) {
+			t.Errorf("%s: overflow wording not recognized: %q", test.name, test.wording)
+		}
+	}
+	notOverflow := []struct{ name, wording string }{
+		{"openai tpm", "Request too large for gpt-4o in organization on tokens per min (TPM): Limit 30000"},
+		{"anthropic rate limit", "This request would exceed your organization's rate limit of 400000 input tokens per minute"},
+		{"moonshot rate limit", "rate_limit_reached_error: your account reached max request"},
+		{"generic 400", "invalid_request_error: tool_choice is not supported with thinking mode"},
+		{"auth", "401 unauthorized: invalid api key"},
+	}
+	for _, test := range notOverflow {
+		if isProviderContextOverflowError(errors.New(test.wording)) {
+			t.Errorf("%s: non-overflow wording misclassified as overflow: %q", test.name, test.wording)
+		}
+	}
+	if isProviderContextOverflowError(nil) {
+		t.Error("nil error classified as overflow")
+	}
+	// An error that is already a ContextLimitExceededError was raised by
+	// admission deliberately and must be left alone.
+	if isProviderContextOverflowError(&ContextLimitExceededError{ContextWindowTokens: 100}) {
+		t.Error("ContextLimitExceededError reclassified as a provider overflow")
+	}
+}
+
 func TestInitializeProviderWrapsEveryStatefulConversation(t *testing.T) {
 	var opened []*admissionTestConversation
 	name := "admission-stateful-" + t.Name()

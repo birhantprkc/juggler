@@ -54,17 +54,14 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 		return true, &BoundedCompactionError{Reason: BoundedCompactionEmptySource, Message: "bounded compaction source is empty"}
 	}
 
-	sourceReq := provider.MessageRequest{Messages: []provider.Message{{Type: "user", Content: strings.Join(records, "\n")}}}
-	sourceTokens := provider.EstimateMessageRequestTokenBreakdown(sourceReq, 0).Total
 	budget := boundedCompactionBudget{
 		window:           limitErr.ContextWindowTokens,
 		reserve:          limitErr.OutputReserveTokens,
 		providerOverhead: limitErr.Breakdown.ProviderOverheadTokens,
-		maxSpend:         compactionMaxSpend(sourceTokens, limitErr.ContextWindowTokens, limitErr.Breakdown.ProviderOverheadTokens),
-		// The rejected request is seeded as prior* — reported, not enforced against
-		// maxSpend (see boundedCompactionBudget).
-		priorSpend: provider.SaturatingAdd(limitErr.EstimatedInputTokens, limitErr.OutputReserveTokens),
-		priorCalls: 1,
+		// The rejected original request is seeded into the reported accounting;
+		// spend gates nothing (see boundedCompactionBudget).
+		spend: provider.SaturatingAdd(limitErr.EstimatedInputTokens, limitErr.OutputReserveTokens),
+		calls: 1,
 	}
 
 	w.recordCompactionStart(compactionKindFolded, limitErr.ContextWindowTokens, limitErr.OutputReserveTokens, limitErr.Breakdown.ProviderOverheadTokens)
@@ -77,7 +74,7 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 		return true, &BoundedCompactionError{
 			Reason: BoundedCompactionSourceChanged, Message: "bounded compaction thread disappeared before result commit",
 			Pass: result.Passes, Calls: result.Calls, Spend: result.EstimatedSpend,
-			MaxSpend: budget.maxSpend, Window: budget.window, Usage: result.Usage,
+			Window: budget.window, Usage: result.Usage,
 		}
 	}
 	w.recordCompactionOutcome(compactionKindFolded, "result", result, nil)

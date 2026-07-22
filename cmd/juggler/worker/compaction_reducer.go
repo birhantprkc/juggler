@@ -41,7 +41,6 @@ const (
 	BoundedCompactionEmptySource        BoundedCompactionReason = "empty_source"
 	BoundedCompactionSourceEncoding     BoundedCompactionReason = "source_encoding"
 	BoundedCompactionContextBound       BoundedCompactionReason = "context_bound"
-	BoundedCompactionSpendBound         BoundedCompactionReason = "spend_bound"
 	BoundedCompactionCallBound          BoundedCompactionReason = "call_bound"
 	BoundedCompactionPassBound          BoundedCompactionReason = "pass_bound"
 	BoundedCompactionNoProgress         BoundedCompactionReason = "no_progress"
@@ -83,15 +82,14 @@ type CompactionResult struct {
 // pass, or zero before reduction starts. Usage is the actual accumulated
 // hidden-call usage at the point of failure.
 type BoundedCompactionError struct {
-	Reason   BoundedCompactionReason
-	Message  string
-	Pass     int
-	Calls    int
-	Spend    int64
-	MaxSpend int64
-	Window   int64
-	Usage    CompactionUsage
-	Cause    error
+	Reason  BoundedCompactionReason
+	Message string
+	Pass    int
+	Calls   int
+	Spend   int64
+	Window  int64
+	Usage   CompactionUsage
+	Cause   error
 }
 
 func (e *BoundedCompactionError) Error() string {
@@ -116,34 +114,21 @@ func (e *BoundedCompactionCancelledError) Error() string {
 
 func (e *BoundedCompactionCancelledError) Unwrap() error { return errBoundedCompactionCancelled }
 
+// boundedCompactionBudget bounds compaction cost with two hard limits: calls
+// (≤ boundedCompactionMaxCalls attempts, checked in plan) and per-call context
+// fit (every request plus its output reserve must fit the window). spend is
+// pure reported accounting — the estimated tokens of every planned attempt —
+// and gates nothing. Orchestrators seed spend/calls with the rejected original
+// request that provoked compaction, so reported accounting includes it; a
+// heuristic spend ceiling used to exist on top of these bounds and was the
+// subsystem's most incident-prone piece, so it was removed.
 type boundedCompactionBudget struct {
 	window           int64
 	reserve          int64
 	providerOverhead int64
-	maxSpend         int64
 	spend            int64
 	calls            int
-	// priorSpend and priorCalls account for the rejected original request that
-	// provoked compaction. They are reported (folded into CompactionResult and
-	// BoundedCompactionError) but not enforced against maxSpend, which bounds only
-	// the reducer's own hidden calls over the folded source. maxSpend is sized from
-	// that source alone, which in a recovery fold is just a prefix of the request;
-	// the request itself belongs in prior* so it does not gate the hidden calls.
-	// spend/calls hold only the enforced hidden-call budget and start at zero.
-	priorSpend int64
-	priorCalls int
-	usage      CompactionUsage
-}
-
-// reportedSpend and reportedCalls fold the rejected original request into the
-// accounting surfaced to callers. The prior* terms are report-only; only spend
-// and calls are enforced against maxSpend.
-func (b *boundedCompactionBudget) reportedSpend() int64 {
-	return provider.SaturatingAdd(b.spend, b.priorSpend)
-}
-
-func (b *boundedCompactionBudget) reportedCalls() int {
-	return b.calls + b.priorCalls
+	usage            CompactionUsage
 }
 
 type hiddenLLMRequest struct {
@@ -177,7 +162,7 @@ type compactionHooks struct {
 
 // boundedReducer is the pure bounded reduction engine: it reduces canonical
 // records into one final summary through hidden LLM calls under explicit
-// pass/call/spend bounds. It performs no document (Yjs) access; orchestrators
+// pass/call/context-fit bounds. It performs no document (Yjs) access; orchestrators
 // snapshot and canonicalize state, run the reducer, and commit the result.
 type boundedReducer struct {
 	conversationID string
@@ -196,23 +181,18 @@ type boundedReducer struct {
 func (r *boundedReducer) run(records []string) (result CompactionResult, err error) {
 	started := time.Now()
 	result = CompactionResult{
-		Calls:             r.budget.reportedCalls(),
-		EstimatedSpend:    r.budget.reportedSpend(),
+		Calls:             r.budget.calls,
+		EstimatedSpend:    r.budget.spend,
 		SourceFingerprint: compactionSourceFingerprint(records),
 	}
 	// Accounting is refreshed on every return path, including panics-free
 	// early exits, so partial accounting always flows to the caller.
 	defer func() {
-		result.Calls = r.budget.reportedCalls()
-		result.EstimatedSpend = r.budget.reportedSpend()
+		result.Calls = r.budget.calls
+		result.EstimatedSpend = r.budget.spend
 		result.Usage = r.budget.usage
 		result.DurationMs = time.Since(started).Milliseconds()
 	}()
-
-	// The enforced hidden-call budget (spend) starts at zero; the spend bound is
-	// applied per call in plan() as hidden calls are admitted against maxSpend.
-	// priorSpend (the rejected original request) is report-only and never gates
-	// dispatch.
 
 	// Prove a content-free hidden envelope can fit before any hidden dispatch.
 	empty := r.hiddenCompactionRequest(0, 0, "", false)
@@ -463,8 +443,8 @@ func (b *boundedCompactionBudget) fits(req hiddenLLMRequest) bool {
 
 func (b *boundedCompactionBudget) err(reason BoundedCompactionReason, pass int, message string, cause error) error {
 	return &BoundedCompactionError{
-		Reason: reason, Message: message, Pass: pass, Calls: b.reportedCalls(),
-		Spend: b.reportedSpend(), MaxSpend: b.maxSpend, Window: b.window, Usage: b.usage, Cause: cause,
+		Reason: reason, Message: message, Pass: pass, Calls: b.calls,
+		Spend: b.spend, Window: b.window, Usage: b.usage, Cause: cause,
 	}
 }
 
@@ -477,24 +457,18 @@ func (b *boundedCompactionBudget) plan(req hiddenLLMRequest, pass int) error {
 	if attemptSpend > b.window {
 		return b.err(BoundedCompactionContextBound, pass, "bounded compaction planned a request exceeding model context", nil)
 	}
-	if provider.SaturatingAdd(b.spend, attemptSpend) > b.maxSpend {
-		return b.err(BoundedCompactionSpendBound, pass, fmt.Sprintf("bounded compaction estimated spend exceeds %d tokens", b.maxSpend), nil)
-	}
 	b.calls++
 	b.spend = provider.SaturatingAdd(b.spend, attemptSpend)
 	return nil
 }
 
-// preflight budget-admits a fully planned pass against a scratch copy of the
-// budget before its first dispatch. A rejection carries the same reason and
-// message the in-loop planner would have produced at that call index, but no
-// partial pass is ever dispatched.
+// preflight admits a fully planned pass before its first dispatch, so a pass
+// cannot stop halfway on a precomputable bound. With the spend ceiling gone the
+// only precomputable bound left is the call count (per-call context fit was
+// already proven while packing the chunks).
 func (b *boundedCompactionBudget) preflight(reqs []hiddenLLMRequest, pass int) error {
-	scratch := *b
-	for _, req := range reqs {
-		if err := scratch.plan(req, pass); err != nil {
-			return err
-		}
+	if b.calls+len(reqs) > boundedCompactionMaxCalls {
+		return b.err(BoundedCompactionCallBound, pass, fmt.Sprintf("bounded compaction exceeded %d total call attempts", boundedCompactionMaxCalls), nil)
 	}
 	return nil
 }
@@ -559,17 +533,4 @@ func boundedCompactionCanReduce(completedPasses int) bool {
 
 func estimateCanonicalLayer(records []string) int64 {
 	return provider.EstimateMessageRequestTokenBreakdown(provider.MessageRequest{Messages: []provider.Message{{Type: "user", Content: strings.Join(records, "\n")}}}, 0).Total
-}
-
-// compactionMaxSpend bounds total estimated hidden-call spend. Each hidden call
-// re-pays the provider's fixed overhead regardless of content, so the ceiling
-// budgets that overhead across a bounded number of passes on top of a multiple
-// of the source size. Basing the ceiling on source tokens alone (the original
-// formula) sets it below a single legitimate call's cost whenever the provider
-// overhead is large — e.g. the Claude Code CLI's 40k — which trips the spend
-// bound the moment reduction begins.
-func compactionMaxSpend(sourceTokens, window, providerOverhead int64) int64 {
-	content := min(provider.SaturatingMul(sourceTokens, 4), provider.SaturatingMul(window, 8))
-	overheadHeadroom := provider.SaturatingMul(providerOverhead, boundedCompactionMaxPasses)
-	return provider.SaturatingAdd(content, overheadHeadroom)
 }

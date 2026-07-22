@@ -95,22 +95,10 @@ func SaturatingAdd(a, b int64) int64 {
 	return a + b
 }
 
-// SaturatingMul returns a*b clamped to MaxInt64. It returns 0 when either
-// operand is <= 0 (the token-budget callers only multiply non-negative sizes by
-// positive factors, and treat a non-positive operand as "no budget").
-func SaturatingMul(a, b int64) int64 {
-	if a <= 0 || b <= 0 {
-		return 0
-	}
-	if a > math.MaxInt64/b {
-		return math.MaxInt64
-	}
-	return a * b
-}
-
 // approximateTokenCount is deliberately conservative across common BPE
-// tokenizers. Natural ASCII runs receive modest compression, while punctuation,
-// long opaque strings, CJK, and symbols are charged at their denser rates.
+// tokenizers. Natural ASCII runs and repeated-punctuation runs receive modest
+// compression, while mixed punctuation, long opaque strings, CJK, and symbols
+// are charged at their denser rates.
 //
 // Calibrated against a cl100k golden corpus (admission_golden_test.go). Two
 // rates are true per-byte maxima for byte-level BPE, which emits at most one
@@ -129,17 +117,31 @@ func approximateTokenCount(text string) int64 {
 	return counter.total()
 }
 
+const (
+	runAlphaNumeric uint8 = iota + 1
+	runWhitespace
+	runRepeatedPunct
+)
+
 type approximateTokenCounter struct {
 	tokens    int64
 	runLength int64
 	runKind   uint8
+	runRune   rune
 }
 
 func (c *approximateTokenCounter) add(r rune) {
-	const (
-		runAlphaNumeric uint8 = iota + 1
-		runWhitespace
-	)
+	if r == utf8.RuneError {
+		// U+FFFD, either literal or produced per invalid input byte by Go's
+		// UTF-8 decoding. json.Marshal replaces invalid bytes with U+FFFD on
+		// the wire too, so this is what the provider tokenizes; measured 1
+		// token alone and 0.25/char in runs (cl100k). Charging its 3-byte
+		// UTF-8 length tripled the estimate for binary junk (the
+		// lone-surrogate adversarial case), so charge the measured maximum.
+		c.flushRun()
+		c.tokens = SaturatingAdd(c.tokens, 1)
+		return
+	}
 
 	var kind uint8
 	if r < utf8.RuneSelf {
@@ -148,21 +150,28 @@ func (c *approximateTokenCounter) add(r rune) {
 			kind = runAlphaNumeric
 		case unicode.IsSpace(r):
 			kind = runWhitespace
+		default:
+			// ASCII punctuation/symbols: only *identical* consecutive runes
+			// merge into a run (flushRun charges a compressed rate); a rune
+			// differing from its predecessor flushes and starts a new run, so
+			// mixed punctuation stays at one token per rune.
+			kind = runRepeatedPunct
 		}
 	}
 	if kind != 0 {
-		if c.runKind != kind {
+		if c.runKind != kind || (kind == runRepeatedPunct && c.runRune != r) {
 			c.flushRun()
 			c.runKind = kind
+			c.runRune = r
 		}
 		c.runLength = SaturatingAdd(c.runLength, 1)
 		return
 	}
 
 	c.flushRun()
-	// Every non-ASCII rune costs its UTF-8 byte length: the provable maximum
-	// for byte-level BPE (measured: common CJK ~1.75 tokens/char, rare glyphs
-	// ~2.5, emoji ~2–3, of a 3–4 byte ceiling).
+	// Every other non-ASCII rune costs its UTF-8 byte length: the provable
+	// maximum for byte-level BPE (measured: common CJK ~1.75 tokens/char, rare
+	// glyphs ~2.5, emoji ~2–3, of a 3–4 byte ceiling).
 	c.tokens = SaturatingAdd(c.tokens, int64(utf8.RuneLen(r)))
 }
 
@@ -172,19 +181,27 @@ func (c *approximateTokenCounter) flushRun() {
 	}
 	var tokens int64
 	switch {
-	case c.runKind == 1 && c.runLength <= 16:
+	case c.runKind == runAlphaNumeric && c.runLength <= 16:
 		// Prose words: modest compression. Opaque runs this short (pasted ids,
 		// keys, hex) tokenize denser — up to ~1/byte — so punctuation-segmented
 		// dense content can under-count here without a fixed bound. Context
 		// recovery, not admission, is the backstop for that drift.
 		tokens = SaturatingAdd(c.runLength, 2) / 3
-	case c.runKind == 1:
+	case c.runKind == runAlphaNumeric:
 		// Hashes, base64, random IDs, and minified data: adversarial
 		// alphanumeric content reaches one token per byte in real BPE
 		// tokenizers (measured "x9"×2000 and random alnum at exactly 1.0 in
 		// cl100k), so charge the provable maximum rather than a density
 		// guess.
 		tokens = c.runLength
+	case c.runKind == runRepeatedPunct:
+		// Runs of one repeated punctuation rune (bracket walls in nested
+		// JSON, ---- rules, ==== banners) merge aggressively in real BPE
+		// vocabularies. The worst measured identical-run rate in cl100k is
+		// exactly 0.5/char (brackets, quotes) with most far cheaper ("-"×64
+		// is 1 token), so charge 1 + n/2 — never below the measured maximum
+		// at any run length, and a single rune stays exactly 1.
+		tokens = SaturatingAdd(1, c.runLength/2)
 	default:
 		// Whitespace: pure runs merge almost entirely in BPE, but
 		// alternating mixes measured 0.33 tokens/char in cl100k.
@@ -193,6 +210,7 @@ func (c *approximateTokenCounter) flushRun() {
 	c.tokens = SaturatingAdd(c.tokens, tokens)
 	c.runLength = 0
 	c.runKind = 0
+	c.runRune = 0
 }
 
 func (c approximateTokenCounter) total() int64 {
@@ -381,16 +399,21 @@ func isProviderContextOverflowError(err error) bool {
 		}
 	}
 	for _, signature := range []string{
-		"context_length_exceeded",
-		"context length",
-		"context window",
-		"maximum context",
-		"prompt is too long",
-		"input is too long",
-		"too many tokens",
-		"exceeds the maximum",
-		"reduce the length of the messages",
-		"request too large",
+		"context_length_exceeded",           // OpenAI error code
+		"context length",                    // OpenAI/DeepSeek/Mistral "maximum context length is N tokens"
+		"context window",                    // OpenAI responses "exceeds the context window of this model"
+		"context limit",                     // Anthropic "input length and max_tokens exceed context limit"
+		"context size",                      // llama.cpp "request exceeds the available context size"
+		"maximum context",                   // OpenAI "This model's maximum context length"
+		"maximum prompt length",             // xAI "This model's maximum prompt length is N"
+		"prompt is too long",                // Anthropic "prompt is too long: N tokens > M maximum"
+		"input is too long",                 // Anthropic (legacy wording)
+		"too many tokens",                   // Cohere-style "too many tokens"
+		"exceeded model token limit",        // Moonshot/Kimi "Your request exceeded model token limit: N"
+		"prompt token count",                // GitHub Copilot "prompt token count of N exceeds the limit of M"
+		"exceeds the maximum",               // Gemini "input token count (N) exceeds the maximum number of tokens allowed (M)"
+		"reduce the length of the messages", // OpenAI remediation suffix
+		"request too large",                 // generic 400 wording (rate limits screened above)
 	} {
 		if strings.Contains(msg, signature) {
 			return true
