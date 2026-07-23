@@ -9,6 +9,13 @@ import { applyCollapsible } from '../utils/collapsible.js';
 import { renderMarkdownWrapped, decorateCodeBlocks, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
 
 /**
+ * Character count above which an over-long user message is clamped behind a
+ * Show more toggle. Higher than the thread tile's limit because the message
+ * bubble is wider, so more chars are needed to fill the clamp height.
+ */
+const USER_MESSAGE_MAX_CHARS = 1000;
+
+/**
  * User message component - simple text bubble without icon layout. When the
  * user item carries image attachments, a thumbnail grid is rendered below the
  * text (or alone, for an image-only message).
@@ -72,9 +79,12 @@ class UserMessage extends BaseMessage {
     this._appendCopyButton(article, () => this.content);
     this.replaceChildren(article);
 
-    // Now attached — clamp an extremely long message behind a Show more toggle.
-    // No-op for ordinary-length text, so short bubbles are unaffected.
-    if (text) applyCollapsible(text, { key: this.itemId || '' });
+    // Clamp an extremely long message behind a Show more toggle. No-op for
+    // ordinary-length text, so short bubbles are unaffected. The gate is a
+    // character count (see collapsible.js); the higher limit than the thread
+    // tile reflects the wider bubble, which needs more chars to fill the clamp
+    // height.
+    if (text) applyCollapsible(text, { key: this.itemId || '', maxChars: USER_MESSAGE_MAX_CHARS });
   }
 
   /**

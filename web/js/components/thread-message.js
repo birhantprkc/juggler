@@ -8,6 +8,13 @@ import { getThreadStatus, paintThreadSummary, paintThreadStatusText } from '../u
 import { applyCollapsible } from '../utils/collapsible.js';
 
 /**
+ * Character count above which a closed thread's markdown summary is clamped
+ * behind a Show more toggle. Tuned to the narrow thread-tile width, where ~600
+ * chars fills the collapsible's 18rem clamp height.
+ */
+const THREAD_SUMMARY_MAX_CHARS = 600;
+
+/**
  * ThreadMessage — parent-tile rendering of a sub-thread.
  *
  * Until the thread is closed (has a `result`), the tile shows a status block
@@ -181,11 +188,13 @@ class ThreadMessage extends HTMLElement {
       }
 
       this.replaceChildren(article);
-      // Now attached — clamp an overly long summary behind a Show more toggle.
-      // Only the closed-state markdown summary is collapsible; the live status
-      // block is always short. Keyed by the thread id so an expanded summary
-      // stays expanded across the tile's in-place repaints.
-      if (isClosed) applyCollapsible(summaryDiv, { key: this._item?.get?.('itemId') || '' });
+      // Clamp an overly long summary behind a Show more toggle. Only the
+      // closed-state markdown summary is collapsible; the live status block is
+      // always short. Keyed by the thread id so an expanded summary stays
+      // expanded across the tile's in-place repaints. The gate is a character
+      // count (see collapsible.js), so it's correct even when the tile is
+      // painted into a hidden tab/column where layout isn't yet available.
+      if (isClosed) applyCollapsible(summaryDiv, { key: this._item?.get?.('itemId') || '', maxChars: THREAD_SUMMARY_MAX_CHARS });
       return;
     }
 
@@ -199,7 +208,7 @@ class ThreadMessage extends HTMLElement {
     if (!summaryDiv) return;
     if (isClosed) {
       paintThreadSummary(summaryDiv, result, { status });
-      applyCollapsible(summaryDiv, { key: this._item?.get?.('itemId') || '' });
+      applyCollapsible(summaryDiv, { key: this._item?.get?.('itemId') || '', maxChars: THREAD_SUMMARY_MAX_CHARS });
       return;
     }
     if (status) paintThreadStatusText(summaryDiv, status);

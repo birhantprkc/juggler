@@ -1997,7 +1997,7 @@ user-message .user-message-text.plain {
 
 /* Collapse/expand for oversized conversation items (an extremely long user
    message, a long thread summary). Applied by utils/collapsible.js only past a
-   height threshold, so ordinary items never carry these classes. The clamped
+   character-count threshold, so ordinary items never carry these classes. The clamped
    block fades to transparent over its last stretch via a mask (background-
    agnostic, so it works on the user bubble and the thread tile alike), and a
    subtle full-width toggle is inserted directly below it. */

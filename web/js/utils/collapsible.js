@@ -8,19 +8,21 @@ import { EXPAND_MORE_SVG, EXPAND_LESS_SVG } from './icons.js';
  * Collapse/expand affordance for oversized conversation items (an extremely
  * long user message, a long thread summary). The clamped content fades out at
  * the bottom via a CSS mask and a subtle, full-width "Show more" toggle is
- * inserted directly below it. Nothing is added when the content isn't tall
+ * inserted directly below it. Nothing is added when the content isn't long
  * enough to be in the way, so ordinary-length items render untouched.
+ *
+ * The decision to engage is gated on the content's character count, NOT its
+ * measured pixel height. Measuring `scrollHeight` needs live layout, which is
+ * unavailable when a tile is painted into a hidden tab/column or before its
+ * markdown has settled — in that state the height reads short and the toggle is
+ * wrongly skipped (and, because the `.collapsible` class is never added, the
+ * CSS clamp doesn't apply either, so the full item renders). WebKit and Chrome
+ * resolve hidden-subtree layout at different moments, which made *which* tiles
+ * failed differ between them. A character count needs no layout, so the same
+ * decision is reached regardless of when or where the element was painted. The
+ * CSS `max-height` clamp still does the actual visual clamping.
  * @module collapsible
  */
-
-/** 18rem — the clamp height; matches `.collapsible.is-collapsed` in styles.css. */
-const DEFAULT_THRESHOLD_PX = 18 * 16;
-
-/**
- * Don't bother clamping content that only just clears the threshold — hiding a
- * line or two behind a toggle is more annoying than just showing it.
- */
-const SLACK_PX = 24;
 
 /**
  * Expanded/collapsed state keyed by a caller-supplied stable id, so a user's
@@ -48,31 +50,34 @@ function paintToggle(btn, expanded) {
 
 /**
  * Clamp `contentEl` and attach a Show more / Show less toggle when — and only
- * when — its natural height exceeds the threshold. Idempotent: safe to call on
- * every render of the same element; a previously-inserted toggle is removed and
- * the clamp classes are reset before re-measuring, so a repaint (e.g. a thread
- * summary whose text changed) re-evaluates cleanly.
+ * when — its text is longer than `maxChars`. Idempotent: safe to call on every
+ * render of the same element; a previously-inserted toggle is removed and the
+ * clamp classes are reset first, so a repaint (e.g. a thread summary whose text
+ * changed) re-evaluates cleanly.
  *
- * The element MUST already be attached to the document when this is called —
- * height is measured via `scrollHeight`, which needs live layout.
+ * The gate is a character count, so no layout is read — the element need not be
+ * laid out (or even visible) for the decision to be correct. See the module
+ * comment for why pixel measurement was replaced.
  * @param {HTMLElement} contentEl - The content block to clamp (e.g. the message
  *   text div or the `.thread-summary`). The toggle is inserted as its next
  *   sibling, so `contentEl`'s parent should lay its children out in a column.
  * @param {object} [opts] - Optional configuration.
  * @param {string} [opts.key] - Stable id used to remember the expanded state
  *   across re-renders. Omit for ephemeral items (state defaults to collapsed).
- * @param {number} [opts.thresholdPx] - Override the clamp height in pixels.
+ * @param {number} [opts.maxChars] - Character count above which the content is
+ *   clamped behind a toggle. Callers tune this to their column width (a narrow
+ *   thread tile fills the clamp height with fewer chars than a wide bubble).
  */
-export function applyCollapsible(contentEl, { key = '', thresholdPx = DEFAULT_THRESHOLD_PX } = {}) {
-  if (!contentEl || !contentEl.isConnected) return;
+export function applyCollapsible(contentEl, { key = '', maxChars = 600 } = {}) {
+  if (!contentEl) return;
 
-  // Drop a toggle we added on a previous pass and clear our classes, so the
-  // natural height we measure below is the true unclamped height.
+  // Drop a toggle we added on a previous pass and clear our classes, so a
+  // repaint re-evaluates from a clean slate.
   const prior = contentEl.nextElementSibling;
   if (prior && prior.classList.contains('collapsible-toggle')) prior.remove();
   contentEl.classList.remove('collapsible', 'is-collapsed', 'is-expanded');
 
-  if (contentEl.scrollHeight <= thresholdPx + SLACK_PX) return;
+  if ((contentEl.textContent?.length ?? 0) <= maxChars) return;
 
   contentEl.classList.add('collapsible');
   // Stamp the key onto the element so `expandCollapsibleContaining` can recover
