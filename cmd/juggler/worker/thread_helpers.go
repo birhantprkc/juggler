@@ -195,13 +195,25 @@ func scanApprovalBlock(arr *ycrdt.YArray) (hasPending, hasExecuting bool) {
 				hasExecuting = true
 			}
 		case ItemTypeThread:
-			if result, _ := m.Get("result").(string); result == "" {
-				hasExecuting = true
-			}
+			// Recurse first so we can tell a genuinely-working sub-thread from
+			// one that is itself only parked on approvals.
+			var np, ne bool
 			if nested, ok := m.Get("items").(*ycrdt.YArray); ok {
-				np, ne := scanApprovalBlock(nested)
-				hasPending = hasPending || np
-				hasExecuting = hasExecuting || ne
+				np, ne = scanApprovalBlock(nested)
+			}
+			hasPending = hasPending || np
+			hasExecuting = hasExecuting || ne
+			// An open (resultless) sub-thread normally means work is in flight —
+			// its LLM turn is running with no in-doc tool marker yet. But a
+			// sub-thread whose only non-terminal work is a pending approval
+			// (np && !ne) is suspended exactly like a top-level approval park:
+			// quitting and restarting leaves the approval intact, so it must NOT
+			// count as executing. Otherwise the desktop quit guard false-positives
+			// on a conversation whose sub-thread is merely awaiting an approval.
+			// Equivalently (De Morgan): count it as executing only when it is not
+			// that pure-approval shape — nothing pending, or something executing.
+			if result, _ := m.Get("result").(string); result == "" && (!np || ne) {
+				hasExecuting = true
 			}
 		}
 	}

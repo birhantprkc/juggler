@@ -5,6 +5,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -141,6 +142,78 @@ func TestManagerActive_ApprovalParkedExcluded(t *testing.T) {
 	}
 	if ids := m.ActiveConversationIDs(); !reflect.DeepEqual(ids, []string{"conv-parked"}) {
 		t.Fatalf("executing tool present: expected [conv-parked], got %v", ids)
+	}
+
+	w.releaseLLM()
+}
+
+// TestManagerActive_SubThreadApprovalParkedExcluded pins the desktop
+// quit-guard false-positive: a conversation whose OPEN (resultless) sub-thread
+// is itself parked solely on a pending tool approval (e.g. an AskUserQuestion
+// awaiting the user's answer) must NOT count as active. Quitting/restarting
+// leaves the sub-thread's approval intact, so nothing is interrupted. Before the
+// fix, scanApprovalBlock treated any resultless sub-thread as executing, so the
+// parent looked busy and the quit guard warned. Adding genuinely-executing work
+// inside the sub-thread flips it back to active, proving the exclusion is
+// approval-parked-only and still detects real in-flight sub-thread work.
+func TestManagerActive_SubThreadApprovalParkedExcluded(t *testing.T) {
+	m := NewManager()
+	defer m.Shutdown()
+
+	w := m.GetOrCreate("conv-sub-parked", "user:test")
+
+	// An open sub-thread whose only non-terminal work is a pending approval.
+	nested, err := json.Marshal([]ConversationItem{
+		{
+			Type:      ItemTypeToolAction,
+			ItemID:    "ta-sub-pending",
+			ToolUseID: "tu-sub-pending",
+			ToolName:  "AskUserQuestion",
+			State:     StatePending,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal nested items: %v", err)
+	}
+	w.doc.InsertMessage(0, ConversationItem{
+		Type:   ItemTypeThread,
+		ItemID: "t-sub",
+		Items:  nested,
+	})
+
+	if !w.requestLLM("") {
+		t.Fatal("precondition: requestLLM should succeed on an idle worker")
+	}
+	if w.getActivity() == ActivityNone {
+		t.Fatal("precondition: the claim must be held (activity != none)")
+	}
+
+	if m.AnyActive() {
+		t.Fatal("sub-thread parked on approval: expected AnyActive=false (nothing is running)")
+	}
+	if ids := m.ActiveConversationIDs(); len(ids) != 0 {
+		t.Fatalf("sub-thread parked on approval: expected no active IDs, got %v", ids)
+	}
+
+	// Add a genuinely-executing tool INSIDE the sub-thread: real work is now in
+	// flight there, so the conversation is active again even though the pending
+	// approval remains.
+	subArr := w.doc.GetThreadItemsArray("t-sub")
+	if subArr == nil {
+		t.Fatal("precondition: sub-thread nested array should exist")
+	}
+	w.doc.InsertMessageIntoArray(subArr, 1, ConversationItem{
+		Type:      ItemTypeToolAction,
+		ItemID:    "ta-sub-approved",
+		ToolUseID: "tu-sub-approved",
+		ToolName:  "bash",
+		State:     StateApproved,
+	})
+	if !m.AnyActive() {
+		t.Fatal("executing tool inside sub-thread: expected AnyActive=true")
+	}
+	if ids := m.ActiveConversationIDs(); !reflect.DeepEqual(ids, []string{"conv-sub-parked"}) {
+		t.Fatalf("executing tool inside sub-thread: expected [conv-sub-parked], got %v", ids)
 	}
 
 	w.releaseLLM()
