@@ -13,8 +13,9 @@ import (
 	"juggler/internal/userpaths"
 )
 
-// RecentModelsCap caps the number of remembered recent (provider, model) picks.
-const RecentModelsCap = 5
+// RecentModelsCap caps the number of remembered recent
+// (provider, model, thinking) picks.
+const RecentModelsCap = 6
 
 // RecentModelsStore manages a user-level list of recently-selected concrete
 // models, stored in ~/.juggler/cache/recent-models.json. It is deliberately
@@ -60,8 +61,9 @@ func (s *RecentModelsStore) Load() ([]ModelRef, error) {
 	return f.Models, nil
 }
 
-// Add moves ref to the front of the list, dedups by (provider, model), and caps
-// at RecentModelsCap. A ref with an empty provider or model is ignored.
+// Add moves ref to the front of the list, dedups by (provider, model,
+// thinking) — the same model at two thinking levels is two distinct entries —
+// and caps at RecentModelsCap. A ref with an empty provider or model is ignored.
 func (s *RecentModelsStore) Add(ref ModelRef) error {
 	if ref.Provider == "" || ref.Model == "" {
 		return nil
@@ -73,7 +75,7 @@ func (s *RecentModelsStore) Add(ref ModelRef) error {
 	out := make([]ModelRef, 0, len(models)+1)
 	out = append(out, ref)
 	for _, m := range models {
-		if m.Provider == ref.Provider && m.Model == ref.Model {
+		if m.Provider == ref.Provider && m.Model == ref.Model && m.Thinking == ref.Thinking {
 			continue
 		}
 		out = append(out, m)

@@ -73,6 +73,12 @@ class ModelSelector extends HTMLElement {
     this.conversation = null;
     /** @type {(() => void)|null} @private - presentPopup release for the open dropdown. */
     this._popupRelease = null;
+    /** @type {number|null} @private - Deferred presentation frame for the dropdown. */
+    this._popupFrame = null;
+    /** @type {(() => void)|null} @private - presentPopup release for the mini thinking popover. */
+    this._miniPopupRelease = null;
+    /** @type {HTMLElement|null} @private - The mini thinking popover's surface while open. */
+    this._miniSurface = null;
     /**
      * This selector's own dropdown while open (relocated to <body>), else null.
      * Instance-scoped so updates/teardown never touch a sibling's surface:
@@ -131,11 +137,18 @@ class ModelSelector extends HTMLElement {
   }
 
   disconnectedCallback() {
+    // Cancel a not-yet-presented dropdown before tearing down any live surface.
+    if (this._popupFrame !== null) {
+      cancelAnimationFrame(this._popupFrame);
+      this._popupFrame = null;
+    }
     // Tear down the open dropdown (surface, scrim, observer, dismissal wiring).
     if (this._popupRelease) {
       this._popupRelease();
       this._popupRelease = null;
     }
+    // Likewise the mini thinking popover, which lives on document.body too.
+    this._closeThinkingMini();
     // Clean up WebSocket listener
     if (this._providersUpdateHandler) {
       wsService.off('providers-update', this._providersUpdateHandler);
@@ -253,6 +266,18 @@ class ModelSelector extends HTMLElement {
     }
     this.provider = provider;
     this.model = model;
+
+    // The open dropdown and its anchor have been moved into separate DOM
+    // subtrees by presentPopup. Model config writes notify their observers
+    // synchronously, so this method can run in the middle of applyConfigPair.
+    // Replacing this element's innerHTML here would detach the anchor and also
+    // create a second inline dropdown. Keep both live nodes and refresh them.
+    if (this.dropdownOpen && this._liveDropdown) {
+      this._updateDropdownContent();
+      this._refreshButtonContent();
+      return;
+    }
+
     this.render();
   }
 
@@ -295,14 +320,16 @@ class ModelSelector extends HTMLElement {
       if (this.dropdownOpen) this._updateInfoColumn();
     }).catch(() => {});
 
-    // Present the dropdown once rendered. presentPopup owns body-append,
-    // dismissal wiring, the reposition observer, and the anchored-vs-sheet
-    // decision; we only attach the delegated list listener (which survives the
-    // menu's innerHTML replacements) before handing the surface over.
-    requestAnimationFrame(() => {
-      const dropdown = /** @type {HTMLElement|null} */(this.querySelector('.provider-dropdown'));
-      const button = /** @type {HTMLElement|null} */(this.querySelector('.model-selector-button'));
-      if (!dropdown || !button) return;
+    // Present the dropdown once rendered. Store and validate the deferred frame:
+    // close/re-render can otherwise leave a stale callback that presents an old
+    // detached menu as a second, unanchored surface.
+    const dropdown = /** @type {HTMLElement|null} */(this.querySelector('.provider-dropdown'));
+    const button = /** @type {HTMLElement|null} */(this.querySelector('.model-selector-button'));
+    if (!dropdown || !button) return;
+    this._popupFrame = requestAnimationFrame(() => {
+      this._popupFrame = null;
+      if (!this.dropdownOpen || !this.contains(dropdown) || !this.contains(button)) return;
+      if (this._popupRelease || this._liveDropdown) return;
       dropdown.setAttribute('data-model-selector', 'true');
       this._liveDropdown = dropdown;
       this._attachDropdownListener(dropdown);
@@ -479,10 +506,15 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   _selectionItem({ label, active, classes = '', dataAttrs = '' }) {
+    const selectedTick = active
+      ? `<span class="model-selected-tick" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z"/></svg>
+                </span>`
+      : '';
     return `
-            <li class="menu-item ${active ? 'active' : ''} ${classes}" ${dataAttrs}>
-                <span>${label}</span>
-                ${active ? '<span class="menu-item-icon">✓</span>' : ''}
+            <li class="menu-item model-selection-item ${active ? 'active' : ''} ${classes}" ${dataAttrs}>
+                ${selectedTick}
+                <span class="model-item-name">${label}</span>
             </li>
         `;
   }
@@ -567,23 +599,35 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
-   * Build the bottom-aligned "Recent" section: up to 5 recently-used concrete
-   * models for quick switching. Includes the current model when it is recent;
-   * hiding it makes a just-selected model look like it was not recorded.
+   * Build the bottom-aligned "Recent" section: up to 6 recently-used concrete
+   * model+level pairs for quick switching. Entries are distinct by
+   * provider+model+thinking, so the same model at two levels is two rows —
+   * the level chip after the name differentiates them. Includes the current
+   * model when it is recent; hiding it makes a just-selected model look like
+   * it was not recorded.
    * @private
    * @returns {string} HTML for the `.info-recent` section, or ''.
    */
   _generateRecentSection() {
-    const recents = recentModels.get().slice(0, 5);
+    const recents = recentModels.get().slice(0, 6);
     if (recents.length === 0) return '';
+    const current = this.currentConfigPair();
 
     const items = recents.map(r => {
       const label = modelLabelFromList(this.providers, r.provider, r.model);
       const providerEntry = this.providers.find(p => p.name === r.provider);
       const providerLabel = providerEntry?.displayName || r.provider;
+      const active = !!current && r.provider === current.provider && r.model === current.model
+        && (r.thinking || '') === (current.thinking || '');
+      // The stored level rides along as data-thinking so a click restores the
+      // exact pair; the chip is display-only (the whole row is the target).
+      const chip = r.thinking
+        ? `<span class="recent-model-chip" title="Thinking: ${escapeHtml(r.thinking)}">${escapeHtml(THINKING_CHIP[r.thinking] || r.thinking)}</span>`
+        : '';
+      const thinkingAttr = r.thinking ? ` data-thinking="${escapeHtml(r.thinking)}"` : '';
       return `
-                <li class="menu-item recent-model" data-provider="${escapeHtml(r.provider)}" data-model="${escapeHtml(r.model)}">
-                    <span class="recent-model-name">${escapeHtml(label)}</span>
+                <li class="menu-item recent-model${active ? ' active' : ''}" data-provider="${escapeHtml(r.provider)}" data-model="${escapeHtml(r.model)}"${thinkingAttr}>
+                    <span class="recent-model-name">${escapeHtml(label)}${chip}</span>
                     <span class="recent-model-provider">${escapeHtml(providerLabel)}</span>
                 </li>`;
     }).join('');
@@ -609,8 +653,10 @@ class ModelSelector extends HTMLElement {
     // Sort the full list newest-first: providers (notably OpenAI and Gemini)
     // return models in no meaningful order, so both the "all" view and the
     // shortlist derived from it should be version-ordered rather than API-ordered.
-    const allModels = sortModelsByVersion(provider.modelsWithContext);
-    const recommendedModels = getRecommendedModels(allModels);
+    // (Casts: the filter utils' generic Model typedef erases the richer
+    // ModelInfo shape, but they return the same objects they were given.)
+    const allModels = /** @type {ModelInfo[]} */ (sortModelsByVersion(provider.modelsWithContext));
+    const recommendedModels = /** @type {ModelInfo[]} */ (getRecommendedModels(allModels));
     const hasShortlist = recommendedModels.length < allModels.length;
     const state = this._resolveViewState(provider.name, hasShortlist);
 
@@ -631,16 +677,17 @@ class ModelSelector extends HTMLElement {
 
     const items = modelsToShow.map(model => {
       const displayName = modelLabel(model.displayName, model.id);
+      const isCurrent = this.provider === provider.name && this.model === model.id;
       if (disabledNote) {
         return this._disabledModelItem({
           label: displayName,
           note: disabledNote,
-          active: this.provider === provider.name && this.model === model.id,
+          active: isCurrent,
         });
       }
       return this._selectionItem({
         label: displayName,
-        active: this.provider === provider.name && this.model === model.id,
+        active: isCurrent,
         classes: recommendedIds.has(model.id) ? 'recommended' : '',
         dataAttrs: `data-provider="${provider.name}" data-model="${model.id}"`,
       });
@@ -784,15 +831,22 @@ class ModelSelector extends HTMLElement {
    * Write a thinking-level choice into the same scope the model selection writes
    * to. `level === ''` means Default → delete the `thinking` key (never store
    * `thinking: ''`). Spread-and-rewrite the whole config atomically (never mutate
-   * the Y.Map field-by-field — see the race note in conversation.js). Keeps the
-   * dropdown open and refreshes the info column so the active segment moves; the
-   * button chip refreshes on close.
+   * the Y.Map field-by-field — see the race note in conversation.js). Model +
+   * level is one identity, so the resulting pair is recorded to the Recent
+   * section — unless `record: false`, the hold-to-cycle thinking shortcut's
+   * mode, whose intermediate hops must not touch recents (its controller
+   * records the landing pair on commit). The shared write path for the
+   * dropdown's segmented control (which also closes the menu — see
+   * `_setThinkingLevel`), the button chip's mini popover (which has no
+   * dropdown to close), and the cycle-thinking shortcut. Pure write — the
+   * caller owns any re-render (see `refreshThinkingDisplay`).
    * @param {string} level - '' for Default, else a canonical level.
-   * @private
+   * @param {{record?: boolean}} [opts] - `record: false` skips the recents entry.
+   * @returns {boolean} True when the level was written.
    */
-  _setThinkingLevel(level) {
+  applyThinkingLevel(level, { record = true } = {}) {
     const eff = this._currentConfig;
-    if (!eff || !eff.provider || !eff.model) return;
+    if (!eff || !eff.provider || !eff.model) return false;
 
     /** @type {{provider: string, model: string, thinking?: string}} */
     const next = { provider: eff.provider, model: eff.model };
@@ -803,11 +857,24 @@ class ModelSelector extends HTMLElement {
     } else if (this.conversation) {
       this.conversation.setModelConfig(next);
     } else {
-      return;
+      return false;
     }
 
     this._currentConfig = next;
-    this._updateDropdownContent();
+    // Remember the concrete model+level pair for the "Recent" section.
+    if (record) recentModels.record(eff.provider, eff.model, level || undefined);
+    return true;
+  }
+
+  /**
+   * Apply a thinking-level pick from the dropdown's segmented control and close
+   * the menu — model + level is one identity, so picking a level is a commit
+   * action exactly like picking a model.
+   * @param {string} level - '' for Default, else a canonical level.
+   * @private
+   */
+  _setThinkingLevel(level) {
+    if (this.applyThinkingLevel(level)) this.closeDropdown();
   }
 
   /**
@@ -972,8 +1039,9 @@ class ModelSelector extends HTMLElement {
     dropdown.addEventListener('click', (e) => {
       const target = /** @type {Element} */(e.target);
 
-      // Thinking-level segment: a tweak, not a commit-and-go action, so keep the
-      // dropdown open (unlike a model pick, which closes it). '' = Default.
+      // Thinking-level segment: model+level is one identity, so picking a level
+      // is a commit action like a model pick — _setThinkingLevel records the
+      // pair and closes the dropdown. '' = Default.
       const seg = target.closest('.thinking-seg');
       if (seg) {
         e.stopPropagation();
@@ -1037,7 +1105,11 @@ class ModelSelector extends HTMLElement {
       const providerName = item.getAttribute('data-provider');
       const modelName = item.getAttribute('data-model');
       if (providerName && modelName) {
-        this.selectProviderAndModel(providerName, modelName);
+        // Recent rows carry their stored level in data-thinking so the exact
+        // pair is restored; plain list rows have no such attribute, so a bare
+        // name click selects the model at its default level.
+        this.selectProviderAndModel(providerName, modelName,
+          item.getAttribute('data-thinking') || undefined);
       }
     });
   }
@@ -1050,6 +1122,11 @@ class ModelSelector extends HTMLElement {
       // scratch rather than diffing against a stale (removed) dropdown.
       this._lastListHTML = null;
       this._lastInfoHTML = null;
+      // Cancel a deferred presentation before it can resurrect this menu.
+      if (this._popupFrame !== null) {
+        cancelAnimationFrame(this._popupFrame);
+        this._popupFrame = null;
+      }
       // Release tears down the surface, scrim, observer and dismissal wiring.
       if (this._popupRelease) {
         this._popupRelease();
@@ -1126,10 +1203,17 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
+   * Select a model, optionally at an explicit thinking level. Model + level is
+   * one identity: `thinking` is honoured only when the model advertises that
+   * level (a stale level from a recent entry falls back to the model's
+   * default), and the concrete pick — level included — is recorded to the
+   * Recent section.
    * @param {string} providerName
    * @param {string} modelName
+   * @param {string} [thinking] Canonical thinking level; absent/empty means
+   *   the model's default level.
    * @private */
-  async selectProviderAndModel(providerName, modelName) {
+  async selectProviderAndModel(providerName, modelName, thinking) {
     let provider = this.providers.find(p => p.name === providerName);
 
     if (!provider) {
@@ -1156,27 +1240,27 @@ class ModelSelector extends HTMLElement {
       return;
     }
 
-    // Already selected — just close the dropdown.
-    if (this.provider === providerName && this.model === modelName) {
+    // Honour the requested level only when the model advertises it — a recent
+    // entry may carry a level the model no longer supports, which must fall
+    // back to the default rather than store a level the model can't honour.
+    const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
+    const level = thinking && (modelEntry?.thinkingLevels || []).includes(thinking) ? thinking : '';
+
+    // Already selected at this exact level — just close the dropdown. The
+    // level is part of the identity, so the same model at a different level
+    // is a real change and falls through.
+    if (this.provider === providerName && this.model === modelName
+      && (this._currentConfig?.thinking || '') === level) {
       this.closeDropdown();
       return;
     }
 
-    // Remember this concrete pick for the "Recent" quick-access section.
-    recentModels.record(providerName, modelName);
+    // Remember this concrete pick (model + level) for the "Recent" section.
+    recentModels.record(providerName, modelName, level || undefined);
 
-    // Preserve the current thinking level onto the new model iff the new model
-    // advertises it; otherwise drop it — a level the new model can't honour must
-    // not linger. (This is the kind of rule that regresses silently.)
     /** @type {{provider: string, model: string, thinking?: string}} */
     const nextConfig = { provider: providerName, model: modelName };
-    const curThinking = this._currentConfig?.thinking;
-    if (curThinking) {
-      const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
-      if ((modelEntry?.thinkingLevels || []).includes(curThinking)) {
-        nextConfig.thinking = curThinking;
-      }
-    }
+    if (level) nextConfig.thinking = level;
 
     // Write to thread if bound, otherwise the conversation.
     if (this._messageThread) {
@@ -1194,23 +1278,271 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
-   * Compact thinking-level pill for the model button. Shown only when the
-   * effective config has a concrete level that the selected model advertises;
-   * an absent level (provider default) yields no chip, so the button never grows
-   * for non-reasoning models.
+   * Open the dropdown menu if it isn't already open. Public entry point for
+   * the hold-to-cycle model shortcut, which uses the menu as its HUD.
+   */
+  open() {
+    if (!this.dropdownOpen) this.toggleDropdown();
+  }
+
+  /**
+   * Close the dropdown menu. Idempotent.
+   */
+  close() {
+    this.closeDropdown();
+  }
+
+  /**
+   * The current effective `{provider, model, thinking?}` pair, with `thinking`
+   * normalised to the levels the model actually advertises (an unsupported
+   * stored level means the model's default, same as everywhere else).
+   * @returns {{provider: string, model: string, thinking?: string}|null} The
+   *   pair, or null when no model is selected.
+   */
+  currentConfigPair() {
+    const c = this._currentConfig;
+    if (!c || !c.provider || !c.model) return null;
+    const level = c.thinking && this.supportedThinkingLevels().includes(c.thinking) ? c.thinking : '';
+    return level
+      ? { provider: c.provider, model: c.model, thinking: level }
+      : { provider: c.provider, model: c.model };
+  }
+
+  /**
+   * The thinking levels the currently selected model advertises, in canonical
+   * order. Empty for non-thinking models (or when nothing is selected).
+   * @returns {string[]} Supported levels in canonical order.
+   */
+  supportedThinkingLevels() {
+    const prov = this.providers.find(p => p.name === this.provider);
+    const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
+    return THINKING_LEVELS.filter(l => (modelEntry?.thinkingLevels || []).includes(l));
+  }
+
+  /**
+   * Apply a `{provider, model, thinking?}` pair WITHOUT recording it to the
+   * Recent section — the write path for the hold-to-cycle model shortcut,
+   * whose intermediate hops must not reorder the very recents list being
+   * cycled (the controller records the landing pair on commit). `thinking` is
+   * honoured only when the model advertises that level, like everywhere else.
+   * Unlike `selectProviderAndModel` this never prompts about an unavailable
+   * provider (cycling just skips it, so the caller gets `false`) and never
+   * closes the dropdown, which the gesture keeps open as its HUD — while open,
+   * both dropdown columns and the collapsed button refresh in place.
+   * @param {{provider: string, model: string, thinking?: string}} pair
+   * @returns {boolean} True when the pair was applied.
+   */
+  applyConfigPair(pair) {
+    const provider = this.providers.find(p => p.name === pair.provider);
+    if (!provider || !provider.available) return false;
+
+    const modelEntry = provider.modelsWithContext?.find(m => m.id === pair.model);
+    const level = pair.thinking && (modelEntry?.thinkingLevels || []).includes(pair.thinking) ? pair.thinking : '';
+
+    /** @type {{provider: string, model: string, thinking?: string}} */
+    const nextConfig = { provider: pair.provider, model: pair.model };
+    if (level) nextConfig.thinking = level;
+
+    if (this._messageThread) {
+      this._messageThread.modelConfig = nextConfig;
+    } else if (this.conversation) {
+      this.conversation.setModelConfig(nextConfig);
+    } else {
+      return false;
+    }
+
+    this._currentConfig = nextConfig;
+    this.provider = pair.provider;
+    this.model = pair.model;
+
+    if (this.dropdownOpen) {
+      // The open dropdown is the gesture's HUD: refresh its columns and the
+      // collapsed button in place — a full render() would build a duplicate
+      // inline dropdown behind the live surface presentPopup moved to <body>.
+      this._updateDropdownContent();
+      this._refreshButtonContent();
+    } else {
+      this.render();
+    }
+    return true;
+  }
+
+  /**
+   * Open the mini thinking popover anchored to the button chip — the public
+   * entry point for the hold-to-cycle thinking shortcut's HUD. The chip always
+   * exists for a selected thinking-capable model (see `_thinkingChipHTML`), so
+   * failure means the current model has no thinking control.
+   * @returns {boolean} True when the popover is (now) open.
+   */
+  openThinkingMini() {
+    if (this._miniPopupRelease) return true;
+    // With the dropdown open, close it first — same rule as the chip's own
+    // click handler; closing re-renders the button, so re-resolve the chip.
+    if (this.dropdownOpen) this.closeDropdown();
+    const chip = /** @type {HTMLElement|null} */(this.querySelector('.model-selector-button .thinking-chip'));
+    if (!chip) return false;
+    this._openThinkingMini(chip);
+    return true;
+  }
+
+  /**
+   * Close the mini thinking popover if open. Idempotent.
+   */
+  closeThinkingMini() {
+    this._closeThinkingMini();
+  }
+
+  /**
+   * Refresh everything displaying the current thinking level after an
+   * out-of-band level change (the hold-to-cycle thinking shortcut). With the
+   * mini popover open it is the gesture's HUD: its segmented control and the
+   * anchor chip are updated IN PLACE, because a full render() would replace —
+   * and thereby close — the popover's anchor. Same in-place treatment with the
+   * dropdown open (whose surface lives in <body>). Otherwise a full render.
+   */
+  refreshThinkingDisplay() {
+    if (this._miniPopupRelease && this._miniSurface) {
+      const providerEntry = this.providers.find(p => p.name === this.provider);
+      const modelEntry = providerEntry?.modelsWithContext?.find(m => m.id === this.model);
+      const resolved = resolveConfig(this._currentConfig, this.providers);
+      this._miniSurface.innerHTML = this._generateThinkingControl(resolved, modelEntry);
+      this._updateChipInPlace();
+      return;
+    }
+    if (this.dropdownOpen) {
+      this._updateDropdownContent();
+      this._updateChipInPlace();
+      return;
+    }
+    this.render();
+  }
+
+  /**
+   * Update the button chip's classes/label for the current effective level
+   * without replacing the element — the chip anchors the mini popover, and
+   * swapping the node out from under presentPopup would orphan its
+   * positioning. Falls back to a full render when the chip's very existence
+   * changed (it appeared or disappeared).
+   * @private
+   */
+  _updateChipInPlace() {
+    const chip = /** @type {HTMLElement|null} */(this.querySelector('.model-selector-button .thinking-chip'));
+    const html = this._thinkingChipHTML();
+    if (!chip || !html) {
+      if (!!chip !== !!html) this.render();
+      return;
+    }
+    // Clone the freshly-generated chip's attributes/text onto the live node.
+    const tmp = document.createElement('span');
+    tmp.innerHTML = html;
+    const fresh = tmp.firstElementChild;
+    if (!fresh) return;
+    chip.className = fresh.className;
+    chip.setAttribute('title', fresh.getAttribute('title') || '');
+    chip.textContent = fresh.textContent;
+  }
+
+  /**
+   * Compact thinking-level pill for the model button, always showing the
+   * EFFECTIVE level for a thinking-capable selected model: an explicit config
+   * level the model advertises ⇒ solid chip; otherwise the model's declared
+   * `defaultThinkingLevel` (or "def" when none is declared) ⇒ hollow `.default`
+   * variant. Non-thinking models get no chip, so the button never grows for
+   * them. The chip is its own click target — it toggles the mini thinking
+   * popover (see `_openThinkingMini`), wired up in `render()`.
    * @returns {string} HTML for the chip, or ''.
    * @private
    */
   _thinkingChipHTML() {
-    const level = this._currentConfig?.thinking;
-    if (!level) return '';
     const prov = this.providers.find(p => p.name === this.provider);
     const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
-    if (!(modelEntry?.thinkingLevels || []).includes(level)) return '';
-    return `<span class="thinking-chip" title="Thinking: ${escapeHtml(level)}">${escapeHtml(THINKING_CHIP[level] || level)}</span>`;
+    const levels = modelEntry?.thinkingLevels || [];
+    if (levels.length === 0) return '';
+    // An explicit level counts only when the model advertises it — a stale
+    // stored level means the model's default, same as everywhere else.
+    const explicit = this._currentConfig?.thinking;
+    const level = explicit && levels.includes(explicit) ? explicit : '';
+    const declaredDefault = modelEntry?.defaultThinkingLevel || '';
+    const shown = level || declaredDefault || 'def';
+    const title = level
+      ? `Thinking: ${level} — click to change`
+      : `Thinking: ${declaredDefault ? `${declaredDefault} (default)` : 'default'} — click to change`;
+    // A <span> (not <button>): the chip nests inside the model button, and a
+    // button inside a button is invalid HTML the parser would eject.
+    return `<span class="thinking-chip${level ? '' : ' default'}" role="button" title="${escapeHtml(title)}">${escapeHtml(THINKING_CHIP[shown] || shown)}</span>`;
   }
 
-  render() {
+  /**
+   * Open the mini thinking popover: just the thinking segmented control,
+   * anchored to the button chip, for changing the current model's level without
+   * opening the full dropdown. Reuses `_generateThinkingControl` for the markup
+   * and `applyThinkingLevel` for the write, so both entry points stay in
+   * lock-step. presentPopup's id-based mutual exclusion guarantees at most one
+   * popover and closes it whenever another popup (the main dropdown included)
+   * opens.
+   * @param {HTMLElement} chip - The button chip to anchor to.
+   * @private
+   */
+  _openThinkingMini(chip) {
+    const resolved = resolveConfig(this._currentConfig, this.providers);
+    const providerEntry = this.providers.find(p => p.name === this.provider);
+    const modelEntry = providerEntry?.modelsWithContext?.find(m => m.id === this.model);
+    const controlHTML = this._generateThinkingControl(resolved, modelEntry);
+    if (!controlHTML) return;
+
+    // `show` up front: presentPopup owns placement, but display comes from the
+    // base .dropdown-menu rule, which hides surfaces without it.
+    const surface = document.createElement('nav');
+    surface.className = 'dropdown-menu thinking-mini show';
+    surface.innerHTML = controlHTML;
+    surface.addEventListener('click', (e) => {
+      const target = /** @type {Element} */(e.target);
+      const seg = target.closest('.thinking-seg');
+      if (!seg) return;
+      e.stopPropagation();
+      this.applyThinkingLevel(seg.getAttribute('data-thinking-level') || '');
+      this._closeThinkingMini();
+      // Re-render so the button chip reflects the new level immediately.
+      this.render();
+    });
+    this._miniSurface = surface;
+
+    this._miniPopupRelease = presentPopup({
+      surface,
+      anchor: chip,
+      id: 'thinking-mini',
+      onClose: () => this._closeThinkingMini(),
+      align: 'left',
+      gap: 8,
+      // The whole selector counts as "inside" so a second chip click reaches
+      // the toggle handler in render() instead of racing the capture-phase
+      // outside-click dismissal (which runs before the chip's bubble handler).
+      insideSelectors: ['model-selector', '.thinking-mini'],
+    });
+  }
+
+  /**
+   * Release the mini thinking popover if open — tears down its surface, scrim,
+   * observer and dismissal wiring via presentPopup's release. Idempotent.
+   * @private
+   */
+  _closeThinkingMini() {
+    if (this._miniPopupRelease) {
+      this._miniPopupRelease();
+      this._miniPopupRelease = null;
+    }
+    this._miniSurface = null;
+  }
+
+  /**
+   * Compute the collapsed button's display state: the label text plus the
+   * flags its state classes key off. Shared by `render()` and the in-place
+   * refresh used while the dropdown is open (`_refreshButtonContent`).
+   * @private
+   * @returns {{modelDisplay: string, noModelSelected: boolean, modelUnavailable: boolean, hasOverride: boolean}}
+   *   The button's display state.
+   */
+  _buttonDisplayState() {
     // Show connection status when not connected, otherwise the model label.
     let modelDisplay;
     let modelUnavailable = false;
@@ -1227,16 +1559,7 @@ class ModelSelector extends HTMLElement {
       modelDisplay = this.model ? modelLabelFromList(this.providers, this.provider, this.model) : this.provider;
     }
 
-    const noModelSelected = modelDisplay === 'Select Model';
-    const infoColumn = this._generateInfoColumn();
-    const listContent = this._generateModelListContent();
-    // Seed the non-destructive-update caches with what we're about to write,
-    // so a subsequent in-place update only rewrites a column whose markup
-    // genuinely differs from this freshly-rendered DOM.
-    this._lastInfoHTML = infoColumn;
-    this._lastListHTML = listContent;
-
-    const hasOverride = this._messageThread?.threadItemId && this._messageThread?.ownModelConfig;
+    const hasOverride = !!(this._messageThread?.threadItemId && this._messageThread?.ownModelConfig);
 
     // Flag when the selected model is absent from the current provider list.
     if (this.provider && this.model && this.providers.length > 0) {
@@ -1245,9 +1568,79 @@ class ModelSelector extends HTMLElement {
                 !prov.modelsWithContext.some(m => m.id === this.model);
     }
 
+    return { modelDisplay, noModelSelected: modelDisplay === 'Select Model', modelUnavailable, hasOverride };
+  }
+
+  /**
+   * The collapsed button's inner markup: icon, label, thinking chip, override dot.
+   * @private
+   * @param {{modelDisplay: string, hasOverride: boolean}} state - From `_buttonDisplayState`.
+   * @returns {string} HTML for the button's content.
+   */
+  _buttonContentHTML(state) {
+    return `<span class="icon-auto-awesome"></span>${state.modelDisplay}${this._thinkingChipHTML()}${state.hasOverride ? '<span class="override-dot"></span>' : ''}`;
+  }
+
+  /**
+   * Rebuild the collapsed button's content and state classes in place, keeping
+   * the <button> element itself — it anchors the open dropdown, and replacing
+   * it would orphan presentPopup's positioning. Rewires the chip's click
+   * handler, which was attached to the replaced chip node. Used by
+   * `applyConfigPair` while the dropdown is open as the cycling HUD.
+   * @private
+   */
+  _refreshButtonContent() {
+    const button = /** @type {HTMLElement|null} */(this.querySelector('#model-button'));
+    if (!button) return;
+    const state = this._buttonDisplayState();
+    button.classList.toggle('has-override', state.hasOverride);
+    button.classList.toggle('model-unavailable', state.modelUnavailable);
+    button.classList.toggle('pulse', state.noModelSelected);
+    button.innerHTML = this._buttonContentHTML(state);
+    this._wireChip();
+  }
+
+  /**
+   * Attach the thinking chip's click handler: the chip is a click target of
+   * its own — it toggles the mini popover and must never toggle the main
+   * dropdown underneath it. No-op when the button carries no chip.
+   * @private
+   */
+  _wireChip() {
+    const chip = /** @type {HTMLElement|null} */(this.querySelector('.model-selector-button .thinking-chip'));
+    if (!chip) return;
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this._miniPopupRelease) {
+        this._closeThinkingMini();
+        return;
+      }
+      // With the dropdown open, close it first (its info column already has
+      // the full control, but the chip promises the mini). Closing re-renders
+      // the button, so re-resolve the freshly-built chip as the anchor.
+      if (this.dropdownOpen) this.closeDropdown();
+      const anchor = /** @type {HTMLElement|null} */(this.querySelector('.model-selector-button .thinking-chip'));
+      if (anchor) this._openThinkingMini(anchor);
+    });
+  }
+
+  render() {
+    // The button chip (the mini popover's anchor) is about to be replaced —
+    // release the popover first so it never floats against a dead anchor.
+    this._closeThinkingMini();
+
+    const state = this._buttonDisplayState();
+    const infoColumn = this._generateInfoColumn();
+    const listContent = this._generateModelListContent();
+    // Seed the non-destructive-update caches with what we're about to write,
+    // so a subsequent in-place update only rewrites a column whose markup
+    // genuinely differs from this freshly-rendered DOM.
+    this._lastInfoHTML = infoColumn;
+    this._lastListHTML = listContent;
+
     this.innerHTML = `
-            <button class="model-selector-button input-ctrl-btn${hasOverride ? ' has-override' : ''}${modelUnavailable ? ' model-unavailable' : ''}${noModelSelected ? ' pulse' : ''}" id="model-button" title="LLM Model">
-                <span class="icon-auto-awesome"></span>${modelDisplay}${this._thinkingChipHTML()}${hasOverride ? '<span class="override-dot"></span>' : ''}
+            <button class="model-selector-button input-ctrl-btn${state.hasOverride ? ' has-override' : ''}${state.modelUnavailable ? ' model-unavailable' : ''}${state.noModelSelected ? ' pulse' : ''}" id="model-button" title="LLM Model">
+                ${this._buttonContentHTML(state)}
             </button>
 
             <nav class="dropdown-menu provider-dropdown ${this.dropdownOpen ? 'show' : ''}" id="provider-dropdown">
@@ -1266,6 +1659,7 @@ class ModelSelector extends HTMLElement {
       });
     }
 
+    this._wireChip();
   }
 }
 

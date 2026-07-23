@@ -5,6 +5,7 @@
 package core
 
 import (
+	"os"
 	"testing"
 
 	"juggler/internal/userpaths/userpathstest"
@@ -77,7 +78,7 @@ func TestRecentModelsDedupMovesToFront(t *testing.T) {
 
 func TestRecentModelsCappedAtCap(t *testing.T) {
 	s := newTestRecentModelsStore(t)
-	ids := []string{"a", "b", "c", "d", "e", "f", "g"}
+	ids := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
 	for _, id := range ids {
 		if err := s.Add(ModelRef{Provider: "p", Model: id}); err != nil {
 			t.Fatalf("Add: %v", err)
@@ -89,11 +90,60 @@ func TestRecentModelsCappedAtCap(t *testing.T) {
 	}
 	// Most-recent-first: the last RecentModelsCap adds, newest first.
 	assertModels(t, got, []ModelRef{
+		{Provider: "p", Model: "h"},
 		{Provider: "p", Model: "g"},
 		{Provider: "p", Model: "f"},
 		{Provider: "p", Model: "e"},
 		{Provider: "p", Model: "d"},
 		{Provider: "p", Model: "c"},
+	})
+}
+
+// TestRecentModelsDedupByThinkingTriple locks the dedupe key as
+// (provider, model, thinking): the same model at two thinking levels is two
+// distinct entries, and re-picking an exact triple moves it to the front
+// rather than duplicating it.
+func TestRecentModelsDedupByThinkingTriple(t *testing.T) {
+	s := newTestRecentModelsStore(t)
+	_ = s.Add(ModelRef{Provider: "anthropic", Model: "claude"})
+	_ = s.Add(ModelRef{Provider: "anthropic", Model: "claude", Thinking: "high"})
+	got, _ := s.Load()
+	assertModels(t, got, []ModelRef{
+		{Provider: "anthropic", Model: "claude", Thinking: "high"},
+		{Provider: "anthropic", Model: "claude"},
+	})
+
+	// Re-picking the default-level entry moves it to the front — the
+	// high-thinking entry survives as its own row.
+	_ = s.Add(ModelRef{Provider: "anthropic", Model: "claude"})
+	got, _ = s.Load()
+	assertModels(t, got, []ModelRef{
+		{Provider: "anthropic", Model: "claude"},
+		{Provider: "anthropic", Model: "claude", Thinking: "high"},
+	})
+}
+
+// TestRecentModelsBackCompatWithoutThinking loads a file written before the
+// thinking field existed: entries must load unchanged, with an empty Thinking
+// meaning the model's default level.
+func TestRecentModelsBackCompatWithoutThinking(t *testing.T) {
+	s := newTestRecentModelsStore(t)
+	// Seed the on-disk file so the directory exists, then overwrite it with the
+	// pre-thinking schema.
+	if err := s.Add(ModelRef{Provider: "seed", Model: "seed"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	old := `{"models":[{"provider":"anthropic","model":"claude"},{"provider":"openaicodex","model":"gpt-5"}]}`
+	if err := os.WriteFile(s.filePath, []byte(old), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	assertModels(t, got, []ModelRef{
+		{Provider: "anthropic", Model: "claude"},
+		{Provider: "openaicodex", Model: "gpt-5"},
 	})
 }
 

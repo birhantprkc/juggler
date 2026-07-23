@@ -108,7 +108,20 @@ export function eventMatchesBinding(binding, e) {
   }
   if (binding.shift !== undefined && !!binding.shift !== e.shiftKey) return false;
   if (!!binding.alt !== e.altKey) return false;
-  return normalizeKey(e.key) === normalizeKey(binding.key);
+  if (normalizeKey(e.key) === normalizeKey(binding.key)) return true;
+  // macOS reports the Option-MODIFIED glyph in `key` (⌥M → 'µ', ⌥T → '†'), so
+  // an Alt binding on a plain letter/digit would never match there by `key`
+  // alone. Fall back to the physical `code` ('KeyM'/'Digit5') for those
+  // bindings. Fallback only — the `key` comparison above stays authoritative,
+  // so non-macOS layouts (which report the base letter) are unaffected, and
+  // the physical-position assumption in `code` only kicks in where `key` has
+  // already been remapped away from anything a binding could name.
+  if (binding.alt && typeof e.code === 'string') {
+    const k = normalizeKey(binding.key);
+    if (/^[a-z]$/.test(k) && e.code === `Key${k.toUpperCase()}`) return true;
+    if (/^[0-9]$/.test(k) && e.code === `Digit${k}`) return true;
+  }
+  return false;
 }
 
 /**
@@ -316,6 +329,28 @@ const SHORTCUT_DEFS = [
     description: 'Cycle the active strategy; hold to open the strategy menu.',
     category: 'Conversations',
     defaultBinding: { shift: true, key: 'Tab' },
+    external: true,
+  },
+  {
+    id: 'cycle-model',
+    label: 'Switch model',
+    description: 'Cycle through recently-used models; hold to open the model menu.',
+    category: 'Conversations',
+    // ⌥⌘M / Ctrl+Alt+M — bare ⌘M is macOS minimize, so the Option is load-bearing.
+    // Dispatched externally by the hold-to-cycle model controller.
+    defaultBinding: { mod: true, alt: true, key: 'm' },
+    allowInInput: true,
+    external: true,
+  },
+  {
+    id: 'cycle-thinking',
+    label: 'Switch thinking level',
+    description: 'Cycle the current model\u2019s thinking level; hold to open the level popover.',
+    category: 'Conversations',
+    // ⌥⌘T / Ctrl+Alt+T — bare ⌘T is the browser new-tab key, deliberately avoided.
+    // Dispatched externally by the hold-to-cycle thinking controller.
+    defaultBinding: { mod: true, alt: true, key: 't' },
+    allowInInput: true,
     external: true,
   },
 ];

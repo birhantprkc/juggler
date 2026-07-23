@@ -336,11 +336,12 @@ func preferredAvailableModel(providers []ProviderStatus) (core.ModelRef, bool) {
 	return core.ModelRef{Provider: best.Name, Model: best.ModelsWithContext[0].ID}, true
 }
 
-// resolveDefaultModel returns the concrete {provider, model} a new conversation
-// should be seeded with, plus whether it came from an explicit user default.
+// resolveDefaultModel returns the concrete {provider, model, thinking?} a new
+// conversation should be seeded with, plus whether it came from an explicit
+// user default. An empty Thinking means the model's default level.
 func (s *Server) resolveDefaultModel(ctx context.Context) (core.ModelRef, bool) {
 	if stored, err := s.defaultModelStore.Load(); err == nil && stored.Provider != "" && stored.Model != "" {
-		return core.ModelRef{Provider: stored.Provider, Model: stored.Model}, true
+		return stored, true
 	}
 
 	// No explicit default: the answer is derived from the live provider list,
@@ -353,34 +354,42 @@ func (s *Server) resolveDefaultModel(ctx context.Context) (core.ModelRef, bool) 
 	return ref, false
 }
 
-// handleDefaultModel returns the concrete {provider, model} a new conversation
-// should be seeded with. When the user has set a default it is returned as-is
-// (explicit:true); otherwise the server computes the preferred available
-// provider's first model from the live provider list (explicit:false). The
-// result is captured onto the conversation at creation time, so a later change
-// to the default never retargets an existing conversation.
+// handleDefaultModel returns the concrete {provider, model, thinking?} a new
+// conversation should be seeded with. When the user has set a default it is
+// returned as-is (explicit:true); otherwise the server computes the preferred
+// available provider's first model from the live provider list
+// (explicit:false). The result is captured onto the conversation at creation
+// time, so a later change to the default never retargets an existing
+// conversation. `thinking` is included only when non-empty (absent = the
+// model's default level).
 func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 	ref, explicit := s.resolveDefaultModel(r.Context())
-	handlers.WriteJSON(w, r, 0, map[string]any{
+	body := map[string]any{
 		"provider": ref.Provider,
 		"model":    ref.Model,
 		"explicit": explicit,
-	})
+	}
+	if ref.Thinking != "" {
+		body["thinking"] = ref.Thinking
+	}
+	handlers.WriteJSON(w, r, 0, body)
 }
 
 // handleSetDefaultModel persists the model new conversations are seeded with.
-// Body: {"provider": "...", "model": "..."}. An empty provider/model clears the
-// stored value, reverting to automatic selection.
+// Body: {"provider": "...", "model": "...", "thinking": "..."} — thinking is
+// optional; absent/empty means the model's default level. An empty
+// provider/model clears the stored value, reverting to automatic selection.
 func (s *Server) handleSetDefaultModel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
+		Thinking string `json:"thinking"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
 		return
 	}
-	if err := s.defaultModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model}); err != nil {
+	if err := s.defaultModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
 		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to save default model: %v", err)})
 		return
 	}
@@ -389,8 +398,11 @@ func (s *Server) handleSetDefaultModel(w http.ResponseWriter, r *http.Request) {
 
 // handleRecentModels handles the user's recently-selected concrete models.
 //
-//	GET  /api/recent-models           → {"models": [{provider, model}, ...]} (most-recent first)
-//	POST /api/recent-models {provider, model} → records a pick, returns {success}
+//	GET  /api/recent-models           → {"models": [{provider, model, thinking?}, ...]} (most-recent first)
+//	POST /api/recent-models {provider, model, thinking?} → records a pick, returns {success}
+//
+// `thinking` is optional on both sides — absent/empty means the model's
+// default level, and entries dedupe by the full triple.
 //
 // The list is server-side (not browser localStorage) so it survives app
 // relaunch / a spawned server binding to a different port. Whether a model is
@@ -430,12 +442,13 @@ func (s *Server) handleRecentModelsPost(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
+		Thinking string `json:"thinking"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
 		return
 	}
-	if err := s.recentModelsStore.Add(core.ModelRef{Provider: req.Provider, Model: req.Model}); err != nil {
+	if err := s.recentModelsStore.Add(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
 		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to record recent model: %v", err)})
 		return
 	}

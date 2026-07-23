@@ -449,7 +449,7 @@ func (m *Manager) GetOrCreate(conversationID, authorID string) *ConversationWork
 func (m *Manager) SeedNewConversation(conversationID, name, projectPath, created string, model *core.ModelRef) error {
 	var modelConfig *ModelConfig
 	if model != nil && model.Provider != "" && model.Model != "" {
-		modelConfig = &ModelConfig{Provider: model.Provider, Model: model.Model}
+		modelConfig = &ModelConfig{Provider: model.Provider, Model: model.Model, Thinking: model.Thinking}
 	}
 	init := &InitMessage{
 		Type: "init",

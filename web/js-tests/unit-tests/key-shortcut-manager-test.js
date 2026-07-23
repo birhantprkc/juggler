@@ -87,7 +87,8 @@ export async function runTests(_ctx) {
   await run('all() lists the expected command ids', () => {
     const ids = keyShortcutManager.all().map((d) => d.id);
     for (const id of ['jump-to-attention', 'new-conversation', 'bin-conversation',
-      'toggle-file-editing', 'pause-conversation', 'undo', 'redo', 'zoom-in', 'zoom-out', 'strategy-switch']) {
+      'toggle-file-editing', 'pause-conversation', 'undo', 'redo', 'zoom-in', 'zoom-out',
+      'strategy-switch', 'cycle-model', 'cycle-thinking']) {
       assert(ids.includes(id), `expected shortcut "${id}" in the table`);
     }
   });
@@ -164,6 +165,27 @@ export async function runTests(_ctx) {
     assert(eventMatchesBinding(zoomIn, evt({ ...modProp, key: '+' })), 'Mod++ should match zoom-in');
     assert(eventMatchesBinding(zoomIn, evt({ ...modProp, shiftKey: true, key: '+' })),
       'Mod+Shift++ should match zoom-in (shift not significant)');
+  });
+
+  await run('alt bindings match the macOS Option glyph via the code fallback', () => {
+    const cycleModel = keyShortcutManager.getBinding('cycle-model');
+    assert(cycleModel.mod && cycleModel.alt && cycleModel.key === 'm', 'cycle-model is Mod+Alt+M');
+    // Windows/Linux report the base letter in `key`.
+    assert(eventMatchesBinding(cycleModel, evt({ ...modProp, altKey: true, key: 'm', code: 'KeyM' })),
+      'Mod+Alt+m should match cycle-model');
+    // macOS reports the Option-modified glyph ('µ' for ⌥M, '†' for ⌥T) — the
+    // physical `code` carries the match there.
+    assert(eventMatchesBinding(cycleModel, evt({ ...modProp, altKey: true, key: 'µ', code: 'KeyM' })),
+      'Mod+Alt+µ (macOS ⌥M glyph) should match cycle-model via code');
+    const cycleThinking = keyShortcutManager.getBinding('cycle-thinking');
+    assert(eventMatchesBinding(cycleThinking, evt({ ...modProp, altKey: true, key: '†', code: 'KeyT' })),
+      'Mod+Alt+† (macOS ⌥T glyph) should match cycle-thinking via code');
+    // The code fallback is Alt-only: without Alt the glyph must not match.
+    assert(!eventMatchesBinding(cycleModel, evt({ ...modProp, key: 'µ', code: 'KeyM' })),
+      'no Alt ⇒ no code fallback');
+    // And the wrong physical key must not match even with the modifiers right.
+    assert(!eventMatchesBinding(cycleModel, evt({ ...modProp, altKey: true, key: 'µ', code: 'KeyN' })),
+      'a different code must not match');
   });
 
   await run('an unwanted Alt modifier blocks the match', () => {

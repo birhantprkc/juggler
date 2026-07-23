@@ -156,10 +156,16 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 		msg.Conversation.ModelConfig.Model != "" &&
 		w.doc.GetMetadata("defaultModelConfig") == nil &&
 		w.doc.GetMetadata("modelConfig") == nil {
-		w.doc.SetMetadata("defaultModelConfig", map[string]any{
+		seed := map[string]any{
 			"provider": msg.Conversation.ModelConfig.Provider,
 			"model":    msg.Conversation.ModelConfig.Model,
-		})
+		}
+		// Thinking rides with the pair only when explicit — absent means the
+		// model's default level, matching the live modelConfig shape.
+		if msg.Conversation.ModelConfig.Thinking != "" {
+			seed["thinking"] = msg.Conversation.ModelConfig.Thinking
+		}
+		w.doc.SetMetadata("defaultModelConfig", seed)
 	}
 
 	// Initialize created timestamp in doc metadata for new conversations.

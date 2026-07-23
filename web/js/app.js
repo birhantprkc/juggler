@@ -12,6 +12,7 @@ import ConnectionManager from './services/connection-manager.js';
 import DisconnectionOverlay from './components/disconnection-overlay.js';
 import UIEventManager from './services/ui-event-manager.js';
 import StrategySwitcher from './services/strategy-switcher.js';
+import { ModelCycler, ThinkingCycler } from './services/model-cycler.js';
 import wsService from './services/websocket.js';
 import { reloadRegistries, initAllRegistries } from './registries/reload-registries.js';
 import actionExecutor from './services/action-executor.js';
@@ -52,6 +53,10 @@ class JugglerApp {
     this._uiEventManager = null;
     /** @type {StrategySwitcher|null} @private */
     this._strategySwitcher = null;
+    /** @type {ModelCycler|null} @private */
+    this._modelCycler = null;
+    /** @type {ThinkingCycler|null} @private */
+    this._thinkingCycler = null;
 
     this.init();
   }
@@ -125,6 +130,13 @@ class JugglerApp {
     // Initialize strategy switcher (Shift+Tab keyboard shortcut)
     this._strategySwitcher = new StrategySwitcher();
     this._strategySwitcher.init();
+
+    // Same hold-to-cycle gesture for models (⌥⌘M / Ctrl+Alt+M) and thinking
+    // levels (⌥⌘T / Ctrl+Alt+T)
+    this._modelCycler = new ModelCycler();
+    this._modelCycler.init();
+    this._thinkingCycler = new ThinkingCycler();
+    this._thinkingCycler.init();
 
     // Listen for plugin file changes (hot reload)
     wsService.on('plugin-changed', async () => {
@@ -949,6 +961,12 @@ class JugglerApp {
     scheduledSendService.stop();
     if (this._strategySwitcher) {
       this._strategySwitcher.destroy();
+    }
+    if (this._modelCycler) {
+      this._modelCycler.destroy();
+    }
+    if (this._thinkingCycler) {
+      this._thinkingCycler.destroy();
     }
     if (this._uiEventManager) {
       this._uiEventManager.destroy();

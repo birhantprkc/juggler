@@ -4,7 +4,9 @@
 
 /**
  * Recently-used concrete models for quick re-access from the model selector.
- * Most-recent first, deduped by provider+model, capped at MAX.
+ * Most-recent first, deduped by provider+model+thinking (the same model at two
+ * thinking levels is two distinct entries), capped at MAX. An absent
+ * `thinking` means the model's default level.
  *
  * Persisted SERVER-SIDE (GET/POST /api/recent-models), not in browser
  * localStorage: localStorage is partitioned by origin (including port), so an
@@ -18,9 +20,9 @@
  * the menu), and `record()` updates it optimistically before POSTing.
  */
 
-const MAX = 5;
+const MAX = 6;
 
-/** @typedef {{ provider: string, model: string }} RecentModel */
+/** @typedef {{ provider: string, model: string, thinking?: string }} RecentModel */
 
 /** @type {RecentModel[]} */
 let _cache = [];
@@ -33,7 +35,9 @@ function sanitize(data) {
   if (!Array.isArray(data)) return [];
   return data
     .filter(x => x && typeof x.provider === 'string' && typeof x.model === 'string')
-    .map(x => ({ provider: x.provider, model: x.model }))
+    .map(x => (typeof x.thinking === 'string' && x.thinking !== ''
+      ? { provider: x.provider, model: x.model, thinking: x.thinking }
+      : { provider: x.provider, model: x.model }))
     .slice(0, MAX);
 }
 
@@ -66,20 +70,25 @@ const recentModels = {
   },
 
   /**
-   * Record a concrete model selection, moving it to the front. Updates the
-   * cache optimistically, then persists to the server.
+   * Record a concrete model selection, moving it to the front. Entries dedupe
+   * by the provider+model+thinking triple. Updates the cache optimistically,
+   * then persists to the server.
    * @param {string} provider
    * @param {string} model
+   * @param {string} [thinking] Canonical thinking level; absent/empty means
+   *   the model's default level.
    * @returns {Promise<void>}
    */
-  async record(provider, model) {
+  async record(provider, model, thinking) {
     if (!provider || !model) return;
-    _cache = [{ provider, model }, ..._cache.filter(x => !(x.provider === provider && x.model === model))].slice(0, MAX);
+    const entry = thinking ? { provider, model, thinking } : { provider, model };
+    _cache = [entry, ..._cache.filter(x =>
+      !(x.provider === provider && x.model === model && (x.thinking || '') === (thinking || '')))].slice(0, MAX);
     try {
       await fetch('/api/recent-models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, model }),
+        body: JSON.stringify(entry),
       });
     } catch {
       // Best-effort persistence; the optimistic cache update already reflects

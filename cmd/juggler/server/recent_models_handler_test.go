@@ -84,6 +84,52 @@ func TestRecentModelsHandlerRoundTrip(t *testing.T) {
 	}
 }
 
+// TestRecentModelsHandlerThinkingTriple locks the optional `thinking` field in
+// the HTTP contract: POST accepts it, GET returns it, and dedupe is by the
+// full provider+model+thinking triple — the same model at two levels is two
+// distinct entries.
+func TestRecentModelsHandlerThinkingTriple(t *testing.T) {
+	userpathstest.Isolate(t)
+	store, err := core.NewRecentModelsStore()
+	if err != nil {
+		t.Fatalf("NewRecentModelsStore: %v", err)
+	}
+	s := &Server{recentModelsStore: store}
+
+	post := func(body string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/recent-models", strings.NewReader(body))
+		s.handleRecentModels(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	post(`{"provider":"anthropic","model":"claude"}`)
+	post(`{"provider":"anthropic","model":"claude","thinking":"high"}`)
+
+	got := getRecentModels(t, s)
+	want := []core.ModelRef{
+		{Provider: "anthropic", Model: "claude", Thinking: "high"},
+		{Provider: "anthropic", Model: "claude"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("after level-distinct POSTs got %v, want %v", got, want)
+	}
+
+	// Re-picking the exact triple moves it to the front without duplicating.
+	post(`{"provider":"anthropic","model":"claude"}`)
+	got = getRecentModels(t, s)
+	want = []core.ModelRef{
+		{Provider: "anthropic", Model: "claude"},
+		{Provider: "anthropic", Model: "claude", Thinking: "high"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("after triple-dedup POST got %v, want %v", got, want)
+	}
+}
+
 // TestRecentModelsHandlerNilStore tolerates a server with no store wired,
 // returning an empty list rather than erroring.
 func TestRecentModelsHandlerNilStore(t *testing.T) {

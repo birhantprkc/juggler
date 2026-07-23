@@ -2373,11 +2373,16 @@ input-box .model-selector-button {
 }
 
 /* Model Selector - compact thinking-level chip on the button. Muted pill that
-   survives the has-override / model-unavailable button states. */
+   survives the has-override / model-unavailable button states. A click target
+   in its own right — it opens the mini thinking popover (.thinking-mini) — so
+   it carries a hover affordance and an enlarged pseudo-element hit area. The
+   transparent border keeps the solid and hollow variants the same size. */
 .model-selector-button .thinking-chip {
     display: inline-block;
+    position: relative;
     margin-left: 0.375rem;
     padding: 0 0.3125rem;
+    border: 0.0625rem solid transparent;
     border-radius: 0.375rem;
     font-size: 0.625rem;
     font-weight: 600;
@@ -2387,9 +2392,37 @@ input-box .model-selector-button {
     color: var(--text-secondary);
     background: var(--bg-tertiary, rgb(127 127 127 / 16%));
     flex-shrink: 0;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
-/* Model Selector - thinking-level segmented control in the info column. */
+/* Enlarged hit area: the pill is tiny, the click target must not be. */
+.model-selector-button .thinking-chip::after {
+    content: "";
+    position: absolute;
+    inset: -0.4375rem -0.25rem;
+}
+
+.model-selector-button .thinking-chip:hover {
+    color: var(--text-primary);
+    border-color: var(--text-tertiary);
+}
+
+/* Hollow variant: no explicit level in the config — the chip echoes the
+   model's declared default level, dimmed and outlined so it reads as
+   "inherited" next to the solid explicit-level pill. */
+.model-selector-button .thinking-chip.default {
+    background: transparent;
+    border-color: var(--border-color, rgb(127 127 127 / 24%));
+    color: var(--text-tertiary);
+}
+
+.model-selector-button .thinking-chip.default:hover {
+    color: var(--text-primary);
+    border-color: var(--text-tertiary);
+}
+
+/* Model Selector - thinking-level control in the info column and mini popover. */
 .model-thinking {
     padding: 0 1rem;
     margin-bottom: 2rem;
@@ -2411,26 +2444,84 @@ input-box .model-selector-button {
 }
 
 .thinking-seg {
-    padding: 0.1875rem 0.35rem;
-    border: 1px solid var(--border-color, rgb(127 127 127 / 24%));
-    border-radius: 0.375rem;
+    padding: 0 0.25rem;
+    border: none;
+    border-radius: 0.3125rem;
     background: transparent;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    font-weight: 500;
+    color: var(--text-tertiary);
+    font-size: 0.625rem;
+    font-weight: 600;
+    line-height: 1.5;
+    text-transform: uppercase;
+    letter-spacing: 0.02rem;
     cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    transition: background 0.12s ease, color 0.12s ease;
 }
 
 .thinking-seg:hover {
-    background: var(--bg-tertiary, rgb(127 127 127 / 12%));
+    background: var(--bg-tertiary, rgb(127 127 127 / 16%));
     color: var(--text-primary);
 }
 
 .thinking-seg.active {
     background: var(--accent-color, #6366f1);
-    border-color: var(--accent-color, #6366f1);
     color: #fff;
+}
+
+/* Mini thinking popover — opened from the button chip. Just the segmented
+   control, reusing the .model-thinking / .thinking-seg styles from the info
+   column; only the surface padding differs (no column gutter to match). */
+.thinking-mini {
+    min-width: auto;
+    padding: 0.625rem 0.75rem;
+}
+
+.thinking-mini .model-thinking {
+    padding: 0;
+    margin-bottom: 0;
+}
+
+/* Model Selector - selectable model rows reserve a left gutter for the tick. */
+.model-menu-list .model-selection-item {
+    position: relative;
+}
+
+.model-menu-list .model-item-name {
+    min-width: 0;
+}
+
+.model-selected-tick {
+    position: absolute;
+    left: 0.625rem;
+    top: 0.45rem;
+    width: 0.875rem;
+    color: currentcolor;
+    line-height: normal;
+    pointer-events: none;
+}
+
+.model-selected-tick svg {
+    display: inline-block;
+    width: 0.875rem;
+    height: 0.875rem;
+    fill: currentcolor;
+    vertical-align: baseline;
+}
+
+/* Chip on a Recent row: display-only echo of the entry's stored level (the
+   whole row is the click target), matching the button chip's look. */
+.recent-model-chip {
+    display: inline-block;
+    margin-left: 0.375rem;
+    padding: 0 0.3125rem;
+    border-radius: 0.375rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    line-height: 1.4;
+    text-transform: uppercase;
+    letter-spacing: 0.02rem;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary, rgb(127 127 127 / 16%));
 }
 
 /* Model Selector - unavailable model indicator */
@@ -2598,6 +2689,10 @@ input-box .model-selector-button {
     align-items: stretch;
     gap: 0.0625rem;
     padding: 0.5rem 1.5rem
+}
+
+.recent-model.active {
+    background: var(--bg-raised);
 }
 
 .recent-model-name {

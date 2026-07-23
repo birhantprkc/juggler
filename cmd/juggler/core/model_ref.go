@@ -9,4 +9,8 @@ package core
 type ModelRef struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// Thinking is the optional canonical thinking/reasoning-effort level
+	// ("off","low","medium","high","max"); empty ⇒ the model's default level.
+	// Old persisted files without the field load as empty — no migration.
+	Thinking string `json:"thinking,omitempty"`
 }

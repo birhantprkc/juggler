@@ -100,7 +100,7 @@ export function folderGrantSuggestions(grantDir, home) {
   if (!folder) return [];
   return [{
     allowedPaths: [folder],
-    label: `allow ${tildeify(folder, home)}`
+    label: tildeify(folder, home)
   }];
 }
 
