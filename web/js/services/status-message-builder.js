@@ -186,7 +186,7 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildProcessingToolsStatus(data = {}) {
-    return this._withElapsed('Processing tools', data);
+    return this._withElapsed('Waiting for tools to complete', data);
   }
 
   /**
