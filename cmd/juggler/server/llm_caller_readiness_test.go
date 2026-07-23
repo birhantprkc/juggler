@@ -7,7 +7,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -93,7 +92,7 @@ func TestLLMCallerWaitsForStartupCapabilities(t *testing.T) {
 	}
 }
 
-func TestLLMCallerRejectsOversizedRootBeforeProviderSubmit(t *testing.T) {
+func TestLLMCallerDispatchesEstimatedOversizedRoot(t *testing.T) {
 	t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
 	const providerName = "test_root_admission"
 	var opened []*capabilityCacheConversation
@@ -133,18 +132,49 @@ func TestLLMCallerRejectsOversizedRootBeforeProviderSubmit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.createLLMCaller()(context.Background(), request, func(worker.StreamChunk) {
-		t.Fatal("rejected root request streamed a chunk")
-	})
-	var exceeded *provider.ContextLimitExceededError
-	if !errors.As(err, &exceeded) {
-		t.Fatalf("error = %T %v, want ContextLimitExceededError", err, err)
+	_, err = s.createLLMCaller()(context.Background(), request, func(worker.StreamChunk) {})
+	if err != nil {
+		t.Fatalf("estimated oversized root request rejected: %v", err)
 	}
 	if len(opened) != 1 {
 		t.Fatalf("opened conversations = %d, want 1", len(opened))
 	}
-	if opened[0].submits != 0 {
-		t.Fatalf("underlying provider submits = %d, want 0", opened[0].submits)
+	if opened[0].submits != 1 {
+		t.Fatalf("underlying provider submits = %d, want 1", opened[0].submits)
+	}
+}
+
+func TestLLMCallerPropagatesContextGuardBypass(t *testing.T) {
+	t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
+	const providerName = "test_context_guard_bypass"
+	var opened []*capabilityCacheConversation
+	provider.RegisterProvider(provider.ProviderInfo{
+		Name: providerName, AuthType: provider.AuthTypeToggle,
+	}, func(provider.Config) (provider.Provider, error) {
+		return &capabilityCacheProvider{opened: &opened}, nil
+	})
+	credentials, err := core.NewCredentialsStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.SetProviderEnabled(providerName, true); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServerState(t)
+	s.providersReady = make(chan struct{})
+	s.shutdownChan = make(chan struct{})
+	s.conversationCache = newConversationCache()
+	t.Cleanup(s.conversationCache.Shutdown)
+	providers := []ProviderStatus{{Name: providerName, ModelsWithContext: []ModelWithContext{{ID: "model", ContextWindow: 1000, MaxOutputTokens: 100}}}}
+	s.providersList.Store(&providers)
+	s.markProvidersReady()
+
+	request := json.RawMessage(`{"conversationId":"conv","bypassContextGuard":true,"modelConfig":{"provider":"test_context_guard_bypass","model":"model"}}`)
+	if _, err := s.createLLMCaller()(context.Background(), request, func(worker.StreamChunk) {}); err != nil {
+		t.Fatalf("LLM call failed: %v", err)
+	}
+	if len(opened) != 1 || !opened[0].lastRequest.BypassContextGuard {
+		t.Fatalf("provider request bypass = %v, want true", len(opened) == 1 && opened[0].lastRequest.BypassContextGuard)
 	}
 }
 

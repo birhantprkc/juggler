@@ -20,7 +20,81 @@ const (
 	// suffix walk stops once another unit would push the reducer window below
 	// reserve + floor, keeping the reducer's fit proofs meaningful.
 	recoverySummaryFloorTokens int64 = 1000
+
+	// maxContextRecoveryAttempts permits several progressive folds while keeping
+	// provider retries small and independent from the reducer's internal call cap.
+	maxContextRecoveryAttempts = 4
 )
+
+type recoverySignature struct {
+	retainedItems int
+	foldBoundary  string
+	wireSize      int
+}
+
+type contextRecoveryResult struct {
+	Changed   bool
+	Signature recoverySignature
+}
+
+type contextRecoveryState struct {
+	attempts          int
+	previousSignature recoverySignature
+}
+
+func (s *contextRecoveryState) canAttempt() bool {
+	return s.attempts < maxContextRecoveryAttempts
+}
+
+func (s *contextRecoveryState) advance(result contextRecoveryResult, overflow error) (bool, error) {
+	if !s.canAttempt() {
+		return false, overflow
+	}
+	s.attempts++
+	if !result.Changed || (s.attempts > 1 && result.Signature == s.previousSignature) {
+		return false, overflow
+	}
+	s.previousSignature = result.Signature
+	return true, nil
+}
+
+func contextLimitFromAdvisory(advisory *provider.ContextCompactionAdvisory) *provider.ContextLimitExceededError {
+	return &provider.ContextLimitExceededError{
+		EstimatedInputTokens: advisory.EstimatedInputTokens,
+		OutputReserveTokens:  advisory.OutputReserveTokens,
+		ContextWindowTokens:  advisory.ContextWindowTokens,
+		Breakdown:            advisory.Breakdown,
+	}
+}
+
+func providerAuthoredContextError(overflow error) error {
+	var contextLimit *provider.ContextLimitExceededError
+	if errors.As(overflow, &contextLimit) && contextLimit.Cause != nil {
+		return fmt.Errorf("%s: %w", contextLimit.Cause.Error(), overflow)
+	}
+	return overflow
+}
+
+func contextRecoverySignature(items []ConversationItem) recoverySignature {
+	raw, _ := json.Marshal(items)
+	boundary := ""
+	for _, item := range items {
+		if item.Type == ItemTypeThread && item.BoundedCompaction {
+			boundary = item.ItemID
+			break
+		}
+	}
+	return recoverySignature{
+		retainedItems: len(items),
+		foldBoundary:  boundary,
+		wireSize:      len(raw),
+	}
+}
+
+func contextRecoveryOutcome(before recoverySignature, items []ConversationItem) contextRecoveryResult {
+	after := contextRecoverySignature(items)
+	return contextRecoveryResult{Changed: after != before, Signature: after}
+}
 
 // recoveryUnit is an atomic fold-boundary unit over the target items array:
 // [start, end) is either a single item or a run of same-transaction
@@ -32,26 +106,26 @@ type recoveryUnit struct {
 }
 
 // tryContextRecovery recovers an ordinary root or subthread turn whose request
-// admission rejected for context size: it summarizes the oldest foldable items
-// with the bounded reducer and atomically folds the summary into the durable
-// history in place of them, leaving the most recent items verbatim. The caller
-// (runStrategyLoop) then rebuilds and retries the rejected turn once.
+// was rejected by the provider for context size. It reports objective structural
+// progress from the durable item shape; the advisory token estimate is used for
+// planning only and is never the progress criterion.
 //
 // Every failure path returns a typed error: BoundedCompactionError for
 // deterministic recovery failures, BoundedCompactionCancelledError (matching
 // errBoundedCompactionCancelled) when interrupted mid-reduce.
-func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) error {
+func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (contextRecoveryResult, error) {
+	before := contextRecoverySignature(w.getTargetItems())
 	if w.compactionCancelled() {
-		return errBoundedCompactionCancelled
+		return contextRecoveryResult{}, errBoundedCompactionCancelled
 	}
 	pinnedModel, err := validateCompactionModel(modelConfig, "context recovery")
 	if err != nil {
-		return err
+		return contextRecoveryResult{}, err
 	}
 	window := limitErr.ContextWindowTokens
 	reserve := limitErr.OutputReserveTokens
 	if window <= 0 {
-		return &BoundedCompactionError{Reason: BoundedCompactionContextBound, Message: "context recovery requires a known context window", Window: window}
+		return contextRecoveryResult{}, &BoundedCompactionError{Reason: BoundedCompactionContextBound, Message: "context recovery requires a known context window", Window: window}
 	}
 
 	// Everything admission counted that is not per-message content is the
@@ -70,7 +144,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	// intact on the wire and in the visible doc (the full result survives in
 	// its transaction blob).
 	if err := w.shrinkOversizedTrailingToolResults(limitErr, &pinnedModel, envelope); err != nil {
-		return err
+		return contextRecoveryResult{}, err
 	}
 
 	// The synthesized prompt item id: it lives inside the folded thread's nested
@@ -82,10 +156,10 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	items := w.getTargetItems()
 	records, err := canonicalCompactionRecords(items, promptID)
 	if err != nil {
-		return &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "context recovery could not encode canonical source: " + err.Error(), Cause: err}
+		return contextRecoveryResult{}, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "context recovery could not encode canonical source: " + err.Error(), Cause: err}
 	}
 	if len(records) == 0 {
-		return &BoundedCompactionError{Reason: BoundedCompactionEmptySource, Message: "context recovery source is empty"}
+		return contextRecoveryOutcome(before, items), nil
 	}
 	fingerprint := compactionSourceFingerprint(records)
 
@@ -115,10 +189,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		k--
 	}
 	if k == len(units) {
-		return &BoundedCompactionError{
-			Reason: BoundedCompactionContextBound, Window: window,
-			Message: "context recovery cannot help: the most recent items alone exceed the model context window",
-		}
+		return contextRecoveryOutcome(before, items), nil
 	}
 	if k <= skip {
 		// Every foldable unit already fits verbatim within the window. Because
@@ -130,7 +201,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		// it. Admission on the retry is the backstop if this estimate is optimistic.
 		w.recordCompactionOutcome(compactionKindRecovery, "shrink-only", CompactionResult{}, map[string]any{"suffixTokens": suffixEst})
 		w.log.Info("[recovery] trailing-result shrink sufficed; no history fold needed (suffix=%d tokens)", suffixEst)
-		return nil
+		return contextRecoveryOutcome(before, items), nil
 	}
 
 	prefixStart := units[skip].start
@@ -157,7 +228,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 
 	result, err := w.runReducer(compactionKindRecovery, pinnedModel, budget, prefixRecords)
 	if err != nil {
-		return err
+		return contextRecoveryResult{}, err
 	}
 
 	// Recovery synthesizes the same folded-thread shape /compact produces rather
@@ -176,7 +247,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	nestedJSON, err := json.Marshal(nested)
 	if err != nil {
 		w.recordCompactionOutcome(compactionKindRecovery, "error", result, map[string]any{"reason": string(BoundedCompactionSourceEncoding)})
-		return &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "context recovery could not encode folded thread items: " + err.Error(), Cause: err}
+		return contextRecoveryResult{}, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "context recovery could not encode folded thread items: " + err.Error(), Cause: err}
 	}
 	resultJSON, _ := json.Marshal(result.Summary)
 	summaryItem := ConversationItem{
@@ -201,7 +272,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	// the fold splicing at stale indices — it aborts rather than clobbering.
 	if !w.doc.FoldPrefixIntoSummaryIfUnchanged(w.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {
 		w.recordCompactionOutcome(compactionKindRecovery, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
-		return &BoundedCompactionError{
+		return contextRecoveryResult{}, &BoundedCompactionError{
 			Reason: BoundedCompactionSourceChanged, Message: "conversation changed during context recovery; nothing was folded",
 			Calls: result.Calls, Spend: result.EstimatedSpend,
 			Window: budget.window, Usage: result.Usage,
@@ -212,7 +283,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	})
 	w.log.Info("[recovery] folded %d items into a compaction summary (passes=%d calls=%d spend=%d window=%d suffix=%d tokens)",
 		prefixEnd-prefixStart, result.Passes, result.Calls, result.EstimatedSpend, window, suffixEst)
-	return nil
+	return contextRecoveryOutcome(before, w.getTargetItems()), nil
 }
 
 // recoveryShrunkResultMarker prefixes a tool result that was replaced by a

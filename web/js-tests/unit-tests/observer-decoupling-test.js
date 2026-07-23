@@ -17,6 +17,7 @@ import {
   createApprovalTestConversation,
   assert
 } from '../utilities/test-helpers.js';
+import { shouldAutoCompactInputUsage } from '../../js/model/conversation-observers.js';
 
 /**
  * Wait for Yjs observers to fire (microtask + small delay).
@@ -137,6 +138,24 @@ export async function runTests(_ctx) {
   } catch (e) {
     failed++;
     errors.push(`observer fetches context window on modelConfig change: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 4: Approximate usage remains eligible for advisory auto-compaction
+  // =========================================================================
+  try {
+    assert(shouldAutoCompactInputUsage({ inputTokens: 8500 }, 10000),
+      'provider-reported usage at the threshold should auto-compact');
+    assert(shouldAutoCompactInputUsage({ inputTokens: 9000, inputTokensApproximate: true }, 10000),
+      'approximate fallback usage above the threshold should advise early compaction');
+    assert(!shouldAutoCompactInputUsage({ inputTokens: 8400, inputTokensApproximate: true }, 10000),
+      'approximate fallback usage below the threshold should not auto-compact');
+    assert(!shouldAutoCompactInputUsage({ inputTokens: 9000, inputTokensApproximate: true }, 0),
+      'usage without a context window should not auto-compact');
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`auto-compaction accepts marked estimates as advisory: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { passed, failed, errors };

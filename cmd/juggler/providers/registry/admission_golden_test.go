@@ -68,10 +68,10 @@ var goldenCorpus = []struct {
 	{"technical prose", "The bounded reducer splits the canonical transcript into chunks that\neach fit the reduced window, summarizes every chunk with a hidden map call,\nthen reduces the partial summaries across passes until one final call fits.\nPasses, calls, and estimated spend are bounded; partial accounting survives\nfailure and cancellation so the operation always leaves diagnostics.", 64},
 }
 
-// TestApproximateTokenCountNeverUndercountsGoldenCorpus is the admission
-// safety property: the local estimate must never be lower than a real BPE
-// tokenizer's count. Under-counting over-admits — the provider then rejects
-// the request or, worse (Ollama), silently truncates history.
+// TestApproximateTokenCountNeverUndercountsGoldenCorpus is a heuristic-quality
+// tripwire, not an admission safety proof. Under-counting may cause a provider
+// rejection (or silent truncation without the future guard), while over-counting
+// may trigger earlier planning; neither estimate is authoritative.
 func TestApproximateTokenCountNeverUndercountsGoldenCorpus(t *testing.T) {
 	for _, sample := range goldenCorpus {
 		if est := approximateTokenCount(sample.text); est < sample.cl100kTokens {

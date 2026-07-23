@@ -57,15 +57,16 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 
 		// Parse worker request
 		var req struct {
-			SystemPrompt    string               `json:"systemPrompt"`
-			Messages        []provider.Message   `json:"messages"`
-			Tools           []ToolDefinition     `json:"tools"`
-			ConversationID  string               `json:"conversationId"`
-			ThreadID        string               `json:"threadId"`
-			ModelConfig     ModelConfig          `json:"modelConfig"`
-			TransactionID   string               `json:"transactionId"`
-			ToolChoice      *provider.ToolChoice `json:"toolChoice,omitempty"`
-			MaxOutputTokens int64                `json:"maxOutputTokens,omitempty"`
+			SystemPrompt       string               `json:"systemPrompt"`
+			Messages           []provider.Message   `json:"messages"`
+			Tools              []ToolDefinition     `json:"tools"`
+			ConversationID     string               `json:"conversationId"`
+			ThreadID           string               `json:"threadId"`
+			ModelConfig        ModelConfig          `json:"modelConfig"`
+			TransactionID      string               `json:"transactionId"`
+			ToolChoice         *provider.ToolChoice `json:"toolChoice,omitempty"`
+			MaxOutputTokens    int64                `json:"maxOutputTokens,omitempty"`
+			BypassContextGuard bool                 `json:"bypassContextGuard,omitempty"`
 		}
 		if err := json.Unmarshal(request, &req); err != nil {
 			return nil, fmt.Errorf("failed to parse LLM request: %w", err)
@@ -145,7 +146,8 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			ToolChoice:     req.ToolChoice,
 			// F1: per-request wire output cap (hidden compaction map calls). 0 =
 			// use the client/model default; adapters apply it as a min().
-			MaxOutputTokens: req.MaxOutputTokens,
+			MaxOutputTokens:    req.MaxOutputTokens,
+			BypassContextGuard: req.BypassContextGuard,
 			// Normalize here so an unknown/garbage stored level degrades to the
 			// provider default rather than reaching a provider verbatim. Rides
 			// per-turn; deliberately NOT part of the conversation-cache key.
@@ -229,14 +231,15 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 		}
 
 		return &worker.LLMResponse{
-			Blocks:           toLLMResponseBlocks(blocks),
-			InputTokens:      result.InputTokens,
-			OutputTokens:     result.OutputTokens,
-			CachedTokens:     result.CachedTokens,
-			CacheWriteTokens: result.CacheWriteTokens,
-			StopReason:       result.StopReason,
-			TransactionID:    req.TransactionID,
-			CacheTTLMs:       conv.CacheTTL().Milliseconds(),
+			Blocks:                 toLLMResponseBlocks(blocks),
+			InputTokens:            result.InputTokens,
+			InputTokensApproximate: result.InputTokensApproximate,
+			OutputTokens:           result.OutputTokens,
+			CachedTokens:           result.CachedTokens,
+			CacheWriteTokens:       result.CacheWriteTokens,
+			StopReason:             result.StopReason,
+			TransactionID:          req.TransactionID,
+			CacheTTLMs:             conv.CacheTTL().Milliseconds(),
 		}, nil
 	}
 }
@@ -256,14 +259,15 @@ type workerTurnSink struct {
 
 func (s *workerTurnSink) DeliverTurn(turn provider.ProviderTurn) {
 	payload, err := json.Marshal(worker.ProviderTurnMessage{
-		Type:             "provider-turn",
-		Blocks:           toLLMResponseBlocks(turn.Blocks),
-		StopReason:       turn.Result.StopReason,
-		InputTokens:      turn.Result.InputTokens,
-		OutputTokens:     turn.Result.OutputTokens,
-		CachedTokens:     turn.Result.CachedTokens,
-		CacheWriteTokens: turn.Result.CacheWriteTokens,
-		Autonomous:       turn.Autonomous,
+		Type:                   "provider-turn",
+		Blocks:                 toLLMResponseBlocks(turn.Blocks),
+		StopReason:             turn.Result.StopReason,
+		InputTokens:            turn.Result.InputTokens,
+		InputTokensApproximate: turn.Result.InputTokensApproximate,
+		OutputTokens:           turn.Result.OutputTokens,
+		CachedTokens:           turn.Result.CachedTokens,
+		CacheWriteTokens:       turn.Result.CacheWriteTokens,
+		Autonomous:             turn.Autonomous,
 	})
 	if err != nil {
 		return

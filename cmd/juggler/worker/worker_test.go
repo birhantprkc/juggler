@@ -2698,7 +2698,7 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "Compact", forceTool: "return_result"})
 		w.thread.itemID = threadID
 
-		raw := w.buildLLMRequest(ctxResult, tools, "txn-1")
+		raw := w.buildLLMRequest(ctxResult, tools, "txn-1", false)
 		var req map[string]any
 		if err := json.Unmarshal(raw, &req); err != nil {
 			t.Fatalf("unmarshal request: %v", err)
@@ -2719,7 +2719,7 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "Plain"})
 		w.thread.itemID = threadID
 
-		raw := w.buildLLMRequest(ctxResult, tools, "txn-2")
+		raw := w.buildLLMRequest(ctxResult, tools, "txn-2", false)
 		var req map[string]any
 		if err := json.Unmarshal(raw, &req); err != nil {
 			t.Fatalf("unmarshal request: %v", err)

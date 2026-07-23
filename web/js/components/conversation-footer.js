@@ -41,7 +41,7 @@ class ConversationFooter extends HTMLElement {
    * transactionId. Lookups are global to the element instance
    * (same conversation for the element's lifetime, so no key
    * collision risk).
-   * @type {Map<string, {inputTokens: number, cachedTokens: number}|null>}
+   * @type {Map<string, {inputTokens: number, cachedTokens: number, inputTokensApproximate: boolean}|null>}
    * @private
    */
   _blobTokenCache = new Map();
@@ -141,13 +141,14 @@ class ConversationFooter extends HTMLElement {
       const blob = /** @type {any} */ (await workerManager.getTransaction(convId, txnId));
       const inputTokens = Number(blob?.inputTokens) || 0;
       const cachedTokens = Number(blob?.cachedTokens) || 0;
+      const inputTokensApproximate = blob?.inputTokensApproximate === true;
       if (inputTokens > 0) {
         // Only cache positive results. The blob may not exist yet:
         // the worker stamps transactionId on the streaming assistant
         // item BEFORE SaveBlob runs at end-of-turn, so the footer's
         // first fetch can race the save. Leaving the cache empty
         // lets the next conversation:changed event retry.
-        this._blobTokenCache.set(txnId, { inputTokens, cachedTokens });
+        this._blobTokenCache.set(txnId, { inputTokens, cachedTokens, inputTokensApproximate });
         success = true;
       }
     } catch {
@@ -188,6 +189,7 @@ class ConversationFooter extends HTMLElement {
       cached: anchor?.cachedTokens ?? 0,
       budget,
       processing,
+      approximate: anchor?.inputTokensApproximate ?? false,
     });
   }
 

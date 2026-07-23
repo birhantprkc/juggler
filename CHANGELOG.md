@@ -8,6 +8,8 @@ of changes; this project follows semantic versioning.
 - GitHub Copilot now works with GitHub Enterprise Cloud (*.ghe.com): reuses your editor login and can sign in to your tenant
 - New shortcuts: ⌥⌘M / Ctrl+Alt+M cycles recent models, ⌥⌘T / Ctrl+Alt+T cycles thinking level (hold opens the menu)
 - Model and thinking menus now stay stable and readable while selecting levels
+- Fix for some token count estimation errors that would make the auto-compact kick in much too soon
+- Added GLM5.2 1m token option
 
 ## [0.4.3] - 2026-07-21
 

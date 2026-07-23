@@ -37,7 +37,8 @@ import { createCopyButton } from '../utils/properties-panel-helpers.js';
  * @property {string} id - Transaction id (matches the file stem on disk).
  * @property {string} [timestamp] - ISO8601 round-trip start time.
  * @property {number} [duration] - Round-trip duration in milliseconds.
- * @property {number} [inputTokens] - Input token count reported by the provider.
+ * @property {number} [inputTokens] - Provider-reported input tokens, or a fallback estimate when inputTokensApproximate is true.
+ * @property {boolean} [inputTokensApproximate] - Whether inputTokens is a local fallback estimate.
  * @property {number} [outputTokens] - Output token count reported by the provider.
  * @property {number} [cachedTokens] - Input tokens served from prompt cache.
  * @property {number} [cacheWriteTokens] - Input tokens written to the prompt cache this turn.
@@ -92,7 +93,7 @@ function _buildMetadataBar(blob) {
     add(`Duration: ${(blob.duration / 1000).toFixed(2)}s`);
   }
   if (blob.inputTokens || blob.outputTokens) {
-    add(`Tokens: ${formatNumber(blob.inputTokens ?? 0)} in \u2192 ${formatNumber(blob.outputTokens ?? 0)} out`);
+    add(`Tokens: ${blob.inputTokensApproximate ? '~' : ''}${formatNumber(blob.inputTokens ?? 0)} in \u2192 ${formatNumber(blob.outputTokens ?? 0)} out`);
   }
   if (blob.cachedTokens || blob.cacheWriteTokens) {
     const read = blob.cachedTokens ?? 0;

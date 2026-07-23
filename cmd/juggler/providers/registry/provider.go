@@ -100,6 +100,13 @@ type MessageRequest struct {
 	// the smaller reserve so the wire cap and the admission reserve never diverge.
 	MaxOutputTokens int64
 
+	// BypassContextGuard explicitly permits this request to dispatch when a
+	// silent-truncation provider's conservative estimate is over its input
+	// ceiling. The worker sets it only for one visible fallback attempt after
+	// structured recovery cannot progress, and for hidden compaction requests
+	// whose own bounded pack/split controller already handles context pressure.
+	BypassContextGuard bool
+
 	// ThinkingLevel selects how much extended reasoning / "thinking" the model
 	// does this turn, from a provider-agnostic vocabulary:
 	//   "" (absent) — the provider default (byte-identical to pre-feature
@@ -221,12 +228,13 @@ type ContentBlock struct {
 // StructuredResponse represents a response with structured content blocks.
 // Token-field semantics match StreamResult — see that type for the contract.
 type StructuredResponse struct {
-	Blocks           []ContentBlock `json:"blocks"`
-	StopReason       string         `json:"stopReason,omitempty"`
-	InputTokens      int            `json:"inputTokens,omitempty"`
-	OutputTokens     int            `json:"outputTokens,omitempty"`
-	CachedTokens     int            `json:"cachedTokens,omitempty"`
-	CacheWriteTokens int            `json:"cacheWriteTokens,omitempty"`
+	Blocks                 []ContentBlock `json:"blocks"`
+	StopReason             string         `json:"stopReason,omitempty"`
+	InputTokens            int            `json:"inputTokens,omitempty"`
+	InputTokensApproximate bool           `json:"inputTokensApproximate,omitempty"`
+	OutputTokens           int            `json:"outputTokens,omitempty"`
+	CachedTokens           int            `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       int            `json:"cacheWriteTokens,omitempty"`
 }
 
 // StreamResult contains metadata about a completed stream.
@@ -241,6 +249,9 @@ type StructuredResponse struct {
 //     Anthropic SDK's `input_tokens`, which is fresh-
 //     only — claudecode/anthropic providers sum
 //     fresh + cache_read + cache_creation here.)
+//   - InputTokensApproximate: InputTokens came from a local fallback estimate
+//     because the provider supplied no input usage. False means provider-reported
+//     (and remains the compatible default when the field is absent).
 //   - OutputTokens:     Output tokens generated.
 //   - CachedTokens:     Prompt tokens served from prompt cache (subset
 //     of InputTokens). Anthropic cache_read /
@@ -250,11 +261,12 @@ type StructuredResponse struct {
 //     cache_creation; 0 for providers without an
 //     explicit cache-write phase.
 type StreamResult struct {
-	StopReason       string `json:"stopReason,omitempty"`
-	InputTokens      int    `json:"inputTokens,omitempty"`
-	OutputTokens     int    `json:"outputTokens,omitempty"`
-	CachedTokens     int    `json:"cachedTokens,omitempty"`
-	CacheWriteTokens int    `json:"cacheWriteTokens,omitempty"`
+	StopReason             string `json:"stopReason,omitempty"`
+	InputTokens            int    `json:"inputTokens,omitempty"`
+	InputTokensApproximate bool   `json:"inputTokensApproximate,omitempty"`
+	OutputTokens           int    `json:"outputTokens,omitempty"`
+	CachedTokens           int    `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       int    `json:"cacheWriteTokens,omitempty"`
 }
 
 // ProviderTurn is a complete turn surfaced by a Conversation — either
@@ -563,6 +575,18 @@ type ModelCapabilities struct {
 	ProviderOverheadTokens int64
 }
 
+// ContextAdmissionPolicy identifies who decides whether request content fits a
+// model's context window. The zero value is provider-authoritative: local
+// estimates may guide planning but do not reject a visible request. Providers
+// known to silently truncate may explicitly request a conservative guard; the
+// worker-side advisory behavior for that policy is implemented separately.
+type ContextAdmissionPolicy string
+
+const (
+	ContextAdmissionProviderAuthoritative ContextAdmissionPolicy = ""
+	ContextAdmissionSilentTruncationGuard ContextAdmissionPolicy = "silent-truncation-guard"
+)
+
 // BudgetContract defines how shared admission reserves room for a response.
 // A positive OutputReserveTokens overrides MaxOutputTokens. A known context with
 // neither uses a conservative derived reserve. Unknown context fails closed
@@ -570,6 +594,7 @@ type ModelCapabilities struct {
 type BudgetContract struct {
 	OutputReserveTokens int64
 	AllowUnknownLimits  bool
+	ContextAdmission    ContextAdmissionPolicy
 }
 
 // Config contains provider configuration
@@ -632,6 +657,10 @@ type ProviderInfo struct {
 	// external agent protocols); their requests dispatch with no admission
 	// check rather than dying with UnknownContextLimitError.
 	AllowUnknownLimits bool
+	// ContextAdmission selects request-content admission behavior. Its zero value
+	// is provider-authoritative; only providers known to silently truncate should
+	// select ContextAdmissionSilentTruncationGuard.
+	ContextAdmission ContextAdmissionPolicy
 }
 
 // EffectiveAuthType preserves the legacy convention where an empty

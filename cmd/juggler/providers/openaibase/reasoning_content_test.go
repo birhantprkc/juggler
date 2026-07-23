@@ -135,6 +135,37 @@ func TestOpenRouterReasoningFieldSurfacedAsThinking(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsMarksFallbackInputUsageApproximate(t *testing.T) {
+	body := sseBody(
+		`{"id":"x","object":"chat.completion.chunk","created":0,"model":"glm-4.6","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":"stop"}]}`,
+	)
+	c := streamingClientWithSSE(t, body)
+
+	result, err := c.streamMessage(context.Background(), provider.MessageRequest{
+		Messages: []provider.Message{{Type: "user", Content: "hello world"}},
+	}, func(provider.StreamChunk) (*provider.ToolResult, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("streamMessage: %v", err)
+	}
+	if result.InputTokens == 0 || !result.InputTokensApproximate {
+		t.Fatalf("fallback input usage = %+v, want positive approximate count", result)
+	}
+
+	reported := sseBody(
+		`{"id":"x","object":"chat.completion.chunk","created":0,"model":"glm-4.6","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":17,"completion_tokens":1}}`,
+	)
+	c = streamingClientWithSSE(t, reported)
+	result, err = c.streamMessage(context.Background(), provider.MessageRequest{
+		Messages: []provider.Message{{Type: "user", Content: "hello world"}},
+	}, func(provider.StreamChunk) (*provider.ToolResult, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("streamMessage with usage: %v", err)
+	}
+	if result.InputTokens != 17 || result.InputTokensApproximate {
+		t.Fatalf("reported input usage = %+v, want 17 authoritative tokens", result)
+	}
+}
+
 // TestReasoningContentNonStringEmitsNoThinking proves the ExtraFields parse is
 // defensive: a null or non-string reasoning_content (and an absent field) must
 // NOT emit a spurious thinking chunk. Without the type guard these would either

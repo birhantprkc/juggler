@@ -47,7 +47,7 @@ func TestResponsesReasoningSurfacedAsThinking(t *testing.T) {
 
 	var thinking, text strings.Builder
 	var sawProgress bool
-	_, err = c.streamMessage(context.Background(), provider.MessageRequest{
+	result, err := c.streamMessage(context.Background(), provider.MessageRequest{
 		Messages: []provider.Message{{Type: "user", Content: "hello"}},
 	}, func(chunk provider.StreamChunk) (*provider.ToolResult, error) {
 		switch chunk.Type {
@@ -64,6 +64,9 @@ func TestResponsesReasoningSurfacedAsThinking(t *testing.T) {
 		t.Fatalf("streamMessage: %v", err)
 	}
 
+	if result.InputTokens == 0 || !result.InputTokensApproximate {
+		t.Fatalf("fallback input usage = %+v, want positive approximate count", result)
+	}
 	if got := thinking.String(); got != "Weighing the options. Settling on an answer." {
 		t.Fatalf("reasoning was not surfaced as thinking; got %q", got)
 	}

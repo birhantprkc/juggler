@@ -86,6 +86,124 @@ func reducerTestRecords(t *testing.T, contents ...string) []string {
 	return records
 }
 
+func TestHiddenCompactionRequestsBypassSilentTruncationGuard(t *testing.T) {
+	records := reducerTestRecords(t, strings.Repeat("history ", 100))
+	stub := &stubCompactionDispatcher{}
+	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
+		if !req.BypassContextGuard {
+			t.Fatal("hidden compaction request did not bypass context guard")
+		}
+		if len(req.Tools) > 0 {
+			return compactionToolResultResponse(t, "summary", 1, 1), nil
+		}
+		return compactionTextResponse("short", 1, 1), nil
+	}
+	result, err := newStubBoundedReducer(records, 10_000, 100, 0, stub).run(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Summary != "summary" || stub.calls == 0 {
+		t.Fatalf("result = %+v calls=%d", result, stub.calls)
+	}
+}
+
+func TestBoundedReducerEstimatedNoFitStillDispatchesWholeRecord(t *testing.T) {
+	// A window of 1 makes every candidate — even a single rune — estimated
+	// over the ceiling (the fixed envelope alone exceeds it). The record must
+	// still dispatch, and dispatch whole: shredding it to per-rune chunks
+	// would explode the planned call count and guarantee no-progress.
+	record := strings.Repeat("λ界x", 12)
+	stop := errors.New("dispatcher stop after proving whole-record dispatch")
+	stub := &stubCompactionDispatcher{}
+	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
+		if got := req.Messages[0].Content; got != record {
+			t.Fatalf("dispatched candidate = %q, want the whole record", got)
+		}
+		return nil, stop
+	}
+	reducer := newStubBoundedReducer([]string{record}, 1, 1, 0, stub)
+	_, err := reducer.run([]string{record})
+	if !errors.Is(err, stop) {
+		t.Fatalf("error = %v, want the dispatcher stop error", err)
+	}
+	if stub.calls != 1 {
+		t.Fatalf("dispatches = %d, want one whole-record dispatch, not per-rune shredding", stub.calls)
+	}
+}
+
+func TestBoundedReducerRealOverflowSplitsRuneSafeAndRecovers(t *testing.T) {
+	records := []string{strings.Repeat("🙂界λ", 80)}
+	providerOverflow := errors.New("provider context window exceeded")
+	finalCalls := 0
+	stub := &stubCompactionDispatcher{}
+	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
+		content := req.Messages[0].Content
+		if !utf8.ValidString(content) {
+			t.Fatalf("overflow retry split invalid UTF-8: %q", content)
+		}
+		if len(req.Tools) > 0 {
+			finalCalls++
+			if finalCalls == 1 {
+				return nil, &provider.ContextLimitExceededError{Cause: providerOverflow}
+			}
+			return compactionToolResultResponse(t, "recovered", 7, 3), nil
+		}
+		if len([]rune(content)) > 60 {
+			return nil, &provider.ContextLimitExceededError{Cause: providerOverflow}
+		}
+		return compactionTextResponse("x", 5, 2), nil
+	}
+	reducer := newStubBoundedReducer(records, 10_000, 100, 0, stub)
+	result, err := reducer.run(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Summary != "recovered" || finalCalls != 2 {
+		t.Fatalf("result = %+v, final calls = %d", result, finalCalls)
+	}
+	if stub.calls < 6 {
+		t.Fatalf("dispatches = %d, want overflow attempts plus split children", stub.calls)
+	}
+	if result.Usage.InputTokens == 0 || result.Usage.OutputTokens == 0 {
+		t.Fatalf("actual usage = %+v, want completed calls only", result.Usage)
+	}
+}
+
+func TestBoundedReducerIrreducibleOverflowPreservesProviderCause(t *testing.T) {
+	records := []string{"🙂"}
+	providerOverflow := errors.New("provider says prompt is too long")
+	stub := &stubCompactionDispatcher{}
+	stub.handle = func(_ int, _ hiddenLLMRequest) (*LLMResponse, error) {
+		return nil, &provider.ContextLimitExceededError{Cause: providerOverflow}
+	}
+	reducer := newStubBoundedReducer(records, 10_000, 100, 0, stub)
+	_, err := reducer.run(records)
+	if !errors.Is(err, providerOverflow) {
+		t.Fatalf("error = %v, want provider cause", err)
+	}
+	var contextLimit *provider.ContextLimitExceededError
+	if !errors.As(err, &contextLimit) {
+		t.Fatalf("error = %T, want typed context overflow", err)
+	}
+	if stub.calls != 2 {
+		t.Fatalf("dispatches = %d, want final attempt then irreducible map leaf", stub.calls)
+	}
+}
+
+func TestBoundedReducerObjectiveSerializedNoProgress(t *testing.T) {
+	records := []string{strings.Repeat("a", 200)}
+	stub := &stubCompactionDispatcher{}
+	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
+		return compactionTextResponse(req.Messages[0].Content, 1, 1), nil
+	}
+	reducer := newStubBoundedReducer(records, 500, 10, 0, stub)
+	_, err := reducer.run(records)
+	var bounded *BoundedCompactionError
+	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionNoProgress || !strings.Contains(bounded.Message, "serialized") {
+		t.Fatalf("error = %#v, want serialized no-progress failure", err)
+	}
+}
+
 func TestBoundedReducerOneCallFinalization(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("history ", 500))
 	const initialSpend int64 = 500
@@ -223,10 +341,11 @@ func TestBoundedReducerPassBoundPreservesPartialAccounting(t *testing.T) {
 	for i := range records {
 		records[i] = fmt.Sprintf("<record>%d%s</record>", i, strings.Repeat("x", 6750))
 	}
+	providerOverflow := errors.New("provider context window exceeded")
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(call int, req hiddenLLMRequest) (*LLMResponse, error) {
 		if len(req.Tools) > 0 {
-			t.Fatal("finalization was attempted for a non-converging source")
+			return nil, &provider.ContextLimitExceededError{Cause: providerOverflow}
 		}
 		chunk := req.Messages[0].Content
 		target := estimateCanonicalLayer([]string{chunk}) * 95 / 100
@@ -237,22 +356,19 @@ func TestBoundedReducerPassBoundPreservesPartialAccounting(t *testing.T) {
 	}
 	reducer := newStubBoundedReducer(records, 4_000, 100, 400, stub)
 	result, err := reducer.run(records)
-	var bounded *BoundedCompactionError
-	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionPassBound || bounded.Pass != boundedCompactionMaxPasses {
-		t.Fatalf("error = %#v, want pass bound at %d", err, boundedCompactionMaxPasses)
+	var contextLimit *provider.ContextLimitExceededError
+	if !errors.As(err, &contextLimit) || !errors.Is(err, providerOverflow) {
+		t.Fatalf("error = %#v, want provider overflow after %d passes", err, boundedCompactionMaxPasses)
 	}
-	if result.Passes != boundedCompactionMaxPasses || stub.calls != 48 {
-		t.Fatalf("passes = %d, hidden calls = %d, want 8 passes of 6 maps", result.Passes, stub.calls)
+	if result.Passes != boundedCompactionMaxPasses || stub.calls != 49 {
+		t.Fatalf("passes = %d, hidden calls = %d, want 8 passes of 6 maps plus final provider attempt", result.Passes, stub.calls)
 	}
 	if result.Calls != stub.calls+1 {
 		t.Fatalf("calls = %d, want rejected request plus %d hidden attempts", result.Calls, stub.calls)
 	}
-	wantInput := int64(48 * 49 / 2) // stub returns the call index as input tokens
+	wantInput := int64(48 * 49 / 2) // the failed final attempt contributes no usage
 	if result.Usage.InputTokens != wantInput || result.Usage.OutputTokens != 48 {
 		t.Fatalf("usage = %+v, want accumulated usage from all 48 completed calls", result.Usage)
-	}
-	if bounded.Usage != result.Usage || bounded.Calls != result.Calls {
-		t.Fatalf("error accounting %+v does not match result accounting %+v", bounded, result)
 	}
 }
 
@@ -455,7 +571,7 @@ func TestCanonicalCompactionSplitsUnicodeThroughPackPath(t *testing.T) {
 		if !utf8.ValidString(chunk) {
 			t.Fatalf("chunk %d is invalid UTF-8", i)
 		}
-		if !reducer.budget.fits(reducer.hiddenCompactionRequest(0, i, chunk, false)) {
+		if !reducer.budget.estimatedFits(reducer.hiddenCompactionRequest(0, i, chunk, false)) {
 			t.Fatalf("chunk %d does not fit", i)
 		}
 	}

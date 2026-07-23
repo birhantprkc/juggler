@@ -412,18 +412,18 @@ func TestHiddenCompactionUsesRegistryAdmissionAndDiscardsAllStreamChunks(t *test
 		t.Fatalf("streaming callbacks created visible items: got %d, want %d", len(items), len(originalItems))
 	}
 
-	rejectedUnderlying, rejected := openCompactionAdmissionConversation(t, 100, 20)
+	dispatchedUnderlying, dispatched := openCompactionAdmissionConversation(t, 100, 20)
 	oversized := provider.MessageRequest{Messages: []provider.Message{{Type: "user", Content: strings.Repeat("oversized ", 1000)}}}
-	_, err = rejected.Submit(context.Background(), oversized, func(provider.StreamChunk) (*provider.ToolResult, error) {
-		t.Fatal("rejected request invoked callback")
+	callbackCalls := 0
+	_, err = dispatched.Submit(context.Background(), oversized, func(provider.StreamChunk) (*provider.ToolResult, error) {
+		callbackCalls++
 		return nil, nil
 	})
-	var exceeded *provider.ContextLimitExceededError
-	if !errors.As(err, &exceeded) {
-		t.Fatalf("oversized error = %T %v, want ContextLimitExceededError", err, err)
+	if err != nil {
+		t.Fatalf("estimated oversized request rejected: %v", err)
 	}
-	if rejectedUnderlying.submits != 0 {
-		t.Fatalf("oversized probe reached underlying Submit %d times", rejectedUnderlying.submits)
+	if dispatchedUnderlying.submits != 1 || callbackCalls == 0 {
+		t.Fatalf("oversized dispatch = submits %d callbacks %d, want provider and callback invoked", dispatchedUnderlying.submits, callbackCalls)
 	}
 }
 

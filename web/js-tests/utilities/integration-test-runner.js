@@ -1008,6 +1008,7 @@ function detectFailedResources() {
  * @param {string} text - Response text
  * @param {object} [options] - Optional token counts and stop reason
  * @param {number} [options.inputTokens] - Input token count
+ * @param {boolean} [options.inputTokensApproximate] - Whether input tokens are estimated
  * @param {number} [options.outputTokens] - Output token count
  * @param {number} [options.cachedTokens] - Cached token count
  * @param {string} [options.stopReason] - Stop reason override
@@ -1019,6 +1020,7 @@ export function textResponse(text, options = {}) {
     blocks: [{ type: 'text', content: text }],
     stopReason: options.stopReason || 'end_turn',
     inputTokens: options.inputTokens || 0,
+    inputTokensApproximate: !!options.inputTokensApproximate,
     outputTokens: options.outputTokens || 0,
     cachedTokens: options.cachedTokens || 0,
     pauseBeforeReturn: !!options.pauseBeforeReturn
@@ -1033,6 +1035,7 @@ export function textResponse(text, options = {}) {
  * @param {string} [prefixText] - Optional text before tool use
  * @param {object} [options] - Optional token counts and stop reason
  * @param {number} [options.inputTokens] - Input token count
+ * @param {boolean} [options.inputTokensApproximate] - Whether input tokens are estimated
  * @param {number} [options.outputTokens] - Output token count
  * @param {number} [options.cachedTokens] - Cached token count
  * @param {string} [options.stopReason] - Stop reason override
@@ -1058,6 +1061,7 @@ export function toolUseResponse(toolUseId, toolName, toolInput, prefixText, opti
     blocks,
     stopReason: options.stopReason || 'tool_use',
     inputTokens: options.inputTokens || 0,
+    inputTokensApproximate: !!options.inputTokensApproximate,
     outputTokens: options.outputTokens || 0,
     cachedTokens: options.cachedTokens || 0,
     pauseBeforeReturn: !!options.pauseBeforeReturn
@@ -1070,6 +1074,7 @@ export function toolUseResponse(toolUseId, toolName, toolInput, prefixText, opti
  * @param {string} [prefixText] - Optional text before tools
  * @param {object} [options] - Optional token counts and stop reason
  * @param {number} [options.inputTokens] - Input token count
+ * @param {boolean} [options.inputTokensApproximate] - Whether input tokens are estimated
  * @param {number} [options.outputTokens] - Output token count
  * @param {number} [options.cachedTokens] - Cached token count
  * @param {string} [options.stopReason] - Stop reason override
@@ -1096,6 +1101,7 @@ export function multiToolResponse(tools, prefixText, options = {}) {
     blocks,
     stopReason: options.stopReason || 'tool_use',
     inputTokens: options.inputTokens || 0,
+    inputTokensApproximate: !!options.inputTokensApproximate,
     outputTokens: options.outputTokens || 0,
     cachedTokens: options.cachedTokens || 0
   };

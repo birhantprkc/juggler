@@ -115,6 +115,9 @@ func TestConversationHappyPath(t *testing.T) {
 		if sr.res.OutputTokens == 0 {
 			t.Fatalf("OutputTokens = 0, want > 0 (estimated)")
 		}
+		if !sr.res.InputTokensApproximate {
+			t.Fatal("InputTokensApproximate = false, want true for ACP local estimate")
+		}
 		text, thinking := col.textAndThinking()
 		if text != "Hello world" {
 			t.Fatalf("text = %q, want %q", text, "Hello world")

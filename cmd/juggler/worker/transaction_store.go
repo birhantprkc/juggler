@@ -69,6 +69,9 @@ func (s *TransactionStore) SaveBlob(in TransactionBlobInput) error {
 
 	if in.Response != nil {
 		blob["inputTokens"] = in.Response.InputTokens
+		if in.Response.InputTokensApproximate {
+			blob["inputTokensApproximate"] = true
+		}
 		blob["outputTokens"] = in.Response.OutputTokens
 		blob["cachedTokens"] = in.Response.CachedTokens
 		blob["cacheWriteTokens"] = in.Response.CacheWriteTokens

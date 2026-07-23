@@ -31,12 +31,13 @@ func TestHandleProviderTurn_FinalizesCost(t *testing.T) {
 			{Type: provider.ContentBlockTypeThinking, Content: "pondering"},
 			{Type: provider.ContentBlockTypeText, Content: "wake done"},
 		},
-		StopReason:       "end_turn",
-		InputTokens:      100621,
-		OutputTokens:     2261,
-		CachedTokens:     96818,
-		CacheWriteTokens: 3801,
-		Autonomous:       true,
+		StopReason:             "end_turn",
+		InputTokens:            100621,
+		InputTokensApproximate: true,
+		OutputTokens:           2261,
+		CachedTokens:           96818,
+		CacheWriteTokens:       3801,
+		Autonomous:             true,
 	})
 
 	w.handleProviderTurn(payload)
@@ -59,18 +60,19 @@ func TestHandleProviderTurn_FinalizesCost(t *testing.T) {
 		t.Fatalf("transaction blob not persisted for autonomous turn: %v", err)
 	}
 	var blob struct {
-		InputTokens      int    `json:"inputTokens"`
-		OutputTokens     int    `json:"outputTokens"`
-		CachedTokens     int    `json:"cachedTokens"`
-		CacheWriteTokens int    `json:"cacheWriteTokens"`
-		StopReason       string `json:"stopReason"`
+		InputTokens            int    `json:"inputTokens"`
+		InputTokensApproximate bool   `json:"inputTokensApproximate"`
+		OutputTokens           int    `json:"outputTokens"`
+		CachedTokens           int    `json:"cachedTokens"`
+		CacheWriteTokens       int    `json:"cacheWriteTokens"`
+		StopReason             string `json:"stopReason"`
 	}
 	if err := json.Unmarshal(data, &blob); err != nil {
 		t.Fatalf("parse blob: %v", err)
 	}
-	if blob.InputTokens != 100621 || blob.OutputTokens != 2261 ||
+	if blob.InputTokens != 100621 || !blob.InputTokensApproximate || blob.OutputTokens != 2261 ||
 		blob.CachedTokens != 96818 || blob.CacheWriteTokens != 3801 || blob.StopReason != "end_turn" {
-		t.Fatalf("blob usage = %+v, want in=100621 out=2261 cacheRead=96818 cacheWrite=3801 end_turn", blob)
+		t.Fatalf("blob usage = %+v, want approximate in=100621 out=2261 cacheRead=96818 cacheWrite=3801 end_turn", blob)
 	}
 }
 

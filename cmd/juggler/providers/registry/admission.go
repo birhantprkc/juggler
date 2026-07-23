@@ -30,21 +30,21 @@ type RequestTokenEstimate struct {
 	Total                  int64
 }
 
-// ContextLimitExceededError reports a request which cannot fit while preserving
-// the configured output reserve. It is deterministic and must not be retried.
+// ContextLimitExceededError reports a context overflow confirmed by the
+// provider. Cause retains that provider error so recovery and terminal reporting
+// never mistake an approximate local estimate for authoritative rejection.
 type ContextLimitExceededError struct {
 	EstimatedInputTokens int64
 	OutputReserveTokens  int64
 	ContextWindowTokens  int64
 	Breakdown            RequestTokenEstimate
-	// Cause is the original provider error when this limit was synthesized from
-	// a provider-side context-overflow rejection (the F2 conversion below). It is
-	// nil when admission raised the limit from its own pre-dispatch estimate.
+	// Cause is the original provider context-overflow error. Visible request
+	// admission never creates this type from an estimate alone.
 	Cause error
 }
 
 func (e *ContextLimitExceededError) Error() string {
-	return fmt.Sprintf("request needs %d input tokens plus %d reserved output tokens; model context window is %d tokens", e.EstimatedInputTokens, e.OutputReserveTokens, e.ContextWindowTokens)
+	return fmt.Sprintf("the provider rejected the request as exceeding its %d-token context window (%d tokens reserved for output; local estimate %d input tokens)", e.ContextWindowTokens, e.OutputReserveTokens, e.EstimatedInputTokens)
 }
 
 // Unwrap exposes the originating provider error (if any) so the terminal error
@@ -54,6 +54,21 @@ func (e *ContextLimitExceededError) Unwrap() error { return e.Cause }
 
 // Retryable allows generic error classifiers to identify this as terminal.
 func (e *ContextLimitExceededError) Retryable() bool { return false }
+
+// ContextCompactionAdvisory asks the worker to compact a visible request before
+// dispatch to a provider known to silently truncate oversized input. It is based
+// only on an approximate estimate, is never terminal, and must either lead to
+// structured recovery or one explicit request-local fallback dispatch.
+type ContextCompactionAdvisory struct {
+	EstimatedInputTokens int64
+	OutputReserveTokens  int64
+	ContextWindowTokens  int64
+	Breakdown            RequestTokenEstimate
+}
+
+func (e *ContextCompactionAdvisory) Error() string {
+	return fmt.Sprintf("request is estimated at %d input tokens plus %d reserved output tokens against a %d-token context window; conservative compaction is advised", e.EstimatedInputTokens, e.OutputReserveTokens, e.ContextWindowTokens)
+}
 
 // UnknownContextLimitError reports that admission could not prove the request
 // fits because its context window is unknown.
@@ -96,9 +111,10 @@ func SaturatingAdd(a, b int64) int64 {
 }
 
 // approximateTokenCount is deliberately conservative across common BPE
-// tokenizers. Natural ASCII runs and repeated-punctuation runs receive modest
-// compression, while mixed punctuation, long opaque strings, CJK, and symbols
-// are charged at their denser rates.
+// tokenizers. It is an advisory planning heuristic, not proof that request
+// content fits or exceeds a provider's context window. Natural ASCII runs and
+// repeated-punctuation runs receive modest compression, while mixed punctuation,
+// long opaque strings, CJK, and symbols are charged at their denser rates.
 //
 // Calibrated against a cl100k golden corpus (admission_golden_test.go). Two
 // rates are true per-byte maxima for byte-level BPE, which emits at most one
@@ -345,23 +361,22 @@ func (cv *admissionConversation) Submit(ctx context.Context, req MessageRequest,
 	}
 
 	breakdown := EstimateMessageRequestTokenBreakdown(req, cv.capabilities.ProviderOverheadTokens)
-	if SaturatingAdd(breakdown.Total, reserve) > window {
-		return nil, &ContextLimitExceededError{
+	if cv.contract.ContextAdmission == ContextAdmissionSilentTruncationGuard &&
+		!req.BypassContextGuard && SaturatingAdd(breakdown.Total, reserve) > window {
+		return nil, &ContextCompactionAdvisory{
 			EstimatedInputTokens: breakdown.Total,
 			OutputReserveTokens:  reserve,
 			ContextWindowTokens:  window,
 			Breakdown:            breakdown,
 		}
 	}
+	// Request-content estimates are advisory. Normal providers dispatch
+	// unconditionally; guarded providers dispatch after the worker has compacted
+	// or explicitly marked this one request as an irreducible fallback.
 	result, err := cv.Conversation.Submit(ctx, req, callback)
 	if err != nil && isProviderContextOverflowError(err) {
-		// F2: the provider itself rejected this turn for context overflow that
-		// our pre-dispatch estimate did not predict — an under-count of dense
-		// content, or a serving window we do not model. Convert it to the same
-		// deterministic limit error admission raises, using the known window and
-		// reserve, so the worker folds history and retries once instead of
-		// surfacing an unrecoverable generic failure. The worker caps recovery at
-		// one attempt, so a second provider rejection still terminates.
+		// Convert the provider's real rejection into the shared typed error so the
+		// worker can recover while retaining the authoritative cause.
 		return nil, &ContextLimitExceededError{
 			EstimatedInputTokens: breakdown.Total,
 			OutputReserveTokens:  reserve,
@@ -378,7 +393,8 @@ func (cv *admissionConversation) Submit(ctx context.Context, req MessageRequest,
 // as an HTTP 400 with heterogeneous wording and no shared structured code, so
 // detection is centralized here over a conservative set of signatures rather
 // than scattered across the provider adapters. An error that is already a
-// ContextLimitExceededError is left alone (admission raised it deliberately).
+// ContextLimitExceededError is left alone because it already represents a
+// converted provider rejection.
 func isProviderContextOverflowError(err error) bool {
 	if err == nil {
 		return false

@@ -43,6 +43,7 @@ import { registerOwnConversation as _registerOwnConversation } from './conversat
  * @property {MockResponseBlock[]} blocks - Response content blocks
  * @property {string} stopReason - Stop reason: 'end_turn', 'tool_use'
  * @property {number} [inputTokens] - Simulated input tokens
+ * @property {boolean} [inputTokensApproximate] - Whether simulated input tokens are estimated
  * @property {number} [outputTokens] - Simulated output tokens
  * @property {number} [cachedTokens] - Simulated cached tokens
  * @property {boolean} [pauseBeforeReturn] - If true, the worker pauses after streaming chunks; tests must call releaseMock() to resume

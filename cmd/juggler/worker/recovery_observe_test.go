@@ -124,7 +124,7 @@ func TestCompactionAccountingPersistedOnSummaryItem(t *testing.T) {
 	calls := 0
 	w.llmCallFunc = observedRecoveryStub(t, &calls)
 
-	if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 	if calls < 2 {
@@ -190,7 +190,7 @@ func TestCompactionTapeRecords(t *testing.T) {
 	calls := 0
 	w.llmCallFunc = observedRecoveryStub(t, &calls)
 
-	if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 
@@ -302,7 +302,7 @@ func TestCompactionCancellationTapeAndAccounting(t *testing.T) {
 		}, nil
 	}
 
-	err := w.tryContextRecovery(recoveryLimitErr(), pinned)
+	_, err := w.tryContextRecovery(recoveryLimitErr(), pinned)
 	if !errors.Is(err, errBoundedCompactionCancelled) {
 		t.Fatalf("error = %v, want cancellation", err)
 	}
@@ -432,10 +432,320 @@ func TestCompactionErrorDataExtraction(t *testing.T) {
 	})
 }
 
-// TestCompactionFailureAccountingOnErrorItem drives the strategy loop into the
-// terminal case — the user's own newest message alone exceeds the window — and
-// asserts the durable error item carries the recovery's failure accounting.
-func TestCompactionFailureAccountingOnErrorItem(t *testing.T) {
+func feedStrategyContextAndTools(w *ConversationWorker) {
+	ctxResp, _ := json.Marshal(map[string]any{
+		"type": "render-context-items-response", "systemPrompt": "sys", "contexts": []any{},
+	})
+	toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+	for {
+		select {
+		case <-w.done:
+			return
+		case w.contextResultChan <- ctxResp:
+		}
+		select {
+		case <-w.done:
+			return
+		case w.toolsResultChan <- toolsResp:
+		}
+	}
+}
+
+func TestContextGuardRecoveryProgressReevaluatesWithoutBypass(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	go feedStrategyContextAndTools(w)
+
+	visibleCalls, hiddenCalls := 0, 0
+	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		var req hiddenLLMRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, err
+		}
+		if strings.Contains(req.ThreadID, ":bounded:") {
+			hiddenCalls++
+			if !req.BypassContextGuard {
+				t.Fatal("hidden recovery request did not bypass guard")
+			}
+			if len(req.Tools) > 0 {
+				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"guard recovery summary"}`)}}}, nil
+			}
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
+		}
+		visibleCalls++
+		if req.BypassContextGuard {
+			t.Fatal("progressive recovery retry unexpectedly bypassed guard")
+		}
+		if visibleCalls == 1 {
+			limit := recoveryLimitErr()
+			return nil, &provider.ContextCompactionAdvisory{
+				EstimatedInputTokens: limit.EstimatedInputTokens, OutputReserveTokens: limit.OutputReserveTokens,
+				ContextWindowTokens: limit.ContextWindowTokens, Breakdown: limit.Breakdown,
+			}
+		}
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered"}}, StopReason: "end_turn"}, nil
+	}
+
+	w.runStrategyLoop("latest question", false)
+	if visibleCalls != 2 || hiddenCalls == 0 {
+		t.Fatalf("visible/hidden calls = %d/%d, want 2 and at least 1", visibleCalls, hiddenCalls)
+	}
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeError {
+			t.Fatalf("advisory escaped as terminal error: %q", item.Content)
+		}
+	}
+}
+
+func TestContextGuardIrreducibleFallbackIsSingleDispatchAndResets(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	go feedStrategyContextAndTools(w)
+
+	calls := 0
+	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		calls++
+		var req hiddenLLMRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, err
+		}
+		if calls == 1 {
+			if req.BypassContextGuard {
+				t.Fatal("initial guarded request bypassed")
+			}
+			limit := recoveryLimitErr()
+			return nil, &provider.ContextCompactionAdvisory{
+				EstimatedInputTokens: limit.EstimatedInputTokens, OutputReserveTokens: limit.OutputReserveTokens,
+				ContextWindowTokens: limit.ContextWindowTokens, Breakdown: limit.Breakdown,
+			}
+		}
+		if calls == 2 {
+			if !req.BypassContextGuard {
+				t.Fatal("irreducible fallback was not marked")
+			}
+			// A successful but barren fallback drives another strategy iteration;
+			// that next visible request must return to normal guarded admission.
+			return &LLMResponse{StopReason: "end_turn"}, nil
+		}
+		if req.BypassContextGuard {
+			t.Fatal("fallback bypass was not reset after successful dispatch")
+		}
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "next turn success"}}, StopReason: "end_turn"}, nil
+	}
+
+	w.runStrategyLoop(strings.Repeat("x", 25_000), false)
+	if calls != 3 {
+		t.Fatalf("visible calls = %d, want advisory, one fallback, and one normally guarded next turn", calls)
+	}
+	request := w.buildLLMRequest(&ContextResult{}, nil, "after-success", false)
+	var rebuilt hiddenLLMRequest
+	if err := json.Unmarshal(request, &rebuilt); err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt.BypassContextGuard {
+		t.Fatal("context guard fallback leaked after successful visible dispatch")
+	}
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeError {
+			t.Fatalf("advisory created error item: %q", item.Content)
+		}
+	}
+}
+
+func TestContextGuardRepeatedAdvisoryAfterBypassStopsWithoutErrorItem(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	go feedStrategyContextAndTools(w)
+
+	calls := 0
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		calls++
+		limit := recoveryLimitErr()
+		return nil, &provider.ContextCompactionAdvisory{
+			EstimatedInputTokens: limit.EstimatedInputTokens, OutputReserveTokens: limit.OutputReserveTokens,
+			ContextWindowTokens: limit.ContextWindowTokens, Breakdown: limit.Breakdown,
+		}
+	}
+	w.runStrategyLoop(strings.Repeat("x", 25_000), false)
+	if calls != 2 {
+		t.Fatalf("calls = %d, want initial advisory plus one bounded fallback", calls)
+	}
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeError {
+			t.Fatalf("repeated advisory reached terminal error item: %q", item.Content)
+		}
+	}
+}
+
+func TestContextGuardFallbackRealOverflowPreservesProviderCause(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	go feedStrategyContextAndTools(w)
+
+	providerCause := errors.New("provider fallback says context window exceeded")
+	calls := 0
+	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		calls++
+		var req hiddenLLMRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, err
+		}
+		limit := recoveryLimitErr()
+		if calls == 1 {
+			return nil, &provider.ContextCompactionAdvisory{
+				EstimatedInputTokens: limit.EstimatedInputTokens, OutputReserveTokens: limit.OutputReserveTokens,
+				ContextWindowTokens: limit.ContextWindowTokens, Breakdown: limit.Breakdown,
+			}
+		}
+		if !req.BypassContextGuard {
+			t.Fatal("fallback provider call was not bypassed")
+		}
+		limit.Cause = providerCause
+		return nil, limit
+	}
+
+	w.runStrategyLoop(strings.Repeat("x", 25_000), false)
+	if calls != 2 {
+		t.Fatalf("visible calls = %d, want bounded advisory plus fallback", calls)
+	}
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeError {
+			if !strings.Contains(item.Content, providerCause.Error()) {
+				t.Fatalf("error item = %q, want provider cause", item.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("real fallback overflow did not create a terminal provider error item")
+}
+
+// TestContextGuardRecoveryFailureSurfacesErrorItem proves a concrete recovery
+// failure under the silent-truncation guard is surfaced as a terminal error
+// item (a silent stop would look like a dead conversation), while the advisory
+// estimate itself still never appears as the terminal message.
+func TestContextGuardRecoveryFailureSurfacesErrorItem(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	go feedStrategyContextAndTools(w)
+
+	reducerFailure := errors.New("hidden reducer transport failed")
+	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		var req hiddenLLMRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, err
+		}
+		if strings.Contains(req.ThreadID, ":bounded:") {
+			return nil, reducerFailure
+		}
+		limit := recoveryLimitErr()
+		return nil, &provider.ContextCompactionAdvisory{
+			EstimatedInputTokens: limit.EstimatedInputTokens, OutputReserveTokens: limit.OutputReserveTokens,
+			ContextWindowTokens: limit.ContextWindowTokens, Breakdown: limit.Breakdown,
+		}
+	}
+
+	w.runStrategyLoop("latest question", false)
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeError {
+			if !strings.Contains(item.Content, "context recovery failed") || !strings.Contains(item.Content, reducerFailure.Error()) {
+				t.Fatalf("error item = %q, want the surfaced recovery failure", item.Content)
+			}
+			if strings.Contains(item.Content, "compaction is advised") {
+				t.Fatalf("error item leaked advisory text: %q", item.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("guard recovery failure did not surface an error item")
+}
+
+// TestContextRecoveryBudgetResetsAfterSuccessfulDispatch proves the bounded
+// recovery budget is per context-pressure incident, not per strategy run: after
+// the attempt bound is consumed and a dispatch succeeds, a later overflow in
+// the same run recovers again instead of dying on an exhausted budget.
+func TestContextRecoveryBudgetResetsAfterSuccessfulDispatch(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	go feedStrategyContextAndTools(w)
+
+	providerCause := errors.New("provider says context window exceeded")
+	overflowRounds := 0
+	visibleCalls := 0
+	overflow := func() error {
+		// Stage fresh foldable history before each overflow so every recovery
+		// can make objective progress (the worker is blocked in
+		// waitForLLMResponse while this runs; InsertMessage locks the doc).
+		overflowRounds++
+		items := make([]ConversationItem, 3)
+		for i := range items {
+			items[i] = ConversationItem{
+				Type: ItemTypeUser, ItemID: fmt.Sprintf("stage-%d-%d", overflowRounds, i),
+				Content: strings.Repeat("x", 2300),
+			}
+		}
+		w.doc.InsertMessage(0, items...)
+		limit := recoveryLimitErr()
+		limit.Cause = providerCause
+		return limit
+	}
+	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		var req hiddenLLMRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, err
+		}
+		if strings.Contains(req.ThreadID, ":bounded:") {
+			if len(req.Tools) > 0 {
+				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"staged history summary"}`)}}}, nil
+			}
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
+		}
+		visibleCalls++
+		switch {
+		case visibleCalls <= maxContextRecoveryAttempts:
+			// Consume the entire bounded recovery budget on real overflows.
+			return nil, overflow()
+		case visibleCalls == maxContextRecoveryAttempts+1:
+			// Successful but barren dispatch: closes the incident and drives
+			// one more strategy iteration.
+			return &LLMResponse{StopReason: "end_turn"}, nil
+		case visibleCalls == maxContextRecoveryAttempts+2:
+			// A fresh incident after success: must recover, not die on an
+			// exhausted per-run budget.
+			return nil, overflow()
+		default:
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered"}}, StopReason: "end_turn"}, nil
+		}
+	}
+
+	w.runStrategyLoop("latest question", false)
+	if want := maxContextRecoveryAttempts + 3; visibleCalls != want {
+		t.Fatalf("visible calls = %d, want %d (budget-consuming overflows, barren success, post-reset overflow, final success)", visibleCalls, want)
+	}
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeError {
+			t.Fatalf("post-success overflow hit an exhausted recovery budget: %q", item.Content)
+		}
+	}
+}
+
+// TestContextRecoveryNoProgressErrorItemPreservesProviderCause drives the
+// strategy loop into the no-progress case and asserts the terminal item reports
+// the latest provider-authored overflow rather than a local compaction error.
+func TestContextRecoveryNoProgressErrorItemPreservesProviderCause(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.storeState(StateProcessing)
@@ -461,6 +771,7 @@ func TestCompactionFailureAccountingOnErrorItem(t *testing.T) {
 		}
 	}()
 
+	providerCause := errors.New("provider says context is too long")
 	realCalls, hiddenCalls := 0, 0
 	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
 		var req hiddenLLMRequest
@@ -472,7 +783,9 @@ func TestCompactionFailureAccountingOnErrorItem(t *testing.T) {
 			return nil, errors.New("unexpected hidden call for an unrecoverable request")
 		}
 		realCalls++
-		return nil, recoveryLimitErr()
+		overflow := recoveryLimitErr()
+		overflow.Cause = providerCause
+		return nil, overflow
 	}
 
 	// The user's own message is the newest unit and alone exceeds the window:
@@ -508,8 +821,11 @@ func TestCompactionFailureAccountingOnErrorItem(t *testing.T) {
 	if err := json.Unmarshal(errorItem.Data, &data); err != nil {
 		t.Fatalf("error item data does not unmarshal: %v (raw %q)", err, errorItem.Data)
 	}
-	if data["compactionReason"] != string(BoundedCompactionContextBound) {
-		t.Fatalf("error item compactionReason = %v, want context_bound", data["compactionReason"])
+	if data["compactionReason"] != nil {
+		t.Fatalf("error item compactionReason = %v, want none for provider-authored overflow", data["compactionReason"])
+	}
+	if !strings.Contains(errorItem.Content, providerCause.Error()) {
+		t.Fatalf("error item content = %q, want provider cause %q", errorItem.Content, providerCause)
 	}
 	if data["provider"] != "test" || data["model"] != "test" {
 		t.Fatalf("error item provider/model = %v/%v, want test/test", data["provider"], data["model"])

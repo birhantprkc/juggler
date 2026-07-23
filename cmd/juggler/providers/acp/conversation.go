@@ -126,9 +126,10 @@ func (c *conversation) Submit(ctx context.Context, req provider.MessageRequest, 
 
 	out := ts.outputString()
 	return &provider.StreamResult{
-		StopReason:   pr.StopReason,
-		InputTokens:  provider.EstimateTokens(promptText),
-		OutputTokens: provider.EstimateTokens(out),
+		StopReason:             pr.StopReason,
+		InputTokens:            provider.EstimateTokens(promptText),
+		InputTokensApproximate: true,
+		OutputTokens:           provider.EstimateTokens(out),
 	}, nil
 }
 

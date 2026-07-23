@@ -209,14 +209,15 @@ func (u UserMessageInput) isEmpty() bool {
 // best-effort, not guaranteed. The handler lands it as a normal assistant
 // turn in the root conversation.
 type ProviderTurnMessage struct {
-	Type             string             `json:"type"` // "provider-turn"
-	Blocks           []LLMResponseBlock `json:"blocks"`
-	StopReason       string             `json:"stopReason"`
-	InputTokens      int                `json:"inputTokens"`
-	OutputTokens     int                `json:"outputTokens"`
-	CachedTokens     int                `json:"cachedTokens"`
-	CacheWriteTokens int                `json:"cacheWriteTokens"`
-	Autonomous       bool               `json:"autonomous"`
+	Type                   string             `json:"type"` // "provider-turn"
+	Blocks                 []LLMResponseBlock `json:"blocks"`
+	StopReason             string             `json:"stopReason"`
+	InputTokens            int                `json:"inputTokens"`
+	InputTokensApproximate bool               `json:"inputTokensApproximate,omitempty"`
+	OutputTokens           int                `json:"outputTokens"`
+	CachedTokens           int                `json:"cachedTokens"`
+	CacheWriteTokens       int                `json:"cacheWriteTokens"`
+	Autonomous             bool               `json:"autonomous"`
 }
 
 // StreamChunk represents a streamed LLM content chunk
@@ -252,15 +253,16 @@ func (e *deliveredLLMError) Unwrap() error { return e.err }
 
 // LLMResponse represents a complete LLM response
 type LLMResponse struct {
-	Blocks           []LLMResponseBlock `json:"blocks"`
-	InputTokens      int                `json:"inputTokens"`
-	OutputTokens     int                `json:"outputTokens"`
-	CachedTokens     int                `json:"cachedTokens,omitempty"`
-	CacheWriteTokens int                `json:"cacheWriteTokens,omitempty"`
-	StopReason       string             `json:"stopReason"` // "end_turn", "tool_use", "max_tokens"
-	Error            string             `json:"error,omitempty"`
-	TransactionID    string             `json:"transactionId,omitempty"`
-	CacheTTLMs       int64              `json:"cacheTTLMs,omitempty"` // Provider's prompt-cache TTL in ms; 0 if no cache concept
+	Blocks                 []LLMResponseBlock `json:"blocks"`
+	InputTokens            int                `json:"inputTokens"`
+	InputTokensApproximate bool               `json:"inputTokensApproximate,omitempty"`
+	OutputTokens           int                `json:"outputTokens"`
+	CachedTokens           int                `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       int                `json:"cacheWriteTokens,omitempty"`
+	StopReason             string             `json:"stopReason"` // "end_turn", "tool_use", "max_tokens"
+	Error                  string             `json:"error,omitempty"`
+	TransactionID          string             `json:"transactionId,omitempty"`
+	CacheTTLMs             int64              `json:"cacheTTLMs,omitempty"` // Provider's prompt-cache TTL in ms; 0 if no cache concept
 }
 
 // LLMResponseBlock represents a block in an LLM response
@@ -531,11 +533,12 @@ type SetMockResponsesMessage struct {
 
 // MockResponse represents a scripted LLM response for testing.
 type MockResponse struct {
-	Blocks       []LLMResponseBlock `json:"blocks"`
-	StopReason   string             `json:"stopReason"`
-	InputTokens  int                `json:"inputTokens,omitempty"`
-	OutputTokens int                `json:"outputTokens,omitempty"`
-	CachedTokens int                `json:"cachedTokens,omitempty"`
+	Blocks                 []LLMResponseBlock `json:"blocks"`
+	StopReason             string             `json:"stopReason"`
+	InputTokens            int                `json:"inputTokens,omitempty"`
+	InputTokensApproximate bool               `json:"inputTokensApproximate,omitempty"`
+	OutputTokens           int                `json:"outputTokens,omitempty"`
+	CachedTokens           int                `json:"cachedTokens,omitempty"`
 	// PauseBeforeReturn, when true, causes popMockResponse to deliver the
 	// response (streaming chunks) and then block on the worker's mockReleaseChan
 	// until the test sends a "release-mock" message. Tests use this to inject
@@ -643,9 +646,10 @@ type ConversationItem struct {
 	// TransactionID identifies the LLM round-trip that produced this item.
 	// All items inserted/stamped during one round-trip share the same id;
 	// the corresponding input/output blob is stored on disk via
-	// TransactionStore and carries the authoritative inputTokens /
-	// cachedTokens for that turn. Consumers (footer, auto-compact) walk
-	// their thread's items backward, find the most recent TransactionID,
+	// TransactionStore and carries inputTokens / cachedTokens for that turn.
+	// inputTokensApproximate distinguishes local fallback estimates from
+	// provider-reported usage; absent remains provider-reported for compatibility.
+	// Consumers (footer, auto-compact) walk their thread's items backward, find the most recent TransactionID,
 	// and fetch the blob on demand — there is no per-item or
 	// per-conversation cached token state.
 	TransactionID string `json:"transactionId,omitempty"`

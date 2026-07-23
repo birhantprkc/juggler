@@ -160,10 +160,8 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 	}
 
 	barrenTurns := 0
-	// recoveryAttempted caps context-window recovery at one fold+retry per
-	// strategy run: if the rebuilt request still does not fit, the error is
-	// terminal rather than a summarize-retry loop.
-	recoveryAttempted := false
+	contextRecovery := contextRecoveryState{}
+	bypassContextGuard := false
 
 strategyLoop:
 	for {
@@ -261,7 +259,7 @@ strategyLoop:
 		txnID := generateTransactionID()
 		w.currentTxnID = txnID
 
-		llmRequest := w.buildLLMRequest(ctxResult, tools, txnID)
+		llmRequest := w.buildLLMRequest(ctxResult, tools, txnID, bypassContextGuard)
 
 		// Stamp the originating user message before the call. The transaction
 		// blob is written below regardless of outcome, so on LLM failure the
@@ -312,8 +310,64 @@ strategyLoop:
 				return
 			}
 
+			var advisory *provider.ContextCompactionAdvisory
 			var contextLimit *provider.ContextLimitExceededError
-			if errors.As(err, &contextLimit) {
+			if errors.As(err, &advisory) {
+				// The request-local fallback is single-shot. Registry admission honors
+				// the bypass before transport, so seeing another advisory here means a
+				// broken caller/provider contract; stop without ever publishing the
+				// estimate as a terminal user error.
+				if bypassContextGuard {
+					w.log.Error("[context guard] advisory repeated after fallback bypass; stopping without a terminal estimate error")
+					w.currentTxnID = ""
+					return
+				}
+				// A silent-truncation guard is an estimate-based request to compact,
+				// never a terminal error. Reuse the bounded objective recovery state;
+				// when it cannot progress, rebuild once with a request-local bypass.
+				var originalRequest hiddenLLMRequest
+				_ = json.Unmarshal(llmRequest, &originalRequest)
+				limit := contextLimitFromAdvisory(advisory)
+				handled, compactErr := w.tryBoundedCompaction(limit, originalRequest.ModelConfig)
+				if handled {
+					w.currentTxnID = ""
+					if compactErr == nil || errors.Is(compactErr, errBoundedCompactionCancelled) {
+						return
+					}
+					// Hidden reducer requests bypass the guard, so any error here is a
+					// real bounded/provider failure rather than the advisory escaping.
+					err = fmt.Errorf("bounded compaction failed: %w", compactErr)
+				} else if contextRecovery.canAttempt() {
+					result, recErr := w.tryContextRecovery(limit, originalRequest.ModelConfig)
+					if errors.Is(recErr, errBoundedCompactionCancelled) {
+						w.currentTxnID = ""
+						return
+					}
+					if recErr != nil {
+						// A concrete recovery failure (reducer call, concurrent source
+						// change, persistence) is surfaced as its own terminal error —
+						// a silent stop here would look like a dead conversation. Only
+						// the advisory estimate itself must never become terminal.
+						err = fmt.Errorf("context recovery failed: %w", recErr)
+					} else if retry, _ := contextRecovery.advance(result, err); retry {
+						w.currentTxnID = ""
+						continue strategyLoop
+					} else {
+						bypassContextGuard = true
+						w.log.Info("[context guard] estimate=%d reserve=%d window=%d; dispatching one irreducible fallback", advisory.EstimatedInputTokens, advisory.OutputReserveTokens, advisory.ContextWindowTokens)
+						w.currentTxnID = ""
+						continue strategyLoop
+					}
+				} else {
+					bypassContextGuard = true
+					w.log.Info("[context guard] recovery attempt bound reached; estimate=%d reserve=%d window=%d; dispatching one fallback", advisory.EstimatedInputTokens, advisory.OutputReserveTokens, advisory.ContextWindowTokens)
+					w.currentTxnID = ""
+					continue strategyLoop
+				}
+				// Any err synthesized above (compaction/recovery failure) is
+				// terminal as-is: it must not re-enter overflow handling below in
+				// the same iteration, even when it wraps a provider overflow.
+			} else if errors.As(err, &contextLimit) {
 				// Parse the original request only now that it is needed (a context
 				// limit rejection), not on every successful turn.
 				var originalRequest hiddenLLMRequest
@@ -328,28 +382,33 @@ strategyLoop:
 						return
 					}
 					err = fmt.Errorf("bounded compaction failed: %w", compactErr)
-				} else if !recoveryAttempted {
-					// Ordinary root / subthread turn: summarize the oldest
-					// foldable history into the doc, then rebuild and retry the
-					// rejected turn once (the loop-top rebuild re-runs admission
-					// on the folded request).
-					recoveryAttempted = true
-					if recErr := w.tryContextRecovery(contextLimit, originalRequest.ModelConfig); recErr != nil {
+				} else if !contextRecovery.canAttempt() {
+					// Preserve and expose the last provider-authored overflow; do
+					// not replace it with a local estimate or retry-limit error.
+					err = providerAuthoredContextError(err)
+					w.log.Info("[recovery] stopped after %d progressive attempts", contextRecovery.attempts)
+				} else {
+					// Ordinary root / subthread turn: summarize or shrink durable
+					// history, then rebuild and retry only when its objective shape
+					// changed. Advisory token estimates do not prove progress.
+					result, recErr := w.tryContextRecovery(contextLimit, originalRequest.ModelConfig)
+					if recErr != nil {
 						if errors.Is(recErr, errBoundedCompactionCancelled) {
 							w.currentTxnID = ""
 							return
 						}
 						err = fmt.Errorf("context recovery failed: %w", recErr)
-						// When the limit was synthesized from a provider-side
-						// rejection (F2), the recovery error does not carry the
-						// provider's own wording. Surface it on the terminal item
-						// so the user sees why the provider rejected the turn.
 						if contextLimit.Cause != nil {
 							err = fmt.Errorf("%w (provider: %s)", err, contextLimit.Cause.Error())
 						}
-					} else {
+					} else if retry, terminalErr := contextRecovery.advance(result, err); retry {
 						w.currentTxnID = ""
 						continue strategyLoop
+					} else {
+						err = providerAuthoredContextError(terminalErr)
+						// No durable structural progress: surface the latest provider
+						// overflow unchanged so errors.Is/As reach its Cause.
+						w.log.Info("[recovery] stopped because the request structure did not change")
 					}
 				}
 			}
@@ -374,6 +433,14 @@ strategyLoop:
 			w.currentTxnID = ""
 			return
 		}
+
+		bypassContextGuard = false
+		// A successful dispatch closes this context-pressure incident: a later
+		// overflow in the same (possibly very long) strategy run gets a fresh
+		// bounded recovery budget instead of inheriting an exhausted one. This
+		// cannot loop — re-entering recovery still takes a fresh provider
+		// overflow, and each incident stays progress-checked and bounded.
+		contextRecovery = contextRecoveryState{}
 
 		// Per-turn token economics at Info level so the prompt-cache hit rate is
 		// visible in the normal conversation log without enabling trace. cached/

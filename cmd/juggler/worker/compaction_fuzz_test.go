@@ -26,7 +26,7 @@ func FuzzLargestFittingRunePrefix(f *testing.F) {
 			t.Skip("[]rune conversion is lossy for invalid UTF-8")
 		}
 		fits := func(s string) bool { return uint(utf8.RuneCountInString(s)) <= limit }
-		prefix, rest := largestFittingRunePrefix(text, fits)
+		prefix, rest := largestRunePrefix(text, fits)
 		if prefix+rest != text {
 			t.Fatalf("prefix %q + rest %q != input %q", prefix, rest, text)
 		}

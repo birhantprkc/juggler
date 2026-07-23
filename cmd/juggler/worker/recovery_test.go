@@ -86,7 +86,7 @@ func TestContextRecoveryFoldsRootPrefixPreservesSuffix(t *testing.T) {
 	calls, stub := newRecoveryStub(t, pinned)
 	w.llmCallFunc = stub
 
-	if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 	if *calls < 2 {
@@ -136,7 +136,7 @@ func TestContextRecoveryFoldsSubthreadPrefix(t *testing.T) {
 	calls, stub := newRecoveryStub(t, pinned)
 	w.llmCallFunc = stub
 
-	if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 	if *calls < 2 {
@@ -188,7 +188,7 @@ func TestContextRecoveryKeepsToolBatchAtomic(t *testing.T) {
 		calls, stub := newRecoveryStub(t, pinned)
 		w.llmCallFunc = stub
 
-		if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+		if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 			t.Fatal(err)
 		}
 		if *calls < 2 {
@@ -213,7 +213,7 @@ func TestContextRecoveryKeepsToolBatchAtomic(t *testing.T) {
 		calls, stub := newRecoveryStub(t, pinned)
 		w.llmCallFunc = stub
 
-		if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+		if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 			t.Fatal(err)
 		}
 		if *calls < 2 {
@@ -257,7 +257,7 @@ func TestContextRecoveryAbortsWhenSourceChanges(t *testing.T) {
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
 
-	err := w.tryContextRecovery(recoveryLimitErr(), pinned)
+	_, err := w.tryContextRecovery(recoveryLimitErr(), pinned)
 	var bounded *BoundedCompactionError
 	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionSourceChanged {
 		t.Fatalf("error = %#v, want source_changed", err)
@@ -286,10 +286,12 @@ func TestContextRecoveryTerminalWhenNewestItemAloneExceeds(t *testing.T) {
 	calls, stub := newRecoveryStub(t, pinned)
 	w.llmCallFunc = stub
 
-	err := w.tryContextRecovery(recoveryLimitErr(), pinned)
-	var bounded *BoundedCompactionError
-	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionContextBound {
-		t.Fatalf("error = %#v, want context_bound", err)
+	result, err := w.tryContextRecovery(recoveryLimitErr(), pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatalf("result = %+v, want no structural progress", result)
 	}
 	if *calls != 0 {
 		t.Fatalf("hidden calls = %d, want none for an unrecoverable suffix", *calls)
@@ -314,7 +316,7 @@ func TestContextRecoveryCancelledMidReduce(t *testing.T) {
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
 
-	err := w.tryContextRecovery(recoveryLimitErr(), pinned)
+	_, err := w.tryContextRecovery(recoveryLimitErr(), pinned)
 	if !errors.Is(err, errBoundedCompactionCancelled) {
 		t.Fatalf("error = %v, want cancellation", err)
 	}
@@ -340,7 +342,7 @@ func TestContextRecoveryPinsLeadingContextItems(t *testing.T) {
 	calls, stub := newRecoveryStub(t, pinned)
 	w.llmCallFunc = stub
 
-	if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 	if *calls < 2 {
@@ -361,11 +363,88 @@ func TestContextRecoveryPinsLeadingContextItems(t *testing.T) {
 	}
 }
 
-// TestContextRecoveryRetriesRejectedTurnOnce drives the full strategy loop:
-// the first real request is rejected admission-style, recovery folds the old
-// history into the doc, and the loop retries the same turn — which now fits
-// and completes, exactly once.
-func TestContextRecoveryRetriesRejectedTurnOnce(t *testing.T) {
+func TestContextRecoveryStatePreservesLatestProviderCause(t *testing.T) {
+	state := contextRecoveryState{}
+	firstCause := errors.New("provider overflow one")
+	first := &provider.ContextLimitExceededError{Cause: firstCause}
+	result := contextRecoveryResult{Changed: true, Signature: recoverySignature{retainedItems: 4, foldBoundary: "fold-1", wireSize: 400}}
+	if retry, err := state.advance(result, first); !retry || err != nil {
+		t.Fatalf("first advance = retry %v, err %v", retry, err)
+	}
+
+	latestCause := errors.New("provider overflow two")
+	latest := &provider.ContextLimitExceededError{Cause: latestCause}
+	if retry, err := state.advance(contextRecoveryResult{Signature: result.Signature}, latest); retry || !errors.Is(err, latestCause) {
+		t.Fatalf("no-progress advance = retry %v, err %v; want latest provider cause", retry, err)
+	}
+}
+
+func TestContextRecoveryStateAllowsTwoProgressiveRecoveriesThenThirdDispatch(t *testing.T) {
+	state := contextRecoveryState{}
+	providerCalls := 0
+	for {
+		providerCalls++
+		if providerCalls == 3 {
+			break
+		}
+		result := contextRecoveryResult{Changed: true, Signature: recoverySignature{
+			retainedItems: 6 - providerCalls, foldBoundary: fmt.Sprintf("fold-%d", providerCalls), wireSize: 600 - providerCalls*100,
+		}}
+		if retry, err := state.advance(result, recoveryLimitErr()); !retry || err != nil {
+			t.Fatalf("advance %d = retry %v, err %v", providerCalls, retry, err)
+		}
+	}
+	if state.attempts != 2 || providerCalls != 3 {
+		t.Fatalf("attempts = %d, provider calls = %d; want two recoveries then third dispatch", state.attempts, providerCalls)
+	}
+}
+
+func TestContextRecoveryStateBoundPreservesLatestProviderCause(t *testing.T) {
+	state := contextRecoveryState{}
+	for i := 0; i < maxContextRecoveryAttempts; i++ {
+		result := contextRecoveryResult{Changed: true, Signature: recoverySignature{
+			retainedItems: maxContextRecoveryAttempts - i, foldBoundary: fmt.Sprintf("fold-%d", i), wireSize: 1000 - i,
+		}}
+		if retry, err := state.advance(result, recoveryLimitErr()); !retry || err != nil {
+			t.Fatalf("advance %d = retry %v, err %v", i, retry, err)
+		}
+	}
+	latestCause := errors.New("last provider overflow")
+	latest := &provider.ContextLimitExceededError{Cause: latestCause}
+	if retry, err := state.advance(contextRecoveryResult{Changed: true}, latest); retry || !errors.Is(err, latestCause) {
+		t.Fatalf("bounded advance = retry %v, err %v; want latest provider cause", retry, err)
+	}
+}
+
+func TestContextRecoveryTrailingToolShrinkCountsAsProgress(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	giantResult, _ := json.Marshal(map[string]any{"content": strings.Repeat("r", 15_000), "isError": false})
+	w.doc.InsertMessage(0, ConversationItem{
+		Type: ItemTypeToolAction, ItemID: "ta-giant", ToolUseID: "tu-giant", ToolName: "read_file",
+		ToolInput: json.RawMessage(`{"path":"/tmp/big.txt"}`), State: StateCompleted,
+		Result: giantResult, TransactionID: "txn-giant",
+	})
+	pinned := &ModelConfig{Provider: "test", Model: "test"}
+	_, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	result, err := w.tryContextRecovery(recoveryLimitErr(), pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || result.Signature.wireSize >= 15_000 {
+		t.Fatalf("result = %+v, want objective shrink progress", result)
+	}
+}
+
+// TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit drives the full strategy loop:
+// the first real request is rejected by the provider, recovery folds the old
+// history into the doc, and the loop retries even though the rebuilt request's
+// advisory estimate still exceeds the reported context window.
+func TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.storeState(StateProcessing)
@@ -397,7 +476,7 @@ func TestContextRecoveryRetriesRejectedTurnOnce(t *testing.T) {
 
 	realCalls, hiddenCalls := 0, 0
 	firstTurnMessages, retriedTurnMessages := -1, -1
-	retriedFit := false
+	retriedEstimate := int64(0)
 	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, sink func(StreamChunk)) (*LLMResponse, error) {
 		var req hiddenLLMRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -416,8 +495,7 @@ func TestContextRecoveryRetriesRejectedTurnOnce(t *testing.T) {
 			return nil, recoveryLimitErr()
 		}
 		retriedTurnMessages = len(req.Messages)
-		estimate := provider.EstimateMessageRequestTokenBreakdown(providerRequest(req), 0).Total
-		retriedFit = estimate+300 <= 4_000
+		retriedEstimate = provider.EstimateMessageRequestTokenBreakdown(providerRequest(req), 0).Total
 		// Visible turns assemble the assistant message from streamed chunks;
 		// mirror the provider's stream before delivering the final response.
 		sink(StreamChunk{Type: provider.ContentBlockTypeText, Content: "recovered answer"})
@@ -438,8 +516,8 @@ func TestContextRecoveryRetriesRejectedTurnOnce(t *testing.T) {
 	if firstTurnMessages != 5 || retriedTurnMessages != 3 {
 		t.Fatalf("turn messages %d -> %d, want 5 rejected, 3 after the fold", firstTurnMessages, retriedTurnMessages)
 	}
-	if !retriedFit {
-		t.Fatal("retried request still exceeds the model context window after the fold")
+	if retriedEstimate+300 <= 2_000 {
+		t.Fatalf("retried advisory estimate = %d + 300, want above 2000", retriedEstimate)
 	}
 
 	items := w.doc.GetItems()
@@ -490,7 +568,7 @@ func TestContextRecoveryShrinksOversizedTrailingToolResult(t *testing.T) {
 	calls, stub := newRecoveryStub(t, pinned)
 	w.llmCallFunc = stub
 
-	if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 	if *calls < 4 {
@@ -554,10 +632,12 @@ func TestContextRecoveryTrailingToolBatchGiantInputStaysTerminal(t *testing.T) {
 	calls, stub := newRecoveryStub(t, pinned)
 	w.llmCallFunc = stub
 
-	err := w.tryContextRecovery(recoveryLimitErr(), pinned)
-	var bounded *BoundedCompactionError
-	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionContextBound {
-		t.Fatalf("error = %#v, want context_bound", err)
+	result, err := w.tryContextRecovery(recoveryLimitErr(), pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatalf("result = %+v, want no structural progress", result)
 	}
 	if *calls != 0 {
 		t.Fatalf("hidden calls = %d, want none — nothing shrinkable", *calls)
@@ -748,10 +828,12 @@ func TestContextRecoveryTerminalWhenNewestImageAloneExceeds(t *testing.T) {
 	calls, stub := newRecoveryStub(t, pinned)
 	w.llmCallFunc = stub
 
-	err := w.tryContextRecovery(recoveryLimitErr(), pinned)
-	var bounded *BoundedCompactionError
-	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionContextBound {
-		t.Fatalf("error = %#v, want context_bound", err)
+	result, err := w.tryContextRecovery(recoveryLimitErr(), pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatalf("result = %+v, want no structural progress", result)
 	}
 	if *calls != 0 {
 		t.Fatalf("hidden calls = %d, want none for an unrecoverable suffix", *calls)
@@ -843,7 +925,7 @@ func TestContextRecoveryShrinkOnlySucceedsWithoutFold(t *testing.T) {
 	calls, stub := newRecoveryStub(t, pinned)
 	w.llmCallFunc = stub
 
-	if err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
 		t.Fatalf("shrink-only recovery must succeed, got: %v", err)
 	}
 	if *calls == 0 {
@@ -945,7 +1027,7 @@ func TestContextRecoveryShrinkPathToleratesLargeProviderOverhead(t *testing.T) {
 	calls, stub := newLargeOverheadRecoveryStub(t, window, overhead, reserve, pinned)
 	w.llmCallFunc = stub
 
-	if err := w.tryContextRecovery(limitErr, pinned); err != nil {
+	if _, err := w.tryContextRecovery(limitErr, pinned); err != nil {
 		t.Fatalf("recovery failed at 40k provider overhead: %v", err)
 	}
 	if *calls == 0 {
@@ -1011,7 +1093,7 @@ func TestContextRecoveryFoldPathToleratesLargeProviderOverhead(t *testing.T) {
 	calls, stub := newLargeOverheadRecoveryStub(t, window, overhead, reserve, pinned)
 	w.llmCallFunc = stub
 
-	if err := w.tryContextRecovery(limitErr, pinned); err != nil {
+	if _, err := w.tryContextRecovery(limitErr, pinned); err != nil {
 		t.Fatalf("fold failed at 40k provider overhead: %v", err)
 	}
 	if *calls == 0 {
@@ -1094,7 +1176,7 @@ func TestContextRecoveryShrinkChargesMapOutputCap(t *testing.T) {
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
 
-	if err := w.tryContextRecovery(limitErr, pinned); err != nil {
+	if _, err := w.tryContextRecovery(limitErr, pinned); err != nil {
 		t.Fatalf("shrink recovery failed at 128k/16384: %v", err)
 	}
 	if *calls == 0 {

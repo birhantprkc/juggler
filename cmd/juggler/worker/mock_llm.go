@@ -78,12 +78,13 @@ func (w *ConversationWorker) popMockResponse(sink func(StreamChunk)) (*LLMRespon
 	})
 
 	response := &LLMResponse{
-		Blocks:       mock.Blocks,
-		StopReason:   mock.StopReason,
-		InputTokens:  mock.InputTokens,
-		OutputTokens: mock.OutputTokens,
-		CachedTokens: mock.CachedTokens,
-		Error:        mock.Error,
+		Blocks:                 mock.Blocks,
+		StopReason:             mock.StopReason,
+		InputTokens:            mock.InputTokens,
+		InputTokensApproximate: mock.InputTokensApproximate,
+		OutputTokens:           mock.OutputTokens,
+		CachedTokens:           mock.CachedTokens,
+		Error:                  mock.Error,
 	}
 
 	// Drain any stale response left by a previously-cancelled call.

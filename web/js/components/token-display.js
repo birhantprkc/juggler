@@ -8,9 +8,10 @@ import { formatTokens as fmtTokens } from '../utils/format.js';
 const UNCACHED_WARN_TOKENS = 5000;
 
 /**
- * Footer token-status pill. All numbers are real-from-blob; there is no
- * client-side estimator. State is a pure function of (total, cached,
- * budget, processing) — no internal accuracy/staleness tracking.
+ * Footer token-status pill. Numbers come from transaction blobs; input usage
+ * may be provider-reported or an explicitly marked fallback estimate. There is
+ * no client-side estimator. State is a pure function of (total, cached, budget,
+ * processing, approximate).
  *
  * UX rules:
  *   1. Count text is always neutral grey. The number is data, not a status.
@@ -27,6 +28,7 @@ const UNCACHED_WARN_TOKENS = 5000;
  * @property {number} [cached] - Cached portion of `total`
  * @property {number} [budget] - Context window (0/undefined = unknown)
  * @property {boolean} [processing] - True while a turn is streaming
+ * @property {boolean} [approximate] - Input total is a local fallback estimate
  */
 class TokenDisplay extends HTMLElement {
   constructor() {
@@ -35,6 +37,7 @@ class TokenDisplay extends HTMLElement {
     /** @type {number}  @private */ this.cached = 0;
     /** @type {number}  @private */ this.budget = 0;
     /** @type {boolean} @private */ this.processing = false;
+    /** @type {boolean} @private */ this.approximate = false;
     /** @type {boolean} @private */ this._hasData = false;
   }
 
@@ -49,14 +52,16 @@ class TokenDisplay extends HTMLElement {
     const cached = Math.max(0, Math.min(total, Number(usage.cached) || 0));
     const budget = Math.max(0, Number(usage.budget) || 0);
     const processing = !!usage.processing;
+    const approximate = !!usage.approximate;
     const hasData = total > 0;
     if (this.total === total && this.cached === cached &&
-            this.budget === budget && this.processing === processing &&
-            this._hasData === hasData) return;
+              this.budget === budget && this.processing === processing &&
+              this.approximate === approximate && this._hasData === hasData) return;
     this.total = total;
     this.cached = cached;
     this.budget = budget;
     this.processing = processing;
+    this.approximate = approximate;
     this._hasData = hasData;
     this.render();
   }
@@ -89,7 +94,7 @@ class TokenDisplay extends HTMLElement {
     const warn = uncached > UNCACHED_WARN_TOKENS;
     this.classList.toggle('cache-warn', warn);
 
-    let leftText = fmtTokens(this.total);
+    let leftText = `${this.approximate ? '~' : ''}${fmtTokens(this.total)}`;
     if (!this.processing && this.cached > 0) {
       const newPart = warn ? ` · <span class="token-new">+${fmtTokens(uncached)} new</span>` : '';
       leftText += ` <span class="token-cached">(${fmtTokens(this.cached)} cached${newPart})</span>`;

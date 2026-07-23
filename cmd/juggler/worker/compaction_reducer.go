@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	provider "juggler/cmd/juggler/providers/registry"
 )
@@ -115,13 +116,10 @@ func (e *BoundedCompactionCancelledError) Error() string {
 func (e *BoundedCompactionCancelledError) Unwrap() error { return errBoundedCompactionCancelled }
 
 // boundedCompactionBudget bounds compaction cost with two hard limits: calls
-// (≤ boundedCompactionMaxCalls attempts, checked in plan) and per-call context
-// fit (every request plus its output reserve must fit the window). spend is
-// pure reported accounting — the estimated tokens of every planned attempt —
-// and gates nothing. Orchestrators seed spend/calls with the rejected original
-// request that provoked compaction, so reported accounting includes it; a
-// heuristic spend ceiling used to exist on top of these bounds and was the
-// subsystem's most incident-prone piece, so it was removed.
+// (≤ boundedCompactionMaxCalls attempts, checked in plan) and reduction passes.
+// Request-size estimates guide conservative chunking and reported spend only;
+// provider responses are authoritative about context overflow. Orchestrators seed
+// spend/calls with the rejected original request that provoked compaction.
 type boundedCompactionBudget struct {
 	window           int64
 	reserve          int64
@@ -132,16 +130,17 @@ type boundedCompactionBudget struct {
 }
 
 type hiddenLLMRequest struct {
-	Type            string             `json:"type"`
-	SystemPrompt    string             `json:"systemPrompt"`
-	Messages        []provider.Message `json:"messages"`
-	Tools           []ToolDefinition   `json:"tools"`
-	ConversationID  string             `json:"conversationId"`
-	ThreadID        string             `json:"threadId"`
-	ModelConfig     *ModelConfig       `json:"modelConfig,omitempty"`
-	ToolChoice      map[string]any     `json:"toolChoice,omitempty"`
-	TransactionID   string             `json:"transactionId"`
-	MaxOutputTokens int64              `json:"maxOutputTokens,omitempty"`
+	Type               string             `json:"type"`
+	SystemPrompt       string             `json:"systemPrompt"`
+	Messages           []provider.Message `json:"messages"`
+	Tools              []ToolDefinition   `json:"tools"`
+	ConversationID     string             `json:"conversationId"`
+	ThreadID           string             `json:"threadId"`
+	ModelConfig        *ModelConfig       `json:"modelConfig,omitempty"`
+	ToolChoice         map[string]any     `json:"toolChoice,omitempty"`
+	TransactionID      string             `json:"transactionId"`
+	MaxOutputTokens    int64              `json:"maxOutputTokens,omitempty"`
+	BypassContextGuard bool               `json:"bypassContextGuard,omitempty"`
 }
 
 // hiddenCompactionDispatcher transports one encoded hidden LLM call through
@@ -194,34 +193,32 @@ func (r *boundedReducer) run(records []string) (result CompactionResult, err err
 		result.DurationMs = time.Since(started).Milliseconds()
 	}()
 
-	// Prove a content-free hidden envelope can fit before any hidden dispatch.
-	empty := r.hiddenCompactionRequest(0, 0, "", false)
-	if !r.budget.fits(empty) {
-		return result, r.budget.err(BoundedCompactionContextBound, 0, "bounded compaction fixed request envelope exceeds model context", nil)
-	}
-
 	layer := records
 	for pass := 0; ; pass++ {
 		if r.isCancelled() {
 			return result, errBoundedCompactionCancelled
 		}
 
-		if finalReq := r.hiddenCompactionRequest(pass, 0, strings.Join(layer, "\n"), true); r.budget.fits(finalReq) {
+		finalReq := r.hiddenCompactionRequest(pass, 0, strings.Join(layer, "\n"), true)
+		// Estimated fit is only a conservative planning hint. At the pass bound
+		// dispatch the smallest layer reached so only the provider can prove it
+		// irreducible; otherwise an estimated overflow starts another map pass.
+		if r.budget.estimatedFits(finalReq) || !boundedCompactionCanReduce(pass) {
 			response, callErr := r.dispatch(finalReq, pass)
-			if callErr != nil {
+			if callErr == nil {
+				summary := strings.TrimSpace(compactionResponseText(response))
+				if summary == "" {
+					return result, r.budget.err(BoundedCompactionEmptyOutput, pass, "bounded compaction final call returned empty output", nil)
+				}
+				result.Summary = summary
+				return result, nil
+			}
+			var contextLimit *provider.ContextLimitExceededError
+			if !errors.As(callErr, &contextLimit) || !boundedCompactionCanReduce(pass) {
 				return result, callErr
 			}
-			summary := strings.TrimSpace(compactionResponseText(response))
-			if summary == "" {
-				return result, r.budget.err(BoundedCompactionEmptyOutput, pass, "bounded compaction final call returned empty output", nil)
-			}
-			result.Summary = summary
-			return result, nil
-		}
-		// Passes count reductions. After the eighth reduction, the fit check above
-		// is the final opportunity; a ninth reduction is never started.
-		if !boundedCompactionCanReduce(pass) {
-			return result, r.budget.err(BoundedCompactionPassBound, pass, fmt.Sprintf("bounded compaction exceeded %d reduction passes", boundedCompactionMaxPasses), nil)
+			// A real final-call overflow falls through to the same canonical map
+			// path used for conservatively estimated large layers.
 		}
 
 		chunks, packErr := r.packCompactionChunks(pass, layer)
@@ -232,9 +229,8 @@ func (r *boundedReducer) run(records []string) (result CompactionResult, err err
 		for i, chunk := range chunks {
 			reqs[i] = r.hiddenCompactionRequest(pass, i, chunk, false)
 		}
-		// A complete pass is budgeted atomically before its first dispatch, so
-		// a pass cannot stop halfway solely because its precomputable budget
-		// was exceeded.
+		// A complete initially planned pass is checked atomically. Real provider
+		// overflows may add bounded split retries, each charged by plan.
 		if planErr := r.budget.preflight(reqs, pass+1); planErr != nil {
 			return result, planErr
 		}
@@ -242,29 +238,22 @@ func (r *boundedReducer) run(records []string) (result CompactionResult, err err
 			r.hooks.passPlanned(pass+1, len(chunks), estimateCanonicalLayer(layer))
 		}
 
-		before := estimateCanonicalLayer(layer)
+		before := canonicalLayerWireSize(layer)
 		next := make([]string, 0, len(chunks))
-		for i, req := range reqs {
+		nextIndex := 0
+		for _, chunk := range chunks {
 			if r.isCancelled() {
 				return result, errBoundedCompactionCancelled
 			}
-			response, callErr := r.dispatch(req, pass+1)
-			if callErr != nil {
-				return result, callErr
+			records, mapErr := r.reduceMapChunk(pass, &nextIndex, chunk)
+			if mapErr != nil {
+				return result, mapErr
 			}
-			summary := strings.TrimSpace(compactionResponseText(response))
-			if summary == "" {
-				return result, r.budget.err(BoundedCompactionEmptyOutput, pass+1, "bounded compaction map call returned empty output", nil)
-			}
-			record := canonicalSummaryRecord(pass, i, summary)
-			if estimateCanonicalLayer([]string{record}) >= estimateCanonicalLayer([]string{chunks[i]}) {
-				return result, r.budget.err(BoundedCompactionNoProgress, pass+1, fmt.Sprintf("bounded compaction map %d made no progress", i), nil)
-			}
-			next = append(next, record)
+			next = append(next, records...)
 		}
-		after := estimateCanonicalLayer(next)
+		after := canonicalLayerWireSize(next)
 		if after >= before {
-			return result, r.budget.err(BoundedCompactionNoProgress, pass+1, fmt.Sprintf("bounded compaction made no progress: estimated size %d -> %d", before, after), nil)
+			return result, r.budget.err(BoundedCompactionNoProgress, pass+1, fmt.Sprintf("bounded compaction made no structural progress: serialized size %d -> %d", before, after), nil)
 		}
 		layer = next
 		result.Passes = pass + 1
@@ -307,6 +296,47 @@ func (r *boundedReducer) dispatch(req hiddenLLMRequest, pass int) (*LLMResponse,
 	return response, nil
 }
 
+func (r *boundedReducer) reduceMapChunk(pass int, nextIndex *int, chunk string) ([]string, error) {
+	index := *nextIndex
+	*nextIndex++
+	req := r.hiddenCompactionRequest(pass, index, chunk, false)
+	response, err := r.dispatch(req, pass+1)
+	if err != nil {
+		var contextLimit *provider.ContextLimitExceededError
+		if !errors.As(err, &contextLimit) {
+			return nil, err
+		}
+		runeCount := utf8.RuneCountInString(chunk)
+		left, right := largestRunePrefix(chunk, func(value string) bool {
+			return utf8.RuneCountInString(value) <= runeCount/2
+		})
+		if left == "" || right == "" || len(left) >= len(chunk) || len(right) >= len(chunk) {
+			// The typed error unwraps through BoundedCompactionError to the real
+			// provider rejection, which is authoritative for this irreducible leaf.
+			return nil, err
+		}
+		leftRecords, leftErr := r.reduceMapChunk(pass, nextIndex, left)
+		if leftErr != nil {
+			return nil, leftErr
+		}
+		rightRecords, rightErr := r.reduceMapChunk(pass, nextIndex, right)
+		if rightErr != nil {
+			return nil, rightErr
+		}
+		return append(leftRecords, rightRecords...), nil
+	}
+
+	summary := strings.TrimSpace(compactionResponseText(response))
+	if summary == "" {
+		return nil, r.budget.err(BoundedCompactionEmptyOutput, pass+1, "bounded compaction map call returned empty output", nil)
+	}
+	record := canonicalSummaryRecord(pass, index, summary)
+	if canonicalLayerWireSize([]string{record}) >= canonicalLayerWireSize([]string{chunk}) {
+		return nil, r.budget.err(BoundedCompactionNoProgress, pass+1, fmt.Sprintf("bounded compaction map %d made no progress: serialized output did not shrink", index), nil)
+	}
+	return []string{record}, nil
+}
+
 func (r *boundedReducer) packCompactionChunks(pass int, records []string) ([]string, error) {
 	var chunks []string
 	current := ""
@@ -317,7 +347,7 @@ func (r *boundedReducer) packCompactionChunks(pass int, records []string) ([]str
 			if current != "" {
 				candidate = current + "\n" + remaining
 			}
-			if r.budget.fits(r.hiddenCompactionRequest(pass, len(chunks), candidate, false)) {
+			if r.budget.estimatedFits(r.hiddenCompactionRequest(pass, len(chunks), candidate, false)) {
 				current = candidate
 				remaining = ""
 				continue
@@ -327,11 +357,17 @@ func (r *boundedReducer) packCompactionChunks(pass int, records []string) ([]str
 				current = ""
 				continue
 			}
-			prefix, rest := largestFittingRunePrefix(remaining, func(value string) bool {
-				return r.budget.fits(r.hiddenCompactionRequest(pass, len(chunks), value, false))
+			prefix, rest := largestRunePrefix(remaining, func(value string) bool {
+				return r.budget.estimatedFits(r.hiddenCompactionRequest(pass, len(chunks), value, false))
 			})
 			if prefix == "" {
-				return nil, errors.New("bounded compaction cannot fit one source rune")
+				// Even a single rune is estimated over the window — the fixed
+				// envelope alone exceeds the estimated ceiling. The estimate is
+				// advisory, so keep the record whole and let the provider judge:
+				// a real overflow splits reactively in reduceMapChunk, while
+				// shredding to runes here would explode the planned call count
+				// and guarantee the per-chunk progress check fails.
+				prefix, rest = remaining, ""
 			}
 			chunks = append(chunks, prefix)
 			remaining = rest
@@ -402,7 +438,8 @@ func hiddenCompactionRequest(conversationID, threadID string, modelConfig *Model
 		Tools:    tools, ConversationID: conversationID,
 		ThreadID:    fmt.Sprintf("%s:bounded:%d:%d:%s", threadID, pass, index, generateRequestID()),
 		ModelConfig: modelConfig, ToolChoice: choice, TransactionID: generateTransactionID(),
-		MaxOutputTokens: maxOutputTokens,
+		MaxOutputTokens:    maxOutputTokens,
+		BypassContextGuard: true,
 	}
 }
 
@@ -415,7 +452,11 @@ func providerRequest(req hiddenLLMRequest) provider.MessageRequest {
 	if req.ToolChoice != nil {
 		choice = &provider.ToolChoice{Mode: fmt.Sprint(req.ToolChoice["mode"]), Name: fmt.Sprint(req.ToolChoice["name"])}
 	}
-	return provider.MessageRequest{Messages: req.Messages, SystemPrompt: req.SystemPrompt, Tools: tools, ConversationID: req.ConversationID, ThreadID: req.ThreadID, ToolChoice: choice, MaxOutputTokens: req.MaxOutputTokens}
+	return provider.MessageRequest{
+		Messages: req.Messages, SystemPrompt: req.SystemPrompt, Tools: tools,
+		ConversationID: req.ConversationID, ThreadID: req.ThreadID, ToolChoice: choice,
+		MaxOutputTokens: req.MaxOutputTokens, BypassContextGuard: req.BypassContextGuard,
+	}
 }
 
 func (b *boundedCompactionBudget) estimate(req hiddenLLMRequest) int64 {
@@ -436,7 +477,7 @@ func (b *boundedCompactionBudget) outputCapFor(req hiddenLLMRequest) int64 {
 	return b.reserve
 }
 
-func (b *boundedCompactionBudget) fits(req hiddenLLMRequest) bool {
+func (b *boundedCompactionBudget) estimatedFits(req hiddenLLMRequest) bool {
 	estimate := b.estimate(req)
 	return provider.SaturatingAdd(estimate, b.outputCapFor(req)) <= b.window
 }
@@ -454,9 +495,6 @@ func (b *boundedCompactionBudget) plan(req hiddenLLMRequest, pass int) error {
 	}
 	estimate := b.estimate(req)
 	attemptSpend := provider.SaturatingAdd(estimate, b.outputCapFor(req))
-	if attemptSpend > b.window {
-		return b.err(BoundedCompactionContextBound, pass, "bounded compaction planned a request exceeding model context", nil)
-	}
 	b.calls++
 	b.spend = provider.SaturatingAdd(b.spend, attemptSpend)
 	return nil
@@ -483,13 +521,13 @@ func (b *boundedCompactionBudget) recordUsage(response *LLMResponse) {
 	b.usage.CacheWriteTokens = provider.SaturatingAdd(b.usage.CacheWriteTokens, int64(response.CacheWriteTokens))
 }
 
-func largestFittingRunePrefix(text string, fits func(string) bool) (string, string) {
+func largestRunePrefix(text string, accepts func(string) bool) (string, string) {
 	runes := []rune(text)
 	low, high := 1, len(runes)
 	best := 0
 	for low <= high {
 		mid := low + (high-low)/2
-		if fits(string(runes[:mid])) {
+		if accepts(string(runes[:mid])) {
 			best = mid
 			low = mid + 1
 		} else {
@@ -529,6 +567,10 @@ func compactionResponseText(response *LLMResponse) string {
 
 func boundedCompactionCanReduce(completedPasses int) bool {
 	return completedPasses < boundedCompactionMaxPasses
+}
+
+func canonicalLayerWireSize(records []string) int {
+	return len(strings.Join(records, "\n"))
 }
 
 func estimateCanonicalLayer(records []string) int64 {

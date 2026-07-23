@@ -191,7 +191,10 @@ func (cc *conversationCache) runActor() {
 				Headers:           op.credential.Headers,
 				Model:             op.key.model,
 				ModelCapabilities: op.key.capabilities,
-				BudgetContract:    provider.BudgetContract{AllowUnknownLimits: info.AllowUnknownLimits},
+				BudgetContract: provider.BudgetContract{
+					AllowUnknownLimits: info.AllowUnknownLimits,
+					ContextAdmission:   info.ContextAdmission,
+				},
 			})
 			if err != nil {
 				op.respCh <- cacheResult{err: fmt.Errorf("initialize provider %q: %w", op.key.providerName, err)}

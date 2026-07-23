@@ -696,19 +696,22 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 		stopReason = "tool_use"
 	}
 
-	// Estimate tokens from content when the API doesn't report usage
+	// Estimate tokens from content when the API doesn't report usage.
+	inputTokensApproximate := false
 	if inputTokens == 0 {
 		inputTokens = provider.EstimateTokens(marshalMessagesForEstimate(req)) + estimateImageTokens(req)
+		inputTokensApproximate = true
 	}
 	if outputTokens == 0 {
 		outputTokens = provider.EstimateTokens(textContent.String())
 	}
 
 	return &provider.StreamResult{
-		StopReason:   stopReason,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		CachedTokens: cachedTokens,
+		StopReason:             stopReason,
+		InputTokens:            inputTokens,
+		InputTokensApproximate: inputTokensApproximate,
+		OutputTokens:           outputTokens,
+		CachedTokens:           cachedTokens,
 	}, nil
 }
 
@@ -1232,19 +1235,22 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 	}
 
 	// Estimate tokens from content when the API doesn't report usage
-	// (e.g. OpenAI-compatible providers that ignore stream_options)
+	// (e.g. OpenAI-compatible providers that ignore stream_options).
+	inputTokensApproximate := false
 	if inputTokens == 0 {
 		inputTokens = provider.EstimateTokens(marshalMessagesForEstimate(req)) + estimateImageTokens(req)
+		inputTokensApproximate = true
 	}
 	if outputTokens == 0 {
 		outputTokens = provider.EstimateTokens(textContent.String())
 	}
 
 	return &provider.StreamResult{
-		StopReason:   mapOpenAIFinishReason(lastFinishReason),
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		CachedTokens: cachedTokens,
+		StopReason:             mapOpenAIFinishReason(lastFinishReason),
+		InputTokens:            inputTokens,
+		InputTokensApproximate: inputTokensApproximate,
+		OutputTokens:           outputTokens,
+		CachedTokens:           cachedTokens,
 	}, nil
 }
 

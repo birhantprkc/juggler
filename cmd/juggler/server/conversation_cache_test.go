@@ -29,12 +29,14 @@ func (p *capabilityCacheProvider) OpenConversation(context.Context, string) (pro
 }
 
 type capabilityCacheConversation struct {
-	closed  bool
-	submits int
+	closed      bool
+	submits     int
+	lastRequest provider.MessageRequest
 }
 
-func (c *capabilityCacheConversation) Submit(context.Context, provider.MessageRequest, provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+func (c *capabilityCacheConversation) Submit(_ context.Context, req provider.MessageRequest, _ provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	c.submits++
+	c.lastRequest = req
 	return &provider.StreamResult{}, nil
 }
 func (c *capabilityCacheConversation) Subscribe(provider.TurnSink) {}
@@ -86,6 +88,34 @@ func TestConversationCacheCapabilitiesArePartOfIdentity(t *testing.T) {
 	}
 	if len(opened) != 2 || !opened[0].closed {
 		t.Fatalf("opened conversations = %+v, want old handle closed before replacement", opened)
+	}
+}
+
+func TestConversationCacheAdmissionContractFlowsFromProviderInfo(t *testing.T) {
+	const providerName = "test_admission_contract_cache"
+	var configs []provider.Config
+	provider.RegisterProvider(provider.ProviderInfo{
+		Name:               providerName,
+		AllowUnknownLimits: true,
+		ContextAdmission:   provider.ContextAdmissionSilentTruncationGuard,
+	}, func(cfg provider.Config) (provider.Provider, error) {
+		configs = append(configs, cfg)
+		opened := []*capabilityCacheConversation{}
+		return &capabilityCacheProvider{opened: &opened}, nil
+	})
+
+	cache := newConversationCache()
+	t.Cleanup(cache.Shutdown)
+	_, err := cache.GetOrOpen(context.Background(), "conv", providerName, "model", core.ProviderCredential{APIKey: "test-key"}, provider.ModelCapabilities{})
+	if err != nil {
+		t.Fatalf("GetOrOpen: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("configs = %d, want 1", len(configs))
+	}
+	got := configs[0].BudgetContract
+	if !got.AllowUnknownLimits || got.ContextAdmission != provider.ContextAdmissionSilentTruncationGuard {
+		t.Fatalf("budget contract = %+v, want unknown limits allowed and silent-truncation guard", got)
 	}
 }
 

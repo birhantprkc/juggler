@@ -22,9 +22,9 @@ import { isCompactionPending, maybePromoteHandoffThread } from '../utils/compact
 import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
 
 /**
- * Auto-compact threshold: when authoritative provider input-token usage
- * reaches this fraction of the model's context window, the next observed
- * items-array delta fires /compact automatically.
+ * Auto-compact threshold: when provider input-token usage, or an explicitly
+ * marked fallback estimate, reaches this fraction of the model's context
+ * window, request advisory early compaction.
  */
 const AUTO_COMPACT_THRESHOLD = 0.85;
 
@@ -151,8 +151,8 @@ export function setupYjsObservers(c) {
       }
 
       // Auto-compact: viewer-only. maybeAutoCompact reads the last
-      // assistant's transaction blob and fires /compact when its
-      // inputTokens crosses the threshold relative to the budget.
+      // assistant's transaction blob and fires /compact when its provider
+      // usage or explicitly approximate fallback crosses the threshold.
       if (isViewer()) {
         maybeAutoCompact(c);
         // /handoff completion: when this tab's handoff summary thread finishes,
@@ -292,11 +292,9 @@ function hasNonUserInsertion(c, insertedItemIds) {
 
 /**
  * Fire /compact when the most recent root-thread turn's prompt size
- * crosses the auto-compact threshold. The authoritative number lives
- * in the LLM transaction blob on disk; we look it up lazily through
- * the worker, keyed by the transactionId of the most recent root
- * item. A sub-thread's blobs live under that thread's items and
- * never trigger compaction of the parent.
+ * crosses the advisory auto-compact threshold. The transaction blob records
+ * whether inputTokens is provider-reported or an approximate fallback. Both may
+ * trigger early compaction here; neither is used to reject an LLM request.
  *
  * The fetch is debounced by transactionId on the conversation
  * instance so back-to-back items-observer ticks don't stack
@@ -332,9 +330,7 @@ function maybeAutoCompact(c) {
     import('../services/worker-manager.js').then(({ default: workerManager }) => {
       return workerManager.getTransaction(c.id, txnId);
     }).then((/** @type {any} */ blob) => {
-      const anchored = Number(blob?.inputTokens) || 0;
-      if (anchored <= 0) return;
-      if (anchored / budget < AUTO_COMPACT_THRESHOLD) return;
+      if (!shouldAutoCompactInputUsage(blob, budget)) return;
       return import('../services/slash-command-handler.js').then(({ default: handler }) => {
         handler.execute('/compact', root).catch(() => { /* surfaced as a status message */ });
       });
@@ -344,6 +340,21 @@ function maybeAutoCompact(c) {
     // the items observer. Log and move on.
     console.warn('[auto-compact] skipped:', err);
   }
+}
+
+/**
+ * Decide whether the latest input-usage anchor warrants advisory compaction.
+ * `inputTokensApproximate` deliberately does not disqualify the anchor: a local
+ * fallback may compact early, but this UI path has no terminal admission power.
+ * Exported for focused provenance/auto-compaction tests.
+ * @param {any} blob - Transaction blob
+ * @param {number} budget - Model context window
+ * @returns {boolean} True when advisory compaction should run
+ */
+export function shouldAutoCompactInputUsage(blob, budget) {
+  const anchored = Number(blob?.inputTokens) || 0;
+  const windowTokens = Number(budget) || 0;
+  return anchored > 0 && windowTokens > 0 && anchored / windowTokens >= AUTO_COMPACT_THRESHOLD;
 }
 
 /**

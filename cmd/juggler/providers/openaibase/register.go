@@ -34,7 +34,8 @@ type Descriptor struct {
 	// no-auth model list, available once its base URL is set). When true and no
 	// key is present, the client is built keyless — the SDK sends no
 	// Authorization header at all.
-	APIKeyOptional bool
+	APIKeyOptional   bool
+	ContextAdmission provider.ContextAdmissionPolicy
 
 	// Static context-window map exposed via ProviderInfo.ModelContextWindows.
 	// May be nil for providers whose model list is discovered at runtime. When
@@ -121,6 +122,7 @@ func Register(d Descriptor) {
 		APIKeyURL:           d.APIKeyURL,
 		AutoDetect:          d.AutoDetect,
 		APIKeyOptional:      d.APIKeyOptional,
+		ContextAdmission:    d.ContextAdmission,
 		ModelContextWindows: d.ContextWindows,
 	}
 	switch {
