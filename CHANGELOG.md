@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-23
+
 - Sub-threads can no longer spawn their own subthreads (threads you create with /thread still can)
 - GitHub Copilot now works with GitHub Enterprise Cloud (*.ghe.com): reuses your editor login and can sign in to your tenant
 - New shortcuts: ⌥⌘M / Ctrl+Alt+M cycles recent models, ⌥⌘T / Ctrl+Alt+T cycles thinking level (hold opens the menu)
