@@ -83,6 +83,10 @@ func (w *ConversationWorker) requestContextAndTools() (*ContextResult, []ToolDef
 // the caller (runStrategyLoop) so the same id is used for the request, the
 // blob filename, and the stamping of items inserted during the round-trip.
 func (w *ConversationWorker) buildLLMRequest(ctxResult *ContextResult, tools []ToolDefinition, txnID string, bypassContextGuard bool) json.RawMessage {
+	// Withhold tools the current thread may not use before anything else reads
+	// the list — in particular resolveForcedToolChoice below must validate a
+	// forced tool against the FILTERED list, never against a tool we're stripping.
+	tools = w.filterToolsForThread(tools)
 	messages := w.buildMessages(ctxResult.Contexts)
 	systemPrompt := w.buildSystemPrompt(ctxResult.SystemPrompt, ctxResult.Contexts)
 
@@ -115,6 +119,37 @@ func (w *ConversationWorker) buildLLMRequest(ctxResult *ContextResult, tools []T
 
 	data, _ := json.Marshal(request)
 	return data
+}
+
+// filterToolsForThread removes tools the current thread may not use. Root scope
+// ("") gets the full list. A sub-thread keeps create_thread only when its Y.Map
+// carries canSpawnThreads=true — set exclusively by the user-facing /thread
+// command. All other creation paths (LLM create_thread, delegated subthread
+// tools, strategies, orchestrator, compaction/handoff) never set it, so their
+// threads are leaf workers by default: withholding the tool (rather than
+// refusing at execution) means the model never sees it at all.
+func (w *ConversationWorker) filterToolsForThread(tools []ToolDefinition) []ToolDefinition {
+	if w.thread.itemID == "" {
+		return tools
+	}
+	threadYMap := w.doc.GetThreadYMap(w.thread.itemID)
+	if threadYMap == nil {
+		return tools
+	}
+	ycrdtMu.Lock()
+	canSpawn, _ := threadYMap.Get("canSpawnThreads").(bool)
+	ycrdtMu.Unlock()
+	if canSpawn {
+		return tools
+	}
+	filtered := make([]ToolDefinition, 0, len(tools))
+	for _, t := range tools {
+		if t.Name == "create_thread" {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return filtered
 }
 
 // resolveForcedToolChoice reads the current thread's `forceTool` Yjs field (set

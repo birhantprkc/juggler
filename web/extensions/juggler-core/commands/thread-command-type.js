@@ -45,7 +45,10 @@ class ThreadCommandType extends CommandType {
     // so the Go worker does not auto-resume the root conversation when it completes.
     // Threads always run isolated: the new thread owns its own context and does
     // not see the parent conversation.
-    const extra = /** @type {any} */ ({ strategyCreated: true });
+    // canSpawnThreads marks a user-driven thread whose LLM may itself use
+    // create_thread; every other creation path omits it and the worker withholds
+    // the tool (see filterToolsForThread in llm_request.go).
+    const extra = /** @type {any} */ ({ strategyCreated: true, canSpawnThreads: true });
     // Seed the new thread's draft as a {text, attachments} record (the single
     // draft object the input box reads), not a bare string.
     if (draftMessage) extra.draft = { text: draftMessage, attachments: [] };

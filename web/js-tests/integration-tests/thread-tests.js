@@ -38,6 +38,19 @@ export const threadCommandBasicTest = {
     { type: 'wait-for-state', condition: { hasThreadItem: true } }
   ],
 
+  // A user-driven /thread is the only path that stamps canSpawnThreads: true, so
+  // its LLM may itself call create_thread. Every other creation path omits it and
+  // the worker withholds the tool (filterToolsForThread in llm_request.go).
+  customAssertions: (conversation) => {
+    const thread = conversation.rootMessageThread.items.find(
+      (/** @type {any} */ it) => it.get?.('type') === 'thread'
+    );
+    if (!thread) throw new Error('thread-command-basic: thread item missing');
+    if (thread.get('canSpawnThreads') !== true) {
+      throw new Error(`thread-command-basic: expected canSpawnThreads=true on /thread Y.Map, got ${JSON.stringify(thread.get('canSpawnThreads'))}`);
+    }
+  },
+
   expectedDocument: {
     items: [
       { type: 'system-prompt', itemId: '$ITEM_1' },

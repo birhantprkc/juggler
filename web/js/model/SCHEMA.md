@@ -126,6 +126,7 @@ A nested sub-conversation.
 | `draft` | `Y.Map` \| object | Per-thread unsent input draft as one record: `{text, attachments}`. |
 | `needsStrategyRun` | boolean | One-shot flag: the worker auto-runs the strategy loop for this thread, then clears it. Set by plugins that create a self-driving thread (e.g. `/compact`). |
 | `noAutoSelect` | boolean | The UI must not auto-select into this thread on creation (e.g. `/compact` folds in place). |
+| `canSpawnThreads` | boolean | Optional. `true` only on `/thread`-created (user-driven) threads, whose LLM may itself call `create_thread`. Absent on every other creation path (LLM `create_thread`, delegated subthreads, strategies, orchestrator, compaction/handoff) ⇒ the worker withholds `create_thread` from that thread's tool list (see `filterToolsForThread` in `llm_request.go`). |
 | `forceTool` | string | Tool name the model **must** call on every strategy turn of this thread. The worker translates it into a provider `tool_choice` (Anthropic/OpenAI/Gemini); providers without forced-tool support (claudecode) fall back to plain text. `/compact` sets `'return_result'` so the summary is returned via the tool, not a chat reply. Generic — any plugin may set it. |
 
 ### `type: 'guidance'` — `GuidanceMessage`

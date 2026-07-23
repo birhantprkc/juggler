@@ -2637,6 +2637,8 @@ type threadOpts struct {
 	userMessage      string
 	result           string // If set, thread is pre-completed
 	forceTool        string // If set, thread forces the model to call this tool
+	llmCreated       bool   // If set, marks the thread as LLM tool-created
+	canSpawnThreads  bool   // If set, thread's LLM may itself use create_thread
 }
 
 // insertThreadWithOpts creates a thread in the doc in a single transaction
@@ -2663,6 +2665,12 @@ func insertThreadWithOpts(w *ConversationWorker, opts threadOpts) string {
 		}
 		if opts.forceTool != "" {
 			ymap.Set("forceTool", opts.forceTool)
+		}
+		if opts.llmCreated {
+			ymap.Set("llmCreated", true)
+		}
+		if opts.canSpawnThreads {
+			ymap.Set("canSpawnThreads", true)
 		}
 		if opts.userMessage != "" {
 			userItem := ConversationItem{
@@ -2727,6 +2735,99 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		if _, present := req["toolChoice"]; present {
 			t.Errorf("unforced request must not carry toolChoice, got %v", req["toolChoice"])
 		}
+	})
+}
+
+// TestFilterToolsForThread verifies the per-thread canSpawnThreads capability
+// gate at the worker boundary: create_thread is offered to root and to
+// user-created (/thread, canSpawnThreads=true) threads, and withheld from every
+// other thread — LLM-created children, and compaction-shaped threads carrying
+// neither llmCreated nor strategyCreated (the auto-compact regression). Other
+// tools and their order are always preserved. The final case asserts the wiring
+// through buildLLMRequest (call site + ordering vs. the forced-tool resolve).
+func TestFilterToolsForThread(t *testing.T) {
+	tools := []ToolDefinition{
+		{Name: "bash", Description: "Run bash", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "create_thread", Description: "Spawn a thread", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "read", Description: "Read a file", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	hasCreateThread := func(ts []ToolDefinition) bool {
+		for _, t := range ts {
+			if t.Name == "create_thread" {
+				return true
+			}
+		}
+		return false
+	}
+	otherToolsIntact := func(t *testing.T, ts []ToolDefinition) {
+		t.Helper()
+		var names []string
+		for _, td := range ts {
+			if td.Name != "create_thread" {
+				names = append(names, td.Name)
+			}
+		}
+		if len(names) != 2 || names[0] != "bash" || names[1] != "read" {
+			t.Errorf("other tools not intact/ordered: got %v, want [bash read]", names)
+		}
+	}
+
+	t.Run("root scope keeps create_thread", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		w.thread.itemID = "" // root
+		got := w.filterToolsForThread(tools)
+		if !hasCreateThread(got) {
+			t.Error("root scope must keep create_thread")
+		}
+		otherToolsIntact(t, got)
+	})
+
+	t.Run("restricted llm-created thread withholds create_thread", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		threadID := insertThreadWithOpts(w, threadOpts{goal: "Delegated", llmCreated: true})
+		w.thread.itemID = threadID
+		got := w.filterToolsForThread(tools)
+		if hasCreateThread(got) {
+			t.Error("llm-created thread must not see create_thread")
+		}
+		otherToolsIntact(t, got)
+	})
+
+	t.Run("user thread with canSpawnThreads keeps create_thread", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		threadID := insertThreadWithOpts(w, threadOpts{goal: "User", canSpawnThreads: true})
+		w.thread.itemID = threadID
+		got := w.filterToolsForThread(tools)
+		if !hasCreateThread(got) {
+			t.Error("canSpawnThreads thread must keep create_thread")
+		}
+		otherToolsIntact(t, got)
+	})
+
+	// Regression for the auto-compact incident: a client-side fold thread carries
+	// neither llmCreated nor strategyCreated nor canSpawnThreads, so it must be
+	// restricted purely by absence of the flag. Asserted through buildLLMRequest.
+	t.Run("compaction-shaped thread withholds create_thread via buildLLMRequest", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+		threadID := insertThreadWithOpts(w, threadOpts{goal: "Compaction fold"})
+		w.thread.itemID = threadID
+
+		raw := w.buildLLMRequest(&ContextResult{SystemPrompt: "sys"}, tools, "txn-compact", false)
+		var req struct {
+			Tools []ToolDefinition `json:"tools"`
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		if hasCreateThread(req.Tools) {
+			t.Error("compaction-shaped thread must not see create_thread in the built request")
+		}
+		otherToolsIntact(t, req.Tools)
 	})
 }
 

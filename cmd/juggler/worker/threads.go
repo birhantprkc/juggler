@@ -216,6 +216,10 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 // legitimate nesting in practice is two or three levels — so an LLM that keeps
 // delegating instead of doing the work itself is stopped before it recurses
 // without bound. Guards only the LLM tool path, not user/orchestrator dispatch.
+// Since the per-thread canSpawnThreads capability filter (filterToolsForThread
+// in llm_request.go) now withholds create_thread from every thread except root
+// and user-created /thread threads, this and maxLiveThreads mainly bound
+// root-level fan-out — they are the backstop behind that capability gate.
 const maxThreadDepth = 3
 
 // maxLiveThreads caps how many create_thread-spawned threads may be in flight
