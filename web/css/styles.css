@@ -2159,6 +2159,30 @@ error-message article.error {
     overflow: hidden;
 }
 
+/* Error items get a card treatment — an out-of-tokens or network error is
+   usually something the user wants to act on, so it reads as a distinct block
+   rather than one more dim log line, and carries its own Retry action. */
+error-message article.error {
+    background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+    border: 0.0625rem solid color-mix(in srgb, var(--accent-red) 35%, transparent);
+    border-radius: 0.5rem;
+    padding: 0.85rem 0.95rem;
+    font-size: 0.85rem;
+}
+
+/* Retry action row sits below the error text, right-aligned. */
+.error-message-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.75rem;
+}
+
+/* Retry reuses .message-action-btn but themes its hover red to match the error. */
+.error-retry-btn:hover:not(:disabled) {
+    border-color: var(--accent-red, #f85149);
+    color: var(--accent-red, #f85149);
+}
+
 /* All message components need display: block for proper backgrounds and selection */
 user-message,
 assistant-message,
