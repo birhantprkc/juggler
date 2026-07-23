@@ -379,15 +379,27 @@ class ConversationFooter extends HTMLElement {
     const hide = (/** @type {Element|null} */ el) => el?.classList.add('hidden');
     const show = (/** @type {Element|null} */ el) => el?.classList.remove('hidden');
     const toggle = (/** @type {Element|null} */ el, /** @type {boolean} */ visible) => visible ? show(el) : hide(el);
+    // `el.textContent = x` ALWAYS replaces the child text node, even when x is
+    // unchanged. update() runs on every streaming tick (many times a second),
+    // so an unconditional write churns these nodes ~10×/s. That's harmless for
+    // display — but if the user presses on a node that a tick then replaces
+    // mid-gesture, the mousedown target is detached before mouseup and the
+    // native `click` (which fires on the common ancestor of the two) never
+    // reaches the button: the intermittent "first Pause click is ignored" bug.
+    // Only write when the value actually changed, so a resting label/button is
+    // a stable click target between ticks.
+    const setText = (/** @type {Element|null} */ el, /** @type {string} */ value) => {
+      if (el && el.textContent !== value) el.textContent = value;
+    };
 
     if (state.isProcessing) {
       show(processing);
       hide(idle);
-      if (text) text.textContent = state.statusMessage || '';
+      setText(text, state.statusMessage || '');
       const spinner = this.querySelector('juggler-spinner');
       if (spinner) toggle(spinner, state.showSpinner !== false);
       if (nextSteps) {
-        nextSteps.textContent = state.nextSteps || '';
+        setText(nextSteps, state.nextSteps || '');
         toggle(nextSteps, !!state.nextSteps);
       }
       if (processing) {
@@ -407,8 +419,7 @@ class ConversationFooter extends HTMLElement {
         const pending = !!state.politePending;
         pauseBtn.classList.toggle('active', pending);
         pauseBtn.classList.toggle('pending', pending);
-        const pauseLabel = pauseBtn.querySelector('.footer-pause-label');
-        if (pauseLabel) pauseLabel.textContent = pending ? 'Pausing…' : 'Pause';
+        setText(pauseBtn.querySelector('.footer-pause-label'), pending ? 'Pausing…' : 'Pause');
       }
     } else {
       // Idle state — show appropriate buttons
