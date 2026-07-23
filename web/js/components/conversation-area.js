@@ -224,13 +224,16 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Set up observer for streaming content changes (element growth, auto-scroll).
+   * Set up observer for streaming content changes. This path handles ONLY
+   * pure content growth of an existing bubble (a streaming token, which carries
+   * no array-level delta): it refreshes the changed elements and, when pinned,
+   * smooths their height change. It deliberately never moves the scroll position
+   * — see the note at the end of the handler.
    * @param {import('../model/conversation.js').default} conversation
    * @private
    */
   _setupStreamingScrollObserver(conversation) {
     this._streamingScrollObserver = (/** @type {any} */ events) => {
-      const wasNearBottom = this._isScrolledNearBottom();
       const scroller = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
 
       // A structural change (item inserted/removed) carries an array-level delta
@@ -243,7 +246,8 @@ class ConversationArea extends HTMLElement {
       // column-reverse pinning holds the footer steady on its own, so animating
       // the grown bubble's HEIGHT (never the scroll position) slides the items
       // above up without nudging the footer. When merely near — but not at — the
-      // bottom, fall through to the scroll-follow below instead.
+      // bottom, we leave the scroll position exactly where the user put it (no
+      // catch-up scroll; see the note at the end of the handler).
       const pinned = !!scroller && Math.abs(scroller.scrollTop) <= 1;
       const animate = pinned && !structural && !prefersReducedMotion();
 
@@ -260,12 +264,15 @@ class ConversationArea extends HTMLElement {
         this._animateStreamingResize(/** @type {HTMLElement} */ (el), fromHeights[i] ?? 0);
       });
 
-      // Rule 9: keep the follow target visible. While pinned this is a no-op
-      // (the height glide above does the work); it earns its keep when content
-      // grows from a near-but-not-pinned position and the view must catch up.
-      if (wasNearBottom) {
-        this._scrollToFollowIfNeeded();
-      }
+      // Pure content growth (a streaming token extending an existing bubble) must
+      // NEVER move the scroll position. If the user is pinned to the bottom, the
+      // column-reverse layout keeps the newest content in view natively (and the
+      // height glide above smooths it); if they've scrolled up to read — or to
+      // inspect a selected item that happens to be streaming — dragging them back
+      // down is exactly the scroll-fighting bug this path used to cause. Auto-
+      // follow belongs only to state changes the user wants surfaced: a new item,
+      // a pending approval, a busy-status change. Those scroll from onItemsInserted
+      // and showBusy, never from here.
     };
     const container = /** @type {import('../model/message-thread.js').MessageThread} */ (this._messageThread).container;
     this._observedContainer = container;
