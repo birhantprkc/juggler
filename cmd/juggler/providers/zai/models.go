@@ -15,11 +15,16 @@ import "juggler/cmd/juggler/providers/utils"
 // API starts advertising a model the defaults would mis-size.
 
 // ModelContextWindows overrides DefaultContextWindow for models whose window is
-// not 200K. The modern line (glm-4.6 onward, all of glm-5*) is 200K; only the
-// glm-4.5 series is 128K, so that's all this map needs to carry.
+// not 200K. The bulk of the modern line (glm-4.6 onward, glm-5, glm-5.1) is 200K;
+// the glm-4.5 series is 128K. GLM-5.2 also serves 200K under its base id, but
+// exposes a usable 1M-token context behind an opt-in variant: z.ai documents
+// appending the "[1m]" suffix to the model name (e.g. glm-5.2[1m]) to request it,
+// rather than advertising it as a separate model in /models. So the base glm-5.2
+// stays on the 200K default, and only the explicitly opt-in id carries 1M.
 var ModelContextWindows = map[string]int{
 	"glm-4.5":     128000,
 	"glm-4.5-air": 128000,
+	"glm-5.2[1m]": 1000000,
 }
 
 // DefaultContextWindow is used for unknown models. The whole current z.ai

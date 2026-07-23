@@ -40,6 +40,8 @@ func TestGLMOutputCapHasReasoningHeadroom(t *testing.T) {
 // current z.ai catalog is 200K except the glm-4.5 series (128K), so the default
 // is optimistic (200K) and only the smaller models carry an override. A new
 // model the API starts advertising therefore inherits 200K, not a stale 128K.
+// GLM-5.2's base id is 200K too — its 1M window is opt-in, requested by
+// appending "[1m]" to the id (see models.go), so only that variant overrides.
 func TestContextWindowDefaultsToModernCatalog(t *testing.T) {
 	cases := []struct {
 		model string
@@ -47,7 +49,9 @@ func TestContextWindowDefaultsToModernCatalog(t *testing.T) {
 	}{
 		{"glm-4.6", 200000},      // default
 		{"glm-4.7", 200000},      // default
-		{"glm-5.2", 200000},      // newer, unsized → default
+		{"glm-5.1", 200000},      // default
+		{"glm-5.2", 200000},      // base id → default; 1M is opt-in via [1m]
+		{"glm-5.2[1m]", 1000000}, // opt-in 1M variant
 		{"glm-9-future", 200000}, // unknown → default
 		{"glm-4.5", 128000},      // override
 		{"glm-4.5-air", 128000},  // override
