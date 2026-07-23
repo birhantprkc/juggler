@@ -38,7 +38,7 @@ import { TIPS_CHANGED_EVENT } from '../services/tips-manager.js';
  *   right now (omit to always show).
  * @property {() => void} [onEnabled] - Optional hook run when the card transitions
  *   from disabled to enabled (the Tips card replays its tips here).
- * @property {(contentEl: HTMLElement) => (() => void)|void} mount - Fill the
+ * @property {(contentEl: HTMLElement, session?: import('../model/session.js').default) => (() => void)|void} mount - Fill the
  *   content region; return a teardown to stop any timers/listeners.
  */
 
@@ -57,6 +57,8 @@ class InfoRail extends HTMLElement {
     this._resizeObserver = null;
     /** @type {(() => void)|null} @private Content/enabled-state change listener. */
     this._onChange = null;
+    /** @type {import('../model/session.js').default|undefined} @private */
+    this._session = undefined;
   }
 
   connectedCallback() {
@@ -94,6 +96,18 @@ class InfoRail extends HTMLElement {
    * @returns {void}
    */
   update() {
+    this._reconcile();
+  }
+
+  /**
+   * Supply the owning conversation session to newly mounted card providers.
+   * @param {import('../model/session.js').default} session
+   * @returns {void}
+   */
+  setSession(session) {
+    if (this._session === session) return;
+    this._session = session;
+    this._teardownAll();
     this._reconcile();
   }
 
@@ -237,7 +251,7 @@ class InfoRail extends HTMLElement {
 
     let cleanup;
     try {
-      cleanup = provider.mount(content);
+      cleanup = provider.mount(content, this._session);
     } catch {
       cleanup = undefined;
     }

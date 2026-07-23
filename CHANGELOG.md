@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added a sidebar card showing active provider quota usage
+
 ## [0.4.4] - 2026-07-23
 
 - Sub-threads can no longer spawn their own subthreads (threads you create with /thread still can)

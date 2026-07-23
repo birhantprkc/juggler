@@ -18,6 +18,7 @@
  */
 
 import { tipsCard } from '../components/cards/tips-card.js';
+import { usageCard } from '../components/cards/usage-card.js';
 import { gitStatusCard } from '../components/cards/git-status-card.js';
 import { readPref, writePref, notifyPrefChanged } from './ui-pref-store.js';
 
@@ -26,7 +27,7 @@ import { readPref, writePref, notifyPrefChanged } from './ui-pref-store.js';
  * the top and drops the tail first when the sidebar runs out of room.
  * @type {import('../components/info-rail.js').InfoCardProvider[]}
  */
-const PROVIDERS = [tipsCard, gitStatusCard];
+const PROVIDERS = [tipsCard, usageCard, gitStatusCard];
 
 /** localStorage key holding `{ overrides: { [id]: boolean } }`. */
 const STORAGE_KEY = 'juggler-info-cards';

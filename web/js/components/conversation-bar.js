@@ -588,6 +588,7 @@ class ConversationBar extends HTMLElement {
       this._cachedElements.set('info-rail', infoRail);
       nav.appendChild(infoRail);
     }
+    infoRail.setSession(this._session);
 
     // Bottom-of-bar "Bin" button — opens the bin modal.
     let binBtn = /** @type {HTMLButtonElement|null} */ (this._cachedElements.get('bin-button'));

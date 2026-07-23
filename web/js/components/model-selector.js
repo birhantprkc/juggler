@@ -12,9 +12,7 @@ import { resolveConfig } from '../model/model-config.js';
 import { modelLabel, modelLabelFromList } from '../model/model-display.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { formatTokens } from '../utils/format.js';
-
-/** Usage snapshots older than this are blanked while refreshing rather than shown. */
-const USAGE_STALE_MS = 5 * 60 * 1000;
+import { formatPlan, isUsageStale, renderUsageRow } from '../utils/usage-renderer.js';
 
 /** localStorage key holding the per-provider list view-state override map. */
 const VIEW_STATE_STORAGE_KEY = 'juggler-model-view-state';
@@ -899,13 +897,13 @@ class ModelSelector extends HTMLElement {
       : '';
 
     const hasStats = usage && usage.stats && usage.stats.length > 0;
-    const showStats = hasStats && !(this._usageLoading && this._isUsageStale(usage));
+    const showStats = hasStats && !(this._usageLoading && isUsageStale(usage));
 
     if (showStats) {
       const planLabel = usage.plan
-        ? ` · <span class="model-usage-plan">${escapeHtml(this._formatPlan(usage.plan))}</span>`
+        ? ` · <span class="model-usage-plan">${escapeHtml(formatPlan(usage.plan))}</span>`
         : '';
-      const rows = usage.stats.map(stat => this._usageRow(stat)).join('');
+      const rows = usage.stats.map(renderUsageRow).join('');
       return `
             <div class="model-usage">
                 <div class="model-usage-header"><span>Usage${planLabel}</span>${spinner}</div>
@@ -919,114 +917,6 @@ class ModelSelector extends HTMLElement {
                 <div class="model-usage-header"><span>Usage</span>${spinner}</div>
                 <div class="model-usage-empty">${message}</div>
             </div>`;
-  }
-
-  /**
-   * Whether a usage snapshot is older than {@link USAGE_STALE_MS}. Stale data
-   * is suppressed while a refresh is in flight rather than shown as a likely
-   * wrong placeholder. A missing/invalid `updatedAt` is treated as not stale.
-   * @private
-   * @param {import('../services/usage-stats-cache.js').UsageStats} usage
-   * @returns {boolean} True when the snapshot is older than the stale window.
-   */
-  _isUsageStale(usage) {
-    if (!usage || !usage.updatedAt) return false;
-    const age = Date.now() - new Date(usage.updatedAt).getTime();
-    return age >= USAGE_STALE_MS;
-  }
-
-  /**
-   * Render one usage signal. A stat with a percentage renders as a labelled
-   * meter row; one without (e.g. a raw account balance) renders as a value row
-   * showing its `detail` text in place of the meter.
-   *
-   * When both `resetsAt` and `windowSecs` are present, a thin vertical tick
-   * is drawn on the bar at the time-elapsed position. The tick acts as a
-   * pace reference: fill left of the tick = under-pacing; fill right of it
-   * = over-pacing. This is the same "scrubber on a timeline" metaphor used
-   * by audio/video players, so no label is needed.
-   * @private
-   * @param {import('../services/usage-stats-cache.js').UsageStat} stat
-   * @returns {string} HTML for one `.usage-stat` row.
-   */
-  _usageRow(stat) {
-    const reset = this._formatResetIn(stat.resetsAt);
-    const resetRow = reset ? `<div class="usage-stat-reset">${escapeHtml(reset)}</div>` : '';
-    const detail = stat.detail ? escapeHtml(stat.detail) : '';
-
-    // A stat without a percentage (e.g. a raw account balance) has no meter —
-    // render the absolute value where the percentage would otherwise sit.
-    const hasPct = stat.usedPercent !== null && stat.usedPercent !== undefined
-      && Number.isFinite(Number(stat.usedPercent));
-    if (!hasPct) {
-      return `
-            <div class="usage-stat usage-stat-value">
-                <div class="usage-stat-top">
-                    <span class="usage-stat-name">${escapeHtml(stat.name)}</span>
-                    <span class="usage-stat-pct">${detail || '—'}</span>
-                </div>
-                ${resetRow}
-            </div>`;
-    }
-
-    const pct = Math.max(0, Math.min(100, Number(stat.usedPercent) || 0));
-    const level = pct > 80 ? 'usage-high' : (pct > 60 ? 'usage-medium' : '');
-
-    // Time-elapsed marker — only when we can derive window start.
-    let timeMarker = '';
-    const windowSecs = Number(stat.windowSecs) || 0;
-    if (stat.resetsAt && windowSecs > 0) {
-      const msRemaining = new Date(stat.resetsAt).getTime() - Date.now();
-      const msElapsed = windowSecs * 1000 - msRemaining;
-      const timePct = Math.max(0, Math.min(100, msElapsed / (windowSecs * 1000) * 100));
-      timeMarker = `<div class="usage-stat-time-marker" style="left:${timePct.toFixed(1)}%" aria-hidden="true"></div>`;
-    }
-
-    return `
-            <div class="usage-stat">
-                <div class="usage-stat-top">
-                    <span class="usage-stat-name">${escapeHtml(stat.name)}</span>
-                    <span class="usage-stat-pct">${Math.round(pct)}%</span>
-                </div>
-                <div class="usage-stat-bar-wrap">
-                    <div class="usage-stat-bar">
-                        <div class="usage-stat-fill ${level}" style="width: ${pct}%;"></div>
-                    </div>
-                    ${timeMarker}
-                </div>
-                ${detail ? `<div class="usage-stat-detail">${detail}</div>` : ''}
-                ${resetRow}
-            </div>`;
-  }
-
-  /**
-   * Human-friendly "resets in …" string from an ISO reset timestamp.
-   * @private
-   * @param {string|undefined} resetsAt
-   * @returns {string} e.g. "Resets in 3h 12m", or '' when unknown.
-   */
-  _formatResetIn(resetsAt) {
-    if (!resetsAt) return '';
-    const ms = new Date(resetsAt).getTime() - Date.now();
-    if (!Number.isFinite(ms)) return '';
-    if (ms <= 0) return 'Resets now';
-    const mins = Math.floor(ms / 60000);
-    if (mins < 60) return `Resets in ${Math.max(1, mins)}m`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `Resets in ${hours}h ${mins % 60}m`;
-    const days = Math.floor(hours / 24);
-    return `Resets in ${days}d ${hours % 24}h`;
-  }
-
-  /**
-   * Title-case a plan label ("pro" → "Pro").
-   * @private
-   * @param {string} plan
-   * @returns {string} Title-cased plan label.
-   */
-  _formatPlan(plan) {
-    if (!plan) return '';
-    return plan.charAt(0).toUpperCase() + plan.slice(1);
   }
 
   /**
