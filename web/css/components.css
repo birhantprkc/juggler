@@ -1789,7 +1789,7 @@ properties-panel-subsection {
     color: var(--text-secondary);
 }
 
-/* File path row: path on the left, optional info, then copy + reveal buttons */
+/* File path row: path fills the available width, copy + reveal buttons at the end */
 .properties-panel-filepath-row {
     display: flex;
     justify-content: space-between;
@@ -1810,12 +1810,13 @@ properties-panel-subsection {
     min-width: 0;
 }
 
+/* Size / line-count annotation, on its own line below the path row */
 .properties-panel-filepath-info {
     font-family: var(--font-mono);
     font-size: 0.6875rem;
     color: var(--text-tertiary);
-    flex-shrink: 0;
     white-space: nowrap;
+    margin-top: 0.25rem;
 }
 
 /* Copy + reveal buttons pinned to the right-hand end of the path row */

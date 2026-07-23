@@ -113,8 +113,9 @@ export function addLlmDescription(wrapper, label, text) {
 
 /**
  * Add a bare file path display (no heading) with copy + reveal buttons.
- * If `info` is provided, it appears between the path and the buttons as a small
- * annotation (e.g. file size, line count) and shares the same row.
+ * The path fills the full available width of its row, with the copy + reveal
+ * buttons pinned to the right. If `info` is provided, it renders as a small
+ * annotation (e.g. file size, line count) on its own line below the path row.
  * @param {HTMLElement} wrapper
  * @param {string} path
  * @param {string} [info] - Optional annotation (e.g. "1.2 KB | 42 lines")
@@ -131,13 +132,6 @@ export function addFilePath(wrapper, path, info) {
   if (path) el.dataset.filePath = path;
   row.appendChild(el);
 
-  if (info) {
-    const infoEl = document.createElement('div');
-    infoEl.className = 'properties-panel-filepath-info';
-    infoEl.textContent = info;
-    row.appendChild(infoEl);
-  }
-
   if (path) {
     const actions = document.createElement('div');
     actions.className = 'properties-panel-filepath-actions';
@@ -152,6 +146,13 @@ export function addFilePath(wrapper, path, info) {
   }
 
   wrapper.appendChild(row);
+
+  if (info) {
+    const infoEl = document.createElement('div');
+    infoEl.className = 'properties-panel-filepath-info';
+    infoEl.textContent = info;
+    wrapper.appendChild(infoEl);
+  }
 }
 
 /**
