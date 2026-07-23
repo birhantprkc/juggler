@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- GitHub Copilot now works with GitHub Enterprise Cloud (*.ghe.com): reuses your editor login and can sign in to your tenant
+
 ## [0.4.3] - 2026-07-21
 
 - User messages now render Markdown you typed or pasted (links, formatting, code) instead of raw source

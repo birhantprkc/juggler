@@ -23,11 +23,28 @@ import (
 // and thereafter sourced by loadCopilotOAuthToken, exactly like an editor login,
 // then exchanged for the short-lived Copilot bearer on each use.
 
-// Device-flow endpoints (vars so tests can point them at an httptest server).
+// Device-flow endpoint overrides for tests (empty in production; the real URLs
+// are derived per-host by resolveCopilotDeviceCodeURL/resolveCopilotAccessTokenURL
+// so a GitHub Enterprise Cloud sign-in runs against <tenant>.ghe.com rather than
+// github.com).
 var (
-	copilotDeviceCodeURL  = "https://github.com/login/device/code"
-	copilotAccessTokenURL = "https://github.com/login/oauth/access_token"
+	copilotDeviceCodeURL  = ""
+	copilotAccessTokenURL = ""
 )
+
+func resolveCopilotDeviceCodeURL(host string) string {
+	if copilotDeviceCodeURL != "" {
+		return copilotDeviceCodeURL
+	}
+	return "https://" + host + "/login/device/code"
+}
+
+func resolveCopilotAccessTokenURL(host string) string {
+	if copilotAccessTokenURL != "" {
+		return copilotAccessTokenURL
+	}
+	return "https://" + host + "/login/oauth/access_token"
+}
 
 const (
 	// copilotClientID is the public GitHub App client id the editor Copilot
@@ -41,6 +58,12 @@ const (
 	// copilotOAuthTokenKey is the credentials.json key holding the device-flow
 	// OAuth token once the user signs in through Juggler.
 	copilotOAuthTokenKey = "copilot_oauth_token"
+
+	// copilotHostKey is the credentials.json key holding the user's chosen GitHub
+	// host (a *.ghe.com Enterprise Cloud tenant). Empty/absent means the public
+	// github.com. It is a persistent preference: sign-out clears the token but
+	// leaves this so editor-login reuse keeps targeting the right host.
+	copilotHostKey = "copilot_host"
 )
 
 // CopilotDeviceCode is the start-of-flow payload the UI shows the user: enter
@@ -64,8 +87,16 @@ const (
 	CopilotLoginDenied     CopilotLoginStatus = "denied"     // user denied access
 )
 
-// StartCopilotDeviceLogin requests a device+user code pair from GitHub.
-func StartCopilotDeviceLogin(ctx context.Context) (CopilotDeviceCode, error) {
+// StartCopilotDeviceLogin requests a device+user code pair from GitHub for host
+// (github.com or a *.ghe.com Enterprise Cloud tenant; empty means github.com).
+func StartCopilotDeviceLogin(ctx context.Context, host string) (CopilotDeviceCode, error) {
+	host = copilotNormalizeHost(host)
+	if host == "" {
+		host = copilotDefaultHost
+	}
+	if !copilotValidHost(host) {
+		return CopilotDeviceCode{}, fmt.Errorf("%q is not github.com or a *.ghe.com host", host)
+	}
 	var raw struct {
 		DeviceCode      string `json:"device_code"`
 		UserCode        string `json:"user_code"`
@@ -76,7 +107,7 @@ func StartCopilotDeviceLogin(ctx context.Context) (CopilotDeviceCode, error) {
 		ErrorDetail     string `json:"error_description"`
 	}
 	form := url.Values{"client_id": {copilotClientID}, "scope": {copilotOAuthScope}}
-	if err := copilotPostForm(ctx, copilotDeviceCodeURL, form, &raw); err != nil {
+	if err := copilotPostForm(ctx, resolveCopilotDeviceCodeURL(host), form, &raw); err != nil {
 		return CopilotDeviceCode{}, err
 	}
 	if raw.Error != "" {
@@ -98,11 +129,19 @@ func StartCopilotDeviceLogin(ctx context.Context) (CopilotDeviceCode, error) {
 	}, nil
 }
 
-// PollCopilotDeviceLogin performs one poll for deviceCode. On authorization it
-// persists the OAuth token (and clears the bearer cache) before returning
-// CopilotLoginAuthorized; otherwise it maps GitHub's error to a status the
-// caller loops on. A non-nil error is a transport/unexpected failure only.
-func PollCopilotDeviceLogin(ctx context.Context, deviceCode string) (CopilotLoginStatus, error) {
+// PollCopilotDeviceLogin performs one poll for deviceCode against host. On
+// authorization it persists the OAuth token and host (and clears the bearer
+// cache) before returning CopilotLoginAuthorized; otherwise it maps GitHub's
+// error to a status the caller loops on. A non-nil error is a transport/
+// unexpected failure only.
+func PollCopilotDeviceLogin(ctx context.Context, host, deviceCode string) (CopilotLoginStatus, error) {
+	host = copilotNormalizeHost(host)
+	if host == "" {
+		host = copilotDefaultHost
+	}
+	if !copilotValidHost(host) {
+		return "", fmt.Errorf("%q is not github.com or a *.ghe.com host", host)
+	}
 	if strings.TrimSpace(deviceCode) == "" {
 		return "", fmt.Errorf("device code is required")
 	}
@@ -116,11 +155,11 @@ func PollCopilotDeviceLogin(ctx context.Context, deviceCode string) (CopilotLogi
 		"device_code": {deviceCode},
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 	}
-	if err := copilotPostForm(ctx, copilotAccessTokenURL, form, &raw); err != nil {
+	if err := copilotPostForm(ctx, resolveCopilotAccessTokenURL(host), form, &raw); err != nil {
 		return "", err
 	}
 	if raw.AccessToken != "" {
-		if err := storeCopilotOAuthToken(raw.AccessToken); err != nil {
+		if err := storeCopilotOAuthToken(raw.AccessToken, host); err != nil {
 			return "", fmt.Errorf("failed to persist Copilot login: %w", err)
 		}
 		return CopilotLoginAuthorized, nil
@@ -182,14 +221,69 @@ func copilotErrText(code, detail string) string {
 	return "unknown error"
 }
 
-// storeCopilotOAuthToken persists the device-flow OAuth token and invalidates
-// the cached bearer so the next resolve re-exchanges under the new login.
-func storeCopilotOAuthToken(token string) error {
+// storeCopilotOAuthToken persists the device-flow OAuth token (and the host it
+// was minted against, as the preferred host) and invalidates the cached bearer
+// so the next resolve re-exchanges under the new login.
+func storeCopilotOAuthToken(token, host string) error {
 	store, err := NewCredentialsStore()
 	if err != nil {
 		return err
 	}
 	if err := store.SetRawKey(copilotOAuthTokenKey, token); err != nil {
+		return err
+	}
+	// Persist an enterprise host as the preference; the default host is stored as
+	// "" so github.com never needs a value (and any stale preference is cleared).
+	pref := host
+	if pref == copilotDefaultHost {
+		pref = ""
+	}
+	if err := store.SetRawKey(copilotHostKey, pref); err != nil {
+		return err
+	}
+	clearCopilotTokenCache()
+	return nil
+}
+
+// copilotPreferredHost returns the user's saved enterprise host, or "" when none
+// is set (meaning the public github.com). An invalid stored value is ignored.
+func copilotPreferredHost() string {
+	store, err := NewCredentialsStore()
+	if err != nil {
+		return ""
+	}
+	host := copilotNormalizeHost(store.GetRawKey(copilotHostKey))
+	if host == "" || host == copilotDefaultHost || !copilotValidHost(host) {
+		return ""
+	}
+	return host
+}
+
+// CopilotHost returns the host Copilot logins target: the saved enterprise host,
+// or github.com by default. Exposed so the settings UI can show/prefill it.
+func CopilotHost() string {
+	if h := copilotPreferredHost(); h != "" {
+		return h
+	}
+	return copilotDefaultHost
+}
+
+// SetCopilotHost saves the preferred GitHub host (a *.ghe.com tenant, or
+// github.com / "" to reset to the public default) and clears the cached bearer
+// so the next resolve re-exchanges against it. Rejects any other host.
+func SetCopilotHost(host string) error {
+	host = copilotNormalizeHost(host)
+	if host != "" && !copilotValidHost(host) {
+		return fmt.Errorf("%q is not github.com or a *.ghe.com host", host)
+	}
+	if host == copilotDefaultHost {
+		host = ""
+	}
+	store, err := NewCredentialsStore()
+	if err != nil {
+		return err
+	}
+	if err := store.SetRawKey(copilotHostKey, host); err != nil {
 		return err
 	}
 	clearCopilotTokenCache()

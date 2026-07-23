@@ -30,9 +30,40 @@ func TestLoadCopilotOAuthToken(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 		writeFile(t, filepath.Join(dir, "github-copilot", "apps.json"),
 			`{"github.com:Iv1.b507a08c87ecfe98":{"user":"octocat","oauth_token":"gho_apps"}}`)
-		tok, err := loadCopilotOAuthToken()
-		if err != nil || tok != "gho_apps" {
-			t.Fatalf("token=%q err=%v, want gho_apps", tok, err)
+		login, err := loadCopilotLogin()
+		if err != nil || login.token != "gho_apps" || login.host != "github.com" {
+			t.Fatalf("login=%+v err=%v, want gho_apps@github.com", login, err)
+		}
+	})
+
+	t.Run("apps.json ghe.com", func(t *testing.T) {
+		t.Setenv("GH_COPILOT_TOKEN", "")
+		t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		// A GitHub Enterprise Cloud (data residency) login: the only entry, so it
+		// is reused automatically with no host configuration.
+		writeFile(t, filepath.Join(dir, "github-copilot", "apps.json"),
+			`{"acme.ghe.com:Iv1.b507a08c87ecfe98":{"user":"octocat","oauth_token":"gho_ghe"}}`)
+		login, err := loadCopilotLogin()
+		if err != nil || login.token != "gho_ghe" || login.host != "acme.ghe.com" {
+			t.Fatalf("login=%+v err=%v, want gho_ghe@acme.ghe.com", login, err)
+		}
+		if got := resolveCopilotExchangeURL(login.host); got != "https://api.acme.ghe.com/copilot_internal/v2/token" {
+			t.Fatalf("exchange URL = %q, want the tenant's api host", got)
+		}
+	})
+
+	t.Run("github.com preferred over ghe.com when both present", func(t *testing.T) {
+		t.Setenv("GH_COPILOT_TOKEN", "")
+		t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
+		dir := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		writeFile(t, filepath.Join(dir, "github-copilot", "apps.json"),
+			`{"acme.ghe.com:x":{"oauth_token":"gho_ghe"},"github.com:y":{"oauth_token":"gho_dotcom"}}`)
+		login, err := loadCopilotLogin()
+		if err != nil || login.host != "github.com" {
+			t.Fatalf("login=%+v err=%v, want github.com to win by default", login, err)
 		}
 	})
 
@@ -43,9 +74,9 @@ func TestLoadCopilotOAuthToken(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 		writeFile(t, filepath.Join(dir, "github-copilot", "hosts.json"),
 			`{"github.com":{"oauth_token":"gho_hosts"}}`)
-		tok, err := loadCopilotOAuthToken()
-		if err != nil || tok != "gho_hosts" {
-			t.Fatalf("token=%q err=%v, want gho_hosts", tok, err)
+		login, err := loadCopilotLogin()
+		if err != nil || login.token != "gho_hosts" || login.host != "github.com" {
+			t.Fatalf("login=%+v err=%v, want gho_hosts@github.com", login, err)
 		}
 	})
 
@@ -56,13 +87,13 @@ func TestLoadCopilotOAuthToken(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 		writeFile(t, filepath.Join(dir, "github-copilot", "apps.json"),
 			`{"github.com:x":{"oauth_token":"gho_apps"}}`)
-		if err := storeCopilotOAuthToken("gho_device"); err != nil {
+		if err := storeCopilotOAuthToken("gho_device", "github.com"); err != nil {
 			t.Fatalf("store: %v", err)
 		}
 		t.Cleanup(func() { _ = clearCopilotDeviceLogin() })
-		tok, err := loadCopilotOAuthToken()
-		if err != nil || tok != "gho_device" {
-			t.Fatalf("token=%q err=%v, want gho_device", tok, err)
+		login, err := loadCopilotLogin()
+		if err != nil || login.token != "gho_device" {
+			t.Fatalf("login=%+v err=%v, want gho_device", login, err)
 		}
 		if !copilotHasDeviceLogin() {
 			t.Fatal("copilotHasDeviceLogin() = false, want true")
@@ -71,8 +102,8 @@ func TestLoadCopilotOAuthToken(t *testing.T) {
 			t.Fatalf("clear: %v", err)
 		}
 		// After sign-out the editor file wins again.
-		if tok, _ := loadCopilotOAuthToken(); tok != "gho_apps" {
-			t.Fatalf("post-signout token=%q, want gho_apps", tok)
+		if login, _ := loadCopilotLogin(); login.token != "gho_apps" {
+			t.Fatalf("post-signout token=%q, want gho_apps", login.token)
 		}
 	})
 
@@ -83,9 +114,9 @@ func TestLoadCopilotOAuthToken(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 		writeFile(t, filepath.Join(dir, "github-copilot", "apps.json"),
 			`{"github.com:x":{"oauth_token":"gho_apps"}}`)
-		tok, err := loadCopilotOAuthToken()
-		if err != nil || tok != "gho_env" {
-			t.Fatalf("token=%q err=%v, want gho_env", tok, err)
+		login, err := loadCopilotLogin()
+		if err != nil || login.token != "gho_env" {
+			t.Fatalf("token=%q err=%v, want gho_env", login.token, err)
 		}
 	})
 
@@ -93,7 +124,7 @@ func TestLoadCopilotOAuthToken(t *testing.T) {
 		t.Setenv("GH_COPILOT_TOKEN", "")
 		t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-		if _, err := loadCopilotOAuthToken(); err == nil {
+		if _, err := loadCopilotLogin(); err == nil {
 			t.Fatal("expected error when no login present")
 		}
 	})
@@ -150,7 +181,7 @@ func TestPollCopilotDeviceLoginStatuses(t *testing.T) {
 	}
 	for _, c := range cases {
 		body = c.resp
-		got, err := PollCopilotDeviceLogin(context.Background(), "dev-code")
+		got, err := PollCopilotDeviceLogin(context.Background(), "github.com", "dev-code")
 		if err != nil || got != c.want {
 			t.Fatalf("%s: got %q err=%v, want %q", c.name, got, err, c.want)
 		}
@@ -158,7 +189,7 @@ func TestPollCopilotDeviceLoginStatuses(t *testing.T) {
 
 	// Authorization persists the token and reports authorized.
 	body = `{"access_token":"gho_new"}`
-	got, err := PollCopilotDeviceLogin(context.Background(), "dev-code")
+	got, err := PollCopilotDeviceLogin(context.Background(), "github.com", "dev-code")
 	if err != nil || got != CopilotLoginAuthorized {
 		t.Fatalf("authorized: got %q err=%v", got, err)
 	}
@@ -219,6 +250,67 @@ func TestLoadCopilotBearerExchangesAndCaches(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&exchanges); n != 2 {
 		t.Fatalf("exchanges = %d, want 2 (refresh expected)", n)
+	}
+}
+
+func TestCopilotHostPreference(t *testing.T) {
+	t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
+	resetCopilotTokenCache()
+	t.Cleanup(resetCopilotTokenCache)
+
+	// Default with nothing stored.
+	if got := CopilotHost(); got != "github.com" {
+		t.Fatalf("CopilotHost() = %q, want github.com by default", got)
+	}
+	// An arbitrary host is rejected.
+	if err := SetCopilotHost("evil.example.com"); err == nil {
+		t.Fatal("SetCopilotHost accepted a non-github/ghe host")
+	}
+	// A *.ghe.com tenant is accepted and becomes the preference.
+	if err := SetCopilotHost("acme.ghe.com"); err != nil {
+		t.Fatalf("SetCopilotHost(ghe): %v", err)
+	}
+	if got := CopilotHost(); got != "acme.ghe.com" {
+		t.Fatalf("CopilotHost() = %q, want acme.ghe.com", got)
+	}
+	// With a preference set, a matching editor login wins over github.com.
+	logins := []copilotLogin{{token: "a", host: "github.com"}, {token: "b", host: "acme.ghe.com"}}
+	if l, ok := pickCopilotLogin(logins, copilotPreferredHost()); !ok || l.token != "b" {
+		t.Fatalf("pickCopilotLogin = %+v ok=%v, want the acme.ghe.com login", l, ok)
+	}
+	// Resetting to github.com clears the preference.
+	if err := SetCopilotHost("github.com"); err != nil {
+		t.Fatalf("SetCopilotHost(github.com): %v", err)
+	}
+	if got := copilotPreferredHost(); got != "" {
+		t.Fatalf("copilotPreferredHost() = %q, want empty after reset", got)
+	}
+}
+
+func TestPollPersistsEnterpriseHost(t *testing.T) {
+	t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
+	resetCopilotTokenCache()
+	t.Cleanup(resetCopilotTokenCache)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"gho_ghe"}`))
+	}))
+	defer srv.Close()
+	orig := copilotAccessTokenURL
+	copilotAccessTokenURL = srv.URL
+	t.Cleanup(func() { copilotAccessTokenURL = orig })
+
+	got, err := PollCopilotDeviceLogin(context.Background(), "acme.ghe.com", "dev-code")
+	if err != nil || got != CopilotLoginAuthorized {
+		t.Fatalf("poll: got %q err=%v", got, err)
+	}
+	if tok := copilotStoredOAuthToken(); tok != "gho_ghe" {
+		t.Fatalf("stored token = %q, want gho_ghe", tok)
+	}
+	// The host the flow ran against is persisted as the preference.
+	if h := copilotPreferredHost(); h != "acme.ghe.com" {
+		t.Fatalf("copilotPreferredHost() = %q, want acme.ghe.com", h)
 	}
 }
 

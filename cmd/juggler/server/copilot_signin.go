@@ -17,10 +17,17 @@ import (
 // successful authorization or a sign-out triggers a provider refresh so the
 // Copilot row flips state without a manual reload.
 
-// handleCopilotDeviceStart begins the OAuth device flow and returns the user
-// code + verification URL for the UI to display.
+// handleCopilotDeviceStart begins the OAuth device flow (against the requested
+// GitHub host, defaulting to github.com) and returns the user code + verification
+// URL for the UI to display. The resolved host is echoed back so the client sends
+// the same one when polling.
 func (s *Server) handleCopilotDeviceStart(w http.ResponseWriter, r *http.Request) {
-	code, err := core.StartCopilotDeviceLogin(r.Context())
+	var req struct {
+		Host string `json:"host"`
+	}
+	// Body is optional: no host means github.com.
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	code, err := core.StartCopilotDeviceLogin(r.Context(), req.Host)
 	if err != nil {
 		handlers.WriteJSON(w, r, http.StatusBadGateway, map[string]any{
 			"success": false,
@@ -30,6 +37,7 @@ func (s *Server) handleCopilotDeviceStart(w http.ResponseWriter, r *http.Request
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{
 		"success":         true,
+		"host":            req.Host,
 		"deviceCode":      code.DeviceCode,
 		"userCode":        code.UserCode,
 		"verificationUri": code.VerificationURI,
@@ -43,6 +51,7 @@ func (s *Server) handleCopilotDeviceStart(w http.ResponseWriter, r *http.Request
 func (s *Server) handleCopilotDevicePoll(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceCode string `json:"deviceCode"`
+		Host       string `json:"host"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{
@@ -51,7 +60,7 @@ func (s *Server) handleCopilotDevicePoll(w http.ResponseWriter, r *http.Request)
 		})
 		return
 	}
-	status, err := core.PollCopilotDeviceLogin(r.Context(), req.DeviceCode)
+	status, err := core.PollCopilotDeviceLogin(r.Context(), req.Host, req.DeviceCode)
 	if err != nil {
 		handlers.WriteJSON(w, r, http.StatusBadGateway, map[string]any{
 			"success": false,
@@ -80,4 +89,41 @@ func (s *Server) handleCopilotSignOut(w http.ResponseWriter, r *http.Request) {
 	}
 	s.RefreshProviders()
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
+}
+
+// handleCopilotGetHost returns the GitHub host Copilot logins target (github.com
+// or the saved *.ghe.com Enterprise Cloud tenant), so the UI can prefill it.
+func (s *Server) handleCopilotGetHost(w http.ResponseWriter, r *http.Request) {
+	handlers.WriteJSON(w, r, 0, map[string]any{
+		"success": true,
+		"host":    core.CopilotHost(),
+	})
+}
+
+// handleCopilotSetHost saves the preferred GitHub host (a *.ghe.com tenant, or
+// github.com to reset to the public default) and refreshes the provider list so
+// the Copilot row re-evaluates against the new host.
+func (s *Server) handleCopilotSetHost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host string `json:"host"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+	if err := core.SetCopilotHost(req.Host); err != nil {
+		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+	s.RefreshProviders()
+	handlers.WriteJSON(w, r, 0, map[string]any{
+		"success": true,
+		"host":    core.CopilotHost(),
+	})
 }

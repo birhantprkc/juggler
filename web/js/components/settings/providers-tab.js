@@ -147,6 +147,10 @@ export class ProvidersTab {
         signInBtn.addEventListener('click', () => this._copilotSignIn(provider, signInBtn));
         buttonGroup.appendChild(signInBtn);
       }
+      // A host field lets Enterprise Cloud users point Copilot at their
+      // <tenant>.ghe.com instead of the public github.com (for both editor-login
+      // reuse and the in-app device sign-in).
+      controlColumn.appendChild(this._buildCopilotHostField(provider));
     }
 
     // Every OAuth provider gets a refresh button: the login it depends on lives in
@@ -248,6 +252,74 @@ export class ProvidersTab {
   }
 
   /**
+   * Build the "GitHub host" field for a device-flow provider. Enterprise Cloud
+   * users enter their `<tenant>.ghe.com`; everyone else leaves the default
+   * `github.com`. Prefilled from the saved host and, on change, persisted (which
+   * re-checks the provider so an editor login on that host is picked up).
+   * @param {any} provider
+   * @returns {HTMLElement} The host field wrapper.
+   * @private
+   */
+  _buildCopilotHostField(provider) {
+    const wrap = document.createElement('div');
+    wrap.className = 'copilot-host-field';
+
+    const inputId = `${provider.name}-host`;
+    const label = document.createElement('label');
+    label.className = 'copilot-host-label';
+    label.setAttribute('for', inputId);
+    label.textContent = 'GitHub host';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = inputId;
+    input.className = 'settings-input small';
+    input.value = 'github.com';
+    input.placeholder = 'github.com or your-tenant.ghe.com';
+    input.autocapitalize = 'off';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+
+    // Prefill with the saved host; the default above shows until this resolves.
+    fetch('/api/providers/copilot/host')
+      .then((r) => r.json())
+      .then((d) => { if (d && d.success && d.host) input.value = d.host; })
+      .catch(() => { /* keep the default */ });
+
+    input.addEventListener('change', () => this._copilotSetHost(provider, input));
+
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  /**
+   * Persist the chosen GitHub host, then re-check the provider so an editor
+   * Copilot login on that host is reused without relaunching.
+   * @param {any} provider
+   * @param {HTMLInputElement} input
+   * @private
+   */
+  async _copilotSetHost(provider, input) {
+    const host = input.value.trim() || 'github.com';
+    try {
+      const res = await fetch('/api/providers/copilot/host', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to set host');
+      // Re-check against the new host (rebuilds this field with the saved value).
+      await this._refreshOAuthProvider(provider, this._buildOAuthRefreshButton(provider));
+    } catch (err) {
+      if (window.showAlert) {
+        await window.showAlert(err instanceof Error ? err.message : 'Failed to set host', 'GitHub Copilot');
+      }
+    }
+  }
+
+  /**
    * Run the GitHub OAuth device flow: start it, open the verification page with
    * the user code (copied to the clipboard), then poll until GitHub authorizes.
    * On success re-syncs the settings panel and the model selector.
@@ -258,11 +330,17 @@ export class ProvidersTab {
   async _copilotSignIn(provider, button) {
     const status = /** @type {HTMLElement|null} */ (this.host.querySelector(`#${provider.name}-oauth-status`));
     const setStatus = (/** @type {string} */ t) => { if (status) status.textContent = t; };
+    const hostInput = /** @type {HTMLInputElement|null} */ (this.host.querySelector(`#${provider.name}-host`));
+    const host = (hostInput && hostInput.value.trim()) || 'github.com';
     const originalText = button.textContent;
     button.disabled = true;
     button.textContent = 'Starting\u2026';
     try {
-      const res = await fetch('/api/providers/copilot/device/start', { method: 'POST' });
+      const res = await fetch('/api/providers/copilot/device/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host }),
+      });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Failed to start sign-in');
 
@@ -272,7 +350,7 @@ export class ProvidersTab {
       button.textContent = 'Waiting\u2026';
       setStatus(`Enter code ${userCode} at ${verificationUri} (opened in your browser, copied to clipboard). Waiting for authorization\u2026`);
 
-      await this._pollCopilotLogin(deviceCode, Number(interval) || 5);
+      await this._pollCopilotLogin(deviceCode, Number(interval) || 5, host);
       setStatus('Signed in with GitHub');
       await this._refreshAfterAuthChange(provider, true);
     } catch (err) {
@@ -290,9 +368,10 @@ export class ProvidersTab {
    * throws on expiry, denial, error, or timeout.
    * @param {string} deviceCode
    * @param {number} interval - seconds between polls (GitHub-provided)
+   * @param {string} host - GitHub host the flow was started against
    * @private
    */
-  async _pollCopilotLogin(deviceCode, interval) {
+  async _pollCopilotLogin(deviceCode, interval, host) {
     let delayMs = Math.max(2, interval) * 1000;
     const deadline = Date.now() + 15 * 60 * 1000;
     while (Date.now() < deadline) {
@@ -300,7 +379,7 @@ export class ProvidersTab {
       const res = await fetch('/api/providers/copilot/device/poll', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceCode }),
+        body: JSON.stringify({ deviceCode, host }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Sign-in check failed');

@@ -365,6 +365,8 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/providers/copilot/device/start", s.handleCopilotDeviceStart).Methods("POST")
 	api.HandleFunc("/providers/copilot/device/poll", s.handleCopilotDevicePoll).Methods("POST")
 	api.HandleFunc("/providers/copilot/signout", s.handleCopilotSignOut).Methods("POST")
+	api.HandleFunc("/providers/copilot/host", s.handleCopilotGetHost).Methods("GET")
+	api.HandleFunc("/providers/copilot/host", s.handleCopilotSetHost).Methods("POST")
 
 	api.HandleFunc("/extensions", s.extensionsAPI.HandleListExtensions).Methods("GET")
 	api.HandleFunc("/extensions/locations", s.extensionsAPI.HandleListLocations).Methods("GET")

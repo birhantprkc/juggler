@@ -4727,6 +4727,39 @@ settings-panel .provider-buttons {
     flex-shrink: 0;
 }
 
+/* GitHub host field for the Copilot (device-flow) provider — Enterprise Cloud
+   users point it at their <tenant>.ghe.com. Compact label above a full-width
+   input, sitting between the sign-in status line and the buttons. */
+settings-panel .copilot-host-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
+}
+
+settings-panel .copilot-host-label {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+settings-panel .copilot-host-field input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.4rem 0.6rem;
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.375rem;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-family: var(--font-mono);
+}
+
+settings-panel .copilot-host-field input:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 0.1875rem rgb(88 166 255 / 10%);
+}
+
 settings-panel .provider-active-badge {
     position: absolute;
     left: 0.875rem;
