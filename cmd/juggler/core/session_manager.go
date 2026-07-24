@@ -114,7 +114,20 @@ func startManager(store *FileSessionStore, projectPath, scratchDir string) *Sess
 	}
 	go m.run()
 	go m.runBinSizeMonitor(store)
+	go m.sweepOrphanedEmptyingDirs(store)
 	return m
+}
+
+// sweepOrphanedEmptyingDirs trashes any .juggler/trash.emptying-* directories
+// left behind by an EmptyBin whose background trash step was interrupted (e.g.
+// the process exited before it finished). Runs once at startup, off the actor,
+// so it never delays session load. Best-effort: failures are logged, not fatal.
+func (m *SessionManager) sweepOrphanedEmptyingDirs(store *FileSessionStore) {
+	for _, dir := range store.orphanedEmptyingDirs() {
+		if err := trashOrRemove(dir); err != nil {
+			jlog.Error("[session] failed to sweep orphaned empty-bin dir %q: %v", dir, err)
+		}
+	}
 }
 
 // runBinSizeMonitor is a low-priority background goroutine that keeps
@@ -528,15 +541,33 @@ func (m *SessionManager) DeleteBinnedConversation(convID string) error {
 }
 
 // EmptyBin permanently removes (via OS trash) every conversation currently in
-// .juggler/bin/, returning the ids removed.
+// .juggler/trash/, returning the ids removed. The actor only does the fast
+// in-memory move-aside (emptyBinDeferred); the actual OS-trash of the moved-
+// aside directory runs on a background goroutine so a multi-GB bin neither
+// stalls other session writes (new tabs, saves) nor plays one "moved to trash"
+// sound per conversation — it is a single trash operation, off the hot path.
 func (m *SessionManager) EmptyBin() ([]string, error) {
-	ids, err := runWrite(m, func(s *sessionState) ([]string, error) {
-		return s.store.EmptyBin()
-	})
-	if err == nil {
-		m.kickBinSizeRecompute()
+	type emptied struct {
+		ids       []string
+		trashPath string
 	}
-	return ids, err
+	r, err := runWrite(m, func(s *sessionState) (emptied, error) {
+		ids, trashPath, e := s.store.emptyBinDeferred()
+		return emptied{ids: ids, trashPath: trashPath}, e
+	})
+	if err != nil {
+		return nil, err
+	}
+	if r.trashPath != "" {
+		go func(path string) {
+			if e := trashOrRemove(path); e != nil {
+				jlog.Error("[session] empty bin: failed to trash %q: %v", path, e)
+			}
+			m.kickBinSizeRecompute()
+		}(r.trashPath)
+	}
+	m.kickBinSizeRecompute()
+	return r.ids, nil
 }
 
 // GetRuntimeInfo returns the runtime info for this manager's project.

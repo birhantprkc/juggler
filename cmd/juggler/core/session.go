@@ -639,24 +639,76 @@ func (fs *FileSessionStore) removeBinnedConversationFiles(convID string) error {
 }
 
 // EmptyBin permanently removes (via OS trash) every conversation currently in
-// .juggler/trash/, returning the ids removed.
+// .juggler/trash/, returning the ids removed. This is the synchronous form used
+// by direct callers and tests; the server empties the bin via emptyBinDeferred
+// so the slow OS-trash step runs off the actor goroutine.
 func (fs *FileSessionStore) EmptyBin() ([]string, error) {
-	if fs.binIndex == nil {
-		return nil, nil
+	removed, trashPath, err := fs.emptyBinDeferred()
+	if err != nil {
+		return nil, err
+	}
+	if trashPath != "" {
+		if err := trashOrRemove(trashPath); err != nil {
+			return removed, fmt.Errorf("empty bin: trash %q: %w", trashPath, err)
+		}
+	}
+	return removed, nil
+}
+
+// emptyBinDeferred performs the in-memory half of emptying the bin: it snapshots
+// the binned ids, atomically renames the whole .juggler/trash/ directory aside
+// to a unique sibling, and clears the bin index. All of this is fast metadata
+// work — no per-conversation filesystem traversal — so it is cheap to run on the
+// actor goroutine. It returns the emptied ids and the path of the moved-aside
+// directory; the caller must trash that directory (a single OS trash operation,
+// hence one "moved to trash" sound instead of one per conversation) off the hot
+// path. trashPath is "" when the bin was already empty.
+func (fs *FileSessionStore) emptyBinDeferred() (removed []string, trashPath string, err error) {
+	if fs.binIndex == nil || len(fs.binIndex.ByID) == 0 {
+		return nil, "", nil
 	}
 	ids := make([]string, 0, len(fs.binIndex.ByID))
 	for id := range fs.binIndex.ByID {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	removed := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if err := fs.removeBinnedConversationFiles(id); err != nil {
-			return removed, err
+
+	// The index is non-empty, so the directory should exist; if it somehow does
+	// not, there is nothing on disk to trash — just clear the index below.
+	binDir := fs.binDir()
+	if _, statErr := os.Stat(binDir); statErr == nil {
+		trashPath = fs.uniqueEmptyingPath()
+		if renameErr := atomicio.RobustRename(binDir, trashPath); renameErr != nil {
+			return nil, "", fmt.Errorf("empty bin: move aside: %w", renameErr)
 		}
-		removed = append(removed, id)
 	}
-	return removed, nil
+
+	fs.binIndex.ByID = map[string]string{}
+	fs.binIndex.Names = map[string]string{}
+	return ids, trashPath, nil
+}
+
+// uniqueEmptyingPath returns a sibling of .juggler/trash/ that does not yet
+// exist, used as the move-aside target when emptying the bin. The nanosecond
+// timestamp plus a disambiguating counter guarantees uniqueness even across
+// rapid successive empties.
+func (fs *FileSessionStore) uniqueEmptyingPath() string {
+	base := filepath.Join(fs.jugglerDir(), "trash.emptying")
+	for i := 0; ; i++ {
+		p := fmt.Sprintf("%s-%d-%d", base, time.Now().UnixNano(), i)
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			return p
+		}
+	}
+}
+
+// orphanedEmptyingDirs returns any leftover trash.emptying-* directories under
+// .juggler/ (see emptyBinDeferred). These exist only when a prior EmptyBin's
+// off-actor trash step was interrupted before it finished; the caller sweeps
+// them at startup.
+func (fs *FileSessionStore) orphanedEmptyingDirs() []string {
+	matches, _ := filepath.Glob(filepath.Join(fs.jugglerDir(), "trash.emptying-*"))
+	return matches
 }
 
 // dirSizeBytes returns the total size, in bytes, of every regular file under

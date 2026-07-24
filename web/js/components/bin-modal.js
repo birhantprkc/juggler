@@ -214,6 +214,25 @@ class BinModal extends JugglerElement {
       { confirmText: 'Empty Bin', cancelText: 'Cancel', danger: true }
     );
     if (!confirmed) return;
+
+    // Optimistically show the emptied state right away. The server now returns
+    // as soon as it has moved the bin aside (the actual OS-trash runs in the
+    // background), so the request resolves quickly and the user never stares at
+    // an untouched list. _refreshList below reconciles with the real state —
+    // restoring the list if the request failed.
+    const emptyBtn = /** @type {HTMLButtonElement|null} */ (this.querySelector('.bin-empty-now'));
+    const list = /** @type {HTMLUListElement|null} */ (this.querySelector('.bin-list'));
+    const empty = /** @type {HTMLElement|null} */ (this.querySelector('.bin-empty'));
+    if (emptyBtn) {
+      emptyBtn.disabled = true;
+      emptyBtn.textContent = 'Emptying…';
+    }
+    if (list) list.innerHTML = '';
+    if (empty) {
+      empty.classList.remove('hidden');
+      empty.textContent = 'The bin is empty.';
+    }
+
     try {
       await this._session.emptyBin();
     } catch (e) {
