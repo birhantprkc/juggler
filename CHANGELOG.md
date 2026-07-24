@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-24
+
 - Added Cmd+/ and Ctrl+/ shortcut to show keyboard shortcuts
 - Fixed ⌥⌘M / ⌥⌘T being lost when focus was outside the composer
 - Fixed the model cycler doing nothing on the first use after a page load
