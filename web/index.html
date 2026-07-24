@@ -46,7 +46,13 @@
          harmless. -->
     <script nonce="{{.CSPNonce}}">
         (function() {
-            var theme = localStorage.getItem('juggler-theme') || 'dark';
+            // Resolve the stored mode to a concrete theme. 'system' (the
+            // default, and any legacy/absent value) follows the OS via
+            // prefers-color-scheme so system-light doesn't flash dark.
+            var mode = localStorage.getItem('juggler-theme');
+            var theme = mode === 'light' || mode === 'dark'
+                ? mode
+                : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
             document.documentElement.style.background = theme === 'light' ? '#fff' : '#0d1117';
             // TEMPORARY (Windows-only): mark the OS pre-paint so styles.css can
             // swap in SVG mouse cursors. Windows/WebView2 draws the native
@@ -241,10 +247,12 @@
                 <button class="u-btn-ghost u-btn-icon-header zoom-out-button" id="zoom-out-button" title="Decrease font size" data-shortcut-id="zoom-out" aria-label="Decrease font size"></button>
                 <button class="u-btn-ghost u-btn-icon-header zoom-in-button" id="zoom-in-button" title="Increase font size" data-shortcut-id="zoom-in" aria-label="Increase font size"></button>
 
-                <!-- Theme Toggle Button -->
-                <button class="u-btn-ghost u-btn-icon-header theme-button" id="theme-button" title="Toggle light/dark theme" aria-label="Toggle theme">
+                <!-- Theme Cycle Button — System → Light → Dark. The icon and
+                     tooltip are set per mode by UIEventManager; the default
+                     here is the System (brightness_auto) glyph. -->
+                <button class="u-btn-ghost u-btn-icon-header theme-button" id="theme-button" title="Theme: System — click for Light" aria-label="Theme: System — click for Light">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960">
-                        <path d="M480-80q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm40-83q119-15 199.5-104.5T800-480q0-123-80.5-212.5T520-797v634Z"/>
+                        <path d="M310-305h55l37-109h159l38 109h53L505-697h-48L310-305Zm107-157 61-163h5l62 163H417Zm64 433L346-160H160v-186L26-480l134-134v-186h186l135-134 133 134h186v186l134 134-134 134v186H614L481-29Zm0-84 108-107h151v-151l109-109-109-109v-151H589L481-849 371-740H220v151L111-480l109 109v151h150l111 107Zm0-368Z"/>
                     </svg>
                 </button>
 

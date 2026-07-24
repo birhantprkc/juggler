@@ -11,6 +11,7 @@ of changes; this project follows semantic versioning.
 - Had a rehash of the buttons in the user message box, to make their layout more balanced and stable at different sizes
 - Added a sidebar card showing active provider quota usage
 - Added a flag for providers which can't handle the forced tool option, which was breaking auto-compaction
+- Made the theme selector tri-state: light/dark/system
 
 ## [0.4.4] - 2026-07-23
 

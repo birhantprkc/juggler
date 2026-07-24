@@ -12,7 +12,28 @@ import { presentPopup } from '../utils/popup-surface.js';
  * @property {object} [options] - Event listener options
  */
 
-import { toggleTheme } from '../utils/theme-manager.js';
+import { cycleTheme, getMode, MODES } from '../utils/theme-manager.js';
+
+/**
+ * Header theme-button presentation per mode: the Material Symbols glyph
+ * (brightness_auto / light_mode / dark_mode, viewBox 0 -960 960 960) and the
+ * tooltip, which names the current mode and the one a click moves to.
+ * @type {Record<string, {path: string, title: string}>}
+ */
+const THEME_BUTTON_UI = {
+  [MODES.SYSTEM]: {
+    path: 'M310-305h55l37-109h159l38 109h53L505-697h-48L310-305Zm107-157 61-163h5l62 163H417Zm64 433L346-160H160v-186L26-480l134-134v-186h186l135-134 133 134h186v186l134 134-134 134v186H614L481-29Zm0-84 108-107h151v-151l109-109-109-109v-151H589L481-849 371-740H220v151L111-480l109 109v151h150l111 107Zm0-368Z',
+    title: 'Theme: System — click for Light'
+  },
+  [MODES.LIGHT]: {
+    path: 'M579-381q41-41 41-99t-41-99q-41-41-99-41t-99 41q-41 41-41 99t41 99q41 41 99 41t99-41Zm-240.5 42.5Q280-397 280-480t58.5-141.5Q397-680 480-680t141.5 58.5Q680-563 680-480t-58.5 141.5Q563-280 480-280t-141.5-58.5ZM200-450H40v-60h160v60Zm720 0H760v-60h160v60ZM450-760v-160h60v160h-60Zm0 720v-160h60v160h-60ZM262-658l-100-97 43-44 96 100-39 41Zm494 496-98-100 41-41 99 98-42 43Zm-99-537 98-99 44 42-99 98-43-41ZM162-205l99-98 42 42-98 99-43-43Zm318-275Z',
+    title: 'Theme: Light — click for Dark'
+  },
+  [MODES.DARK]: {
+    path: 'M480-120q-150 0-255-105T120-480q0-150 105-255t255-105q8 0 17 .5t23 1.5q-36 32-56 79t-20 99q0 90 63 153t153 63q52 0 99-18.5t79-51.5q1 12 1.5 19.5t.5 14.5q0 150-105 255T480-120Zm0-60q109 0 190-67.5T771-406q-25 11-53.67 16.5Q688.67-384 660-384q-114.69 0-195.34-80.66Q384-545.31 384-660q0-24 5-51.5t18-62.5q-98 27-162.5 109.5T180-480q0 125 87.5 212.5T480-180Zm-4-297Z',
+    title: 'Theme: Dark — click for System'
+  }
+};
 import { toggleSound, isSoundEnabled, ATTENTION_PREFS_EVENT } from '../utils/attention-manager.js';
 import { zoomIn, zoomOut } from '../utils/zoom-manager.js';
 import keyShortcutManager from './key-shortcut-manager.js';
@@ -183,9 +204,11 @@ class UIEventManager {
       return;
     }
 
-    // Toggle theme when clicked
+    // Show the current mode's icon + tooltip, then cycle
+    // System → Light → Dark → System on each click.
+    this._renderThemeButton(themeButton, getMode());
     const handler = () => {
-      toggleTheme();
+      this._renderThemeButton(themeButton, cycleTheme());
     };
     themeButton.addEventListener('click', handler);
     this._listeners.push({
@@ -193,6 +216,20 @@ class UIEventManager {
       event: 'click',
       handler: handler
     });
+  }
+
+  /**
+   * Paint the theme button's icon and tooltip for a mode.
+   * @param {HTMLElement} button - The theme button element.
+   * @param {string} mode - One of MODES.
+   * @private
+   */
+  _renderThemeButton(button, mode) {
+    const ui = THEME_BUTTON_UI[mode] || THEME_BUTTON_UI[MODES.SYSTEM];
+    if (!ui) return;
+    button.querySelector('path')?.setAttribute('d', ui.path);
+    button.title = ui.title;
+    button.setAttribute('aria-label', ui.title);
   }
 
   /**

@@ -107,9 +107,33 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case "theme":
-		colour, ok := a.setWindowTheme(e, r.URL.Query().Get("theme"))
+		pageTheme := r.URL.Query().Get("theme")
+		colour, ok := a.setWindowTheme(e, pageTheme)
 		if !ok {
 			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.URL.Query().Get("mode") == "system" {
+			// System mode: the OS light/dark setting is authoritative, and only
+			// the native side can read it reliably — the WKWebView's
+			// prefers-color-scheme is pinned by the window's forced appearance, so
+			// the page's guessed theme can be stale. paintSystemChrome clears that
+			// forced appearance (so the window follows the OS again) and reports
+			// the resolved theme, which we echo back so the page can repaint.
+			type chrome struct {
+				colour application.RGBA
+				theme  string
+			}
+			ch := make(chan chrome, 1)
+			application.InvokeAsync(func() {
+				c, t := paintSystemChrome(e.win, colour, normaliseTheme(pageTheme))
+				e.win.SetBackgroundColour(c)
+				ch <- chrome{c, t}
+			})
+			got := <-ch
+			a.setWindowTheme(e, got.theme)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"theme": got.theme})
 			return
 		}
 		application.InvokeAsync(func() {
