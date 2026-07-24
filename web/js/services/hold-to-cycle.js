@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import keyShortcutManager, { eventMatchesBinding } from './key-shortcut-manager.js';
+import { markSeen } from './tips-manager.js';
 
 /**
  * HoldToCycleController — the shared "Alt-Tab" gesture behind the strategy,
@@ -104,6 +105,12 @@ class HoldToCycleController {
       e.stopPropagation();
 
       if (this._config.onGestureStart) this._config.onGestureStart();
+
+      // Learn-by-doing: engaging the gesture retires its onboarding tip. The tip
+      // id equals the shortcut id for every cycler (cycle-model / cycle-thinking
+      // / strategy-switch), and we're past the canCycle gate, so this only fires
+      // on a real, applicable use. Idempotent; a no-op for ids with no tip.
+      markSeen(this._config.shortcutId);
 
       // Cycle immediately on keydown
       this._config.onCycle();

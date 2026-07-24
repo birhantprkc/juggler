@@ -40,7 +40,7 @@ export function registerConversationShortcuts(session) {
   // jump/toggle report whether they acted so an inapplicable press falls through.
   keyShortcutManager.register('new-conversation', () => { createNewConversation(); markSeen('new-conversation'); return true; });
   keyShortcutManager.register('bin-conversation', () => { binActiveConversation(); markSeen('bin-conversation'); return true; });
-  keyShortcutManager.register('rename-conversation', () => { renameActiveConversation(); return true; });
+  keyShortcutManager.register('rename-conversation', () => { renameActiveConversation(); markSeen('rename-conversation'); return true; });
   // Prev/next-tab (macOS ⌥⌘↑/↓) reuse the conversation bar's existing cycle path:
   // the same juggler:cycle-tab event the native Ctrl+Tab accelerator fires, which
   // moves to the adjacent tab (wrapping) and commits focus to its composer. The
@@ -48,10 +48,12 @@ export function registerConversationShortcuts(session) {
   // other platforms the registration is inert. Always "handles" the key.
   keyShortcutManager.register('prev-tab', () => {
     window.dispatchEvent(new CustomEvent('juggler:cycle-tab', { detail: { direction: 'prev' } }));
+    markSeen('prev-tab');
     return true;
   });
   keyShortcutManager.register('next-tab', () => {
     window.dispatchEvent(new CustomEvent('juggler:cycle-tab', { detail: { direction: 'next' } }));
+    markSeen('next-tab');
     return true;
   });
   keyShortcutManager.register('jump-to-attention', () => {
@@ -75,6 +77,7 @@ export function registerConversationShortcuts(session) {
     const column = tab?.getActiveConversationColumn?.();
     if (!column) return false;
     findBar.open(column);
+    markSeen('find-in-conversation');
     return true;
   });
   keyShortcutManager.install();

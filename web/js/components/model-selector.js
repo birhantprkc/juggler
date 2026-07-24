@@ -11,6 +11,7 @@ import { getRecommendedModels, sortModelsByVersion } from '../utils/model-filter
 import { resolveConfig } from '../model/model-config.js';
 import { modelLabel, modelLabelFromList } from '../model/model-display.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
+import keyShortcutManager from '../services/key-shortcut-manager.js';
 import { formatTokens } from '../utils/format.js';
 import { formatPlan, isUsageStale, renderUsageRow } from '../utils/usage-renderer.js';
 
@@ -1354,9 +1355,13 @@ class ModelSelector extends HTMLElement {
     const level = explicit && levels.includes(explicit) ? explicit : '';
     const declaredDefault = modelEntry?.defaultThinkingLevel || '';
     const shown = level || declaredDefault || 'def';
+    // Cite the switch-thinking shortcut (⌥⌘T / Ctrl+Alt+T) live from the central
+    // table, so the hint stays correct if it's ever rebound or left unbound.
+    const cycleKey = keyShortcutManager.formatBinding('cycle-thinking');
+    const keyHint = cycleKey ? ` (${cycleKey}, hold for menu)` : '';
     const title = level
-      ? `Thinking: ${level} — click to change`
-      : `Thinking: ${declaredDefault ? `${declaredDefault} (default)` : 'default'} — click to change`;
+      ? `Thinking: ${level} — click to change${keyHint}`
+      : `Thinking: ${declaredDefault ? `${declaredDefault} (default)` : 'default'} — click to change${keyHint}`;
     // A <span> (not <button>): the chip nests inside the model button, and a
     // button inside a button is invalid HTML the parser would eject.
     return `<span class="thinking-chip${level ? '' : ' default'}" role="button" title="${escapeHtml(title)}">${escapeHtml(THINKING_CHIP[shown] || shown)}</span>`;
@@ -1528,8 +1533,13 @@ class ModelSelector extends HTMLElement {
     this._lastInfoHTML = infoColumn;
     this._lastListHTML = listContent;
 
+    // Cite the switch-model shortcut (⌥⌘M / Ctrl+Alt+M) live from the central
+    // table, so the tooltip stays correct if it's ever rebound or left unbound.
+    const cycleModelKey = keyShortcutManager.formatBinding('cycle-model');
+    const modelTitle = cycleModelKey ? `LLM Model (${cycleModelKey}, hold for menu)` : 'LLM Model';
+
     this.innerHTML = `
-            <button class="model-selector-button input-ctrl-btn${state.hasOverride ? ' has-override' : ''}${state.modelUnavailable ? ' model-unavailable' : ''}${state.noModelSelected ? ' pulse' : ''}" id="model-button" title="LLM Model">
+            <button class="model-selector-button input-ctrl-btn${state.hasOverride ? ' has-override' : ''}${state.modelUnavailable ? ' model-unavailable' : ''}${state.noModelSelected ? ' pulse' : ''}" id="model-button" title="${escapeHtml(modelTitle)}">
                 ${this._buttonContentHTML(state)}
             </button>
 

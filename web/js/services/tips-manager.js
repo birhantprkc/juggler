@@ -17,7 +17,7 @@
  * @module services/tips-manager
  */
 
-import keyShortcutManager from './key-shortcut-manager.js';
+import keyShortcutManager, { isMac } from './key-shortcut-manager.js';
 import { readPref, writePref, notifyPrefChanged } from './ui-pref-store.js';
 
 /** localStorage key holding `{ seen: string[] }`. */
@@ -50,7 +50,14 @@ export const TIPS_CHANGED_EVENT = 'juggler:tips-changed';
 const SHORTCUT_TIPS = [
   { id: 'jump-to-attention', body: 'Jump straight to whichever conversation is waiting on you, landing on its pending approval.' },
   { id: 'new-conversation', body: 'Spin up another conversation and switch to it — run several in parallel.' },
+  { id: 'cycle-model', body: 'Tap to flip back to your previous model; hold to open the full model menu — no mouse needed.' },
+  { id: 'cycle-thinking', body: 'Nudge the current model\u2019s thinking level up or down; hold to open the level popover.' },
+  { id: 'next-tab', body: 'Step down your conversation list without leaving the keyboard (wraps around at the end).' },
+  { id: 'prev-tab', body: 'Step up your conversation list without leaving the keyboard (wraps around at the top).' },
+  { id: 'strategy-switch', body: 'Flip the active strategy from the composer; hold to open the full strategy menu.' },
+  { id: 'find-in-conversation', body: 'Open the find bar to search the text of the conversation you\u2019re reading.' },
   { id: 'toggle-file-editing', body: 'Flip between letting the agent edit files freely and asking you first.' },
+  { id: 'rename-conversation', body: 'Give the current conversation a memorable name, straight from the keyboard.' },
   { id: 'pause-conversation', body: 'Pause after the current step finishes — a non-destructive stop, instead of a hard cancel.' },
   { id: 'bin-conversation', body: 'Clear a conversation out of the way — you can restore it from the Bin anytime.' },
 ];
@@ -112,7 +119,11 @@ export function allTips() {
   const shortcuts = [];
   for (const entry of SHORTCUT_TIPS) {
     const def = keyShortcutManager.all().find((d) => d.id === entry.id);
-    if (def) shortcuts.push({ id: entry.id, kind: 'shortcut', title: def.label, body: entry.body, shortcutId: entry.id });
+    // Drop a dangling id, and any command restricted to a platform we're not on —
+    // e.g. the mac-only ⌥⌘↑/↓ tab shortcuts, which are deliberately unbound on
+    // Windows/Linux, so we never advertise a key that does nothing there.
+    if (!def || (def.platform && (def.platform === 'mac') !== isMac())) continue;
+    shortcuts.push({ id: entry.id, kind: 'shortcut', title: def.label, body: entry.body, shortcutId: entry.id });
   }
   return [...shortcuts, ...FEATURE_TIPS];
 }
