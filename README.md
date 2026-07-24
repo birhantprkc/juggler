@@ -15,7 +15,8 @@ And here's the TL;DR:
 
 - **It is a proper GUI.** This is not a console app. It's all about graphical visual navigation, inspection, and control.
 - **The session is a tree, not a doom-scroll.** It's a Yjs document, not a transcript. Create sub-threads, drill down, backtrack, compare, and edit.
-- **Everything important is visible.** Tool calls, approvals, thread structure, item properties, raw context — laid out in Finder-style Miller columns instead of buried in collapsible chat.
+- **Sessions are persistent and stateful.** Because a session is a document on disk, you can quit or relaunch and it resumes every conversation exactly where you left it. That even includes states such as an agent waiting for user approval. You can restart, reconnect, and the approval dialog will be there waiting for you.
+- **Everything is inspectable.** Tool calls, approvals, thread structure, item properties, raw context — laid out in Finder-style Miller columns for fast navigation.
 - **It's plugins all the way down.** Context items, slash commands, LLM loop strategies, and their UIs are JavaScript extensions you can inspect, fork, or replace.
 - **It runs locally, remotely, or both at once.** Use the same session with the same UI in the native desktop app, and/or browsers. Multiple clients can attach to the same session.
 - **It talks to the usual model zoo.** Claude Code (via CLI or API), OpenAI (codex plan or API), Gemini, Ollama, OpenRouter, Z.AI, Deepseek, etc.
@@ -66,6 +67,12 @@ Most agents give you a single linear transcript and if you're lucky you can rewi
 Juggler gives you a **tree**. Any point can branch into a sub-thread. Sub-threads can branch again. You can navigate, inspect, and edit the structure directly.
 
 The UI uses **Miller columns**: root on the left, selected items expanding into properties and children to the right. (If you've used Finder's column view, you already understand the basic move).
+
+#### Your session survives being closed — approvals and all
+
+Because the whole session is a document, and the server is a state machine that modifies it, nothing is lost when you close the app. Quit, relaunch, lose the connection, come back tomorrow — it rehydrates exactly where it was.
+
+Crucially, that includes workflow that's *waiting on you*. When the agent pauses for user intervention — to run a command, apply an edit, take the next step — that paused state is part of the document. You can shut everything down, reopen it later on the same machine or a different one, and the agent is still parked at the same decision, ready to resume the moment you say yes.
 
 #### Everything is an extension
 
