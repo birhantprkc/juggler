@@ -55,7 +55,8 @@ func Register() {
 		ListModelsOverride: listModels,
 		ThinkingSpecFn:     openaibase.OpenAIThinkingSpec,
 		Quirks: openaibase.Quirks{
-			MaxTokensParamName: "max_tokens",
+			MaxTokensParamName:        "max_tokens",
+			ForcedToolChoiceSupported: true,
 		},
 	})
 }

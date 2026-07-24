@@ -26,8 +26,9 @@ func Register() {
 		InputModalitiesFn: inputModalities,
 		ThinkingSpecFn:    openaibase.OpenAIThinkingSpec,
 		Quirks: openaibase.Quirks{
-			UseDeveloperRole:   true,
-			MaxTokensParamName: "max_completion_tokens",
+			UseDeveloperRole:          true,
+			MaxTokensParamName:        "max_completion_tokens",
+			ForcedToolChoiceSupported: true,
 		},
 	})
 }

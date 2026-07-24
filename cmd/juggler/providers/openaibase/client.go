@@ -106,14 +106,21 @@ type Quirks struct {
 	// stays off by default and is enabled only where the API demands it.
 	EchoReasoningContent bool
 
-	// ForcedToolChoiceUnsupported downgrades a forced single-tool choice
-	// (ToolChoice{Mode: tool, Name: X}) to auto on the Chat Completions wire.
-	// DeepSeek's thinking models reject a named tool_choice with 400 "Thinking
-	// mode does not support this tool_choice". The tool stays in the request and
-	// the caller's prompt still directs the model to it, so auto elicits the same
-	// call while staying within the thinking-mode contract; a model that answers
-	// in plain text instead is handled by the caller's text fallback.
-	ForcedToolChoiceUnsupported bool
+	// ForcedToolChoiceSupported opts this provider IN to sending a forced
+	// single-tool choice (ToolChoice{Mode: tool, Name: X}) as a named
+	// tool_choice on the wire. It defaults to false — i.e. forced tool choice is
+	// downgraded to auto (the tool stays offered) unless a provider proves it
+	// supports named forcing — because that is the fail-safe default: many
+	// OpenAI-compatible upstreams reject a named tool_choice with a hard 400
+	// (DeepSeek/GLM/Kimi thinking modes, arbitrary gateways behind
+	// openai-compatible/OpenRouter, local llama.cpp/Ollama), which would brick
+	// any flow that forces a tool (e.g. /compact forcing return_result). When
+	// downgraded, the caller's prompt still directs the model to the tool, so
+	// auto elicits the same call; a plain-text answer is handled by the caller's
+	// text fallback. Only first-party OpenAI-shaped providers proven to honour
+	// named forcing (openai, openaicodex, copilot) set this true; every other —
+	// including any provider added later — is safe by default.
+	ForcedToolChoiceSupported bool
 }
 
 // Config holds configuration for OpenAI-compatible providers
@@ -543,7 +550,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	// Add tools if provided
 	if len(req.Tools) > 0 {
 		params.Tools = convertToolsToResponsesAPI(req.Tools)
-		if tc, ok := convertToolChoiceResponses(req.ToolChoice); ok {
+		if tc, ok := convertToolChoiceResponses(req.ToolChoice, !c.quirks.ForcedToolChoiceSupported); ok {
 			params.ToolChoice = tc
 		}
 	}
@@ -743,14 +750,17 @@ func convertToolChoiceChat(tc *provider.ToolChoice, downgradeForcedTool bool) (o
 }
 
 // convertToolChoiceResponses maps the provider-agnostic ToolChoice onto the
-// Responses API tool_choice union. ok=false for nil/auto.
-func convertToolChoiceResponses(tc *provider.ToolChoice) (responses.ResponseNewParamsToolChoiceUnion, bool) {
+// Responses API tool_choice union. ok=false for nil/auto. When
+// downgradeForcedTool is set, a forced single tool is mapped to auto (the tool
+// stays offered) for providers that don't support a named tool_choice —
+// mirroring the Chat Completions path so the fail-safe default holds on both wires.
+func convertToolChoiceResponses(tc *provider.ToolChoice, downgradeForcedTool bool) (responses.ResponseNewParamsToolChoiceUnion, bool) {
 	if tc == nil {
 		return responses.ResponseNewParamsToolChoiceUnion{}, false
 	}
 	switch tc.Mode {
 	case provider.ToolChoiceTool:
-		if tc.Name == "" {
+		if tc.Name == "" || downgradeForcedTool {
 			return responses.ResponseNewParamsToolChoiceUnion{}, false
 		}
 		return responses.ResponseNewParamsToolChoiceUnion{
@@ -1104,7 +1114,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 
 	if len(req.Tools) > 0 {
 		params.Tools = convertToolsToOpenAI(req.Tools)
-		if tc, ok := convertToolChoiceChat(req.ToolChoice, c.quirks.ForcedToolChoiceUnsupported); ok {
+		if tc, ok := convertToolChoiceChat(req.ToolChoice, !c.quirks.ForcedToolChoiceSupported); ok {
 			params.ToolChoice = tc
 		}
 	}

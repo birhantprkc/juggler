@@ -24,10 +24,12 @@ func Register() {
 		UsageStatsOverride: usageStats,
 		BaseURL:            "https://api.deepseek.com/v1",
 		Quirks: openaibase.Quirks{
-			IncludePresencePenalty:      true,
-			IncludeFrequencyPenalty:     true,
-			EchoReasoningContent:        true,
-			ForcedToolChoiceUnsupported: true,
+			IncludePresencePenalty:  true,
+			IncludeFrequencyPenalty: true,
+			EchoReasoningContent:    true,
+			// No ForcedToolChoiceSupported: DeepSeek's thinking mode 400s on a
+			// named tool_choice, so it relies on the fail-safe default (forced
+			// tool choice downgraded to auto).
 		},
 	})
 }

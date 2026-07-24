@@ -37,10 +37,10 @@ func Register() {
 		UsageStatsOverride: usageStats,
 		ThinkingSpecFn:     openaibase.OpenAIThinkingSpec,
 		Quirks: openaibase.Quirks{
-
 			MaxTokensParamName:           "max_completion_tokens",
 			ForceResponsesAPI:            true,
 			OmitResponsesMaxOutputTokens: true,
+			ForcedToolChoiceSupported:    true,
 		},
 	})
 }

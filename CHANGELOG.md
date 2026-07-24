@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Added a sidebar card showing active provider quota usage
+- Added a flag for providers which can't handle the forced tool option, which was breaking auto-compaction
 
 ## [0.4.4] - 2026-07-23
 
