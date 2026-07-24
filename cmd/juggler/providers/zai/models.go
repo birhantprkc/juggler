@@ -16,15 +16,16 @@ import "juggler/cmd/juggler/providers/utils"
 
 // ModelContextWindows overrides DefaultContextWindow for models whose window is
 // not 200K. The bulk of the modern line (glm-4.6 onward, glm-5, glm-5.1) is 200K;
-// the glm-4.5 series is 128K. GLM-5.2 also serves 200K under its base id, but
-// exposes a usable 1M-token context behind an opt-in variant: z.ai documents
-// appending the "[1m]" suffix to the model name (e.g. glm-5.2[1m]) to request it,
-// rather than advertising it as a separate model in /models. So the base glm-5.2
-// stays on the 200K default, and only the explicitly opt-in id carries 1M.
+// the glm-4.5 series is 128K. GLM-5.2 carries a 1M-token window under its plain
+// base id — z.ai serves it directly over the standard coding endpoint, not via a
+// special variant. (Verified on the wire: the coding endpoint ingested and billed
+// 640K+ input tokens for a single glm-5.2 request. An earlier "glm-5.2[1m]" suffix
+// was a phantom — z.ai 400s it as "Unknown Model" — so the 1M window belongs on
+// the base id, not an opt-in variant.)
 var ModelContextWindows = map[string]int{
 	"glm-4.5":     128000,
 	"glm-4.5-air": 128000,
-	"glm-5.2[1m]": 1000000,
+	"glm-5.2":     1000000,
 }
 
 // DefaultContextWindow is used for unknown models. The whole current z.ai
