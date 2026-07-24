@@ -254,20 +254,24 @@ func remoteTransportLabel(kind string) string {
 	return kind
 }
 
-// lanAddress is a reachable LAN IPv4 address together with the name of the
-// network interface it belongs to, so each can be labelled when several exist.
+// lanAddress is a reachable LAN address (IPv4 or IPv6) together with the name of
+// the network interface it belongs to, so each can be labelled when several
+// exist.
 type lanAddress struct {
 	iface string
 	ip    string
 }
 
-// getLANAddresses returns IPv4 addresses of active non-loopback network
-// interfaces, each tagged with its interface name.
+// getLANAddresses returns reachable addresses of active non-loopback network
+// interfaces, each tagged with its interface name. Both IPv4 and IPv6 global /
+// unique-local unicast addresses are included; loopback, link-local (needs a
+// zone to be usable), and multicast addresses are skipped. IPv4 addresses are
+// listed before IPv6 so the primary, most-broadly-reachable URL comes first.
 func getLANAddresses() []lanAddress {
-	var addrs []lanAddress
+	var v4, v6 []lanAddress
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return addrs
+		return nil
 	}
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
@@ -285,15 +289,18 @@ func getLANAddresses() []lanAddress {
 			case *net.IPAddr:
 				ip = v.IP
 			}
-			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+				ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
 				continue
 			}
 			if ip4 := ip.To4(); ip4 != nil {
-				addrs = append(addrs, lanAddress{iface: iface.Name, ip: ip4.String()})
+				v4 = append(v4, lanAddress{iface: iface.Name, ip: ip4.String()})
+			} else {
+				v6 = append(v6, lanAddress{iface: iface.Name, ip: ip.String()})
 			}
 		}
 	}
-	return addrs
+	return append(v4, v6...)
 }
 
 // PrintLANStatus prints the LAN access status box and, when enabled, QR codes
