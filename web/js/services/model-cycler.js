@@ -6,6 +6,7 @@ import HoldToCycleController from './hold-to-cycle.js';
 import { isMac } from './key-shortcut-manager.js';
 import recentModels from './recent-models.js';
 import providersCache from './providers-cache.js';
+import { isForeignPopupOpen } from '../utils/popup-manager.js';
 
 /**
  * Hold-to-cycle clients for the model shortcuts: {@link ModelCycler}
@@ -47,6 +48,38 @@ function getModelSelector() {
 }
 
 /**
+ * Popup ids the model shortcuts OWN — the model dropdown and the mini thinking
+ * popover, both surfaces of the model-selector the cyclers drive. Allow-listed
+ * in {@link modelGestureShouldHandle} so the window-wide gate never stands the
+ * gesture down for its own cycling HUD.
+ * @type {string[]}
+ */
+const OWN_POPUP_IDS = ['model-selector', 'thinking-mini'];
+
+/**
+ * The gesture gate for the model/thinking cyclers. Unlike the strategy
+ * switcher's composer-focus gate (`defaultShouldHandle` in hold-to-cycle), these fire from
+ * ANYWHERE in the window: their ⌥⌘M / ⌥⌘T chords carry no native in-app meaning
+ * to protect, and being lost to the OS when focus sits outside the composer
+ * (bare ⌘M minimises the app) is the very bug this gate fixes. The controller
+ * already resolves its target from the ACTIVE conversation tab, so the gesture
+ * still reaches the right thread no matter where focus is — the whole-window
+ * capture just stops the keystroke leaking to the OS first.
+ *
+ * It stands down only while a FOREIGN overlay is open (a modal dialog, another
+ * component's dropdown) — never for the cyclers' own HUD popups. That exception
+ * is load-bearing: holding to open the model menu, or a re-press to keep
+ * cycling, must never be gated out by the very popup the gesture just opened.
+ * (Re-presses during an active gesture bypass this gate anyway; the allow-list
+ * covers the idle case where the HUD was already opened by a click.)
+ * @param {KeyboardEvent} _e - Trigger event; focus is intentionally ignored.
+ * @returns {boolean} True when the gesture may start.
+ */
+export function modelGestureShouldHandle(_e) {
+  return !isForeignPopupOpen(OWN_POPUP_IDS);
+}
+
+/**
  * ModelCycler - the `cycle-model` hold-to-cycle client. Alt-Tab semantics over
  * the Recent models list: the gesture snapshots the list once at gesture start
  * (frozen, minus entries whose provider is currently unavailable), so cycling
@@ -72,12 +105,16 @@ class ModelCycler {
     this._controller = new HoldToCycleController({
       shortcutId: 'cycle-model',
       modifierKeys: [commandModifierKey(), 'Alt'],
+      // Window-wide: ⌥⌘M must not leak to the OS (bare ⌘M minimises) when focus
+      // sits outside the composer — the controller redirects to the active tab.
+      shouldHandle: modelGestureShouldHandle,
       canCycle: () => getModelSelector() !== null,
       onGestureStart: () => this._startGesture(),
       onCycle: () => this._cycle(),
       onOpenMenu: () => { getModelSelector()?.open(); },
       onCloseMenu: () => { getModelSelector()?.close(); },
       onCommit: () => this._commit(),
+      onCancel: () => this._cancel(),
     });
   }
 
@@ -87,6 +124,14 @@ class ModelCycler {
    */
   init() {
     this._controller.init();
+    // Pre-warm the recents cache that `_startGesture` snapshots SYNCHRONOUSLY.
+    // Recents are otherwise loaded lazily on menu-open, so the very first ⌥⌘M
+    // after a page load would snapshot an empty list and cycle over nothing
+    // until a menu-open refresh populated it (repeated presses no-op, but the
+    // long-press HUD still shows — "it appears but does nothing the first
+    // time"). Best-effort: refresh() never rejects and leaves the cache empty
+    // on failure, exactly as before.
+    recentModels.refresh().catch(() => {});
   }
 
   /**
@@ -103,6 +148,9 @@ class ModelCycler {
    * @private
    */
   _startGesture() {
+    // Hold the model write until commit: hops update the selector's display and
+    // its dropdown HUD, but a running turn never sees an intermediate model.
+    getModelSelector()?.beginCycle();
     const available = new Set(providersCache.get().filter(p => p.available).map(p => p.name));
     this._snapshot = recentModels.get().filter(r => available.has(r.provider));
     const current = getModelSelector()?.currentConfigPair();
@@ -143,10 +191,24 @@ class ModelCycler {
    * @private
    */
   _commit() {
+    // Flush the buffered landing model to the doc first (once), then record it.
+    getModelSelector()?.commitCycle();
     if (this._cycled) {
       const pair = getModelSelector()?.currentConfigPair();
       if (pair) recentModels.record(pair.provider, pair.model, pair.thinking);
     }
+    this._snapshot = [];
+    this._cursor = -1;
+    this._cycled = false;
+  }
+
+  /**
+   * Abandon the gesture (Escape): drop the buffered model write so the doc
+   * keeps its pre-gesture value, and clear the snapshot without recording.
+   * @private
+   */
+  _cancel() {
+    getModelSelector()?.cancelCycle();
     this._snapshot = [];
     this._cursor = -1;
     this._cycled = false;
@@ -171,16 +233,19 @@ class ThinkingCycler {
     this._controller = new HoldToCycleController({
       shortcutId: 'cycle-thinking',
       modifierKeys: [commandModifierKey(), 'Alt'],
+      // Window-wide, same as ⌥⌘M — see modelGestureShouldHandle.
+      shouldHandle: modelGestureShouldHandle,
       canCycle: () => {
         const selector = getModelSelector();
         return !!selector && !!selector.currentConfigPair()
           && selector.supportedThinkingLevels().length > 0;
       },
-      onGestureStart: () => { this._cycled = false; },
+      onGestureStart: () => { this._cycled = false; getModelSelector()?.beginCycle(); },
       onCycle: () => this._cycle(),
       onOpenMenu: () => { getModelSelector()?.openThinkingMini(); },
       onCloseMenu: () => { getModelSelector()?.closeThinkingMini(); },
       onCommit: () => this._commit(),
+      onCancel: () => this._cancel(),
     });
   }
 
@@ -226,10 +291,22 @@ class ThinkingCycler {
    * @private
    */
   _commit() {
+    // Flush the buffered landing level to the doc first (once), then record it.
+    getModelSelector()?.commitCycle();
     if (this._cycled) {
       const pair = getModelSelector()?.currentConfigPair();
       if (pair) recentModels.record(pair.provider, pair.model, pair.thinking);
     }
+    this._cycled = false;
+  }
+
+  /**
+   * Abandon the gesture (Escape): drop the buffered level write so the doc
+   * keeps its pre-gesture value.
+   * @private
+   */
+  _cancel() {
+    getModelSelector()?.cancelCycle();
     this._cycled = false;
   }
 }

@@ -46,6 +46,9 @@ class UIEventManager {
 
     /** @type {(() => void)|null} @private */
     this._unregisterZoomOut = null;
+
+    /** @type {(() => void)|null} @private */
+    this._unregisterShowShortcuts = null;
   }
 
   /**
@@ -160,6 +163,12 @@ class UIEventManager {
     // returning truthy makes the manager preventDefault the browser's page zoom.
     this._unregisterZoomIn = keyShortcutManager.register('zoom-in', () => { zoomIn(); return true; });
     this._unregisterZoomOut = keyShortcutManager.register('zoom-out', () => { zoomOut(); return true; });
+    this._unregisterShowShortcuts = keyShortcutManager.register('show-shortcuts', () => {
+      if ('openSettings' in window && typeof window.openSettings === 'function') {
+        /** @type {any} */ (window).openSettings('shortcuts');
+      }
+      return true;
+    });
   }
 
   /**
@@ -569,6 +578,7 @@ class UIEventManager {
     this._listeners = [];
     this._unregisterZoomIn?.();
     this._unregisterZoomOut?.();
+    this._unregisterShowShortcuts?.();
   }
 }
 

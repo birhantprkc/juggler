@@ -24,10 +24,15 @@ class StrategySwitcher {
       shortcutId: 'strategy-switch',
       modifierKeys: ['Shift'],
       canCycle: () => this._getStrategySelector() !== null,
+      // Buffer the strategy write for the whole gesture: hops update the menu
+      // HUD's highlight, but a running turn never sees an intermediate strategy
+      // (the doc is written once, on commit).
+      onGestureStart: () => { this._getStrategySelector()?.beginCycle(); },
       onCycle: () => { this._getStrategySelector()?.cycleNext(); },
       onOpenMenu: () => { this._getStrategySelector()?.open(); },
       onCloseMenu: () => { this._getStrategySelector()?.close(); },
-      onCommit: () => { /* cycling already applied the strategy */ },
+      onCommit: () => { this._getStrategySelector()?.commitCycle(); },
+      onCancel: () => { this._getStrategySelector()?.cancelCycle(); },
     });
   }
 

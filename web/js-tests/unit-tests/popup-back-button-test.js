@@ -26,10 +26,12 @@
 import {
   markPopupOpen,
   isAnyPopupOpen,
+  isForeignPopupOpen,
   closeAllPopups,
   registerOpenPopup,
   __resetPopupManagerForTests,
 } from '../../js/utils/popup-manager.js';
+import { modelGestureShouldHandle } from '../../js/services/model-cycler.js';
 
 const OVERLAY_MARKER = 'jugglerOverlay';
 
@@ -189,6 +191,49 @@ export async function runTests() {
     closeAllPopups();
     tally(check(dropdownClosed === 1, 'dropdown: closed via POPUP_CLOSE_ALL event', errors));
     tally(check(!isAnyPopupOpen(), 'dropdown: nothing open afterwards', errors));
+    await tick();
+
+    // === isForeignPopupOpen: the window-wide cycler gate ===
+    // Clean baseline, then exercise each foreign/own combination. `dummyEvt`
+    // stands in for the KeyboardEvent the gate ignores (it reads focus from
+    // nothing — the whole point is that it fires window-wide).
+    __resetPopupManagerForTests();
+    const dummyEvt = /** @type {any} */ ({});
+    tally(check(!isForeignPopupOpen([]), 'foreign: nothing open ⇒ not foreign', errors));
+    tally(check(modelGestureShouldHandle(dummyEvt) === true,
+      'gate: fires when nothing is open', errors));
+
+    // A foreign id-keyed dropdown blocks the gesture.
+    const relForeign = registerOpenPopup({ id: 'some-other-dropdown', onClose: () => {} });
+    tally(check(isForeignPopupOpen(['model-selector', 'thinking-mini']),
+      'foreign: an id outside the allow-list is foreign', errors));
+    tally(check(modelGestureShouldHandle(dummyEvt) === false,
+      'gate: stands down while a foreign dropdown is open', errors));
+    relForeign();
+
+    // The cyclers' OWN HUD popup is never foreign — the gesture fires over it.
+    const relOwn = registerOpenPopup({ id: 'model-selector', onClose: () => {} });
+    tally(check(!isForeignPopupOpen(['model-selector', 'thinking-mini']),
+      'own: the allow-listed HUD id is not foreign', errors));
+    tally(check(modelGestureShouldHandle(dummyEvt) === true,
+      'gate: fires over the cyclers own model-selector HUD', errors));
+
+    // ...but a foreign modal stacked over the own HUD still blocks it.
+    const relModal = markPopupOpen(() => {});
+    tally(check(isForeignPopupOpen(['model-selector', 'thinking-mini']),
+      'own+modal: an id-less modal over the HUD is still foreign', errors));
+    tally(check(modelGestureShouldHandle(dummyEvt) === false,
+      'gate: a foreign modal over the HUD stands the gesture down', errors));
+    relModal();
+    relOwn();
+
+    // A bare modal (id-less markPopupOpen) is foreign even against any allow-list.
+    const relBareModal = markPopupOpen(() => {});
+    tally(check(isForeignPopupOpen(['model-selector', 'thinking-mini']),
+      'modal: an id-less modal has no id to allow-list ⇒ foreign', errors));
+    relBareModal();
+    tally(check(!isForeignPopupOpen(['model-selector']),
+      'cleanup: nothing foreign after releasing everything', errors));
     await tick();
   } finally {
     // Drain any deferred sentinel removal before restoring the real API.

@@ -85,6 +85,27 @@ export function isAnyPopupOpen() {
 }
 
 /**
+ * Whether any popup/modal is open OTHER than the ones named in `ownIds`. The
+ * gate for window-wide shortcuts (the model/thinking cyclers): they must fire
+ * over their OWN cycling HUD — which registers as a popup the moment the gesture
+ * opens it — while still standing down for any FOREIGN overlay. Two kinds of
+ * open popup count as foreign: an id-keyed popup (via {@link registerOpenPopup})
+ * whose id is not in `ownIds`, and any id-less popup (a modal registered through
+ * {@link markPopupOpen} directly, which has no id to allow-list). Every id-keyed
+ * popup adds exactly one entry to both registries, so an `openPopups` count
+ * above the id-keyed count means at least one id-less (modal) popup is open too.
+ * @param {string[]} [ownIds] - Popup ids that do NOT count as foreign.
+ * @returns {boolean} True if a popup outside `ownIds` is open.
+ */
+export function isForeignPopupOpen(ownIds = []) {
+  const own = new Set(ownIds);
+  for (const id of openPopupsById.keys()) {
+    if (!own.has(id)) return true;
+  }
+  return openPopups.size > openPopupsById.size;
+}
+
+/**
  * TEST-ONLY: force the popup registry back to empty. The multi-iframe test pool
  * reuses one JS realm across the sequence of tests a lane runs, so a prior test
  * that leaked an open-popup registration would otherwise poison this module

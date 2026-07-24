@@ -103,6 +103,15 @@ class ModelSelector extends HTMLElement {
     this._messageThread = null;
     /** @type {*} @private */
     this._currentConfig = null;
+    /**
+     * True while a hold-to-cycle gesture is in progress: each hop updates the
+     * visible selection (local fields + HUD) but its doc write — the value a
+     * running turn reads — is buffered until commit. See `beginCycle`.
+     * @type {boolean} @private
+     */
+    this._deferWrites = false;
+    /** @type {boolean} @private - Whether the deferred gesture applied at least one hop worth flushing. */
+    this._deferDirty = false;
     /** @type {boolean} @private - True while a usage-stats fetch is in flight. */
     this._usageLoading = false;
     /** @type {string|null} @private - Last list-column HTML written, for non-destructive updates. */
@@ -851,13 +860,7 @@ class ModelSelector extends HTMLElement {
     const next = { provider: eff.provider, model: eff.model };
     if (level) next.thinking = level;
 
-    if (this._messageThread) {
-      this._messageThread.modelConfig = next;
-    } else if (this.conversation) {
-      this.conversation.setModelConfig(next);
-    } else {
-      return false;
-    }
+    if (!this._writeOrDefer(next)) return false;
 
     this._currentConfig = next;
     // Remember the concrete model+level pair for the "Recent" section.
@@ -1234,13 +1237,7 @@ class ModelSelector extends HTMLElement {
     const nextConfig = { provider: pair.provider, model: pair.model };
     if (level) nextConfig.thinking = level;
 
-    if (this._messageThread) {
-      this._messageThread.modelConfig = nextConfig;
-    } else if (this.conversation) {
-      this.conversation.setModelConfig(nextConfig);
-    } else {
-      return false;
-    }
+    if (!this._writeOrDefer(nextConfig)) return false;
 
     this._currentConfig = nextConfig;
     this.provider = pair.provider;
@@ -1256,6 +1253,85 @@ class ModelSelector extends HTMLElement {
       this.render();
     }
     return true;
+  }
+
+  /**
+   * Persist a `{provider, model, thinking?}` choice into the bound scope — the
+   * conversation/thread Y.Map the engine (and any running turn) reads. The
+   * single write path shared by `applyConfigPair` and `applyThinkingLevel`.
+   * @param {{provider: string, model: string, thinking?: string}} config
+   * @returns {boolean} True when written; false when there is nothing bound.
+   * @private
+   */
+  _writeConfigToDoc(config) {
+    if (this._messageThread) {
+      this._messageThread.modelConfig = config;
+      return true;
+    }
+    if (this.conversation) {
+      this.conversation.setModelConfig(config);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Write `config` now, or — during a hold-to-cycle gesture (`beginCycle`) —
+   * buffer it so a running turn never observes an intermediate hop; the local
+   * fields and HUD still update on every hop, and `commitCycle` flushes the
+   * landing value once. Returns false only when nothing is bound to write to,
+   * so callers still reject an inapplicable pair identically in both modes.
+   * @param {{provider: string, model: string, thinking?: string}} config
+   * @returns {boolean} True when the choice may be applied to the display.
+   * @private
+   */
+  _writeOrDefer(config) {
+    if (this._deferWrites) {
+      this._deferDirty = true;
+      return !!(this._messageThread || this.conversation);
+    }
+    return this._writeConfigToDoc(config);
+  }
+
+  /**
+   * Enter deferred-write mode for a hold-to-cycle gesture: subsequent
+   * `applyConfigPair` / `applyThinkingLevel` hops update the visible selection
+   * but hold their doc write until `commitCycle`. Idempotent, so the model and
+   * thinking cyclers (which share this selector) can both open a gesture
+   * without the second clobbering the first's committed baseline.
+   */
+  beginCycle() {
+    if (this._deferWrites) return;
+    this._deferWrites = true;
+    this._deferDirty = false;
+  }
+
+  /**
+   * Flush a deferred gesture: leave deferred mode and, if any hop was applied,
+   * write the landing config to the doc exactly once — so a running turn only
+   * ever sees the final choice. A pure hold-to-peek (no hop) writes nothing.
+   */
+  commitCycle() {
+    const dirty = this._deferDirty;
+    this._deferWrites = false;
+    this._deferDirty = false;
+    if (dirty && this._currentConfig) this._writeConfigToDoc(this._currentConfig);
+  }
+
+  /**
+   * Abandon a deferred gesture (Escape): the doc was never touched, so restore
+   * the visible selection to the still-committed config and drop the preview.
+   * A pure peek leaves the display untouched.
+   */
+  cancelCycle() {
+    const dirty = this._deferDirty;
+    this._deferWrites = false;
+    this._deferDirty = false;
+    if (!dirty) return;
+    // The doc still holds the pre-gesture value; re-sync display from it. The
+    // menu has already closed on Escape, so refresh the collapsed button too.
+    this._syncModelDisplay();
+    if (!this.dropdownOpen) this.render();
   }
 
   /**
@@ -1473,7 +1549,7 @@ class ModelSelector extends HTMLElement {
    * @returns {string} HTML for the button's content.
    */
   _buttonContentHTML(state) {
-    return `<span class="icon-auto-awesome"></span>${state.modelDisplay}${this._thinkingChipHTML()}${state.hasOverride ? '<span class="override-dot"></span>' : ''}`;
+    return `<span class="icon-auto-awesome"></span><span class="model-name">${state.modelDisplay}</span>${this._thinkingChipHTML()}${state.hasOverride ? '<span class="override-dot"></span>' : ''}`;
   }
 
   /**

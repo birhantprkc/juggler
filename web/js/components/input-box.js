@@ -2205,13 +2205,13 @@ class InputBox extends HTMLElement {
   _closeActionsSheet() {
     if (!this._actionsSheetOpen) return;
     this._actionsSheetOpen = false;
-    // Return the relocated strategy selector to its inline home (just before the
-    // model selector) BEFORE the sheet surface is removed — otherwise it would
-    // be torn down along with the sheet.
+    // Return the relocated strategy selector to its inline home (the FIRST slot
+    // in the config cluster — strategy leads so its fixed left edge anchors the
+    // permission button, which can hide/show as the strategy changes) BEFORE the
+    // sheet surface is removed — otherwise it would be torn down along with it.
     if (this._relocatedStrategy) {
-      const left = this.querySelector('input-controls-left');
-      const model = this.querySelector('model-selector');
-      if (left) left.insertBefore(this._relocatedStrategy, model || null);
+      const config = this.querySelector('input-controls-config');
+      if (config) config.insertBefore(this._relocatedStrategy, config.firstElementChild || null);
       this._relocatedStrategy = null;
     }
     if (this._actionsSheetCleanup) {
@@ -2235,8 +2235,12 @@ class InputBox extends HTMLElement {
                 ></textarea>
                 <input type="file" class="attach-file-input" accept="image/*" multiple hidden />
                 <input-controls>
-                    <input-controls-left>
+                    <input-controls-config>
+                        <strategy-selector></strategy-selector>
                         <permission-controls></permission-controls>
+                        <model-selector id="conversation-model-selector"></model-selector>
+                    </input-controls-config>
+                    <input-controls-actions>
                         <button class="commands-button input-ctrl-btn" id="commands-button"
                                 title="Commands"
                                 aria-label="Commands menu">
@@ -2247,8 +2251,6 @@ class InputBox extends HTMLElement {
                                 aria-label="Attach image">
                             <span class="attach-image-icon">${IMAGE_ATTACH_SVG}</span>
                         </button>
-                        <strategy-selector></strategy-selector>
-                        <model-selector id="conversation-model-selector"></model-selector>
                         <button class="more-actions-btn input-ctrl-btn" id="more-actions-button"
                                 title="More actions"
                                 aria-label="More actions">
@@ -2260,8 +2262,8 @@ class InputBox extends HTMLElement {
                             <span class="schedule-send-icon">${CLOCK_SVG}</span>
                             <span class="schedule-send-countdown" hidden></span>
                         </button>
-                    </input-controls-left>
-                    <input-controls-right>
+                    </input-controls-actions>
+                    <input-controls-send>
                         <button class="new-thread-btn input-ctrl-btn" title="Create a new sub-thread">
                             New Thread
                             <span class="new-thread-arrow">${THREAD_ARROW_SVG}</span>
@@ -2271,7 +2273,7 @@ class InputBox extends HTMLElement {
                                 aria-label="Send message">
                             <span class="send-icon">${SEND_ARROW_SVG}</span>
                         </button>
-                    </input-controls-right>
+                    </input-controls-send>
                 </input-controls>
             </input-box-wrapper>
         `;

@@ -337,6 +337,17 @@ const SHORTCUT_DEFS = [
     allowInInput: true,
   },
   {
+    id: 'show-shortcuts',
+    label: 'Show keyboard shortcuts',
+    description: 'Open Settings to this Keyboard shortcuts tab.',
+    category: 'View',
+    // ⌘/ (Ctrl+/) is the near-universal "show shortcuts" chord (Slack, GitHub,
+    // Gmail). It fires from the composer (allowInInput) since it is invoked with
+    // the command modifier rather than as ordinary typed text.
+    defaultBinding: { mod: true, key: '/' },
+    allowInInput: true,
+  },
+  {
     id: 'strategy-switch',
     label: 'Switch strategy',
     description: 'Cycle the active strategy; hold to open the strategy menu.',

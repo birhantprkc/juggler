@@ -21,6 +21,16 @@ class StrategySelector extends HTMLElement {
     this._messageThread = null;
     /** @type {string} @private */
     this._currentStrategyId = 'default';
+    /**
+     * True while a hold-to-cycle gesture is in progress: each hop updates the
+     * visible selection (local id + in-place render) but its `setStrategy` doc
+     * write — the value the engine and any running turn read — is buffered until
+     * commit. See `beginCycle`.
+     * @type {boolean} @private
+     */
+    this._deferWrites = false;
+    /** @type {boolean} @private - Whether the deferred gesture applied at least one hop worth flushing. */
+    this._deferDirty = false;
     /** @type {StrategyManifestInfo[]} @private */
     this._strategies = [];
     /** @type {boolean} @private */
@@ -157,7 +167,7 @@ class StrategySelector extends HTMLElement {
     }
 
     // Update the conversation's strategy
-    this._messageThread?.setStrategy(strategyId);
+    this._writeStrategyToDoc(strategyId);
 
     // Close dropdown first so render() sees dropdownOpen = false
     this.closeDropdown();
@@ -251,32 +261,89 @@ class StrategySelector extends HTMLElement {
   }
 
   /**
-   * Cycle to next strategy (wraps around), keeping dropdown open if it was open
+   * Cycle to next strategy (wraps around), keeping the dropdown open if it was
+   * open. `render()` refreshes the open menu and its anchor button IN PLACE
+   * (see the live-dropdown branch), so cycling never tears the body-hosted
+   * popup down and re-presents it — the teardown/re-present that made the menu
+   * flicker on every hop. During a hold-to-cycle gesture the `setStrategy`
+   * write is buffered (see `beginCycle`); the local id + render still update so
+   * the HUD highlights the landing strategy.
    */
   cycleNext() {
     if (!this._messageThread || this._strategies.length <= 1) return;
 
-    const wasOpen = this._dropdownOpen;
-
-    // Close dropdown first (removes from body) to avoid orphaned element
-    if (wasOpen) {
-      this.closeDropdown();
-    }
-
     const currentIndex = this._strategies.findIndex(s => s.id === this._currentStrategyId);
     const nextIndex = (currentIndex + 1) % this._strategies.length;
     const next = this._strategies[nextIndex];
+    if (!next) return;
 
-    if (next) {
-      this._messageThread?.setStrategy(next.id);
-      this._currentStrategyId = next.id;
-    }
+    this._writeOrDeferStrategy(next.id);
+    this._currentStrategyId = next.id;
     this.render();
+  }
 
-    // Reopen if it was open
-    if (wasOpen) {
-      this.open();
+  /**
+   * Persist a strategy id to the bound thread — the doc the engine (and any
+   * running turn) reads. The single write path shared by `selectStrategy` and
+   * `cycleNext`/`commitCycle`.
+   * @param {string} strategyId
+   * @private
+   */
+  _writeStrategyToDoc(strategyId) {
+    this._messageThread?.setStrategy(strategyId);
+  }
+
+  /**
+   * Write `strategyId` now, or — during a hold-to-cycle gesture (`beginCycle`)
+   * — buffer it so a running turn never observes an intermediate strategy; the
+   * local id and in-place render still update on every hop, and `commitCycle`
+   * flushes the landing strategy once.
+   * @param {string} strategyId
+   * @private
+   */
+  _writeOrDeferStrategy(strategyId) {
+    if (this._deferWrites) {
+      this._deferDirty = true;
+      return;
     }
+    this._writeStrategyToDoc(strategyId);
+  }
+
+  /**
+   * Enter deferred-write mode for a hold-to-cycle gesture: subsequent
+   * `cycleNext` hops update the visible selection but hold their `setStrategy`
+   * write until `commitCycle`. Idempotent.
+   */
+  beginCycle() {
+    if (this._deferWrites) return;
+    this._deferWrites = true;
+    this._deferDirty = false;
+  }
+
+  /**
+   * Flush a deferred gesture: leave deferred mode and, if any hop was applied,
+   * write the landing strategy to the doc exactly once — so a running turn only
+   * ever sees the final choice. A pure hold-to-peek writes nothing.
+   */
+  commitCycle() {
+    const dirty = this._deferDirty;
+    this._deferWrites = false;
+    this._deferDirty = false;
+    if (dirty) this._writeStrategyToDoc(this._currentStrategyId);
+  }
+
+  /**
+   * Abandon a deferred gesture (Escape): the doc was never written, so restore
+   * the visible selection to the thread's still-committed strategy and
+   * re-render. A pure peek leaves the display untouched.
+   */
+  cancelCycle() {
+    const dirty = this._deferDirty;
+    this._deferWrites = false;
+    this._deferDirty = false;
+    if (!dirty) return;
+    this._currentStrategyId = this._messageThread?.currentStrategyId || 'default';
+    this.render();
   }
 
   render() {

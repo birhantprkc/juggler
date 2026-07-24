@@ -170,8 +170,8 @@ export async function runTests() {
         'picking an actions-sheet row must close the sheet');
 
       // Closing the sheet returns the strategy selector to the inline row.
-      const left = box.querySelector('input-controls-left');
-      assert(!!left && left.contains(strategySel),
+      const config = box.querySelector('input-controls-config');
+      assert(!!config && config.contains(strategySel),
         'strategy-selector must return to the inline control row when the sheet closes');
       passed++;
     } catch (e) {

@@ -747,6 +747,16 @@ modal-panel {
     display: block;
 }
 
+/* Hold-to-cycle HUDs (model / strategy / thinking shortcuts) open under a
+   modifier hold, while the OS has hidden the pointer because the user is
+   "typing". Until the pointer actually moves, suppress the menu's hover/click
+   so an item under the stationary invisible cursor doesn't light up as if
+   hovered. HoldToCycleController sets `hud-pointer-idle` on <body> when the menu
+   opens and clears it on the first pointermove. */
+body.hud-pointer-idle .dropdown-menu {
+    pointer-events: none;
+}
+
 /* Menu Item - Interactive clickable item. Rounded, inset rows: the container's
    --popup-padding gutter keeps them clear of the large corner curve, and the
    row's own radius echoes it. */

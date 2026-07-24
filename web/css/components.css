@@ -2373,9 +2373,27 @@ model-selector:not(input-box *) .model-selector-button:hover {
 }
 
 
-/* Model Selector in input-box - override base min-width */
+/* Model Selector in input-box — floor its width so cycling the model/thinking
+   level doesn't resize the button under its own open popup. The label caps and
+   ellipsises past the floor rather than growing the row. */
 input-box .model-selector-button {
-    min-width: auto;
+    min-width: var(--config-model-min);
+    justify-content: flex-start;
+}
+
+/* Model name: sized to its content so it sits flush against the thinking chip
+   (NOT a fixed slot — a fixed slot would strand the chip out to the right with a
+   dead gap between it and the name). Stability comes from the button's min-width
+   floor above: the slack sits at the button's right edge, past the chip, reading
+   as padding. `max-width` only bounds a pathologically long id, which ellipsises
+   with the full name kept in the title/popup. */
+input-box .model-selector-button .model-name {
+    flex: 0 1 auto;
+    max-width: var(--config-model-name-max);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Model Selector - override indicator dot */
@@ -2406,11 +2424,17 @@ input-box .model-selector-button {
     line-height: 1.4;
     text-transform: uppercase;
     letter-spacing: 0.02rem;
+    text-align: center;
     color: var(--text-secondary);
     background: var(--bg-tertiary, rgb(127 127 127 / 16%));
     flex-shrink: 0;
     cursor: pointer;
     transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+
+    /* Fixed slot so cycling off/low/med/high/max never resizes the button —
+       this chip is the worst width-jitter offender during a model cycle. */
+    min-width: 2.5rem;
+    box-sizing: border-box;
 }
 
 /* Enlarged hit area: the pill is tiny, the click target must not be. */
@@ -3338,9 +3362,12 @@ input-box textarea::placeholder {
 }
 
 /* Strategy selector shares the .input-ctrl-btn ghost-pill style; only its
-   slightly smaller label and the chevron affordance are unique. */
+   slightly smaller label and the chevron affordance are unique. The min-width
+   floor fits the common names so the label caps and ellipsises past it rather
+   than resizing the button. */
 input-box .strategy-selector-button {
     font-size: 0.6875rem;
+    min-width: var(--config-strategy-min);
 }
 
 /* Current strategy's colour is carried by the label text (not a border, which
@@ -3367,28 +3394,131 @@ input-box .strategy-selector-button .strategy-chevron svg {
     height: 1rem;
 }
 
-/* Input controls container - permission controls + strategy selector */
+/* Input controls row. Three unbreakable clusters — config (permission /
+   strategy / model), actions (the icon buttons), send — laid out in one source
+   order everywhere: config, actions, send. `container-type: inline-size` makes
+   this row the query container for the narrow-width fold below; height is not
+   contained, so the row is free to grow to a second line.
+
+   The --config-* custom properties are the width-stability floors: each
+   variable-width config control gets a min-width sized to its common label so
+   cycling model/thinking/strategy doesn't jog the button under its own anchored
+   popup; an outlier label ellipsises past the cap instead of growing the row. */
 input-box input-controls {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     flex-wrap: wrap;
     gap: 0.375rem;
     margin-top: 1rem;
+    container-type: inline-size;
+
+    /* Button min-width floors: sized to comfortably exceed the COMMON label so
+       the button width pins to the floor and cycling among common values leaves
+       it steady (the slack sits past the trailing chip/chevron). The name-max
+       values only cap a pathological outlier, which ellipsises. */
+    --config-perm-min: 6rem;
+    --config-strategy-min: 7rem;
+    --config-strategy-name-max: 9rem;
+    --config-model-min: 13rem;
+    --config-model-name-max: 13rem;
 }
 
-input-box input-controls-left {
+/* Each cluster is a nowrap flex unit: it can never split mid-cluster, so the
+   row can only ever break at a cluster boundary — no ragged wrapping.
+
+   `flex-shrink: 0` is load-bearing, not cosmetic: input-controls is a wrapping
+   flex row, and flexbox SHRINKS items to fit a line before it wraps them. With
+   the default shrink, it would squeeze the config cluster's box below its
+   content width — but config is nowrap with non-shrinking buttons, so the
+   buttons can't shrink and instead spill out of the shrunk box and OVERLAP the
+   next cluster. Pinning shrink to 0 makes an over-wide cluster wrap to the next
+   line instead (the narrow-column fold below then handles config itself). */
+input-box input-controls-config,
+input-box input-controls-actions,
+input-box input-controls-send {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.5rem;
+    flex-shrink: 0;
 }
 
-input-box input-controls-right {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+/* The send cluster hugs the right edge; the elastic gap sits to its left, so
+   config/actions growth spills into that gap and never shifts the send cluster
+   (or its New-Thread neighbour). */
+input-box input-controls-send {
+    margin-left: auto;
+}
+
+/* Permission pill: floor covers the toggled head ("✓ Edits on" / "🔒 Edits
+   off"); the "· N cmds · M paths" detail extends past the floor and only
+   changes on rule edits, never during a cycle. */
+input-box .permission-btn {
+    min-width: var(--config-perm-min);
+    justify-content: flex-start;
+}
+
+/* Strategy name: content-sized so the chevron sits flush against it (same
+   rationale as .model-name — the button's min-width floor supplies the stable
+   width, with the slack past the chevron). max-width bounds an outlier name. */
+input-box .strategy-selector-button .strategy-name {
+    flex: 0 1 auto;
+    max-width: var(--config-strategy-name-max);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Narrow-column fold: below the threshold, config takes the whole first row and
+   actions + send flow onto a second row (send still margin-left:auto, so it
+   stays bottom-right).
+
+   The threshold is set ABOVE the one-line fit width (config ~25rem + actions
+   ~9rem + send ~9.5rem ≈ 44rem at the floors), NOT at some smaller value. If it
+   sat below the fit width, the 40–44rem band would be above the fold but below
+   the fit, so flexbox would NATURALLY wrap instead — and because the send
+   cluster is last with margin-left:auto, it wraps alone onto row 2, leaving a
+   packed top row and a near-empty bottom one. Folding at 46rem pre-empts that
+   natural wrap with the balanced split (config row 1, actions+send row 2) the
+   moment one line stops fitting.
+
+   Below the fold the config cluster is allowed to wrap internally and its
+   buttons to shrink: the width-stability floors and `flex-shrink: 0` are what
+   keep the buttons steady at comfortable widths, but at narrow widths they'd
+   force the three config buttons to spill past the column edge and get lost.
+   Correctness (never lose a control) beats stability here — so we drop the
+   floors, let the buttons shrink (a long model name ellipsises), and let the
+   cluster wrap to as many lines as it needs rather than overflow. */
+@container (max-width: 46rem) {
+    input-box input-controls-config {
+        flex-basis: 100%;
+        flex-wrap: wrap;
+    }
+
+    /* The config cluster's flex items are the custom-element WRAPPERS, not the
+       buttons inside them. A wrapper must be able to shrink below its content
+       width (min-width:0 + flex-shrink:1) or a single one wider than the row
+       overflows the column instead of wrapping — losing the control entirely.
+       permission-controls / model-selector default to flex-shrink:1, but
+       strategy-selector is pinned flex-shrink:0 upstream, so re-enable it. */
+    input-box input-controls-config > permission-controls,
+    input-box input-controls-config > strategy-selector,
+    input-box input-controls-config > model-selector {
+        min-width: 0;
+        flex-shrink: 1;
+    }
+
+    /* And the button inside each wrapper: drop its stability floor and let it
+       clip so the ellipsised label (.model-name / .strategy-name) actually
+       shrinks with the wrapper rather than forcing an overflow. */
+    input-box input-controls-config .permission-btn,
+    input-box input-controls-config .strategy-selector-button,
+    input-box input-controls-config .model-selector-button {
+        min-width: 0;
+        overflow: hidden;
+        flex-shrink: 1;
+    }
 }
 
 /* New thread button shares the .input-ctrl-btn ghost-pill style; the trailing
@@ -3674,31 +3804,39 @@ input-box .send-btn.is-empty {
 
     /* The strategy selector is relocated into the "+" sheet (see
        input-box._openActionsSheet); hide its inline slot. */
-    input-box input-controls-left > strategy-selector {
+    input-box input-controls-config > strategy-selector {
         display: none;
     }
 
-    /* One row, never wrapping: [permission] [model] [+] … [send]. The left
-       group may shrink (min-width:0) so a long model name ellipsises rather
-       than pushing the row to a second line. */
+    /* One row, never wrapping: [permission] [model] [+] … [send]. Neutralise the
+       narrow-column fold (config never claims a full row here) and let the
+       config cluster shrink (min-width:0) so a long model name ellipsises
+       rather than pushing the row to a second line. */
     input-box input-controls {
         flex-wrap: nowrap;
     }
 
-    input-box input-controls-left {
+    input-box input-controls-config {
+        flex-basis: auto;
         flex-wrap: nowrap;
         min-width: 0;
         gap: 0.375rem;
     }
 
     /* Compact the permission pill to just "✓ Edits on" — the cmd/path counts
-       are still one tap away in the permissions popup. */
+       are still one tap away in the permissions popup. The head floor would
+       waste space on this tight row, so drop it too. */
+    input-box .permission-btn {
+        min-width: 0;
+    }
+
     input-box .permission-btn .permission-detail {
         display: none;
     }
 
     /* Let the model selector absorb the remaining width and ellipsise. */
-    input-box model-selector {
+    input-box model-selector,
+    input-box .model-selector-button {
         min-width: 0;
         overflow: hidden;
     }

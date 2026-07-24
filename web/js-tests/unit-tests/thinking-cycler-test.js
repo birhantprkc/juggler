@@ -19,7 +19,7 @@
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import { ThinkingCycler } from '../../js/services/model-cycler.js';
+import { ThinkingCycler, ModelCycler, modelGestureShouldHandle } from '../../js/services/model-cycler.js';
 import recentModels from '../../js/services/recent-models.js';
 import '../../js/components/model-selector.js';
 
@@ -84,6 +84,37 @@ export async function runTests(_ctx) {
       errors.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
+
+  await run('both model cyclers gate window-wide, not on composer focus', () => {
+    // The ⌥⌘M / ⌥⌘T chords must fire from anywhere in the window (bare ⌘M
+    // minimises the app otherwise), so both cyclers replace the shared
+    // composer-focus gate with the whole-window one. Asserting the wiring here
+    // keeps them from silently regressing back to defaultShouldHandle.
+    const thinking = /** @type {any} */ (new ThinkingCycler());
+    const model = /** @type {any} */ (new ModelCycler());
+    assert(thinking._controller._config.shouldHandle === modelGestureShouldHandle,
+      'ThinkingCycler must use the window-wide gate');
+    assert(model._controller._config.shouldHandle === modelGestureShouldHandle,
+      'ModelCycler must use the window-wide gate');
+  });
+
+  await run('ModelCycler.init() pre-warms the recents cache for the first gesture', () => {
+    // `_startGesture` snapshots recentModels.get() synchronously, so the cache
+    // must be warmed before the first ⌥⌘M — otherwise the first gesture cycles
+    // over an empty snapshot and only the long-press HUD appears. init() must
+    // kick a refresh to close that cold-cache gap.
+    const orig = recentModels.refresh;
+    let calls = 0;
+    recentModels.refresh = /** @type {any} */ (() => { calls++; return Promise.resolve([]); });
+    const cycler = /** @type {any} */ (new ModelCycler());
+    try {
+      cycler.init();
+      assert(calls === 1, `init must warm recents exactly once — got ${calls}`);
+    } finally {
+      cycler.destroy();
+      recentModels.refresh = orig;
+    }
+  });
 
   await run('cycles Default → supported levels in canonical order → wraps to Default', () => {
     const { el, state } = makeStubSelector(['low', 'medium', 'high'], { provider: 'p', model: 'm' });

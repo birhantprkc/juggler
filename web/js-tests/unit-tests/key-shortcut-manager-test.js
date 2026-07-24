@@ -88,7 +88,7 @@ export async function runTests(_ctx) {
     const ids = keyShortcutManager.all().map((d) => d.id);
     for (const id of ['jump-to-attention', 'new-conversation', 'bin-conversation',
       'toggle-file-editing', 'pause-conversation', 'undo', 'redo', 'zoom-in', 'zoom-out',
-      'strategy-switch', 'cycle-model', 'cycle-thinking']) {
+      'show-shortcuts', 'strategy-switch', 'cycle-model', 'cycle-thinking']) {
       assert(ids.includes(id), `expected shortcut "${id}" in the table`);
     }
   });
@@ -165,6 +165,13 @@ export async function runTests(_ctx) {
     assert(eventMatchesBinding(zoomIn, evt({ ...modProp, key: '+' })), 'Mod++ should match zoom-in');
     assert(eventMatchesBinding(zoomIn, evt({ ...modProp, shiftKey: true, key: '+' })),
       'Mod+Shift++ should match zoom-in (shift not significant)');
+  });
+
+  await run('show-shortcuts matches Mod+/', () => {
+    const showShortcuts = keyShortcutManager.getBinding('show-shortcuts');
+    assert(showShortcuts.mod && showShortcuts.key === '/', 'show-shortcuts is Mod+/');
+    assert(eventMatchesBinding(showShortcuts, evt({ ...modProp, key: '/' })),
+      'Mod+/ should match show-shortcuts');
   });
 
   await run('alt bindings match the macOS Option glyph via the code fallback', () => {

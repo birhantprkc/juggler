@@ -5,6 +5,10 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added Cmd+/ and Ctrl+/ shortcut to show keyboard shortcuts
+- Fixed ⌥⌘M / ⌥⌘T being lost when focus was outside the composer
+- Fixed the model cycler doing nothing on the first use after a page load
+- Had a rehash of the buttons in the user message box, to make their layout more balanced and stable at different sizes
 - Added a sidebar card showing active provider quota usage
 - Added a flag for providers which can't handle the forced tool option, which was breaking auto-compaction
 

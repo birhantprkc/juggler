@@ -170,6 +170,50 @@ export async function runTests(_ctx) {
     }
   });
 
+  await run('opening the menu flags the pointer idle; pointer motion clears it', () => {
+    const { controller } = makeHarness();
+    try {
+      const timer = trapLongPress(() => pressTrigger());
+      assert(!document.body.classList.contains('hud-pointer-idle'),
+        'the pointer must not be flagged idle before the menu opens');
+      timer.fire();
+      assert(document.body.classList.contains('hud-pointer-idle'),
+        'opening the HUD must flag the pointer idle so its hover is suppressed');
+      document.dispatchEvent(new Event('pointermove', { bubbles: true }));
+      assert(!document.body.classList.contains('hud-pointer-idle'),
+        'the first real pointer motion must clear the idle flag');
+    } finally {
+      controller.destroy();
+    }
+  });
+
+  await run('committing on modifier release clears the pointer-idle flag', () => {
+    const { controller } = makeHarness();
+    try {
+      const timer = trapLongPress(() => pressTrigger());
+      timer.fire();
+      assert(document.body.classList.contains('hud-pointer-idle'), 'sanity: HUD open flags idle');
+      releaseKey('Shift');
+      assert(!document.body.classList.contains('hud-pointer-idle'),
+        'ending the gesture must clear the idle flag');
+    } finally {
+      controller.destroy();
+    }
+  });
+
+  await run('Escape from menu-open clears the pointer-idle flag', () => {
+    const { controller } = makeHarness();
+    try {
+      const timer = trapLongPress(() => pressTrigger());
+      timer.fire();
+      pressEscape();
+      assert(!document.body.classList.contains('hud-pointer-idle'),
+        'Escape must clear the idle flag along with closing the menu');
+    } finally {
+      controller.destroy();
+    }
+  });
+
   await run('modifier release before the long-press commits without any menu', () => {
     const { controller, calls } = makeHarness();
     try {

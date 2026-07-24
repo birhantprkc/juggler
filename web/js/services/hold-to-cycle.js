@@ -45,11 +45,16 @@ import { markSeen } from './tips-manager.js';
  *   also called on Escape during press-started, before any menu opened).
  * @property {() => void} onCommit - Gesture ended by modifier release: persist
  *   the landing state (e.g. record it to recents). Not called on Escape.
+ * @property {() => void} [onCancel] - Gesture ended by Escape: discard the
+ *   landing state and restore what was committed before the gesture (e.g. a
+ *   client that holds its live write until commit uses this to drop the
+ *   preview). Optional; runs after onCloseMenu on the Escape path, never on a
+ *   modifier-release commit.
  * @class
  */
 class HoldToCycleController {
   /** @type {number} Threshold in ms for long press detection */
-  static LONG_PRESS_THRESHOLD = 500;
+  static LONG_PRESS_THRESHOLD = 5;
 
   /**
    * @param {HoldToCycleConfig} config
@@ -65,6 +70,7 @@ class HoldToCycleController {
     // Bind handlers to preserve 'this' context
     this._handleKeyDown = this._handleKeyDown.bind(this);
     this._handleKeyUp = this._handleKeyUp.bind(this);
+    this._handlePointerMove = this._handlePointerMove.bind(this);
   }
 
   /**
@@ -82,6 +88,7 @@ class HoldToCycleController {
     document.removeEventListener('keydown', this._handleKeyDown, { capture: true });
     document.removeEventListener('keyup', this._handleKeyUp, { capture: true });
     this._clearTimeout();
+    this._endPointerIdle();
   }
 
   /**
@@ -123,6 +130,7 @@ class HoldToCycleController {
         if (this._phase === 'press-started') {
           this._phase = 'menu-open';
           this._config.onOpenMenu();
+          this._beginPointerIdle();
         }
       }, HoldToCycleController.LONG_PRESS_THRESHOLD);
       return;
@@ -135,7 +143,9 @@ class HoldToCycleController {
       e.stopPropagation();
       this._clearTimeout();
       this._phase = 'idle';
+      this._endPointerIdle();
       this._config.onCloseMenu();
+      if (this._config.onCancel) this._config.onCancel();
       return;
     }
     // The modifiers are necessarily still held (their release ends the
@@ -163,8 +173,43 @@ class HoldToCycleController {
     this._clearTimeout();
     const menuWasOpen = this._phase === 'menu-open';
     this._phase = 'idle';
+    this._endPointerIdle();
     if (menuWasOpen) this._config.onCloseMenu();
     this._config.onCommit();
+  }
+
+  /**
+   * Menu just opened as a HUD under a held modifier — and the OS has hidden the
+   * pointer because the user is "typing". Flag the pointer as idle so the menu's
+   * hover/click styling is suppressed (see the `body.hud-pointer-idle` CSS): an
+   * item happening to sit under the stationary invisible cursor must not light
+   * up as if hovered. The flag is cleared on the first real pointer motion, at
+   * which point normal hover resumes.
+   * @private
+   */
+  _beginPointerIdle() {
+    document.body.classList.add('hud-pointer-idle');
+    document.addEventListener('pointermove', this._handlePointerMove, { capture: true });
+  }
+
+  /**
+   * Clear the pointer-idle flag and stop listening for motion. Idempotent — the
+   * class removal and listener removal are both no-ops when never armed, so it
+   * is safe to call on every gesture-end path.
+   * @private
+   */
+  _endPointerIdle() {
+    document.body.classList.remove('hud-pointer-idle');
+    document.removeEventListener('pointermove', this._handlePointerMove, { capture: true });
+  }
+
+  /**
+   * First pointer motion after the HUD opened: the cursor is live again, so
+   * restore normal hover/click on the menu.
+   * @private
+   */
+  _handlePointerMove() {
+    this._endPointerIdle();
   }
 
   /**
