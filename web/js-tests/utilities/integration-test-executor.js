@@ -368,12 +368,41 @@ export async function runTests(ctx) {
  */
 async function runUnitSuiteWithConvCleanup(suite, ctx) {
   setCurrentTestName(suite.name);
+  // Unit suites share one document, so a modal a prior suite left open leaks
+  // into this one. The confirm/alert/notice host is a reused <modal-dialog>
+  // singleton (see modal-dialog.js): showConfirm/showAlert only resolve on a
+  // user click, so a suite that opens one without dismissing it leaves
+  // `modal-dialog.show` in the DOM — and any later suite that consults it
+  // globally (e.g. hold-to-cycle's defaultShouldHandle, which treats an open
+  // modal as "don't handle") then fails. Neutralize stray modals both before
+  // and after each suite so isolation holds regardless of neighbour order.
+  neutralizeStrayModals();
   const before = snapshotOwnConversationIds();
   try {
     return await suite.run(ctx);
   } finally {
+    neutralizeStrayModals();
     await deleteOwnConversationsCreatedSince(before, `unit-cleanup:${suite.name}`);
   }
+}
+
+/**
+ * Close and remove any <modal-dialog> element left in the shared unit-test
+ * document. close(null) removes the `show`/`is-notice` classes, releases the
+ * popup-manager token, clears the notice timer, and resolves any pending
+ * promise; removing the element then guarantees the next showConfirm/showAlert
+ * lazily recreates a pristine singleton. Best-effort — a throw here must never
+ * mask the suite's own result.
+ */
+function neutralizeStrayModals() {
+  document.querySelectorAll('modal-dialog').forEach((modal) => {
+    try {
+      const m = /** @type {any} */ (modal);
+      if (typeof m.close === 'function') m.close(null);
+    } catch (_) { /* ignore — fall through to removal */ }
+    modal.classList.remove('show');
+    modal.remove();
+  });
 }
 
 let _wsSetupDone = false;
