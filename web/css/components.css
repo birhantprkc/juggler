@@ -755,9 +755,10 @@ conversation-bar .conversation-bin-button:hover {
    the available space — no measuring of siblings. When the list is tall it shrinks
    to nothing first (basis 0) and the tabs scroll instead; cards bottom-align so
    they rest just above the Bin. overflow:hidden is a safety net — the component
-   only ever appends cards that fully fit. Deliberately low-key: no card chrome (no
-   background, border or shadow) — just muted text sitting directly on the sidebar
-   panel. .app-main sets a monospace font-family that the sidebar inherits, so the
+   only ever appends cards that fully fit. Deliberately low-key: no per-card
+   background or shadow — just muted text on the sidebar panel, with a hairline
+   divider between adjacent cards for gentle zoning (see .info-card + .info-card).
+   .app-main sets a monospace font-family that the sidebar inherits, so the
    host forces the card text (title, body, keycap) back to the UI sans font.
    ---------------------------------------------------------------------------- */
 conversation-bar info-rail {
@@ -782,6 +783,14 @@ conversation-bar .info-card {
     display: flex;
     flex-direction: column;
     padding: 0.5rem 0.4rem;
+}
+
+/* Zone adjacent cards with a hairline divider (never above the first card). The
+   rail's 0.5rem gap sits above the line and the card's own top padding below it,
+   so the separator rests centred in the space between two cards. Kept low-key —
+   still no per-card background, just a quiet region divider on the flat panel. */
+conversation-bar .info-card + .info-card {
+    border-top: 0.0625rem solid var(--border-divider);
 }
 
 conversation-bar .info-card__content {
