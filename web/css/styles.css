@@ -406,7 +406,7 @@ select {
     /* Background colors */
     --bg-primary: #f6f8fa;
     --bg-secondary: #fff;
-    --bg-raised: #f6f8fa;
+    --bg-raised: #e1e3e6;
     --border-color: #d0d7de;        /* Base: inline element borders (inputs, buttons, cards, code) */
     --border-divider: #d0d7de;      /* Separators/dividers between regions on a solid surface */
     --border-floating: #d0d7de;     /* Outline of floating surfaces (menus, dropdowns, modal windows) — light borders already read well */

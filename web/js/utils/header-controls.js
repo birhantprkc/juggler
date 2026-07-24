@@ -11,6 +11,7 @@
 
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import wsService from '../services/websocket.js';
+import { hasNativeHost } from '../../sdk/lib/window-control.js';
 
 /**
  * @typedef {import('../model/session.js').default} Session
@@ -136,17 +137,28 @@ export function setupHeaderControls(session) {
   // no-project mode (the user then picks a folder). Only a native desktop
   // window has a host able to do this; in a remote browser tab apiService
   // .newWindow() is a no-op and the button is hidden by CSS anyway.
+  const openNewWindow = async () => {
+    try {
+      const { default: apiService } = await import('../services/api.js');
+      await apiService.newWindow();
+    } catch (err) {
+      const { extractUserMessage } = await import('../../sdk/lib/error-utils.js');
+      await window.showAlert(extractUserMessage(err), 'New window');
+    }
+  };
   if (newWindowBtn) {
-    newWindowBtn.addEventListener('click', async () => {
-      try {
-        const { default: apiService } = await import('../services/api.js');
-        await apiService.newWindow();
-      } catch (err) {
-        const { extractUserMessage } = await import('../../sdk/lib/error-utils.js');
-        await window.showAlert(extractUserMessage(err), 'New window');
-      }
-    });
+    newWindowBtn.addEventListener('click', openNewWindow);
   }
+  // ⇧⌘N / Ctrl+Shift+N — same action as the button. Desktop only: a plain browser
+  // tab has no native host to open a window, so we return false and leave ⇧⌘N to
+  // the browser (its own new-window/incognito) rather than swallowing it as a
+  // no-op. On the desktop this is the sole handler for the chord — the native File
+  // ▸ New Window menu item shares the accelerator for display and click.
+  keyShortcutManager.register('new-window', () => {
+    if (!hasNativeHost()) return false;
+    void openNewWindow();
+    return true;
+  });
 
   // Connected-clients indicator. Shows how many OTHER clients share this
   // session (the server's count includes this one, so subtract it), and hides

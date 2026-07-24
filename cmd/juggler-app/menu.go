@@ -11,9 +11,11 @@ import (
 )
 
 // installAppMenu builds the native application menu. File ▸ Open… asks the
-// focused window's page to show the project picker; File ▸ New Window opens
-// another in-process window (no project → picker); View carries dev-only
-// reload/devtools plus Toggle Full Screen; Help ▸ Learn More opens the browser.
+// focused window's page to show the project picker; File ▸ New Tab creates a
+// conversation in the focused window (mirrors the in-app Cmd+N shortcut); File ▸
+// New Window opens another in-process window (no project → picker); View carries
+// dev-only reload/devtools plus Toggle Full Screen; Help ▸ Learn More opens the
+// browser.
 func installAppMenu(a *appState, devMode bool) {
 	// Linux renders the application menu as a GtkMenuBar embedded at the top of
 	// the window (Wails prepends it into the window's vbox), which looks wrong
@@ -37,8 +39,21 @@ func installAppMenu(a *appState, devMode bool) {
 				win.ExecJS("window.dispatchEvent(new CustomEvent('juggler:open-project'))")
 			}
 		})
-	fileMenu.Add("New Window").
+	// New Tab owns Cmd+N (the browser new-tab key most people reach for) and
+	// creates a conversation in the focused window by dispatching the same event
+	// the in-app Cmd+N shortcut fires. In the desktop app the native menu
+	// accelerator preempts the webview keydown, so the frontend's own Cmd+N
+	// binding only fires in menu-less browser tabs — no double trigger.
+	fileMenu.Add("New Tab").
 		SetAccelerator("CmdOrCtrl+n").
+		OnClick(func(_ *application.Context) {
+			if win := a.app.Window.Current(); win != nil {
+				win.ExecJS("document.dispatchEvent(new CustomEvent('juggler:new-conversation'))")
+			}
+		})
+	// New Window moves to the Shift variant so it stops shadowing New Tab's Cmd+N.
+	fileMenu.Add("New Window").
+		SetAccelerator("CmdOrCtrl+Shift+n").
 		OnClick(func(_ *application.Context) { a.openWindowForProject("", a.currentWindowTheme()) })
 	fileMenu.AddSeparator()
 	fileMenu.AddRole(application.CloseWindow)

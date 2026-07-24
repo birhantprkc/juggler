@@ -204,7 +204,20 @@ const SHORTCUT_DEFS = [
     label: 'New conversation',
     description: 'Create a new conversation and switch to it.',
     category: 'Conversations',
-    defaultBinding: { mod: true, key: 'n' },
+    // shift:false is load-bearing: an omitted shift is *tolerant* (see
+    // eventMatchesBinding), so ⌘N and ⇧⌘N would both match — and ⇧⌘N is the New
+    // window chord. Pinning shift off keeps this to bare ⌘N so New window opens a
+    // window instead of a tab.
+    defaultBinding: { mod: true, shift: false, key: 'n' },
+    allowInInput: true,
+  },
+  {
+    id: 'new-window',
+    label: 'New window',
+    description: 'Open a new app window. Desktop app only — in a plain browser tab '
+      + 'the key is left to the browser.',
+    category: 'Conversations',
+    defaultBinding: { mod: true, shift: true, key: 'n' },
     allowInInput: true,
   },
   {

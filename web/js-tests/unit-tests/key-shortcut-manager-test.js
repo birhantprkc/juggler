@@ -195,6 +195,19 @@ export async function runTests(_ctx) {
       'Mod+Alt+N should not match a non-Alt binding');
   });
 
+  // New tab (⌘N) vs New window (⇧⌘N) must not overlap: new-conversation pins
+  // shift:false so ⇧⌘N doesn't also open a tab, and new-window owns ⇧⌘N.
+  await run('Shift disambiguates New tab (⌘N) from New window (⇧⌘N)', () => {
+    const newConv = keyShortcutManager.getBinding('new-conversation');
+    const newWin = keyShortcutManager.getBinding('new-window');
+    assert(!eventMatchesBinding(newConv, evt({ ...modProp, shiftKey: true, key: 'n' })),
+      'Mod+Shift+N must NOT match new-conversation');
+    assert(eventMatchesBinding(newWin, evt({ ...modProp, shiftKey: true, key: 'n' })),
+      'Mod+Shift+N should match new-window');
+    assert(!eventMatchesBinding(newWin, evt({ ...modProp, key: 'n' })),
+      'bare Mod+N must NOT match new-window');
+  });
+
   // ── Display formatting (platform-correct) ───────────────────────────
   await run('formatBinding renders platform-correct labels', () => {
     assert(keyShortcutManager.formatBinding('undo') === (mac ? '⌘Z' : 'Ctrl+Z'),
