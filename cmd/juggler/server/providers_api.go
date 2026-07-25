@@ -356,6 +356,142 @@ func (s *Server) resolveDefaultModel(ctx context.Context) (core.ModelRef, bool) 
 	return ref, false
 }
 
+// providerAvailable reports whether the named provider is present and available
+// in the most recent provider snapshot.
+func (s *Server) providerAvailable(providerName string) bool {
+	for _, p := range s.cachedProviders() {
+		if p.Name == providerName {
+			return p.Available
+		}
+	}
+	return false
+}
+
+// liveModelMatch resolves a provider's cheap-model hint against its live model
+// list, returning the concrete model id to send. It matches an exact id first,
+// then falls back to a prefix match so a family hint ("claude-haiku-4-5") lands
+// on the dated id the API actually publishes ("claude-haiku-4-5-20251001").
+// ok=false when the provider is unavailable or exposes no matching model.
+func (s *Server) liveModelMatch(providerName, wantID string) (string, bool) {
+	if wantID == "" {
+		return "", false
+	}
+	for _, p := range s.cachedProviders() {
+		if p.Name != providerName {
+			continue
+		}
+		if !p.Available {
+			return "", false
+		}
+		for _, m := range p.ModelsWithContext {
+			if m.ID == wantID {
+				return m.ID, true
+			}
+		}
+		for _, m := range p.ModelsWithContext {
+			if strings.HasPrefix(m.ID, wantID) {
+				return m.ID, true
+			}
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// resolveCheapModel returns the concrete {provider, model, thinking?} to use for
+// out-of-band micro-tasks (auto-naming a tab, plugin generateText), plus whether
+// one was resolved at all. Resolution order:
+//
+//  1. Explicit — the user pinned a cheap model (cheapModelStore) and its
+//     provider is currently available: used as-is.
+//  2. Auto-derive — the caller's primary model's provider advertises a
+//     ProviderInfo.CheapModel that appears in its live list: used with the
+//     matched concrete id.
+//  3. Neither → ok=false. Callers that need a model do not run (no heuristic).
+//
+// The primary ref lets the namer derive a cheap sibling of the conversation's
+// own model; the HTTP endpoint passes the resolved default as primary.
+func (s *Server) resolveCheapModel(ctx context.Context, primary core.ModelRef) (core.ModelRef, bool) {
+	// The live provider list drives both the availability check and the
+	// auto-derive validation, so wait out startup discovery once here (a no-op in
+	// steady state), exactly as resolveDefaultModel does.
+	s.awaitProvidersReady(ctx)
+
+	if s.cheapModelStore != nil {
+		if stored, err := s.cheapModelStore.Load(); err == nil && stored.Provider != "" && stored.Model != "" {
+			if s.providerAvailable(stored.Provider) {
+				return stored, true
+			}
+			// Pinned but unavailable: fall through to auto-derive rather than
+			// returning a model that cannot run.
+		}
+	}
+
+	if primary.Provider == "" {
+		return core.ModelRef{}, false
+	}
+	info, ok := provider.GetProviderInfo(primary.Provider)
+	if !ok || info.CheapModel == "" {
+		return core.ModelRef{}, false
+	}
+	if concrete, ok := s.liveModelMatch(primary.Provider, info.CheapModel); ok {
+		return core.ModelRef{Provider: primary.Provider, Model: concrete}, true
+	}
+	return core.ModelRef{}, false
+}
+
+// handleCheapModel returns the cheap model used for out-of-band micro-tasks.
+// When the user has pinned one it is returned as-is (explicit:true). Otherwise
+// the server reports the auto-derived cheap sibling of the current default model
+// (explicit:false) under `autoResolved`, or omits it when none is available so
+// the UI can show a plain "Auto".
+func (s *Server) handleCheapModel(w http.ResponseWriter, r *http.Request) {
+	var stored core.ModelRef
+	if s.cheapModelStore != nil {
+		stored, _ = s.cheapModelStore.Load()
+	}
+	explicit := stored.Provider != "" && stored.Model != ""
+
+	body := map[string]any{"explicit": explicit}
+	if explicit {
+		body["provider"] = stored.Provider
+		body["model"] = stored.Model
+		if stored.Thinking != "" {
+			body["thinking"] = stored.Thinking
+		}
+	} else {
+		primary, _ := s.resolveDefaultModel(r.Context())
+		if ref, ok := s.resolveCheapModel(r.Context(), primary); ok {
+			body["autoResolved"] = map[string]any{"provider": ref.Provider, "model": ref.Model}
+		}
+	}
+	handlers.WriteJSON(w, r, 0, body)
+}
+
+// handleSetCheapModel persists the cheap model used for out-of-band micro-tasks.
+// Body: {"provider": "...", "model": "...", "thinking": "..."} — thinking is
+// optional. An empty provider/model clears the stored value, reverting to Auto.
+func (s *Server) handleSetCheapModel(w http.ResponseWriter, r *http.Request) {
+	if s.cheapModelStore == nil {
+		handlers.WriteJSON(w, r, http.StatusServiceUnavailable, map[string]any{"success": false, "error": "Cheap model is not available"})
+		return
+	}
+	var req struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Thinking string `json:"thinking"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+		return
+	}
+	if err := s.cheapModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
+		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to save cheap model: %v", err)})
+		return
+	}
+	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
+}
+
 // handleDefaultModel returns the concrete {provider, model, thinking?} a new
 // conversation should be seeded with. When the user has set a default it is
 // returned as-is (explicit:true); otherwise the server computes the preferred

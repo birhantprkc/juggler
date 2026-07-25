@@ -46,6 +46,9 @@ func Info() provider.ProviderInfo {
 		// Anthropic API behind the CLI remains the enforcing backstop. The
 		// known aliases above keep static+live limits and stay fully admitted.
 		AllowUnknownLimits: true,
+		// The CLI's bare Haiku alias — a first-class entry in ListModelsWithInfo,
+		// so it matches exactly. Fast/cheap tier for out-of-band micro-tasks.
+		CheapModel: "haiku",
 	}
 }
 

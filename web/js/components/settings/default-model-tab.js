@@ -30,21 +30,25 @@ export class DefaultModelTab {
     this.providers = [];
     /** @type {{provider: string, model: string, explicit?: boolean}} @private - Model new conversations are seeded with; explicit=false means automatic. */
     this.defaultModel = { provider: '', model: '', explicit: false };
+    /** @type {{provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} @private - Cheap model for out-of-band micro-tasks; explicit=false means Auto. */
+    this.cheapModel = { explicit: false };
   }
 
   /**
    * Receive the shared loadConfig() payload: store config/providers/defaultModel
    * and (on a full render) build the fields.
-   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, explicit?: boolean}}} data
+   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}}} data
    * @param {boolean} renderFields
    */
   onConfigLoaded(data, renderFields) {
     this.config = data.config;
     this.providers = data.providers;
     this.defaultModel = data.defaultModel;
+    if (data.cheapModel) this.cheapModel = data.cheapModel;
     if (renderFields) {
       this.renderGlobalProviderSettings();
       this.renderDefaultModelField();
+      this.renderCheapModelField();
     }
   }
 
@@ -245,6 +249,150 @@ export class DefaultModelTab {
     row.appendChild(infoColumn);
     row.appendChild(controlColumn);
     container.appendChild(row);
+  }
+
+  /**
+   * Render the "Cheap model" picker: the small/fast model used for out-of-band
+   * micro-tasks (auto-naming a tab, plugin generateText). Offers an "Auto"
+   * option — which greys in the server's auto-derived choice — plus every model
+   * grouped by provider. Changing it persists immediately via PUT
+   * /api/cheap-model; "Auto" clears the stored value.
+   * @private
+   */
+  renderCheapModelField() {
+    const container = this.host.querySelector('#cheap-model-field-container');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const row = document.createElement('div');
+    row.className = 'settings-group provider-field';
+
+    const infoColumn = document.createElement('div');
+    infoColumn.className = 'provider-info';
+
+    const nameLabel = document.createElement('div');
+    nameLabel.className = 'provider-name';
+    nameLabel.textContent = 'Cheap model for background tasks';
+    infoColumn.appendChild(nameLabel);
+
+    const description = document.createElement('div');
+    description.className = 'provider-description';
+    description.textContent =
+      'A small, fast model used out-of-band for micro-tasks like auto-naming a ' +
+      'tab. "Auto" derives one from the model in use.';
+    infoColumn.appendChild(description);
+
+    const controlColumn = document.createElement('div');
+    controlColumn.className = 'provider-control';
+
+    const select = document.createElement('select');
+    select.className = 'default-model-select';
+    select.id = 'cheap-model-select';
+
+    const current = this.cheapModel || { explicit: false };
+    const explicit = !!current.explicit;
+    const currentValue = explicit && current.provider && current.model
+      ? `${current.provider} ${current.model}`
+      : '';
+    let currentValueIsValid = false;
+
+    // "Auto" — clears the stored value; the server auto-derives a cheap model
+    // from the provider of the model in use.
+    const autoOpt = document.createElement('option');
+    autoOpt.value = '';
+    const autoLabel = current.autoResolved && current.autoResolved.provider && current.autoResolved.model
+      ? `Auto — ${modelLabelFromList(this.providers, current.autoResolved.provider, current.autoResolved.model)}`
+      : 'Auto';
+    autoOpt.textContent = autoLabel;
+    if (!explicit) autoOpt.selected = true;
+    select.appendChild(autoOpt);
+
+    for (const provider of this.providers) {
+      if (!provider.modelsWithContext || provider.modelsWithContext.length === 0) continue;
+      const group = document.createElement('optgroup');
+      group.label = provider.available
+        ? provider.displayName
+        : `${provider.displayName} (no API key)`;
+      for (const m of /** @type {Array<{id: string, displayName?: string}>} */ (provider.modelsWithContext)) {
+        const opt = document.createElement('option');
+        const val = `${provider.name} ${m.id}`;
+        opt.value = val;
+        opt.textContent = modelLabel(m.displayName, m.id);
+        if (val === currentValue) {
+          opt.selected = true;
+          currentValueIsValid = true;
+        }
+        group.appendChild(opt);
+      }
+      select.appendChild(group);
+    }
+
+    // A pinned cheap model no longer in the provider list: surface it as a
+    // selected "unavailable" option so the state stays visible.
+    if (currentValue && !currentValueIsValid) {
+      const orphanGroup = document.createElement('optgroup');
+      orphanGroup.label = 'Currently set (unavailable)';
+      const opt = document.createElement('option');
+      opt.value = currentValue;
+      opt.selected = true;
+      const refProvider = this.providers.find((/** @type {any} */ p) => p.name === current.provider);
+      const cheapModelId = current.model || '';
+      opt.textContent = `${refProvider ? modelLabelFromList(this.providers, refProvider.name, cheapModelId) : `${current.provider} / ${cheapModelId}`} — unavailable`;
+      orphanGroup.appendChild(opt);
+      select.insertBefore(orphanGroup, select.firstChild ? select.firstChild.nextSibling : null);
+    }
+
+    select.addEventListener('change', () => this._saveCheapModel(select.value));
+
+    controlColumn.appendChild(select);
+
+    row.appendChild(infoColumn);
+    row.appendChild(controlColumn);
+    container.appendChild(row);
+  }
+
+  /**
+   * Persist the chosen cheap model. An empty value clears it (Auto).
+   * @param {string} value - "<provider> <model>" or "" for Auto
+   * @private
+   */
+  async _saveCheapModel(value) {
+    let body;
+    if (!value) {
+      body = { provider: '', model: '' };
+    } else {
+      const sep = value.indexOf(' ');
+      body = { provider: value.slice(0, sep), model: value.slice(sep + 1) };
+    }
+    try {
+      const response = await fetch('/api/cheap-model', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new Error(`Server returned ${response.status}`);
+      }
+      // Reflect the saved state locally. When cleared to Auto, re-fetch so the
+      // greyed-in auto-derived label refreshes; otherwise update in place.
+      if (body.provider && body.model) {
+        this.cheapModel = { provider: body.provider, model: body.model, explicit: true };
+        this.renderCheapModelField();
+      } else {
+        try {
+          const refreshed = await fetch('/api/cheap-model');
+          this.cheapModel = refreshed.ok ? await refreshed.json() : { explicit: false };
+        } catch {
+          this.cheapModel = { explicit: false };
+        }
+        this.renderCheapModelField();
+      }
+    } catch (err) {
+      console.error('[SettingsPanel] Failed to save cheap model:', err);
+      if (window.showAlert) {
+        await window.showAlert('Failed to save cheap model.', 'Error');
+      }
+    }
   }
 
   /**

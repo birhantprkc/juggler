@@ -830,5 +830,7 @@ func Info() provider.ProviderInfo {
 		EnvVarName:          "GEMINI_API_KEY",
 		APIKeyURL:           "https://aistudio.google.com/apikey",
 		ModelContextWindows: ModelContextWindows,
+		// Flash is Gemini's fast/low-cost tier for out-of-band micro-tasks.
+		CheapModel: "gemini-2.5-flash",
 	}
 }

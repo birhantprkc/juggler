@@ -25,6 +25,8 @@ func Register() {
 		MaxOutputCaps:     maxOutputCaps,
 		InputModalitiesFn: inputModalities,
 		ThinkingSpecFn:    openaibase.OpenAIThinkingSpec,
+		// Small/fast tier for out-of-band micro-tasks (auto-naming a tab).
+		CheapModel: "gpt-5-mini",
 		Quirks: openaibase.Quirks{
 			UseDeveloperRole:          true,
 			MaxTokensParamName:        "max_completion_tokens",

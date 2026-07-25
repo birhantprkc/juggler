@@ -757,5 +757,9 @@ func Info() provider.ProviderInfo {
 		EnvVarName:          "ANTHROPIC_API_KEY",
 		APIKeyURL:           "https://console.anthropic.com/settings/keys",
 		ModelContextWindows: ModelContextWindows,
+		// Latest Haiku family for out-of-band micro-tasks. Matched by prefix
+		// against the live Models API list (which returns dated ids such as
+		// claude-haiku-4-5-20251001), so this need not be an exact id.
+		CheapModel: "claude-haiku-4-5",
 	}
 }

@@ -689,6 +689,13 @@ type ProviderInfo struct {
 	// is provider-authoritative; only providers known to silently truncate should
 	// select ContextAdmissionSilentTruncationGuard.
 	ContextAdmission ContextAdmissionPolicy
+	// CheapModel names this provider's preferred low-cost / fast model id, used
+	// for out-of-band micro-tasks (e.g. auto-naming a tab) when the user has not
+	// pinned an explicit cheap model. Empty ⇒ this provider offers no cheap tier
+	// and never auto-derives (callers then fall through to the next resolution
+	// step, or no-op). Presentation/selection only — never sent on the wire as-is
+	// without validation against the live model list.
+	CheapModel string
 }
 
 // EffectiveAuthType preserves the legacy convention where an empty

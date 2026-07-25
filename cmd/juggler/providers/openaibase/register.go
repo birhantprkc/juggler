@@ -36,6 +36,11 @@ type Descriptor struct {
 	// Authorization header at all.
 	APIKeyOptional   bool
 	ContextAdmission provider.ContextAdmissionPolicy
+	// CheapModel names this provider's preferred low-cost / fast model id for
+	// out-of-band micro-tasks (auto-naming a tab). Empty ⇒ no cheap tier.
+	// Surfaced on ProviderInfo.CheapModel; validated against the live list
+	// before use.
+	CheapModel string
 
 	// Static context-window map exposed via ProviderInfo.ModelContextWindows.
 	// May be nil for providers whose model list is discovered at runtime. When
@@ -124,6 +129,7 @@ func Register(d Descriptor) {
 		APIKeyOptional:      d.APIKeyOptional,
 		ContextAdmission:    d.ContextAdmission,
 		ModelContextWindows: d.ContextWindows,
+		CheapModel:          d.CheapModel,
 	}
 	switch {
 	case capsSynthesised:

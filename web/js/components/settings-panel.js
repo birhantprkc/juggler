@@ -27,6 +27,7 @@ import { UpdatesTab } from './settings/updates-tab.js';
  * @property {object} config - The /api/config result.
  * @property {any[]} providers - The sorted /api/providers list.
  * @property {{provider: string, model: string, explicit?: boolean}} defaultModel - The /api/default-model result.
+ * @property {{provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} [cheapModel] - The /api/cheap-model result.
  * @property {object} connectivity - The /api/connectivity result.
  */
 
@@ -156,6 +157,11 @@ class SettingsPanel extends HTMLElement {
                         <div class="settings-section-heading">Default model</div>
                         <div class="settings-form" id="default-model-form">
                             <div id="default-model-field-container"></div>
+                        </div>
+
+                        <div class="settings-section-heading">Cheap model</div>
+                        <div class="settings-form" id="cheap-model-form">
+                            <div id="cheap-model-field-container"></div>
                         </div>
 
                         <div class="settings-form" id="global-provider-settings"></div>
@@ -437,10 +443,11 @@ class SettingsPanel extends HTMLElement {
   async loadConfig(renderFields = true) {
     try {
       // Load config, providers, the default model, and connectivity state
-      const [configResponse, providersResponse, defaultModelResponse, connectivityResponse] = await Promise.all([
+      const [configResponse, providersResponse, defaultModelResponse, cheapModelResponse, connectivityResponse] = await Promise.all([
         fetch('/api/config'),
         fetch('/api/providers'),
         fetch('/api/default-model'),
+        fetch('/api/cheap-model'),
         fetch('/api/connectivity'),
       ]);
 
@@ -470,13 +477,17 @@ class SettingsPanel extends HTMLElement {
       if (defaultModelResponse.ok) {
         defaultModel = await defaultModelResponse.json();
       }
+      let cheapModel = /** @type {any} */ (this._tabs['default-model']).cheapModel;
+      if (cheapModelResponse.ok) {
+        cheapModel = await cheapModelResponse.json();
+      }
       let connectivity = /** @type {any} */ (this._tabs.connectivity).connectivity;
       if (connectivityResponse.ok) {
         connectivity = await connectivityResponse.json();
       }
 
       /** @type {LoadedSettings} */
-      const data = { config, providers, defaultModel, connectivity };
+      const data = { config, providers, defaultModel, cheapModel, connectivity };
       for (const tab of Object.values(this._tabs)) {
         if (tab.onConfigLoaded) tab.onConfigLoaded(data, renderFields);
       }
