@@ -325,15 +325,19 @@ export function looksLikeMarkdown(text) {
 }
 
 /**
- * Add our standard copy-to-clipboard button to the corner of every `<pre>`
- * code block inside a freshly-rendered markdown element.
+ * Post-process a freshly-rendered markdown element: add our standard
+ * copy-to-clipboard button to every `<pre>` code block, and wrap every
+ * `<table>` in a horizontal-scroll container so a table wider than the panel
+ * can be scrolled instead of silently spilling off the edge.
  *
- * `renderMarkdown` returns an HTML string, so it cannot wire up live buttons;
- * callers that insert that HTML into the DOM call this on the container
- * afterwards. Each `<pre>` is wrapped in a non-scrolling positioning context
- * (`.code-block-wrap`) so the button stays pinned to the visible corner even
- * when the code scrolls horizontally. Idempotent: a `<pre>` already inside a
- * wrapper is skipped, so re-running on the same subtree is a no-op.
+ * `renderMarkdown` returns an HTML string, so it cannot wire up live buttons or
+ * wrappers; callers that insert that HTML into the DOM call this on the
+ * container afterwards. Each `<pre>` is wrapped in a non-scrolling positioning
+ * context (`.code-block-wrap`) so the button stays pinned to the visible corner
+ * even when the code scrolls horizontally. Each `<table>` is wrapped in a
+ * `.table-scroll-wrap` (a `<table>` ignores `overflow`, so it needs a block
+ * ancestor to scroll). Idempotent: an element already inside its wrapper is
+ * skipped, so re-running on the same subtree is a no-op.
  * @param {HTMLElement|null|undefined} root - Container holding rendered markdown.
  */
 export function decorateCodeBlocks(root) {
@@ -353,6 +357,16 @@ export function decorateCodeBlocks(root) {
       () => (codeEl || pre).textContent || '',
       'code-copy-button'
     ));
+  });
+
+  root.querySelectorAll('table').forEach((table) => {
+    // Skip a <table> we've already wrapped (e.g. on a redundant re-decorate).
+    if (table.parentElement?.classList.contains('table-scroll-wrap')) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'table-scroll-wrap';
+    table.parentNode?.insertBefore(wrap, table);
+    wrap.appendChild(table);
   });
 }
 

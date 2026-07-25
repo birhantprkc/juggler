@@ -3039,6 +3039,20 @@ thread-column-actions {
     margin: 1rem 0;
 }
 
+/* Horizontal-scroll container wrapped around each rendered table by
+   decorateCodeBlocks(), so a table too wide for the panel scrolls here instead
+   of spilling off the edge. A <table> ignores overflow itself, so it needs
+   this block ancestor to scroll. The wrapper owns the table's vertical rhythm;
+   the inner table drops its own margin to avoid doubling it. */
+.markdown .table-scroll-wrap {
+    overflow-x: auto;
+    margin: 0.75rem 0;
+}
+
+.markdown .table-scroll-wrap table {
+    margin: 0;
+}
+
 .markdown table {
     border-collapse: collapse;
     width: 100%;
