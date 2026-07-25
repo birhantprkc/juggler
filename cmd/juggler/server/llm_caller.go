@@ -113,7 +113,12 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 		}
 		credential, err := creds.GetProviderCredential(req.ModelConfig.Provider)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get credentials: %w", err)
+			// The stored/selected provider has no usable credentials (no API key,
+			// provider disabled, OAuth not signed in). Wrap with the worker sentinel
+			// so the strategy loop surfaces a user-fixable "pick another model"
+			// validation error (Guard B) instead of a generic turn failure, and
+			// never retries a model that cannot run until the user acts.
+			return nil, fmt.Errorf("%w: %v", worker.ErrProviderUnavailable, err)
 		}
 
 		// Open (or reuse) the per-conversation handle. The cache binds

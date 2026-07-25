@@ -490,7 +490,7 @@ class LLMState {
   /**
    * Handle processing state change from Yjs metadata
    * @param {string} conversationId - Conversation ID
-   * @param {{status: string, message?: string, threadItemId?: string, startedAt?: number, inputTokens?: number, outputTokens?: number, cachedTokens?: number, phase?: string}|null} state - Processing state
+   * @param {{status: string, message?: string, code?: string, threadItemId?: string, startedAt?: number, inputTokens?: number, outputTokens?: number, cachedTokens?: number, phase?: string}|null} state - Processing state
    * @private
    */
   _handleProcessingStateChange(conversationId, state) {
@@ -523,10 +523,16 @@ class LLMState {
     // Map worker status to LLMState actions
     // Status values: preparing, streaming, idle, error, validation-error
     switch (status) {
-      case 'preparing':
+      case 'preparing': {
+        // A turn was accepted, so the model divergence (if any) is resolved —
+        // clear Guard A's one-shot self-heal latch so a genuinely new divergence
+        // much later can heal again rather than being suppressed forever.
+        const conv = this._conversations.get(conversationId);
+        if (conv) conv._modelSelfHealAttempted = false;
         this.start(conversationId, state.startedAt);
         this.updateStatus(conversationId, 'preparing', tokenData);
         break;
+      }
 
       case 'streaming':
         this.start(conversationId, state.startedAt);
@@ -553,8 +559,32 @@ class LLMState {
         break;
 
       case 'validation-error': {
-        // Show validation error in input box warning
         const conversation = this._conversations.get(conversationId);
+
+        // Guard A — self-heal the "no-model" divergence. The worker's doc
+        // resolved no model, yet this client is displaying a real one: the model
+        // write never reached the worker (the outbound-sync gap — see
+        // session.js). Re-broadcast our full doc state (which carries
+        // defaultModelConfig) so the worker's doc gets the model, then resend the
+        // pending message ONCE. A per-conversation latch prevents a loop if the
+        // resend also bounces; it is cleared on the next accepted turn
+        // ('preparing'). Ordering holds because the resync and the resend ride
+        // the same FIFO worker channel, so the model lands before re-validation.
+        if (conversation && state.code === 'no-model' && !conversation._modelSelfHealAttempted) {
+          const cfg = conversation.modelConfig;
+          const pending = conversation._pendingUserMessage;
+          if (cfg && cfg.provider && cfg.model && pending) {
+            conversation._modelSelfHealAttempted = true;
+            conversation.resyncToWorker();
+            conversation.resendToWorker(pending, state.threadItemId || null);
+            this.stop(conversationId);
+            break;
+          }
+        }
+
+        // Not self-healable (no code match, no local model, nothing pending, or
+        // the self-heal was already spent): surface the warning and restore the
+        // user's text so they can act on it.
         if (conversation) {
           conversation.showWarning(message || 'Validation error');
           conversation.restorePendingMessage();

@@ -58,6 +58,17 @@ var ErrCancelled = errors.New("cancelled")
 // iteration so the new message is included in the LLM context.
 var ErrRestartStrategy = errors.New("restart strategy")
 
+// ErrProviderUnavailable marks a turn that failed because the selected model's
+// provider isn't configured/usable (no API key, provider disabled, OAuth not
+// signed in). The LLM caller wraps its credential-resolution failure with this
+// sentinel; the strategy loop detects it with errors.Is and surfaces a
+// user-fixable validation error (Guard B, code "provider-unavailable") — a
+// "pick another model / configure this one" prompt — instead of a generic red
+// error item. It is NEVER auto-retried: the model genuinely cannot run until the
+// user acts. It survives the deliveredLLMError + classifyLLMError wrapping
+// because both preserve the cause via Unwrap()/%w.
+var ErrProviderUnavailable = errors.New("provider not configured")
+
 // retryableError is implemented by provider errors that callLLMWithRetry
 // should transparently retry after a short wait rather than surface to the
 // user. New retryable categories satisfy this interface and need no changes

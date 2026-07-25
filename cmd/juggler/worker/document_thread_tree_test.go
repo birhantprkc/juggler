@@ -46,6 +46,40 @@ func TestResolveModelConfigDefaultKey(t *testing.T) {
 	}
 }
 
+// TestResolveModelConfigLegacyMetadataKeyFallback pins the compatibility fallback:
+// a pre-rename session stored its conversation default under the legacy
+// `modelConfig` METADATA key (not `defaultModelConfig`). Resolution must fall back
+// to it so such a session isn't stuck on "please select a model" despite holding a
+// real persisted default.
+func TestResolveModelConfigLegacyMetadataKeyFallback(t *testing.T) {
+	w := NewConversationWorker("conv-mc-legacy", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+
+	// Only the legacy key is present — no defaultModelConfig.
+	w.doc.SetMetadata("modelConfig", map[string]any{"provider": "prov-legacy", "model": "model-legacy", "thinking": "high"})
+
+	got := w.doc.ResolveEffectiveModelConfig("")
+	if got == nil || got.Provider != "prov-legacy" || got.Model != "model-legacy" || got.Thinking != "high" {
+		t.Fatalf("root must fall back to the legacy modelConfig metadata key, got %+v", got)
+	}
+}
+
+// TestResolveModelConfigDefaultKeyWinsOverLegacy confirms the new
+// `defaultModelConfig` key takes precedence when both keys are present, so the
+// legacy fallback never shadows a current default.
+func TestResolveModelConfigDefaultKeyWinsOverLegacy(t *testing.T) {
+	w := NewConversationWorker("conv-mc-legacy-precedence", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "prov-new", "model": "model-new"})
+	w.doc.SetMetadata("modelConfig", map[string]any{"provider": "prov-legacy", "model": "model-legacy"})
+
+	got := w.doc.ResolveEffectiveModelConfig("")
+	if got == nil || got.Provider != "prov-new" || got.Model != "model-new" {
+		t.Fatalf("defaultModelConfig must win over the legacy key, got %+v", got)
+	}
+}
+
 // TestResolveModelConfigThreadOverrideWinsOverDefault confirms a sub-thread's own
 // `modelConfig` override wins over the conversation default, while the root still
 // resolves the default — the canonical inheritance property after the rename.

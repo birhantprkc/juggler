@@ -61,28 +61,55 @@ func NewEventTape() *EventTape {
 func (t *EventTape) run() {
 	buf := make([]EventTapeEntry, eventTapeCapacity)
 	var head, size int
+
+	appendEntry := func(e EventTapeEntry) {
+		if size < eventTapeCapacity {
+			buf[size] = e
+			size++
+		} else {
+			buf[head] = e
+			head = (head + 1) % eventTapeCapacity
+		}
+	}
+	snapshot := func() []EventTapeEntry {
+		out := make([]EventTapeEntry, 0, size)
+		if size < eventTapeCapacity {
+			out = append(out, buf[:size]...)
+		} else {
+			out = append(out, buf[head:]...)
+			out = append(out, buf[:head]...)
+		}
+		return out
+	}
+
 	for {
 		select {
 		case e, ok := <-t.in:
 			if !ok {
 				return
 			}
-			if size < eventTapeCapacity {
-				buf[size] = e
-				size++
-			} else {
-				buf[head] = e
-				head = (head + 1) % eventTapeCapacity
-			}
+			appendEntry(e)
 		case reply := <-t.dumps:
-			out := make([]EventTapeEntry, 0, size)
-			if size < eventTapeCapacity {
-				out = append(out, buf[:size]...)
-			} else {
-				out = append(out, buf[head:]...)
-				out = append(out, buf[:head]...)
+			// Drain every record already queued on `in` before answering. A
+			// Record() that happens-before this DumpAll() on the same goroutine
+			// completes its `in <- e` send before the later `dumps <- reply`, so
+			// the entry is guaranteed to be sitting in `in`'s buffer here — but
+			// the select above could otherwise service this dump first and omit
+			// it. This non-blocking drain makes DumpAll observe all prior Records,
+			// which the compaction-tape assertions depend on.
+			for drained := false; !drained; {
+				select {
+				case e, ok := <-t.in:
+					if !ok {
+						drained = true
+						break
+					}
+					appendEntry(e)
+				default:
+					drained = true
+				}
 			}
-			reply <- out
+			reply <- snapshot()
 		}
 	}
 }

@@ -88,6 +88,14 @@ export class ConversationDocument {
   }
 
   /**
+   * Re-broadcast the full doc state to the worker on demand (Guard A model
+   * self-heal). See DocumentSyncManager.broadcastFullState.
+   */
+  broadcastFullState() {
+    this._syncManager.broadcastFullState();
+  }
+
+  /**
    * Apply a sync update from remote
    * @param {Uint8Array} update
    */

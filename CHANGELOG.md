@@ -5,6 +5,9 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Some minor fixes for thinking mode names, a few UI issues, light/dark mode on linux
+- Handling for bash commands with newlines inside string literals
+
 ## [0.4.5] - 2026-07-24
 
 - Added Cmd+/ and Ctrl+/ shortcut to show keyboard shortcuts

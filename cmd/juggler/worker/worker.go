@@ -1143,6 +1143,16 @@ func (w *ConversationWorker) reply(msg any) {
 }
 
 func (w *ConversationWorker) sendStatus(status, message string) {
+	w.sendStatusWithCode(status, message, "")
+}
+
+// sendStatusWithCode is sendStatus plus a machine-readable `code` the client can
+// branch on without matching English text. Used for the model-validation errors
+// so the client can tell a recoverable divergence (code "no-model" — self-heal
+// by re-broadcasting its own config) apart from a genuinely unusable model
+// (code "provider-unavailable" — never auto-retry). Empty code ⇒ omitted, so
+// every existing sendStatus caller is unchanged on the wire.
+func (w *ConversationWorker) sendStatusWithCode(status, message, code string) {
 	// `startedAt` is the shared timer base every client uses to render
 	// the spinner's elapsed-time digit (see web/js/services/llm-state.js).
 	// It must come from the doc so all clients agree: a client falling back
@@ -1186,6 +1196,9 @@ func (w *ConversationWorker) sendStatus(status, message string) {
 		"status":       status,
 		"message":      message,
 		"threadItemId": w.thread.itemID,
+	}
+	if code != "" {
+		stateMap["code"] = code
 	}
 	if statusHoldsClaim(status) {
 		stateMap["startedAt"] = w.processingStartedAt
@@ -1253,11 +1266,15 @@ func (w *ConversationWorker) sendStatus(status, message string) {
 	}
 
 	// Also send direct WebSocket message for logging/debugging
-	w.send(map[string]any{
+	wsMsg := map[string]any{
 		"type":    "status",
 		"status":  status,
 		"message": message,
-	})
+	}
+	if code != "" {
+		wsMsg["code"] = code
+	}
+	w.send(wsMsg)
 }
 
 func (w *ConversationWorker) sendReady() {

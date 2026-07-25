@@ -337,8 +337,15 @@ func (cd *ConversationDocument) resolveEffectiveModelConfig(threadItemID string)
 	}
 
 	// Conversation-level DEFAULT lives under `defaultModelConfig`; the
-	// thread-level override key (read above) stays `modelConfig`.
+	// thread-level override key (read above) stays `modelConfig`. Fall back to
+	// the legacy `modelConfig` METADATA key so a pre-rename session whose default
+	// was persisted under it still resolves, rather than being stuck on "please
+	// select a model" despite holding a real default. The new key wins when both
+	// are present, so the fallback never shadows a current default.
 	raw := cd.metadata.Get("defaultModelConfig")
+	if raw == nil {
+		raw = cd.metadata.Get("modelConfig")
+	}
 	if raw == nil {
 		return nil
 	}

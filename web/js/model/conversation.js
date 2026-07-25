@@ -1493,6 +1493,14 @@ class Conversation {
   _stopHandlers = new Set();
 
   /**
+   * Guard A one-shot latch: set when a "no-model" validation error triggers a
+   * model-config resync + auto-resend (see services/llm-state.js), cleared on the
+   * next accepted turn. Prevents a resend loop if the self-heal doesn't take.
+   * @type {boolean}
+   */
+  _modelSelfHealAttempted = false;
+
+  /**
    * Optimistic "Pause pending" cue. True from a polite-stop request until the
    * worker next settles to idle (see isPolitePending, which self-clears it).
    * Local-only: it drives the Pause button's active appearance without a server
@@ -2192,6 +2200,33 @@ class Conversation {
    */
   activateYjsSync(opts) {
     this._doc.activateSync(opts);
+  }
+
+  /**
+   * Re-broadcast this conversation's full doc state to its worker. Guard A's
+   * repair for the "no-model" divergence: the worker's doc resolved no model
+   * even though this client is displaying one (the model write never reached the
+   * worker — the outbound-sync gap). Pushing full state, which includes
+   * `defaultModelConfig`, repairs the worker's doc so the next send validates.
+   */
+  resyncToWorker() {
+    this._doc.broadcastFullState();
+  }
+
+  /**
+   * Resend a message straight to the worker — Guard A's one-shot auto-retry
+   * after resyncToWorker(). Deliberately bypasses the local sendMessage guards:
+   * they already passed for the original send, and this must ride the same FIFO
+   * worker channel immediately after the resync so the model config lands before
+   * the resend is re-validated. Text-only (attachments, if any, were already
+   * consumed by the original attempt); no-op if the worker isn't ready.
+   * @param {string} text - The pending user message to resend.
+   * @param {string|null} [threadItemId] - Target thread, or null for root.
+   */
+  resendToWorker(text, threadItemId = null) {
+    if (workerManager.isWorkerReady(this.id)) {
+      workerManager.sendMessage(this.id, text, threadItemId, undefined);
+    }
   }
 
   // ========================================================================

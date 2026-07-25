@@ -109,6 +109,22 @@ class DocumentSyncManager {
   }
 
   /**
+   * Re-encode the entire doc and broadcast it to the worker on demand.
+   *
+   * Unlike activateSync (idempotent, fires its initial-state push at most once),
+   * this can be called any time to repair a worker whose doc is missing state the
+   * client already holds — the outbound-sync gap behind Guard A's model
+   * self-heal. It sends through the same broadcast sink as incremental updates,
+   * so it works even if the incremental `doc.on('update')` handler was never
+   * attached. No-op when no broadcast sink is wired.
+   */
+  broadcastFullState() {
+    if (this.onSyncBroadcast) {
+      this.onSyncBroadcast(Y.encodeStateAsUpdate(this.doc));
+    }
+  }
+
+  /**
    * Apply a sync update from remote
    * Batches rapid updates to reduce main thread blocking during streaming
    * @param {Uint8Array} update - The update bytes to apply

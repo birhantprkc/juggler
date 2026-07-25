@@ -310,6 +310,23 @@ strategyLoop:
 				return
 			}
 
+			// Guard B: the selected model's provider isn't configured (no API key,
+			// provider disabled, OAuth not signed in). That is a user-fixable setup
+			// problem, not a turn failure — surface it as a validation error the
+			// client can act on (code "provider-unavailable": prompt to pick another
+			// model, never auto-retry) rather than a generic red error item. Do this
+			// before any context-limit handling: a credential failure is terminal and
+			// unrelated to compaction/recovery.
+			if errors.Is(err, ErrProviderUnavailable) {
+				msg := "The selected model's provider isn't configured. Pick another model, or configure it in settings."
+				if mc := w.resolveModelConfig(); mc != nil {
+					msg = fmt.Sprintf("The provider for %s (%s) isn't configured. Pick another model, or configure %s in settings.", mc.Model, mc.Provider, mc.Provider)
+				}
+				w.sendStatusWithCode("validation-error", msg, "provider-unavailable")
+				w.currentTxnID = ""
+				return
+			}
+
 			var advisory *provider.ContextCompactionAdvisory
 			var contextLimit *provider.ContextLimitExceededError
 			if errors.As(err, &advisory) {

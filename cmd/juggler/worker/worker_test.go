@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -419,7 +420,94 @@ func TestModelValidation(t *testing.T) {
 	if msgText != "Please select a model before sending a message" {
 		t.Errorf("Expected 'Please select a model' error, got: %s", msgText)
 	}
+	// The recoverable divergence code lets the client self-heal (re-broadcast its
+	// own model config + retry once) rather than only surfacing a dead-end warning.
+	if code, _ := msg["code"].(string); code != "no-model" {
+		t.Errorf("Expected validation code 'no-model', got: %q", code)
+	}
 	t.Logf("SUCCESS: Got expected validation error: %s", msgText)
+}
+
+// TestProviderUnavailableSurfacedAsValidationError verifies Guard B: when the LLM
+// dispatch fails because the selected model's provider isn't configured (the
+// caller wraps ErrProviderUnavailable), the worker surfaces a validation-error
+// with code "provider-unavailable" — a user-fixable "pick another model" prompt —
+// rather than a generic error item, and does not retry a model that cannot run.
+func TestProviderUnavailableSurfacedAsValidationError(t *testing.T) {
+	w := NewConversationWorker("conv-pu", "user:test")
+	defer w.doc.Destroy()
+
+	// Seed a resolvable default model so the mapped message can name it.
+	initPayload, _ := json.Marshal(InitMessage{
+		Type: "init",
+		Conversation: SerializedConversation{
+			ID:                "conv-pu",
+			CurrentStrategyID: "default",
+			ModelConfig:       &ModelConfig{Provider: "test", Model: "test-model"},
+		},
+		Config: WorkerConfig{ProjectPath: t.TempDir()},
+	})
+	w.handleInit(initPayload)
+
+	// Real dispatch path (no mock): the caller fails with a wrapped
+	// ErrProviderUnavailable, exactly as createLLMCaller does when credentials
+	// for the stored provider are missing.
+	var calls int32
+	w.llmCallFunc = func(context.Context, json.RawMessage, func(StreamChunk)) (*LLMResponse, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, fmt.Errorf("%w: no API key configured for provider: test", ErrProviderUnavailable)
+	}
+
+	// Capture the worker's broadcast status messages.
+	statusCh := make(chan map[string]any, 16)
+	w.SetCallback("viewer", func(b []byte) {
+		var m map[string]any
+		if json.Unmarshal(b, &m) == nil && m["type"] == "status" {
+			statusCh <- m
+		}
+	})
+
+	// Feed context/tools so the turn reaches dispatch without a live engine
+	// (mirrors TestToolTurnPushesStateToEngine).
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ctxResp, _ := json.Marshal(map[string]any{"type": "render-context-items-result", "systemPrompt": "sys", "contexts": []any{}})
+		toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+		for {
+			select {
+			case <-done:
+				return
+			case w.contextResultChan <- ctxResp:
+			}
+			select {
+			case <-done:
+				return
+			case w.toolsResultChan <- toolsResp:
+			}
+		}
+	}()
+
+	w.runStrategyLoop("Hello", false)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case m := <-statusCh:
+			if m["status"] != "validation-error" {
+				continue
+			}
+			if code, _ := m["code"].(string); code != "provider-unavailable" {
+				t.Fatalf("expected code 'provider-unavailable', got %q (message=%v)", code, m["message"])
+			}
+			if got := atomic.LoadInt32(&calls); got != 1 {
+				t.Fatalf("provider dispatch calls = %d, want 1 (an unusable model must not be retried)", got)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timeout waiting for validation-error status with code provider-unavailable")
+		}
+	}
 }
 
 // TestDeleteRangeBasic verifies delete-range deletes from fromIndex to end.

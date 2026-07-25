@@ -282,7 +282,10 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		if msg.IsContinuation {
 			errMsg = "Please select a model before continuing"
 		}
-		w.sendStatus("validation-error", errMsg)
+		// code "no-model" marks the recoverable divergence case: the client may
+		// hold a valid model this worker's doc never received (outbound sync gap).
+		// The client self-heals by re-broadcasting its config and retrying once.
+		w.sendStatusWithCode("validation-error", errMsg, "no-model")
 		return
 	}
 
