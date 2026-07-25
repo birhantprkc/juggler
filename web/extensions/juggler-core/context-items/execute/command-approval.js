@@ -3778,8 +3778,10 @@ export const MAX_SUGGESTED_PATTERN_LENGTH = 150;
 /**
  * @typedef {object} SegmentRemedy
  * @property {string[]} globs glob patterns narrowest→broadest that cover the
- *   segment via the analyser's pattern fallback (exact text, then handler
- *   generalisations or `<cmd> *`).
+ *   segment via the analyser's pattern fallback: the exact text, then handler
+ *   generalisations / `<cmd> *` — EXCEPT the wildcard generalisations are
+ *   withheld when an out-of-root path is the segment's sole obstacle (a wildcard
+ *   would drop the in-root-path restriction that was violated), leaving exact only.
  * @property {string[]} paths absolute folders to grant (add to the allowed-paths
  *   list) that, by themselves, make the segment safe — empty when the segment is
  *   not rejected purely because of out-of-root path arguments.
@@ -3824,19 +3826,34 @@ function segmentRemedies(seg, interpreters, cfg) {
   const globs = [reconstructSegment(seg)];
   const handler = COMMAND_HANDLERS.get(head.text);
 
-  // Path-grant remedy: ask the handler which path arguments are out-of-root,
-  // resolve them to grantable absolute roots, and confirm the segment becomes
-  // safe with exactly those added. Anything else (ungrantable path, a non-path
-  // obstacle) leaves paths empty so the caller falls back to glob patterns.
+  // Path-grant remedy + sole-obstacle detection. Ask the handler which path
+  // arguments are out-of-root, then grant exactly those (the raw paths) and
+  // re-check: if the segment becomes safe, an out-of-root path is its SOLE
+  // obstacle. That decides two things:
+  //   - `paths`: when every such path ALSO canonicalises to a grantable root,
+  //     offer a folder grant (the targeted fix). A non-grantable path (`/`, a
+  //     bare top-level, the home dir) or a mix leaves paths empty, so the caller
+  //     falls back to the exact-segment glob.
+  //   - `pathIsSoleObstacle`: when true, the `<cmd> *` wildcard tier is withheld
+  //     below — generalising the command would drop the very in-root-path
+  //     restriction that was violated (and for a handler with its own safety
+  //     grammar, e.g. find's -delete/-exec, a `find *` rule would blanket-approve
+  //     the forms it forbids). The exact segment is still offered.
+  // Anything else (a non-path obstacle — a forbidden predicate, an unparseable
+  // flag) leaves both untouched, so the caller offers the usual glob tiers.
   /** @type {string[]} */
   let paths = [];
+  let pathIsSoleObstacle = false;
   if (handler && typeof handler.outOfRootPaths === 'function') {
     const args = /** @type {WordToken[]} */ (seg.slice(1)).map(t => t.text);
     const candidates = handler.outOfRootPaths(args, cfg) || [];
-    const roots = /** @type {string[]} */ (candidates.map(p => canonicalRoot(p, cfg.home)).filter(Boolean));
-    if (candidates.length > 0 && roots.length === candidates.length) {
-      const augmented = { ...cfg, allowedRoots: [...(cfg.allowedRoots || []), ...roots] };
-      if (isSegmentSafe(seg, augmented)) paths = roots;
+    if (candidates.length > 0) {
+      const probe = { ...cfg, allowedRoots: [...(cfg.allowedRoots || []), ...candidates] };
+      if (isSegmentSafe(seg, probe)) {
+        pathIsSoleObstacle = true;
+        const roots = /** @type {string[]} */ (candidates.map(p => canonicalRoot(p, cfg.home)).filter(Boolean));
+        if (roots.length === candidates.length) paths = roots;
+      }
     }
   }
 
@@ -3844,6 +3861,11 @@ function segmentRemedies(seg, interpreters, cfg) {
   // `bash *` rule would auto-approve arbitrary scripts. Offer the exact form
   // only, matching ExecuteContextItem.extractDefaultPattern's policy.
   if (interpreters.has(head.text)) return { globs, paths };
+
+  // Out-of-root path is the sole obstacle: a `<cmd> *` wildcard is dishonest
+  // (it drops the path restriction that was violated), so offer the exact
+  // segment only — plus the folder grant above when one is grantable.
+  if (pathIsSoleObstacle) return { globs, paths };
 
   const words = /** @type {WordToken[]} */ (seg).map(t => t.text);
   const generalisations = handler && typeof handler.suggestPatterns === 'function'

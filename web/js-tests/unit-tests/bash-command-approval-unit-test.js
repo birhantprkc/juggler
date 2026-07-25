@@ -1302,24 +1302,27 @@ const SUGGEST_CASES = [
     expected: [["sed -n 'w /tmp/leak' /opt/sdk/windows/job.go"], ['sed *']] },
 
   // === Over-broad roots are NEVER offered as a folder grant (sanity gate) ===
-  // `find /` walks the whole filesystem. Granting `/` would blanket-approve
-  // every future read on the machine — so no path-grant tier; fall back to the
-  // (narrow, clearly-a-command) glob tiers instead.
-  { name: 'find / (filesystem root) → never grant /, glob tiers only',
+  // The path IS the sole obstacle, but the root is too broad to grant — and a
+  // `<cmd> *` wildcard would drop the very in-root-path restriction that was
+  // violated (and blanket-approve destructive forms the handler forbids). So no
+  // path-grant tier AND no wildcard tier: offer the exact command only.
+  // `find /` walks the whole filesystem; granting `/` would blanket-approve every
+  // future read, and `find *` would auto-approve `find / -delete` / `-exec`.
+  { name: 'find / (filesystem root) → never grant /, no find * wildcard, exact only',
     command: 'find / -name foo.go 2>/dev/null | head -3',
-    expected: [['find / -name foo.go'], ['find *']] },
+    expected: [['find / -name foo.go']] },
   // A bare system top-level (`/usr`) is one segment deep — too broad to grant.
-  { name: 'du over a bare system top-level → never grant /usr, glob tiers only',
+  { name: 'du over a bare system top-level → never grant /usr, no du * wildcard, exact only',
     command: 'du -sh /usr',
-    expected: [['du -sh /usr'], ['du *']] },
+    expected: [['du -sh /usr']] },
   // The user's whole home dir is too broad to grant (it is "all my files").
-  { name: 'du over the home dir itself → never grant ~, glob tiers only',
+  { name: 'du over the home dir itself → never grant ~, no du * wildcard, exact only',
     command: 'du -sh /Users/jules',
-    expected: [['du -sh /Users/jules'], ['du *']] },
+    expected: [['du -sh /Users/jules']] },
   // `/Users` is an ancestor of home (contains every user) → too broad to grant.
-  { name: 'du over /Users (home ancestor) → never grant /Users, glob tiers only',
+  { name: 'du over /Users (home ancestor) → never grant /Users, no du * wildcard, exact only',
     command: 'du -sh /Users',
-    expected: [['du -sh /Users'], ['du *']] }
+    expected: [['du -sh /Users']] }
 ];
 
 /**
