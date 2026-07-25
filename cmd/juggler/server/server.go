@@ -103,6 +103,7 @@ type Server struct {
 	skillsRegistryAPI *handlers.SkillsRegistryAPI
 	configAPI         *handlers.ConfigAPI
 	defaultModelStore *core.DefaultModelStore
+	cheapModelStore   *core.CheapModelStore
 	recentsStore      *core.RecentsStore
 	recentModelsStore *core.RecentModelsStore
 
@@ -144,6 +145,13 @@ type Server struct {
 	// rather than the still-empty cache. providersReadyOnce guards the close.
 	providersReady     chan struct{}
 	providersReadyOnce sync.Once
+
+	// quickCompleteSem is a counting semaphore bounding concurrent out-of-band
+	// QuickComplete calls (the /api/llm/complete endpoint + the auto-namer), so
+	// plugins can't turn the endpoint into a provider firehose. Buffered to the
+	// cap; a full buffer means an over-cap caller is rejected fast rather than
+	// queued. Created in the server constructor.
+	quickCompleteSem chan struct{}
 
 	publicMode atomic.Bool                  // true = accept connections from non-localhost IPs
 	tunnel     atomic.Pointer[activeTunnel] // non-nil when a tunnel is active
@@ -273,6 +281,11 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to create default model store: %w", err)
 	}
 
+	cheapModelStore, err := core.NewCheapModelStore()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cheap model store: %w", err)
+	}
+
 	systemPromptPresetStore, err := core.NewSystemPromptPresetStore()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create system prompt preset store: %w", err)
@@ -313,6 +326,7 @@ func New(cfg Config) (*Server, error) {
 	s.skillsRegistryAPI = handlers.NewSkillsRegistryAPI(s.ProjectPath, s.skillsAPI)
 	s.configAPI = configAPI
 	s.defaultModelStore = defaultModelStore
+	s.cheapModelStore = cheapModelStore
 	s.systemPromptPresetStore = systemPromptPresetStore
 	s.recentsStore = recents
 	s.recentModelsStore = recentModels
@@ -325,6 +339,7 @@ func New(cfg Config) (*Server, error) {
 	s.conversationCache = newConversationCache()
 	s.refreshRequests = make(chan struct{}, 1)
 	s.providersReady = make(chan struct{})
+	s.quickCompleteSem = make(chan struct{}, quickCompleteConcurrency)
 	s.switchToken = make(chan struct{}, 1)
 	s.switchToken <- struct{}{}
 

@@ -51,6 +51,8 @@ export {
   // Web
   webFetch,
   webSearch,
+  // LLM (out-of-band text generation)
+  generateText,
   // OS integration
   osOpenPath as openPath,
   osRevealPath as revealPath,

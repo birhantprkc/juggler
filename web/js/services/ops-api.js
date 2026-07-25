@@ -1082,6 +1082,93 @@ export async function webSearch(params, signal) {
 }
 
 // ============================================================================
+// LLM Operations
+// ============================================================================
+
+/**
+ * Parameters for an out-of-band text generation.
+ * @typedef {object} GenerateTextParams
+ * @property {string} prompt - The user content for the single-turn completion.
+ * @property {string} [system] - Optional system prompt.
+ * @property {('cheap'|'default'|{provider: string, model: string, thinking?: string})} [model]
+ *   Which model to use. "cheap" (default) uses the resolved cheap model,
+ *   "default" the default model, or an explicit {provider, model} pair.
+ * @property {number} [maxTokens] - Output cap (server-clamped to a ceiling).
+ */
+
+/**
+ * Token accounting for a generateText call.
+ * @typedef {object} GenerateTextUsage
+ * @property {number} inputTokens - Total prompt tokens sent.
+ * @property {number} outputTokens - Tokens generated.
+ * @property {number} cachedTokens - Prompt tokens served from cache.
+ */
+
+/**
+ * Result of an out-of-band text generation.
+ * @typedef {object} GenerateTextResult
+ * @property {string} text - The generated text (trimmed).
+ * @property {GenerateTextUsage} usage - Token accounting.
+ */
+
+/**
+ * Generate a short piece of text out-of-band — a single bounded LLM turn with
+ * no tools, no conversation, and no persistence. Backed by /api/llm/complete
+ * (see server/quick_complete.go): output is capped, wall-clock bounded, and
+ * server-side concurrency-limited. Intended for micro-tasks (titles, labels,
+ * one-line summaries), not for driving a conversation.
+ * @param {GenerateTextParams} params
+ * @param {AbortSignal} [signal] - Abort signal for cancellation
+ * @returns {Promise<GenerateTextResult>} The generated text and usage
+ */
+export async function generateText(params, signal) {
+  if (!params || !params.prompt) {
+    throw new TypeError('prompt is required');
+  }
+
+  const headers = /** @type {Record<string, string>} */ ({ 'Content-Type': 'application/json' });
+  const token = /** @type {{__jugglerToken?: string}} */ (globalThis).__jugglerToken;
+  if (token) {
+    headers['X-Juggler-Token'] = token;
+  }
+
+  const body = {
+    prompt: params.prompt,
+    system: params.system,
+    // Default to the cheap model when the caller doesn't specify one.
+    model: params.model ?? 'cheap',
+    maxTokens: params.maxTokens
+  };
+
+  const response = await fetch('/api/llm/complete', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal
+  });
+
+  if (!response.ok) {
+    let errorDetail = response.statusText;
+    try {
+      const errorBody = await response.text();
+      if (errorBody) {
+        try {
+          const errorJson = JSON.parse(errorBody);
+          errorDetail = errorJson.error || errorBody;
+        } catch {
+          errorDetail = errorBody;
+        }
+      }
+    } catch {
+      // Fall back to statusText if the body can't be read.
+    }
+    throw new OpsError(errorDetail);
+  }
+
+  return response.json();
+}
+
+// ============================================================================
 // OS Integration Operations
 // ============================================================================
 

@@ -60,6 +60,7 @@ const PERMISSION_INFO = /** @type {Record<string, string>} */ ({
   'filesystem.write': 'Create, modify, and delete files on your computer',
   'shell.exec': 'Run shell commands on your computer',
   'web.fetch': 'Fetch content from the web over the network',
+  'llm.generate': 'Generate text with a language model (uses your provider credits)',
 });
 
 /** Capability itemType → tree sub-heading, in display order under an extension. */
