@@ -791,7 +791,7 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 				MaxOutputTokens:      model.OutputTokenLimit,
 				FromAPI:              model.InputTokenLimit > 0,
 				InputModalities:      inputModalities,
-				ThinkingLevels:       spec.levels,
+				ThinkingLevels:       provider.CanonicalThinkingOptions(spec.levels...),
 				DefaultThinkingLevel: spec.def,
 			})
 		}

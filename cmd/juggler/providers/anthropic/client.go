@@ -726,10 +726,10 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 			inputModalities = []string{"text", "image"}
 		}
 
-		var thinkingLevels []string
+		var thinkingLevels []provider.ThinkingOption
 		var defaultThinkingLevel string
 		if SupportsThinking(model.ID) {
-			thinkingLevels = []string{provider.ThinkingOff, provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax}
+			thinkingLevels = provider.CanonicalThinkingOptions(provider.ThinkingOff, provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax)
 			defaultThinkingLevel = provider.ThinkingOff
 		}
 

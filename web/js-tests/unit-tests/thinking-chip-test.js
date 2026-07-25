@@ -30,7 +30,9 @@ import '../../js/components/model-selector.js';
 /**
  * Build a detached model-selector instance with one provider/model stubbed in.
  * @param {object} opts - Scenario knobs.
- * @param {string[]} [opts.levels] - `thinkingLevels` the model advertises (omit for a non-thinking model).
+ * @param {(string|{value: string, label?: string})[]} [opts.levels] - `thinkingLevels` the
+ *   model advertises: bare strings are treated as `{value}` (canonical label), objects pass
+ *   through so a native label can be exercised (omit for a non-thinking model).
  * @param {string} [opts.defaultLevel] - The model's `defaultThinkingLevel`.
  * @param {string} [opts.thinking] - Explicit level in the current config.
  * @returns {any} The stubbed (never-connected) element.
@@ -39,7 +41,7 @@ function makeSelector({ levels, defaultLevel, thinking }) {
   const el = /** @type {any} */ (document.createElement('model-selector'));
   /** @type {any} */
   const modelEntry = { id: 'model-x', contextWindow: 200000 };
-  if (levels) modelEntry.thinkingLevels = levels;
+  if (levels) modelEntry.thinkingLevels = levels.map(l => (typeof l === 'string' ? { value: l } : l));
   if (defaultLevel) modelEntry.defaultThinkingLevel = defaultLevel;
   el.providers = [{ name: 'prov', displayName: 'Prov', available: true, modelsWithContext: [modelEntry] }];
   el.provider = 'prov';
@@ -122,6 +124,15 @@ export async function runTests(_ctx) {
   await run('non-thinking model ⇒ no chip, even with a stale config level', () => {
     const el = makeSelector({ thinking: 'high' });
     assert(el._thinkingChipHTML() === '', 'a model without thinkingLevels must never grow a chip');
+  });
+
+  await run('a native tier label overrides the canonical compact label on the chip', () => {
+    // codex-max advertises {value:"max", label:"xhigh"}: the chip must show the
+    // native "xhigh", not the canonical "max".
+    const el = makeSelector({ levels: [{ value: 'high', label: 'high' }, { value: 'max', label: 'xhigh' }], thinking: 'max' });
+    const chip = chipOf(el._thinkingChipHTML());
+    assert(chip !== null && !chip.classList.contains('default'), 'an explicit advertised level ⇒ solid chip');
+    assert(chip.textContent === 'xhigh', `the native label is shown, got "${chip.textContent}"`);
   });
 
   await run('a stale explicit level the model no longer advertises falls back to the hollow default', () => {

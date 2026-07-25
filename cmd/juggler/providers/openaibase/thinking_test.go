@@ -76,6 +76,80 @@ func TestOpenAIThinkingSpec(t *testing.T) {
 	}
 }
 
+// TestThinkingSpecOptions pins the advertised tier list: each option carries its
+// canonical Value and native Label, and a level whose native effort duplicates an
+// earlier one is dropped from the advertised set (but stays wire-mappable).
+func TestThinkingSpecOptions(t *testing.T) {
+	cases := []struct {
+		model string
+		want  []provider.ThinkingOption
+	}{
+		{
+			// codex-max style: low/medium/high + native "xhigh"; no "off".
+			model: "gpt-5.2-codex",
+			want: []provider.ThinkingOption{
+				{Value: "low", Label: "low"},
+				{Value: "medium", Label: "medium"},
+				{Value: "high", Label: "high"},
+				{Value: "max", Label: "xhigh"},
+			},
+		},
+		{
+			// gpt-5.1: "none" off label, and no phantom "max" (its native "high"
+			// duplicates the "high" tier, so it's de-duped away).
+			model: "gpt-5.1",
+			want: []provider.ThinkingOption{
+				{Value: "off", Label: "none"},
+				{Value: "low", Label: "low"},
+				{Value: "medium", Label: "medium"},
+				{Value: "high", Label: "high"},
+			},
+		},
+		{
+			// earlier gpt-5: off maps to native "minimal"; "max" still de-duped.
+			model: "gpt-5",
+			want: []provider.ThinkingOption{
+				{Value: "off", Label: "minimal"},
+				{Value: "low", Label: "low"},
+				{Value: "medium", Label: "medium"},
+				{Value: "high", Label: "high"},
+			},
+		},
+		{
+			// o-series: native names equal canonical; labels present but harmless.
+			model: "o3-mini",
+			want: []provider.ThinkingOption{
+				{Value: "low", Label: "low"},
+				{Value: "medium", Label: "medium"},
+				{Value: "high", Label: "high"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		got := OpenAIThinkingSpec(tc.model).Options()
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: options = %+v, want %+v", tc.model, got, tc.want)
+			continue
+		}
+		for i, opt := range tc.want {
+			if got[i] != opt {
+				t.Errorf("%s: options[%d] = %+v, want %+v", tc.model, i, got[i], opt)
+			}
+		}
+	}
+
+	// No-control model advertises nothing.
+	if opts := OpenAIThinkingSpec("gpt-4o").Options(); len(opts) != 0 {
+		t.Errorf("gpt-4o: options = %+v, want none", opts)
+	}
+
+	// Back-compat: a dropped tier stays mappable on the wire — a stored
+	// thinking:"max" on gpt-5.1 still resolves to native "high".
+	if got, ok := OpenAIThinkingSpec("gpt-5.1").effortFor("max"); !ok || got != "high" {
+		t.Errorf("gpt-5.1 effortFor(max) = %q,%v; want \"high\",true (back-compat)", got, ok)
+	}
+}
+
 // TestEffortForOmitsWhenUnsupported pins the omit contract: an absent/unknown
 // level, or any level on a no-control spec, returns ok=false so no param is sent.
 func TestEffortForOmitsWhenUnsupported(t *testing.T) {

@@ -183,7 +183,7 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 			ContextWindow:        contextWindow,
 			MaxOutputTokens:      maxOutputTokens,
 			FromAPI:              true,
-			ThinkingLevels:       spec.Levels,
+			ThinkingLevels:       spec.Options(),
 			DefaultThinkingLevel: spec.Default,
 		})
 	}

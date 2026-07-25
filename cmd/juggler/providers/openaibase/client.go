@@ -245,11 +245,11 @@ func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterF
 			inputModalities = modalitiesFunc(model.ID)
 		}
 
-		var thinkingLevels []string
+		var thinkingLevels []provider.ThinkingOption
 		var defaultThinkingLevel string
 		if thinkingSpecFunc != nil {
 			spec := thinkingSpecFunc(model.ID)
-			thinkingLevels = spec.Levels
+			thinkingLevels = spec.Options()
 			defaultThinkingLevel = spec.Default
 		}
 

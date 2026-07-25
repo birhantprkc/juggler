@@ -101,7 +101,7 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 	// "think"-family keywords in the prompt, not forced off — so "Default" is the
 	// honest label, and an "off" choice couldn't be honoured distinctly (we don't
 	// send MAX_THINKING_TOKENS=0; its disabling semantics are unverified).
-	thinking := []string{provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax}
+	thinking := provider.CanonicalThinkingOptions(provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax)
 	bases := []provider.ModelInfo{
 		{ID: "opus", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinking},
 		{ID: "sonnet", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinking},

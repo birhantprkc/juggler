@@ -48,7 +48,7 @@ function makeSelector() {
     displayName: 'Provider',
     available: true,
     modelsWithContext: [
-      { id: 'm', displayName: 'Model', contextWindow: 1000, thinkingLevels: ['low', 'high'] },
+      { id: 'm', displayName: 'Model', contextWindow: 1000, thinkingLevels: [{ value: 'low' }, { value: 'high' }] },
       { id: 'other', displayName: 'Other', contextWindow: 1000 },
     ],
   }];

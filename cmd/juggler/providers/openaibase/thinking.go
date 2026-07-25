@@ -43,6 +43,29 @@ func (s ThinkingSpec) effortFor(level string) (string, bool) {
 	return effort, ok
 }
 
+// Options returns the advertised thinking tiers in display order, each carrying
+// its canonical Value and the model's native effort string as the Label. A
+// level whose native label already appeared is skipped, so a family that maps
+// two canonical levels onto one native effort (e.g. gpt-5's "max"→"high")
+// advertises the tier only once. The Effort map is left intact, so an
+// already-stored conversation on a dropped level still maps to the wire value.
+func (s ThinkingSpec) Options() []provider.ThinkingOption {
+	if len(s.Levels) == 0 {
+		return nil
+	}
+	opts := make([]provider.ThinkingOption, 0, len(s.Levels))
+	seen := make(map[string]bool, len(s.Levels))
+	for _, level := range s.Levels {
+		label := s.Effort[level]
+		if label != "" && seen[label] {
+			continue
+		}
+		seen[label] = true
+		opts = append(opts, provider.ThinkingOption{Value: level, Label: label})
+	}
+	return opts
+}
+
 // OpenAIThinkingSpec classifies an OpenAI / OpenAI-Codex model id into its
 // reasoning-effort support, expressed in the canonical thinking vocabulary.
 // Non-reasoning models (gpt-4o, gpt-4, gpt-3.5) return the zero ThinkingSpec.

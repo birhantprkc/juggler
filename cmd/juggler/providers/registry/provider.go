@@ -134,6 +134,31 @@ const (
 	ThinkingMax    = "max"
 )
 
+// ThinkingOption is one advertised reasoning-effort tier for a model.
+type ThinkingOption struct {
+	// Value is the canonical level (off/low/medium/high/max) — the identity used
+	// on the wire and in persistence. Unchanged by the display-label feature.
+	Value string `json:"value"`
+	// Label is the model's native display name for this tier (e.g. "xhigh",
+	// "none", "minimal"). Empty ⇒ the UI derives a label from Value, preserving
+	// the canonical labels for providers that don't rename their tiers.
+	Label string `json:"label,omitempty"`
+}
+
+// CanonicalThinkingOptions builds thinking options whose Label is left empty, so
+// the UI derives each label from its canonical Value. Providers that expose the
+// canonical tier names verbatim (Anthropic, Gemini, claudecode) use this.
+func CanonicalThinkingOptions(levels ...string) []ThinkingOption {
+	if len(levels) == 0 {
+		return nil
+	}
+	opts := make([]ThinkingOption, len(levels))
+	for i, level := range levels {
+		opts[i] = ThinkingOption{Value: level}
+	}
+	return opts
+}
+
 // NormalizeThinkingLevel maps an arbitrary input to a canonical thinking level,
 // returning "" (provider default) for anything unrecognised — including the
 // empty string. Providers and the server call this so an unknown/garbage value
@@ -440,11 +465,14 @@ type ModelInfo struct {
 	// must treat absence as text-only and never force-populate "text" for
 	// every model. Set only for models with verified non-text input support.
 	InputModalities []string
-	// ThinkingLevels lists the canonical thinking/reasoning-effort levels this
-	// model supports ("off","low","medium","high","max"). Empty/nil ⇒ the model
-	// exposes no thinking control and the UI hides the selector. Providers map
-	// each canonical level to their native parameter at their own boundary.
-	ThinkingLevels []string
+	// ThinkingLevels lists the reasoning-effort tiers this model supports, in
+	// display order. Each option's Value is a canonical level
+	// ("off","low","medium","high","max") — the wire + persistence identity —
+	// and Label is the model's native display name for that tier (empty ⇒ the UI
+	// derives a label from Value). Empty/nil ⇒ the model exposes no thinking
+	// control and the UI hides the selector. Providers map each canonical level
+	// to their native parameter at their own boundary.
+	ThinkingLevels []ThinkingOption
 	// DefaultThinkingLevel names the level the provider uses when the request
 	// carries none. Presentation only (lets the UI label "Default (medium)").
 	// Empty when unknown.
