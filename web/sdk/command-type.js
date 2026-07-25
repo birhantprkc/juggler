@@ -23,6 +23,8 @@
  *   `SlashCommandHandler` awaits `conversation.cancelAndSettle()` before invoking `execute()`
  *   so the command never captures or overwrites mid-flight tool/LLM state. Pure side-effect
  *   commands (`/help`, anything that only reads or only opens a UI panel) leave this unset.
+ * @property {boolean} [rejectWhileBusy] - True if a mutating command must be rejected rather
+ *   than cancel the active turn.
  * @property {boolean} [coalesceUndo] - True if every document mutation `execute()` makes
  *   (including async multi-step sequences like clear-then-re-seed) should collapse into a
  *   single undo group, so the whole command reverts in one undo. When set, `SlashCommandHandler`

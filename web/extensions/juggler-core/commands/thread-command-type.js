@@ -18,7 +18,8 @@ class ThreadCommandType extends CommandType {
     version: '1.0.0',
     description: 'Create a new sub-conversation thread',
     icon: 'icon-thread',
-    mutatesConversation: true
+    mutatesConversation: true,
+    rejectWhileBusy: true
   };
 
   /**

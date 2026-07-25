@@ -2623,6 +2623,7 @@ input-box .model-selector-button .model-name {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    padding: 0.5rem;
 }
 
 .info-section {
@@ -2668,7 +2669,7 @@ input-box .model-selector-button .model-name {
     min-height: 0;
     overflow-y: auto;
     border-left: 0.0625rem solid var(--border-divider);
-    padding: 0.5rem 0;
+    padding: 0.5rem;
 }
 
 .model-menu-list > menu {

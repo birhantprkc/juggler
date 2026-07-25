@@ -8,12 +8,10 @@
  * The input box exposes controls (New Thread button, slash-commands menu,
  * Close-thread button) that remain clickable while an LLM turn is in flight.
  * These tests pin the worker mid-turn with a paused mock and exercise each
- * control, asserting the well-defined "preempt the live turn, then act"
- * behaviour:
+ * control, asserting the active-turn behaviour:
  *
- *   - /thread (new-thread button + slash menu): cancels the live turn before
- *     creating the thread, AND surfaces a visible "Cancelled the active turn"
- *     notice so the cancellation is never silent.
+ *   - /thread (new-thread button + slash menu): rejects the request without
+ *     cancelling the live turn and asks the user to wait.
  *   - Close thread: previously a non-slash summary message that hit the
  *     `if (isProcessing) return` guard in conversation.sendMessage and was
  *     silently DROPPED mid-turn. Now MessageThread.close() preempts the live
@@ -110,23 +108,21 @@ function assertNoOrphanedRunning(conversation, testName) {
 }
 
 // ============================================================================
-// TEST 1: /thread fired mid-turn cancels the live turn AND shows feedback
+// TEST 1: /thread fired mid-turn is rejected without cancelling the live turn
 // ============================================================================
 
 /**
  * A root turn is streaming (paused at the mock barrier, exactly as a real
  * long-running turn would leave the worker busy). The user fires /thread (the
  * new-thread button dispatches this command). Expected:
- *   1. The live turn is cancelled before the thread is created (no orphaned
- *      running state).
- *   2. A visible "Cancelled the active turn" notice is shown — the cancellation
- *      is NOT silent.
- *   3. The new (empty) thread is created.
+ *   1. The command is rejected and no thread is created.
+ *   2. A visible "Wait for the current turn" notice is shown.
+ *   3. Releasing the mock lets the original turn complete normally.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const threadMidTurnCancelsAndNotifiesTest = {
   name: 'thread-mid-turn-cancels-and-notifies',
-  description: '/thread mid-turn cancels the live turn, shows a notice, then creates the thread',
+  description: '/thread mid-turn is rejected without cancelling the active turn',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -139,24 +135,22 @@ export const threadMidTurnCancelsAndNotifiesTest = {
     { type: 'send-message-no-wait', message: 'Message 1' },
     { type: 'wait-for-mock-paused' },
     // Fire /thread while the worker is paused mid-turn (new-thread button path).
-    { type: 'run-command', command: 'thread' },
-    // Feedback must be visible — RED until the slash-command path surfaces it.
-    { type: 'assert-input-warning', textContains: 'Cancelled the active turn' },
-    { type: 'wait-for-state', condition: { hasThreadItem: true } }
+    { type: 'send-message-no-wait', message: '/thread' },
+    { type: 'assert-input-warning', textContains: 'Wait for the current turn' },
+    { type: 'release-mock' },
+    { type: 'wait-for-idle' }
   ],
 
   customAssertions: (conversation) => {
-    assertNoOrphanedRunning(conversation, 'thread-mid-turn-cancels-and-notifies');
-    // Exactly one (open, no result) thread was created.
     const threads = conversation.rootMessageThread.items.filter(
       (/** @type {any} */ it) => it.get?.('type') === 'thread'
     );
-    if (threads.length !== 1) {
-      throw new Error(`Expected exactly 1 thread, got ${threads.length}`);
+    if (threads.length !== 0) {
+      throw new Error(`Expected /thread to be rejected, got ${threads.length} thread(s)`);
     }
-    const result = threads[0].get?.('result');
-    if (result !== null && result !== undefined && result !== '') {
-      throw new Error(`New thread should be open (no result), got result=${JSON.stringify(result)}`);
+    const status = conversation.processingState?.status;
+    if (status && status !== 'idle') {
+      throw new Error(`Original active turn did not settle after /thread was rejected: ${status}`);
     }
   }
 };
@@ -268,20 +262,13 @@ export const newThreadWithDraftDoesNotRunTest = {
 /**
  * The real-world repro of "the new thread immediately starts running": the
  * parent conversation is parked at `activity=awaiting_llm` because a tool is
- * waiting for the user's approval (the worker is at rest — state idle — with
- * the tool pending). The user presses "New Thread" (dispatches `/thread`).
- *
- * The freshly-created inherit-context thread is EMPTY. The worker's reducer
- * walk-down descends into it and — because an empty nested thread under
- * `awaiting_llm` is the inherited-continuation trigger — wrongly fires an LLM
- * call on it, even though that `awaiting_llm` marker belongs to the PARENT's
- * pending tool, not this brand-new thread. The thread must instead wait for the
- * user to actually send a message.
+ * waiting for the user's approval. New Thread is rejected because the turn is
+ * still active, even though the worker is parked at the approval boundary.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const newThreadWhileToolPendingDoesNotRunTest = {
   name: 'new-thread-while-tool-pending-does-not-run',
-  description: 'Creating a thread while a tool awaits approval must not auto-run the thread',
+  description: 'New Thread is rejected while a tool awaits approval',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -297,17 +284,18 @@ export const newThreadWhileToolPendingDoesNotRunTest = {
     // Worker reaches the approval gate → parked at awaiting_llm, state idle.
     { type: 'wait-for-approval', toolUseId: 'call_1' },
     // Press "New Thread" (the button dispatches /thread).
-    { type: 'run-command', command: 'thread' },
-    { type: 'wait-for-state', condition: { hasThreadItem: true } },
-    // Settle window: if the worker were going to dispatch the thread, it would
-    // have consumed the second mock and appended an assistant item by now.
-    { type: 'wait-ms', ms: 600 }
+    { type: 'send-message-no-wait', message: '/thread' },
+    { type: 'assert-input-warning', textContains: 'Wait for the current turn' },
+    { type: 'wait-ms', ms: 200 }
   ],
 
   customAssertions: (conversation) => {
-    assertNoOrphanedRunning(conversation, 'new-thread-while-tool-pending-does-not-run');
-    const thread = soleThread(conversation, 'new-thread-while-tool-pending-does-not-run');
-    assertThreadOpenAndEmpty(thread, 'new-thread-while-tool-pending-does-not-run');
+    const threads = conversation.rootMessageThread.items.filter(
+      (/** @type {any} */ it) => it.get?.('type') === 'thread'
+    );
+    if (threads.length !== 0) {
+      throw new Error(`Expected /thread to be rejected while approval is pending, got ${threads.length} thread(s)`);
+    }
   }
 };
 

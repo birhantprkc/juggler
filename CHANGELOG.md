@@ -13,6 +13,7 @@ of changes; this project follows semantic versioning.
 - Some minor fixes for thinking mode names, a few UI issues, light/dark mode on linux
 - Handling for bash commands with newlines inside string literals
 - "Don't ask again" approval patterns can now be edited in place before saving
+- New Thread no longer interrupts an active agent turn
 
 ## [0.4.5] - 2026-07-24
 

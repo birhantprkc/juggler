@@ -207,6 +207,8 @@ class InputBox extends HTMLElement {
     // Conversation reference for strategy selector
     /** @type {import('../model/conversation.js').default|null} @private */
     this._conversation = null;
+    /** @type {((event: any) => void)|null} @private */
+    this._conversationMetadataObserver = null;
 
     // Thread context - when set, messages are routed to this thread's nested items
     /** @type {string|null} */
@@ -297,6 +299,10 @@ class InputBox extends HTMLElement {
     if (this._schedulePickerCleanup) {
       this._schedulePickerCleanup();
       this._schedulePickerCleanup = null;
+    }
+    if (this._conversationMetadataObserver && this._conversation) {
+      this._conversation.unobserveMetadata(this._conversationMetadataObserver);
+      this._conversationMetadataObserver = null;
     }
     // Drop the countdown-refresh interval. The target stays persisted on the
     // thread's draft, so reconnecting (or rebinding) restores the countdown —
@@ -676,9 +682,25 @@ class InputBox extends HTMLElement {
     const empty = this._isComposerEmpty();
     const sendBtn = this.querySelector('#send-button');
     if (sendBtn) sendBtn.classList.toggle('is-empty', empty);
+    this._updateNewThreadControls();
     // The schedule button follows the same empty rule; _updateScheduleButton
     // re-reads emptiness itself, so just re-render it.
     this._updateScheduleButton();
+  }
+
+  _updateNewThreadControls() {
+    const busy = this._conversation?.isTurnActive() === true;
+    const button = /** @type {HTMLButtonElement|null} */ (this.querySelector('.new-thread-btn'));
+    if (button) {
+      button.disabled = busy;
+      button.title = busy
+        ? 'Wait for the current turn to finish before creating a new thread'
+        : 'Create a new sub-thread';
+    }
+    this.querySelectorAll('[data-command="thread"], [data-action="new-thread"]').forEach((row) => {
+      row.classList.toggle('disabled', busy);
+      row.setAttribute('aria-disabled', String(busy));
+    });
   }
 
   /**
@@ -1063,7 +1085,18 @@ class InputBox extends HTMLElement {
    * @param {import('../model/conversation.js').default|null} conversation - Conversation instance
    */
   setConversation(conversation) {
+    if (this._conversationMetadataObserver && this._conversation) {
+      this._conversation.unobserveMetadata(this._conversationMetadataObserver);
+    }
     this._conversation = conversation;
+    this._conversationMetadataObserver = null;
+    if (conversation) {
+      this._conversationMetadataObserver = (event) => {
+        if (event.keysChanged?.has?.('processingState')) this._updateNewThreadControls();
+      };
+      conversation.observeMetadata(this._conversationMetadataObserver);
+    }
+    this._updateNewThreadControls();
     this._syncStrategySelector();
     const permissionControls = this.querySelector('permission-controls');
     if (permissionControls && 'setMessageThread' in permissionControls) {
@@ -1626,6 +1659,10 @@ class InputBox extends HTMLElement {
    * @private
    */
   _createThread() {
+    if (this._conversation?.isTurnActive()) {
+      this.showWarning('Wait for the current turn to finish before creating a new thread.');
+      return;
+    }
     const textarea = this.querySelector('textarea');
     const text = textarea ? textarea.value.trim() : '';
     let command = '/thread';
@@ -2114,13 +2151,15 @@ class InputBox extends HTMLElement {
      * @param {string} label
      * @param {string} iconSvg
      * @param {() => void} onClick
+     * @param {string} [action]
      */
-    const addRow = (label, iconSvg, onClick) => {
+    const addRow = (label, iconSvg, onClick, action = '') => {
       const item = document.createElement('li');
       item.className = 'menu-item actions-sheet-item';
+      if (action) item.dataset.action = action;
       const icon = document.createElement('span');
       icon.className = 'actions-sheet-icon';
-      icon.innerHTML = iconSvg;
+
       item.appendChild(icon);
       const text = document.createElement('span');
       text.className = 'actions-sheet-label';
@@ -2163,7 +2202,8 @@ class InputBox extends HTMLElement {
       /** @type {HTMLInputElement|null} */
       (this.querySelector('.attach-file-input'))?.click();
     });
-    addRow('New Thread', THREAD_ARROW_SVG, () => this._createThread());
+    addRow('New Thread', THREAD_ARROW_SVG, () => this._createThread(), 'new-thread');
+    this._updateNewThreadControls();
 
     // Relocate the live strategy selector into the sheet — on touch it is
     // hidden from the inline row to keep that row single-line. Re-parenting

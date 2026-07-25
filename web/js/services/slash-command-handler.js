@@ -77,6 +77,19 @@ class SlashCommandHandler {
 
     const conv = messageThread?.conversation;
 
+    // Some mutations have no sensible mid-turn semantics. In particular, a
+    // user-created thread cannot yet be queued like a regular message, so reject
+    // it without interrupting the active agent. The UI mirrors this guard, but
+    // enforcement belongs here so typed commands and other callers cannot bypass
+    // it.
+    if (CommandClass.MANIFEST?.rejectWhileBusy && conv?.isTurnActive()) {
+      return {
+        handled: true,
+        message: 'Wait for the current turn to finish before creating a new thread.',
+        error: true
+      };
+    }
+
     // Architectural invariant: commands that will mutate the conversation
     // (snapshot/move/delete items, clear history, insert threads) must
     // never run while a turn is in flight. The handler is the single
