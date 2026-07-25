@@ -774,13 +774,69 @@ class PlanContextItem extends ContextItem {
 
   /**
    * Check if this action is auto-permitted (skips approval).
-   * Step actions don't need approval; submit actions do.
+   * Step actions never need approval. A `submit` needs approval unless it
+   * proposes the same plan as the one already on the thread — re-submitting
+   * the current plan (e.g. an LLM marking every step completed by
+   * resubmitting it) is a no-op the user has already approved, so we skip the
+   * prompt. See {@link _isSameAsCurrentPlan} for the match rule; execute()
+   * still applies the submitted data either way.
    * @override
    * @param {Record<string, unknown>} toolInput - Raw tool input parameters
    * @returns {boolean} True if auto-approved (no approval needed)
    */
   isPermitted(toolInput) {
-    return toolInput.action !== 'submit';
+    if (toolInput.action !== 'submit') {
+      return true; // Step actions never need approval.
+    }
+    return this._isSameAsCurrentPlan(toolInput);
+  }
+
+  /**
+   * Decide whether a `submit` proposes the same plan as the one currently on
+   * the thread, so it can skip re-approval. Match rule: same number of steps
+   * and each step's content text is identical (whitespace-trimmed). Status is
+   * deliberately ignored — a resubmission that only changes step statuses
+   * (the reported "mark the plan completed by resubmitting it" abuse) still
+   * counts as the same plan. Title is ignored too: the plan is a singleton,
+   * and a title-only change isn't worth interrupting the user for. Returns
+   * false when there is no existing plan or it has no steps (the first
+   * submission always prompts); malformed items fall through to validate(),
+   * which produces the real error.
+   *
+   * Looks the plan up on `this.messageThread` rather than `this.data` because
+   * the executor constructs an ephemeral action instance whose own data is
+   * empty — the canonical current plan lives in the thread's context items
+   * (same lookup `_updateStepStatus` / `_getOrCreatePlanContextItem` use).
+   * @param {Record<string, unknown>} toolInput - Raw submit tool input
+   * @returns {boolean} True when the proposed plan matches the current one
+   * @private
+   */
+  _isSameAsCurrentPlan(toolInput) {
+    const existing = this.messageThread?.contextItems?.find(
+      (/** @type {{type: string}} */ f) => f.type === 'plan'
+    );
+    const currentSteps = existing?.data?.steps;
+    if (!Array.isArray(currentSteps) || currentSteps.length === 0) {
+      return false; // No current plan — first submission always prompts.
+    }
+
+    let rawItems = PlanContextItem._resolvePlanItems(toolInput);
+    if (typeof rawItems === 'string') {
+      try {
+        rawItems = JSON.parse(rawItems);
+      } catch {
+        return false; // Malformed — let validate() surface the real error.
+      }
+    }
+    if (!Array.isArray(rawItems) || rawItems.length !== currentSteps.length) {
+      return false;
+    }
+
+    return rawItems.every((/** @type {Record<string, unknown>} */ item, /** @type {number} */ i) => {
+      const submitted = (PlanContextItem._resolveStepContent(item) || '').trim();
+      const current = String(currentSteps[i].content || '').trim();
+      return submitted !== '' && submitted === current;
+    });
   }
 
   /**

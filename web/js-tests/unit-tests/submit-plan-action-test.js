@@ -768,5 +768,223 @@ export async function runTests(ctx) {
     errors.push(`registry race resilience: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // Test 17: A submit that re-proposes the current plan skips approval.
+  //
+  // Regression: an LLM resubmitting an already-approved plan (e.g. to mark it
+  // completed by filling in statuses) used to prompt for approval every time,
+  // even though the plan body was unchanged. isPermitted() must recognise the
+  // identical step contents and return true, so requiresApproval() &&
+  // !isPermitted() is false.
+  try {
+    const conversation = await createTestConversation(session);
+    const mt = conversation.rootMessageThread;
+
+    // Seed the current plan via a normal submit.
+    const seedCall = createToolCall('plan', {
+      action: 'submit',
+      title: 'Current Plan',
+      items: [
+        { content: 'Step one', status: 'pending' },
+        { content: 'Step two', status: 'pending' }
+      ]
+    });
+    await executeToolsAndGetContext(conversation, session, [seedCall]);
+
+    const PlanClass = /** @type {any} */ (contextItemRegistry.getByToolName('plan'));
+    const action = new PlanClass({
+      id: PlanClass.MANIFEST.id, session, conversation, messageThread: mt
+    });
+    assert(action.requiresApproval() === true,
+      'submit should still be requiresApproval=true');
+
+    // Same step CONTENTS, different (in-progress) statuses — still a match.
+    const sameContents = {
+      action: 'submit',
+      title: 'Current Plan',
+      items: [
+        { content: 'Step one', status: 'in_progress' },
+        { content: 'Step two', status: 'in_progress' }
+      ]
+    };
+    assert(action.isPermitted(sameContents) === true,
+      'a submit with identical step contents should skip approval (isPermitted true)');
+    assert(!(action.requiresApproval() && !action.isPermitted(sameContents)),
+      'the requiresApproval() && !isPermitted() gate should be false for a matching submit');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`matching submit skips approval: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Test 18: The reported abuse case — resubmit the current plan with every
+  // step marked completed. Per the chosen behaviour, isPermitted() returns
+  // true (no prompt) AND execute() still applies the submitted statuses. The
+  // sanity check removes the spurious approval; the data overwrite is
+  // unchanged by design.
+  try {
+    const conversation = await createTestConversation(session);
+    const mt = conversation.rootMessageThread;
+
+    const seedCall = createToolCall('plan', {
+      action: 'submit',
+      title: 'Abuse Plan',
+      items: [
+        { content: 'Do the work', status: 'pending' },
+        { content: 'Verify it', status: 'pending' }
+      ]
+    });
+    await executeToolsAndGetContext(conversation, session, [seedCall]);
+
+    const PlanClass = /** @type {any} */ (contextItemRegistry.getByToolName('plan'));
+    const action = new PlanClass({
+      id: PlanClass.MANIFEST.id, session, conversation, messageThread: mt
+    });
+
+    const markAllDone = {
+      action: 'submit',
+      title: 'Abuse Plan',
+      items: [
+        { content: 'Do the work', status: 'completed' },
+        { content: 'Verify it', status: 'completed' }
+      ]
+    };
+    assert(action.isPermitted(markAllDone) === true,
+      'resubmitting the plan with all steps completed should skip approval');
+
+    // The execute path still applies the submitted data (no-op would lose
+    // this), so a second submit via the full pipeline overwrites statuses.
+    const resubmit = createToolCall('plan', markAllDone);
+    await executeToolsAndGetContext(conversation, session, [resubmit]);
+    const planCI = mt.contextItems.find(f => f.type === 'plan' && f.data.title === 'Abuse Plan');
+    assert(planCI?.data?.steps?.[0]?.status === 'completed',
+      'matching submit should still apply its submitted statuses (step 1)');
+    assert(planCI?.data?.steps?.[1]?.status === 'completed',
+      'matching submit should still apply its submitted statuses (step 2)');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`abuse case mark-all-done: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Test 19: A submit that changes step contents (or count) still prompts.
+  try {
+    const conversation = await createTestConversation(session);
+    const mt = conversation.rootMessageThread;
+
+    const seedCall = createToolCall('plan', {
+      action: 'submit',
+      title: 'Original',
+      items: [
+        { content: 'Unchanged step', status: 'pending' },
+        { content: 'To be reworded', status: 'pending' }
+      ]
+    });
+    await executeToolsAndGetContext(conversation, session, [seedCall]);
+
+    const PlanClass = /** @type {any} */ (contextItemRegistry.getByToolName('plan'));
+    const action = new PlanClass({
+      id: PlanClass.MANIFEST.id, session, conversation, messageThread: mt
+    });
+
+    // Different content on step 2 → must prompt.
+    assert(action.isPermitted({
+      action: 'submit',
+      title: 'Original',
+      items: [
+        { content: 'Unchanged step', status: 'pending' },
+        { content: 'Now reworded', status: 'pending' }
+      ]
+    }) === false, 'a submit that changes step content should still require approval');
+
+    // Different step count → must prompt.
+    assert(action.isPermitted({
+      action: 'submit',
+      title: 'Original',
+      items: [{ content: 'Unchanged step', status: 'pending' }]
+    }) === false, 'a submit with a different step count should still require approval');
+
+    // Whitespace-only differences in content should NOT defeat the match.
+    assert(action.isPermitted({
+      action: 'submit',
+      title: 'Original',
+      items: [
+        { content: '  Unchanged step  ', status: 'pending' },
+        { content: '\tTo be reworded\t', status: 'pending' }
+      ]
+    }) === true, 'whitespace-only content differences should still match (skip approval)');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`changed plan still prompts: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Test 20: First-ever submit (no existing plan) always prompts — the
+  // sanity-check must not auto-approve when there is nothing to compare to.
+  try {
+    const conversation = await createTestConversation(session);
+    const mt = conversation.rootMessageThread;
+
+    const planCI = mt.contextItems.find(f => f.type === 'plan');
+    assert(planCI === undefined, 'precondition: no plan should exist yet');
+
+    const PlanClass = /** @type {any} */ (contextItemRegistry.getByToolName('plan'));
+    const action = new PlanClass({
+      id: PlanClass.MANIFEST.id, session, conversation, messageThread: mt
+    });
+    assert(action.isPermitted({
+      action: 'submit',
+      title: 'First Plan',
+      items: [{ content: 'Only step', status: 'pending' }]
+    }) === false, 'first submit with no existing plan should still require approval');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`first submit still prompts: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Test 21: The sanity-check honours the same input aliases validate() does
+  // (items/steps/tasks, content/description/text/task) and tolerates a
+  // JSON-string items value — otherwise an aliased-but-identical submission
+  // would wrongly prompt.
+  try {
+    const conversation = await createTestConversation(session);
+    const mt = conversation.rootMessageThread;
+
+    const seedCall = createToolCall('plan', {
+      action: 'submit',
+      title: 'Alias Plan',
+      items: [{ content: 'Aliased step', status: 'pending' }]
+    });
+    await executeToolsAndGetContext(conversation, session, [seedCall]);
+
+    const PlanClass = /** @type {any} */ (contextItemRegistry.getByToolName('plan'));
+    const action = new PlanClass({
+      id: PlanClass.MANIFEST.id, session, conversation, messageThread: mt
+    });
+
+    // `steps` alias + `description` content alias.
+    assert(action.isPermitted({
+      action: 'submit',
+      title: 'Alias Plan',
+      steps: [{ description: 'Aliased step', status: 'pending' }]
+    }) === true, 'steps/description aliases of an identical plan should skip approval');
+
+    // JSON-string form of items.
+    assert(action.isPermitted({
+      action: 'submit',
+      title: 'Alias Plan',
+      items: JSON.stringify([{ content: 'Aliased step', status: 'pending' }])
+    }) === true, 'JSON-string items of an identical plan should skip approval');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`alias-aware match: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   return { passed, failed, errors };
 }
