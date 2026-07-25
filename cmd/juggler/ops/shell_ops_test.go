@@ -196,6 +196,82 @@ func TestGetOutput_ReturnsDeltaNotCumulative(t *testing.T) {
 	}
 }
 
+// TestNormalizeCommandNewlines pins the two distinct multi-line shapes the
+// model sends. (1) A command-per-line list — several independent commands
+// separated by bare newlines — is deliberately joined with " && " for fail-fast
+// display/semantics. (2) A SINGLE multi-line command whose newlines live inside
+// a quote, backtick, here-document, or a backslash continuation must survive
+// verbatim: those newlines are data, not command separators. The pre-fix code
+// conflated the two and mangled every case (2) into broken " && " fragments —
+// squashing multi-line git commit messages, python -c scripts and heredocs.
+func TestNormalizeCommandNewlines(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// --- case (1): genuine command-per-line lists still join with && ---
+		{
+			name: "single line unchanged",
+			in:   "echo hello",
+			want: "echo hello",
+		},
+		{
+			name: "command per line joined with &&",
+			in:   "echo a\necho b\necho c",
+			want: "echo a && echo b && echo c",
+		},
+		{
+			name: "blank lines dropped",
+			in:   "echo a\n\n\necho b",
+			want: "echo a && echo b",
+		},
+		// --- case (2): a single multi-line command is preserved verbatim ---
+		{
+			name: "double-quoted multiline commit message preserved",
+			in:   "git commit -m \"feat: add thing\n\n- bullet one\n- bullet two\"",
+			want: "git commit -m \"feat: add thing\n\n- bullet one\n- bullet two\"",
+		},
+		{
+			name: "single-quoted multiline python preserved",
+			in:   "python3 -c 'import json\nprint(json.dumps({}))\n'",
+			want: "python3 -c 'import json\nprint(json.dumps({}))\n'",
+		},
+		{
+			name: "backtick substitution newline preserved",
+			in:   "echo `date\nwhoami`",
+			want: "echo `date\nwhoami`",
+		},
+		{
+			name: "quoted newline preserved but top-level newline still joins",
+			in:   "echo \"a\nb\"\necho done",
+			want: "echo \"a\nb\" && echo done",
+		},
+		{
+			name: "heredoc body preserved, trailing command still joins",
+			in:   "cat <<EOF\nline1\nline2\nEOF\necho after",
+			want: "cat <<EOF\nline1\nline2\nEOF && echo after",
+		},
+		{
+			name: "here-string is not treated as a heredoc",
+			in:   "grep x <<< \"$var\"\necho next",
+			want: "grep x <<< \"$var\" && echo next",
+		},
+		{
+			name: "backslash line continuation preserved",
+			in:   "echo one \\\ntwo",
+			want: "echo one \\\ntwo",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeCommandNewlines(tc.in); got != tc.want {
+				t.Fatalf("normalizeCommandNewlines(%q) =\n  %q\nwant\n  %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidateCwd_SiblingDirectoryRejected guards against the missing-separator
 // bug in the shell cwd prefix check: a sibling dir whose name happens to start
 // with the project dir's name must not be accepted.

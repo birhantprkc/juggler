@@ -1108,20 +1108,199 @@ func (ops *ShellOperations) ExecuteStreaming(
 // normalizeCommandNewlines replaces bare newlines used as command separators
 // with " && " for consistent display/logging and fail-fast semantics.
 // Empty lines are dropped; commands without newlines pass through unchanged.
+//
+// Only newlines that act as top-level command separators are rewritten. A
+// newline that lives inside a quote ('...', "...", `...`), a here-document
+// body, or after a backslash line-continuation is DATA, not a separator, and is
+// preserved verbatim — so a single multi-line command (a multi-line git commit
+// message, a `python3 -c '...'` script, a heredoc) survives intact instead of
+// being shredded into broken " && " fragments.
 func normalizeCommandNewlines(command string) string {
 	if !strings.Contains(command, "\n") {
 		return command
 	}
 
-	lines := strings.Split(command, "\n")
 	var nonEmpty []string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
+	for _, seg := range splitTopLevelCommands(command) {
+		if trimmed := strings.TrimSpace(seg); trimmed != "" {
 			nonEmpty = append(nonEmpty, trimmed)
 		}
 	}
 	return strings.Join(nonEmpty, " && ")
+}
+
+// heredocSpec is a pending here-document whose body has not been consumed yet.
+type heredocSpec struct {
+	delim     string
+	stripTabs bool // <<- form: leading tabs are stripped when matching the terminator
+}
+
+// splitTopLevelCommands splits command on the newlines that act as shell command
+// separators, while preserving every newline that lives inside a quote, backtick
+// substitution, here-document body, or a backslash line-continuation. Each
+// returned element is one top-level command exactly as written (internal
+// newlines intact). This is a lexical scan, not a full shell parser — but it is
+// conservative: when in doubt it keeps text together, so a misjudged newline
+// degrades to the shell's own sequential semantics rather than corrupting the
+// command.
+func splitTopLevelCommands(command string) []string {
+	var (
+		segments []string
+		buf      strings.Builder
+		quote    byte // 0, '\'', '"', or '`'
+		heredocs []heredocSpec
+	)
+	n := len(command)
+	for i := 0; i < n; i++ {
+		c := command[i]
+
+		// Inside a quote: copy verbatim until the matching close.
+		if quote != 0 {
+			buf.WriteByte(c)
+			if quote == '\'' {
+				if c == '\'' {
+					quote = 0
+				}
+			} else { // '"' or '`': a backslash escapes the next byte
+				if c == '\\' && i+1 < n {
+					buf.WriteByte(command[i+1])
+					i++
+				} else if c == quote {
+					quote = 0
+				}
+			}
+			continue
+		}
+
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+			buf.WriteByte(c)
+		case '\\':
+			// Backslash escapes the next byte, including a newline used as a line
+			// continuation — keep both verbatim, in the same command.
+			buf.WriteByte(c)
+			if i+1 < n {
+				buf.WriteByte(command[i+1])
+				i++
+			}
+		case '<':
+			if i+1 < n && command[i+1] == '<' {
+				if i+2 < n && command[i+2] == '<' {
+					// here-string (<<<), a single-line redirect — not a heredoc.
+					buf.WriteString("<<<")
+					i += 2
+					break
+				}
+				// here-document: << or <<-. Record its delimiter; the body is
+				// consumed when we reach the newline that starts it.
+				buf.WriteString("<<")
+				i += 2
+				strip := false
+				if i < n && command[i] == '-' {
+					strip = true
+					buf.WriteByte('-')
+					i++
+				}
+				for i < n && (command[i] == ' ' || command[i] == '\t') {
+					buf.WriteByte(command[i])
+					i++
+				}
+				delim, adv := readHeredocDelim(command[i:])
+				buf.WriteString(command[i : i+adv])
+				i += adv - 1 // -1: the outer loop's i++ steps to the next byte
+				if delim != "" {
+					heredocs = append(heredocs, heredocSpec{delim: delim, stripTabs: strip})
+				}
+			} else {
+				buf.WriteByte(c)
+			}
+		case '\n':
+			if len(heredocs) > 0 {
+				// This newline begins the pending here-doc bodies; consume them
+				// (internal newlines and all) rather than splitting here.
+				buf.WriteByte(c)
+				i = consumeHeredocs(command, i+1, heredocs, &buf) - 1
+				heredocs = heredocs[:0]
+			} else {
+				segments = append(segments, buf.String())
+				buf.Reset()
+			}
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	segments = append(segments, buf.String())
+	return segments
+}
+
+// readHeredocDelim reads a here-document delimiter word from the start of s,
+// returning the delimiter (quotes removed) and the number of bytes consumed
+// (quotes included). A quoted delimiter (<<'EOF') is matched literally.
+func readHeredocDelim(s string) (string, int) {
+	if s == "" {
+		return "", 0
+	}
+	if s[0] == '\'' || s[0] == '"' {
+		q := s[0]
+		for j := 1; j < len(s); j++ {
+			if s[j] == q {
+				return s[1:j], j + 1
+			}
+		}
+		return s[1:], len(s) // unterminated quote: take the rest
+	}
+	j := 0
+	for j < len(s) && isHeredocDelimByte(s[j]) {
+		j++
+	}
+	return s[:j], j
+}
+
+func isHeredocDelimByte(b byte) bool {
+	return b == '_' || b == '-' || b == '.' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// consumeHeredocs appends the bodies of the pending here-documents (starting at
+// index i, the first body byte) to buf and returns the index just past the last
+// terminator word — leaving the newline that follows it for the caller to treat
+// as a normal command separator. Body text, terminator lines and their internal
+// newlines are copied verbatim.
+func consumeHeredocs(s string, i int, specs []heredocSpec, buf *strings.Builder) int {
+	n := len(s)
+	for si, spec := range specs {
+		// Bodies of stacked heredocs on one line are back-to-back: step over the
+		// newline that ended the previous terminator before reading the next.
+		if si > 0 && i < n && s[i] == '\n' {
+			buf.WriteByte('\n')
+			i++
+		}
+		for i < n {
+			lineEnd := i
+			for lineEnd < n && s[lineEnd] != '\n' {
+				lineEnd++
+			}
+			line := s[i:lineEnd]
+			cmp := line
+			if spec.stripTabs {
+				cmp = strings.TrimLeft(cmp, "\t")
+			}
+			if cmp == spec.delim {
+				buf.WriteString(line) // terminator line, without its trailing newline
+				i = lineEnd
+				break
+			}
+			if lineEnd < n {
+				buf.WriteString(s[i : lineEnd+1]) // body line incl. newline
+				i = lineEnd + 1
+			} else {
+				buf.WriteString(line) // final line, no trailing newline
+				i = lineEnd
+			}
+		}
+	}
+	return i
 }
 
 // bestEffortShellSanityCheck rejects empty / oversized commands and a tiny
