@@ -12,6 +12,7 @@ import { createMessageThread } from '../model/message-thread.js';
 import { isThreadClosed } from '../model/thread-navigation.js';
 import { ColumnSelectionState } from '../utils/column-selection.js';
 import { recordTape } from '../utils/event-tape.js';
+import { isAnyPopupOpen } from '../utils/popup-manager.js';
 // Columns are created via createElement('conversation-area' | 'properties-panel')
 // in _buildConversationColumn. Import the defining modules so the custom elements
 // are registered before this component ever instantiates one (otherwise an
@@ -695,6 +696,13 @@ class ConversationTab extends HTMLElement {
             break;
           }
           case 'Escape':
+            // Backstop: a popup/modal open over the conversation owns Escape —
+            // it dismisses itself via popup-manager, which stops the key from
+            // reaching this document-level handler. This guard only bites if the
+            // listener order ever flips (this handler running before that stop):
+            // then don't let Escape leak through to cancel a running turn behind
+            // the popup. Mirrors the same isAnyPopupOpen() gate in input-box.js.
+            if (isAnyPopupOpen()) break;
             // Cancel fires regardless of which column type is active (a
             // "Re-run command" click lands in the properties panel; gating
             // cancel on CONVERSATION-AREA left Escape a silent no-op there).

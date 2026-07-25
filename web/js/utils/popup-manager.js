@@ -360,8 +360,19 @@ if (typeof window !== 'undefined' && window.history && window.history.state
 }
 
 // Global Escape key handler — routes through the same dismissal path as Back.
+//
+// When a popup owns the Escape, stop the key here so no OTHER document-level
+// keydown listener acts on the same press. This module is evaluated at import
+// time, so this listener is registered before any runtime-added document
+// handler (notably the conversation grid's Escape→cancelLLMOperation in
+// conversation-tab.js); without `stopImmediatePropagation`, closeAllPopups()
+// would empty the registry and then that later handler — seeing isAnyPopupOpen()
+// already false — would go on to interrupt a running turn behind the popup.
+// Inner-element handlers (a menu/input's own Escape) fire at the target phase
+// before the event ever reaches document, so they are unaffected.
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isAnyPopupOpen()) {
+    e.stopImmediatePropagation();
     closeAllPopups();
   }
 });
