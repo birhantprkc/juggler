@@ -6329,6 +6329,113 @@ action-confirmation:focus {
     margin-right: 0.25em;
 }
 
+/* ===================================================================
+   Editable approval suggestions (subtle in-button pencil → in-place input)
+   Editing a suggested pattern is rare, so it must never cost layout: an
+   editable option is the same height as any other. The pencil sits quietly
+   inside the button; clicking it swaps that one button for a text input in
+   the SAME slot (only one is shown at a time), so the dialog never grows.
+   =================================================================== */
+.action-approval-option {
+    position: relative;
+}
+
+/* Reserve just enough room at the button's right edge for the pencil so a long
+   pattern never runs under it. Only editable options pay this cost. */
+.action-approval-option.editable .action-confirmation-button {
+    position: relative;
+    padding-right: 1.9rem;
+}
+
+/* Pencil: a quiet, low-opacity glyph pinned to the button's right edge. Barely
+   there at rest, a touch clearer when the button is hovered, fully lit only on
+   its own hover — so it stays out of the way until wanted. */
+.pattern-edit-btn {
+    position: absolute;
+    top: 50%;
+    right: 0.5rem;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    padding: 0;
+    border-radius: 0.1875rem;
+    color: currentcolor;
+    opacity: 0.35;
+    cursor: pointer;
+    transition: opacity 120ms ease, background 120ms ease;
+}
+
+.action-confirmation-button:hover .pattern-edit-btn {
+    opacity: 0.6;
+}
+
+.pattern-edit-btn:hover {
+    opacity: 1;
+    background: color-mix(in srgb, currentcolor 15%, transparent);
+}
+
+.pattern-edit-btn svg {
+    width: 0.8125rem;
+    height: 0.8125rem;
+}
+
+/* Edit mode: the button hands its slot to the input — no second row, no height
+   change. The input matches the button's padding + border so the swap is a
+   clean in-place morph rather than a jump. */
+.action-approval-option.editing .action-confirmation-button {
+    display: none;
+}
+
+/* Hidden by default; shown (as a column: input + notice) only while editing.
+   Scoped to :not([hidden]) so the `hidden` attribute genuinely hides it — the
+   earlier unconditional `display:flex` was overriding `hidden` and leaving a
+   box under every button. */
+.pattern-edit-field {
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.pattern-edit-field:not([hidden]) {
+    display: flex;
+}
+
+.pattern-edit-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.25rem;
+    border: 0.0625rem solid var(--accent-green, #15803d);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    outline: none;
+}
+
+/* An edit that would not approve the command turns the input's edge red. */
+.action-approval-option.revise-invalid .pattern-edit-input {
+    border-color: var(--accent-red, #dc2626);
+}
+
+/* Notice line under the input while editing: amber caution when the edit is
+   valid-but-broad, red reason when the edit is rejected. */
+.pattern-edit-notice {
+    font-size: 0.6875rem;
+    line-height: 1.3;
+    padding: 0 0.125rem;
+}
+
+.pattern-edit-notice.caution {
+    color: var(--accent-yellow, #d97706);
+}
+
+.pattern-edit-notice.error {
+    color: var(--accent-red, #dc2626);
+}
+
 /* Input box with confirmation pending */
 textarea[data-confirmation-pending="true"] {
     opacity: 0.6;

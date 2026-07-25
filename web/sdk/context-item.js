@@ -20,6 +20,7 @@ import { coerceToolInputToSchema } from './coerce-schema-types.js';
  * @typedef {import('./context-item-types.js').ItemSummary} ItemSummary
  * @typedef {import('./context-item-types.js').ApprovalConfig} ApprovalConfig
  * @typedef {import('./context-item-types.js').ApprovalSuggestion} ApprovalSuggestion
+ * @typedef {import('./context-item-types.js').RevisedApprovalSuggestion} RevisedApprovalSuggestion
  * @typedef {import('./context-item-types.js').ValidationResult} ValidationResult
  * @typedef {import('./context-item-types.js').PreparedItem} PreparedItem
  * @typedef {import('./context-item-types.js').OutcomeSuccess} OutcomeSuccess
@@ -570,6 +571,23 @@ class ContextItem {
   getApprovalSuggestions(_toolInput) {
     return [];
   }
+
+  // OPTIONAL HOOK — reviseApprovalSuggestion({ index, original, editedText, params })
+  //
+  // Implement this to make a single-pattern "don't ask again" suggestion
+  // editable in the approval dialog. When present, the framework renders a
+  // pencil affordance on each single-pattern button, turns the pattern into a
+  // text input, and calls this hook (debounced) on every edit; it gates the
+  // button on the returned `valid` flag, styles `notice` by `valid`, and
+  // persists the returned `rules`/`allowedPaths` verbatim on approval. Return a
+  // RevisedApprovalSuggestion (or a Promise of one; `null` is treated as
+  // invalid). `original` is the untouched suggestion at that index — inspect its
+  // `rules` vs `allowedPaths` to tell a command-glob edit from a folder-grant
+  // edit. `params` is the validated tool input the suggestions derive from.
+  //
+  // It is deliberately NOT defined on the base: an action WITHOUT this method
+  // keeps today's fixed buttons (the framework only wires the edit UI when the
+  // method exists). See ExecuteContextItem for a reference implementation.
 
   // ============================================================================
   // PERMISSION UI (plugin-owned)

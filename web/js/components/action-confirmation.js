@@ -12,6 +12,18 @@ import { escapeHtml } from '../../sdk/lib/html.js';
 const FOLDER_ICON_SVG = '<svg class="pattern-folder-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640H447l-80-80H160v480l96-320h684L837-217q-8 26-29.5 41.5T760-160H160Zm84-80h516l72-240H316l-72 240Zm0 0 72-240-72 240Zm-84-400v-80 80Z"/></svg>';
 
 /**
+ * Pencil glyph for the "edit this pattern" affordance. It sits quietly *inside*
+ * the single-pattern "don't ask again" button (a low-opacity span pinned to the
+ * right edge), staying out of the way since editing is rarely needed. The
+ * delegated click handler recognises a click on the pencil and enters edit mode
+ * instead of approving.
+ */
+const PENCIL_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M200-200h57l391-391-57-57-391 391v57Zm-80 80v-170l528-527q12-11 26.5-17t30.5-6q16 0 31 6t26 18l55 56q12 11 17.5 26t5.5 30q0 16-5.5 30.5T846-647L319-120H120Zm640-584-56-56 56 56Zm-141 85-28-29 57 57-29-28Z"/></svg>';
+
+/** Debounce (ms) between a keystroke in the edit input and the revise call. */
+const REVISE_DEBOUNCE_MS = 150;
+
+/**
  * @typedef {object} ApprovalOption
  * @property {string} label - Button label
  * @property {string} value - Value returned when selected ('yes', 'yes-always', 'yes-always:N', 'no', 'cancel')
@@ -56,6 +68,36 @@ class ActionConfirmation extends HTMLElement {
     /** @type {number} @private */
     this._focusedIndex = 0;
 
+    /**
+     * Optional plugin bridge that re-derives a single-pattern suggestion from
+     * the user's edited text. When null (the default) no pencil affordance is
+     * rendered and the component behaves exactly as before.
+     * @type {((index: number, editedText: string) => (import('juggler/context-item').RevisedApprovalSuggestion | null | Promise<import('juggler/context-item').RevisedApprovalSuggestion | null>))|null}
+     * @private
+     */
+    this._onRevise = null;
+
+    /**
+     * Per-option monotonic request tokens: guards against a stale async revise
+     * response resolving after a newer edit (last edit wins).
+     * @type {Record<number, number>} @private
+     */
+    this._reviseTokens = {};
+
+    /**
+     * Per-option debounce timers for revise requests.
+     * @type {Record<number, number>} @private
+     */
+    this._debounceTimers = {};
+
+    /**
+     * Per-option snapshot of the grant as it was when editing began, so Escape
+     * can restore the button to exactly its pre-edit state. Keyed by option
+     * index; present only while that option is being edited.
+     * @type {Record<number, {rules?: any, allowedPaths?: string[], patterns?: string[], pattern?: string}>} @private
+     */
+    this._editSnapshots = {};
+
     // Bind handlers for stable references (addEventListener/removeEventListener)
     this._handleButtonClick = this._handleButtonClick.bind(this);
     this._handleKeyDown = this._handleKeyDown.bind(this);
@@ -76,13 +118,48 @@ class ActionConfirmation extends HTMLElement {
    * Set confirmation options and promise resolver
    * @param {ActionConfirmationOptions} options - Button options
    * @param {(value: string) => void} resolve - Callback when user selects an option
+   * @param {{onRevise?: (index: number, editedText: string) => (import('juggler/context-item').RevisedApprovalSuggestion | null | Promise<import('juggler/context-item').RevisedApprovalSuggestion | null>)}} [extra] - Optional plugin bridge for editable suggestions. When `onRevise` is supplied, single-pattern "don't ask again" options gain an inline pencil edit affordance.
    */
-  setOptions(options, resolve) {
+  setOptions(options, resolve, extra = {}) {
     this._options = options;
     this._resolveCallback = resolve;
+    this._onRevise = extra.onRevise || null;
     this._focusedIndex = 0;
+    this._reviseTokens = {};
+    this._debounceTimers = {};
+    this._editSnapshots = {};
     this._render();
     this._attachEventListeners();
+  }
+
+  /**
+   * Is this option's suggestion editable in place? Editable requires a revise
+   * bridge, a grant to remember, and exactly ONE pattern — multi-pattern
+   * suggestions and the plain Yes/No buttons keep today's fixed rendering.
+   * @param {ApprovalOption} opt
+   * @returns {boolean} True if the option should show a pencil edit affordance
+   * @private
+   */
+  _isEditable(opt) {
+    if (!this._onRevise) return false;
+    const hasGrant = (Array.isArray(opt.rules) && opt.rules.length > 0)
+      || (Array.isArray(opt.allowedPaths) && opt.allowedPaths.length > 0);
+    if (!hasGrant) return false;
+    const patternCount = (opt.patterns && opt.patterns.length)
+      ? opt.patterns.length
+      : (opt.pattern ? 1 : 0);
+    return patternCount === 1;
+  }
+
+  /**
+   * The single pattern text pre-filled into an editable option's input.
+   * @param {ApprovalOption} opt
+   * @returns {string} The current pattern, or ''
+   * @private
+   */
+  _currentPattern(opt) {
+    if (opt.patterns && opt.patterns.length) return opt.patterns[0] || '';
+    return opt.pattern || '';
   }
 
   /**
@@ -100,18 +177,58 @@ class ActionConfirmation extends HTMLElement {
       <div class="action-approval-buttons">
         ${options.map((opt, index) => {
           const patternHtml = this._renderPatterns(opt);
+          const descriptor = patternHtml
+            ? `<span class="option-descriptor">${patternHtml}</span>`
+            : '';
+          const editable = this._isEditable(opt);
+          // The pencil lives INSIDE the button, pinned to its right edge — a
+          // subtle span, not its own row, so an editable option is the same
+          // height as any other. A span (not a nested <button>, which is invalid
+          // HTML) that the delegated click handler routes to edit mode.
+          const pencil = editable
+            ? `<span class="pattern-edit-btn" data-edit-index="${index}" role="button" title="Edit pattern" aria-label="Edit pattern">${PENCIL_ICON_SVG}</span>`
+            : '';
+          // The editor occupies the SAME slot as the button (only one is shown
+          // at a time — see the `.editing` CSS), so entering edit mode swaps the
+          // button for the input in place without changing the dialog's height.
+          const editField = editable
+            ? `<div class="pattern-edit-field" hidden>
+                 <input type="text" class="pattern-edit-input" data-edit-index="${index}" value="${escapeHtml(this._currentPattern(opt))}" aria-label="Edit approval pattern" />
+                 <div class="pattern-edit-notice" hidden></div>
+               </div>`
+            : '';
           return `
-          <button
-            class="action-confirmation-button ${opt.style}"
-            data-value="${opt.value}"
-            data-index="${index}"
-          >
-            ${escapeHtml(opt.label)}${patternHtml}
-          </button>
+          <div class="action-approval-option${editable ? ' editable' : ''}" data-index="${index}">
+            <button
+              class="action-confirmation-button ${opt.style}"
+              data-value="${opt.value}"
+              data-index="${index}"
+            >${escapeHtml(opt.label)}${descriptor}${pencil}</button>
+            ${editField}
+          </div>
         `;
         }).join('')}
       </div>
     `;
+
+    this._wireEditInputs();
+  }
+
+  /**
+   * Attach input + keydown listeners to each editable option's text input.
+   * Called after every render; the previous render's nodes (and their
+   * listeners) are discarded when innerHTML is replaced.
+   * @private
+   */
+  _wireEditInputs() {
+    if (!this._onRevise) return;
+    this.querySelectorAll('.pattern-edit-input').forEach((el) => {
+      const input = /** @type {HTMLInputElement} */ (el);
+      const index = Number(input.dataset.editIndex);
+      input.addEventListener('input', () => this._scheduleRevise(index, input.value));
+      input.addEventListener('keydown', (e) =>
+        this._handleInputKeyDown(/** @type {KeyboardEvent} */ (e), index));
+    });
   }
 
   /**
@@ -180,6 +297,18 @@ class ActionConfirmation extends HTMLElement {
    * @private
    */
   _handleFocusOut(event) {
+    // Click-away / tab-away while editing cancels the edit: restore the button
+    // to its pre-edit state, discarding the typed text (mirrors Escape). Done
+    // before the focus-ring cleanup below so it also fires when focus moves to
+    // another control INSIDE this widget (e.g. clicking the No button). Enter
+    // never reaches here — it approves and removes the widget's listeners first.
+    const losing = /** @type {HTMLElement|null} */ (event.target);
+    if (losing && losing.classList && losing.classList.contains('pattern-edit-input')) {
+      const editingRow = losing.closest('.action-approval-option');
+      if (editingRow && editingRow.classList.contains('editing')) {
+        this._exitEditMode(Number(losing.dataset.editIndex), { revert: true });
+      }
+    }
     const next = /** @type {Node|null} */ (event.relatedTarget);
     if (next && this.contains(next)) return;
     this.querySelectorAll('.action-confirmation-button').forEach(
@@ -198,14 +327,190 @@ class ActionConfirmation extends HTMLElement {
       return;
     }
 
-    const button = target.closest('.action-confirmation-button');
-    if (!button) {
+    // Pencil affordance: enter edit mode rather than approving. Handled first
+    // so a click on the pencil never falls through to the approve button.
+    const editBtn = target.closest('.pattern-edit-btn');
+    if (editBtn) {
+      event.preventDefault();
+      this._enterEditMode(Number(/** @type {HTMLElement} */ (editBtn).dataset.editIndex));
       return;
     }
 
-    const value = /** @type {HTMLElement} */ (button).dataset.value;
+    const button = /** @type {HTMLButtonElement|null} */ (target.closest('.action-confirmation-button'));
+    if (!button) {
+      return;
+    }
+    // A button disabled by an invalid edit must not resolve.
+    if (button.disabled) {
+      return;
+    }
+
+    const value = button.dataset.value;
     if (value) {
       this._resolve(value);
+    }
+  }
+
+  /**
+   * Enter edit mode for one option: reveal its input (pre-filled with the
+   * current pattern), hide the descriptor, focus the input, and run an initial
+   * validation so any broadness caution shows immediately.
+   * @param {number} index - Option index
+   * @private
+   */
+  _enterEditMode(index) {
+    const row = this.querySelector(`.action-approval-option[data-index="${index}"]`);
+    if (!row) return;
+    const field = /** @type {HTMLElement|null} */ (row.querySelector('.pattern-edit-field'));
+    const input = /** @type {HTMLInputElement|null} */ (row.querySelector('.pattern-edit-input'));
+    if (!field || !input) return;
+    // Snapshot the pre-edit grant so a cancel (Escape / click-away) restores the
+    // button to exactly what it showed before editing began.
+    const opt = this._options?.options?.[index];
+    this._editSnapshots[index] = opt
+      ? { rules: opt.rules, allowedPaths: opt.allowedPaths, patterns: opt.patterns, pattern: opt.pattern }
+      : {};
+    const descriptor = row.querySelector('.option-descriptor');
+    if (descriptor) descriptor.setAttribute('hidden', '');
+    field.hidden = false;
+    row.classList.add('editing');
+    input.focus();
+    input.select();
+    // Validate the pre-filled value now (bypassing the debounce) so an
+    // already-broad suggestion shows its caution the moment editing begins.
+    this._runRevise(index, input.value);
+  }
+
+  /**
+   * Leave edit mode for one option and put its button back in place — the exit
+   * path for both Escape and click-away (never for a committed Enter, which
+   * tears down the whole widget). With `revert`, the option's grant is restored
+   * from the snapshot taken in {@link _enterEditMode}, discarding the typed
+   * text; the descriptor is re-rendered either way. Idempotent: it no-ops unless
+   * the option is currently editing, so the focus move it triggers can't
+   * re-enter it.
+   * @param {number} index - Option index
+   * @param {{revert?: boolean}} [opts] - `revert: true` discards the edit
+   * @returns {HTMLButtonElement|null} The restored approve button, or null
+   * @private
+   */
+  _exitEditMode(index, { revert = false } = {}) {
+    const row = this.querySelector(`.action-approval-option[data-index="${index}"]`);
+    if (!row || !row.classList.contains('editing')) return null;
+    // Clear editing state FIRST so the focus move below is a no-op re-entry.
+    row.classList.remove('editing');
+    const snapshot = this._editSnapshots[index];
+    delete this._editSnapshots[index];
+    // Cancel any pending/in-flight revise so a late response can't reapply to a
+    // button that has left edit mode.
+    clearTimeout(this._debounceTimers[index]);
+    delete this._debounceTimers[index];
+    this._reviseTokens[index] = (this._reviseTokens[index] || 0) + 1;
+
+    const opt = this._options?.options?.[index];
+    if (revert && snapshot && opt) {
+      opt.rules = snapshot.rules;
+      opt.allowedPaths = snapshot.allowedPaths;
+      opt.patterns = snapshot.patterns;
+      opt.pattern = snapshot.pattern;
+    }
+
+    const descriptor = row.querySelector('.option-descriptor');
+    if (descriptor && opt) {
+      descriptor.innerHTML = this._renderPatterns(opt);
+      descriptor.removeAttribute('hidden');
+    }
+    const field = /** @type {HTMLElement|null} */ (row.querySelector('.pattern-edit-field'));
+    if (field) field.hidden = true;
+    const notice = /** @type {HTMLElement|null} */ (row.querySelector('.pattern-edit-notice'));
+    if (notice) {
+      notice.hidden = true;
+      notice.textContent = '';
+      notice.classList.remove('caution', 'error');
+    }
+    row.classList.remove('revise-invalid');
+    const button = /** @type {HTMLButtonElement|null} */ (row.querySelector('.action-confirmation-button'));
+    if (button) button.disabled = false;
+    return button;
+  }
+
+  /**
+   * Debounce a revise request for one option's edited text.
+   * @param {number} index - Option index
+   * @param {string} text - Current input text
+   * @private
+   */
+  _scheduleRevise(index, text) {
+    if (!this._onRevise) return;
+    clearTimeout(this._debounceTimers[index]);
+    this._debounceTimers[index] = /** @type {number} */ (/** @type {unknown} */ (
+      setTimeout(() => this._runRevise(index, text), REVISE_DEBOUNCE_MS)
+    ));
+  }
+
+  /**
+   * Call the revise bridge for one option and apply the result — unless a newer
+   * request superseded this one while it was in flight (stale-guard).
+   * @param {number} index - Option index
+   * @param {string} text - Edited text
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _runRevise(index, text) {
+    if (!this._onRevise) return;
+    const token = (this._reviseTokens[index] || 0) + 1;
+    this._reviseTokens[index] = token;
+    let result = null;
+    try {
+      result = await this._onRevise(index, text);
+    } catch {
+      result = null;
+    }
+    if (this._reviseTokens[index] !== token) return; // superseded by a newer edit
+    this._applyReviseResult(index, result);
+  }
+
+  /**
+   * Apply a revise result to one option: update its live grant (when valid),
+   * enable/disable the button, and render the notice (amber caution when valid,
+   * red reason when not).
+   * @param {number} index - Option index
+   * @param {import('juggler/context-item').RevisedApprovalSuggestion | null} result
+   * @private
+   */
+  _applyReviseResult(index, result) {
+    const opt = this._options?.options?.[index];
+    const row = this.querySelector(`.action-approval-option[data-index="${index}"]`);
+    if (!opt || !row) return;
+    const button = /** @type {HTMLButtonElement|null} */ (row.querySelector('.action-confirmation-button'));
+    const notice = /** @type {HTMLElement|null} */ (row.querySelector('.pattern-edit-notice'));
+    const valid = !!(result && result.valid);
+
+    if (valid && result) {
+      // A revised grant is one shape or the other, never both — clear the
+      // opposite so `_renderPatterns` and persistence read consistently.
+      if (result.rules) { opt.rules = result.rules; opt.allowedPaths = undefined; }
+      if (result.allowedPaths) { opt.allowedPaths = result.allowedPaths; opt.rules = undefined; }
+      if (result.patterns) { opt.patterns = result.patterns; opt.pattern = result.patterns[0]; }
+      const descriptor = row.querySelector('.option-descriptor');
+      if (descriptor) descriptor.innerHTML = this._renderPatterns(opt);
+    }
+
+    if (button) button.disabled = !valid;
+    row.classList.toggle('revise-invalid', !valid);
+
+    if (notice) {
+      const msg = (result && result.notice) ? result.notice : (valid ? '' : 'Invalid pattern');
+      if (msg) {
+        notice.textContent = msg;
+        notice.hidden = false;
+        notice.classList.toggle('caution', valid);
+        notice.classList.toggle('error', !valid);
+      } else {
+        notice.hidden = true;
+        notice.textContent = '';
+        notice.classList.remove('caution', 'error');
+      }
     }
   }
 
@@ -253,6 +558,39 @@ class ActionConfirmation extends HTMLElement {
         event.stopPropagation();
         this._disengage();
         break;
+    }
+  }
+
+  /**
+   * Keyboard handling while focus is inside an edit input.
+   *   - Return → commit and approve with the edited grant (if the button is
+   *     enabled); if the edit is invalid the button is disabled and nothing
+   *     happens, mirroring a click.
+   *   - ↑/↓ → caret movement; stop propagation so the widget's button
+   *     navigation doesn't hijack the keystroke.
+   *   - Escape → cancel the edit in place: restore the button to its pre-edit
+   *     grant and refocus it. Propagation is stopped so the widget-level Escape
+   *     does NOT also disengage the whole approval — cancelling an edit and
+   *     dismissing the approval are distinct actions.
+   * @param {KeyboardEvent} event
+   * @param {number} index - Option index of the input
+   * @private
+   */
+  _handleInputKeyDown(event, index) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      const button = /** @type {HTMLButtonElement|null} */ (
+        this.querySelector(`.action-confirmation-button[data-index="${index}"]`)
+      );
+      if (button && !button.disabled) button.click();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      const button = this._exitEditMode(index, { revert: true });
+      if (button) button.focus();
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.stopPropagation();
     }
   }
 
@@ -310,6 +648,12 @@ class ActionConfirmation extends HTMLElement {
    * @private
    */
   _resolve(value) {
+    // Cancel any in-flight edit debounce so a late revise can't touch a
+    // detached widget after we resolve.
+    for (const key of Object.keys(this._debounceTimers)) {
+      clearTimeout(this._debounceTimers[/** @type {any} */ (key)]);
+    }
+    this._debounceTimers = {};
     if (this._resolveCallback) {
       this._resolveCallback(value);
       this._resolveCallback = null;

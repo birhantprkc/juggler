@@ -878,5 +878,293 @@ export async function runTests(_ctx) {
     errors.push(`buildApprovalButtons multi-pattern render: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // =========================================================================
+  // Test 16: the pencil edit affordance renders ONLY on single-pattern
+  // "don't ask again" options when an onRevise bridge is supplied — never on
+  // Yes/No, never on multi-pattern options, and never without onRevise.
+  // =========================================================================
+  try {
+    const options = [
+      { label: 'Yes', value: 'yes', style: 'primary' },
+      { label: "Yes + Don't Ask Again", value: 'yes-always:0', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'git push *' }], patterns: ['git push *'] },
+      { label: "Yes + Don't Ask Again", value: 'yes-always:1', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'go version' }, { kind: 'glob', value: 'go list *' }],
+        patterns: ['go version', 'go list *'] },
+      { label: 'No', value: 'no', style: 'secondary' }
+    ];
+
+    // Without onRevise: no pencils anywhere.
+    const elNoRevise = /** @type {any} */ (document.createElement('action-confirmation'));
+    elNoRevise.setOptions({ options }, () => {});
+    assert(elNoRevise.querySelectorAll('.pattern-edit-btn').length === 0,
+      'no pencils when onRevise is absent');
+
+    // With onRevise: exactly one pencil, on the single-pattern option.
+    const el = /** @type {any} */ (document.createElement('action-confirmation'));
+    el.setOptions({ options }, () => {}, { onRevise: () => ({ valid: true, patterns: ['x'], rules: [] }) });
+    const pencils = el.querySelectorAll('.pattern-edit-btn');
+    assert(pencils.length === 1, `expected exactly one pencil, got ${pencils.length}`);
+    assert(pencils[0].dataset.editIndex === '1',
+      `pencil must be on the single-pattern option (index 1), got ${pencils[0].dataset.editIndex}`);
+    // The multi-pattern row (index 2) and Yes/No rows carry no pencil.
+    const row2 = el.querySelector('.action-approval-option[data-index="2"]');
+    assert(row2 && !row2.querySelector('.pattern-edit-btn'), 'multi-pattern option must NOT be editable');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`pencil rendering: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 17: clicking the pencil swaps the descriptor for a text input
+  // pre-filled with the current pattern.
+  // =========================================================================
+  try {
+    const options = [
+      { label: "Yes + Don't Ask Again", value: 'yes-always:0', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'git push *' }], patterns: ['git push *'] },
+      { label: 'No', value: 'no', style: 'secondary' }
+    ];
+    const el = /** @type {any} */ (document.createElement('action-confirmation'));
+    document.body.appendChild(el);
+    el.setOptions({ options }, () => {}, { onRevise: () => ({ valid: true, patterns: ['git push *'], rules: options[0].rules }) });
+
+    const row = el.querySelector('.action-approval-option[data-index="0"]');
+    const input = row.querySelector('.pattern-edit-input');
+    const field = row.querySelector('.pattern-edit-field');
+    assert(field.hidden, 'edit field starts hidden');
+    assert(input.value === 'git push *', `input must be pre-filled with the current pattern, got '${input.value}'`);
+
+    // Enter edit mode via the pencil (reveals the field synchronously).
+    row.querySelector('.pattern-edit-btn').click();
+    assert(!field.hidden, 'edit field becomes visible after clicking the pencil');
+    assert(row.querySelector('.option-descriptor').hasAttribute('hidden'),
+      'descriptor is hidden while editing');
+
+    el.remove();
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`pencil swaps to input: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 18: live validation — a valid revise enables the button and shows an
+  // amber caution notice; an invalid revise disables the button and shows a red
+  // reason notice.
+  // =========================================================================
+  try {
+    const options = [
+      { label: "Yes + Don't Ask Again", value: 'yes-always:0', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'git push *' }], patterns: ['git push *'] },
+      { label: 'No', value: 'no', style: 'secondary' }
+    ];
+    let next = null;
+    const el = /** @type {any} */ (document.createElement('action-confirmation'));
+    el.setOptions({ options }, () => {}, { onRevise: () => next });
+
+    const row = el.querySelector('.action-approval-option[data-index="0"]');
+    const button = row.querySelector('.action-confirmation-button');
+    const notice = row.querySelector('.pattern-edit-notice');
+
+    // Invalid → button disabled, red notice.
+    next = { valid: false, notice: 'This pattern wouldn\'t approve this command', patterns: ['nope'], rules: [] };
+    await el._runRevise(0, 'nope');
+    assert(button.disabled === true, 'invalid revise must disable the button');
+    assert(!notice.hidden && notice.classList.contains('error'), 'invalid revise shows a red notice');
+    assert(row.classList.contains('revise-invalid'), 'row is flagged revise-invalid');
+
+    // Valid + broad → button enabled, amber caution notice, grant updated.
+    next = { valid: true, notice: 'Very broad — approves many commands', patterns: ['*'], rules: [{ kind: 'glob', value: '*' }] };
+    await el._runRevise(0, '*');
+    assert(button.disabled === false, 'valid revise must enable the button');
+    assert(!notice.hidden && notice.classList.contains('caution'), 'valid+broad revise shows an amber caution');
+    assert(options[0].rules[0].value === '*', 'valid revise updates the option grant in place');
+
+    // Valid + no notice → notice hidden.
+    next = { valid: true, patterns: ['git push origin main'], rules: [{ kind: 'glob', value: 'git push origin main' }] };
+    await el._runRevise(0, 'git push origin main');
+    assert(notice.hidden, 'a clean valid revise hides the notice');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`live validation: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 19: stale-response guard — when two edits are in flight and the OLDER
+  // resolves last, the newer result wins.
+  // =========================================================================
+  try {
+    const options = [
+      { label: "Yes + Don't Ask Again", value: 'yes-always:0', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'git push *' }], patterns: ['git push *'] },
+      { label: 'No', value: 'no', style: 'secondary' }
+    ];
+    /** @type {(v:any)=>void} */ let resolveA = () => {};
+    /** @type {(v:any)=>void} */ let resolveB = () => {};
+    const pA = new Promise((r) => { resolveA = r; });
+    const pB = new Promise((r) => { resolveB = r; });
+    let call = 0;
+    const el = /** @type {any} */ (document.createElement('action-confirmation'));
+    el.setOptions({ options }, () => {}, { onRevise: () => (++call === 1 ? pA : pB) });
+
+    const row = el.querySelector('.action-approval-option[data-index="0"]');
+    const button = row.querySelector('.action-confirmation-button');
+
+    const p1 = el._runRevise(0, 'aaa'); // older request → pA
+    const p2 = el._runRevise(0, 'bbb'); // newer request → pB
+
+    // Newer resolves first (valid), then the older resolves LAST (invalid).
+    resolveB({ valid: true, patterns: ['bbb'], rules: [{ kind: 'glob', value: 'bbb' }] });
+    await p2;
+    resolveA({ valid: false, notice: 'stale reject', patterns: ['aaa'], rules: [] });
+    await p1;
+
+    assert(button.disabled === false, 'newer (valid) result must win over the older (invalid) one');
+    assert(options[0].rules[0].value === 'bbb', 'the newer revise grant is the one applied');
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`stale-response guard: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 20: keyboard — Return in a valid input approves with the revised
+  // grant; Return in an invalid input does nothing.
+  // =========================================================================
+  try {
+    const options = [
+      { label: "Yes + Don't Ask Again", value: 'yes-always:0', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'git push *' }], patterns: ['git push *'] },
+      { label: 'No', value: 'no', style: 'secondary' }
+    ];
+
+    // Valid input → Return approves.
+    let resolved = /** @type {string|undefined} */ (undefined);
+    const reviseResult = { valid: true, patterns: ['git push origin main'], rules: [{ kind: 'glob', value: 'git push origin main' }] };
+    const el = /** @type {any} */ (document.createElement('action-confirmation'));
+    document.body.appendChild(el);
+    el.setOptions({ options }, (v) => { resolved = v; }, { onRevise: () => reviseResult });
+    el._enterEditMode(0);
+    const input = el.querySelector('.pattern-edit-input');
+    input.value = 'git push origin main';
+    await el._runRevise(0, input.value);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    assert(resolved === 'yes-always:0', `Return in a valid input must approve, got '${resolved}'`);
+    assert(options[0].rules[0].value === 'git push origin main', 'approval persists the revised grant');
+
+    // Invalid input → Return does nothing.
+    const options2 = [
+      { label: "Yes + Don't Ask Again", value: 'yes-always:0', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'git push *' }], patterns: ['git push *'] },
+      { label: 'No', value: 'no', style: 'secondary' }
+    ];
+    let resolved2 = /** @type {string|undefined} */ (undefined);
+    const el2 = /** @type {any} */ (document.createElement('action-confirmation'));
+    document.body.appendChild(el2);
+    el2.setOptions({ options: options2 }, (v) => { resolved2 = v; },
+      { onRevise: () => ({ valid: false, notice: 'no match', patterns: ['zzz'], rules: [] }) });
+    el2._enterEditMode(0);
+    const input2 = el2.querySelector('.pattern-edit-input');
+    input2.value = 'zzz';
+    await el2._runRevise(0, input2.value);
+    input2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    assert(resolved2 === undefined, 'Return in an invalid input must NOT approve');
+
+    el.remove();
+    el2.remove();
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`keyboard revise: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 21: Escape while editing cancels the edit in place — it restores the
+  // button (not disengage the whole approval) and discards the typed text,
+  // reverting the option's grant to its pre-edit value.
+  // =========================================================================
+  try {
+    const options = [
+      { label: "Yes + Don't Ask Again", value: 'yes-always:0', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'git push *' }], patterns: ['git push *'] },
+      { label: 'No', value: 'no', style: 'secondary' }
+    ];
+    let resolved = /** @type {string|undefined} */ (undefined);
+    const el = /** @type {any} */ (document.createElement('action-confirmation'));
+    document.body.appendChild(el);
+    el.setOptions({ options }, (v) => { resolved = v; },
+      { onRevise: () => ({ valid: true, patterns: ['git push origin main'], rules: [{ kind: 'glob', value: 'git push origin main' }] }) });
+
+    const row = el.querySelector('.action-approval-option[data-index="0"]');
+    const field = row.querySelector('.pattern-edit-field');
+    el._enterEditMode(0);
+    const input = row.querySelector('.pattern-edit-input');
+    input.value = 'git push origin main';
+    await el._runRevise(0, input.value);
+    assert(!field.hidden && row.classList.contains('editing'), 'is editing before Escape');
+    // The valid revise updated the live grant; Escape must roll it back.
+    assert(options[0].rules[0].value === 'git push origin main', 'grant updated while editing');
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    assert(field.hidden && !row.classList.contains('editing'), 'Escape leaves edit mode');
+    assert(!row.querySelector('.option-descriptor').hasAttribute('hidden'),
+      'the button descriptor is shown again after Escape');
+    assert(options[0].rules[0].value === 'git push *', 'Escape reverts the grant to its pre-edit value');
+    assert(resolved === undefined, 'Escape cancels the edit only — it must NOT resolve the approval');
+
+    el.remove();
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`escape cancels edit: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // =========================================================================
+  // Test 22: clicking away from the edit input (focusout) also cancels the
+  // edit — restoring the button and reverting the grant, exactly like Escape.
+  // =========================================================================
+  try {
+    const options = [
+      { label: "Yes + Don't Ask Again", value: 'yes-always:0', style: 'primary-always',
+        rules: [{ kind: 'glob', value: 'git push *' }], patterns: ['git push *'] },
+      { label: 'No', value: 'no', style: 'secondary' }
+    ];
+    const el = /** @type {any} */ (document.createElement('action-confirmation'));
+    document.body.appendChild(el);
+    el.setOptions({ options }, () => {},
+      { onRevise: () => ({ valid: true, patterns: ['git push origin main'], rules: [{ kind: 'glob', value: 'git push origin main' }] }) });
+
+    const row = el.querySelector('.action-approval-option[data-index="0"]');
+    const field = row.querySelector('.pattern-edit-field');
+    el._enterEditMode(0);
+    const input = row.querySelector('.pattern-edit-input');
+    input.value = 'git push origin main';
+    await el._runRevise(0, input.value);
+    assert(row.classList.contains('editing'), 'is editing before blur');
+
+    // Simulate focus leaving the input for somewhere outside the widget.
+    // A focusout with no relatedTarget reads as "focus left the widget", which
+    // is the click-away case (the handler treats null relatedTarget as outside).
+    input.dispatchEvent(new Event('focusout', { bubbles: true }));
+
+    assert(field.hidden && !row.classList.contains('editing'), 'blur leaves edit mode');
+    assert(options[0].rules[0].value === 'git push *', 'blur reverts the grant to its pre-edit value');
+    assert(!row.querySelector('.option-descriptor').hasAttribute('hidden'),
+      'the button descriptor is shown again after blur');
+
+    el.remove();
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`click-away cancels edit: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   return { passed, failed, errors };
 }

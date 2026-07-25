@@ -9,6 +9,7 @@ of changes; this project follows semantic versioning.
 - Added OpenCode Zen provider — a multi-model gateway (Claude, GPT, Gemini, DeepSeek, and more)
 - Some minor fixes for thinking mode names, a few UI issues, light/dark mode on linux
 - Handling for bash commands with newlines inside string literals
+- "Don't ask again" approval patterns can now be edited in place before saving
 
 ## [0.4.5] - 2026-07-24
 

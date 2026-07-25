@@ -20,6 +20,7 @@
  */
 
 import { isCommandAutoApproved, suggestApprovalPatterns, tokenize, posixNormalize, matchesGlob, isGrantableRoot, isPathInsideAllowedRoots } from '../../extensions/juggler-core/context-items/execute/command-approval.js';
+import ExecuteContextItem from '../../extensions/juggler-core/context-items/execute-context-item.js';
 
 const PROJECT_ROOT = '/Users/jules/code/juggler';
 const TEST_HOME = '/Users/jules';
@@ -1596,6 +1597,202 @@ export async function runTests() {
       failed++;
       errors.push(`tokenize subst: "${cmd}" token[${idx}].subst want ${JSON.stringify(wantSubst)}, got ${JSON.stringify(got)}`);
     } else passed++;
+  }
+
+  // === reviseApprovalSuggestion (editable suggested approval patterns) ===
+  //
+  // Drives the plugin hook directly through a real ExecuteContextItem instance
+  // backed by stub session/messageThread, so validation is exactly what the
+  // original suggestion buttons guaranteed — the edit just substitutes the
+  // user's text before the dry-run.
+  {
+    /**
+     * Build an ExecuteContextItem whose messageThread/session are minimal stubs.
+     * @param {{allowedPaths?: string[], patterns?: string[]}} [state]
+     * @returns {ExecuteContextItem} A probe item wired to the stub context
+     */
+    const makeItem = (state = {}) => {
+      const session = { platform: 'darwin', home: TEST_HOME };
+      const mt = {
+        getAllowedPaths: () => state.allowedPaths || [],
+        getRulesFor: (/** @type {string} */ key) => key === 'execute'
+          ? (state.patterns || []).map(v => ({ kind: 'glob', value: v, scope: 'conversation' }))
+          : []
+      };
+      return new ExecuteContextItem({
+        id: 'revise-probe',
+        session,
+        conversation: { session },
+        messageThread: mt
+      });
+    };
+
+    /**
+     * @param {{name: string, ok: boolean, msg?: string}} r
+     */
+    const record = (r) => {
+      if (r.ok) passed++;
+      else { failed++; errors.push(`revise/${r.name}: ${r.msg || 'failed'}`); }
+    };
+
+    // -- Command-glob edits (original carries `rules`) --------------------------
+    const globOriginal = { rules: [{ kind: 'glob', value: 'git push *', scope: 'conversation' }], patterns: ['git push *'] };
+
+    try {
+      // Narrowing to an exact command that still matches stays valid.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: globOriginal, editedText: 'git push origin main',
+        params: { command: 'git push origin main' }
+      });
+      record({ name: 'glob narrow stays valid', ok: res.valid === true && !!res.rules
+        && res.rules[0].value === 'git push origin main' && res.patterns[0] === 'git push origin main'
+        && !res.notice, msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'glob narrow stays valid', ok: false, msg: String(e) }); }
+
+    try {
+      // Narrowing so far it no longer matches the command → invalid, no-match notice.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: globOriginal, editedText: 'git pull *',
+        params: { command: 'git push origin main' }
+      });
+      record({ name: 'glob over-narrow rejected', ok: res.valid === false && /wouldn't approve/.test(res.notice || ''),
+        msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'glob over-narrow rejected', ok: false, msg: String(e) }); }
+
+    try {
+      // Empty text → invalid.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: globOriginal, editedText: '   ',
+        params: { command: 'git push origin main' }
+      });
+      record({ name: 'glob empty rejected', ok: res.valid === false, msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'glob empty rejected', ok: false, msg: String(e) }); }
+
+    try {
+      // Over-length text → invalid.
+      const item = makeItem();
+      const long = 'echo ' + 'a'.repeat(200);
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: globOriginal, editedText: long,
+        params: { command: 'git push origin main' }
+      });
+      record({ name: 'glob over-length rejected', ok: res.valid === false && /too long/i.test(res.notice || ''),
+        msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'glob over-length rejected', ok: false, msg: String(e) }); }
+
+    try {
+      // Widening to a bare `*` is valid but flagged broad (amber caution).
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: globOriginal, editedText: '*',
+        params: { command: 'git push origin main' }
+      });
+      record({ name: 'glob widen-to-star broad', ok: res.valid === true && /broad/i.test(res.notice || ''),
+        msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'glob widen-to-star broad', ok: false, msg: String(e) }); }
+
+    try {
+      // An interpreter wildcard (`bash *`) is broad; must warn even though the
+      // command matches. Use a bash command so the dry-run approves.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: globOriginal, editedText: 'bash *',
+        params: { command: 'bash deploy.sh' }
+      });
+      record({ name: 'glob interpreter wildcard broad', ok: res.valid === true && /broad/i.test(res.notice || ''),
+        msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'glob interpreter wildcard broad', ok: false, msg: String(e) }); }
+
+    // -- Folder-grant edits (original carries `allowedPaths`) -------------------
+    // A read-only command reaching outside the roots; granting the folder covers it.
+    const grantOriginal = { allowedPaths: ['/Users/jules/notes'], patterns: ['~/notes'] };
+    const grantCommand = 'cat ~/notes/todo.md';
+
+    try {
+      // Editing to a deeper folder that still contains the target stays valid.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: grantOriginal, editedText: '~/notes/sub',
+        params: { command: 'cat ~/notes/sub/todo.md' }
+      });
+      record({ name: 'grant deeper stays valid', ok: res.valid === true && !!res.allowedPaths
+        && res.allowedPaths[0] === '/Users/jules/notes/sub' && res.patterns[0] === '~/notes/sub',
+      msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'grant deeper stays valid', ok: false, msg: String(e) }); }
+
+    try {
+      // A sibling folder that does NOT contain the target → invalid, no-cover notice.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: grantOriginal, editedText: '~/other',
+        params: { command: grantCommand }
+      });
+      record({ name: 'grant sibling rejected', ok: res.valid === false && /wouldn't cover/.test(res.notice || ''),
+        msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'grant sibling rejected', ok: false, msg: String(e) }); }
+
+    try {
+      // Tilde round-trips: editing to an absolute path returns the tilde display.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: grantOriginal, editedText: '/Users/jules/notes',
+        params: { command: grantCommand }
+      });
+      record({ name: 'grant tilde round-trip', ok: res.valid === true && res.patterns[0] === '~/notes',
+        msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'grant tilde round-trip', ok: false, msg: String(e) }); }
+
+    try {
+      // Granting the home dir itself is not grantable → invalid.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: grantOriginal, editedText: '~',
+        params: { command: grantCommand }
+      });
+      record({ name: 'grant home rejected', ok: res.valid === false && /grantable|valid folder/i.test(res.notice || ''),
+        msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'grant home rejected', ok: false, msg: String(e) }); }
+
+    try {
+      // A non-absolute, non-tilde path is not a valid folder.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: grantOriginal, editedText: 'relative/dir',
+        params: { command: grantCommand }
+      });
+      record({ name: 'grant relative rejected', ok: res.valid === false, msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'grant relative rejected', ok: false, msg: String(e) }); }
+
+    try {
+      // A direct child of home (`~/code`) that covers the command is valid but
+      // flagged broad.
+      const item = makeItem();
+      const res = item.reviseApprovalSuggestion({
+        index: 0, original: grantOriginal, editedText: '~/code',
+        params: { command: 'cat ~/code/notes.md' }
+      });
+      record({ name: 'grant home-child broad', ok: res.valid === true && /broad/i.test(res.notice || ''),
+        msg: JSON.stringify(res) });
+    } catch (e) { record({ name: 'grant home-child broad', ok: false, msg: String(e) }); }
+
+    try {
+      // Shape routing: the SAME editedText routes to glob logic for a `rules`
+      // original and folder logic for an `allowedPaths` original.
+      const item = makeItem();
+      const asGlob = item.reviseApprovalSuggestion({
+        index: 0, original: globOriginal, editedText: '/Users/jules/notes',
+        params: { command: grantCommand }
+      });
+      const asGrant = item.reviseApprovalSuggestion({
+        index: 0, original: grantOriginal, editedText: '/Users/jules/notes',
+        params: { command: grantCommand }
+      });
+      record({ name: 'shape routes by original', ok: !!asGlob.rules && !asGlob.allowedPaths
+        && !!asGrant.allowedPaths && !asGrant.rules, msg: `${JSON.stringify(asGlob)} | ${JSON.stringify(asGrant)}` });
+    } catch (e) { record({ name: 'shape routes by original', ok: false, msg: String(e) }); }
   }
 
   return { passed, failed, errors };

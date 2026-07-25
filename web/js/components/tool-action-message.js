@@ -41,7 +41,7 @@ import { iconOptionsForItem } from '../utils/item-badge.js';
 /**
  * action-confirmation element with setOptions method
  * @typedef {import('./action-confirmation.js').ActionConfirmationOptions} ActionConfirmationOptions
- * @typedef {HTMLElement & { setOptions: (options: ActionConfirmationOptions, resolve: (value: string) => void) => void }} ActionConfirmationElement
+ * @typedef {HTMLElement & { setOptions: (options: ActionConfirmationOptions, resolve: (value: string) => void, extra?: {onRevise?: Function}) => void }} ActionConfirmationElement
  */
 
 /**
@@ -695,6 +695,14 @@ class ToolActionMessage extends HTMLElement {
     if (!approvalOptions) return;
 
     const messageThread = this._getMessageThread();
+
+    // Snapshot the original suggestions before the edit UI mutates any option's
+    // live grant in place, so each revise call sees the untouched suggestion.
+    const originalOptions = (approvalOptions.options || []).map((o) => ({ ...o }));
+    // Only wire the edit UI when the owning action implements the optional hook;
+    // otherwise the component renders today's fixed buttons.
+    const onRevise = this._buildReviseHook(item, originalOptions);
+
     const buttonsEl = /** @type {ActionConfirmationElement} */ (
       document.createElement('action-confirmation')
     );
@@ -718,8 +726,51 @@ class ToolActionMessage extends HTMLElement {
       } else {
         messageThread.resolveApproval(item.get('toolUseId'), response);
       }
-    });
+    }, onRevise ? { onRevise } : undefined);
     container.appendChild(buttonsEl);
+  }
+
+  /**
+   * Build the optional revise bridge the edit UI calls when the user edits a
+   * suggested pattern. Returns null unless the owning action implements
+   * `reviseApprovalSuggestion` — in which case no pencil affordance is rendered
+   * and the buttons stay fixed. The returned callback maps the component's
+   * option index back to the untouched suggestion snapshot and forwards the edit
+   * (with the validated tool input) to the plugin.
+   * @param {ToolActionItem} item - The tool action item
+   * @param {Array<Record<string, any>>} originalOptions - Untouched option snapshots
+   * @returns {((index: number, editedText: string) => Promise<any>)|null} Revise callback, or null
+   * @private
+   */
+  _buildReviseHook(item, originalOptions) {
+    const toolName = item.get('toolName');
+    if (!toolName) return null;
+    const ActionClass = contextItemRegistry.getByToolName(toolName);
+    if (!ActionClass) return null;
+    const conversation = this._getConversation();
+    const actionInstance = this._createActionForUI(ActionClass, toolName, conversation);
+    if (!actionInstance || typeof actionInstance.reviseApprovalSuggestion !== 'function') {
+      return null;
+    }
+    const toolInput = item.get('toolInput');
+    const params = toolInput?.toJSON ? toolInput.toJSON() : (toolInput || {});
+    return async (index, editedText) => {
+      const original = originalOptions[index];
+      if (!original) return null;
+      const m = /^yes-always:(\d+)$/.exec(String(original.value));
+      const suggestionIndex = m ? Number(m[1]) : index;
+      try {
+        return await actionInstance.reviseApprovalSuggestion({
+          index: suggestionIndex,
+          original,
+          editedText,
+          params
+        });
+      } catch (error) {
+        console.error('[ToolActionMessage] reviseApprovalSuggestion failed:', error);
+        return null;
+      }
+    };
   }
 
   /**

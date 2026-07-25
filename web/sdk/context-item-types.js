@@ -52,6 +52,25 @@
  */
 
 /**
+ * A single-pattern suggestion re-derived from the user's edited text by the
+ * optional `reviseApprovalSuggestion` hook (see `ContextItem`).
+ *
+ * The framework renders a pencil affordance on each editable "don't ask again"
+ * button (single-pattern options only, when the action implements the hook),
+ * turns the pattern into a text input, and calls the hook — debounced — on each
+ * edit. It gates the button on `valid`, styles `notice` by `valid` (amber
+ * caution when valid, red reason when not), and on approval persists the
+ * returned `rules`/`allowedPaths` verbatim. The framework holds no glob or path
+ * semantics; every match/broadness judgment lives in the plugin.
+ * @typedef {object} RevisedApprovalSuggestion
+ * @property {Array<{kind: string, value: any, scope?: 'session'|'conversation'}>} [rules] - Grant derived from the edited text (command-glob edits). Persisted verbatim on approval; same shape as the original suggestion's `rules`.
+ * @property {string[]} [allowedPaths] - Grant derived from the edited text (folder-grant edits). Mutually exclusive with `rules`.
+ * @property {string[]} patterns - Normalized display string(s) rendered back into the input (one element; the plugin may trim/canonicalize).
+ * @property {boolean} valid - When false the framework disables the button and blocks Return. Set false when the edit is syntactically invalid or wouldn't approve the current command.
+ * @property {string} [notice] - Optional human message, styled by `valid`: amber caution when valid (a "dangerously broad" warning), red reason when invalid.
+ */
+
+/**
  * Validation result from validate() - simplified validation-only return type.
  * @typedef {object} ValidationResult
  * @property {boolean} valid - Whether params are valid for execution

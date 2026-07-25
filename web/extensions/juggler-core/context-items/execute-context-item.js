@@ -6,7 +6,7 @@
 import ContextItem from 'juggler/context-item';
 import { shell, shellStreaming, shellBackground, MAX_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { smartTruncate, createHighlightedCode, createSummaryWithSubtitle } from 'juggler/ui';
-import { isCommandAutoApproved, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH } from './execute/command-approval.js';
+import { isCommandAutoApproved, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
 import { renderExecutePermissionSection } from './execute/permission-section.js';
 
 /**
@@ -337,6 +337,25 @@ class ExecuteContextItem extends ContextItem {
   }
 
   /**
+   * Expand a `~`-collapsed display path back to an absolute path — the inverse
+   * of {@link _tildeify}. A user editing a folder grant sees and types the
+   * tilde form; the persisted grant must be absolute, so we re-expand before
+   * validating. Anything that isn't a tilde path (already absolute, or
+   * relative) is returned unchanged for the caller to judge.
+   * @param {string} p - Display path, possibly `~`-collapsed
+   * @param {string} home - Backend home dir (may be empty)
+   * @returns {string} Absolute path, or `p` unchanged if not a tilde path
+   */
+  static _untildeify(p, home) {
+    if (!p) return '';
+    if (!home) return p;
+    const base = home.endsWith('/') ? home.slice(0, -1) : home;
+    if (p === '~') return base;
+    if (p.startsWith('~/')) return base + p.slice(1);
+    return p;
+  }
+
+  /**
    * Suggest escalating-breadth auto-approval rule-sets for this command.
    *
    * Defers to the analyser's {@link suggestApprovalPatterns}, which decomposes
@@ -430,6 +449,153 @@ class ExecuteContextItem extends ContextItem {
       rules: [{ kind: 'glob', value: pattern, scope: 'conversation' }],
       patterns: [pattern]
     }];
+  }
+
+  /**
+   * Re-derive a single-pattern approval suggestion from the user's edited text.
+   *
+   * The framework's approval dialog lets the user edit one suggested pattern in
+   * place — narrowing, widening, correcting a command glob, or retargeting a
+   * folder grant — before "Yes + Don't Ask Again" remembers it. This hook is
+   * the plugin's text↔rule bridge: it takes the raw edited text and returns a
+   * fully-formed, dry-run-verified suggestion the framework persists verbatim.
+   *
+   * The shape is inferred from `original`: a suggestion carrying `allowedPaths`
+   * is a folder grant (edit routes to {@link _reviseFolderGrant}); anything else
+   * is a command glob ({@link _reviseCommandGlob}). Both reuse the exact
+   * machinery {@link getApprovalSuggestions} does — the `isCommandAutoApproved`
+   * dry-run — so an edited rule that wouldn't actually approve the command comes
+   * back `valid: false` and the framework blocks saving it.
+   * @param {{index: number, original: {rules?: Array<object>, allowedPaths?: string[]}, editedText: string, params: Record<string, unknown>}} args
+   * @returns {{rules?: Array<object>, allowedPaths?: string[], patterns: string[], valid: boolean, notice?: string}} Re-derived suggestion
+   */
+  reviseApprovalSuggestion({ original, editedText, params }) {
+    const command = /** @type {string} */ (params?.command || params?.code || '');
+    const mt = this.messageThread;
+    const platform = this.conversation.session?.platform || 'darwin';
+    const home = this.conversation.session?.home || '';
+    const allowedRoots = mt?.getAllowedPaths?.() || [];
+    const patterns = (mt?.getRulesFor('execute') || [])
+      .filter(r => r.kind === 'glob')
+      .map(r => /** @type {string} */ (r.value));
+    const writeEnabled = ExecuteContextItem._isFileWritingEnabled(mt);
+
+    /**
+     * Dry-run the edited grant against the original command — the same guard
+     * {@link getApprovalSuggestions} uses, so an edit is accepted only if it
+     * would genuinely auto-approve the command in front of the user.
+     * @param {{extraPatterns?: string[], extraAllowedRoots?: string[]}} [extras]
+     * @returns {boolean} true if the added grant would approve the command
+     */
+    const approvesWith = (extras = {}) => isCommandAutoApproved(command, {
+      platform,
+      home,
+      allowedRoots: [...allowedRoots, ...(extras.extraAllowedRoots || [])],
+      patterns: [...patterns, ...(extras.extraPatterns || [])],
+      writeEnabled
+    });
+
+    const text = typeof editedText === 'string' ? editedText.trim() : '';
+    if (!command) return { valid: false, patterns: text ? [text] : [], notice: 'No command to approve' };
+
+    const isPathGrant = Array.isArray(original?.allowedPaths) && original.allowedPaths.length > 0;
+    return isPathGrant
+      ? ExecuteContextItem._reviseFolderGrant(text, home, approvesWith)
+      : ExecuteContextItem._reviseCommandGlob(text, approvesWith);
+  }
+
+  /**
+   * Re-derive a command-glob suggestion from edited text. Blocks empty /
+   * over-length text and any glob that wouldn't approve the command; warns
+   * (but allows) when the glob is dangerously broad.
+   * @param {string} text - Edited glob pattern (already trimmed)
+   * @param {(extras?: {extraPatterns?: string[]}) => boolean} approvesWith - Dry-run guard
+   * @returns {{rules?: Array<object>, patterns: string[], valid: boolean, notice?: string}} Re-derived suggestion
+   */
+  static _reviseCommandGlob(text, approvesWith) {
+    if (!text) return { valid: false, patterns: [], notice: 'Enter a command pattern' };
+    if (text.length > MAX_SUGGESTED_PATTERN_LENGTH) {
+      return { valid: false, patterns: [text], notice: 'Pattern is too long' };
+    }
+    const rules = [{ kind: 'glob', value: text, scope: 'conversation' }];
+    if (!approvesWith({ extraPatterns: [text] })) {
+      return { rules, patterns: [text], valid: false, notice: "This pattern wouldn't approve this command" };
+    }
+    const notice = ExecuteContextItem._broadGlobNotice(text);
+    return notice
+      ? { rules, patterns: [text], valid: true, notice }
+      : { rules, patterns: [text], valid: true };
+  }
+
+  /**
+   * Re-derive a folder-grant suggestion from edited text. Un-tildeifies to an
+   * absolute path, requires a grantable root that actually covers the command,
+   * and warns (but allows) when the granted tree is broad.
+   * @param {string} text - Edited folder path (already trimmed, possibly tilde-form)
+   * @param {string} home - Backend home dir
+   * @param {(extras?: {extraAllowedRoots?: string[]}) => boolean} approvesWith - Dry-run guard
+   * @returns {{allowedPaths?: string[], patterns: string[], valid: boolean, notice?: string}} Re-derived suggestion
+   */
+  static _reviseFolderGrant(text, home, approvesWith) {
+    if (!text) return { valid: false, patterns: [], notice: 'Enter a folder path' };
+    const abs = ExecuteContextItem._untildeify(text, home);
+    if (!abs || !abs.startsWith('/')) {
+      return { valid: false, patterns: [text], notice: 'Not a valid folder' };
+    }
+    const root = canonicalRoot(abs, home);
+    if (!root || !isGrantableRoot(root, home)) {
+      return { allowedPaths: [abs], patterns: [ExecuteContextItem._tildeify(abs, home)], valid: false, notice: 'Not a grantable folder' };
+    }
+    const patterns = [ExecuteContextItem._tildeify(root, home)];
+    if (!approvesWith({ extraAllowedRoots: [root] })) {
+      return { allowedPaths: [root], patterns, valid: false, notice: "This folder wouldn't cover this command" };
+    }
+    const notice = ExecuteContextItem._broadRootNotice(root, home);
+    return notice
+      ? { allowedPaths: [root], patterns, valid: true, notice }
+      : { allowedPaths: [root], patterns, valid: true };
+  }
+
+  /**
+   * Simple, explicit broadness heuristic for a command glob (only warns, never
+   * blocks — so a rough rule is low-risk). Flags a bare `*`, a leading-`*`
+   * pattern, and an interpreter wildcard (`bash *`, `python *`), which would
+   * auto-approve arbitrary commands or scripts.
+   * @param {string} pattern - The edited glob
+   * @returns {string} A caution message, or '' if the glob is not obviously broad
+   */
+  static _broadGlobNotice(pattern) {
+    const p = pattern.trim();
+    if (!p) return '';
+    if (p === '*' || p === '**' || p.startsWith('*')) return 'Very broad — approves many commands';
+    const first = /** @type {string} */ (p.split(/\s+/)[0]).toLowerCase();
+    const interpreters = new Set([
+      ...ExecuteContextItem.UNIX_INTERPRETERS,
+      ...ExecuteContextItem.WINDOWS_INTERPRETERS
+    ]);
+    if (interpreters.has(first) && p.includes('*')) return 'Very broad — approves many commands';
+    return '';
+  }
+
+  /**
+   * Simple, explicit broadness heuristic for a folder grant (only warns).
+   * Flags a shallow root (two segments or fewer) or a direct child of the home
+   * directory (`~/code`), both of which whitelist reads across a large tree.
+   * @param {string} root - Canonical absolute root to grant
+   * @param {string} home - Backend home dir
+   * @returns {string} A caution message, or '' if the root is not obviously broad
+   */
+  static _broadRootNotice(root, home) {
+    const segs = root.split('/').filter(Boolean);
+    if (segs.length <= 2) return 'Broad — grants read access to a large tree';
+    if (home) {
+      const base = home.endsWith('/') ? home.slice(0, -1) : home;
+      const homeSegs = base.split('/').filter(Boolean);
+      if (segs.length === homeSegs.length + 1 && root.startsWith(base + '/')) {
+        return 'Broad — grants read access to a large tree';
+      }
+    }
+    return '';
   }
 
   /**
