@@ -97,19 +97,20 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 	// opus/sonnet/haiku map to multimodal Claude families (image input). "fable"
 	// is left text-only by convention until its image support is verified.
 	imageInput := []string{"text", "image"}
-	// All four base families support extended thinking via the CLI's
-	// MAX_THINKING_TOKENS budget (low..max pin an explicit budget). We do NOT
-	// advertise "off" and leave DefaultThinkingLevel empty on purpose: with no
-	// budget set the CLI decides adaptively — extended thinking is triggered by
-	// "think"-family keywords in the prompt, not forced off — so "Default" is the
-	// honest label, and an "off" choice couldn't be honoured distinctly (we don't
-	// send MAX_THINKING_TOKENS=0; its disabling semantics are unverified).
-	thinking := provider.CanonicalThinkingOptions(provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax)
+	// All four base families expose the claude CLI's native reasoning-effort
+	// levels (low/medium/high/xhigh/max — see claudecodeEffortLevels), passed
+	// through verbatim via CLAUDE_CODE_EFFORT_LEVEL. We do NOT advertise "off" and
+	// leave DefaultThinkingLevel empty on purpose: with no level set the CLI
+	// decides adaptively (extended thinking is triggered by "think"-family
+	// keywords in the prompt, not forced off), so "Default" is the honest label,
+	// and the CLI has no distinct "off" effort we could send. The level list comes
+	// from thinkingLevelsFor, the single source of truth shared with the spawn
+	// path, so the advertised set and the accepted set can never drift.
 	bases := []provider.ModelInfo{
-		{ID: "opus", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinking},
-		{ID: "sonnet", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinking},
-		{ID: "haiku", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinking},
-		{ID: "fable", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false, ThinkingLevels: thinking},
+		{ID: "opus", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinkingLevelsFor("opus")},
+		{ID: "sonnet", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinkingLevelsFor("sonnet")},
+		{ID: "haiku", ContextWindow: 0, MaxOutputTokens: 32000, FromAPI: false, InputModalities: imageInput, ThinkingLevels: thinkingLevelsFor("haiku")},
+		{ID: "fable", ContextWindow: 0, MaxOutputTokens: 64000, FromAPI: false, ThinkingLevels: thinkingLevelsFor("fable")},
 	}
 	out := make([]provider.ModelInfo, 0, len(bases))
 	for _, base := range bases {

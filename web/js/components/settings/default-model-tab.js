@@ -161,106 +161,64 @@ export class DefaultModelTab {
    * Render the single "Default model" picker. The dropdown offers an
    * "Automatic" option (server picks a preferred available model) plus every
    * model grouped by provider. The current default is preselected; changing
-   * it persists immediately via PUT /api/default-model.
+   * it persists immediately via PUT /api/default-model. The auto-resolved
+   * choice is shown as a hint under the combo box.
    * @private
    */
   renderDefaultModelField() {
-    const container = this.host.querySelector('#default-model-field-container');
-    if (!container) return;
-    container.innerHTML = '';
-
-    const row = document.createElement('div');
-    row.className = 'settings-group provider-field';
-
-    const infoColumn = document.createElement('div');
-    infoColumn.className = 'provider-info';
-
-    const nameLabel = document.createElement('div');
-    nameLabel.className = 'provider-name';
-    nameLabel.textContent = 'Default model for new conversations';
-    infoColumn.appendChild(nameLabel);
-
-    const controlColumn = document.createElement('div');
-    controlColumn.className = 'provider-control';
-
-    const select = document.createElement('select');
-    select.className = 'default-model-select';
-    select.id = 'default-model-select';
-
-    const current = this.defaultModel || { provider: '', model: '', explicit: false };
-    const explicit = !!current.explicit;
-    const currentValue = explicit && current.provider && current.model
-      ? `${current.provider} ${current.model}`
-      : '';
-    let currentValueIsValid = false;
-
-    // "Automatic" — clears the stored value; the server then picks the
-    // preferred available model when seeding a new conversation.
-    const autoOpt = document.createElement('option');
-    autoOpt.value = '';
-    autoOpt.textContent = 'Automatic';
-    if (!explicit) autoOpt.selected = true;
-    select.appendChild(autoOpt);
-
-    for (const provider of this.providers) {
-      if (!provider.modelsWithContext || provider.modelsWithContext.length === 0) continue;
-      const group = document.createElement('optgroup');
-      group.label = provider.available
-        ? provider.displayName
-        : `${provider.displayName} (no API key)`;
-      for (const m of /** @type {Array<{id: string, displayName?: string}>} */ (provider.modelsWithContext)) {
-        const opt = document.createElement('option');
-        const val = `${provider.name} ${m.id}`;
-        opt.value = val;
-        opt.textContent = modelLabel(m.displayName, m.id);
-        if (val === currentValue) {
-          opt.selected = true;
-          currentValueIsValid = true;
-        }
-        group.appendChild(opt);
-      }
-      select.appendChild(group);
-    }
-
-    // An explicitly-set model that is no longer in the provider list:
-    // surface it as a selected "unavailable" option so the state is visible.
-    if (currentValue && !currentValueIsValid) {
-      const orphanGroup = document.createElement('optgroup');
-      orphanGroup.label = 'Currently set (unavailable)';
-      const opt = document.createElement('option');
-      opt.value = currentValue;
-      opt.selected = true;
-      const refProvider = this.providers.find((/** @type {any} */ p) => p.name === current.provider);
-      opt.textContent = `${refProvider ? modelLabelFromList(this.providers, refProvider.name, current.model) : `${current.provider} / ${current.model}`} — unavailable`;
-      orphanGroup.appendChild(opt);
-      select.insertBefore(orphanGroup, select.firstChild ? select.firstChild.nextSibling : null);
-    }
-
-    select.addEventListener('change', () => this._saveDefaultModel(select.value));
-
-    const status = document.createElement('div');
-    status.className = 'key-source-hint';
-    status.style.display = 'block';
-    status.textContent = this._defaultModelStatusText(current);
-
-    controlColumn.appendChild(select);
-    controlColumn.appendChild(status);
-
-    row.appendChild(infoColumn);
-    row.appendChild(controlColumn);
-    container.appendChild(row);
+    this._renderModelField({
+      containerId: '#default-model-field-container',
+      selectId: 'default-model-select',
+      nameLabel: 'Default model for new conversations',
+      autoLabel: 'Automatic',
+      current: this.defaultModel || { provider: '', model: '', explicit: false },
+      statusText: (ref) => this._defaultModelStatusText(ref),
+      onSave: (value) => this._saveDefaultModel(value),
+    });
   }
 
   /**
    * Render the "Cheap model" picker: the small/fast model used for out-of-band
    * micro-tasks (auto-naming a tab, plugin generateText). Offers an "Auto"
-   * option — which greys in the server's auto-derived choice — plus every model
-   * grouped by provider. Changing it persists immediately via PUT
-   * /api/cheap-model; "Auto" clears the stored value.
+   * option plus every model grouped by provider. Changing it persists
+   * immediately via PUT /api/cheap-model; "Auto" clears the stored value and
+   * the auto-derived choice is shown as a hint under the combo box.
    * @private
    */
   renderCheapModelField() {
-    const container = this.host.querySelector('#cheap-model-field-container');
+    this._renderModelField({
+      containerId: '#cheap-model-field-container',
+      selectId: 'cheap-model-select',
+      nameLabel: 'Cheap model for background tasks',
+      description:
+        'A small, fast model used out-of-band for micro-tasks like auto-naming a ' +
+        'tab. "Auto" derives one from the model in use.',
+      autoLabel: 'Auto',
+      current: this.cheapModel || { explicit: false },
+      statusText: (ref) => this._cheapModelStatusText(ref),
+      onSave: (value) => this._saveCheapModel(value),
+    });
+  }
+
+  /**
+   * Shared renderer for the Default/Cheap model pickers. Both offer an
+   * auto-option (clearing the stored value) plus every model grouped by
+   * provider, an "unavailable" fallback for a pinned-but-missing model, and a
+   * status hint under the combo box describing the current (or auto-resolved)
+   * choice.
+   * @param {object} opts
+   * @param {string} opts.containerId - CSS selector for the field container.
+   * @param {string} opts.selectId - id to assign the <select>.
+   * @param {string} opts.nameLabel - field label text.
+   * @param {string} [opts.description] - optional description under the label.
+   * @param {string} opts.autoLabel - text for the auto-option (e.g. "Automatic").
+   * @param {{provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} opts.current
+   * @param {(ref: any) => string} opts.statusText - builds the status hint.
+   * @param {(value: string) => void} opts.onSave - persists "<provider> <model>" or "".
+   * @private
+   */
+  _renderModelField({ containerId, selectId, nameLabel, description, autoLabel, current, statusText, onSave }) {
+    const container = this.host.querySelector(containerId);
     if (!container) return;
     container.innerHTML = '';
 
@@ -270,39 +228,36 @@ export class DefaultModelTab {
     const infoColumn = document.createElement('div');
     infoColumn.className = 'provider-info';
 
-    const nameLabel = document.createElement('div');
-    nameLabel.className = 'provider-name';
-    nameLabel.textContent = 'Cheap model for background tasks';
-    infoColumn.appendChild(nameLabel);
+    const name = document.createElement('div');
+    name.className = 'provider-name';
+    name.textContent = nameLabel;
+    infoColumn.appendChild(name);
 
-    const description = document.createElement('div');
-    description.className = 'provider-description';
-    description.textContent =
-      'A small, fast model used out-of-band for micro-tasks like auto-naming a ' +
-      'tab. "Auto" derives one from the model in use.';
-    infoColumn.appendChild(description);
+    if (description) {
+      const desc = document.createElement('div');
+      desc.className = 'provider-description';
+      desc.textContent = description;
+      infoColumn.appendChild(desc);
+    }
 
     const controlColumn = document.createElement('div');
     controlColumn.className = 'provider-control';
 
     const select = document.createElement('select');
     select.className = 'default-model-select';
-    select.id = 'cheap-model-select';
+    select.id = selectId;
 
-    const current = this.cheapModel || { explicit: false };
-    const explicit = !!current.explicit;
-    const currentValue = explicit && current.provider && current.model
-      ? `${current.provider} ${current.model}`
+    const ref = current || { explicit: false };
+    const explicit = !!ref.explicit;
+    const currentValue = explicit && ref.provider && ref.model
+      ? `${ref.provider} ${ref.model}`
       : '';
     let currentValueIsValid = false;
 
-    // "Auto" — clears the stored value; the server auto-derives a cheap model
-    // from the provider of the model in use.
+    // Auto-option — clears the stored value; the server then derives/picks a
+    // model. The resolved choice is surfaced in the status hint below.
     const autoOpt = document.createElement('option');
     autoOpt.value = '';
-    const autoLabel = current.autoResolved && current.autoResolved.provider && current.autoResolved.model
-      ? `Auto — ${modelLabelFromList(this.providers, current.autoResolved.provider, current.autoResolved.model)}`
-      : 'Auto';
     autoOpt.textContent = autoLabel;
     if (!explicit) autoOpt.selected = true;
     select.appendChild(autoOpt);
@@ -327,24 +282,30 @@ export class DefaultModelTab {
       select.appendChild(group);
     }
 
-    // A pinned cheap model no longer in the provider list: surface it as a
-    // selected "unavailable" option so the state stays visible.
+    // An explicitly-set model that is no longer in the provider list: surface
+    // it as a selected "unavailable" option so the state stays visible.
     if (currentValue && !currentValueIsValid) {
       const orphanGroup = document.createElement('optgroup');
       orphanGroup.label = 'Currently set (unavailable)';
       const opt = document.createElement('option');
       opt.value = currentValue;
       opt.selected = true;
-      const refProvider = this.providers.find((/** @type {any} */ p) => p.name === current.provider);
-      const cheapModelId = current.model || '';
-      opt.textContent = `${refProvider ? modelLabelFromList(this.providers, refProvider.name, cheapModelId) : `${current.provider} / ${cheapModelId}`} — unavailable`;
+      const refProvider = this.providers.find((/** @type {any} */ p) => p.name === ref.provider);
+      const modelId = ref.model || '';
+      opt.textContent = `${refProvider ? modelLabelFromList(this.providers, refProvider.name, modelId) : `${ref.provider} / ${modelId}`} — unavailable`;
       orphanGroup.appendChild(opt);
       select.insertBefore(orphanGroup, select.firstChild ? select.firstChild.nextSibling : null);
     }
 
-    select.addEventListener('change', () => this._saveCheapModel(select.value));
+    select.addEventListener('change', () => onSave(select.value));
+
+    const status = document.createElement('div');
+    status.className = 'key-source-hint';
+    status.style.display = 'block';
+    status.textContent = statusText(ref);
 
     controlColumn.appendChild(select);
+    controlColumn.appendChild(status);
 
     row.appendChild(infoColumn);
     row.appendChild(controlColumn);
@@ -374,7 +335,7 @@ export class DefaultModelTab {
         throw new Error(`Server returned ${response.status}`);
       }
       // Reflect the saved state locally. When cleared to Auto, re-fetch so the
-      // greyed-in auto-derived label refreshes; otherwise update in place.
+      // auto-derived hint under the combo box refreshes; otherwise update in place.
       if (body.provider && body.model) {
         this.cheapModel = { provider: body.provider, model: body.model, explicit: true };
         this.renderCheapModelField();
@@ -396,17 +357,44 @@ export class DefaultModelTab {
   }
 
   /**
-   * @param {{provider: string, model: string, explicit?: boolean}} ref
+   * @param {{provider: string, model: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} ref
    * @returns {string} short status describing the current default-model state
    * @private
    */
   _defaultModelStatusText(ref) {
     if (!ref || !ref.explicit) {
       if (ref && ref.provider && ref.model) {
-        return `Automatic — currently ${modelLabelFromList(this.providers, ref.provider, ref.model)}.`;
+        return `Auto — currently ${modelLabelFromList(this.providers, ref.provider, ref.model)}.`;
       }
-      return 'Automatic — no provider is configured yet.';
+      return 'Auto — no provider is configured yet.';
     }
+    return this._explicitModelStatusText(ref);
+  }
+
+  /**
+   * @param {{provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} ref
+   * @returns {string} short status describing the current cheap-model state
+   * @private
+   */
+  _cheapModelStatusText(ref) {
+    if (!ref || !ref.explicit) {
+      const auto = ref && ref.autoResolved;
+      if (auto && auto.provider && auto.model) {
+        return `Auto — currently ${modelLabelFromList(this.providers, auto.provider, auto.model)}.`;
+      }
+      return 'Auto — derived from the model in use.';
+    }
+    return this._explicitModelStatusText(ref);
+  }
+
+  /**
+   * Status hint shared by both pickers for an explicitly-pinned model: reports
+   * whether its provider is registered/available and the model still listed.
+   * @param {{provider?: string, model?: string}} ref
+   * @returns {string} the status hint for the pinned model
+   * @private
+   */
+  _explicitModelStatusText(ref) {
     const p = this.providers.find((/** @type {any} */ pp) => pp.name === ref.provider);
     if (!p) return 'Provider not registered.';
     if (!p.available) return p.authType === 'oauth_bearer'

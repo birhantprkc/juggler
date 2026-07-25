@@ -137,7 +137,7 @@ func TestBuildMessageParamsHonorsRequestOutputCap(t *testing.T) {
 	// Thinking budget clamps against the tightened request cap.
 	params = c.buildMessageParams(provider.MessageRequest{
 		Messages:        []provider.Message{{Type: "user", Content: "hi"}},
-		ThinkingLevel:   provider.ThinkingMax,
+		ThinkingLevel:   "max",
 		MaxOutputTokens: 20000,
 	})
 	if params.MaxTokens != 20000 {

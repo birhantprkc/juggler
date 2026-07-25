@@ -153,10 +153,10 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			// use the client/model default; adapters apply it as a min().
 			MaxOutputTokens:    req.MaxOutputTokens,
 			BypassContextGuard: req.BypassContextGuard,
-			// Normalize here so an unknown/garbage stored level degrades to the
-			// provider default rather than reaching a provider verbatim. Rides
-			// per-turn; deliberately NOT part of the conversation-cache key.
-			ThinkingLevel: provider.NormalizeThinkingLevel(req.ModelConfig.Thinking),
+			// The chosen level is the provider's own native string; passed through
+			// verbatim, and each provider ignores any value it doesn't advertise.
+			// Rides per-turn; deliberately NOT part of the conversation-cache key.
+			ThinkingLevel: req.ModelConfig.Thinking,
 		}
 
 		// Adapter that bridges Provider's StructuredStreamCallback to the

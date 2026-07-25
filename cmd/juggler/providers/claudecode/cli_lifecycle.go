@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -164,39 +165,46 @@ func spawnEnv(bin string, extra []string) []string {
 	return env
 }
 
+// claudecodeEffortLevels is the claude CLI's native reasoning-effort vocabulary,
+// in display order — taken verbatim from the CLI's own definition
+// (`"level": "low" | "medium" | "high" | "xhigh" | "max"`). The chosen level is
+// passed to the CLI UNCHANGED via CLAUDE_CODE_EFFORT_LEVEL; the CLI validates it
+// and reports "Effort not supported" for a model that can't honour it, so we
+// never translate to a token budget or invent a number. This slice is the single
+// source of truth: it IS the advertised list (thinkingLevelsFor) AND the accepted
+// set (effortLevelSupported), so the two can never drift, and adding a level the
+// CLI grows is a one-line edit here.
+var claudecodeEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+
+// thinkingLevelsFor returns the effort levels a claudecode family advertises, in
+// display order. Every family shares the CLI's one native vocabulary — the CLI,
+// not us, decides per-model which a given model can honour.
+func thinkingLevelsFor(modelID string) []string {
+	return claudecodeEffortLevels
+}
+
+// effortLevelSupported reports whether level is one the claude CLI accepts (a
+// member of claudecodeEffortLevels). Passed to CLAUDE_CODE_EFFORT_LEVEL verbatim,
+// so anything not in the set (absent, "off", garbage) omits the var and the CLI
+// falls back to its default adaptive thinking.
+func effortLevelSupported(level string) bool {
+	return slices.Contains(claudecodeEffortLevels, level)
+}
+
 // thinkingSpawnExtras returns the extra spawn-env entries for the current turn:
-// the test extras plus, when this turn's thinking level maps to a budget, a
-// MAX_THINKING_TOKENS entry the claude CLI reads to size its thinking budget. It
-// also records the level actually spawned (spawnedThinkingLevel) so a later turn
-// with a different level knows to recycle the CLI. "off"/absent levels omit the
-// var entirely — the CLI then uses its default (no forced thinking), matching
-// the Anthropic provider's treatment of "off".
+// the test extras plus, when this turn carries a valid effort level, a
+// CLAUDE_CODE_EFFORT_LEVEL entry the claude CLI reads at spawn to set its native
+// reasoning effort. It also records the level actually spawned
+// (spawnedThinkingLevel) so a later turn with a different level knows to recycle
+// the CLI. An absent/unknown level omits the var — the CLI then uses its default
+// adaptive thinking.
 func (c *Client) thinkingSpawnExtras() []string {
 	c.spawnedThinkingLevel = c.thinkingLevel
 	extras := testExtraSpawnEnv
-	if budget, ok := maxThinkingTokensForLevel(c.thinkingLevel); ok {
-		extras = append(append([]string(nil), extras...), fmt.Sprintf("MAX_THINKING_TOKENS=%d", budget))
+	if effortLevelSupported(c.thinkingLevel) {
+		extras = append(append([]string(nil), extras...), "CLAUDE_CODE_EFFORT_LEVEL="+c.thinkingLevel)
 	}
 	return extras
-}
-
-// maxThinkingTokensForLevel maps a canonical thinking level to the
-// MAX_THINKING_TOKENS budget the claude CLI reads at spawn. ok=false for
-// "off"/absent/unknown levels, so the CLI is spawned without the var (its
-// default: no forced thinking budget).
-func maxThinkingTokensForLevel(level string) (int, bool) {
-	switch provider.NormalizeThinkingLevel(level) {
-	case provider.ThinkingLow:
-		return 2048, true
-	case provider.ThinkingMedium:
-		return 8192, true
-	case provider.ThinkingHigh:
-		return 16384, true
-	case provider.ThinkingMax:
-		return 32768, true
-	default:
-		return 0, false
-	}
 }
 
 // augmentPathEnv returns environ with dir prepended to its PATH entry (matched

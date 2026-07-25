@@ -5,87 +5,58 @@
 package openaibase
 
 import (
+	"slices"
 	"strings"
-
-	provider "juggler/cmd/juggler/providers/registry"
 )
 
-// ThinkingSpec describes a model's reasoning-effort support in the canonical
-// thinking vocabulary. The zero value (nil Effort) means the model exposes no
+// ThinkingSpec describes a model's reasoning-effort support. Each level name IS
+// the native reasoning_effort string sent on the wire — there is no separate
+// canonical vocabulary. The zero value (nil Levels) means the model exposes no
 // reasoning control and the UI hides the selector.
 type ThinkingSpec struct {
-	// Levels are the canonical levels advertised to the UI, in display order
-	// (a subset of off/low/medium/high/max).
+	// Levels are the native reasoning_effort strings advertised to the UI, in
+	// display order (e.g. ["low","medium","high"], ["none","low","high","xhigh"]).
 	Levels []string
-	// Default is the canonical level the model uses when a turn carries none
-	// (presentation only, so the UI can label "Default (medium)").
+	// Default is the level the model uses when a turn carries none (presentation
+	// only, so the UI can label "Default (medium)"). One of Levels.
 	Default string
-	// Effort maps each supported canonical level to the native reasoning_effort
-	// string to send on the wire. A canonical level absent here is unsupported:
-	// a request carrying it omits the reasoning param.
-	Effort map[string]string
 }
 
 // ThinkingSpecFunc returns the ThinkingSpec for a model id. A nil func (or a
 // zero ThinkingSpec) means the provider exposes no reasoning control.
 type ThinkingSpecFunc func(modelID string) ThinkingSpec
 
-// effortFor maps a canonical level to the native reasoning_effort to send.
-// ok=false means omit the reasoning param entirely — the level is absent,
-// unsupported by this model, or unknown — which preserves today's default
-// request shape byte-for-byte.
+// effortFor returns the native reasoning_effort to send for a requested level.
+// ok=false means omit the reasoning param entirely — the level is absent or not
+// one this model advertises — which preserves today's default request shape
+// byte-for-byte. The advertised list is the only gate: a level is valid iff it
+// is a member, and the string is sent verbatim.
 func (s ThinkingSpec) effortFor(level string) (string, bool) {
-	level = provider.NormalizeThinkingLevel(level)
-	if level == "" || len(s.Effort) == 0 {
+	if level == "" || !slices.Contains(s.Levels, level) {
 		return "", false
 	}
-	effort, ok := s.Effort[level]
-	return effort, ok
+	return level, true
 }
 
-// Options returns the advertised thinking tiers in display order, each carrying
-// its canonical Value and the model's native effort string as the Label. A
-// level whose native label already appeared is skipped, so a family that maps
-// two canonical levels onto one native effort (e.g. gpt-5's "max"→"high")
-// advertises the tier only once. The Effort map is left intact, so an
-// already-stored conversation on a dropped level still maps to the wire value.
-func (s ThinkingSpec) Options() []provider.ThinkingOption {
-	if len(s.Levels) == 0 {
-		return nil
-	}
-	opts := make([]provider.ThinkingOption, 0, len(s.Levels))
-	seen := make(map[string]bool, len(s.Levels))
-	for _, level := range s.Levels {
-		label := s.Effort[level]
-		if label != "" && seen[label] {
-			continue
-		}
-		seen[label] = true
-		opts = append(opts, provider.ThinkingOption{Value: level, Label: label})
-	}
-	return opts
+// Options returns the advertised thinking levels in display order.
+func (s ThinkingSpec) Options() []string {
+	return s.Levels
 }
 
-// EffortSpec builds a ThinkingSpec for the common case where each native
-// reasoning_effort string equals its canonical level name (low→"low",
-// medium→"medium", high→"high"). Levels are advertised in the order given and
-// defaultLevel labels the UI's "Default (…)" hint. Providers whose native
-// vocabulary diverges from the canonical names (e.g. off→"minimal"/"none",
-// max→"xhigh") build the Effort map directly, or start here and amend it —
-// the returned Effort is a fresh mutable map.
+// EffortSpec builds a ThinkingSpec from an ordered list of native
+// reasoning_effort strings, with defaultLevel labelling the UI's "Default (…)"
+// hint. It exists only to keep call sites terse — Levels is the given slice
+// verbatim.
 func EffortSpec(defaultLevel string, levels ...string) ThinkingSpec {
-	effort := make(map[string]string, len(levels))
-	for _, level := range levels {
-		effort[level] = level
-	}
-	return ThinkingSpec{Levels: levels, Default: defaultLevel, Effort: effort}
+	return ThinkingSpec{Levels: levels, Default: defaultLevel}
 }
 
 // OpenAIThinkingSpec classifies an OpenAI / OpenAI-Codex model id into its
-// reasoning-effort support, expressed in the canonical thinking vocabulary.
-// Non-reasoning models (gpt-4o, gpt-4, gpt-3.5) return the zero ThinkingSpec.
+// reasoning-effort support, expressed in the native reasoning_effort values the
+// family accepts. Non-reasoning models (gpt-4o, gpt-4, gpt-3.5) return the zero
+// ThinkingSpec.
 //
-// The canonical→native maps are deliberately conservative: the valid set of
+// The level sets are deliberately conservative: the valid set of
 // reasoning_effort values differs by model family and a wrong value is a hard
 // 400, so a model we can't confidently classify gets no control (no param sent)
 // rather than a guessed value. This is the single source of truth shared by the
@@ -95,45 +66,29 @@ func OpenAIThinkingSpec(modelID string) ThinkingSpec {
 
 	// Codex reasoning models (gpt-5.x-codex, codex-max, bare "codex" slugs).
 	// They accept low/medium/high; codex-max style models add an "xhigh" tier.
-	// "off" is intentionally not offered — codex reasons on every turn.
+	// No "off"/"none" — codex reasons on every turn.
 	if strings.Contains(m, "codex") {
-		spec := EffortSpec(provider.ThinkingMedium,
-			provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh)
 		if strings.Contains(m, "codex-max") || strings.Contains(m, "5.2-codex") {
-			spec.Levels = append(spec.Levels, provider.ThinkingMax)
-			spec.Effort[provider.ThinkingMax] = "xhigh"
+			return EffortSpec("medium", "low", "medium", "high", "xhigh")
 		}
-		return spec
+		return EffortSpec("medium", "low", "medium", "high")
 	}
 
 	// GPT-5 family (gpt-5, gpt-5-mini/nano, gpt-5.1, gpt-5.1-thinking, gpt-5.6…).
-	// gpt-5.1+ accept an explicit "none" for fully-off; earlier gpt-5 map "off"
-	// to the always-safe "minimal". No family member exposes "xhigh", so "max"
-	// caps at "high".
+	// gpt-5.1+ accept an explicit "none" for fully-off; earlier gpt-5 use
+	// "minimal" as their lowest tier. No family member exposes "xhigh".
 	if strings.HasPrefix(m, "gpt-5") {
-		off := "minimal"
 		if strings.HasPrefix(m, "gpt-5.1") || strings.HasPrefix(m, "gpt-5.2") || strings.HasPrefix(m, "gpt-5.6") {
-			off = "none"
+			return EffortSpec("medium", "none", "low", "medium", "high")
 		}
-		return ThinkingSpec{
-			Levels:  []string{provider.ThinkingOff, provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax},
-			Default: provider.ThinkingMedium,
-			Effort: map[string]string{
-				provider.ThinkingOff:    off,
-				provider.ThinkingLow:    "low",
-				provider.ThinkingMedium: "medium",
-				provider.ThinkingHigh:   "high",
-				provider.ThinkingMax:    "high",
-			},
-		}
+		return EffortSpec("medium", "minimal", "low", "medium", "high")
 	}
 
 	// o-series reasoning models (o1, o3, o3-mini, o4-mini). These accept only
 	// low/medium/high — no "minimal"/"none"/"xhigh". o1-mini and o1-preview do
 	// not accept reasoning_effort and are excluded.
 	if isOSeriesReasoning(m) {
-		return EffortSpec(provider.ThinkingMedium,
-			provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh)
+		return EffortSpec("medium", "low", "medium", "high")
 	}
 
 	return ThinkingSpec{}

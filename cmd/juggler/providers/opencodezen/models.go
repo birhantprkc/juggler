@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"juggler/cmd/juggler/providers/openaibase"
-	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/providers/utils"
 )
 
@@ -93,27 +92,15 @@ var (
 
 // thinkingSpec returns the reasoning-effort spec for an OpenCode Zen model.
 // Most models support low/medium/high; DeepSeek V4 models use high/xhigh.
-//
-// Levels are always the canonical thinking vocabulary (off/low/medium/high/max);
-// the native effort string the gateway expects on the wire lives in Effort and
-// is surfaced to the UI as the tier's display label. DeepSeek V4's top tier maps
-// canonical "max" onto the native "xhigh" effort.
+// Each level string is the native reasoning_effort the gateway expects on the
+// wire and the label shown in the UI.
 func thinkingSpec(modelID string) openaibase.ThinkingSpec {
 	m := strings.ToLower(modelID)
 
 	if strings.HasPrefix(m, "deepseek-v4") {
-		return openaibase.ThinkingSpec{
-			Levels:  []string{provider.ThinkingHigh, provider.ThinkingMax},
-			Default: provider.ThinkingHigh,
-			Effort: map[string]string{
-				provider.ThinkingHigh: "high",
-				provider.ThinkingMax:  "xhigh",
-			},
-		}
+		return openaibase.EffortSpec("high", "high", "xhigh")
 	}
 
-	// All other models on this gateway support low/medium/high, with native
-	// effort strings matching the canonical level names.
-	return openaibase.EffortSpec(provider.ThinkingMedium,
-		provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh)
+	// All other models on this gateway support low/medium/high.
+	return openaibase.EffortSpec("medium", "low", "medium", "high")
 }

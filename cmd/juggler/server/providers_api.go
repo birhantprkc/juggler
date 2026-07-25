@@ -29,11 +29,11 @@ type ModelWithContext struct {
 	FromAPI         bool     `json:"fromAPI"`                   // True if from API, false if hardcoded fallback
 	InputModalities []string `json:"inputModalities,omitempty"` // e.g. ["text","image"]; empty/omitted means text-only
 	// ThinkingLevels lists the reasoning-effort tiers this model supports, in
-	// display order. Each entry is {value,label}: value is the canonical level
-	// ("off","low","medium","high","max") used on the wire, label is the model's
-	// native display name (empty ⇒ the UI derives one from value). Empty/omitted
+	// display order, each named in the provider's own native vocabulary (e.g.
+	// "low"/"medium"/"high", "none"/"low"/"high"/"xhigh"). The string is the
+	// identity: shown verbatim and sent back as the chosen level. Empty/omitted
 	// ⇒ the UI hides the thinking control for this model.
-	ThinkingLevels []provider.ThinkingOption `json:"thinkingLevels,omitempty"`
+	ThinkingLevels []string `json:"thinkingLevels,omitempty"`
 	// DefaultThinkingLevel is the level the provider uses when a turn carries
 	// none — presentation only, lets the UI label "Default (medium)".
 	DefaultThinkingLevel string `json:"defaultThinkingLevel,omitempty"`

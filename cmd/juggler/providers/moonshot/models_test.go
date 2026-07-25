@@ -5,6 +5,7 @@
 package moonshot
 
 import (
+	"slices"
 	"testing"
 
 	provider "juggler/cmd/juggler/providers/registry"
@@ -80,16 +81,13 @@ func TestInputModalities(t *testing.T) {
 }
 
 // TestThinkingSpec verifies only kimi-k3 exposes a reasoning-effort selector
-// (mapping the canonical "max" level to the native "max"), and that the K2.x
-// thinking models and legacy moonshot-v1 models expose no selector — sending
-// reasoning_effort to them would be rejected.
+// (its single native level "max"), and that the K2.x thinking models and legacy
+// moonshot-v1 models expose no selector — sending reasoning_effort to them would
+// be rejected.
 func TestThinkingSpec(t *testing.T) {
 	k3 := thinkingSpec("kimi-k3")
-	if len(k3.Levels) == 0 {
-		t.Fatalf("thinkingSpec(kimi-k3) has no levels, want a reasoning selector")
-	}
-	if k3.Effort[provider.ThinkingMax] != "max" {
-		t.Errorf("thinkingSpec(kimi-k3).Effort[max] = %q, want \"max\"", k3.Effort[provider.ThinkingMax])
+	if !slices.Equal(k3.Levels, []string{"max"}) {
+		t.Errorf("thinkingSpec(kimi-k3).Levels = %v, want [max]", k3.Levels)
 	}
 	for _, m := range []string{"kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-128k"} {
 		if spec := thinkingSpec(m); len(spec.Levels) != 0 {

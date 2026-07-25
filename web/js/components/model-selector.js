@@ -21,20 +21,14 @@ const VIEW_STATE_STORAGE_KEY = 'juggler-model-view-state';
 /** The list view-states a provider header toggle cycles through. */
 const VIEW_STATES = ['none', 'top', 'all'];
 
-/** Canonical thinking levels in display order. */
-const THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'max'];
-
 /**
- * Full labels for the popup segmented control.
- * @type {Record<string, string>}
+ * Title-case a native thinking-level string for the segmented control's full
+ * label (e.g. "medium" → "Medium", "xhigh" → "Xhigh"). The button chip shows the
+ * raw string verbatim.
+ * @param {string} level - The native level string.
+ * @returns {string} The level with its first letter upper-cased.
  */
-const THINKING_LABELS = { off: 'Off', low: 'Low', medium: 'Med', high: 'High', max: 'Max' };
-
-/**
- * Compact labels for the model-button chip (kept short so the button stays narrow).
- * @type {Record<string, string>}
- */
-const THINKING_CHIP = { off: 'off', low: 'low', medium: 'med', high: 'high', max: 'max' };
+const thinkingLabel = (level) => (level ? level.charAt(0).toUpperCase() + level.slice(1) : level);
 
 /**
  * Model selector component with provider and model dropdown menu
@@ -42,7 +36,7 @@ const THINKING_CHIP = { off: 'off', low: 'low', medium: 'med', high: 'high', max
  * @property {string} id - Model ID
  * @property {number} contextWindow - Context window size
  * @property {string} [displayName] - Provider-supplied human label, when the provider exposes one
- * @property {{value: string, label?: string}[]} [thinkingLevels] - Reasoning tiers the model supports: `value` is the canonical level, `label` the model's native display name (absent ⇒ derive from `value`); absent/empty ⇒ no thinking control
+ * @property {string[]} [thinkingLevels] - Reasoning tiers the model supports, in display order, each named in the provider's own native vocabulary (the string is the identity, shown verbatim); absent/empty ⇒ no thinking control
  * @property {string} [defaultThinkingLevel] - Level used when a turn carries none (presentation only)
  * @typedef {object} Provider
  * @property {string} name - Provider name (e.g., "anthropic")
@@ -641,7 +635,7 @@ class ModelSelector extends HTMLElement {
       // The stored level rides along as data-thinking so a click restores the
       // exact pair; the chip is display-only (the whole row is the target).
       const chip = r.thinking
-        ? `<span class="recent-model-chip" title="Thinking: ${escapeHtml(r.thinking)}">${escapeHtml(THINKING_CHIP[r.thinking] || r.thinking)}</span>`
+        ? `<span class="recent-model-chip" title="Thinking: ${escapeHtml(r.thinking)}">${escapeHtml(r.thinking)}</span>`
         : '';
       const thinkingAttr = r.thinking ? ` data-thinking="${escapeHtml(r.thinking)}"` : '';
       return `
@@ -815,9 +809,10 @@ class ModelSelector extends HTMLElement {
    * Segmented control for the current model's thinking level, rendered only
    * when the model advertises `thinkingLevels`. "Default" (no explicit level) is
    * always offered first and, when picked, deletes the `thinking` key; the
-   * advertised levels follow in canonical order. The active segment reflects the
-   * effective config's `thinking` (Default when absent or unsupported). Clicks
-   * are dispatched via `data-thinking-level` in `_attachDropdownListener`.
+   * advertised levels follow in the provider's declared order, each shown by its
+   * native name. The active segment reflects the effective config's `thinking`
+   * (Default when absent or unsupported). Clicks are dispatched via
+   * `data-thinking-level` in `_attachDropdownListener`.
    * @param {import('../model/model-config.js').ResolvedConfig|null} resolved
    * @param {ModelInfo} [modelEntry]
    * @returns {string} HTML, or '' when the model exposes no thinking control.
@@ -827,21 +822,17 @@ class ModelSelector extends HTMLElement {
     const levels = modelEntry?.thinkingLevels || [];
     if (levels.length === 0) return '';
 
-    const hasValue = (/** @type {string} */ v) => levels.some(o => o.value === v);
-    const active = resolved?.thinking && hasValue(resolved.thinking) ? resolved.thinking : '';
+    const active = resolved?.thinking && levels.includes(resolved.thinking) ? resolved.thinking : '';
     const def = modelEntry?.defaultThinkingLevel;
-    const defaultLabel = def ? `Default (${THINKING_LABELS[def] || def})` : 'Default';
+    const defaultLabel = def ? `Default (${thinkingLabel(def)})` : 'Default';
 
     const seg = (/** @type {string} */ level, /** @type {string} */ label) => {
       const isActive = level === active;
       return `<button type="button" class="thinking-seg${isActive ? ' active' : ''}" data-thinking-level="${escapeHtml(level)}" role="radio" aria-checked="${isActive}">${escapeHtml(label)}</button>`;
     };
 
-    // Canonical order for stability; each tier's native label wins, falling back
-    // to the canonical label when the provider left it empty.
-    const rank = (/** @type {string} */ v) => { const i = THINKING_LEVELS.indexOf(v); return i === -1 ? THINKING_LEVELS.length : i; };
-    const ordered = [...levels].sort((a, b) => rank(a.value) - rank(b.value));
-    const segments = [seg('', defaultLabel), ...ordered.map(o => seg(o.value, o.label || THINKING_LABELS[o.value] || o.value))];
+    // Advertised order, shown verbatim (title-cased) — the provider owns the set.
+    const segments = [seg('', defaultLabel), ...levels.map(l => seg(l, thinkingLabel(l)))];
 
     return `
             <div class="model-thinking">
@@ -863,7 +854,7 @@ class ModelSelector extends HTMLElement {
    * `_setThinkingLevel`), the button chip's mini popover (which has no
    * dropdown to close), and the cycle-thinking shortcut. Pure write — the
    * caller owns any re-render (see `refreshThinkingDisplay`).
-   * @param {string} level - '' for Default, else a canonical level.
+   * @param {string} level - '' for Default, else a native provider level.
    * @param {{record?: boolean}} [opts] - `record: false` skips the recents entry.
    * @returns {boolean} True when the level was written.
    */
@@ -887,7 +878,7 @@ class ModelSelector extends HTMLElement {
    * Apply a thinking-level pick from the dropdown's segmented control and close
    * the menu — model + level is one identity, so picking a level is a commit
    * action exactly like picking a model.
-   * @param {string} level - '' for Default, else a canonical level.
+   * @param {string} level - '' for Default, else a native provider level.
    * @private
    */
   _setThinkingLevel(level) {
@@ -1119,8 +1110,8 @@ class ModelSelector extends HTMLElement {
    * Recent section.
    * @param {string} providerName
    * @param {string} modelName
-   * @param {string} [thinking] Canonical thinking level; absent/empty means
-   *   the model's default level.
+   * @param {string} [thinking] Native provider thinking level; absent/empty
+   *   means the model's default level.
    * @private */
   async selectProviderAndModel(providerName, modelName, thinking) {
     let provider = this.providers.find(p => p.name === providerName);
@@ -1153,7 +1144,7 @@ class ModelSelector extends HTMLElement {
     // entry may carry a level the model no longer supports, which must fall
     // back to the default rather than store a level the model can't honour.
     const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
-    const level = thinking && (modelEntry?.thinkingLevels || []).some(o => o.value === thinking) ? thinking : '';
+    const level = thinking && (modelEntry?.thinkingLevels || []).includes(thinking) ? thinking : '';
 
     // Already selected at this exact level — just close the dropdown. The
     // level is part of the identity, so the same model at a different level
@@ -1218,14 +1209,15 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
-   * The thinking levels the currently selected model advertises, in canonical
-   * order. Empty for non-thinking models (or when nothing is selected).
-   * @returns {string[]} Supported levels in canonical order.
+   * The thinking levels the currently selected model advertises, in the
+   * provider's declared order. Empty for non-thinking models (or when nothing is
+   * selected).
+   * @returns {string[]} Supported levels in advertised order.
    */
   supportedThinkingLevels() {
     const prov = this.providers.find(p => p.name === this.provider);
     const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
-    return THINKING_LEVELS.filter(l => (modelEntry?.thinkingLevels || []).some(o => o.value === l));
+    return (modelEntry?.thinkingLevels || []).slice();
   }
 
   /**
@@ -1246,7 +1238,7 @@ class ModelSelector extends HTMLElement {
     if (!provider || !provider.available) return false;
 
     const modelEntry = provider.modelsWithContext?.find(m => m.id === pair.model);
-    const level = pair.thinking && (modelEntry?.thinkingLevels || []).some(o => o.value === pair.thinking) ? pair.thinking : '';
+    const level = pair.thinking && (modelEntry?.thinkingLevels || []).includes(pair.thinking) ? pair.thinking : '';
 
     /** @type {{provider: string, model: string, thinking?: string}} */
     const nextConfig = { provider: pair.provider, model: pair.model };
@@ -1440,16 +1432,14 @@ class ModelSelector extends HTMLElement {
     const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
     const levels = modelEntry?.thinkingLevels || [];
     if (levels.length === 0) return '';
-    const byValue = new Map(levels.map(o => [o.value, o]));
     // An explicit level counts only when the model advertises it — a stale
     // stored level means the model's default, same as everywhere else.
     const explicit = this._currentConfig?.thinking;
-    const level = explicit && byValue.has(explicit) ? explicit : '';
+    const level = explicit && levels.includes(explicit) ? explicit : '';
     const declaredDefault = modelEntry?.defaultThinkingLevel || '';
     const shown = level || declaredDefault || 'def';
-    // The chip shows the tier's native label when the model renames it, else the
-    // canonical compact label.
-    const shownLabel = byValue.get(shown)?.label || THINKING_CHIP[shown] || shown;
+    // The chip shows the provider's native level string verbatim.
+    const shownLabel = shown;
     // Cite the switch-thinking shortcut (⌥⌘T / Ctrl+Alt+T) live from the central
     // table, so the hint stays correct if it's ever rebound or left unbound.
     const cycleKey = keyShortcutManager.formatBinding('cycle-thinking');

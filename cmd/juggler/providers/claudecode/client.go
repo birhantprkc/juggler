@@ -381,7 +381,7 @@ func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, 
 	// it so the new budget takes effect. tearDownLiveCLI preserves
 	// sessionUUID/history, so this is a warm-history cold-cache restart (the
 	// resume machinery re-warms), not a cold start.
-	c.thinkingLevel = provider.NormalizeThinkingLevel(req.ThinkingLevel)
+	c.thinkingLevel = req.ThinkingLevel
 	if c.activeSession != nil && c.activeSession.hasLiveCLI() && c.spawnedThinkingLevel != c.thinkingLevel {
 		jlog.Info("claudecode: thinking level changed %q→%q — recycling CLI session conv=%s",
 			c.spawnedThinkingLevel, c.thinkingLevel, shortID(req.ConversationID))

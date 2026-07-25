@@ -266,7 +266,7 @@ class ThinkingCycler {
 
   /**
    * Apply the next thinking level in the cycle Default → supported levels in
-   * canonical order → wrap, then refresh the chip/popover so the HUD tracks.
+   * advertised order → wrap, then refresh the chip/popover so the HUD tracks.
    * @private
    */
   _cycle() {
@@ -275,7 +275,7 @@ class ThinkingCycler {
     const levels = selector.supportedThinkingLevels();
     if (levels.length === 0) return;
 
-    // '' = Default first, then the supported levels in canonical order.
+    // '' = Default first, then the supported levels in advertised order.
     const order = ['', ...levels];
     const current = selector.currentConfigPair()?.thinking || '';
     const next = order[(order.indexOf(current) + 1) % order.length];

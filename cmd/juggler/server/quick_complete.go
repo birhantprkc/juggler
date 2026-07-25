@@ -152,8 +152,9 @@ func (s *Server) QuickComplete(ctx context.Context, req QuickCompleteRequest) (Q
 		MaxOutputTokens: maxTokens,
 		// The prompt is tiny and single-turn; skip the silent-truncation guard.
 		BypassContextGuard: true,
-		// Normalize so a garbage stored level degrades to the provider default.
-		ThinkingLevel: provider.NormalizeThinkingLevel(req.Model.Thinking),
+		// Native provider level, passed through verbatim; the provider ignores
+		// any value it doesn't advertise.
+		ThinkingLevel: req.Model.Thinking,
 	}
 
 	// Accumulate only text blocks; ignore thinking / status / progress / usage

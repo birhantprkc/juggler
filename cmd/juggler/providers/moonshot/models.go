@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"juggler/cmd/juggler/providers/openaibase"
-	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/providers/utils"
 )
 
@@ -118,11 +117,7 @@ func supportsVision(modelID string) bool {
 // control). Legacy moonshot-v1-* models don't reason at all.
 func thinkingSpec(modelID string) openaibase.ThinkingSpec {
 	if strings.HasPrefix(strings.ToLower(modelID), "kimi-k3") {
-		return openaibase.ThinkingSpec{
-			Levels:  []string{provider.ThinkingMax},
-			Default: provider.ThinkingMax,
-			Effort:  map[string]string{provider.ThinkingMax: "max"},
-		}
+		return openaibase.EffortSpec("max", "max")
 	}
 	return openaibase.ThinkingSpec{}
 }

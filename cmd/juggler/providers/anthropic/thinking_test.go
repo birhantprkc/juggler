@@ -17,10 +17,10 @@ func TestBuildMessageParamsThinkingLevel(t *testing.T) {
 	c := &Client{model: "claude-sonnet-4-5-20250929"}
 
 	cases := map[string]int64{
-		provider.ThinkingLow:    2048,
-		provider.ThinkingMedium: 8192,
-		provider.ThinkingHigh:   16384,
-		provider.ThinkingMax:    32768,
+		"low":    2048,
+		"medium": 8192,
+		"high":   16384,
+		"max":    32768,
 	}
 	for level, wantBudget := range cases {
 		params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: level})
@@ -42,7 +42,7 @@ func TestBuildMessageParamsThinkingLevel(t *testing.T) {
 // headroom rather than exceeding the ceiling (a hard 400).
 func TestBuildMessageParamsThinkingClamped(t *testing.T) {
 	c := &Client{model: "claude-opus-4-20250514"}
-	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: provider.ThinkingMax})
+	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: "max"})
 	got := params.Thinking.GetBudgetTokens()
 	if got == nil {
 		t.Fatal("thinking param missing for opus max")
@@ -60,7 +60,7 @@ func TestBuildMessageParamsThinkingClamped(t *testing.T) {
 // headroom, thinking drops for that turn instead of erroring.
 func TestBuildMessageParamsThinkingClampedToCapability(t *testing.T) {
 	c := &Client{model: "claude-sonnet-4-5-20250929", maxOutputTokens: 20000}
-	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: provider.ThinkingMax})
+	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: "max"})
 	got := params.Thinking.GetBudgetTokens()
 	if got == nil {
 		t.Fatal("thinking param missing for max level")
@@ -73,7 +73,7 @@ func TestBuildMessageParamsThinkingClampedToCapability(t *testing.T) {
 	}
 
 	c = &Client{model: "claude-sonnet-4-5-20250929", maxOutputTokens: 5000}
-	params = c.buildMessageParams(provider.MessageRequest{ThinkingLevel: provider.ThinkingMax})
+	params = c.buildMessageParams(provider.MessageRequest{ThinkingLevel: "max"})
 	if got := params.Thinking.GetBudgetTokens(); got != nil {
 		t.Errorf("maxTokens 5000: budget = %d, want thinking dropped (below the 1024 minimum after headroom)", *got)
 	}
@@ -85,7 +85,7 @@ func TestBuildMessageParamsThinkingClampedToCapability(t *testing.T) {
 // snapshot — otherwise budget_tokens ≥ max_tokens would be a hard 400.
 func TestBuildMessageParamsThinkingClampsToCatalogWireValue(t *testing.T) {
 	c := &Client{model: "claude-opus-4-20250514", maxOutputTokens: 100000}
-	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: provider.ThinkingMax})
+	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: "max"})
 	if params.MaxTokens != 32000 {
 		t.Fatalf("MaxTokens = %d, want catalog-clamped 32000", params.MaxTokens)
 	}
@@ -105,7 +105,7 @@ func TestBuildMessageParamsThinkingClampsToCatalogWireValue(t *testing.T) {
 // an absent level produce no thinking param at all.
 func TestBuildMessageParamsThinkingOffAbsent(t *testing.T) {
 	c := &Client{model: "claude-sonnet-4-5-20250929"}
-	for _, level := range []string{"", provider.ThinkingOff, "garbage"} {
+	for _, level := range []string{"", "off", "garbage"} {
 		params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: level})
 		if got := params.Thinking.GetBudgetTokens(); got != nil {
 			t.Errorf("level %q: thinking param present (budget %d), want omitted", level, *got)
@@ -124,7 +124,7 @@ func TestBuildMessageParamsThinkingForcedToolDrops(t *testing.T) {
 		{Mode: provider.ToolChoiceAny},
 	} {
 		params := c.buildMessageParams(provider.MessageRequest{
-			ThinkingLevel: provider.ThinkingHigh,
+			ThinkingLevel: "high",
 			Tools:         tools,
 			ToolChoice:    tc,
 		})
@@ -135,7 +135,7 @@ func TestBuildMessageParamsThinkingForcedToolDrops(t *testing.T) {
 
 	// A non-forcing choice (none) still allows thinking.
 	params := c.buildMessageParams(provider.MessageRequest{
-		ThinkingLevel: provider.ThinkingHigh,
+		ThinkingLevel: "high",
 		Tools:         tools,
 		ToolChoice:    &provider.ToolChoice{Mode: provider.ToolChoiceNone},
 	})
@@ -148,7 +148,7 @@ func TestBuildMessageParamsThinkingForcedToolDrops(t *testing.T) {
 // without extended-thinking support (Claude 3.5) is ignored.
 func TestBuildMessageParamsThinkingUnsupportedModel(t *testing.T) {
 	c := &Client{model: "claude-3-5-sonnet-20241022"}
-	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: provider.ThinkingHigh})
+	params := c.buildMessageParams(provider.MessageRequest{ThinkingLevel: "high"})
 	if got := params.Thinking.GetBudgetTokens(); got != nil {
 		t.Errorf("unsupported model: thinking present (budget %d), want omitted", *got)
 	}

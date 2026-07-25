@@ -334,30 +334,36 @@ func forcesTool(tc *provider.ToolChoice) bool {
 	return tc != nil && (tc.Mode == provider.ToolChoiceTool || tc.Mode == provider.ToolChoiceAny)
 }
 
-// thinkingBudgetForLevel maps a canonical thinking level to an Anthropic
-// budget_tokens value for the given model. It returns (budget, true) when
-// thinking should be enabled for this turn, or (0, false) for "off"/absent/
-// unknown levels and models that don't support extended thinking. The budget is
-// clamped to stay a safe margin (~4k answer headroom) below the effective
-// max_tokens going on the wire, since Anthropic requires budget_tokens <
-// max_tokens. The wire value is passed in rather than re-derived from the
-// static catalog so a capability snapshot carrying a lower output limit can
-// never push budget_tokens above max_tokens (a hard 400).
+// anthropicThinkingLevels are the levels an Anthropic thinking model advertises,
+// in display order. "off" carries no budget (no thinking param); the rest map to
+// budget_tokens via anthropicThinkingBudgets.
+var anthropicThinkingLevels = []string{"off", "low", "medium", "high", "max"}
+
+// anthropicThinkingBudgets maps a thinking level to its Anthropic budget_tokens.
+// A level absent here ("off", or any string this provider doesn't recognise) ⇒
+// no thinking param, byte-identical to pre-feature behaviour.
+var anthropicThinkingBudgets = map[string]int64{
+	"low":    2048,
+	"medium": 8192,
+	"high":   16384,
+	"max":    32768,
+}
+
+// thinkingBudgetForLevel maps a thinking level to an Anthropic budget_tokens
+// value for the given model. It returns (budget, true) when thinking should be
+// enabled for this turn, or (0, false) for "off"/absent/unknown levels and
+// models that don't support extended thinking. The budget is clamped to stay a
+// safe margin (~4k answer headroom) below the effective max_tokens going on the
+// wire, since Anthropic requires budget_tokens < max_tokens. The wire value is
+// passed in rather than re-derived from the static catalog so a capability
+// snapshot carrying a lower output limit can never push budget_tokens above
+// max_tokens (a hard 400).
 func thinkingBudgetForLevel(model, level string, maxTokens int64) (int64, bool) {
 	if !SupportsThinking(model) {
 		return 0, false
 	}
-	var budget int64
-	switch provider.NormalizeThinkingLevel(level) {
-	case provider.ThinkingLow:
-		budget = 2048
-	case provider.ThinkingMedium:
-		budget = 8192
-	case provider.ThinkingHigh:
-		budget = 16384
-	case provider.ThinkingMax:
-		budget = 32768
-	default: // "off", absent, or unknown ⇒ no thinking param (current behaviour)
+	budget, ok := anthropicThinkingBudgets[level]
+	if !ok { // "off", absent, or unknown ⇒ no thinking param (current behaviour)
 		return 0, false
 	}
 	const answerHeadroom int64 = 4096
@@ -726,11 +732,11 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 			inputModalities = []string{"text", "image"}
 		}
 
-		var thinkingLevels []provider.ThinkingOption
+		var thinkingLevels []string
 		var defaultThinkingLevel string
 		if SupportsThinking(model.ID) {
-			thinkingLevels = provider.CanonicalThinkingOptions(provider.ThinkingOff, provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax)
-			defaultThinkingLevel = provider.ThinkingOff
+			thinkingLevels = anthropicThinkingLevels
+			defaultThinkingLevel = "off"
 		}
 
 		modelInfos = append(modelInfos, provider.ModelInfo{

@@ -6,16 +6,14 @@ package gemini
 
 import (
 	"strings"
-
-	provider "juggler/cmd/juggler/providers/registry"
 )
 
-// thinkingSpec describes a Gemini model's thinking-budget support in the
-// canonical vocabulary. The zero value (nil budgets) ⇒ no thinking control.
+// thinkingSpec describes a Gemini model's thinking-budget support in its own
+// native level names. The zero value (nil budgets) ⇒ no thinking control.
 type thinkingSpec struct {
-	levels  []string         // canonical levels advertised, in display order
-	def     string           // canonical default level (presentation only)
-	budgets map[string]int32 // canonical level → thinkingBudget tokens
+	levels  []string         // native levels advertised, in display order
+	def     string           // default level (presentation only)
+	budgets map[string]int32 // level name → thinkingBudget tokens
 }
 
 // geminiThinkingSpecFor classifies a Gemini model id into its thinking support.
@@ -33,13 +31,13 @@ func geminiThinkingSpecFor(model string) thinkingSpec {
 		// is dynamic (the model decides), not a fixed level, so def is left empty
 		// ⇒ the UI shows a plain "Default".
 		return thinkingSpec{
-			levels: []string{provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax},
+			levels: []string{"low", "medium", "high", "max"},
 			def:    "",
 			budgets: map[string]int32{
-				provider.ThinkingLow:    2048,
-				provider.ThinkingMedium: 8192,
-				provider.ThinkingHigh:   16384,
-				provider.ThinkingMax:    32768,
+				"low":    2048,
+				"medium": 8192,
+				"high":   16384,
+				"max":    32768,
 			},
 		}
 	}
@@ -47,23 +45,22 @@ func geminiThinkingSpecFor(model string) thinkingSpec {
 	// choice); max budget 24576. The default budget is dynamic (the model
 	// decides), not off, so def is left empty ⇒ the UI shows a plain "Default".
 	return thinkingSpec{
-		levels: []string{provider.ThinkingOff, provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh, provider.ThinkingMax},
+		levels: []string{"off", "low", "medium", "high", "max"},
 		def:    "",
 		budgets: map[string]int32{
-			provider.ThinkingOff:    0,
-			provider.ThinkingLow:    2048,
-			provider.ThinkingMedium: 8192,
-			provider.ThinkingHigh:   16384,
-			provider.ThinkingMax:    24576,
+			"off":    0,
+			"low":    2048,
+			"medium": 8192,
+			"high":   16384,
+			"max":    24576,
 		},
 	}
 }
 
-// budgetFor returns the thinkingBudget for a canonical level, and ok=false when
-// the level is absent/unsupported (⇒ leave ThinkingConfig unset, provider
-// default).
+// budgetFor returns the thinkingBudget for a level, and ok=false when the level
+// is absent/unsupported (⇒ leave ThinkingConfig unset, provider default). The
+// advertised budgets map is the only gate: a level is valid iff it is a key.
 func (s thinkingSpec) budgetFor(level string) (int32, bool) {
-	level = provider.NormalizeThinkingLevel(level)
 	if level == "" || s.budgets == nil {
 		return 0, false
 	}

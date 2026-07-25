@@ -6,52 +6,59 @@ package claudecode
 
 import (
 	"slices"
+	"strings"
 	"testing"
-
-	provider "juggler/cmd/juggler/providers/registry"
 )
 
-// TestMaxThinkingTokensForLevel pins the canonical level → MAX_THINKING_TOKENS
-// budget mapping, and that off/absent/unknown omit the var.
-func TestMaxThinkingTokensForLevel(t *testing.T) {
-	on := map[string]int{
-		provider.ThinkingLow:    2048,
-		provider.ThinkingMedium: 8192,
-		provider.ThinkingHigh:   16384,
-		provider.ThinkingMax:    32768,
-	}
-	for level, want := range on {
-		got, ok := maxThinkingTokensForLevel(level)
-		if !ok || got != want {
-			t.Errorf("level %q: got (%d,%v), want (%d,true)", level, got, ok, want)
+// TestClaudecodeEffortLevels pins the advertised set to the claude CLI's native
+// effort vocabulary (low/medium/high/xhigh/max — verbatim from the CLI), and
+// that the advertised list and the accepted set are the same source of truth so
+// they cannot drift.
+func TestClaudecodeEffortLevels(t *testing.T) {
+	want := []string{"low", "medium", "high", "xhigh", "max"}
+	for _, family := range []string{"opus", "sonnet", "haiku", "fable"} {
+		if got := thinkingLevelsFor(family); !slices.Equal(got, want) {
+			t.Errorf("thinkingLevelsFor(%q) = %v, want %v", family, got, want)
 		}
 	}
-	for _, level := range []string{"", provider.ThinkingOff, "garbage"} {
-		if _, ok := maxThinkingTokensForLevel(level); ok {
-			t.Errorf("level %q: expected no budget (var omitted)", level)
+	// Every advertised level is accepted; nothing outside the set is.
+	for _, lvl := range want {
+		if !effortLevelSupported(lvl) {
+			t.Errorf("advertised level %q must be accepted by effortLevelSupported", lvl)
+		}
+	}
+	for _, lvl := range []string{"", "off", "minimal", "none", "garbage"} {
+		if effortLevelSupported(lvl) {
+			t.Errorf("effortLevelSupported(%q) = true, want false", lvl)
 		}
 	}
 }
 
-// TestThinkingSpawnExtras proves a leveled turn injects MAX_THINKING_TOKENS and
-// records the spawned level, while off/absent turns omit the var.
+// TestThinkingSpawnExtras proves a leveled turn injects CLAUDE_CODE_EFFORT_LEVEL
+// with the level passed through verbatim (including xhigh, the tier that has no
+// token-budget equivalent), records the spawned level, and that off/absent turns
+// omit the var so the CLI keeps its default adaptive thinking.
 func TestThinkingSpawnExtras(t *testing.T) {
-	c := &Client{thinkingLevel: provider.ThinkingHigh}
-	extras := c.thinkingSpawnExtras()
-	if !slices.Contains(extras, "MAX_THINKING_TOKENS=16384") {
-		t.Errorf("high turn extras = %v, want MAX_THINKING_TOKENS=16384", extras)
-	}
-	if c.spawnedThinkingLevel != provider.ThinkingHigh {
-		t.Errorf("spawnedThinkingLevel = %q, want high", c.spawnedThinkingLevel)
-	}
-
-	c2 := &Client{thinkingLevel: provider.ThinkingOff}
-	for _, e := range c2.thinkingSpawnExtras() {
-		if len(e) >= len("MAX_THINKING_TOKENS") && e[:len("MAX_THINKING_TOKENS")] == "MAX_THINKING_TOKENS" {
-			t.Errorf("off turn must omit MAX_THINKING_TOKENS, got %q", e)
+	for _, level := range []string{"high", "xhigh", "max"} {
+		c := &Client{thinkingLevel: level}
+		extras := c.thinkingSpawnExtras()
+		if !slices.Contains(extras, "CLAUDE_CODE_EFFORT_LEVEL="+level) {
+			t.Errorf("%s turn extras = %v, want CLAUDE_CODE_EFFORT_LEVEL=%s", level, extras, level)
+		}
+		if c.spawnedThinkingLevel != level {
+			t.Errorf("spawnedThinkingLevel = %q, want %q", c.spawnedThinkingLevel, level)
 		}
 	}
-	if c2.spawnedThinkingLevel != provider.ThinkingOff {
-		t.Errorf("spawnedThinkingLevel = %q, want off", c2.spawnedThinkingLevel)
+
+	for _, level := range []string{"", "off", "garbage"} {
+		c := &Client{thinkingLevel: level}
+		for _, e := range c.thinkingSpawnExtras() {
+			if strings.HasPrefix(e, "CLAUDE_CODE_EFFORT_LEVEL=") {
+				t.Errorf("level %q must omit CLAUDE_CODE_EFFORT_LEVEL, got %q", level, e)
+			}
+		}
+		if c.spawnedThinkingLevel != level {
+			t.Errorf("spawnedThinkingLevel = %q, want %q", c.spawnedThinkingLevel, level)
+		}
 	}
 }

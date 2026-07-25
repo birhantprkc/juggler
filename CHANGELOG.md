@@ -5,6 +5,9 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- New conversations now name their own tab from your first message
+- Added a "cheap model" setting — a small, fast model for background micro-tasks like tab naming
+- Plugins can now request short out-of-band model completions via a generateText op
 - Added Mistral AI provider, with vision models and Magistral reasoning levels
 - Added OpenCode Zen provider — a multi-model gateway (Claude, GPT, Gemini, DeepSeek, and more)
 - Some minor fixes for thinking mode names, a few UI issues, light/dark mode on linux

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"juggler/cmd/juggler/providers/openaibase"
-	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/providers/utils"
 )
 
@@ -53,15 +52,7 @@ var (
 // spec (no reasoning control).
 func thinkingSpec(modelID string) openaibase.ThinkingSpec {
 	if strings.HasPrefix(strings.ToLower(modelID), "magistral") {
-		return openaibase.ThinkingSpec{
-			Levels:  []string{provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh},
-			Default: provider.ThinkingMedium,
-			Effort: map[string]string{
-				provider.ThinkingLow:    "low",
-				provider.ThinkingMedium: "medium",
-				provider.ThinkingHigh:   "high",
-			},
-		}
+		return openaibase.EffortSpec("medium", "low", "medium", "high")
 	}
 	return openaibase.ThinkingSpec{}
 }

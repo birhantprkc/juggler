@@ -108,68 +108,16 @@ type MessageRequest struct {
 	BypassContextGuard bool
 
 	// ThinkingLevel selects how much extended reasoning / "thinking" the model
-	// does this turn, from a provider-agnostic vocabulary:
-	//   "" (absent) — the provider default (byte-identical to pre-feature
-	//                 behaviour: no thinking parameter is sent)
-	//   "off"       — thinking explicitly disabled
-	//   "low" / "medium" / "high" / "max" — increasing reasoning effort/budget
-	// Each provider advertises the subset it supports per model (ModelInfo.
-	// ThinkingLevels) and maps the canonical level to its native parameter at
-	// its own boundary (Anthropic thinking budget, OpenAI reasoning_effort,
-	// claudecode MAX_THINKING_TOKENS, …). A level a provider/model doesn't
-	// support is ignored silently — same contract as ToolChoice. Per-turn (not
-	// on Config) by design, so flicking the level never churns the conversation
-	// cache handle.
+	// does this turn, named in the provider's OWN native vocabulary. It is one
+	// of the strings the model advertised in ModelInfo.ThinkingLevels (e.g.
+	// "low" / "high" / "xhigh" / "none" / "max"), or "" for the provider default
+	// — no thinking parameter is sent, byte-identical to pre-feature behaviour.
+	// Each provider maps the string to its native parameter at its own boundary
+	// (Anthropic thinking budget, OpenAI reasoning_effort, claudecode
+	// MAX_THINKING_TOKENS, …) and ignores any value it doesn't recognise — same
+	// contract as ToolChoice. Per-turn (not on Config) by design, so flicking
+	// the level never churns the conversation cache handle.
 	ThinkingLevel string
-}
-
-// Canonical thinking/reasoning-effort levels. Providers translate these into
-// their native parameters; the empty string means "provider default" (no
-// thinking parameter sent). See MessageRequest.ThinkingLevel.
-const (
-	ThinkingOff    = "off"
-	ThinkingLow    = "low"
-	ThinkingMedium = "medium"
-	ThinkingHigh   = "high"
-	ThinkingMax    = "max"
-)
-
-// ThinkingOption is one advertised reasoning-effort tier for a model.
-type ThinkingOption struct {
-	// Value is the canonical level (off/low/medium/high/max) — the identity used
-	// on the wire and in persistence. Unchanged by the display-label feature.
-	Value string `json:"value"`
-	// Label is the model's native display name for this tier (e.g. "xhigh",
-	// "none", "minimal"). Empty ⇒ the UI derives a label from Value, preserving
-	// the canonical labels for providers that don't rename their tiers.
-	Label string `json:"label,omitempty"`
-}
-
-// CanonicalThinkingOptions builds thinking options whose Label is left empty, so
-// the UI derives each label from its canonical Value. Providers that expose the
-// canonical tier names verbatim (Anthropic, Gemini, claudecode) use this.
-func CanonicalThinkingOptions(levels ...string) []ThinkingOption {
-	if len(levels) == 0 {
-		return nil
-	}
-	opts := make([]ThinkingOption, len(levels))
-	for i, level := range levels {
-		opts[i] = ThinkingOption{Value: level}
-	}
-	return opts
-}
-
-// NormalizeThinkingLevel maps an arbitrary input to a canonical thinking level,
-// returning "" (provider default) for anything unrecognised — including the
-// empty string. Providers and the server call this so an unknown/garbage value
-// degrades to the default rather than being forwarded verbatim.
-func NormalizeThinkingLevel(s string) string {
-	switch s {
-	case ThinkingOff, ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingMax:
-		return s
-	default:
-		return ""
-	}
 }
 
 // ToolChoice constrains which tool (if any) the model must call on a turn.
@@ -466,16 +414,17 @@ type ModelInfo struct {
 	// every model. Set only for models with verified non-text input support.
 	InputModalities []string
 	// ThinkingLevels lists the reasoning-effort tiers this model supports, in
-	// display order. Each option's Value is a canonical level
-	// ("off","low","medium","high","max") — the wire + persistence identity —
-	// and Label is the model's native display name for that tier (empty ⇒ the UI
-	// derives a label from Value). Empty/nil ⇒ the model exposes no thinking
-	// control and the UI hides the selector. Providers map each canonical level
-	// to their native parameter at their own boundary.
-	ThinkingLevels []ThinkingOption
+	// display order, each named in the provider's OWN native vocabulary (e.g.
+	// "low"/"medium"/"high", or "none"/"low"/"high"/"xhigh"). A level string IS
+	// the identity — shown in the UI verbatim, stored, and sent back on the next
+	// turn as MessageRequest.ThinkingLevel for the provider to map to its native
+	// parameter. Empty/nil ⇒ the model exposes no thinking control and the UI
+	// hides the selector.
+	ThinkingLevels []string
 	// DefaultThinkingLevel names the level the provider uses when the request
-	// carries none. Presentation only (lets the UI label "Default (medium)").
-	// Empty when unknown.
+	// carries none — one of ThinkingLevels, in that native vocabulary.
+	// Presentation only (lets the UI label "Default (medium)"). Empty when
+	// unknown.
 	DefaultThinkingLevel string
 }
 

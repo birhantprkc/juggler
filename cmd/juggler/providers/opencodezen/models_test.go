@@ -5,6 +5,7 @@
 package opencodezen
 
 import (
+	"slices"
 	"testing"
 
 	provider "juggler/cmd/juggler/providers/registry"
@@ -44,47 +45,22 @@ func TestOutputCapFitsWindow(t *testing.T) {
 	}
 }
 
-// TestThinkingSpecUsesCanonicalLevels pins the thinking contract: every
-// advertised level is a canonical thinking token (off/low/medium/high/max) so
-// it survives NormalizeThinkingLevel, and DeepSeek V4's top tier maps the
-// canonical "max" level onto the native "xhigh" effort (not a bogus "xhigh"
-// canonical level, which would be dropped and send no reasoning param).
-func TestThinkingSpecUsesCanonicalLevels(t *testing.T) {
-	canonical := map[string]bool{
-		provider.ThinkingOff: true, provider.ThinkingLow: true, provider.ThinkingMedium: true,
-		provider.ThinkingHigh: true, provider.ThinkingMax: true,
-	}
-	for _, model := range []string{"deepseek-v4-pro", "deepseek-v4-flash", "gpt-5", "claude-opus-4-5", "glm-5"} {
-		spec := thinkingSpec(model)
-		if len(spec.Levels) == 0 {
-			t.Errorf("thinkingSpec(%q) advertised no levels", model)
-		}
-		for _, lvl := range spec.Levels {
-			if !canonical[lvl] {
-				t.Errorf("thinkingSpec(%q) advertises non-canonical level %q (would be dropped by NormalizeThinkingLevel)", model, lvl)
-			}
-			if _, ok := spec.Effort[lvl]; !ok {
-				t.Errorf("thinkingSpec(%q) level %q has no native effort mapping", model, lvl)
-			}
-		}
-	}
-
-	// DeepSeek V4: canonical high→high, max→xhigh.
+// TestThinkingSpecNativeLevels pins the thinking contract: each model advertises
+// its native reasoning_effort levels directly (the level name IS the wire value),
+// DeepSeek V4 exposes high/xhigh, and everything else low/medium/high.
+func TestThinkingSpecNativeLevels(t *testing.T) {
 	ds := thinkingSpec("deepseek-v4-pro")
-	if ds.Effort[provider.ThinkingHigh] != "high" {
-		t.Errorf("deepseek-v4 Effort[high] = %q, want \"high\"", ds.Effort[provider.ThinkingHigh])
+	if !slices.Equal(ds.Levels, []string{"high", "xhigh"}) {
+		t.Errorf("deepseek-v4 levels = %v, want [high xhigh]", ds.Levels)
 	}
-	if ds.Effort[provider.ThinkingMax] != "xhigh" {
-		t.Errorf("deepseek-v4 Effort[max] = %q, want \"xhigh\"", ds.Effort[provider.ThinkingMax])
+	if ds.Default != "high" {
+		t.Errorf("deepseek-v4 default = %q, want high", ds.Default)
 	}
 
-	// Everything else: standard low/medium/high.
-	other := thinkingSpec("gpt-5")
-	for lvl, want := range map[string]string{
-		provider.ThinkingLow: "low", provider.ThinkingMedium: "medium", provider.ThinkingHigh: "high",
-	} {
-		if other.Effort[lvl] != want {
-			t.Errorf("gpt-5 Effort[%q] = %q, want %q", lvl, other.Effort[lvl], want)
+	for _, model := range []string{"gpt-5", "claude-opus-4-5", "glm-5"} {
+		spec := thinkingSpec(model)
+		if !slices.Equal(spec.Levels, []string{"low", "medium", "high"}) {
+			t.Errorf("thinkingSpec(%q) levels = %v, want [low medium high]", model, spec.Levels)
 		}
 	}
 }

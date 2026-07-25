@@ -6,8 +6,6 @@ package mistral
 
 import (
 	"testing"
-
-	provider "juggler/cmd/juggler/providers/registry"
 )
 
 // TestMistralContextWindow pins a couple of known windows and the unknown-model
@@ -39,8 +37,8 @@ func TestMistralThinkingSpec(t *testing.T) {
 		if len(spec.Options()) != 3 {
 			t.Errorf("thinkingSpec(%q) options = %d, want 3", id, len(spec.Options()))
 		}
-		if spec.Default != provider.ThinkingMedium {
-			t.Errorf("thinkingSpec(%q) default = %q, want %q", id, spec.Default, provider.ThinkingMedium)
+		if spec.Default != "medium" {
+			t.Errorf("thinkingSpec(%q) default = %q, want medium", id, spec.Default)
 		}
 	}
 	nonReasoning := []string{"mistral-large-latest", "codestral-latest", "ministral-8b-latest"}
