@@ -463,7 +463,6 @@ class ConversationArea extends HTMLElement {
             <h3 class="properties-panel-title thread-column-goal"></h3>
           </header>
           <thread-column-actions>
-            <button class="thread-action-btn thread-cancel-btn" title="Cancel thread">Cancel</button>
             <button class="properties-panel-btn thread-copy-tab-btn" title="Copy this thread (with inherited context) to a new tab">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-160v-326L336-382l-56-58 200-200 200 200-56 58-104-104v326h-80ZM160-600v-120q0-33 23.5-56.5T240-800h480q33 0 56.5 23.5T800-720v120h-80v-120H240v120h-80Z"/></svg>
               Copy thread to new tab
@@ -524,17 +523,6 @@ class ConversationArea extends HTMLElement {
     // Update status badge
     this._updateThreadHeaderStatus(threadYMap);
 
-    // Wire up Cancel button (clone to remove old listeners)
-    const cancelBtn = header.querySelector('.thread-cancel-btn');
-    if (cancelBtn) {
-      const newCancelBtn = cancelBtn.cloneNode(true);
-      cancelBtn.parentNode?.replaceChild(newCancelBtn, cancelBtn);
-      newCancelBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this._cancelThread(threadYMap);
-      });
-    }
-
     // Wire up Copy to new tab — reuses the same promote-thread-requested event
     // as the thread-result tile's Promote button (conversation-tab handles it
     // via promoteThreadToNewTab). Clone to clear listeners from a prior show.
@@ -584,14 +572,14 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Update the thread header button visibility based on whether the thread is
+   * Update the thread header input-box visibility based on whether the thread is
    * finished (derived state).
    *
    * "Finished" is isThreadClosed (result set AND nothing in the subtree awaiting
    * approval), NOT raw `result` — the same canonical predicate the tile colour
    * and the tab's input-box placement use. A sub-thread parked on your approval
    * is still active even when a stale "Thread was interrupted" result sits on it
-   * from a reload, so it must keep its Cancel button and input box.
+   * from a reload, so it must keep its input box.
    *
    * For the input box we set display to '' (not a forced value) when active, so
    * we DEFER to the CSS `conversation-area[data-hide-input] input-box` rule that
@@ -607,8 +595,6 @@ class ConversationArea extends HTMLElement {
     if (!header || !threadYMap) return;
 
     const isFinished = isThreadClosed(threadYMap);
-    const cancelBtn = header.querySelector('.thread-cancel-btn');
-    if (cancelBtn) /** @type {HTMLElement} */ (cancelBtn).style.display = isFinished ? 'none' : '';
 
     // Hide when finished; otherwise defer to CSS (data-hide-input) by clearing
     // the inline style rather than forcing visibility.
@@ -623,20 +609,6 @@ class ConversationArea extends HTMLElement {
   hideThreadHeader() {
     const header = this.querySelector('.thread-column-header');
     if (header) header.classList.add('hidden');
-  }
-
-  /**
-   * Stop the thread from its own column-header — interrupt without closing.
-   * This is the thread's own vantage (same as Escape inside it or its footer
-   * Stop): the worker turn is preempted but the thread stays open so the user
-   * can keep interacting with it. Closing (a 'Cancelled' summary) is a
-   * parent-vantage action (the parent tile's Stop → conversation.cancelThread).
-   * @param {*} threadYMap
-   * @private
-   */
-  _cancelThread(threadYMap) {
-    if (!this._conversation) return;
-    void this._conversation.interruptThread(threadYMap);
   }
 
   setupEventListeners() {

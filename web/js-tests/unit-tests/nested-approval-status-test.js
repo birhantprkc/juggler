@@ -322,20 +322,17 @@ export async function runTests() {
     // tests header-status visibility logic, not the footer.
     el.updateFooter = () => {};
     const inputBox = el.querySelector('input-box');
-    const cancelBtn = el.querySelector('.thread-cancel-btn');
-    assert(!!inputBox && !!cancelBtn, 'conversation-area must render input-box + cancel button');
+    assert(!!inputBox, 'conversation-area must render input-box');
 
     try {
       // Waiting sub-thread carrying a stale interrupted result: NOT finished
-      // → cancel shown, input deferred to CSS (inline display cleared).
+      // → input deferred to CSS (inline display cleared).
       const waiting = buildRoot([thread('H1', [toolAction('pending')])]).get(0);
       waiting.set('result', 'Thread was interrupted');
       el._updateThreadHeaderStatus(waiting);
       assert(inputBox.style.display !== 'none',
         `waiting thread with stale result must NOT force input-box hidden; ` +
 				`inline display was "${inputBox.style.display}"`);
-      assert(cancelBtn.style.display !== 'none',
-        'waiting thread must keep its Cancel button visible');
 
       // Genuinely finished thread (result, nothing pending): force hidden.
       const done = buildRoot([thread('H2', [toolAction('completed')])]).get(0);
@@ -344,8 +341,6 @@ export async function runTests() {
       assert(inputBox.style.display === 'none',
         `a genuinely finished thread must hide its input box; ` +
 				`inline display was "${inputBox.style.display}"`);
-      assert(cancelBtn.style.display === 'none',
-        'a finished thread must hide its Cancel button');
 
       passed++;
     } finally {

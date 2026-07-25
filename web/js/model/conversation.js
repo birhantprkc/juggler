@@ -846,8 +846,8 @@ class Conversation {
 
   /**
    * Stop a single thread's subtree — the one primitive behind every "stop a
-   * thread" affordance (parent tile button, column-header Cancel, an in-thread
-   * footer Stop). Settles the thread closed the way MessageThread.close() does:
+   * thread" affordance (parent tile button, an in-thread footer Stop). Settles
+   * the thread closed the way MessageThread.close() does:
    * worker truth first, then a result stamp.
    *
    * Crucially, the worker-cancel SCOPE equals the settle TARGET. We preempt the
@@ -888,8 +888,8 @@ class Conversation {
    * the thread after stopping it.
    *
    * This is the "stop from the thread's own vantage" action: Escape while
-   * focused in the sub-thread, the sub-thread's footer Stop, and its
-   * column-header Cancel all route here. Closing a thread (stamping a
+   * focused in the sub-thread and the sub-thread's footer Stop both route
+   * here. Closing a thread (stamping a
    * 'Cancelled' summary) only happens when it is stopped from its PARENT's
    * vantage — `cancelThread` (the parent tile's Stop) or `closeOpenSubThreads`
    * (a root/parent Escape).

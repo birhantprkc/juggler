@@ -2809,11 +2809,6 @@ thread-column-actions {
     color: var(--accent-blue, #58a6ff);
 }
 
-.thread-cancel-btn:hover {
-    border-color: var(--accent-red, #f85149);
-    color: var(--accent-red, #f85149);
-}
-
 
 .thread-column .conversation-message-list {
     padding-top: 1rem;

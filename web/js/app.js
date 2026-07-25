@@ -835,7 +835,7 @@ class JugglerApp {
    * Cancel the current LLM operation.
    *
    * Vantage-aware. Stopping from a sub-thread's OWN vantage (Escape while
-   * focused in it, its footer Stop / header Cancel) INTERRUPTS it: the worker
+   * focused in it, or its footer Stop) INTERRUPTS it: the worker
    * turn is preempted but the thread stays open, so its input box stays put and
    * the user can keep interacting with it. Stopping from the root/parent vantage
    * stops everything AND closes the open sub-threads (so the input box returns
