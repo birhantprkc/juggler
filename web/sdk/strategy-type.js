@@ -178,6 +178,8 @@ export class AbortError extends Error {
  *     `recommendations`, `color`, `icon`.
  *   - `filterTools(tools)` — restrict which tools the model may call (per phase).
  *   - `getApprovalPolicy(info)` — auto-approve or force-approve a tool call.
+ *   - `onToolPending(info)` — react (async) once a tool has parked for approval;
+ *     the seam for out-of-band auto-approval (classify, then `resolveApproval`).
  *   - `onActivate(prevId)` / `onWorkerIdle()` — inject guidance / drive follow-on
  *     work. Steer the model via `injectGuidance()` (a durable system-reminder),
  *     never by authoring system-prompt text.
@@ -243,6 +245,7 @@ export class AbortError extends Error {
  * |------|-------------|
  * | filterTools(tools)         | Restrict the tools the model may call (each loop iteration) |
  * | getApprovalPolicy(info)    | Auto-approve / force-approve a tool call |
+ * | onToolPending(info)        | React (async) after a tool parks for approval — classify + resolveApproval |
  * | onActivate(prevId)         | Inject guidance when this strategy becomes active |
  * | onWorkerIdle()             | Drive follow-on work when the worker goes idle |
  * | injectGuidance(text)       | Write a durable system-reminder (the way to steer the model) |
@@ -421,6 +424,44 @@ class StrategyType {
   getApprovalPolicy({ toolName, toolInput, category, defaultApproval }) {
     void toolName; void toolInput; void category; void defaultApproval;
     return APPROVAL_POLICY.DEFAULT;
+  }
+
+  /**
+   * Called (fire-and-forget, engine-only) the moment a tool call has parked
+   * awaiting approval — i.e. the permission system decided it needs approval
+   * and this strategy did not auto-approve or force-approve it via
+   * {@link getApprovalPolicy}.
+   *
+   * This is the sanctioned seam for out-of-band approval automation. Unlike
+   * `getApprovalPolicy` — which must return its decision synchronously — this
+   * hook may be async and do real work. For example, an auto-approve strategy
+   * can classify the parked action with a cheap out-of-band model (via
+   * `generateText` from `juggler/ops`) and then approve or deny it by calling
+   * {@link import('../js/model/message-thread.js').default#resolveApproval}:
+   * `this.messageThread.resolveApproval(toolUseId, 'yes' | 'no')`.
+   *
+   * The framework does not await this hook and ignores its return value. The
+   * tool stays parked until something resolves it — this strategy, or the user.
+   * That makes the safe default **fail-closed**: if the hook errors, times out,
+   * or never resolves, the tool simply waits for human approval. Because the
+   * hook runs only on the authoritative engine (never in passive viewers), it
+   * fires exactly once per park; no viewer election is needed.
+   *
+   * Note: worker-managed tools (e.g. `create_thread`) are driven entirely by
+   * the Go worker and are not routed through this hook — it covers the
+   * browser-executed tools (`bash`, `write`, `edit`, …) that park at the
+   * engine approval gate, which is where command auto-approval applies.
+   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined}} info
+   *   - toolUseId: id to pass to `messageThread.resolveApproval`
+   *   - toolName: name of the parked tool
+   *   - toolInput: the tool's input parameters (plain object)
+   *   - category: tool category ('read', 'write', 'meta', or undefined)
+   * @returns {void|Promise<void>} Ignored by the framework
+   */
+  onToolPending(info) {
+    void info;
+    // Default: no-op — the tool stays parked until the user (or an overriding
+    // strategy) resolves it.
   }
 
   // ============================================================================

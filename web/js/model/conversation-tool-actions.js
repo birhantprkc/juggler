@@ -199,6 +199,35 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
       messageThread.updateToolActionState(toolUseId, TOOL_STATES.APPROVED, { ifState: '' });
     }
   }, ENGINE_DERIVED_ORIGIN);
+
+  // The tool has now parked awaiting approval (state=PENDING committed above).
+  // Notify the strategy so out-of-band approval automation (e.g. a cheap-model
+  // auto-approve classifier) can review it and resolve via resolveApproval.
+  //
+  // Fire-and-forget by contract: this whole function is engine-only (viewers
+  // returned at the top), so the hook runs exactly once per park — no viewer
+  // election. We deliberately do NOT await it: getApprovalPolicy above is the
+  // synchronous decision, and blocking the gate on an async classifier would
+  // stall the evaluate-tool ack. A throw or a rejected promise is swallowed
+  // here so it never becomes an unhandled rejection; the tool simply stays
+  // PENDING for the human (fail-closed).
+  if (needsApproval) {
+    try {
+      const pendingResult = messageThread.strategy?.onToolPending?.({
+        toolUseId,
+        toolName,
+        toolInput: toolInputPlain,
+        category: toolDef?.category
+      });
+      if (pendingResult && typeof pendingResult.then === 'function') {
+        pendingResult.catch((/** @type {unknown} */ err) => {
+          console.error('[handleNewToolAction] onToolPending rejected:', err);
+        });
+      }
+    } catch (err) {
+      console.error('[handleNewToolAction] onToolPending threw:', err);
+    }
+  }
 }
 
 /**
