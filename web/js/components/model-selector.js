@@ -42,7 +42,7 @@ const THINKING_CHIP = { off: 'off', low: 'low', medium: 'med', high: 'high', max
  * @property {string} id - Model ID
  * @property {number} contextWindow - Context window size
  * @property {string} [displayName] - Provider-supplied human label, when the provider exposes one
- * @property {string[]} [thinkingLevels] - Canonical thinking levels the model supports; absent/empty ⇒ no thinking control
+ * @property {{value: string, label?: string}[]} [thinkingLevels] - Reasoning tiers the model supports: `value` is the canonical level, `label` the model's native display name (absent ⇒ derive from `value`); absent/empty ⇒ no thinking control
  * @property {string} [defaultThinkingLevel] - Level used when a turn carries none (presentation only)
  * @typedef {object} Provider
  * @property {string} name - Provider name (e.g., "anthropic")
@@ -192,6 +192,17 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   _syncModelDisplay() {
+    // During a hold-to-cycle gesture the doc deliberately still holds the
+    // pre-gesture config (writes are buffered until commit — see beginCycle),
+    // while _currentConfig and the HUD show the previewed hop. Re-reading the
+    // doc here would clobber that preview back to the original model — which is
+    // exactly what an async providers-update push (triggered by the menu HUD's
+    // own open→refresh round trip, landing ~0.5-1s later) would do. Keep the
+    // preview; just refresh the open dropdown so updated availability shows.
+    if (this._deferWrites) {
+      if (this.dropdownOpen) this._updateDropdownContent();
+      return;
+    }
     const config = this._getEffectiveConfig();
     this._currentConfig = config;
     this.setModel(config?.provider || '', config?.model || '');
@@ -816,7 +827,8 @@ class ModelSelector extends HTMLElement {
     const levels = modelEntry?.thinkingLevels || [];
     if (levels.length === 0) return '';
 
-    const active = resolved?.thinking && levels.includes(resolved.thinking) ? resolved.thinking : '';
+    const hasValue = (/** @type {string} */ v) => levels.some(o => o.value === v);
+    const active = resolved?.thinking && hasValue(resolved.thinking) ? resolved.thinking : '';
     const def = modelEntry?.defaultThinkingLevel;
     const defaultLabel = def ? `Default (${THINKING_LABELS[def] || def})` : 'Default';
 
@@ -825,8 +837,11 @@ class ModelSelector extends HTMLElement {
       return `<button type="button" class="thinking-seg${isActive ? ' active' : ''}" data-thinking-level="${escapeHtml(level)}" role="radio" aria-checked="${isActive}">${escapeHtml(label)}</button>`;
     };
 
-    const ordered = THINKING_LEVELS.filter(l => levels.includes(l));
-    const segments = [seg('', defaultLabel), ...ordered.map(l => seg(l, THINKING_LABELS[l] || l))];
+    // Canonical order for stability; each tier's native label wins, falling back
+    // to the canonical label when the provider left it empty.
+    const rank = (/** @type {string} */ v) => { const i = THINKING_LEVELS.indexOf(v); return i === -1 ? THINKING_LEVELS.length : i; };
+    const ordered = [...levels].sort((a, b) => rank(a.value) - rank(b.value));
+    const segments = [seg('', defaultLabel), ...ordered.map(o => seg(o.value, o.label || THINKING_LABELS[o.value] || o.value))];
 
     return `
             <div class="model-thinking">
@@ -1138,7 +1153,7 @@ class ModelSelector extends HTMLElement {
     // entry may carry a level the model no longer supports, which must fall
     // back to the default rather than store a level the model can't honour.
     const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
-    const level = thinking && (modelEntry?.thinkingLevels || []).includes(thinking) ? thinking : '';
+    const level = thinking && (modelEntry?.thinkingLevels || []).some(o => o.value === thinking) ? thinking : '';
 
     // Already selected at this exact level — just close the dropdown. The
     // level is part of the identity, so the same model at a different level
@@ -1210,7 +1225,7 @@ class ModelSelector extends HTMLElement {
   supportedThinkingLevels() {
     const prov = this.providers.find(p => p.name === this.provider);
     const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
-    return THINKING_LEVELS.filter(l => (modelEntry?.thinkingLevels || []).includes(l));
+    return THINKING_LEVELS.filter(l => (modelEntry?.thinkingLevels || []).some(o => o.value === l));
   }
 
   /**
@@ -1231,7 +1246,7 @@ class ModelSelector extends HTMLElement {
     if (!provider || !provider.available) return false;
 
     const modelEntry = provider.modelsWithContext?.find(m => m.id === pair.model);
-    const level = pair.thinking && (modelEntry?.thinkingLevels || []).includes(pair.thinking) ? pair.thinking : '';
+    const level = pair.thinking && (modelEntry?.thinkingLevels || []).some(o => o.value === pair.thinking) ? pair.thinking : '';
 
     /** @type {{provider: string, model: string, thinking?: string}} */
     const nextConfig = { provider: pair.provider, model: pair.model };
@@ -1425,12 +1440,16 @@ class ModelSelector extends HTMLElement {
     const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
     const levels = modelEntry?.thinkingLevels || [];
     if (levels.length === 0) return '';
+    const byValue = new Map(levels.map(o => [o.value, o]));
     // An explicit level counts only when the model advertises it — a stale
     // stored level means the model's default, same as everywhere else.
     const explicit = this._currentConfig?.thinking;
-    const level = explicit && levels.includes(explicit) ? explicit : '';
+    const level = explicit && byValue.has(explicit) ? explicit : '';
     const declaredDefault = modelEntry?.defaultThinkingLevel || '';
     const shown = level || declaredDefault || 'def';
+    // The chip shows the tier's native label when the model renames it, else the
+    // canonical compact label.
+    const shownLabel = byValue.get(shown)?.label || THINKING_CHIP[shown] || shown;
     // Cite the switch-thinking shortcut (⌥⌘T / Ctrl+Alt+T) live from the central
     // table, so the hint stays correct if it's ever rebound or left unbound.
     const cycleKey = keyShortcutManager.formatBinding('cycle-thinking');
@@ -1440,7 +1459,7 @@ class ModelSelector extends HTMLElement {
       : `Thinking: ${declaredDefault ? `${declaredDefault} (default)` : 'default'} — click to change${keyHint}`;
     // A <span> (not <button>): the chip nests inside the model button, and a
     // button inside a button is invalid HTML the parser would eject.
-    return `<span class="thinking-chip${level ? '' : ' default'}" role="button" title="${escapeHtml(title)}">${escapeHtml(THINKING_CHIP[shown] || shown)}</span>`;
+    return `<span class="thinking-chip${level ? '' : ' default'}" role="button" title="${escapeHtml(title)}">${escapeHtml(shownLabel)}</span>`;
   }
 
   /**
