@@ -159,10 +159,17 @@ function applyTheme(theme, mode) {
  * Initialize theme on page load
  */
 function initTheme() {
-  // A ?theme= param (used when a native host or parent hands a child window an
-  // explicit theme) pins that theme as the mode for this window.
+  // A ?theme= param (from a native host or parent window) carries a *resolved*
+  // theme ('dark'/'light') as a pre-localStorage paint hint. It must not override
+  // a mode the user has already chosen: on every relaunch the host replays the
+  // last resolved theme, so treating it as the mode would silently demote
+  // 'system' to whichever concrete theme happened to be showing. Only let the
+  // param pin a mode when this window has no stored preference yet (a first-ever
+  // hand-off to a brand-new window); otherwise the persisted mode wins.
   const urlTheme = new URL(window.location.href).searchParams.get('theme');
-  if (urlTheme === THEMES.DARK || urlTheme === THEMES.LIGHT) {
+  const stored = localStorage.getItem(THEME_KEY);
+  const hasStoredMode = stored === MODES.SYSTEM || stored === MODES.LIGHT || stored === MODES.DARK;
+  if ((urlTheme === THEMES.DARK || urlTheme === THEMES.LIGHT) && !hasStoredMode) {
     localStorage.setItem(THEME_KEY, urlTheme);
     applyTheme(urlTheme, urlTheme);
   } else {
