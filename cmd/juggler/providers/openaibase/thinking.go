@@ -66,6 +66,21 @@ func (s ThinkingSpec) Options() []provider.ThinkingOption {
 	return opts
 }
 
+// EffortSpec builds a ThinkingSpec for the common case where each native
+// reasoning_effort string equals its canonical level name (low→"low",
+// medium→"medium", high→"high"). Levels are advertised in the order given and
+// defaultLevel labels the UI's "Default (…)" hint. Providers whose native
+// vocabulary diverges from the canonical names (e.g. off→"minimal"/"none",
+// max→"xhigh") build the Effort map directly, or start here and amend it —
+// the returned Effort is a fresh mutable map.
+func EffortSpec(defaultLevel string, levels ...string) ThinkingSpec {
+	effort := make(map[string]string, len(levels))
+	for _, level := range levels {
+		effort[level] = level
+	}
+	return ThinkingSpec{Levels: levels, Default: defaultLevel, Effort: effort}
+}
+
 // OpenAIThinkingSpec classifies an OpenAI / OpenAI-Codex model id into its
 // reasoning-effort support, expressed in the canonical thinking vocabulary.
 // Non-reasoning models (gpt-4o, gpt-4, gpt-3.5) return the zero ThinkingSpec.
@@ -82,17 +97,13 @@ func OpenAIThinkingSpec(modelID string) ThinkingSpec {
 	// They accept low/medium/high; codex-max style models add an "xhigh" tier.
 	// "off" is intentionally not offered — codex reasons on every turn.
 	if strings.Contains(m, "codex") {
-		levels := []string{provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh}
-		effort := map[string]string{
-			provider.ThinkingLow:    "low",
-			provider.ThinkingMedium: "medium",
-			provider.ThinkingHigh:   "high",
-		}
+		spec := EffortSpec(provider.ThinkingMedium,
+			provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh)
 		if strings.Contains(m, "codex-max") || strings.Contains(m, "5.2-codex") {
-			levels = append(levels, provider.ThinkingMax)
-			effort[provider.ThinkingMax] = "xhigh"
+			spec.Levels = append(spec.Levels, provider.ThinkingMax)
+			spec.Effort[provider.ThinkingMax] = "xhigh"
 		}
-		return ThinkingSpec{Levels: levels, Default: provider.ThinkingMedium, Effort: effort}
+		return spec
 	}
 
 	// GPT-5 family (gpt-5, gpt-5-mini/nano, gpt-5.1, gpt-5.1-thinking, gpt-5.6…).
@@ -121,15 +132,8 @@ func OpenAIThinkingSpec(modelID string) ThinkingSpec {
 	// low/medium/high — no "minimal"/"none"/"xhigh". o1-mini and o1-preview do
 	// not accept reasoning_effort and are excluded.
 	if isOSeriesReasoning(m) {
-		return ThinkingSpec{
-			Levels:  []string{provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh},
-			Default: provider.ThinkingMedium,
-			Effort: map[string]string{
-				provider.ThinkingLow:    "low",
-				provider.ThinkingMedium: "medium",
-				provider.ThinkingHigh:   "high",
-			},
-		}
+		return EffortSpec(provider.ThinkingMedium,
+			provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh)
 	}
 
 	return ThinkingSpec{}

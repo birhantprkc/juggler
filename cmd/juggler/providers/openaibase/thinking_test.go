@@ -169,6 +169,35 @@ func TestEffortForOmitsWhenUnsupported(t *testing.T) {
 	}
 }
 
+// TestEffortSpec pins the identity-map helper: levels are preserved in order,
+// each maps to its own canonical name as the native effort, Default is carried
+// through, and the returned Effort map is mutable so callers can amend it (e.g.
+// appending a divergent max→"xhigh" tier) without aliasing.
+func TestEffortSpec(t *testing.T) {
+	spec := EffortSpec(provider.ThinkingMedium, provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh)
+	if spec.Default != provider.ThinkingMedium {
+		t.Errorf("Default = %q, want %q", spec.Default, provider.ThinkingMedium)
+	}
+	wantLevels := []string{provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh}
+	if len(spec.Levels) != len(wantLevels) {
+		t.Fatalf("Levels = %v, want %v", spec.Levels, wantLevels)
+	}
+	for i, lvl := range wantLevels {
+		if spec.Levels[i] != lvl {
+			t.Errorf("Levels[%d] = %q, want %q", i, spec.Levels[i], lvl)
+		}
+		if spec.Effort[lvl] != lvl {
+			t.Errorf("Effort[%q] = %q, want identity %q", lvl, spec.Effort[lvl], lvl)
+		}
+	}
+	// Mutable result: amending one spec's map must not touch a sibling's.
+	spec.Effort[provider.ThinkingMax] = "xhigh"
+	other := EffortSpec(provider.ThinkingLow, provider.ThinkingLow)
+	if _, aliased := other.Effort[provider.ThinkingMax]; aliased {
+		t.Error("EffortSpec results share a map — must return a fresh map each call")
+	}
+}
+
 // TestChatCompletionsSendsReasoningEffort proves the Chat Completions path sends
 // reasoning_effort mapped from the canonical level, and omits it when absent.
 func TestChatCompletionsSendsReasoningEffort(t *testing.T) {

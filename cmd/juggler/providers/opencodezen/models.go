@@ -112,14 +112,8 @@ func thinkingSpec(modelID string) openaibase.ThinkingSpec {
 		}
 	}
 
-	// All other models on this gateway support low/medium/high
-	return openaibase.ThinkingSpec{
-		Levels:  []string{provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh},
-		Default: provider.ThinkingMedium,
-		Effort: map[string]string{
-			provider.ThinkingLow:    "low",
-			provider.ThinkingMedium: "medium",
-			provider.ThinkingHigh:   "high",
-		},
-	}
+	// All other models on this gateway support low/medium/high, with native
+	// effort strings matching the canonical level names.
+	return openaibase.EffortSpec(provider.ThinkingMedium,
+		provider.ThinkingLow, provider.ThinkingMedium, provider.ThinkingHigh)
 }
