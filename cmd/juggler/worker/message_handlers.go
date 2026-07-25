@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"juggler/cmd/juggler/core"
@@ -319,6 +320,18 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 
 	// Add user message to doc before signaling the reducer.
 	if !msg.IsContinuation && !input.isEmpty() {
+		// Auto-name trigger: fire the injected server callback exactly once, on the
+		// FIRST user message of the ROOT thread. Detected from the doc (no prior
+		// user item) rather than a cached flag, so a reconnect to an already-
+		// populated conversation never re-fires. The server owns the guard, cheap-
+		// model resolution, the bounded completion, and the rename; the worker only
+		// signals and hands off. Skipped for subthreads and text-less (image-only)
+		// first messages.
+		if msg.ThreadItemID == "" && w.autoNameFunc != nil &&
+			strings.TrimSpace(input.Text) != "" && !w.hasExistingUserMessage() {
+			w.autoNameFunc(w.conversationID, input.Text, modelConfig.Provider, modelConfig.Model, modelConfig.Thinking)
+		}
+
 		// Drain any queued items into this thread FIRST, then append the new user
 		// message after them. The queue is normally empty on an idle send (the
 		// turn boundary already promoted it), but a client that saw us as busy an
@@ -346,6 +359,19 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	// the next event-loop tick via tryReconcile → dispatchCallLLM.
 	w.requestLLM(msg.ThreadItemID)
 	w.needsReconcile = true
+}
+
+// hasExistingUserMessage reports whether the current target (root when no
+// thread is active) already contains a user message. Used by the auto-name
+// trigger to fire only on the conversation's very first user message. Called
+// with the root thread context set, so it reads the root items.
+func (w *ConversationWorker) hasExistingUserMessage() bool {
+	for _, it := range w.getTargetItems() {
+		if it.Type == ItemTypeUser {
+			return true
+		}
+	}
+	return false
 }
 
 // handleProviderTurn lands a turn the provider surfaced out-of-band — an

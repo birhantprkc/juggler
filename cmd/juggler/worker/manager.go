@@ -37,6 +37,7 @@ const (
 	mgrSystemWake
 	mgrAnyActive
 	mgrActiveIDs
+	mgrSetAutoNamer
 )
 
 // CancelLLMSessionFunc tears down provider-side state for an in-flight LLM
@@ -69,6 +70,7 @@ type managerOp struct {
 	payload        json.RawMessage
 	sendCallback   func(msg []byte)
 	llmCallFunc    LLMCallFunc
+	autoNameFunc   AutoNameFunc
 	engineCallback func(convID string, msg []byte)
 	pathProvider   PathProviderFunc
 	saveBinaryFn   SaveBinaryFunc
@@ -118,6 +120,7 @@ func (m *Manager) run() {
 	workers := make(map[string]*ConversationWorker)         // conversationID -> worker
 	clientConversations := make(map[string]map[string]bool) // clientID -> set of conversationIDs
 	var llmCallFunc LLMCallFunc
+	var autoNameFunc AutoNameFunc
 	var engineClientID string
 	var engineCallback func(convID string, msg []byte)
 	var pathProvider PathProviderFunc
@@ -150,6 +153,9 @@ func (m *Manager) run() {
 		if llmCallFunc != nil {
 			w.SetLLMCaller(llmCallFunc)
 		}
+		if autoNameFunc != nil {
+			w.SetAutoNamer(autoNameFunc)
+		}
 		if cancelLLMFn != nil {
 			w.SetCancelLLMSession(cancelLLMFn)
 		}
@@ -176,6 +182,12 @@ func (m *Manager) run() {
 		switch op.kind {
 		case mgrSetLLMCaller:
 			llmCallFunc = op.llmCallFunc
+
+		case mgrSetAutoNamer:
+			autoNameFunc = op.autoNameFunc
+			for _, w := range workers {
+				w.SetAutoNamer(autoNameFunc)
+			}
 
 		case mgrSetCancelLLMSession:
 			cancelLLMFn = op.cancelLLMFn
@@ -387,6 +399,12 @@ func (m *Manager) run() {
 // SetLLMCaller sets the function used by all workers to call the LLM provider directly.
 func (m *Manager) SetLLMCaller(fn LLMCallFunc) {
 	m.ops <- managerOp{kind: mgrSetLLMCaller, llmCallFunc: fn}
+}
+
+// SetAutoNamer sets the out-of-band tab auto-naming callback applied to every
+// existing worker and any worker created later. See AutoNameFunc.
+func (m *Manager) SetAutoNamer(fn AutoNameFunc) {
+	m.ops <- managerOp{kind: mgrSetAutoNamer, autoNameFunc: fn}
 }
 
 // SetEngineReadyFunc sets the engine-readiness gate used by all workers before

@@ -131,6 +131,10 @@ type ConversationWorker struct {
 
 	// LLM calling
 	llmCallFunc LLMCallFunc
+	// autoNameFunc is the injected server callback fired once, on the first user
+	// message of the root conversation, to auto-name the tab out-of-band. Nil
+	// (tests / not wired) ⇒ no auto-naming. See AutoNameFunc.
+	autoNameFunc AutoNameFunc
 	// engineReadyFunc brings the on-demand engine WebView up and waits until it
 	// is connected, returning false if it could not. Used by the worker to
 	// guarantee the engine is present before dispatching a strategy hook to it
@@ -604,6 +608,12 @@ func (w *ConversationWorker) pushStateToEngine() {
 // SetLLMCaller sets the function used to call the LLM provider directly.
 func (w *ConversationWorker) SetLLMCaller(fn LLMCallFunc) {
 	w.llmCallFunc = fn
+}
+
+// SetAutoNamer registers the out-of-band tab auto-naming callback. See
+// autoNameFunc / AutoNameFunc.
+func (w *ConversationWorker) SetAutoNamer(fn AutoNameFunc) {
+	w.autoNameFunc = fn
 }
 
 // SetEngineReadyFunc registers the gate that brings the on-demand engine up and

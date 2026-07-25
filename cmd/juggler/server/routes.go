@@ -81,6 +81,10 @@ func (s *Server) seedProjectState(cfg Config) {
 func (s *Server) wireWorkerManager() {
 	s.workerManager.SetLLMCaller(s.createLLMCaller())
 
+	// Out-of-band tab auto-naming: the worker fires this on a conversation's
+	// first user message; the server resolves a cheap model and renames the tab.
+	s.workerManager.SetAutoNamer(s.autoNamer())
+
 	// Engine-readiness gate for worker-driven strategy hooks: the worker waits
 	// for the hidden engine to be connected before dispatching onActivate at
 	// turn-start. Same gate the LLM caller uses; nil in tests / the test-pool,
@@ -205,6 +209,18 @@ func (s *Server) setupConfigRoutes(configAPI *handlers.ConfigAPI) {
 	// later change never retargets an existing conversation.
 	api.HandleFunc("/default-model", s.handleDefaultModel).Methods("GET")
 	api.HandleFunc("/default-model", s.handleSetDefaultModel).Methods("PUT")
+
+	// Cheap model used for out-of-band micro-tasks (auto-naming a tab, plugin
+	// generateText). GET returns the pinned value or, when unset, the
+	// auto-derived cheap sibling of the current default; PUT persists the user's
+	// choice (empty clears back to Auto).
+	api.HandleFunc("/cheap-model", s.handleCheapModel).Methods("GET")
+	api.HandleFunc("/cheap-model", s.handleSetCheapModel).Methods("PUT")
+
+	// Out-of-band single-turn completion (no tools, no persistence, bounded
+	// output + timeout + concurrency). Backs the plugin generateText op and the
+	// auto-namer. See server/quick_complete.go.
+	api.HandleFunc("/llm/complete", s.handleLLMComplete).Methods("POST")
 
 	// User-saved system-prompt presets + the chosen session-default preset id.
 	// GET lists the user's presets (built-ins live in the frontend); POST saves

@@ -120,6 +120,17 @@ func (e *TransientError) retryStatus(a, max int) string {
 // Returns the complete response when streaming finishes.
 type LLMCallFunc func(ctx context.Context, request json.RawMessage, chunkHandler func(StreamChunk)) (*LLMResponse, error)
 
+// AutoNameFunc is an injected server callback the worker fires exactly once, on
+// the FIRST user message of the root conversation, so the server can derive a
+// short tab title out-of-band. The worker only signals (convID, the first
+// message text, and the primary provider/model/thinking it will run under); the
+// server owns the guard, cheap-model resolution, the bounded completion, and the
+// rename + broadcast. Passing provider/model/thinking as plain strings keeps the
+// worker free of any dependency on the server's model-ref type. Fire-and-forget:
+// the callee must not block the worker goroutine (the server hands off to its
+// own goroutine).
+type AutoNameFunc func(convID, firstMessage, provider, model, thinking string)
+
 // =============================================================================
 // Generic Message Envelope
 // =============================================================================
