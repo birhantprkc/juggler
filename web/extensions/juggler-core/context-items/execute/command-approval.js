@@ -581,6 +581,18 @@ export function tokenize(input) {
       continue;
     }
 
+    // An unquoted `#` at a word boundary begins a comment that runs to the end
+    // of the line (POSIX). It is only a comment at the START of a word: a `#`
+    // inside a word (`foo#bar`, `$VAR#`) is a literal character, so we require
+    // `curStart === -1` (no word currently accumulating — quoted `#` never
+    // reaches here, it is consumed inside the quote branches). The terminating
+    // newline is left in place for the newline branch to handle as a normal
+    // command separator, so a comment line behaves exactly like a blank line.
+    if (c === '#' && curStart === -1) {
+      while (i < input.length && input[i] !== '\n' && input[i] !== '\r') i++;
+      continue;
+    }
+
     let matched = null;
     for (const op of SHELL_OPERATORS) {
       if (input.startsWith(op, i)) { matched = op; break; }
@@ -3947,7 +3959,10 @@ export function suggestApprovalPatterns(command, opts = {}) {
   /** @type {SegmentRemedy[]} one remedy per rejected segment */
   const perSegment = [];
   for (const seg of segments) {
-    if (seg.length === 0) return [];
+    // Empty segment (comment/blank line around a synthesized `;`): no command,
+    // so no remedy to suggest — skip it rather than bailing to a whole-command
+    // rule, so a leading/trailing comment doesn't coarsen the suggestion.
+    if (seg.length === 0) continue;
     // Control flow and grouped commands are too complex to suggest
     // minimal patterns for; bail (caller falls back to an exact rule).
     const head = checkedAt(seg, 0);
@@ -4131,7 +4146,11 @@ function validateSegmentSequence(segments, ctx) {
   let i = 0;
   while (i < segments.length) {
     let seg = checkedAt(segments, i);
-    if (seg.length === 0) return false;
+    // An empty segment carries no command to run — it is the residue of a
+    // comment line or blank line around a synthesized `;` separator (or a
+    // degenerate `;;` / `; ;`). Nothing to validate; skip it. It can never be
+    // unsafe, so skipping (rather than rejecting) is security-neutral.
+    if (seg.length === 0) { i++; continue; }
 
     // Peel leading body-introducer keyword (`do`, `then`, `else`) so the
     // segment that follows e.g. `do` can be validated as a normal command.
