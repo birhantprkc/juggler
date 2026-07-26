@@ -345,11 +345,15 @@ function releaseOverlayStateIfLast() {
 // A Back press that pops our sentinel while overlays are open IS the dismissal.
 // The browser already removed the entry, so clear the flag before closing (so
 // the cascade of releases doesn't try to history.back() over it again).
-window.addEventListener('popstate', () => {
-  if (!isAnyPopupOpen()) return;
-  overlayStatePushed = false;
-  closeAllPopups();
-});
+// Guarded: this module is transitively imported by context items that load in
+// the DOM-less node engine host, where `window` is undefined.
+if (typeof window !== 'undefined') {
+  window.addEventListener('popstate', () => {
+    if (!isAnyPopupOpen()) return;
+    overlayStatePushed = false;
+    closeAllPopups();
+  });
+}
 
 // A reload can leave our sentinel as the current entry with nothing actually
 // open. Strip the marker so the first Back press navigates normally instead of
@@ -370,9 +374,13 @@ if (typeof window !== 'undefined' && window.history && window.history.state
 // already false — would go on to interrupt a running turn behind the popup.
 // Inner-element handlers (a menu/input's own Escape) fire at the target phase
 // before the event ever reaches document, so they are unaffected.
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && isAnyPopupOpen()) {
-    e.stopImmediatePropagation();
-    closeAllPopups();
-  }
-});
+// Guarded like the popstate handler above: `document` is undefined in the
+// DOM-less node engine host that imports this module transitively.
+if (typeof document !== 'undefined') {
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isAnyPopupOpen()) {
+      e.stopImmediatePropagation();
+      closeAllPopups();
+    }
+  });
+}

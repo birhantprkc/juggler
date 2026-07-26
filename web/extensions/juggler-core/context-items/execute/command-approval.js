@@ -3414,9 +3414,12 @@ function stripLeadingSafeCd(tokens, ctx) {
  * tokens and `{`/`}` word tokens.
  * @param {ShellToken[]} tokens tokens
  * @param {Set<string>} splitOps operators to split on
+ * @param {string[]} [outOps] if provided, receives the operator text at each
+ *   split boundary (length = returned segments − 1), so callers can tell which
+ *   separator bounded an empty segment.
  * @returns {ShellToken[][]} segments
  */
-function splitOnOps(tokens, splitOps) {
+function splitOnOps(tokens, splitOps, outOps) {
   /** @type {ShellToken[][]} */
   const out = [];
   let cur = /** @type {ShellToken[]} */ ([]);
@@ -3427,6 +3430,7 @@ function splitOnOps(tokens, splitOps) {
 
     if (depth === 0 && t.type === 'op' && splitOps.has(t.text)) {
       out.push(cur);
+      if (outOps) outOps.push(t.text);
       cur = [];
     } else {
       cur.push(t);
@@ -3772,7 +3776,21 @@ export function isCommandAutoApproved(command, opts = {}) {
   working = afterCd;
   if (working.length === 0) return false;
 
-  const segments = splitOnOps(working, TOP_LEVEL_SPLIT_OPS);
+  /** @type {string[]} */
+  const seps = [];
+  const segments = splitOnOps(working, TOP_LEVEL_SPLIT_OPS, seps);
+  // A dangling `&&`/`||` (empty operand on either side, e.g. `pwd &&`) is a
+  // malformed compound command we can't fully reason about — reject it rather
+  // than skip the empty segment. Empty segments bounded only by `;` (the
+  // residue of comment/blank lines around a synthesized separator) stay benign
+  // and are skipped by validateSegmentSequence.
+  for (let k = 0; k < seps.length; k++) {
+    const op = checkedAt(seps, k);
+    if ((op === '&&' || op === '||')
+        && (checkedAt(segments, k).length === 0 || checkedAt(segments, k + 1).length === 0)) {
+      return false;
+    }
+  }
   return validateSegmentSequence(segments, ctx);
 }
 
