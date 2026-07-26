@@ -101,3 +101,9 @@ func paintSystemChrome(win *application.WebviewWindow, pageColour application.RG
 		return pageColour, pageTheme
 	}
 }
+
+// watchSystemColorScheme is Linux-only: on macOS "system" mode clears the forced
+// NSWindow appearance, so the WKWebView's prefers-color-scheme tracks System
+// Settings and the page's own matchMedia 'change' listener follows live toggles.
+// No-op here.
+func (a *appState) watchSystemColorScheme() {}

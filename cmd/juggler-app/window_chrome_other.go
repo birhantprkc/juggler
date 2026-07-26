@@ -20,3 +20,8 @@ func applyWindowChrome(_ *application.WebviewWindow, _ application.RGBA) {}
 func paintSystemChrome(_ *application.WebviewWindow, pageColour application.RGBA, pageTheme string) (application.RGBA, string) {
 	return pageColour, pageTheme
 }
+
+// watchSystemColorScheme is Linux-only: WebView2's matchMedia tracks the OS
+// light/dark setting reliably, so the page's own 'change' listener already
+// follows live toggles. No-op here.
+func (a *appState) watchSystemColorScheme() {}

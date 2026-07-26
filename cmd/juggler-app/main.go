@@ -71,6 +71,13 @@ func main() {
 	}
 	app.serveControl(ln)
 
+	// On Linux, follow live desktop light/dark toggles in "system" mode by
+	// watching the XDG desktop portal; a no-op on macOS/Windows, where the WebView
+	// already tracks the OS setting. Started after the app + control endpoint exist
+	// and before the event loop, so the first signal is delivered once windows are
+	// up.
+	app.watchSystemColorScheme()
+
 	// An explicit --url/--project opens just that window; otherwise restore the
 	// last open set of windows (each at its remembered geometry).
 	specs := app.startupSpecs(*urlFlag, *project)

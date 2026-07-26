@@ -183,6 +183,19 @@ function initTheme() {
       applyTheme(systemTheme(), MODES.SYSTEM);
     }
   });
+
+  // The embedded desktop webview (notably WebKitGTK on Linux) derives
+  // prefers-color-scheme from the app toolkit theme, not the desktop's live
+  // light/dark preference, so the matchMedia 'change' above never fires there
+  // when the desktop is toggled. The native host watches the OS preference
+  // directly and pushes this event; in 'system' mode we re-resolve and repaint
+  // (applyTheme re-reads the host's authoritative OS theme). Harmless on
+  // platforms that never emit it.
+  window.addEventListener('juggler:system-theme-changed', () => {
+    if (getMode() === MODES.SYSTEM) {
+      applyTheme(systemTheme(), MODES.SYSTEM);
+    }
+  });
 }
 
 // Auto-initialize when module loads. Theming is a viewer affordance; the engine

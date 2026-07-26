@@ -15,6 +15,72 @@ import (
 // Wails native window background (set via SetBackgroundColour) suffices here.
 func applyWindowChrome(_ *application.WebviewWindow, _ application.RGBA) {}
 
+// watchSystemColorScheme keeps "system" mode tracking live desktop light/dark
+// toggles. The embedded WebKitGTK webview derives prefers-color-scheme from the
+// app's GTK theme, not the desktop's appearance preference, so the page's own
+// matchMedia 'change' listener never fires when the desktop is toggled (see
+// theme-manager.js). We instead watch the XDG desktop portal directly — the same
+// authoritative signal portalColorScheme() reads on demand — and nudge every
+// window to repaint. The page filters: only windows actually in "system" mode
+// re-resolve the OS theme (via their usual native POST) and repaint.
+//
+// Runs on its own private session-bus connection so the signal subscription is
+// isolated from the shared method-call bus portalColorScheme() uses. Best-effort:
+// on any setup failure (no portal, no session bus) it logs and returns, leaving
+// system mode to catch up on the next reload/mode-pick as before.
+func (a *appState) watchSystemColorScheme() {
+	go func() {
+		conn, err := dbus.ConnectSessionBus()
+		if err != nil {
+			logf("color-scheme watch: session bus: %v", err)
+			return
+		}
+		if err := conn.AddMatchSignal(
+			dbus.WithMatchInterface("org.freedesktop.portal.Settings"),
+			dbus.WithMatchMember("SettingChanged"),
+			dbus.WithMatchObjectPath("/org/freedesktop/portal/desktop"),
+		); err != nil {
+			logf("color-scheme watch: add match: %v", err)
+			_ = conn.Close()
+			return
+		}
+		ch := make(chan *dbus.Signal, 8)
+		conn.Signal(ch)
+		for sig := range ch {
+			// SettingChanged body: namespace string, key string, value variant.
+			if len(sig.Body) < 2 {
+				continue
+			}
+			ns, _ := sig.Body[0].(string)
+			key, _ := sig.Body[1].(string)
+			if ns == "org.freedesktop.appearance" && key == "color-scheme" {
+				a.broadcastSystemThemeChanged()
+			}
+		}
+	}()
+}
+
+// broadcastSystemThemeChanged dispatches the juggler:system-theme-changed DOM
+// event to every open window. Windows not in "system" mode ignore it; those in
+// system mode re-resolve the OS theme and repaint (see theme-manager.js). ExecJS
+// must run on the main thread, hence InvokeAsync.
+func (a *appState) broadcastSystemThemeChanged() {
+	var wins []*application.WebviewWindow
+	a.reg(func(st *regState) {
+		for _, e := range st.windows {
+			if e.win != nil {
+				wins = append(wins, e.win)
+			}
+		}
+	})
+	for _, win := range wins {
+		win := win
+		application.InvokeAsync(func() {
+			win.ExecJS("window.dispatchEvent(new CustomEvent('juggler:system-theme-changed'))")
+		})
+	}
+}
+
 // paintSystemChrome resolves the OS light/dark preference for "system" mode.
 //
 // Unlike a standalone browser, the embedded WebKitGTK webview derives its
