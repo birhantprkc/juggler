@@ -459,11 +459,14 @@ class StrategyType {
    * that resolution is the user's own answer, which no strategy can stand in
    * for. So a strategy may resolve anything it is handed here without risk of
    * silently answering a question — the framework has already excluded them.
-   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined}} info
+   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined, permissionKey: string}} info
    *   - toolUseId: id to pass to `messageThread.resolveApproval`
    *   - toolName: name of the parked tool
    *   - toolInput: the tool's input parameters (plain object)
    *   - category: tool category ('read', 'write', 'meta', or undefined)
+   *   - permissionKey: the action's permission key (e.g. 'write-file' for every
+   *     edit-family tool). Discriminates classes of parked call that share a
+   *     category — edits and shell commands are both category 'write'.
    * @returns {void|Promise<void>} Ignored by the framework
    */
   onToolPending(info) {

@@ -6,6 +6,7 @@
 import { generateText } from 'juggler/ops';
 import DefaultStrategyType from './default-strategy-type.js';
 import { POLICY_PROMPT, buildReviewerPrompt, parseVerdict } from './auto-approve-reviewer.js';
+import { WRITE_FILE_ITEM_TYPE } from '../../../js/services/file-editing-permission.js';
 
 /**
  * AutoApproveStrategyType - Default behavior plus an out-of-band safety reviewer
@@ -30,6 +31,16 @@ import { POLICY_PROMPT, buildReviewerPrompt, parseVerdict } from './auto-approve
  * calls — never the agent's prose, never tool output (see
  * `auto-approve-reviewer.js`). In allow-only mode the only harmful mistake is a
  * wrong *allow*, and those are the two channels that manufacture one.
+ *
+ * **File edits are deliberately out of the reviewer's remit.** A file write only
+ * reaches this hook when it has already parked, and an edit parks for exactly two
+ * reasons: the conversation's file-editing toggle is off (the user asked to
+ * eyeball every edit), or the write targets a path outside the project and
+ * granted roots (the containment guard in `edit-base.js`, issues #23/#24). Both
+ * are cases we want a human to decide, so the deterministic file-editing toggle
+ * owns edits end to end and this reviewer never resolves a `write-file` action —
+ * it only ever clears the routine *non-edit* prompts (allowlistable commands,
+ * out-of-root reads). Approving edits wholesale is what YOLO is for.
  *
  * While `onToolPending`'s returned promise is in flight the framework surfaces a
  * transient "Auto-approve reviewing…" indicator in the approval card (label
@@ -107,13 +118,18 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
    * own input, which no reviewer can supply — so this method needs no guard
    * against auto-answering a question.
    * @override
-   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined}} info
+   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined, permissionKey: string}} info
    * @returns {Promise<void>}
    */
-  async onToolPending({ toolUseId, toolName, toolInput, category }) {
+  async onToolPending({ toolUseId, toolName, toolInput, category, permissionKey }) {
     // `category` is unused in v1 but kept for future use (e.g. skipping review
     // for 'meta' tools). Reference it so the destructure isn't dead.
     void category;
+    // File edits are never auto-approved by the reviewer — the deterministic
+    // file-editing toggle owns them (see the class doc). Leave the write parked
+    // for the human. Guarding on the permission key (not a tool-name list) keeps
+    // every current and future edit-family plugin covered uniformly.
+    if (permissionKey === WRITE_FILE_ITEM_TYPE) return;
     try {
       const prompt = buildReviewerPrompt(this.messageThread.items, { toolName, toolInput });
       const model = /** @type {any} */ (this.state)?.reviewerModel ?? 'cheap';

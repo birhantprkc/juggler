@@ -290,7 +290,13 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
         toolUseId,
         toolName,
         toolInput: toolInputPlain,
-        category: toolDef?.category
+        category: toolDef?.category,
+        // The action's permission key (e.g. 'write-file' for every edit-family
+        // tool). Lets a strategy tell apart classes of parked call that share a
+        // category — edits and shell commands are both category 'write', but
+        // only edits report the 'write-file' key — so e.g. auto-approve can
+        // defer all file edits to the deterministic file-editing toggle.
+        permissionKey: action.getPermissionKey(toolInputPlain)
       });
       if (pendingResult && typeof pendingResult.then === 'function') {
         // The hook returned a still-pending promise: the strategy is reviewing

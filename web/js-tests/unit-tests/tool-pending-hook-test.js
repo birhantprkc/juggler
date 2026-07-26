@@ -138,6 +138,10 @@ export async function runTests(_ctx) {
       assert(calls[0].toolName === 'bash', `hook receives toolName, got ${calls[0].toolName}`);
       assert(calls[0].toolInput?.command === 'echo pending-hook', 'hook receives plain toolInput');
       assert(calls[0].category === 'write', `bash category should be write, got ${calls[0].category}`);
+      // permissionKey lets a strategy tell edits apart from same-category shell
+      // commands (both category 'write'); bash must NOT report the edit key.
+      assert(typeof calls[0].permissionKey === 'string' && calls[0].permissionKey !== 'write-file',
+        `hook receives a non-edit permissionKey for bash, got ${calls[0].permissionKey}`);
 
       passed++;
     } catch (e) {

@@ -54,7 +54,7 @@ function makeStrategy(completeImpl, opts = {}) {
   return { strategy, resolveCalls, completeCalls };
 }
 
-const PENDING = { toolUseId: 'tid-1', toolName: 'bash', toolInput: { command: 'ls' }, category: 'write' };
+const PENDING = { toolUseId: 'tid-1', toolName: 'bash', toolInput: { command: 'ls' }, category: 'write', permissionKey: 'bash' };
 
 /**
  * Run all auto-approve strategy orchestration tests.
@@ -108,6 +108,22 @@ export async function runTests(_ctx) {
     const { strategy, resolveCalls } = makeStrategy(async () => ({ text: 'deny' }));
     await strategy.onToolPending({ ...PENDING });
     assert(resolveCalls.length === 0, `deny must not resolve, got ${resolveCalls.length} calls`);
+  });
+
+  // =========================================================================
+  // file edits are out of the reviewer's remit — never reviewed, never resolved
+  // =========================================================================
+  await run("an edit-family tool (permissionKey 'write-file') is never reviewed, even on 'allow'", async () => {
+    const { strategy, resolveCalls, completeCalls } = makeStrategy(async () => ({ text: 'allow' }));
+    await strategy.onToolPending({
+      toolUseId: 'tid-edit', toolName: 'edit',
+      toolInput: { path: 'src/a.js', old_str: 'a', new_str: 'b' },
+      category: 'write', permissionKey: 'write-file'
+    });
+    assert(completeCalls.length === 0,
+      `edits must never reach the reviewer, but _complete ran ${completeCalls.length} time(s)`);
+    assert(resolveCalls.length === 0,
+      `edits must stay parked for the human, but resolveApproval ran ${resolveCalls.length} time(s)`);
   });
 
   // Note: the guarantee that an elicitation (AskUserQuestion) is never handed to
