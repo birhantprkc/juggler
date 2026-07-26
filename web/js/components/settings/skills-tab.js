@@ -702,12 +702,21 @@ export class SkillsTab {
 
   /**
    * Reload registries and refresh both data sets after an install/uninstall.
+   *
+   * The visible list refresh ({@link _loadAll}) must NOT be gated on
+   * reloadRegistries(): that rebuild defers to local quiescence (it never
+   * resolves while a conversation is mid-turn) and can reject if a plugin's
+   * init() throws — either of which would otherwise leave the just-mutated list
+   * stale on screen. So we kick the registry rebuild off without awaiting it
+   * (it still applies live once quiescent) and always refresh the list.
    * @private
    */
   async _afterMutation() {
     resetSkillsCache();
     resetCatalogCache();
-    await reloadRegistries();
+    reloadRegistries().catch((err) => {
+      console.warn('[Skills] registry reload after mutation failed:', err);
+    });
     await this._loadAll(false);
   }
 
