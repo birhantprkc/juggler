@@ -27,6 +27,8 @@
  * @module services/key-shortcut-manager
  */
 
+import { isAnyPopupOpen } from '../utils/popup-manager.js';
+
 /**
  * A platform-agnostic key binding.
  * @typedef {object} KeyBinding
@@ -426,6 +428,26 @@ class KeyShortcutManager {
     document.addEventListener('keydown', this._onKeyDown);
   }
 
+  /**
+   * Whether app-level command shortcuts and background/window-level navigation
+   * handlers must stand down right now because an overlay (modal, settings
+   * panel, dropdown) owns interaction. The SINGLE source of truth for "is a
+   * popup capturing the keyboard": the central dispatcher below consults it, and
+   * the document-level navigation handlers that act on the app BEHIND focus
+   * (conversation arrow-nav, tab-list nav) call it too — instead of each one
+   * re-deriving the answer, or forgetting to. Element-scoped handlers (a
+   * focused input, a menu's own keys) don't need it: they only fire when their
+   * own surface is focused, which by definition IS the active layer.
+   *
+   * Escape/Back are deliberately NOT gated here — they're the dismissal gesture,
+   * owned by popup-manager, which stops Escape at document before background
+   * handlers see it.
+   * @returns {boolean} True when an overlay is open and global shortcuts should not fire.
+   */
+  suppressedByOverlay() {
+    return isAnyPopupOpen();
+  }
+
   /** @returns {ShortcutDef[]} All definitions in declared order. */
   all() {
     return [...this._defs.values()];
@@ -559,6 +581,9 @@ class KeyShortcutManager {
    */
   _onKeyDown(e) {
     if (e.isComposing || e.keyCode === 229) return; // IME in progress
+    // An open overlay owns the keyboard: no rebindable command fires behind it.
+    // (Escape is not in the command table — popup-manager owns dismissal.)
+    if (this.suppressedByOverlay()) return;
     const editable = isEditableTarget(e.target);
     for (const def of this._defs.values()) {
       if (def.external) continue;

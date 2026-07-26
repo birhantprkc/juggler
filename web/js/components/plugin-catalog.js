@@ -8,6 +8,7 @@ import commandRegistry from '../registries/command-registry.js';
 import { reloadRegistries } from '../registries/reload-registries.js';
 import { fetchExtensions, fetchExtensionLocations } from '../services/extensions.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
+import { renderMarkdown, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
 
 /**
  * @typedef {object} CapCard
@@ -956,7 +957,7 @@ class PluginCatalog extends HTMLElement {
     }
 
     if (cap.description) {
-      header.appendChild(this._createElement('p', 'plugin-description', cap.description));
+      header.appendChild(this._createProse('div', 'plugin-description', cap.description));
     }
     container.appendChild(header);
 
@@ -1101,7 +1102,7 @@ class PluginCatalog extends HTMLElement {
     if (rec.approach) {
       const group = this._createElement('div', 'recommendation-group');
       group.appendChild(this._createElement('div', 'recommendation-label', 'Approach:'));
-      group.appendChild(this._createElement('p', 'approach-text', rec.approach));
+      group.appendChild(this._createProse('div', 'approach-text', rec.approach));
       container.appendChild(group);
     }
 
@@ -1183,6 +1184,38 @@ class PluginCatalog extends HTMLElement {
     const el = document.createElement(tag);
     if (className) el.className = className;
     if (textContent !== undefined) el.textContent = textContent;
+    return el;
+  }
+
+  /**
+   * Create an element holding author-facing prose (a capability description or a
+   * strategy's "Approach" copy). When the text reads as markdown — or simply
+   * spans multiple paragraphs — it is rendered through the shared markdown
+   * formatter so paragraphs, lists, `code`, and links display properly; plain
+   * one-liners fall back to `textContent` unchanged, so ordinary descriptions
+   * are never reflowed. `renderMarkdown` sanitises its own output (tags,
+   * attributes, and URL schemes), so assigning it to innerHTML is safe.
+   *
+   * Use a block-level tag: markdown emits block elements (`<p>`, `<ul>`), which
+   * are invalid nested inside a `<p>`.
+   * @param {string} tag - Wrapper tag (must be block-level)
+   * @param {string} className - CSS class(es)
+   * @param {string} text - Prose to render (plain or markdown)
+   * @returns {HTMLElement} The created element
+   * @private
+   */
+  _createProse(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    const str = text ?? '';
+    // Treat a blank-line paragraph break as markdown too: textContent would
+    // collapse it to a space, so multi-paragraph prose needs the renderer.
+    if (looksLikeMarkdown(str) || /\n\s*\n/.test(str)) {
+      el.classList.add('markdown');
+      el.innerHTML = renderMarkdown(str, { escapeXml: true });
+    } else {
+      el.textContent = str;
+    }
     return el;
   }
 }
