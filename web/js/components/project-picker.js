@@ -140,7 +140,12 @@ export function buildPickerPanel({
       });
       btn.addEventListener('dblclick', async () => {
         pathInputEl.value = path;
-        if (!validate) { doOpen(); return; }
+        // Double-click must do exactly what the primary confirm button does —
+        // which, in the desktop switching case, is open a NEW window
+        // (confirmAction === doNewWindow when confirmOpensNewWindow), not switch
+        // this window in place. Route through confirmAction, never doOpen
+        // directly, so both entry points stay in lockstep across window modes.
+        if (!validate) { confirmAction(); return; }
         if (debounceTimer !== null) { clearTimeout(debounceTimer); debounceTimer = null; }
         setStatus('checking', 'Checking…');
         const gen = ++validationGen;
@@ -149,7 +154,7 @@ export function buildPickerPanel({
           if (gen !== validationGen) return;
           if (result.valid) {
             setStatus('valid', result.current ? 'This is the current project' : (result.path || path));
-            doOpen();
+            confirmAction();
           } else {
             setStatus('invalid', result.error || 'Invalid path');
           }

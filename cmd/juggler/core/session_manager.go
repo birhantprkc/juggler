@@ -614,6 +614,84 @@ func (m *SessionManager) SetWindowState(ws WindowState) error {
 	return err
 }
 
+// GetUIZoom returns the persisted UI zoom (root font-size %) for this project,
+// or (0, false) if none has been saved yet. Runs on the actor goroutine so it
+// never races a concurrent save. Zoom is per-project session state — like
+// WindowState — but, unlike geometry, it is surfaced to the web viewer so a
+// reopened project paints at the size the user left it.
+func (m *SessionManager) GetUIZoom() (int, bool) {
+	type result struct {
+		zoom int
+		ok   bool
+	}
+	r, _ := runRead(m, func(s *sessionState) (result, error) {
+		if s.session == nil || s.session.UIZoom <= 0 {
+			return result{}, nil
+		}
+		return result{s.session.UIZoom, true}, nil
+	})
+	return r.zoom, r.ok
+}
+
+// SetUIZoom persists the UI zoom for this project and writes the session
+// manifest. A non-positive value or a no-project session (still at the picker)
+// is a no-op — there is nowhere to store it — mirroring SetWindowState.
+func (m *SessionManager) SetUIZoom(zoom int) error {
+	if zoom <= 0 {
+		return nil
+	}
+	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
+		if s.session == nil {
+			return struct{}{}, nil
+		}
+		s.session.UIZoom = zoom
+		return struct{}{}, s.store.Save(s.session)
+	})
+	return err
+}
+
+// validUIThemeMode reports whether mode is a theme mode the web viewer accepts.
+func validUIThemeMode(mode string) bool {
+	return mode == "system" || mode == "light" || mode == "dark"
+}
+
+// GetUITheme returns the persisted UI theme mode (system|light|dark) for this
+// project, or ("", false) if none has been saved yet. Runs on the actor
+// goroutine so it never races a concurrent save. Like UIZoom this is per-project
+// session state, surfaced to the web viewer so a reopened project paints in the
+// theme the user left it — not whichever theme another project last wrote to the
+// origin-shared localStorage (every project's server reuses the same port).
+func (m *SessionManager) GetUITheme() (string, bool) {
+	type result struct {
+		mode string
+		ok   bool
+	}
+	r, _ := runRead(m, func(s *sessionState) (result, error) {
+		if s.session == nil || !validUIThemeMode(s.session.UITheme) {
+			return result{}, nil
+		}
+		return result{s.session.UITheme, true}, nil
+	})
+	return r.mode, r.ok
+}
+
+// SetUITheme persists the UI theme mode for this project and writes the session
+// manifest. An unrecognised mode or a no-project session (still at the picker)
+// is a no-op — mirroring SetUIZoom.
+func (m *SessionManager) SetUITheme(mode string) error {
+	if !validUIThemeMode(mode) {
+		return nil
+	}
+	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
+		if s.session == nil {
+			return struct{}{}, nil
+		}
+		s.session.UITheme = mode
+		return struct{}{}, s.store.Save(s.session)
+	})
+	return err
+}
+
 // PatchMetadata applies a targeted key-by-key patch to the session metadata
 // map and persists the manifest, returning the set of changed keys (nil value
 // = key deleted). It is a thin convenience over Update: the mutation runs on the

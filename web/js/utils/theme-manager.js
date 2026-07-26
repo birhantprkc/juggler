@@ -5,10 +5,19 @@
 /**
  * Theme Manager - Handles the light/dark/system theme setting.
  *
- * The user picks one of three *modes*, persisted in localStorage:
+ * The user picks one of three *modes*, remembered per project in the session
+ * (server-side) and cached in localStorage:
  *   - 'system' (default): follow the OS light/dark setting, live.
  *   - 'light' / 'dark':   an explicit override that ignores the OS.
  * A mode resolves to a concrete *theme* ('light' or 'dark') for painting.
+ *
+ * On load the mode is resolved by precedence: this project's saved session mode
+ * (window.__sessionThemeMode, server-injected, authoritative) > a resolved
+ * ?theme= seed inherited from the window that opened this one > this window's
+ * localStorage > 'system'. localStorage sits below the session/seed because every
+ * project's server reuses the same origin, so a bare localStorage value may
+ * belong to a DIFFERENT project — which is exactly why theme is stored in the
+ * session, not left to localStorage alone.
  */
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
@@ -71,7 +80,84 @@ export function getTheme() {
 }
 
 /**
- * Persist a mode and apply the theme it resolves to.
+ * The concrete theme currently painted on the document ('dark' or 'light'),
+ * read straight from the data-theme attribute. Unlike getTheme(), which
+ * re-resolves 'system' via matchMedia — unreliable in a native macOS window
+ * whose prefers-color-scheme is pinned by the window's forced appearance, so it
+ * can report the opposite of what's on screen — this returns what is actually
+ * displayed, already reconciled with the native host (see applyTheme). Use it
+ * when handing a resolved theme to a child window so the child inherits exactly
+ * what the source shows rather than a stale matchMedia guess.
+ * @returns {string} 'dark' or 'light'.
+ */
+export function getPaintedTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light'
+    ? THEMES.LIGHT
+    : THEMES.DARK;
+}
+
+/**
+ * Whether s is a theme mode the app understands.
+ * @param {string|null|undefined} s
+ * @returns {boolean} True when s is 'system', 'light', or 'dark'.
+ * @private
+ */
+function isMode(s) {
+  return s === MODES.SYSTEM || s === MODES.LIGHT || s === MODES.DARK;
+}
+
+/**
+ * This project's saved theme mode, injected pre-paint by the server. Null for a
+ * no-project window or a project that has never saved one. Authoritative over
+ * localStorage: each project's server reuses the same origin, so a bare
+ * localStorage value can belong to a DIFFERENT project.
+ * @returns {string|null} One of MODES, or null.
+ * @private
+ */
+function sessionMode() {
+  const m = window.__sessionThemeMode;
+  return isMode(m) ? /** @type {string} */ (m) : null;
+}
+
+/**
+ * The resolved theme ('light'/'dark') inherited from the window that opened this
+ * one (a ?theme= param the native host bakes into the URL). Null when absent.
+ * @returns {string|null} The inherited resolved theme ('light'/'dark'), or null.
+ * @private
+ */
+function seedTheme() {
+  try {
+    const t = new URL(window.location.href).searchParams.get('theme');
+    return t === THEMES.LIGHT || t === THEMES.DARK ? t : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Persist this window's theme mode into the project's session (best-effort). The
+ * server no-ops for a no-project window; per-project storage is what lets a
+ * reopened project restore its own theme instead of whichever theme another
+ * project left in the origin-shared localStorage.
+ * @param {string} mode - One of MODES.
+ * @private
+ */
+function persistThemeToSession(mode) {
+  try {
+    void fetch('/api/session/ui-theme', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uiTheme: mode }),
+    }).catch(() => {});
+  } catch (_e) {
+    /* best-effort — a missing/blocked fetch just skips session persistence */
+  }
+}
+
+/**
+ * Persist a mode and apply the theme it resolves to. Persistence is both to this
+ * project's session (so a reopen restores it) and localStorage (this window's
+ * cache / the browser-tab store).
  * @param {string} mode - One of MODES.
  */
 export function setMode(mode) {
@@ -79,6 +165,7 @@ export function setMode(mode) {
     return;
   }
   localStorage.setItem(THEME_KEY, mode);
+  persistThemeToSession(mode);
   const theme = mode === MODES.SYSTEM ? systemTheme() : mode;
   applyTheme(theme, mode);
   document.dispatchEvent(new CustomEvent(THEME_MODE_EVENT, { detail: { mode, theme } }));
@@ -159,21 +246,26 @@ function applyTheme(theme, mode) {
  * Initialize theme on page load
  */
 function initTheme() {
-  // A ?theme= param (from a native host or parent window) carries a *resolved*
-  // theme ('dark'/'light') as a pre-localStorage paint hint. It must not override
-  // a mode the user has already chosen: on every relaunch the host replays the
-  // last resolved theme, so treating it as the mode would silently demote
-  // 'system' to whichever concrete theme happened to be showing. Only let the
-  // param pin a mode when this window has no stored preference yet (a first-ever
-  // hand-off to a brand-new window); otherwise the persisted mode wins.
-  const urlTheme = new URL(window.location.href).searchParams.get('theme');
+  // Resolve the initial mode by precedence: this project's saved session mode
+  // (authoritative — a bare localStorage value may be another project's, since
+  // every project's server reuses the same origin) > a resolved ?theme= seed
+  // inherited from the window that opened this one > this window's localStorage >
+  // follow the OS. A ?theme= seed is a *resolved* theme, so it also pins a
+  // concrete mode — intended for the hand-off to a brand-new window.
+  const session = sessionMode();
+  const seed = seedTheme();
   const stored = localStorage.getItem(THEME_KEY);
-  const hasStoredMode = stored === MODES.SYSTEM || stored === MODES.LIGHT || stored === MODES.DARK;
-  if ((urlTheme === THEMES.DARK || urlTheme === THEMES.LIGHT) && !hasStoredMode) {
-    localStorage.setItem(THEME_KEY, urlTheme);
-    applyTheme(urlTheme, urlTheme);
-  } else {
-    applyTheme(getTheme(), getMode());
+  const mode = session ?? seed ?? (isMode(stored) ? stored : null) ?? MODES.SYSTEM;
+
+  // Cache the resolved mode so getMode()/cycleTheme() start from it this window.
+  localStorage.setItem(THEME_KEY, mode);
+  applyTheme(mode === MODES.SYSTEM ? systemTheme() : mode, mode);
+
+  // If we fell through to an inherited seed (the session held no value of its
+  // own), persist it so the project remembers this theme next open. No-ops
+  // server-side for a no-project window.
+  if (session === null && seed !== null) {
+    persistThemeToSession(mode);
   }
 
   // In 'system' mode, follow OS light/dark changes live. An explicit

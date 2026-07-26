@@ -15,6 +15,7 @@ of changes; this project follows semantic versioning.
 - Handling for bash commands with newlines inside string literals
 - "Don't ask again" approval patterns can now be edited in place before saving
 - New Thread no longer interrupts an active agent turn
+- Font size and theme are now remembered per project; a new empty window inherits the size and theme of the window you opened it from
 
 ## [0.4.5] - 2026-07-24
 

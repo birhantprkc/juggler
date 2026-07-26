@@ -158,6 +158,19 @@ func (s *Server) setupSessionRoutes(sessionAPI *handlers.SessionAPI) {
 	// the desktop app so each project's window reopens where it was left.
 	api.HandleFunc("/session/window-state", sessionAPI.HandleGetWindowState).Methods("GET")
 	api.HandleFunc("/session/window-state", sessionAPI.HandleSetWindowState).Methods("PUT")
+	// UI zoom (root font-size) also lives with the session (per project), so a
+	// reopened project window paints at the size the user left it. Unlike
+	// geometry it is applied by the web viewer, which reads the server-injected
+	// value at load and PUTs changes here.
+	api.HandleFunc("/session/ui-zoom", sessionAPI.HandleGetUIZoom).Methods("GET")
+	api.HandleFunc("/session/ui-zoom", sessionAPI.HandleSetUIZoom).Methods("PUT")
+	// UI theme (light/dark/system mode) also lives with the session (per
+	// project), so a reopened project window paints in the theme the user left
+	// it rather than whichever theme another project last wrote to the origin-
+	// shared localStorage. Applied by the web viewer, which reads the server-
+	// injected value at load and PUTs changes here.
+	api.HandleFunc("/session/ui-theme", sessionAPI.HandleGetUITheme).Methods("GET")
+	api.HandleFunc("/session/ui-theme", sessionAPI.HandleSetUITheme).Methods("PUT")
 	// Atomic conversation creation: server picks id, creates folder with
 	// the collision-resolved canonical name, returns {id, name, created}.
 	api.HandleFunc("/conversations", sessionAPI.HandleCreateConversation).Methods("POST")

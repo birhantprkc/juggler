@@ -3,7 +3,8 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
-import { getTheme } from '../utils/theme-manager.js';
+import { getPaintedTheme } from '../utils/theme-manager.js';
+import { getCurrentZoom } from '../utils/zoom-manager.js';
 
 /**
  * The full session payload returned by GET /api/session. Mirrors the shape
@@ -487,7 +488,7 @@ class APIService {
    * @returns {Promise<void>} Resolves once the launch was requested.
    */
   async newWindow(path = '') {
-    const params = new URLSearchParams({ theme: getTheme() });
+    const params = new URLSearchParams({ theme: getPaintedTheme(), zoom: String(getCurrentZoom()) });
     if (path) params.set('project', path);
     const url = windowControlURL('new', `?${params.toString()}`);
     if (!url) return; // no native host (browser tab) — nothing to open

@@ -82,6 +82,8 @@ type Session struct {
 	MessageHistory       []string          `json:"messageHistory"`        // Session-level history of raw user messages for input navigation
 	Metadata             map[string]any    `json:"metadata,omitempty"`    // General-purpose key-value store for frontend flags
 	WindowState          *WindowState      `json:"windowState,omitempty"` // Native-window geometry for this project (nil until first save)
+	UIZoom               int               `json:"uiZoom,omitempty"`      // UI zoom (root font-size %) for this project's window; 0 until first set
+	UITheme              string            `json:"uiTheme,omitempty"`     // UI theme mode (system|light|dark) for this project's window; "" until first set
 }
 
 // NewSession creates a new session with initial state

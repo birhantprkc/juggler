@@ -160,6 +160,15 @@ export function setupHeaderControls(session) {
     return true;
   });
 
+  // The native File ▸ New Window menu item and its ⇧⌘N accelerator dispatch this
+  // event on the focused window. The native accelerator preempts the webview
+  // keydown in the desktop app, so the keyShortcutManager binding above only runs
+  // in browser tabs; routing the menu/keyboard case back through openNewWindow()
+  // means such a window carries THIS window's live theme and font size to the
+  // child — the same single path as the header button, never a global last-used
+  // seed.
+  window.addEventListener('juggler:new-window', () => { void openNewWindow(); });
+
   // Connected-clients indicator. Shows how many OTHER clients share this
   // session (the server's count includes this one, so subtract it), and hides
   // itself when this is the only client. Clicking opens Connectivity settings.

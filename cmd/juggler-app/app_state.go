@@ -88,6 +88,13 @@ type regState struct {
 	// theme instead of flashing the default before the page's first paint.
 	lastTheme string
 
+	// lastZoom is the most recent page-reported UI zoom (root font-size %) across
+	// all windows. It seeds the ?zoom= hint of the next window built without an
+	// inherited zoom (a restored, Finder-launched, or Cmd+N window), so it opens
+	// at the last-active size instead of the default. Persisted across launches
+	// via workspace.json; the per-project value lives in the session.
+	lastZoom int
+
 	// quitting is set once an app-wide quit has been authorised (the quit guard
 	// found no busy work, or the user confirmed the discard). While set, the
 	// ShouldQuit hook allows termination and per-window close hooks stop
@@ -120,7 +127,7 @@ func newAppState(devMode int) *appState {
 		// Seed lastTheme from the persisted last-used theme so the very first
 		// window built this launch (before any page has reported) paints its bare
 		// frame to match instead of flashing the dark default (see workspace.go).
-		st := &regState{windows: map[string]*winEntry{}, servers: map[string]*exec.Cmd{}, lastTheme: a.workspace.loadLastTheme()}
+		st := &regState{windows: map[string]*winEntry{}, servers: map[string]*exec.Cmd{}, lastTheme: a.workspace.loadLastTheme(), lastZoom: a.workspace.loadLastZoom()}
 		for op := range a.regOps {
 			op(st)
 		}
@@ -247,7 +254,7 @@ func (a *appState) run(specs []windowSpec) error {
 			return fmt.Errorf("start initial window: %w", err)
 		}
 		saved, hasSaved := fetchWindowState(serverURL)
-		initial = a.buildWindow(windowSpec{}, serverURL, proc, saved, hasSaved, "")
+		initial = a.buildWindow(windowSpec{}, serverURL, proc, saved, hasSaved, "", 0)
 	}
 
 	// Crash loudly if the initial window never becomes visible (e.g. the webview
@@ -278,7 +285,7 @@ func (a *appState) run(specs []windowSpec) error {
 			})
 		}
 		for _, s := range rest {
-			a.openWindow(s, "")
+			a.openWindow(s, "", 0)
 		}
 	})
 
@@ -311,7 +318,7 @@ func (a *appState) tryBuildInitial(spec windowSpec) *winEntry {
 		return nil
 	}
 	saved, hasSaved := fetchWindowState(serverURL)
-	return a.buildWindow(spec, serverURL, proc, saved, hasSaved, "")
+	return a.buildWindow(spec, serverURL, proc, saved, hasSaved, "", 0)
 }
 
 // startupSpecs decides which windows to open at launch. An explicit --url or
@@ -363,7 +370,7 @@ func (a *appState) onSecondInstance(data application.SecondInstanceData) {
 			return
 		}
 		logf("second instance: no window open, opening a fresh one (bare relaunch)")
-		a.openWindow(windowSpec{}, "")
+		a.openWindow(windowSpec{}, "", 0)
 		return
 	}
 
@@ -381,7 +388,7 @@ func (a *appState) onSecondInstance(data application.SecondInstanceData) {
 		return
 	}
 	logf("second instance: opening new window for %+v", spec.entry())
-	a.openWindow(spec, "")
+	a.openWindow(spec, "", 0)
 }
 
 // focusAnyWindow raises and focuses the most-recently-opened window, returning
@@ -435,13 +442,15 @@ func focusEntry(e *winEntry) bool {
 // or connecting to a URL), reads that session's saved geometry, and opens a new
 // in-process window onto it. The blocking resolve + geometry fetch run off the
 // main thread; the window is then created on the main thread.
-func (a *appState) openWindow(spec windowSpec, inheritedTheme string) {
+func (a *appState) openWindow(spec windowSpec, inheritedTheme string, inheritedZoom int) {
 	inheritedTheme = normaliseTheme(inheritedTheme)
 	go func() {
 		serverURL, proc, err := spec.resolve()
 		if err != nil {
 			if locked, ok := err.(*lockedProjectError); ok {
 				application.InvokeAsync(func() {
+					// A locked window shows a static recovery page, not the app —
+					// there is no root font-size to scale, so zoom is not threaded.
 					e := a.buildLockedProjectWindow(spec, locked.message(), inheritedTheme)
 					a.showWindow(e)
 					go a.warnIfWindowNeverVisible(e, "opened locked project")
@@ -453,7 +462,7 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme string) {
 		}
 		saved, hasSaved := fetchWindowState(serverURL)
 		application.InvokeAsync(func() {
-			e := a.buildWindow(spec, serverURL, proc, saved, hasSaved, inheritedTheme)
+			e := a.buildWindow(spec, serverURL, proc, saved, hasSaved, inheritedTheme, inheritedZoom)
 			a.showWindow(e)
 			// Don't let a dynamically-opened window fail to appear silently.
 			go a.warnIfWindowNeverVisible(e, "opened dynamically")
@@ -463,8 +472,8 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme string) {
 
 // openWindowForProject opens a window onto a project. Used by "New Window" and
 // the page's "open in new window" (via the loopback control endpoint).
-func (a *appState) openWindowForProject(project, inheritedTheme string) {
-	a.openWindow(windowSpec{project: project}, inheritedTheme)
+func (a *appState) openWindowForProject(project, inheritedTheme string, inheritedZoom int) {
+	a.openWindow(windowSpec{project: project}, inheritedTheme, inheritedZoom)
 }
 
 func normaliseTheme(theme string) string {
@@ -472,26 +481,6 @@ func normaliseTheme(theme string) string {
 		return theme
 	}
 	return ""
-}
-
-func (a *appState) themeForWindow(win application.Window) string {
-	if win == nil {
-		return ""
-	}
-	var theme string
-	a.reg(func(st *regState) {
-		for _, w := range st.windows {
-			if w.win != nil && w.win.ID() == win.ID() {
-				theme = w.currentTheme
-				return
-			}
-		}
-	})
-	return theme
-}
-
-func (a *appState) currentWindowTheme() string {
-	return a.themeForWindow(a.app.Window.Current())
 }
 
 func (a *appState) setWindowTheme(e *winEntry, theme string) (application.RGBA, bool) {
@@ -517,6 +506,29 @@ func (a *appState) setWindowTheme(e *winEntry, theme string) (application.RGBA, 
 		a.workspace.saveTheme(theme)
 	}
 	return themeColours[theme], true
+}
+
+// setWindowZoom records the freshest page-reported UI zoom, so the next window
+// built without an inherited zoom opens at the last-active size. Unlike theme it
+// touches no native window (zoom is a web-only root font-size); it just tracks
+// the inheritance seed and persists it across launches. A non-positive value is
+// ignored. The per-project value is owned by the session (server-side); this is
+// only the cross-window seed.
+func (a *appState) setWindowZoom(zoom int) {
+	if zoom <= 0 {
+		return
+	}
+	changed := false
+	a.reg(func(st *regState) {
+		if st.lastZoom != zoom {
+			st.lastZoom = zoom
+			changed = true
+		}
+	})
+	// Only on an actual change — the page reports its zoom on every load.
+	if changed {
+		a.workspace.saveZoom(zoom)
+	}
 }
 
 // cascadeStep is the down-right nudge applied when a new window would open
@@ -635,7 +647,7 @@ func (a *appState) buildLockedProjectWindow(spec windowSpec, message, inheritedT
 // main thread, after it (dynamic windows). serverProc is the server this app
 // spawned for the window, or nil for a shared/remote server. Show it with
 // showWindow once the app has launched.
-func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *exec.Cmd, saved core.WindowState, hasSaved bool, inheritedTheme string) *winEntry {
+func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *exec.Cmd, saved core.WindowState, hasSaved bool, inheritedTheme string, inheritedZoom int) *winEntry {
 	id := <-a.ids
 	nativeCtl := fmt.Sprintf("http://127.0.0.1:%d/win/%s", a.ctlPort, id)
 
@@ -649,9 +661,23 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	if startupTheme == "" {
 		a.reg(func(st *regState) { startupTheme = st.lastTheme })
 	}
+	// Resolve the startup zoom hint the same way: the page uses ?zoom= to paint
+	// at the last-active size before its own preference is read, but only when
+	// the project session has no saved zoom of its own (the page gives that
+	// priority). Prefer an explicitly inherited value (Cmd+N / open-in-new-window
+	// from a source window), else the freshest zoom any window reported this
+	// session or a previous launch; send nothing when we have neither, so a
+	// first-ever launch just uses the default.
+	startupZoom := inheritedZoom
+	if startupZoom <= 0 {
+		a.reg(func(st *regState) { startupZoom = st.lastZoom })
+	}
 	fullURL := strings.TrimRight(serverURL, "/") + "/?window=1&nativeCtl=" + url.QueryEscape(nativeCtl)
 	if startupTheme != "" {
 		fullURL += "&theme=" + url.QueryEscape(startupTheme)
+	}
+	if startupZoom > 0 {
+		fullURL += "&zoom=" + strconv.Itoa(startupZoom)
 	}
 
 	// Resolve the native background colour to paint before the page's first

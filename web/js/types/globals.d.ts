@@ -59,6 +59,19 @@ interface Window {
 	 */
 	JUGGLER_TEST_MODE?: boolean;
 
+	/**
+	 * Project session's saved UI zoom (root font-size %), injected pre-paint by
+	 * the server. 0/absent when the session has none (see zoom-manager.js).
+	 */
+	__sessionZoom?: number;
+
+	/**
+	 * Project session's saved UI theme mode (system|light|dark), injected
+	 * pre-paint by the server. Empty/absent when the session has none (see
+	 * theme-manager.js).
+	 */
+	__sessionThemeMode?: string;
+
 }
 
 /**

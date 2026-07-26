@@ -78,6 +78,13 @@ func (e workspaceEntry) spec() windowSpec {
 type workspaceFile struct {
 	Windows   []workspaceEntry `json:"windows"`
 	LastTheme string           `json:"lastTheme,omitempty"`
+	// LastZoom is the most recent page-reported UI zoom (root font-size %) across
+	// all windows. Read back at startup to seed the ?zoom= hint the next window
+	// (a restored, Finder-launched, or File ▸ New Window one with no inherited
+	// value) opens with, so it inherits the last-active size rather than resetting
+	// to the default. Global, not per-project — the per-project value lives in the
+	// session (server-side); this is only the cross-window inheritance seed.
+	LastZoom int `json:"lastZoom,omitempty"`
 }
 
 // workspaceStore persists the open-window set. One goroutine owns the file;
@@ -90,6 +97,7 @@ type workspaceStore struct {
 type wsSaveReq struct {
 	entries []workspaceEntry // nil leaves the persisted window set unchanged
 	theme   *string          // nil leaves the persisted theme unchanged
+	zoom    *int             // nil leaves the persisted zoom unchanged
 	done    chan struct{}    // non-nil for a synchronous flush
 }
 
@@ -106,6 +114,9 @@ func newWorkspaceStore() *workspaceStore {
 			}
 			if req.theme != nil {
 				cur.LastTheme = *req.theme
+			}
+			if req.zoom != nil {
+				cur.LastZoom = *req.zoom
 			}
 			writeWorkspaceFile(w.path, cur)
 			if req.done != nil {
@@ -137,6 +148,22 @@ func (w *workspaceStore) saveTheme(theme string) {
 		return
 	}
 	w.saves <- wsSaveReq{theme: &theme}
+}
+
+// saveZoom records the last-used UI zoom, preserving the open-window set and
+// theme. Best-effort and fire-and-forget, like saveTheme; a failure just means
+// the next launch's first window falls back to the default size.
+func (w *workspaceStore) saveZoom(zoom int) {
+	if zoom <= 0 {
+		return
+	}
+	w.saves <- wsSaveReq{zoom: &zoom}
+}
+
+// loadLastZoom returns the persisted last-used UI zoom (0 when absent/corrupt).
+// Read at startup to seed the ?zoom= inheritance hint before any page reports.
+func (w *workspaceStore) loadLastZoom() int {
+	return readWorkspaceFile(w.path).LastZoom
 }
 
 // load reads the persisted set as specs (empty when missing/corrupt → caller

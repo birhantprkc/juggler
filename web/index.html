@@ -46,13 +46,31 @@
          harmless. -->
     <script nonce="{{.CSPNonce}}">
         (function() {
-            // Resolve the stored mode to a concrete theme. 'system' (the
-            // default, and any legacy/absent value) follows the OS via
+            // Resolve the theme to paint synchronously, so the page (and the
+            // strip under the transparent macOS titlebar) is the right colour on
+            // the very first frame. Precedence (mirrors theme-manager.js): this
+            // project's saved session theme mode (server-injected, authoritative)
+            // > a resolved ?theme= seed inherited from the window that opened this
+            // one > this window's localStorage > follow the OS. localStorage sits
+            // below the session/seed because every project's server reuses the
+            // same origin, so a bare localStorage value may belong to a DIFFERENT
+            // project. 'system' (and any absent value) follows the OS via
             // prefers-color-scheme so system-light doesn't flash dark.
-            var mode = localStorage.getItem('juggler-theme');
-            var theme = mode === 'light' || mode === 'dark'
-                ? mode
+            // window.__sessionThemeMode is read back by theme-manager.js, which
+            // reconciles this at document-ready and reports to the native host.
+            var sessionThemeMode = "{{.InitialThemeMode}}";
+            window.__sessionThemeMode = sessionThemeMode;
+            var isThemeMode = function(m) { return m === 'system' || m === 'light' || m === 'dark'; };
+            var seedTheme = new URLSearchParams(window.location.search).get('theme');
+            var lsThemeMode = localStorage.getItem('juggler-theme');
+            var themeMode = isThemeMode(sessionThemeMode) ? sessionThemeMode
+                : (seedTheme === 'light' || seedTheme === 'dark') ? seedTheme
+                : isThemeMode(lsThemeMode) ? lsThemeMode
+                : 'system';
+            var theme = themeMode === 'light' || themeMode === 'dark'
+                ? themeMode
                 : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+            document.documentElement.setAttribute('data-theme', theme);
             document.documentElement.style.background = theme === 'light' ? '#fff' : '#0d1117';
             // TEMPORARY (Windows-only): mark the OS pre-paint so styles.css can
             // swap in SVG mouse cursors. Windows/WebView2 draws the native
@@ -64,6 +82,24 @@
             if (/Windows/.test(navigator.userAgent)) {
                 document.documentElement.dataset.os = 'windows';
             }
+            // UI zoom (root font-size). Apply synchronously so the whole UI
+            // paints at the right scale — a font-size change reflows everything,
+            // so a late correction is a visible jump. Precedence (mirrors
+            // zoom-manager.js): this project's saved session zoom (server-
+            // injected, authoritative) > an inherited ?zoom= seed from the window
+            // that opened this one > this window's localStorage > default.
+            // localStorage sits below the seed because every project's server
+            // reuses the same origin, so a bare value may be another project's.
+            // window.__sessionZoom is read back by zoom-manager.js.
+            var sessionZoom = {{.InitialZoom}};
+            window.__sessionZoom = sessionZoom;
+            var seedZoom = parseInt(new URLSearchParams(window.location.search).get('zoom'), 10);
+            var lsZoom = parseInt(localStorage.getItem('juggler-zoom'), 10);
+            var zoom = sessionZoom > 0 ? sessionZoom
+                : !isNaN(seedZoom) ? seedZoom
+                : !isNaN(lsZoom) ? lsZoom
+                : 110;
+            document.documentElement.style.fontSize = Math.max(60, Math.min(160, zoom)) + '%';
             // Mark window-mode when loaded inside a native desktop window, which
             // the desktop app opens with ?window=1; remote browsers never have
             // this query param.

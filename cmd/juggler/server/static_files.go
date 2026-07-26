@@ -391,18 +391,34 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 
+	// The project session's saved UI zoom (root font-size %), or 0 when none.
+	// Injected so the page paints at the right scale on the very first frame —
+	// a font-size change reflows the whole UI, so a late correction is a visible
+	// jump. 0 lets the client fall back to an inherited seed or the default.
+	initialZoom, _ := s.SessionManager().GetUIZoom()
+
+	// The project session's saved UI theme mode (system|light|dark), or "" when
+	// none. Injected so the first paint uses this project's own theme instead of
+	// whichever theme another project left in the origin-shared localStorage
+	// (every project's server reuses the same port, hence the same origin).
+	initialThemeMode, _ := s.SessionManager().GetUITheme()
+
 	data := struct {
-		StaticVersion string
-		IsTestMode    bool
-		IsDevMode     bool
-		IsWindowMode  bool
-		CSPNonce      string
-		APIToken      string
+		StaticVersion    string
+		IsTestMode       bool
+		IsDevMode        bool
+		IsWindowMode     bool
+		CSPNonce         string
+		APIToken         string
+		InitialZoom      int
+		InitialThemeMode string
 	}{
-		StaticVersion: s.staticVersion,
-		IsTestMode:    s.testMode,
-		IsDevMode:     s.devMode,
-		APIToken:      s.apiToken,
+		StaticVersion:    s.staticVersion,
+		IsTestMode:       s.testMode,
+		IsDevMode:        s.devMode,
+		APIToken:         s.apiToken,
+		InitialZoom:      initialZoom,
+		InitialThemeMode: initialThemeMode,
 		// The desktop app opens the page with ?window=1; remote browsers never
 		// have it. Mirrors the client-side check in index.html and gates the
 		// Wails runtime <script>, which only does anything in a native window.

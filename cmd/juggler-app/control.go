@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -71,10 +72,13 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 	id, action := parts[0], parts[1]
 
 	// "new" doesn't need the originating window — it opens another one. If the
-	// caller includes theme, pass it through so the child window's first paint and
-	// native chrome match the source window.
+	// caller includes theme/zoom, pass them through so the child window's first
+	// paint and native chrome match the source window (zoom only seeds a child
+	// project that has no saved size of its own; the page gives its session
+	// priority).
 	if action == "new" {
-		a.openWindowForProject(r.URL.Query().Get("project"), r.URL.Query().Get("theme"))
+		zoom, _ := strconv.Atoi(r.URL.Query().Get("zoom"))
+		a.openWindowForProject(r.URL.Query().Get("project"), r.URL.Query().Get("theme"), zoom)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -183,6 +187,14 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 		// page only posts this for an unwatched window, so it never fires on the
 		// conversation the user is actively looking at.
 		application.InvokeAsync(func() { e.win.Flash(true) })
+		w.WriteHeader(http.StatusNoContent)
+	case "zoom":
+		// The page reports its UI zoom (root font-size %) on load and whenever the
+		// user changes it. We only track it as the cross-window inheritance seed
+		// (the next window built without an inherited zoom opens at this size) —
+		// no native window is touched, since zoom is a web-only root font-size.
+		zoom, _ := strconv.Atoi(r.URL.Query().Get("zoom"))
+		a.setWindowZoom(zoom)
 		w.WriteHeader(http.StatusNoContent)
 	case "pick-directory":
 		// Native folder chooser for the in-page project picker. Runs as a sheet on

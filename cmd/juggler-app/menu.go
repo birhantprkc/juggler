@@ -52,9 +52,19 @@ func installAppMenu(a *appState, devMode bool) {
 			}
 		})
 	// New Window moves to the Shift variant so it stops shadowing New Tab's Cmd+N.
+	// Like New Tab, it dispatches into the focused window's page rather than
+	// opening the window here: the page's own newWindow() carries THIS window's
+	// live theme and font size to the child (see header-controls.js). Opening it
+	// in Go could only pass the global last-used values, not the source window's —
+	// which is what made a new window adopt the last-active appearance instead of
+	// the one it was launched from.
 	fileMenu.Add("New Window").
 		SetAccelerator("CmdOrCtrl+Shift+n").
-		OnClick(func(_ *application.Context) { a.openWindowForProject("", a.currentWindowTheme()) })
+		OnClick(func(_ *application.Context) {
+			if win := a.app.Window.Current(); win != nil {
+				win.ExecJS("window.dispatchEvent(new CustomEvent('juggler:new-window'))")
+			}
+		})
 	fileMenu.AddSeparator()
 	fileMenu.AddRole(application.CloseWindow)
 

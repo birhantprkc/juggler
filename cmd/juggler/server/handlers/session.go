@@ -161,6 +161,64 @@ func (api *SessionAPI) HandleSetWindowState(w http.ResponseWriter, r *http.Reque
 	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 
+// HandleGetUIZoom returns the UI zoom (root font-size %) saved in this project's
+// session, so a reopened window paints at the size the user left it. `hasZoom`
+// is false when this project has never saved one (first open, or a no-project
+// window), letting the client fall back to an inherited seed or the default.
+func (api *SessionAPI) HandleGetUIZoom(w http.ResponseWriter, r *http.Request) {
+	zoom, ok := api.manager().GetUIZoom()
+	WriteJSON(w, r, 0, map[string]any{"uiZoom": zoom, "hasZoom": ok})
+}
+
+// HandleSetUIZoom persists the UI zoom into this project's session. The page
+// PUTs it when the user zooms (and when a brand-new window inherits a size), so
+// the project remembers it across relaunches. A no-project session no-ops (see
+// SessionManager.SetUIZoom).
+func (api *SessionAPI) HandleSetUIZoom(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		UIZoom int `json:"uiZoom"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := api.manager().SetUIZoom(body.UIZoom); err != nil {
+		writeError(w, r, http.StatusInternalServerError, err.Error())
+		return
+	}
+	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
+}
+
+// HandleGetUITheme returns the UI theme mode (system|light|dark) saved in this
+// project's session, so a reopened window paints in the theme the user left it.
+// `hasTheme` is false when this project has never saved one (first open, or a
+// no-project window), letting the client fall back to an inherited seed or the
+// default.
+func (api *SessionAPI) HandleGetUITheme(w http.ResponseWriter, r *http.Request) {
+	mode, ok := api.manager().GetUITheme()
+	WriteJSON(w, r, 0, map[string]any{"uiTheme": mode, "hasTheme": ok})
+}
+
+// HandleSetUITheme persists the UI theme mode into this project's session. The
+// page PUTs it when the user changes theme (and when a brand-new window inherits
+// one), so the project remembers it across relaunches instead of reading
+// whichever theme another project left in the origin-shared localStorage. A
+// no-project session no-ops (see SessionManager.SetUITheme).
+func (api *SessionAPI) HandleSetUITheme(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		UITheme string `json:"uiTheme"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := api.manager().SetUITheme(body.UITheme); err != nil {
+		writeError(w, r, http.StatusInternalServerError, err.Error())
+		return
+	}
+	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
+}
+
 // HandleGetSession retrieves the session with runtime info
 func (api *SessionAPI) HandleGetSession(w http.ResponseWriter, r *http.Request) {
 	sess := api.manager().GetSession()
