@@ -17,7 +17,7 @@ import (
 // (provider, model, thinking) picks.
 const RecentModelsCap = 6
 
-// RecentModelsStore manages a user-level list of recently-selected concrete
+// RecentModelsStore manages a user-level list of recently-used concrete
 // models, stored in ~/.juggler/cache/recent-models.json. It is deliberately
 // server-side (not browser localStorage) so the list survives an app relaunch
 // and the spawned server binding to a different port — localStorage is

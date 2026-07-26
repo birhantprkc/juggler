@@ -42,20 +42,27 @@ export const sendRefusedWhenProviderDisabledTest = {
   async customAssertions(conversation, _ctx) {
     const wsService = (await import('../../js/services/websocket.js')).default;
     const providersCache = (await import('../../js/services/providers-cache.js')).default;
+    const recentModels = (await import('../../js/services/recent-models.js')).default;
     const win = /** @type {any} */ (window);
 
     const prior = providersCache.get();
     const priorConfirm = win.showConfirm;
     const priorOpenSettings = win.openSettings;
+    const priorRecord = recentModels.record;
 
     /** @type {string[]} */
     const confirmMessages = [];
     let openSettingsCalls = 0;
+    let recentRecordCalls = 0;
     win.showConfirm = (/** @type {string} */ message) => {
       confirmMessages.push(message);
       return Promise.resolve(false); // user dismisses
     };
     win.openSettings = () => { openSettingsCalls++; };
+    recentModels.record = /** @type {any} */ (() => {
+      recentRecordCalls++;
+      return Promise.resolve();
+    });
 
     try {
       wsService._emit('providers-update', [
@@ -93,7 +100,11 @@ export const sendRefusedWhenProviderDisabledTest = {
       if (conversation.isProcessing) {
         throw new Error('conversation must not enter processing when the send is refused');
       }
+      if (recentRecordCalls !== 0) {
+        throw new Error(`a refused send must not promote the selected model; got ${recentRecordCalls} calls`);
+      }
     } finally {
+      recentModels.record = priorRecord;
       win.showConfirm = priorConfirm;
       win.openSettings = priorOpenSettings;
       wsService._emit('providers-update', prior);
@@ -123,8 +134,16 @@ export const sendAllowedWhenProviderAvailableTest = {
     const harness = ctx.harness;
     const wsService = (await import('../../js/services/websocket.js')).default;
     const providersCache = (await import('../../js/services/providers-cache.js')).default;
+    const recentModels = (await import('../../js/services/recent-models.js')).default;
 
     const prior = providersCache.get();
+    const priorRecord = recentModels.record;
+    /** @type {any[][]} */
+    const recorded = [];
+    recentModels.record = /** @type {any} */ ((...args) => {
+      recorded.push(args);
+      return Promise.resolve();
+    });
     try {
       wsService._emit('providers-update', [
         {
@@ -136,7 +155,10 @@ export const sendAllowedWhenProviderAvailableTest = {
           ]
         }
       ]);
-      await conversation.setModelConfig({ provider: 'live-co', model: 'live-1' });
+      await conversation.setModelConfig({ provider: 'live-co', model: 'live-1', thinking: 'high' });
+      if (recorded.length !== 0) {
+        throw new Error('selecting a model must not promote it before use');
+      }
 
       const sinceTurns = conversation.completedTurns;
       harness.consumeResponse();
@@ -144,12 +166,17 @@ export const sendAllowedWhenProviderAvailableTest = {
       if (result) {
         throw new Error(`send must be allowed for an available provider; got refusal ${JSON.stringify(result)}`);
       }
+      if (recorded.length !== 1 || recorded[0][0] !== 'live-co'
+          || recorded[0][1] !== 'live-1' || recorded[0][2] !== 'high') {
+        throw new Error(`accepted send must promote its exact model configuration; got ${JSON.stringify(recorded)}`);
+      }
       await harness.awaitPendingSend();
       await harness.waitForTurnComplete(6000, sinceTurns);
       if (!(conversation.completedTurns > sinceTurns)) {
         throw new Error(`turn should complete for an available provider; completedTurns ${sinceTurns} -> ${conversation.completedTurns}`);
       }
     } finally {
+      recentModels.record = priorRecord;
       wsService._emit('providers-update', prior);
     }
   }

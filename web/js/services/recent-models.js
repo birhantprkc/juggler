@@ -11,9 +11,9 @@
  * Persisted SERVER-SIDE (GET/POST /api/recent-models), not in browser
  * localStorage: localStorage is partitioned by origin (including port), so an
  * app relaunch that lands the spawned server on a different port would reset
- * it. Server-side storage survives both. Whether a model is currently
- * available has no bearing on this list — recording and reading are decoupled
- * from availability.
+ * it. Server-side storage survives both. The persisted list is independent of
+ * current provider availability; callers use {@link getAvailable} when building
+ * selectable UI.
  *
  * An in-memory cache backs the synchronous `get()` the model selector needs at
  * render time; `refresh()` repopulates it from the server (call it when opening
@@ -50,6 +50,20 @@ const recentModels = {
    */
   get() {
     return _cache;
+  },
+
+  /**
+   * Cached recent models whose provider and model are present in the supplied
+   * provider snapshot. Unavailable providers are excluded because these entries
+   * back selection UI rather than history display.
+   * @param {Array<{name: string, available: boolean, modelsWithContext?: Array<{id: string}>}>} providers
+   * @returns {RecentModel[]} Selectable recent models.
+   */
+  getAvailable(providers) {
+    const available = new Map(providers
+      .filter(provider => provider.available)
+      .map(provider => [provider.name, new Set((provider.modelsWithContext || []).map(model => model.id))]));
+    return _cache.filter(entry => available.get(entry.provider)?.has(entry.model));
   },
 
   /**

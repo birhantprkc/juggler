@@ -5,6 +5,7 @@
 import ResponseHandler from '../services/response-handler.js';
 import wsService from '../services/websocket.js';
 import providersCache from '../services/providers-cache.js';
+import recentModels from '../services/recent-models.js';
 import { AbortError } from 'juggler/strategy-type';
 import ConversationDocument from './conversation-document.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
@@ -1477,6 +1478,10 @@ class Conversation {
     // exclusively by the Go worker; there is no viewer-side fallback loop.
     if (workerManager.isWorkerReady(this.id)) {
       workerManager.sendMessage(this.id, userMessage, messageThread?.threadItemId || threadItemId, options.attachments);
+      const acceptedConfig = messageThread?.modelConfig || this.modelConfig;
+      if (acceptedConfig?.provider && acceptedConfig?.model) {
+        recentModels.record(acceptedConfig.provider, acceptedConfig.model, acceptedConfig.thinking);
+      }
       // Worker will emit state patches that update proxy, which triggers UI updates
       // Processing state is managed by worker via state patches
       return null;

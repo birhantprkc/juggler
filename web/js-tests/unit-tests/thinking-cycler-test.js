@@ -6,8 +6,8 @@
  * ThinkingCycler cycle-order unit tests.
  *
  * The `cycle-thinking` client cycles the CURRENT model's level: Default → the
- * supported levels in canonical order → wrap, applying without recording;
- * commit records the landing pair once. The cycler resolves its target via
+ * supported levels in canonical order → wrap, then commits the landing pair.
+ * The cycler resolves its target via
  * `document.querySelector('model-selector')`, so each test prepends a real
  * (registered) model-selector element whose network/render side effects are
  * neutered and whose public cycling surface (`currentConfigPair` /
@@ -120,12 +120,13 @@ export async function runTests(_ctx) {
     const { el, state } = makeStubSelector(['low', 'medium', 'high'], { provider: 'p', model: 'm' });
     try {
       const cycler = /** @type {any} */ (new ThinkingCycler());
+      cycler._selector = el;
       for (let i = 0; i < 5; i++) cycler._cycle();
       const seq = state.applied.map((a) => a.level).join(',');
       assert(seq === 'low,medium,high,,low',
         `expected low,medium,high,<Default>,low — got "${seq}"`);
-      assert(state.applied.every((a) => a.record === false),
-        'every cycle hop must apply with record: false');
+      assert(state.applied.every((a) => a.record === undefined),
+        'cycle hops must use the ordinary selection write path');
       assert(state.refreshes === 5, `each hop refreshes the HUD — got ${state.refreshes}`);
     } finally {
       el.remove();
@@ -136,6 +137,7 @@ export async function runTests(_ctx) {
     const { el, state } = makeStubSelector(['low', 'medium', 'high'], { provider: 'p', model: 'm', thinking: 'medium' });
     try {
       const cycler = /** @type {any} */ (new ThinkingCycler());
+      cycler._selector = el;
       cycler._cycle();
       cycler._cycle();
       const seq = state.applied.map((a) => a.level).join(',');
@@ -150,6 +152,7 @@ export async function runTests(_ctx) {
     const { el, state } = makeStubSelector([], { provider: 'p', model: 'm' });
     try {
       const cycler = /** @type {any} */ (new ThinkingCycler());
+      cycler._selector = el;
       assert(cycler._controller._config.canCycle() === false,
         'canCycle must be false so the keystroke falls through untouched');
       cycler._cycle();
@@ -170,31 +173,21 @@ export async function runTests(_ctx) {
     }
   });
 
-  await run('commit records the landing pair exactly once; a peek without cycling records nothing', () => {
+  await run('commit never promotes the selected thinking level to recents', () => {
     const { el, state } = makeStubSelector(['low', 'high'], { provider: 'p', model: 'm' });
     const origRecord = recentModels.record;
-    /** @type {any[][]} */
-    const recorded = [];
-    recentModels.record = /** @type {any} */ ((/** @type {any} */ ...args) => {
-      recorded.push(args);
+    let recordCalls = 0;
+    recentModels.record = /** @type {any} */ (() => {
+      recordCalls++;
       return Promise.resolve();
     });
     try {
       const cycler = /** @type {any} */ (new ThinkingCycler());
-      // Pure hold-to-peek: commit with no cycle must not touch recents.
-      cycler._commit();
-      assert(recorded.length === 0, 'no cycle ⇒ no record');
-
+      cycler._selector = el;
       cycler._cycle(); // Default → low
       cycler._commit();
-      assert(recorded.length === 1, `one commit ⇒ one record, got ${recorded.length}`);
-      assert(recorded[0][0] === 'p' && recorded[0][1] === 'm' && recorded[0][2] === 'low',
-        `the LANDING pair is recorded — got ${JSON.stringify(recorded[0])}`);
+      assert(recordCalls === 0, `selection must not update recents — got ${recordCalls} calls`);
       assert(state.applied.length === 1, 'commit itself must not re-apply a level');
-
-      // The cycled flag was reset: another bare commit records nothing more.
-      cycler._commit();
-      assert(recorded.length === 1, 'commit must be once-per-gesture');
     } finally {
       recentModels.record = origRecord;
       el.remove();

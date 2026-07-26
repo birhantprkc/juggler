@@ -103,6 +103,26 @@ export async function runTests(_ctx) {
     }
   });
 
+  await run('Recent hides entries that are not selectable', async () => {
+    await seedRecents([
+      { provider: 'missing', model: 'ghost' },
+      { provider: 'p', model: 'removed' },
+      { provider: 'p', model: 'm' },
+    ]);
+    const el = makeSelector();
+    try {
+      const host = document.createElement('div');
+      host.innerHTML = el._generateRecentSection();
+      const rows = host.querySelectorAll('.recent-model');
+      assert(rows.length === 1, `expected one selectable Recent row, got ${rows.length}`);
+      assert(rows[0].getAttribute('data-provider') === 'p'
+        && rows[0].getAttribute('data-model') === 'm',
+      'Recent must contain only a model present on an available provider');
+    } finally {
+      el.remove();
+    }
+  });
+
   await run('synchronous model observers preserve the open HUD and anchor', async () => {
     const originalRAF = window.requestAnimationFrame;
     /** @type {FrameRequestCallback[]} */

@@ -659,7 +659,7 @@ class ModelSelector extends HTMLElement {
    * @returns {string} HTML for the `.info-recent` section, or ''.
    */
   _generateRecentSection() {
-    const recents = recentModels.get().slice(0, 6);
+    const recents = recentModels.getAvailable(this.providers).slice(0, 6);
     if (recents.length === 0) return '';
     const current = this.currentConfigPair();
 
@@ -882,20 +882,14 @@ class ModelSelector extends HTMLElement {
    * Write a thinking-level choice into the same scope the model selection writes
    * to. `level === ''` means Default → delete the `thinking` key (never store
    * `thinking: ''`). Spread-and-rewrite the whole config atomically (never mutate
-   * the Y.Map field-by-field — see the race note in conversation.js). Model +
-   * level is one identity, so the resulting pair is recorded to the Recent
-   * section — unless `record: false`, the hold-to-cycle thinking shortcut's
-   * mode, whose intermediate hops must not touch recents (its controller
-   * records the landing pair on commit). The shared write path for the
-   * dropdown's segmented control (which also closes the menu — see
-   * `_setThinkingLevel`), the button chip's mini popover (which has no
-   * dropdown to close), and the cycle-thinking shortcut. Pure write — the
-   * caller owns any re-render (see `refreshThinkingDisplay`).
+   * the Y.Map field-by-field — see the race note in conversation.js). The shared
+   * write path serves the dropdown's segmented control, the button chip's mini
+   * popover, and the cycle-thinking shortcut. Pure write — the caller owns any
+   * re-render (see `refreshThinkingDisplay`).
    * @param {string} level - '' for Default, else a native provider level.
-   * @param {{record?: boolean}} [opts] - `record: false` skips the recents entry.
    * @returns {boolean} True when the level was written.
    */
-  applyThinkingLevel(level, { record = true } = {}) {
+  applyThinkingLevel(level) {
     const eff = this._currentConfig;
     if (!eff || !eff.provider || !eff.model) return false;
 
@@ -906,8 +900,6 @@ class ModelSelector extends HTMLElement {
     if (!this._writeOrDefer(next)) return false;
 
     this._currentConfig = next;
-    // Remember the concrete model+level pair for the "Recent" section.
-    if (record) recentModels.record(eff.provider, eff.model, level || undefined);
     return true;
   }
 
@@ -976,9 +968,8 @@ class ModelSelector extends HTMLElement {
     dropdown.addEventListener('click', (e) => {
       const target = /** @type {Element} */(e.target);
 
-      // Thinking-level segment: model+level is one identity, so picking a level
-      // is a commit action like a model pick — _setThinkingLevel records the
-      // pair and closes the dropdown. '' = Default.
+      // Thinking-level segment: apply the level and close the dropdown.
+      // '' = Default.
       const seg = target.closest('.thinking-seg');
       if (seg) {
         e.stopPropagation();
@@ -1143,8 +1134,7 @@ class ModelSelector extends HTMLElement {
    * Select a model, optionally at an explicit thinking level. Model + level is
    * one identity: `thinking` is honoured only when the model advertises that
    * level (a stale level from a recent entry falls back to the model's
-   * default), and the concrete pick — level included — is recorded to the
-   * Recent section.
+   * default).
    * @param {string} providerName
    * @param {string} modelName
    * @param {string} [thinking] Native provider thinking level; absent/empty
@@ -1194,9 +1184,6 @@ class ModelSelector extends HTMLElement {
 
     // An explicit pick supersedes any in-flight post-commit pin.
     this._cycle.reset();
-
-    // Remember this concrete pick (model + level) for the "Recent" section.
-    recentModels.record(providerName, modelName, level || undefined);
 
     /** @type {{provider: string, model: string, thinking?: string}} */
     const nextConfig = { provider: providerName, model: modelName };

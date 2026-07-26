@@ -42,6 +42,11 @@ var testServerPool chan testServerEntry
 // pool shutdown. Empty when unset (e.g. the -short path).
 var testLogDir string
 
+// testConfigDir is a throwaway per-user config root inherited by every pool
+// subprocess. It isolates cache-backed convenience state such as recent models,
+// plus credentials and settings, from the developer's real Juggler profile.
+var testConfigDir string
+
 // testSkillsDir is an empty throwaway directory the pool points every
 // subprocess's user-scoped skill discovery at (via JUGGLER_SKILLS_USER_DIR), so
 // a server — which inherits the developer's real $HOME — never discovers their
@@ -139,6 +144,16 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// Isolate all per-user application state. Browser tests exercise real HTTP
+	// endpoints, including recent-model writes, so inheriting the developer's
+	// profile would let synthetic fixtures escape the test process.
+	if dir, err := os.MkdirTemp("", "juggler-test-config-*"); err == nil {
+		testConfigDir = dir
+	} else {
+		fmt.Fprintf(os.Stderr, "cannot create test config dir: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Isolate user-scoped skill discovery to an empty dir so the developer's
 	// real ~/.juggler and ~/.agents skills never leak into a test conversation
 	// (see testSkillsDir).
@@ -228,10 +243,24 @@ func (p *poolHandle) shutdown() {
 		if testLogDir != "" {
 			os.RemoveAll(testLogDir)
 		}
+		if testConfigDir != "" {
+			os.RemoveAll(testConfigDir)
+		}
 		if testSkillsDir != "" {
 			os.RemoveAll(testSkillsDir)
 		}
 	})
+}
+
+func envWithOverride(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			out = append(out, entry)
+		}
+	}
+	return append(out, prefix+value)
 }
 
 // startJugglerSubprocess starts a slot subprocess and returns the entry once
@@ -264,17 +293,23 @@ func startJugglerSubprocess(binary, fixture string, iframes int) (testServerEntr
 	// is the only way a browser-test failure block can include the WORKER
 	// TAPE section (the /api/test/dump-tape endpoint returns nothing when
 	// tracing is off).
-	cmd.Env = append(cmd.Env, "JUGGLER_TRACE=1")
+	cmd.Env = envWithOverride(cmd.Env, "JUGGLER_TRACE", "1")
 	// Redirect this server's logs into the pool's throwaway dir (see testLogDir)
 	// so the run never writes into the user's real application-log directory.
 	if testLogDir != "" {
-		cmd.Env = append(cmd.Env, "JUGGLER_LOG_DIR="+testLogDir)
+		cmd.Env = envWithOverride(cmd.Env, "JUGGLER_LOG_DIR", testLogDir)
+	}
+	// Redirect all user-level state, including cache-backed recent models, away
+	// from the developer's profile.
+	if testConfigDir != "" {
+		configDir := filepath.Join(testConfigDir, filepath.Base(fixture))
+		cmd.Env = envWithOverride(cmd.Env, "JUGGLER_CONFIG_DIR", configDir)
 	}
 	// Point user-scoped skill discovery at an empty throwaway dir (see
 	// testSkillsDir) so the developer's real ~/.juggler / ~/.agents skills never
 	// leak in as an auto-instantiated Skills context item and skew item counts.
 	if testSkillsDir != "" {
-		cmd.Env = append(cmd.Env, "JUGGLER_SKILLS_USER_DIR="+testSkillsDir)
+		cmd.Env = envWithOverride(cmd.Env, "JUGGLER_SKILLS_USER_DIR", testSkillsDir)
 	}
 	// Put the child in its own process group so we can kill the whole group
 	// (parent + any grandchildren) on cleanup. Without this, signals to the

@@ -102,8 +102,8 @@ export function modelGestureShouldHandle(_e) {
  * (frozen, minus entries whose provider is currently unavailable), so cycling
  * can never reorder the list it is walking; the first press opens the model menu
  * as a HUD showing the CURRENT pair highlighted (no hop), each further press
- * previews the next `{provider, model, thinking?}` pair (without recording it);
- * releasing the modifiers commits, recording only the landing pair. The first
+ * previews the next `{provider, model, thinking?}` pair; releasing the modifiers
+ * commits the landing pair. The first
  * cycle (the first re-press) goes to snapshot index 1 — the previous pair —
  * since index 0 is the current one (or to index 0 when the current config isn't
  * in the snapshot at all). With fewer than two entries there is nothing to
@@ -117,8 +117,6 @@ class ModelCycler {
     this._snapshot = [];
     /** @type {number} @private - Snapshot index of the last-applied pair; -1 = current pair absent from the snapshot. */
     this._cursor = -1;
-    /** @type {boolean} @private - Whether this gesture applied at least one pair. */
-    this._cycled = false;
     /**
      * The model selector this gesture drives, snapshotted at gesture start and
      * held for its lifetime so focus drift (menu HUD open, column rebuilds from
@@ -179,14 +177,12 @@ class ModelCycler {
     // Hold the model write until commit: hops update the selector's display and
     // its dropdown HUD, but a running turn never sees an intermediate model.
     this._selector?.beginCycle();
-    const available = new Set(providersCache.get().filter(p => p.available).map(p => p.name));
-    this._snapshot = recentModels.get().filter(r => available.has(r.provider));
+    this._snapshot = recentModels.getAvailable(providersCache.get());
     const current = this._selector?.currentConfigPair();
     this._cursor = current
       ? this._snapshot.findIndex(r => r.provider === current.provider
         && r.model === current.model && (r.thinking || '') === (current.thinking || ''))
       : -1;
-    this._cycled = false;
   }
 
   /**
@@ -206,41 +202,31 @@ class ModelCycler {
       if (next === this._cursor) break; // wrapped all the way around
       if (selector.applyConfigPair(this._snapshot[next])) {
         this._cursor = next;
-        this._cycled = true;
         return;
       }
     }
   }
 
   /**
-   * Commit the gesture: record the landing pair to recents (moving it to the
-   * front) — but only when the gesture actually cycled, so a pure
-   * hold-to-peek at the menu never reorders the list.
+   * Commit the gesture's buffered landing model to the document.
    * @private
    */
   _commit() {
-    // Flush the buffered landing model to the doc first (once), then record it.
     this._selector?.commitCycle();
-    if (this._cycled) {
-      const pair = this._selector?.currentConfigPair();
-      if (pair) recentModels.record(pair.provider, pair.model, pair.thinking);
-    }
     this._snapshot = [];
     this._cursor = -1;
-    this._cycled = false;
     this._selector = null;
   }
 
   /**
    * Abandon the gesture (Escape): drop the buffered model write so the doc
-   * keeps its pre-gesture value, and clear the snapshot without recording.
+   * keeps its pre-gesture value, and clear the snapshot.
    * @private
    */
   _cancel() {
     this._selector?.cancelCycle();
     this._snapshot = [];
     this._cursor = -1;
-    this._cycled = false;
     this._selector = null;
   }
 }
@@ -250,16 +236,13 @@ class ModelCycler {
  * CURRENT model's thinking level: Default → the supported levels in canonical
  * order → wrap. The first press opens the mini thinking popover anchored to the
  * button chip showing the CURRENT level (no hop); each further press previews
- * the next level (without recording), refreshing the level displays in place so
- * the HUD visibly tracks; releasing the modifiers commits, recording the landing
- * pair. On a model without thinking levels the whole gesture is a transparent
- * no-op (the press falls through).
+ * the next level, refreshing the level displays in place so the HUD visibly
+ * tracks; releasing the modifiers commits the landing pair. On a model without
+ * thinking levels the gesture is a transparent no-op (the press falls through).
  * @class
  */
 class ThinkingCycler {
   constructor() {
-    /** @type {boolean} @private - Whether this gesture applied at least one level. */
-    this._cycled = false;
     /**
      * The model selector this gesture drives, snapshotted at gesture start and
      * held for its lifetime so focus drift (mini popover open, column rebuilds
@@ -282,7 +265,6 @@ class ThinkingCycler {
       // Snapshot the target selector so every hook drives the same thread, enter
       // deferred-write mode, and open the mini thinking popover as the HUD.
       onGestureStart: () => {
-        this._cycled = false;
         this._selector = getModelSelector();
         this._selector?.beginCycle();
         this._selector?.openThinkingMini();
@@ -323,25 +305,17 @@ class ThinkingCycler {
     const order = ['', ...levels];
     const current = selector.currentConfigPair()?.thinking || '';
     const next = order[(order.indexOf(current) + 1) % order.length];
-    if (selector.applyThinkingLevel(next, { record: false })) {
+    if (selector.applyThinkingLevel(next)) {
       selector.refreshThinkingDisplay();
-      this._cycled = true;
     }
   }
 
   /**
-   * Commit the gesture: record the landing model+level pair to recents — only
-   * when a level was actually cycled, so a pure hold-to-peek never records.
+   * Commit the gesture's buffered landing level to the document.
    * @private
    */
   _commit() {
-    // Flush the buffered landing level to the doc first (once), then record it.
     this._selector?.commitCycle();
-    if (this._cycled) {
-      const pair = this._selector?.currentConfigPair();
-      if (pair) recentModels.record(pair.provider, pair.model, pair.thinking);
-    }
-    this._cycled = false;
     this._selector = null;
   }
 
@@ -352,7 +326,6 @@ class ThinkingCycler {
    */
   _cancel() {
     this._selector?.cancelCycle();
-    this._cycled = false;
     this._selector = null;
   }
 }

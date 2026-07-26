@@ -101,6 +101,22 @@ export async function runTests(_ctx) {
       `unknown keys must be stripped, got ${JSON.stringify(list[3])}`);
   });
 
+  await run('getAvailable() keeps only models present on available providers', async () => {
+    await seed([
+      { provider: 'ready', model: 'kept' },
+      { provider: 'ready', model: 'removed' },
+      { provider: 'off', model: 'hidden' },
+      { provider: 'missing', model: 'ghost' },
+    ]);
+    const list = recentModels.getAvailable([
+      { name: 'ready', available: true, modelsWithContext: [{ id: 'kept' }] },
+      { name: 'off', available: false, modelsWithContext: [{ id: 'hidden' }] },
+    ]);
+    assert(list.length === 1 && list[0].provider === 'ready' && list[0].model === 'kept',
+      `expected only ready/kept, got ${JSON.stringify(list)}`);
+    assert(recentModels.get().length === 4, 'availability filtering must not mutate persisted recents');
+  });
+
   await run('refresh() with a non-array payload yields an empty list', async () => {
     await seed([{ provider: 'a', model: 'm' }]);
     await seed(/** @type {any} */ ('not-an-array'));

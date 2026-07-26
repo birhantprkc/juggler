@@ -534,10 +534,10 @@ func (s *Server) handleSetDefaultModel(w http.ResponseWriter, r *http.Request) {
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
 }
 
-// handleRecentModels handles the user's recently-selected concrete models.
+// handleRecentModels handles the user's recently-used concrete models.
 //
 //	GET  /api/recent-models           → {"models": [{provider, model, thinking?}, ...]} (most-recent first)
-//	POST /api/recent-models {provider, model, thinking?} → records a pick, returns {success}
+//	POST /api/recent-models {provider, model, thinking?} → records usage, returns {success}
 //
 // `thinking` is optional on both sides — absent/empty means the model's
 // default level, and entries dedupe by the full triple.
