@@ -6191,6 +6191,57 @@ action-confirmation:focus {
     padding: 0.5rem 0;
 }
 
+/* Transient "reviewing…" indicator shown inside the approval box while a
+   strategy's onToolPending reviewer deliberates. Purely additive — sits above
+   the approval buttons, which stay fully live throughout. No background or
+   border: just bright amber monospace text and a matching spinner (the spinner
+   inherits `color`, so the two are always the same hue), gently breathing via
+   opacity so it reads as "actively working". --accent-orange is defined in both
+   themes, so it stays legible in light and dark. */
+.approval-review-status {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5rem 0;
+    color: var(--accent-orange);
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    font-weight: var(--font-weight-normal);
+    animation: approval-review-pulse 1.8s ease-in-out infinite;
+}
+
+.approval-review-status juggler-spinner {
+    flex: 0 0 auto;
+}
+
+.approval-review-status-label {
+    flex: 1 1 auto;
+    color: inherit;
+    min-width: 0;
+}
+
+/* Gentle opacity breathe — signals live deliberation without a box or colour
+   shift. */
+@keyframes approval-review-pulse {
+    0%, 100% {
+        opacity: 0.55;
+    }
+
+    50% {
+        opacity: 1;
+    }
+}
+
+/* Respect reduced-motion: hold steady at full opacity. */
+@media (prefers-reduced-motion: reduce) {
+    .approval-review-status {
+        animation: none;
+        opacity: 1;
+    }
+}
+
 /* ==========================================
    Transaction Summary (inline marker)
    ========================================== */

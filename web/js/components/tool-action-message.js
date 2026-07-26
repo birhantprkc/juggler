@@ -62,7 +62,7 @@ class ToolActionMessage extends HTMLElement {
   /** @type {Function|null} @private */
   _yjsObserver = null;
 
-  /** @type {{state: string|undefined, hasResult: boolean, resultIsError: boolean, hasApprovalOptions: boolean, displayDataJson: string}|null} @private */
+  /** @type {{state: string|undefined, hasResult: boolean, resultIsError: boolean, hasApprovalOptions: boolean, displayDataJson: string, reviewStatusJson: string}|null} @private */
   _lastSnapshot = null;
 
   connectedCallback() {
@@ -113,6 +113,13 @@ class ToolActionMessage extends HTMLElement {
         // neighbouring item — the source of the "approve clicked, neighbour
         // selected" bug. The command/diff being approved is fixed at request
         // time, so suppressing the rebuild loses nothing visible.
+        // A reviewStatus-only change (a strategy's onToolPending reviewer
+        // starting/finishing) must likewise avoid the destructive re-render:
+        // update the indicator in place so the live buttons stay put.
+        if (this._isReviewStatusChurn(prevSnapshot, newSnapshot)) {
+          this._applyReviewStatus(this._getItem());
+          return;
+        }
         if (this._isPendingApprovalChurn(prevSnapshot, newSnapshot)) return;
         this.render();
         // Tool state changes (e.g. RUNNING→COMPLETED) affect isProcessing;
@@ -129,7 +136,7 @@ class ToolActionMessage extends HTMLElement {
   /**
    * Create a snapshot of item fields we care about for change detection
    * @param {ToolActionItem|null} item - The item to snapshot
-   * @returns {{state: string|undefined, hasResult: boolean, resultIsError: boolean, hasApprovalOptions: boolean, displayDataJson: string}|null} Snapshot object or null
+   * @returns {{state: string|undefined, hasResult: boolean, resultIsError: boolean, hasApprovalOptions: boolean, displayDataJson: string, reviewStatusJson: string}|null} Snapshot object or null
    * @private
    */
   _snapshot(item) {
@@ -137,18 +144,20 @@ class ToolActionMessage extends HTMLElement {
     const displayData = item.get('displayData');
     const resultMap = item.get('result');
     const isError = resultMap?.get ? resultMap.get('isError') : resultMap?.isError;
+    const reviewStatus = item.get('reviewStatus');
     return {
       state: item.get('state'),
       hasResult: resultMap !== null && resultMap !== undefined,
       resultIsError: !!isError,
       hasApprovalOptions: !!item.get('approvalOptions'),
-      displayDataJson: displayData ? JSON.stringify(displayData.toJSON ? displayData.toJSON() : displayData) : ''
+      displayDataJson: displayData ? JSON.stringify(displayData.toJSON ? displayData.toJSON() : displayData) : '',
+      reviewStatusJson: reviewStatus ? JSON.stringify(reviewStatus.toJSON ? reviewStatus.toJSON() : reviewStatus) : ''
     };
   }
 
   /**
    * Check if item has changed from last snapshot
-   * @param {{state: string|undefined, hasResult: boolean, resultIsError: boolean, hasApprovalOptions: boolean, displayDataJson: string}|null} newSnapshot - New snapshot to compare
+   * @param {{state: string|undefined, hasResult: boolean, resultIsError: boolean, hasApprovalOptions: boolean, displayDataJson: string, reviewStatusJson: string}|null} newSnapshot - New snapshot to compare
    * @returns {boolean} True if the item has changed
    * @private
    */
@@ -158,7 +167,8 @@ class ToolActionMessage extends HTMLElement {
                this._lastSnapshot.hasResult !== newSnapshot.hasResult ||
                this._lastSnapshot.resultIsError !== newSnapshot.resultIsError ||
                this._lastSnapshot.hasApprovalOptions !== newSnapshot.hasApprovalOptions ||
-               this._lastSnapshot.displayDataJson !== newSnapshot.displayDataJson;
+               this._lastSnapshot.displayDataJson !== newSnapshot.displayDataJson ||
+               this._lastSnapshot.reviewStatusJson !== newSnapshot.reviewStatusJson;
   }
 
   /**
@@ -182,6 +192,81 @@ class ToolActionMessage extends HTMLElement {
       prev.resultIsError === next.resultIsError &&
       prev.displayDataJson !== '' &&
       !!this.querySelector('action-confirmation');
+  }
+
+  /**
+   * Whether a snapshot change is a pure `reviewStatus` change on a tool-action
+   * that is still PENDING with a live approval widget mounted — i.e. a
+   * strategy's onToolPending reviewer starting or finishing. In that case the
+   * indicator is toggled in place (see `_applyReviewStatus`) so the approval
+   * buttons are never rebuilt under the user's cursor. Requires everything else
+   * (state, result, displayData, approval options) unchanged and an
+   * action-confirmation present.
+   * @param {ReturnType<ToolActionMessage['_snapshot']>} prev - Previous snapshot
+   * @param {ReturnType<ToolActionMessage['_snapshot']>} next - New snapshot
+   * @returns {boolean} True if only reviewStatus changed on a mounted approval widget
+   * @private
+   */
+  _isReviewStatusChurn(prev, next) {
+    if (!prev || !next) return false;
+    return prev.state === TOOL_STATES.PENDING &&
+      next.state === TOOL_STATES.PENDING &&
+      prev.hasApprovalOptions && next.hasApprovalOptions &&
+      prev.hasResult === next.hasResult &&
+      prev.resultIsError === next.resultIsError &&
+      prev.displayDataJson === next.displayDataJson &&
+      prev.reviewStatusJson !== next.reviewStatusJson &&
+      !!this.querySelector('action-confirmation');
+  }
+
+  /**
+   * Show/hide the transient "reviewing…" indicator in place, without a
+   * destructive re-render. Adds a `.approval-review-status` row directly above
+   * the approval buttons when `reviewStatus.busy`, updates its label, or removes
+   * it otherwise. Never touches the buttons themselves.
+   * @param {ToolActionItem|null} item - The tool action item
+   * @private
+   */
+  _applyReviewStatus(item) {
+    const container = /** @type {HTMLElement|null} */ (this.querySelector('.action-approval-container'));
+    if (!item || !container) return;
+    const reviewStatus = item.get('reviewStatus');
+    const busy = reviewStatus?.get ? reviewStatus.get('busy') : reviewStatus?.busy;
+    const label = reviewStatus?.get ? reviewStatus.get('label') : reviewStatus?.label;
+    let row = /** @type {HTMLElement|null} */ (container.querySelector('.approval-review-status'));
+    if (busy) {
+      if (!row) {
+        row = this._buildReviewStatusRow(label);
+        const buttons = container.querySelector('action-confirmation');
+        container.insertBefore(row, buttons);
+      } else {
+        const labelEl = row.querySelector('.approval-review-status-label');
+        if (labelEl) labelEl.textContent = label || 'Reviewing…';
+      }
+    } else if (row) {
+      row.remove();
+    }
+  }
+
+  /**
+   * Build the "reviewing…" indicator row (spinner + label). Purely additive —
+   * rendered above the approval buttons; the buttons stay live.
+   * @param {string} [label] - The review label to show
+   * @returns {HTMLElement} The indicator row
+   * @private
+   */
+  _buildReviewStatusRow(label) {
+    const row = document.createElement('div');
+    row.className = 'approval-review-status';
+    const spinner = document.createElement('juggler-spinner');
+    spinner.setAttribute('style', '--size: 1.35rem');
+    spinner.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('span');
+    text.className = 'approval-review-status-label';
+    text.textContent = label || 'Reviewing…';
+    row.appendChild(spinner);
+    row.appendChild(text);
+    return row;
   }
 
   /**
@@ -727,6 +812,17 @@ class ToolActionMessage extends HTMLElement {
         messageThread.resolveApproval(item.get('toolUseId'), response);
       }
     }, onRevise ? { onRevise } : undefined);
+
+    // First-paint of the review indicator: if a strategy's onToolPending
+    // reviewer is already in flight (e.g. a reload mid-review), render the
+    // "reviewing…" row directly above the buttons so it paints correctly.
+    const reviewStatus = item.get('reviewStatus');
+    const reviewBusy = reviewStatus?.get ? reviewStatus.get('busy') : reviewStatus?.busy;
+    if (reviewBusy) {
+      const reviewLabel = reviewStatus?.get ? reviewStatus.get('label') : reviewStatus?.label;
+      container.appendChild(this._buildReviewStatusRow(reviewLabel));
+    }
+
     container.appendChild(buttonsEl);
   }
 

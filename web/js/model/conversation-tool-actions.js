@@ -30,6 +30,69 @@ import { INTERACTION_KIND } from '../../sdk/context-item.js';
 /** @typedef {import('../../sdk/lib/message.js').Message} Message */
 
 /**
+ * Framework-owned, strategy-agnostic label for the review indicator shown while
+ * a strategy's `onToolPending` promise is in flight. Derived from the strategy's
+ * own manifest so no strategy-specific string leaks into the core: an explicit
+ * `static REVIEW_LABEL` wins, else "<name> reviewing…", else a generic fallback.
+ * @param {any} strategy - The message thread's strategy instance
+ * @returns {string} Human-readable review label
+ */
+function reviewLabelFor(strategy) {
+  const override = strategy?.constructor?.REVIEW_LABEL;
+  if (override) return override;
+  const name = strategy?.constructor?.MANIFEST?.name;
+  return name ? `${name} reviewing…` : 'Reviewing…';
+}
+
+/**
+ * Mark a parked tool-action as under out-of-band review by writing a transient
+ * `reviewStatus` field. Tagged ENGINE_DERIVED_ORIGIN so the worker's UndoManager
+ * skips it, matching the sibling approvalOptions/displayData writes.
+ * @param {import('./message-thread.js').default} messageThread
+ * @param {string} toolUseId
+ * @param {string} label
+ */
+function setReviewStatus(messageThread, toolUseId, label) {
+  const doc = messageThread.conversation?._doc?.doc;
+  if (!doc) return;
+  doc.transact(() => {
+    const items = messageThread.items;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (isToolActionMessage(/** @type {Message} */ (item)) && item.get('toolUseId') === toolUseId) {
+        messageThread.updateItemField(i, 'reviewStatus', { busy: true, label });
+        break;
+      }
+    }
+  }, ENGINE_DERIVED_ORIGIN);
+}
+
+/**
+ * Clear the transient `reviewStatus` once a strategy's `onToolPending` promise
+ * settles — but only if the tool is still PENDING. On the allow path it already
+ * transitioned to APPROVED and the approval surface is gone, so the stale field
+ * is harmless; we leave it untouched rather than write onto a resolved item.
+ * @param {import('./message-thread.js').default} messageThread
+ * @param {string} toolUseId
+ */
+function clearReviewStatus(messageThread, toolUseId) {
+  const doc = messageThread.conversation?._doc?.doc;
+  if (!doc) return;
+  doc.transact(() => {
+    const items = messageThread.items;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (isToolActionMessage(/** @type {Message} */ (item)) && item.get('toolUseId') === toolUseId) {
+        if (item.get('state') === TOOL_STATES.PENDING) {
+          messageThread.updateItemField(i, 'reviewStatus', null);
+        }
+        break;
+      }
+    }
+  }, ENGINE_DERIVED_ORIGIN);
+}
+
+/**
  * Execute a tool action that has been approved (state='running').
  * Called by the items observer when it detects a running tool without a result.
  * @param {import('./message-thread.js').default} messageThread
@@ -230,9 +293,17 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
         category: toolDef?.category
       });
       if (pendingResult && typeof pendingResult.then === 'function') {
-        pendingResult.catch((/** @type {unknown} */ err) => {
-          console.error('[handleNewToolAction] onToolPending rejected:', err);
-        });
+        // The hook returned a still-pending promise: the strategy is reviewing
+        // this parked call out-of-band. Surface a transient "reviewing…"
+        // indicator for exactly the promise's lifetime (the approval buttons
+        // stay fully live throughout — the indicator is purely additive), and
+        // clear it when the promise settles.
+        setReviewStatus(messageThread, toolUseId, reviewLabelFor(messageThread.strategy));
+        pendingResult
+          .catch((/** @type {unknown} */ err) => {
+            console.error('[handleNewToolAction] onToolPending rejected:', err);
+          })
+          .finally(() => clearReviewStatus(messageThread, toolUseId));
       }
     } catch (err) {
       console.error('[handleNewToolAction] onToolPending threw:', err);

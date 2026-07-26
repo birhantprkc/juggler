@@ -16,11 +16,17 @@
  * These isolate the decision by overriding `_getItem` with a fake and (for
  * render) spying on the `_render*` methods, so no conversation/DOM plumbing is
  * needed.
+ *
+ * Also covers the auto-approve review indicator's in-place update: a
+ * reviewStatus-only change is churn (`_isReviewStatusChurn` → true) so the live
+ * approval buttons are never rebuilt, and a first paint with `reviewStatus.busy`
+ * renders the `.approval-review-status` row above the buttons.
  * @module unit-tests/tool-action-render
  */
 
 import { TOOL_STATES } from '../../sdk/lib/message.js';
 import '../../js/components/tool-action-message.js'; // registers the custom element
+import '../../js/components/action-confirmation.js'; // registers <action-confirmation>
 
 /**
  * @typedef {object} TestResult
@@ -77,6 +83,57 @@ export async function runTests() {
       throw new Error(`expected ['cancelled'], got [${calls}]`);
     passed++;
   } catch (e) { failed++; errors.push(`render terminal-result routing: ${e.message}`); }
+
+  // C — a reviewStatus-only change on a mounted approval widget is in-place
+  // churn: _isReviewStatusChurn must return true (so the observer skips the
+  // destructive render() that would rebuild the buttons under the cursor), and
+  // false when no action-confirmation is mounted.
+  try {
+    const base = {
+      state: TOOL_STATES.PENDING, hasResult: false, resultIsError: false,
+      hasApprovalOptions: true, displayDataJson: '{"cmd":"echo"}', reviewStatusJson: '',
+    };
+    const next = { ...base, reviewStatusJson: '{"busy":true,"label":"Auto-approve reviewing…"}' };
+
+    const mounted = /** @type {any} */ (document.createElement('tool-action-message'));
+    mounted.appendChild(document.createElement('action-confirmation'));
+    if (mounted._isReviewStatusChurn(base, next) !== true)
+      throw new Error('expected churn=true when only reviewStatus changes with buttons mounted');
+
+    const bare = /** @type {any} */ (document.createElement('tool-action-message'));
+    if (bare._isReviewStatusChurn(base, next) !== false)
+      throw new Error('expected churn=false when no action-confirmation is mounted');
+
+    // A displayData change alongside reviewStatus is NOT review-status churn.
+    const both = { ...next, displayDataJson: '{"cmd":"ls"}' };
+    if (mounted._isReviewStatusChurn(base, both) !== false)
+      throw new Error('expected churn=false when displayData also changed');
+    passed++;
+  } catch (e) { failed++; errors.push(`reviewStatus churn guard: ${e.message}`); }
+
+  // D — first paint with reviewStatus.busy renders the .approval-review-status
+  // row above the approval buttons.
+  try {
+    const paintEl = /** @type {any} */ (document.createElement('tool-action-message'));
+    const container = document.createElement('div');
+    container.className = 'action-approval-container';
+    paintEl._appendApprovalButtons(container, fakeItem({
+      toolUseId: 't-review', toolName: 'bash',
+      approvalOptions: { options: [{ label: 'Approve', value: 'yes' }] },
+      reviewStatus: { busy: true, label: 'Auto-approve reviewing…' },
+    }));
+    const row = container.querySelector('.approval-review-status');
+    const buttons = container.querySelector('action-confirmation');
+    if (!row) throw new Error('expected a .approval-review-status row on first paint');
+    const labelEl = row.querySelector('.approval-review-status-label');
+    if (!labelEl || labelEl.textContent !== 'Auto-approve reviewing…')
+      throw new Error(`expected the manifest label, got ${labelEl && labelEl.textContent}`);
+    if (!buttons) throw new Error('expected action-confirmation buttons present');
+    // Row must precede the buttons in document order.
+    const rowBeforeButtons = !!(row.compareDocumentPosition(buttons) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!rowBeforeButtons) throw new Error('review-status row must be above the buttons');
+    passed++;
+  } catch (e) { failed++; errors.push(`review-status first paint: ${e.message}`); }
 
   return { passed, failed, errors };
 }

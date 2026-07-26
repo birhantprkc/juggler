@@ -21,6 +21,12 @@
  *   5. An *elicitation* tool (AskUserQuestion) parks PENDING but does NOT fire
  *      the hook — the dispatch is gate-only, so approval automation can never
  *      resolve (and thereby silently answer) a user-input form.
+ *   6. A still-pending onToolPending promise stamps `reviewStatus.busy` (+ a
+ *      manifest-derived label) on the parked tool for the promise's lifetime,
+ *      and clears it when the promise settles while the tool is still PENDING.
+ *   7. A synchronous (non-thenable) hook never sets `reviewStatus`.
+ *   8. If the tool resolves before the promise settles (the allow path), the
+ *      clear is a guarded no-op — it never writes onto the resolved item.
  * @module unit-tests/tool-pending-hook-test
  */
 
@@ -258,6 +264,122 @@ export async function runTests(_ctx) {
     } catch (e) {
       failed++;
       errors.push(`elicitation skips the hook: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // =======================================================================
+    // Test 6: a still-pending onToolPending promise marks the parked tool with
+    // reviewStatus.busy (+ a manifest-derived label); settling it clears the
+    // field while the tool is still PENDING (the deny/leave-parked path).
+    // =======================================================================
+    try {
+      const conversation = await createApprovalTestConversation(session);
+      const mt = conversation.rootMessageThread;
+
+      const toolUseId = insertUnstartedBash(conversation, 'review-1', 'echo reviewing');
+      /** @type {() => void} */
+      let releaseHook = () => {};
+      const gate = new Promise((res) => { releaseHook = res; });
+      // Class-based stub so reviewLabelFor reads a real static MANIFEST.name.
+      class StubReviewStrategy {
+        static MANIFEST = { name: 'Stub' };
+        getApprovalPolicy() { return 'require-approval'; }
+        onToolPending() { return gate; }
+      }
+      mt.strategy = new StubReviewStrategy();
+
+      await handleNewToolAction(mt, toolUseId, conversation);
+
+      const ta = mt.getToolAction(toolUseId);
+      assert(ta?.get('state') === TOOL_STATES.PENDING, `should park pending, got ${ta?.get('state')}`);
+      const rs = ta?.get('reviewStatus');
+      const busy = rs && (rs.get ? rs.get('busy') : rs.busy);
+      assert(busy === true, `reviewStatus.busy should be true during review, got ${busy}`);
+      const label = rs && (rs.get ? rs.get('label') : rs.label);
+      assert(label === 'Stub reviewing…', `label should come from the manifest, got ${label}`);
+
+      // Settle the reviewer promise; the .catch().finally() chain clears on a
+      // later task. Drain a macrotask so the clear has run.
+      releaseHook();
+      await gate;
+      await new Promise((r) => setTimeout(r, 0));
+
+      const rsAfter = ta?.get('reviewStatus');
+      assert(rsAfter === null || rsAfter === undefined,
+        `reviewStatus should be cleared after the promise settles, got ${JSON.stringify(rsAfter)}`);
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`reviewStatus set-then-clear: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // =======================================================================
+    // Test 7: a synchronous (non-thenable) onToolPending never sets reviewStatus
+    // — the indicator is tied to an in-flight promise, and there is none.
+    // =======================================================================
+    try {
+      const conversation = await createApprovalTestConversation(session);
+      const mt = conversation.rootMessageThread;
+
+      const toolUseId = insertUnstartedBash(conversation, 'review-sync-1', 'echo sync');
+      mt.strategy = {
+        getApprovalPolicy: () => 'require-approval',
+        // Returns undefined — no promise, so no indicator.
+        onToolPending: () => {}
+      };
+
+      await handleNewToolAction(mt, toolUseId, conversation);
+
+      const ta = mt.getToolAction(toolUseId);
+      assert(ta?.get('state') === TOOL_STATES.PENDING, `should park pending, got ${ta?.get('state')}`);
+      const rs = ta?.get('reviewStatus');
+      assert(rs === null || rs === undefined,
+        `reviewStatus must not be set for a synchronous hook, got ${JSON.stringify(rs)}`);
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`synchronous hook sets no reviewStatus: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // =======================================================================
+    // Test 8: if the tool is resolved (APPROVED) before the review promise
+    // settles — the allow path — the clear is a guarded no-op: it must not
+    // write onto the already-resolved item.
+    // =======================================================================
+    try {
+      const conversation = await createApprovalTestConversation(session);
+      const mt = conversation.rootMessageThread;
+
+      const toolUseId = insertUnstartedBash(conversation, 'review-approve-1', 'echo approve');
+      /** @type {() => void} */
+      let releaseHook = () => {};
+      const gate = new Promise((res) => { releaseHook = res; });
+      mt.strategy = {
+        getApprovalPolicy: () => 'require-approval',
+        onToolPending: () => gate
+      };
+
+      await handleNewToolAction(mt, toolUseId, conversation);
+
+      const ta = mt.getToolAction(toolUseId);
+      // Reviewer approved out-of-band before its promise settled.
+      mt.resolveApproval(toolUseId, 'yes');
+      assert(ta?.get('state') === TOOL_STATES.APPROVED, `should be approved, got ${ta?.get('state')}`);
+
+      // Now settle the promise: clearReviewStatus sees a non-PENDING tool and
+      // must leave it untouched (guarded no-op) — no throw, state unchanged.
+      releaseHook();
+      await gate;
+      await new Promise((r) => setTimeout(r, 0));
+
+      assert(ta?.get('state') === TOOL_STATES.APPROVED,
+        `clear must not disturb a resolved tool, got ${ta?.get('state')}`);
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`clear is a no-op on a resolved tool: ${e instanceof Error ? e.message : String(e)}`);
     }
   } finally {
     /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;

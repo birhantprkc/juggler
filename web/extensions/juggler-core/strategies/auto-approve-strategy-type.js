@@ -31,6 +31,11 @@ import { POLICY_PROMPT, buildReviewerPrompt, parseVerdict } from './auto-approve
  * `auto-approve-reviewer.js`). In allow-only mode the only harmful mistake is a
  * wrong *allow*, and those are the two channels that manufacture one.
  *
+ * While `onToolPending`'s returned promise is in flight the framework surfaces a
+ * transient "Auto-approve reviewing…" indicator in the approval card (label
+ * derived from this manifest's `name`); the approval buttons stay fully live, so
+ * the human can always decide instantly and race the reviewer.
+ *
  * Future (deliberately out of scope for v1): hard-deny with rationale fed back
  * to the model, a per-turn circuit breaker, a per-strategy reviewer-model
  * setting UI, and surfacing the reviewer's rationale in the approval card.
