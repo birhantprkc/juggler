@@ -6,6 +6,7 @@ import strategyRegistry from '../registries/strategy-registry.js';
 import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import { presentPopup } from '../utils/popup-surface.js';
 import { DROPDOWN_ARROW_SVG } from '../utils/icons.js';
+import CycleBuffer from '../services/cycle-buffer.js';
 
 /**
  * Strategy Selector - Dropdown component for selecting conversation strategy
@@ -19,18 +20,34 @@ class StrategySelector extends HTMLElement {
     super();
     /** @type {import('../model/message-thread.js').default|null} @private */
     this._messageThread = null;
-    /** @type {string} @private */
+    /**
+     * The LIVE strategy id: the committed selection normally, and the previewed
+     * hop while a hold-to-cycle gesture is in progress. It drives the dropdown
+     * HUD's highlight. The collapsed BUTTON reads `_committedStrategyId` instead
+     * while the gesture runs, so the button stays frozen until release.
+     * @type {string} @private
+     */
     this._currentStrategyId = 'default';
     /**
-     * True while a hold-to-cycle gesture is in progress: each hop updates the
-     * visible selection (local id + in-place render) but its `setStrategy` doc
-     * write — the value the engine and any running turn read — is buffered until
-     * commit. See `beginCycle`.
-     * @type {boolean} @private
+     * The button's frozen value during a gesture: the committed strategy id
+     * snapshotted at `beginCycle`, or null when no gesture is running (the button
+     * then reads `_currentStrategyId` directly). See `_buttonStrategyId`.
+     * @type {string|null} @private
      */
-    this._deferWrites = false;
-    /** @type {boolean} @private - Whether the deferred gesture applied at least one hop worth flushing. */
-    this._deferDirty = false;
+    this._committedStrategyId = null;
+    /**
+     * The shared display-defence lifecycle for the hold-to-cycle gesture: while
+     * it runs the button is frozen at `_committedStrategyId` and doc-sync is
+     * blocked; on commit it pins the landing id against the post-commit sync
+     * bounce until the running turn settles. It does not touch the doc. See
+     * `beginCycle` / `commitCycle` and the CycleBuffer module doc.
+     * @type {CycleBuffer<string>} @private
+     */
+    this._cycle = new CycleBuffer({
+      // Force a re-read once the backstop releases a pin, in case the value we
+      // masked reflected a genuine external switch rather than the transient bounce.
+      onRelease: () => this.setMessageThread(this._messageThread),
+    });
     /** @type {StrategyManifestInfo[]} @private */
     this._strategies = [];
     /** @type {boolean} @private */
@@ -65,6 +82,7 @@ class StrategySelector extends HTMLElement {
       this._popupRelease = null;
     }
     this._liveDropdown = null;
+    this._cycle.reset();
   }
 
   /**
@@ -81,11 +99,16 @@ class StrategySelector extends HTMLElement {
    */
   setMessageThread(messageThread) {
     this._messageThread = messageThread;
-    if (messageThread) {
-      this._currentStrategyId = messageThread.currentStrategyId || 'default';
-    } else {
-      this._currentStrategyId = 'default';
-    }
+    // The CycleBuffer owns the two guards this used to hand-roll: while a gesture
+    // buffers, it rejects everything (the preview owns the display); after a
+    // commit it pins the landing id and rejects the transient sync bounce until
+    // the running turn settles. conversation-tab rebuilds a fresh MessageThread
+    // wrapper and re-runs this on every doc update, so the gate runs constantly
+    // while a turn streams — keep the new thread reference for the eventual
+    // commit regardless, but only repaint when the buffer accepts the value.
+    const incoming = messageThread ? (messageThread.currentStrategyId || 'default') : 'default';
+    if (!this._cycle.accepts(incoming)) return;
+    this._currentStrategyId = incoming;
     this.render();
   }
 
@@ -155,6 +178,8 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   selectStrategy(strategyId) {
+    // An explicit pick supersedes any in-flight post-commit pin.
+    this._cycle.reset();
     if (!this._messageThread) {
       console.error('[StrategySelector] No message thread bound');
       this.closeDropdown();
@@ -178,12 +203,25 @@ class StrategySelector extends HTMLElement {
   }
 
   /**
+   * The strategy id the collapsed BUTTON should display: the frozen committed id
+   * while a gesture is cycling (so the button doesn't track the previewed hops —
+   * those show only in the dropdown HUD), otherwise the live id.
+   * @returns {string} The id to show on the button.
+   * @private
+   */
+  _buttonStrategyId() {
+    return this._cycle.buffering && this._committedStrategyId !== null
+      ? this._committedStrategyId
+      : this._currentStrategyId;
+  }
+
+  /**
    * Get the current strategy name for display
    * @returns {string} The display name of the current strategy
    * @private
    */
   getCurrentStrategyName() {
-    const strategy = this._strategies.find(s => s.id === this._currentStrategyId);
+    const strategy = this._strategies.find(s => s.id === this._buttonStrategyId());
     return strategy ? strategy.manifest.name : 'Select Strategy';
   }
 
@@ -230,7 +268,7 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   getCurrentStrategyColor() {
-    const strategy = this._strategies.find(s => s.id === this._currentStrategyId);
+    const strategy = this._strategies.find(s => s.id === this._buttonStrategyId());
     return strategy?.manifest.color || null;
   }
 
@@ -240,7 +278,7 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   getCurrentStrategyIcon() {
-    const strategy = this._strategies.find(s => s.id === this._currentStrategyId);
+    const strategy = this._strategies.find(s => s.id === this._buttonStrategyId());
     return strategy?.manifest.icon || null;
   }
 
@@ -261,13 +299,13 @@ class StrategySelector extends HTMLElement {
   }
 
   /**
-   * Cycle to next strategy (wraps around), keeping the dropdown open if it was
-   * open. `render()` refreshes the open menu and its anchor button IN PLACE
-   * (see the live-dropdown branch), so cycling never tears the body-hosted
-   * popup down and re-presents it — the teardown/re-present that made the menu
-   * flicker on every hop. During a hold-to-cycle gesture the `setStrategy`
-   * write is buffered (see `beginCycle`); the local id + render still update so
-   * the HUD highlights the landing strategy.
+   * Preview the next strategy (wraps around), keeping the dropdown open. This
+   * moves the LIVE id — which drives the dropdown HUD's highlight — but writes
+   * nothing to the doc (a running turn never sees an intermediate strategy) and
+   * leaves the collapsed button frozen at the committed strategy until release.
+   * `render()` refreshes the open menu and its anchor button IN PLACE (see the
+   * live-dropdown branch), so cycling never tears the body-hosted popup down and
+   * re-presents it.
    */
   cycleNext() {
     if (!this._messageThread || this._strategies.length <= 1) return;
@@ -277,15 +315,13 @@ class StrategySelector extends HTMLElement {
     const next = this._strategies[nextIndex];
     if (!next) return;
 
-    this._writeOrDeferStrategy(next.id);
     this._currentStrategyId = next.id;
     this.render();
   }
 
   /**
    * Persist a strategy id to the bound thread — the doc the engine (and any
-   * running turn) reads. The single write path shared by `selectStrategy` and
-   * `cycleNext`/`commitCycle`.
+   * running turn) reads. Shared by `selectStrategy` and `commitCycle`.
    * @param {string} strategyId
    * @private
    */
@@ -294,55 +330,45 @@ class StrategySelector extends HTMLElement {
   }
 
   /**
-   * Write `strategyId` now, or — during a hold-to-cycle gesture (`beginCycle`)
-   * — buffer it so a running turn never observes an intermediate strategy; the
-   * local id and in-place render still update on every hop, and `commitCycle`
-   * flushes the landing strategy once.
-   * @param {string} strategyId
-   * @private
-   */
-  _writeOrDeferStrategy(strategyId) {
-    if (this._deferWrites) {
-      this._deferDirty = true;
-      return;
-    }
-    this._writeStrategyToDoc(strategyId);
-  }
-
-  /**
-   * Enter deferred-write mode for a hold-to-cycle gesture: subsequent
-   * `cycleNext` hops update the visible selection but hold their `setStrategy`
-   * write until `commitCycle`. Idempotent.
+   * Begin a hold-to-cycle gesture: snapshot the committed strategy so the button
+   * stays frozen on it while the dropdown previews hops, and freeze doc-sync.
+   * Idempotent, and supersedes any pin left by a previous commit.
    */
   beginCycle() {
-    if (this._deferWrites) return;
-    this._deferWrites = true;
-    this._deferDirty = false;
+    this._committedStrategyId = this._currentStrategyId;
+    this._cycle.begin();
   }
 
   /**
-   * Flush a deferred gesture: leave deferred mode and, if any hop was applied,
-   * write the landing strategy to the doc exactly once — so a running turn only
-   * ever sees the final choice. A pure hold-to-peek writes nothing.
+   * Commit the gesture (modifier released): the previewed id becomes the
+   * selection. If it changed, write it to the doc exactly once — so a running
+   * turn only ever sees the final choice — and pin it against the post-commit
+   * sync bounce until the turn settles. Then repaint the button DIRECTLY (not
+   * via the doc-sync path, which the pin may gate). A pure hold-to-peek that
+   * landed back on the committed strategy writes nothing.
    */
   commitCycle() {
-    const dirty = this._deferDirty;
-    this._deferWrites = false;
-    this._deferDirty = false;
-    if (dirty) this._writeStrategyToDoc(this._currentStrategyId);
+    const landing = this._currentStrategyId;
+    const changed = landing !== this._committedStrategyId;
+    this._committedStrategyId = null;
+    if (changed) {
+      this._cycle.pin(landing);
+      this._writeStrategyToDoc(landing);
+    } else {
+      this._cycle.end();
+    }
+    this.render();
   }
 
   /**
-   * Abandon a deferred gesture (Escape): the doc was never written, so restore
-   * the visible selection to the thread's still-committed strategy and
-   * re-render. A pure peek leaves the display untouched.
+   * Abandon the gesture (Escape): nothing was written, so drop the preview and
+   * restore the button/dropdown to the committed strategy.
    */
   cancelCycle() {
-    const dirty = this._deferDirty;
-    this._deferWrites = false;
-    this._deferDirty = false;
-    if (!dirty) return;
-    this._currentStrategyId = this._messageThread?.currentStrategyId || 'default';
+    this._currentStrategyId = this._committedStrategyId
+      ?? (this._messageThread?.currentStrategyId || 'default');
+    this._committedStrategyId = null;
+    this._cycle.end();
     this.render();
   }
 

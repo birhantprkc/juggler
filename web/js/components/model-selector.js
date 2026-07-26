@@ -14,6 +14,7 @@ import { escapeHtml } from '../../sdk/lib/html.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import { formatTokens } from '../utils/format.js';
 import { formatPlan, isUsageStale, renderUsageRow } from '../utils/usage-renderer.js';
+import CycleBuffer from '../services/cycle-buffer.js';
 
 /** localStorage key holding the per-provider list view-state override map. */
 const VIEW_STATE_STORAGE_KEY = 'juggler-model-view-state';
@@ -29,6 +30,20 @@ const VIEW_STATES = ['none', 'top', 'all'];
  * @returns {string} The level with its first letter upper-cased.
  */
 const thinkingLabel = (level) => (level ? level.charAt(0).toUpperCase() + level.slice(1) : level);
+
+/**
+ * Structural equality for a `{provider, model, thinking?}` config, with the
+ * thinking level normalised (absent === ''). Shared by the CycleBuffer pin
+ * comparison and the commit's changed-vs-committed check.
+ * @param {*} a - A model config (or null).
+ * @param {*} b - A model config (or null).
+ * @returns {boolean} True when both name the same provider, model and level.
+ */
+function sameModelConfig(a, b) {
+  return a === b || (!!a && !!b
+    && a.provider === b.provider && a.model === b.model
+    && (a.thinking || '') === (b.thinking || ''));
+}
 
 /**
  * Model selector component with provider and model dropdown menu
@@ -95,17 +110,37 @@ class ModelSelector extends HTMLElement {
     this.providerViewState = this._loadViewState();
     /** @type {import('../model/message-thread.js').default|null} @private */
     this._messageThread = null;
-    /** @type {*} @private */
+    /**
+     * The LIVE model config: the committed selection normally, and the previewed
+     * hop while a hold-to-cycle gesture is in progress. `this.provider`/`this.model`
+     * track it too, so the dropdown/popover HUD shows the preview. The collapsed
+     * BUTTON reads `_committed` instead while the gesture runs, so it stays frozen
+     * until release.
+     * @type {*} @private
+     */
     this._currentConfig = null;
     /**
-     * True while a hold-to-cycle gesture is in progress: each hop updates the
-     * visible selection (local fields + HUD) but its doc write — the value a
-     * running turn reads — is buffered until commit. See `beginCycle`.
-     * @type {boolean} @private
+     * The button's frozen `{provider, model, config}` snapshot during a gesture,
+     * taken at `beginCycle`; null when no gesture is running (the button then
+     * reads the live fields). See `_buttonDisplayState` / `_thinkingChipHTML`.
+     * @type {{provider: string, model: string, config: *}|null} @private
      */
-    this._deferWrites = false;
-    /** @type {boolean} @private - Whether the deferred gesture applied at least one hop worth flushing. */
-    this._deferDirty = false;
+    this._committed = null;
+    /**
+     * The shared display-defence lifecycle for the hold-to-cycle gesture: while
+     * it runs the button is frozen at `_committed` and doc-sync is blocked; on
+     * commit it pins the landing config against the post-commit sync bounce until
+     * the running turn settles — the anti-flicker this selector previously
+     * lacked. It does not touch the doc. See `beginCycle` / `commitCycle` and the
+     * CycleBuffer module doc.
+     * @type {CycleBuffer<*>} @private
+     */
+    this._cycle = new CycleBuffer({
+      isEqual: sameModelConfig,
+      // Force a re-sync once the backstop releases a pin, in case the value we
+      // masked reflected a genuine external change rather than the transient bounce.
+      onRelease: () => this._syncModelDisplay(),
+    });
     /** @type {boolean} @private - True while a usage-stats fetch is in flight. */
     this._usageLoading = false;
     /** @type {string|null} @private - Last list-column HTML written, for non-destructive updates. */
@@ -160,6 +195,8 @@ class ModelSelector extends HTMLElement {
       this._liveDropdown.remove();
       this._liveDropdown = null;
     }
+    // Drop any gesture/pin state (clears the pin's backstop timer).
+    this._cycle.reset();
   }
 
   /**
@@ -186,18 +223,18 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   _syncModelDisplay() {
-    // During a hold-to-cycle gesture the doc deliberately still holds the
-    // pre-gesture config (writes are buffered until commit — see beginCycle),
-    // while _currentConfig and the HUD show the previewed hop. Re-reading the
-    // doc here would clobber that preview back to the original model — which is
-    // exactly what an async providers-update push (triggered by the menu HUD's
-    // own open→refresh round trip, landing ~0.5-1s later) would do. Keep the
-    // preview; just refresh the open dropdown so updated availability shows.
-    if (this._deferWrites) {
+    // The CycleBuffer decides whether the doc may drive the display right now.
+    // While a gesture buffers, it rejects the read so the previewed hop stays on
+    // screen (re-reading the doc — e.g. from an async providers-update push the
+    // menu HUD's own open→refresh triggers ~0.5-1s later — would clobber the
+    // preview back to the original model). After a commit it rejects the
+    // transient post-commit bounce until the running turn settles. Either way
+    // the open dropdown still refreshes so updated availability shows.
+    const config = this._getEffectiveConfig();
+    if (!this._cycle.accepts(config)) {
       if (this.dropdownOpen) this._updateDropdownContent();
       return;
     }
-    const config = this._getEffectiveConfig();
     this._currentConfig = config;
     this.setModel(config?.provider || '', config?.model || '');
     if (this.dropdownOpen) this._updateDropdownContent();
@@ -1155,6 +1192,9 @@ class ModelSelector extends HTMLElement {
       return;
     }
 
+    // An explicit pick supersedes any in-flight post-commit pin.
+    this._cycle.reset();
+
     // Remember this concrete pick (model + level) for the "Recent" section.
     recentModels.record(providerName, modelName, level || undefined);
 
@@ -1293,52 +1333,62 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   _writeOrDefer(config) {
-    if (this._deferWrites) {
-      this._deferDirty = true;
+    // During a gesture, preview only — no doc write (a running turn never sees an
+    // intermediate config); the landing config is written once by commitCycle.
+    if (this._cycle.buffering) {
       return !!(this._messageThread || this.conversation);
     }
+    // A non-buffered write is an explicit choice (a picked model/level) — it
+    // supersedes any in-flight post-commit pin so the pick shows immediately.
+    this._cycle.reset();
     return this._writeConfigToDoc(config);
   }
 
   /**
-   * Enter deferred-write mode for a hold-to-cycle gesture: subsequent
-   * `applyConfigPair` / `applyThinkingLevel` hops update the visible selection
-   * but hold their doc write until `commitCycle`. Idempotent, so the model and
-   * thinking cyclers (which share this selector) can both open a gesture
-   * without the second clobbering the first's committed baseline.
+   * Begin a hold-to-cycle gesture: snapshot the committed config so the button
+   * stays frozen on it while the dropdown/popover previews hops, and freeze
+   * doc-sync. Idempotent, so the model and thinking cyclers (which share this
+   * selector) can both open a gesture without the second disturbing the first.
    */
   beginCycle() {
-    if (this._deferWrites) return;
-    this._deferWrites = true;
-    this._deferDirty = false;
+    this._committed = { provider: this.provider, model: this.model, config: this._currentConfig };
+    this._cycle.begin();
   }
 
   /**
-   * Flush a deferred gesture: leave deferred mode and, if any hop was applied,
-   * write the landing config to the doc exactly once — so a running turn only
-   * ever sees the final choice. A pure hold-to-peek (no hop) writes nothing.
+   * Commit the gesture (modifier released): the previewed config becomes the
+   * selection. If it changed, write it to the doc exactly once — so a running
+   * turn only ever sees the final choice — and pin it against the post-commit
+   * sync bounce until the turn settles. Then repaint the button DIRECTLY (not
+   * via the doc-sync path, which the pin may gate). A pure hold-to-peek that
+   * landed back on the committed config writes nothing.
    */
   commitCycle() {
-    const dirty = this._deferDirty;
-    this._deferWrites = false;
-    this._deferDirty = false;
-    if (dirty && this._currentConfig) this._writeConfigToDoc(this._currentConfig);
+    const landing = this._currentConfig;
+    const changed = !sameModelConfig(landing, this._committed?.config);
+    this._committed = null;
+    if (changed && landing) {
+      this._cycle.pin(landing);
+      this._writeConfigToDoc(landing);
+    } else {
+      this._cycle.end();
+    }
+    this.render();
   }
 
   /**
-   * Abandon a deferred gesture (Escape): the doc was never touched, so restore
-   * the visible selection to the still-committed config and drop the preview.
-   * A pure peek leaves the display untouched.
+   * Abandon the gesture (Escape): nothing was written, so drop the preview and
+   * restore the live fields (button + dropdown/popover) to the committed config.
    */
   cancelCycle() {
-    const dirty = this._deferDirty;
-    this._deferWrites = false;
-    this._deferDirty = false;
-    if (!dirty) return;
-    // The doc still holds the pre-gesture value; re-sync display from it. The
-    // menu has already closed on Escape, so refresh the collapsed button too.
-    this._syncModelDisplay();
-    if (!this.dropdownOpen) this.render();
+    if (this._committed) {
+      this.provider = this._committed.provider;
+      this.model = this._committed.model;
+      this._currentConfig = this._committed.config;
+    }
+    this._committed = null;
+    this._cycle.end();
+    this.render();
   }
 
   /**
@@ -1428,13 +1478,20 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   _thinkingChipHTML() {
-    const prov = this.providers.find(p => p.name === this.provider);
-    const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
+    // Frozen at the committed snapshot while a gesture cycles (the button chip
+    // must not track previewed hops — those show in the mini popover HUD).
+    const frozen = this._cycle.buffering ? this._committed : null;
+    const provider = frozen ? frozen.provider : this.provider;
+    const model = frozen ? frozen.model : this.model;
+    const config = frozen ? frozen.config : this._currentConfig;
+
+    const prov = this.providers.find(p => p.name === provider);
+    const modelEntry = prov?.modelsWithContext?.find(m => m.id === model);
     const levels = modelEntry?.thinkingLevels || [];
     if (levels.length === 0) return '';
     // An explicit level counts only when the model advertises it — a stale
     // stored level means the model's default, same as everywhere else.
-    const explicit = this._currentConfig?.thinking;
+    const explicit = config?.thinking;
     const level = explicit && levels.includes(explicit) ? explicit : '';
     const declaredDefault = modelEntry?.defaultThinkingLevel || '';
     const shown = level || declaredDefault || 'def';
@@ -1523,6 +1580,13 @@ class ModelSelector extends HTMLElement {
    *   The button's display state.
    */
   _buttonDisplayState() {
+    // While a gesture cycles, the button is frozen at the committed snapshot —
+    // the previewed hops show only in the dropdown/popover HUD (which reads the
+    // live this.provider/this.model). Outside a gesture these ARE the live fields.
+    const frozen = this._cycle.buffering ? this._committed : null;
+    const provider = frozen ? frozen.provider : this.provider;
+    const model = frozen ? frozen.model : this.model;
+
     // Show connection status when not connected, otherwise the model label.
     let modelDisplay;
     let modelUnavailable = false;
@@ -1533,19 +1597,19 @@ class ModelSelector extends HTMLElement {
       modelDisplay = 'Disconnected';
     } else if (this.connectionStatus === 'connecting') {
       modelDisplay = 'Connecting...';
-    } else if (!this.provider || this.provider === '' || this.provider === 'Loading...') {
+    } else if (!provider || provider === '' || provider === 'Loading...') {
       modelDisplay = 'Select Model';
     } else {
-      modelDisplay = this.model ? modelLabelFromList(this.providers, this.provider, this.model) : this.provider;
+      modelDisplay = model ? modelLabelFromList(this.providers, provider, model) : provider;
     }
 
     const hasOverride = !!(this._messageThread?.threadItemId && this._messageThread?.ownModelConfig);
 
     // Flag when the selected model is absent from the current provider list.
-    if (this.provider && this.model && this.providers.length > 0) {
-      const prov = this.providers.find(p => p.name === this.provider);
+    if (provider && model && this.providers.length > 0) {
+      const prov = this.providers.find(p => p.name === provider);
       modelUnavailable = !prov || !prov.modelsWithContext ||
-                !prov.modelsWithContext.some(m => m.id === this.model);
+                !prov.modelsWithContext.some(m => m.id === model);
     }
 
     return { modelDisplay, noModelSelected: modelDisplay === 'Select Model', modelUnavailable, hasOverride };

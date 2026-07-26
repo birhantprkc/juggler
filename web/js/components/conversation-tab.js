@@ -12,7 +12,7 @@ import { createMessageThread } from '../model/message-thread.js';
 import { isThreadClosed } from '../model/thread-navigation.js';
 import { ColumnSelectionState } from '../utils/column-selection.js';
 import { recordTape } from '../utils/event-tape.js';
-import { isAnyPopupOpen } from '../utils/popup-manager.js';
+import keyShortcutManager from '../services/key-shortcut-manager.js';
 // Columns are created via createElement('conversation-area' | 'properties-panel')
 // in _buildConversationColumn. Import the defining modules so the custom elements
 // are registered before this component ever instantiates one (otherwise an
@@ -609,6 +609,13 @@ class ConversationTab extends HTMLElement {
       // Only handle if this is the active tab
       if (!this.classList.contains('active')) return;
 
+      // An overlay (modal, settings panel, dropdown) owns the keyboard: this is
+      // a document-level handler that navigates/cancels the conversation BEHIND
+      // it, so it must stand down while a popup is open — otherwise ↑/↓ would
+      // move the selection under the overlay. Single rule, shared with the
+      // central command dispatcher (see KeyShortcutManager.suppressedByOverlay).
+      if (keyShortcutManager.suppressedByOverlay()) return;
+
       // Don't handle if user is typing in an input
       const target = /** @type {Element|null} */ (e.target);
       if (target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')) return;
@@ -696,13 +703,10 @@ class ConversationTab extends HTMLElement {
             break;
           }
           case 'Escape':
-            // Backstop: a popup/modal open over the conversation owns Escape —
-            // it dismisses itself via popup-manager, which stops the key from
-            // reaching this document-level handler. This guard only bites if the
-            // listener order ever flips (this handler running before that stop):
-            // then don't let Escape leak through to cancel a running turn behind
-            // the popup. Mirrors the same isAnyPopupOpen() gate in input-box.js.
-            if (isAnyPopupOpen()) break;
+            // A popup/modal open over the conversation owns Escape (popup-manager
+            // dismisses it and stops the key at document); the overlay gate at the
+            // top of this handler already returned before we got here, so by this
+            // point no overlay is open and Escape means "stop the turn behind me".
             // Cancel fires regardless of which column type is active (a
             // "Re-run command" click lands in the properties panel; gating
             // cancel on CONVERSATION-AREA left Escape a silent no-op there).

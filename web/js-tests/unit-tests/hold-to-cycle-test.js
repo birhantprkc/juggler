@@ -5,16 +5,17 @@
 /**
  * HoldToCycleController phase-machine unit tests.
  *
- * Drives the shared hold-to-cycle gesture (idle → press-started → menu-open)
- * with synthetic KeyboardEvents dispatched on document — the controller's own
- * capture-phase listeners receive them — and records every config callback in
- * an ordered log. The trigger is the real `strategy-switch` binding
- * (Shift+Tab, modifier-less so the same synthetic events match on every
- * platform) with `shouldHandle: () => true` to bypass the composer-focus gate,
- * which is asserted separately via the exported {@link defaultShouldHandle}.
- * The 500ms long-press timer is captured deterministically by stubbing
- * `window.setTimeout` around the initial keydown (same pattern as
- * reconnect-policy-test), so no test ever waits on the wall clock. app.js is
+ * Drives the shared hold-to-cycle gesture (idle → active) with synthetic
+ * KeyboardEvents dispatched on document — the controller's own capture-phase
+ * listeners receive them — and records every config callback in an ordered log.
+ * The trigger is the real `strategy-switch` binding (Shift+Tab, modifier-less so
+ * the same synthetic events match on every platform) with `shouldHandle: () =>
+ * true` to bypass the composer-focus gate, which is asserted separately via the
+ * exported {@link defaultShouldHandle}.
+ *
+ * The gesture is now single-phase-open: the first press opens the popup at the
+ * current value (no hop, no long-press timer to trap), each re-press previews
+ * the next value, releasing the modifier commits, and Escape cancels. app.js is
  * not loaded in the harness page, so no production controller instance is
  * listening — every reaction to these events is the instance under test.
  * @module unit-tests/hold-to-cycle-test
@@ -48,36 +49,12 @@ function makeHarness(overrides = {}) {
     shouldHandle: () => true,
     onGestureStart: () => calls.push('start'),
     onCycle: () => calls.push('cycle'),
-    onOpenMenu: () => calls.push('open'),
-    onCloseMenu: () => calls.push('close'),
     onCommit: () => calls.push('commit'),
+    onCancel: () => calls.push('cancel'),
     ...overrides,
   });
   controller.init();
   return { controller, calls };
-}
-
-/**
- * Capture the long-press timeout callback scheduled during `fn` (which runs
- * synchronously), without letting a real timer start — the returned handle
- * fires it on demand. `window.setTimeout` is restored before returning, so the
- * stub can never leak into other (async) code; the fake -1 timer id makes a
- * later real `clearTimeout(-1)` a harmless no-op.
- * @param {() => void} fn - Code expected to schedule the long-press setTimeout.
- * @returns {{fire: () => void}} Handle invoking the captured callback (no-op
- *   when nothing was scheduled).
- */
-function trapLongPress(fn) {
-  const orig = window.setTimeout;
-  /** @type {(() => void)|null} */
-  let cb = null;
-  window.setTimeout = /** @type {any} */ ((/** @type {() => void} */ f) => { cb = f; return -1; });
-  try {
-    fn();
-  } finally {
-    window.setTimeout = orig;
-  }
-  return { fire: () => { if (cb) cb(); } };
 }
 
 /**
@@ -130,53 +107,50 @@ export async function runTests(_ctx) {
     }
   };
 
-  await run('trigger keydown cycles immediately and is consumed', () => {
+  await run('the first trigger keydown opens the gesture at the current value without cycling', () => {
     const { controller, calls } = makeHarness();
     try {
-      let prevented = false;
-      trapLongPress(() => { prevented = pressTrigger(); });
+      const prevented = pressTrigger();
       assert(prevented, 'the starting keydown must be preventDefault-ed');
-      assert(calls.join(',') === 'start,cycle', `expected start,cycle — got ${calls.join(',')}`);
+      assert(calls.join(',') === 'start',
+        `the first press must open only, applying no hop — got ${calls.join(',')}`);
     } finally {
       controller.destroy();
     }
   });
 
-  await run('re-pressing the trigger cycles again without restarting the gesture', () => {
+  await run('each re-press cycles once without restarting the gesture', () => {
     const { controller, calls } = makeHarness();
     try {
-      trapLongPress(() => pressTrigger());
+      pressTrigger();
       assert(pressTrigger(), 're-press must be consumed too');
       assert(pressTrigger(), 'third press must be consumed too');
-      assert(calls.join(',') === 'start,cycle,cycle,cycle',
-        `onGestureStart must fire once per gesture — got ${calls.join(',')}`);
+      assert(calls.join(',') === 'start,cycle,cycle',
+        `start opens; each re-press adds one cycle — got ${calls.join(',')}`);
     } finally {
       controller.destroy();
     }
   });
 
-  await run('long-press opens the menu; re-press still cycles; release closes then commits', () => {
+  await run('release from an active gesture commits the landing selection', () => {
     const { controller, calls } = makeHarness();
     try {
-      const timer = trapLongPress(() => pressTrigger());
-      timer.fire();
-      assert(calls.join(',') === 'start,cycle,open', `long-press should open the menu — got ${calls.join(',')}`);
-      assert(pressTrigger(), 'trigger must keep cycling in menu-open');
+      pressTrigger();
+      assert(pressTrigger(), 'trigger must cycle while active');
       releaseKey('Shift');
-      assert(calls.join(',') === 'start,cycle,open,cycle,close,commit',
-        `release from menu-open must close BEFORE committing — got ${calls.join(',')}`);
+      assert(calls.join(',') === 'start,cycle,commit',
+        `modifier release must commit — got ${calls.join(',')}`);
     } finally {
       controller.destroy();
     }
   });
 
-  await run('opening the menu flags the pointer idle; pointer motion clears it', () => {
+  await run('the first press flags the pointer idle; pointer motion clears it', () => {
     const { controller } = makeHarness();
     try {
-      const timer = trapLongPress(() => pressTrigger());
       assert(!document.body.classList.contains('hud-pointer-idle'),
-        'the pointer must not be flagged idle before the menu opens');
-      timer.fire();
+        'the pointer must not be flagged idle before the gesture starts');
+      pressTrigger();
       assert(document.body.classList.contains('hud-pointer-idle'),
         'opening the HUD must flag the pointer idle so its hover is suppressed');
       document.dispatchEvent(new Event('pointermove', { bubbles: true }));
@@ -190,9 +164,8 @@ export async function runTests(_ctx) {
   await run('committing on modifier release clears the pointer-idle flag', () => {
     const { controller } = makeHarness();
     try {
-      const timer = trapLongPress(() => pressTrigger());
-      timer.fire();
-      assert(document.body.classList.contains('hud-pointer-idle'), 'sanity: HUD open flags idle');
+      pressTrigger();
+      assert(document.body.classList.contains('hud-pointer-idle'), 'sanity: gesture start flags idle');
       releaseKey('Shift');
       assert(!document.body.classList.contains('hud-pointer-idle'),
         'ending the gesture must clear the idle flag');
@@ -201,65 +174,58 @@ export async function runTests(_ctx) {
     }
   });
 
-  await run('Escape from menu-open clears the pointer-idle flag', () => {
+  await run('Escape clears the pointer-idle flag along with cancelling', () => {
     const { controller } = makeHarness();
     try {
-      const timer = trapLongPress(() => pressTrigger());
-      timer.fire();
+      pressTrigger();
       pressEscape();
       assert(!document.body.classList.contains('hud-pointer-idle'),
-        'Escape must clear the idle flag along with closing the menu');
+        'Escape must clear the idle flag along with cancelling the gesture');
     } finally {
       controller.destroy();
     }
   });
 
-  await run('modifier release before the long-press commits without any menu', () => {
+  await run('a press then immediate release is a commit-only peek', () => {
     const { controller, calls } = makeHarness();
     try {
-      const timer = trapLongPress(() => pressTrigger());
+      pressTrigger();
       releaseKey('Shift');
-      assert(calls.join(',') === 'start,cycle,commit',
-        `press-started release is commit-only — got ${calls.join(',')}`);
-      // The long-press timer was cleared: firing its captured callback now
-      // must not open a menu (the controller is idle again).
-      timer.fire();
-      assert(!calls.includes('open'), 'a cleared long-press timer must never open the menu');
+      assert(calls.join(',') === 'start,commit',
+        `a press then release with no re-press applies no hop — got ${calls.join(',')}`);
     } finally {
       controller.destroy();
     }
   });
 
-  await run('Escape cancels from menu-open: closes, never commits', () => {
+  await run('Escape cancels without committing; a later modifier release is inert', () => {
     const { controller, calls } = makeHarness();
     try {
-      const timer = trapLongPress(() => pressTrigger());
-      timer.fire();
+      pressTrigger();
       pressEscape();
-      assert(calls.join(',') === 'start,cycle,open,close',
-        `Escape must close without committing — got ${calls.join(',')}`);
+      assert(calls.join(',') === 'start,cancel',
+        `Escape must cancel without committing — got ${calls.join(',')}`);
       // The gesture is over: the (still-held) modifier's release does nothing.
       releaseKey('Shift');
-      assert(calls.join(',') === 'start,cycle,open,close',
+      assert(calls.join(',') === 'start,cancel',
         `post-Escape modifier release must be inert — got ${calls.join(',')}`);
     } finally {
       controller.destroy();
     }
   });
 
-  await run('Escape cancels from press-started and re-arms the controller', () => {
+  await run('Escape re-arms the controller for a fresh gesture', () => {
     const { controller, calls } = makeHarness();
     try {
-      const timer = trapLongPress(() => pressTrigger());
+      pressTrigger();
       pressEscape();
-      assert(calls.join(',') === 'start,cycle,close',
-        `Escape in press-started closes (idempotent hook) without commit — got ${calls.join(',')}`);
-      timer.fire();
-      assert(!calls.includes('open'), 'Escape must clear the pending long-press timer');
+      assert(calls.join(',') === 'start,cancel',
+        `Escape cancels without commit — got ${calls.join(',')}`);
       // A fresh gesture starts cleanly afterwards.
-      trapLongPress(() => pressTrigger());
+      pressTrigger();
+      assert(pressTrigger(), 're-press must cycle in the fresh gesture');
       releaseKey('Shift');
-      assert(calls.join(',') === 'start,cycle,close,start,cycle,commit',
+      assert(calls.join(',') === 'start,cancel,start,cycle,commit',
         `the next gesture must run a full start/cycle/commit — got ${calls.join(',')}`);
     } finally {
       controller.destroy();
@@ -269,8 +235,7 @@ export async function runTests(_ctx) {
   await run('canCycle() === false lets the trigger fall through untouched', () => {
     const { controller, calls } = makeHarness({ canCycle: () => false });
     try {
-      let prevented = true;
-      trapLongPress(() => { prevented = pressTrigger(); });
+      const prevented = pressTrigger();
       assert(!prevented, 'an inapplicable trigger must NOT be preventDefault-ed');
       assert(calls.length === 0, `no callback may fire — got ${calls.join(',')}`);
       releaseKey('Shift');
@@ -283,8 +248,7 @@ export async function runTests(_ctx) {
   await run('shouldHandle false leaves the event alone', () => {
     const { controller, calls } = makeHarness({ shouldHandle: () => false });
     try {
-      let prevented = true;
-      trapLongPress(() => { prevented = pressTrigger(); });
+      const prevented = pressTrigger();
       assert(!prevented && calls.length === 0, 'gated trigger must fall through with no callbacks');
     } finally {
       controller.destroy();
@@ -294,12 +258,12 @@ export async function runTests(_ctx) {
   await run('releasing a non-configured key does not end the gesture', () => {
     const { controller, calls } = makeHarness();
     try {
-      trapLongPress(() => pressTrigger());
+      pressTrigger();
       releaseKey('Alt'); // not in modifierKeys — must be ignored
       assert(!calls.includes('commit'), 'a non-modifier keyup must not commit');
       assert(pressTrigger(), 'the gesture must still be live and cycling');
       releaseKey('Shift');
-      assert(calls.join(',') === 'start,cycle,cycle,commit',
+      assert(calls.join(',') === 'start,cycle,commit',
         `only the configured modifier ends the gesture — got ${calls.join(',')}`);
     } finally {
       controller.destroy();
@@ -309,12 +273,12 @@ export async function runTests(_ctx) {
   await run('onGestureStart fires again for each new gesture', () => {
     const { controller, calls } = makeHarness();
     try {
-      trapLongPress(() => pressTrigger());
+      pressTrigger();
       releaseKey('Shift');
-      trapLongPress(() => pressTrigger());
+      pressTrigger();
       releaseKey('Shift');
-      assert(calls.join(',') === 'start,cycle,commit,start,cycle,commit',
-        `two taps are two full gestures — got ${calls.join(',')}`);
+      assert(calls.join(',') === 'start,commit,start,commit',
+        `two peek taps are two full gestures — got ${calls.join(',')}`);
     } finally {
       controller.destroy();
     }

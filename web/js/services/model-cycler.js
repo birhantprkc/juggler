@@ -30,13 +30,29 @@ function commandModifierKey() {
 }
 
 /**
- * Get the model selector element the shortcut should act on: the one inside
- * the active conversation tab (so sub-thread columns' selectors are governed
- * by which tab is active), with a document-wide fallback — mirrors
- * StrategySwitcher's target resolution.
+ * Get the model selector element the shortcut should act on: the one owned by
+ * the column the user is focused in (so a sub-thread composer drives ITS model
+ * selector), falling back to the active conversation tab's root selector, then
+ * any visible one — mirrors StrategySwitcher's target resolution.
+ *
+ * The focus-first step matters because `querySelector` returns the first match
+ * in DOM order — always the root column's selector — so without it the model /
+ * thinking shortcuts silently drove the root conversation even when the cursor
+ * sat in a sub-thread composer. These gestures fire window-wide, so focus may
+ * be outside any composer; the fallbacks cover that.
  * @returns {any} The model-selector element, or null.
  */
 function getModelSelector() {
+  // Prefer the focused composer's own column.
+  const focused = /** @type {HTMLElement|null} */ (document.activeElement);
+  const box = focused && typeof focused.closest === 'function'
+    ? focused.closest('input-box')
+    : null;
+  if (box) {
+    const owned = box.querySelector('model-selector');
+    if (owned) return owned;
+  }
+
   const activeTab = document.querySelector('conversation-tab.active');
   if (activeTab) {
     const selector = activeTab.querySelector('model-selector');
@@ -61,10 +77,11 @@ const OWN_POPUP_IDS = ['model-selector', 'thinking-mini'];
  * switcher's composer-focus gate (`defaultShouldHandle` in hold-to-cycle), these fire from
  * ANYWHERE in the window: their ⌥⌘M / ⌥⌘T chords carry no native in-app meaning
  * to protect, and being lost to the OS when focus sits outside the composer
- * (bare ⌘M minimises the app) is the very bug this gate fixes. The controller
- * already resolves its target from the ACTIVE conversation tab, so the gesture
- * still reaches the right thread no matter where focus is — the whole-window
- * capture just stops the keystroke leaking to the OS first.
+ * (bare ⌘M minimises the app) is the very bug this gate fixes. Target
+ * resolution (`getModelSelector`) prefers the focused column's selector and
+ * falls back to the active tab's root, so the gesture still reaches the right
+ * thread no matter where focus is — the whole-window capture just stops the
+ * keystroke leaking to the OS first.
  *
  * It stands down only while a FOREIGN overlay is open (a modal dialog, another
  * component's dropdown) — never for the cyclers' own HUD popups. That exception
@@ -83,14 +100,15 @@ export function modelGestureShouldHandle(_e) {
  * ModelCycler - the `cycle-model` hold-to-cycle client. Alt-Tab semantics over
  * the Recent models list: the gesture snapshots the list once at gesture start
  * (frozen, minus entries whose provider is currently unavailable), so cycling
- * can never reorder the list it is walking; each press applies the next
- * `{provider, model, thinking?}` pair immediately (without recording it);
- * holding opens the model menu as a HUD; releasing the modifiers commits,
- * recording only the landing pair. The first cycle goes to snapshot index 1 —
- * the previous pair — since index 0 is the current one (or to index 0 when the
- * current config isn't in the snapshot at all). With fewer than two entries
- * there is nothing to switch between, so taps no-op while holding still opens
- * the menu.
+ * can never reorder the list it is walking; the first press opens the model menu
+ * as a HUD showing the CURRENT pair highlighted (no hop), each further press
+ * previews the next `{provider, model, thinking?}` pair (without recording it);
+ * releasing the modifiers commits, recording only the landing pair. The first
+ * cycle (the first re-press) goes to snapshot index 1 — the previous pair —
+ * since index 0 is the current one (or to index 0 when the current config isn't
+ * in the snapshot at all). With fewer than two entries there is nothing to
+ * switch between, so re-presses no-op while the menu still opens on the first
+ * press.
  * @class
  */
 class ModelCycler {
@@ -101,20 +119,27 @@ class ModelCycler {
     this._cursor = -1;
     /** @type {boolean} @private - Whether this gesture applied at least one pair. */
     this._cycled = false;
+    /**
+     * The model selector this gesture drives, snapshotted at gesture start and
+     * held for its lifetime so focus drift (menu HUD open, column rebuilds from
+     * a running turn) can't retarget us to a different thread mid-cycle. Null
+     * between gestures.
+     * @type {any} @private
+     */
+    this._selector = null;
     /** @type {HoldToCycleController} @private */
     this._controller = new HoldToCycleController({
       shortcutId: 'cycle-model',
       modifierKeys: [commandModifierKey(), 'Alt'],
       // Window-wide: ⌥⌘M must not leak to the OS (bare ⌘M minimises) when focus
-      // sits outside the composer — the controller redirects to the active tab.
+      // sits outside the composer — the target still resolves to the focused
+      // column (or the active tab's root as fallback).
       shouldHandle: modelGestureShouldHandle,
       canCycle: () => getModelSelector() !== null,
-      onGestureStart: () => this._startGesture(),
+      onGestureStart: () => { this._startGesture(); this._selector?.open(); },
       onCycle: () => this._cycle(),
-      onOpenMenu: () => { getModelSelector()?.open(); },
-      onCloseMenu: () => { getModelSelector()?.close(); },
-      onCommit: () => this._commit(),
-      onCancel: () => this._cancel(),
+      onCommit: () => { this._selector?.close(); this._commit(); },
+      onCancel: () => { this._selector?.close(); this._cancel(); },
     });
   }
 
@@ -148,12 +173,15 @@ class ModelCycler {
    * @private
    */
   _startGesture() {
+    // Snapshot the target selector for the gesture's lifetime so every hook
+    // drives the same thread even if focus drifts once the HUD opens.
+    this._selector = getModelSelector();
     // Hold the model write until commit: hops update the selector's display and
     // its dropdown HUD, but a running turn never sees an intermediate model.
-    getModelSelector()?.beginCycle();
+    this._selector?.beginCycle();
     const available = new Set(providersCache.get().filter(p => p.available).map(p => p.name));
     this._snapshot = recentModels.get().filter(r => available.has(r.provider));
-    const current = getModelSelector()?.currentConfigPair();
+    const current = this._selector?.currentConfigPair();
     this._cursor = current
       ? this._snapshot.findIndex(r => r.provider === current.provider
         && r.model === current.model && (r.thinking || '') === (current.thinking || ''))
@@ -170,7 +198,7 @@ class ModelCycler {
     // 0/1-entry snapshot: nothing to switch between — taps no-op, but the
     // gesture stays engaged so a hold still opens the menu.
     if (this._snapshot.length < 2) return;
-    const selector = getModelSelector();
+    const selector = this._selector;
     if (!selector) return;
 
     for (let i = 0; i < this._snapshot.length; i++) {
@@ -192,14 +220,15 @@ class ModelCycler {
    */
   _commit() {
     // Flush the buffered landing model to the doc first (once), then record it.
-    getModelSelector()?.commitCycle();
+    this._selector?.commitCycle();
     if (this._cycled) {
-      const pair = getModelSelector()?.currentConfigPair();
+      const pair = this._selector?.currentConfigPair();
       if (pair) recentModels.record(pair.provider, pair.model, pair.thinking);
     }
     this._snapshot = [];
     this._cursor = -1;
     this._cycled = false;
+    this._selector = null;
   }
 
   /**
@@ -208,27 +237,37 @@ class ModelCycler {
    * @private
    */
   _cancel() {
-    getModelSelector()?.cancelCycle();
+    this._selector?.cancelCycle();
     this._snapshot = [];
     this._cursor = -1;
     this._cycled = false;
+    this._selector = null;
   }
 }
 
 /**
  * ThinkingCycler - the `cycle-thinking` hold-to-cycle client. Cycles the
  * CURRENT model's thinking level: Default → the supported levels in canonical
- * order → wrap. Each press applies immediately (without recording) and
- * refreshes the level displays in place so the HUD visibly tracks; holding
- * opens the mini thinking popover anchored to the button chip; releasing the
- * modifiers commits, recording the landing pair. On a model without thinking
- * levels the whole gesture is a transparent no-op (the press falls through).
+ * order → wrap. The first press opens the mini thinking popover anchored to the
+ * button chip showing the CURRENT level (no hop); each further press previews
+ * the next level (without recording), refreshing the level displays in place so
+ * the HUD visibly tracks; releasing the modifiers commits, recording the landing
+ * pair. On a model without thinking levels the whole gesture is a transparent
+ * no-op (the press falls through).
  * @class
  */
 class ThinkingCycler {
   constructor() {
     /** @type {boolean} @private - Whether this gesture applied at least one level. */
     this._cycled = false;
+    /**
+     * The model selector this gesture drives, snapshotted at gesture start and
+     * held for its lifetime so focus drift (mini popover open, column rebuilds
+     * from a running turn) can't retarget us to a different thread mid-cycle.
+     * Null between gestures.
+     * @type {any} @private
+     */
+    this._selector = null;
     /** @type {HoldToCycleController} @private */
     this._controller = new HoldToCycleController({
       shortcutId: 'cycle-thinking',
@@ -240,12 +279,17 @@ class ThinkingCycler {
         return !!selector && !!selector.currentConfigPair()
           && selector.supportedThinkingLevels().length > 0;
       },
-      onGestureStart: () => { this._cycled = false; getModelSelector()?.beginCycle(); },
+      // Snapshot the target selector so every hook drives the same thread, enter
+      // deferred-write mode, and open the mini thinking popover as the HUD.
+      onGestureStart: () => {
+        this._cycled = false;
+        this._selector = getModelSelector();
+        this._selector?.beginCycle();
+        this._selector?.openThinkingMini();
+      },
       onCycle: () => this._cycle(),
-      onOpenMenu: () => { getModelSelector()?.openThinkingMini(); },
-      onCloseMenu: () => { getModelSelector()?.closeThinkingMini(); },
-      onCommit: () => this._commit(),
-      onCancel: () => this._cancel(),
+      onCommit: () => { this._selector?.closeThinkingMini(); this._commit(); },
+      onCancel: () => { this._selector?.closeThinkingMini(); this._cancel(); },
     });
   }
 
@@ -270,7 +314,7 @@ class ThinkingCycler {
    * @private
    */
   _cycle() {
-    const selector = getModelSelector();
+    const selector = this._selector;
     if (!selector) return;
     const levels = selector.supportedThinkingLevels();
     if (levels.length === 0) return;
@@ -292,12 +336,13 @@ class ThinkingCycler {
    */
   _commit() {
     // Flush the buffered landing level to the doc first (once), then record it.
-    getModelSelector()?.commitCycle();
+    this._selector?.commitCycle();
     if (this._cycled) {
-      const pair = getModelSelector()?.currentConfigPair();
+      const pair = this._selector?.currentConfigPair();
       if (pair) recentModels.record(pair.provider, pair.model, pair.thinking);
     }
     this._cycled = false;
+    this._selector = null;
   }
 
   /**
@@ -306,8 +351,9 @@ class ThinkingCycler {
    * @private
    */
   _cancel() {
-    getModelSelector()?.cancelCycle();
+    this._selector?.cancelCycle();
     this._cycled = false;
+    this._selector = null;
   }
 }
 

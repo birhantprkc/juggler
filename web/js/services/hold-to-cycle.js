@@ -7,16 +7,19 @@ import { markSeen } from './tips-manager.js';
 
 /**
  * HoldToCycleController — the shared "Alt-Tab" gesture behind the strategy,
- * model, and thinking-level shortcuts. One phase machine, extracted from the
- * original StrategySwitcher, drives them all:
+ * model, and thinking-level shortcuts. One two-phase machine drives them all:
  *
- *   idle → (trigger keydown: cycle immediately) → press-started
- *        → (still held after 500ms: open the menu HUD) → menu-open
+ *   idle → (trigger keydown: open the popup at the CURRENT value) → active
+ *        → (trigger re-press while held: apply the next hop)
+ *        → (modifier release: commit) | (Escape: cancel) → idle
  *
- * While the gesture is in progress (either non-idle phase), pressing the
- * trigger key again cycles again; Escape cancels (menu closed, nothing
- * committed); releasing ANY of the configured modifier keys ends the gesture —
- * closing the menu if open, then committing.
+ * The popup is the surface the whole time: it opens on the very first press
+ * showing the current selection highlighted, then each re-press previews the
+ * next value — so there is no press-vs-hold distinction and no open delay. The
+ * first press applies no hop, so a press-and-release with no re-press is a pure
+ * peek. Nothing is persisted until the modifiers are released — every hop only
+ * previews (the client buffers its doc write), and the landing value is
+ * committed on release (or discarded on Escape).
  *
  * The trigger binding is looked up live from the KeyShortcutManager by
  * `shortcutId` (the definition is marked `external` there), so a future user
@@ -27,7 +30,7 @@ import { markSeen } from './tips-manager.js';
  * @property {string} shortcutId - KeyShortcutManager definition id of the trigger.
  * @property {string[]} modifierKeys - `KeyboardEvent.key` names of the binding's
  *   modifiers (e.g. `['Shift']` or `['Meta', 'Alt']`); releasing any of them
- *   ends the gesture. Callers must resolve the platform meaning of `mod`
+ *   commits the gesture. Callers must resolve the platform meaning of `mod`
  *   themselves ('Meta' on macOS, 'Control' elsewhere — see `isMac()`).
  * @property {(e: KeyboardEvent) => boolean} [shouldHandle] - Focus/context gate
  *   for starting a gesture. Defaults to the composer rule the strategy switcher
@@ -35,37 +38,32 @@ import { markSeen } from './tips-manager.js';
  * @property {() => boolean} [canCycle] - Whole-gesture applicability. When it
  *   returns false the trigger press falls through untouched (no preventDefault),
  *   so an inapplicable shortcut is a transparent no-op. Defaults to always-on.
- * @property {() => void} [onGestureStart] - Called once per gesture, on the
- *   idle → press-started transition, before the first onCycle. The hook for
- *   snapshotting state the gesture must hold frozen (e.g. the recents list).
- * @property {() => void} onCycle - Apply the next item. Called on the trigger
- *   keydown that starts the gesture and on every re-press while it's active.
- * @property {() => void} onOpenMenu - Long-press reached: open the menu HUD.
- * @property {() => void} onCloseMenu - Close the menu HUD (must be idempotent —
- *   also called on Escape during press-started, before any menu opened).
- * @property {() => void} onCommit - Gesture ended by modifier release: persist
- *   the landing state (e.g. record it to recents). Not called on Escape.
- * @property {() => void} [onCancel] - Gesture ended by Escape: discard the
- *   landing state and restore what was committed before the gesture (e.g. a
- *   client that holds its live write until commit uses this to drop the
- *   preview). Optional; runs after onCloseMenu on the Escape path, never on a
- *   modifier-release commit.
+ * @property {() => void} onGestureStart - Called once per gesture, on the
+ *   idle → active transition. The hook to snapshot frozen state (e.g. the
+ *   recents list), enter the client's deferred-write mode, and open the popup
+ *   HUD at the current selection — the popup is up for the whole gesture now,
+ *   and no hop is applied until the first re-press.
+ * @property {() => void} onCycle - Preview the next item. Called on every
+ *   trigger re-press while the gesture is active — NOT on the initial press,
+ *   which only opens the popup at the current value. Buffers rather than
+ *   persists — see onCommit.
+ * @property {() => void} onCommit - Gesture ended by modifier release: close the
+ *   popup and persist the landing selection (flush the buffered write, record to
+ *   recents). Not called on Escape.
+ * @property {() => void} [onCancel] - Gesture ended by Escape: close the popup
+ *   and discard the preview, restoring what was committed before the gesture.
+ *   Optional; never runs on a modifier-release commit.
  * @class
  */
 class HoldToCycleController {
-  /** @type {number} Threshold in ms for long press detection */
-  static LONG_PRESS_THRESHOLD = 5;
-
   /**
    * @param {HoldToCycleConfig} config
    */
   constructor(config) {
     /** @type {HoldToCycleConfig} @private */
     this._config = config;
-    /** @type {'idle'|'press-started'|'menu-open'} @private */
+    /** @type {'idle'|'active'} @private */
     this._phase = 'idle';
-    /** @type {number|null} @private */
-    this._longPressTimeout = null;
 
     // Bind handlers to preserve 'this' context
     this._handleKeyDown = this._handleKeyDown.bind(this);
@@ -87,7 +85,6 @@ class HoldToCycleController {
   destroy() {
     document.removeEventListener('keydown', this._handleKeyDown, { capture: true });
     document.removeEventListener('keyup', this._handleKeyUp, { capture: true });
-    this._clearTimeout();
     this._endPointerIdle();
   }
 
@@ -100,7 +97,7 @@ class HoldToCycleController {
     const binding = keyShortcutManager.getBinding(this._config.shortcutId);
     if (!binding) return;
 
-    // Phase: IDLE - waiting for the trigger combination
+    // Phase: IDLE — waiting for the trigger combination.
     if (this._phase === 'idle') {
       if (!eventMatchesBinding(binding, e)) return;
       if (!this._shouldHandle(e)) return;
@@ -111,7 +108,11 @@ class HoldToCycleController {
       e.preventDefault();
       e.stopPropagation();
 
-      if (this._config.onGestureStart) this._config.onGestureStart();
+      // Open the popup and enter deferred-write mode — the popup is the surface
+      // from the very first press, showing the CURRENT selection highlighted. No
+      // hop is applied yet: the first onCycle fires on the next re-press, so a
+      // press-and-release with no re-press is a pure peek that changes nothing.
+      this._config.onGestureStart();
 
       // Learn-by-doing: engaging the gesture retires its onboarding tip. The tip
       // id equals the shortcut id for every cycler (cycle-model / cycle-thinking
@@ -119,38 +120,24 @@ class HoldToCycleController {
       // on a real, applicable use. Idempotent; a no-op for ids with no tip.
       markSeen(this._config.shortcutId);
 
-      // Cycle immediately on keydown
-      this._config.onCycle();
-
-      this._phase = 'press-started';
-
-      // Start long press timer - opens menu if the modifiers are still held
-      this._longPressTimeout = window.setTimeout(() => {
-        this._longPressTimeout = null;
-        if (this._phase === 'press-started') {
-          this._phase = 'menu-open';
-          this._config.onOpenMenu();
-          this._beginPointerIdle();
-        }
-      }, HoldToCycleController.LONG_PRESS_THRESHOLD);
+      this._phase = 'active';
+      this._beginPointerIdle();
       return;
     }
 
-    // Phase: PRESS_STARTED / MENU_OPEN - the trigger key cycles again;
-    // Escape cancels the whole gesture without committing.
+    // Phase: ACTIVE — the trigger key cycles again; Escape cancels the whole
+    // gesture without committing.
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      this._clearTimeout();
       this._phase = 'idle';
       this._endPointerIdle();
-      this._config.onCloseMenu();
       if (this._config.onCancel) this._config.onCancel();
       return;
     }
-    // The modifiers are necessarily still held (their release ends the
-    // gesture in keyup), so a re-press of the trigger key satisfies the full
-    // binding again — matched the same way as the initial press so the macOS
+    // The modifiers are necessarily still held (their release ends the gesture
+    // in keyup), so a re-press of the trigger key satisfies the full binding
+    // again — matched the same way as the initial press so the macOS
     // Option-glyph fallback in eventMatchesBinding applies here too.
     if (eventMatchesBinding(binding, e)) {
       e.preventDefault();
@@ -160,9 +147,8 @@ class HoldToCycleController {
   }
 
   /**
-   * Handle keyup events — releasing any configured modifier ends the gesture:
-   * close the menu if it opened, then commit. (During press-started the menu
-   * never opened, so only the commit fires.)
+   * Handle keyup events — releasing any configured modifier commits the gesture:
+   * close the popup, then persist the landing selection.
    * @param {KeyboardEvent} e
    * @private
    */
@@ -170,21 +156,18 @@ class HoldToCycleController {
     if (this._phase === 'idle') return;
     if (!this._config.modifierKeys.includes(e.key)) return;
 
-    this._clearTimeout();
-    const menuWasOpen = this._phase === 'menu-open';
     this._phase = 'idle';
     this._endPointerIdle();
-    if (menuWasOpen) this._config.onCloseMenu();
     this._config.onCommit();
   }
 
   /**
-   * Menu just opened as a HUD under a held modifier — and the OS has hidden the
-   * pointer because the user is "typing". Flag the pointer as idle so the menu's
-   * hover/click styling is suppressed (see the `body.hud-pointer-idle` CSS): an
-   * item happening to sit under the stationary invisible cursor must not light
-   * up as if hovered. The flag is cleared on the first real pointer motion, at
-   * which point normal hover resumes.
+   * The popup just opened as a HUD under a held modifier — and the OS has hidden
+   * the pointer because the user is "typing". Flag the pointer as idle so the
+   * menu's hover/click styling is suppressed (see the `body.hud-pointer-idle`
+   * CSS): an item happening to sit under the stationary invisible cursor must
+   * not light up as if hovered. The flag is cleared on the first real pointer
+   * motion, at which point normal hover resumes.
    * @private
    */
   _beginPointerIdle() {
@@ -210,17 +193,6 @@ class HoldToCycleController {
    */
   _handlePointerMove() {
     this._endPointerIdle();
-  }
-
-  /**
-   * Clear any pending timeout
-   * @private
-   */
-  _clearTimeout() {
-    if (this._longPressTimeout !== null) {
-      clearTimeout(this._longPressTimeout);
-      this._longPressTimeout = null;
-    }
   }
 
   /**

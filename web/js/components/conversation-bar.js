@@ -30,6 +30,7 @@ import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
 import { formatBytes } from '../utils/format.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
+import keyShortcutManager from '../services/key-shortcut-manager.js';
 import './bin-modal.js';
 import './info-rail.js';
 
@@ -212,6 +213,11 @@ class ConversationBar extends HTMLElement {
 
     this._keydownHandler = (e) => {
       if (!this.classList.contains('tab-list-focused')) return;
+
+      // Stand down while an overlay owns the keyboard: this document-level
+      // handler switches tabs behind the popup, so ↑/↓ must not reach it. Same
+      // shared rule as the central dispatcher (KeyShortcutManager).
+      if (keyShortcutManager.suppressedByOverlay()) return;
 
       const target = /** @type {Element|null} */ (e.target);
       if (target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')) return;
