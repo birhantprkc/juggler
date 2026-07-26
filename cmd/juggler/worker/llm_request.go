@@ -123,11 +123,13 @@ func (w *ConversationWorker) buildLLMRequest(ctxResult *ContextResult, tools []T
 
 // filterToolsForThread removes tools the current thread may not use. Root scope
 // ("") gets the full list. A sub-thread keeps create_thread only when its Y.Map
-// carries canSpawnThreads=true — set exclusively by the user-facing /thread
-// command. All other creation paths (LLM create_thread, delegated subthread
-// tools, strategies, orchestrator, compaction/handoff) never set it, so their
-// threads are leaf workers by default: withholding the tool (rather than
-// refusing at execution) means the model never sees it at all.
+// carries canSpawnThreads=true. That flag means "a human is steering this thread":
+// it is set either at creation by the user-facing /thread command, or when a human
+// sends a genuine message into any (non-delegated) thread (promoteThreadSpawnCapable,
+// called from handleSendMessage). Threads born from an LLM create_thread, delegated
+// subthread tools, strategies, the orchestrator, or compaction/handoff never carry
+// it until a human engages them, so they are leaf workers by default: withholding
+// the tool (rather than refusing at execution) means the model never sees it at all.
 func (w *ConversationWorker) filterToolsForThread(tools []ToolDefinition) []ToolDefinition {
 	if w.thread.itemID == "" {
 		return tools

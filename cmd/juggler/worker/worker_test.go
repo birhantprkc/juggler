@@ -2727,6 +2727,7 @@ type threadOpts struct {
 	forceTool        string // If set, thread forces the model to call this tool
 	llmCreated       bool   // If set, marks the thread as LLM tool-created
 	canSpawnThreads  bool   // If set, thread's LLM may itself use create_thread
+	delegated        bool   // If set, marks the thread as delegatesToSubthread-spawned
 }
 
 // insertThreadWithOpts creates a thread in the doc in a single transaction
@@ -2759,6 +2760,9 @@ func insertThreadWithOpts(w *ConversationWorker, opts threadOpts) string {
 		}
 		if opts.canSpawnThreads {
 			ymap.Set("canSpawnThreads", true)
+		}
+		if opts.delegated {
+			ymap.Set("delegated", true)
 		}
 		if opts.userMessage != "" {
 			userItem := ConversationItem{
@@ -2916,6 +2920,62 @@ func TestFilterToolsForThread(t *testing.T) {
 			t.Error("compaction-shaped thread must not see create_thread in the built request")
 		}
 		otherToolsIntact(t, req.Tools)
+	})
+}
+
+// TestPromoteThreadSpawnCapable verifies the "human-steered ⇒ spawn-capable"
+// promotion: a genuine user message into an LLM-created leaf thread stamps
+// canSpawnThreads (so its own agent may then create_thread), while root and
+// delegated threads are never promoted, and an already-capable thread is a no-op.
+func TestPromoteThreadSpawnCapable(t *testing.T) {
+	canSpawn := func(w *ConversationWorker, id string) bool {
+		m := w.doc.GetThreadYMap(id)
+		if m == nil {
+			return false
+		}
+		ycrdtMu.Lock()
+		defer ycrdtMu.Unlock()
+		v, _ := m.Get("canSpawnThreads").(bool)
+		return v
+	}
+
+	t.Run("llm-created leaf is promoted when user steers it", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		id := insertThreadWithOpts(w, threadOpts{goal: "Leaf", llmCreated: true})
+		if canSpawn(w, id) {
+			t.Fatal("precondition: llm-created leaf must not start spawn-capable")
+		}
+		w.promoteThreadSpawnCapable(id)
+		if !canSpawn(w, id) {
+			t.Error("user-steered llm-created thread must become spawn-capable")
+		}
+	})
+
+	t.Run("root is never promoted", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		w.promoteThreadSpawnCapable("") // must not panic; root has the full list already
+	})
+
+	t.Run("delegated subthread is never promoted", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		id := insertThreadWithOpts(w, threadOpts{goal: "Delegated", delegated: true})
+		w.promoteThreadSpawnCapable(id)
+		if canSpawn(w, id) {
+			t.Error("delegated subthread must not be promoted (decision #3)")
+		}
+	})
+
+	t.Run("already-capable thread stays capable (idempotent)", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		id := insertThreadWithOpts(w, threadOpts{goal: "User", canSpawnThreads: true})
+		w.promoteThreadSpawnCapable(id)
+		if !canSpawn(w, id) {
+			t.Error("already spawn-capable thread must remain spawn-capable")
+		}
 	})
 }
 

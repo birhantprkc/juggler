@@ -210,16 +210,60 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	return threadItemID, nil
 }
 
+// promoteThreadSpawnCapable stamps canSpawnThreads=true on the thread a human
+// just sent a genuine message into, so that thread's agent may itself call
+// create_thread. The non-recursive-thread rule keys on whether a human is
+// STEERING a thread, not on who CREATED it: a thread a person has messaged (or
+// created via /thread) may spawn, so recursion is gated on human attention.
+//
+// An LLM-spawned child is still born a leaf (canSpawnThreads unset) — it only
+// becomes spawn-capable once a human opens it and drives it directly, so LLM→LLM
+// →LLM recursion still cannot happen without a person in the loop. maxThreadDepth
+// and maxLiveThreads remain the backstops behind this gate.
+//
+// No-ops that must never promote:
+//   - Root ("") already has the full tool list; nothing to stamp.
+//   - Delegated subthreads (delegated=true) are tool-result-bound — their return
+//     flows back as a tool_result via resolveDelegatedThreadResult — so making
+//     one spawn-capable would be a nonsensical state; leave the withinDelegatedThread
+//     guard as the sole authority there (decision #3).
+//
+// Called from handleSendMessage on the genuine-user-message path only (never the
+// parent-LLM seed insert in createThread), so the seed prompt a parent injects
+// into its child can never trip this — that separation is the safety argument.
+func (w *ConversationWorker) promoteThreadSpawnCapable(threadItemID string) {
+	if threadItemID == "" {
+		return // root: full tool list already
+	}
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	m := findThreadYMap(w.doc.getItems(), threadItemID)
+	if m == nil {
+		return
+	}
+	if delegated, _ := m.Get("delegated").(bool); delegated {
+		return // delegated subthread: never promote (decision #3)
+	}
+	if already, _ := m.Get("canSpawnThreads").(bool); already {
+		return // already spawn-capable (e.g. a /thread-created thread)
+	}
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		m.Set("canSpawnThreads", true)
+	}, w.doc.authorID)
+	w.log.Info("[worker] promoted thread %s to spawn-capable (user-steered)", threadItemID)
+}
+
 // maxThreadDepth caps how deeply create_thread may nest threads. Root is depth
 // 0, a thread directly under it depth 1; a thread at this depth may no longer
 // spawn a child. It is a runaway backstop, not a workflow limit — the deepest
 // legitimate nesting in practice is two or three levels — so an LLM that keeps
 // delegating instead of doing the work itself is stopped before it recurses
 // without bound. Guards only the LLM tool path, not user/orchestrator dispatch.
-// Since the per-thread canSpawnThreads capability filter (filterToolsForThread
-// in llm_request.go) now withholds create_thread from every thread except root
-// and user-created /thread threads, this and maxLiveThreads mainly bound
-// root-level fan-out — they are the backstop behind that capability gate.
+// The per-thread canSpawnThreads capability filter (filterToolsForThread in
+// llm_request.go) withholds create_thread from every thread except root and
+// human-steered threads (those a user created via /thread or has sent a message
+// into), so this and maxLiveThreads mainly bound the fan-out reachable from those
+// threads — they are the backstop behind that capability gate.
 const maxThreadDepth = 3
 
 // maxLiveThreads caps how many create_thread-spawned threads may be in flight

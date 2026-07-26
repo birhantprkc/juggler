@@ -344,6 +344,14 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		w.addUserMessage(input)
 		w.batcher.Flush()
 		w.handleItemsChange()
+
+		// A human just sent a genuine message into this thread — promote it to
+		// spawn-capable so its agent may itself use create_thread. The
+		// non-recursive-thread rule keys on human steering, not thread provenance:
+		// a thread a person has messaged may spawn, gating recursion on human
+		// attention. No-op at root (full tool list already) and for delegated
+		// subthreads. See promoteThreadSpawnCapable.
+		w.promoteThreadSpawnCapable(msg.ThreadItemID)
 	}
 
 	// Explicit Continue clicks have no new user item to make the reducer's

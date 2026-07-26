@@ -38,9 +38,10 @@ export const threadCommandBasicTest = {
     { type: 'wait-for-state', condition: { hasThreadItem: true } }
   ],
 
-  // A user-driven /thread is the only path that stamps canSpawnThreads: true, so
-  // its LLM may itself call create_thread. Every other creation path omits it and
-  // the worker withholds the tool (filterToolsForThread in llm_request.go).
+  // A user-driven /thread stamps canSpawnThreads: true at creation, so its LLM may
+  // itself call create_thread. Other threads omit it at birth and gain it only when
+  // a human sends a message into them (promoteThreadSpawnCapable in the worker);
+  // until then the worker withholds the tool (filterToolsForThread in llm_request.go).
   customAssertions: (conversation) => {
     const thread = conversation.rootMessageThread.items.find(
       (/** @type {any} */ it) => it.get?.('type') === 'thread'
