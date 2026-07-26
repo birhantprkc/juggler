@@ -110,6 +110,11 @@ export async function runTests(_ctx) {
     assert(resolveCalls.length === 0, `deny must not resolve, got ${resolveCalls.length} calls`);
   });
 
+  // Note: the guarantee that an elicitation (AskUserQuestion) is never handed to
+  // the reviewer lives at the dispatch level — see tool-pending-hook-test's
+  // "elicitation skips the hook". onToolPending is gate-only by contract, so the
+  // strategy carries no per-call guard to unit-test here.
+
   // =========================================================================
   // _complete throws → fail-closed (never approve, no throw escapes)
   // =========================================================================

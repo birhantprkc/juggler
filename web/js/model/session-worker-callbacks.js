@@ -162,8 +162,7 @@ async function handleApprovalRequest(session, request, conversationId) {
       title: approvalConfig?.title || action.getTitle(),
       message: approvalConfig?.message || formatToolInput(toolInput),
       options: approvalConfig?.options || buildApprovalButtons(action, validation.params || toolInput),
-      display: approvalConfig?.display,
-      customApproval: approvalConfig?.customApproval || false
+      display: approvalConfig?.display
     });
   } catch (error) {
     const errorMsg = extractErrorMessage(error);

@@ -404,5 +404,35 @@ export async function runTests() {
     assert(custom === null, `expected no custom-answer row, got ${JSON.stringify(custom)}`);
   });
 
+  // ==========================================================================
+  // applyApprovalResponse — the elicitation seam that folds the captured answer
+  // back into the tool input before execution.
+  // ==========================================================================
+  const askInput = { questions: [{ header: 'Approach', options: [] }] };
+
+  check('AskUserQuestion is declared an elicitation', () => {
+    assert(AskUserQuestionContextItem.interactionKind() === 'elicitation',
+      `expected interactionKind 'elicitation', got '${AskUserQuestionContextItem.interactionKind()}'`);
+  });
+
+  check('applyApprovalResponse parses a JSON multi-answer object', () => {
+    const out = AskUserQuestionContextItem.applyApprovalResponse(
+      askInput, JSON.stringify({ Approach: ['A', 'B'] }));
+    assert(Array.isArray(out.answers.Approach) && out.answers.Approach.length === 2,
+      `expected the parsed answers object, got ${JSON.stringify(out.answers)}`);
+    assert(out.questions === askInput.questions, 'original input fields must be preserved');
+  });
+
+  check('applyApprovalResponse treats a non-JSON response as a single label', () => {
+    const out = AskUserQuestionContextItem.applyApprovalResponse(askInput, 'Beta');
+    assert(out.answers.Approach === 'Beta',
+      `expected the label keyed under the first header, got ${JSON.stringify(out.answers)}`);
+  });
+
+  check('applyApprovalResponse with an empty response is a no-op passthrough', () => {
+    const out = AskUserQuestionContextItem.applyApprovalResponse(askInput, '');
+    assert(out === askInput, 'an empty response must return the input unchanged');
+  });
+
   return { passed, failed, errors };
 }

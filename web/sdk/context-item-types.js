@@ -29,7 +29,6 @@
  * @property {string} [title] - Dialog title (default: "Approve: {item name}")
  * @property {Array<{label: string, value: string, style: string}>} [options] - Custom buttons (default: Yes/Yes+Always/No)
  * @property {Record<string, unknown>} [display] - Extra display data (diffs, previews, etc.)
- * @property {boolean} [customApproval] - If true, the custom form handles its own submit/cancel flow
  */
 
 /**
@@ -230,6 +229,7 @@
  * @property {string} version - Semantic version (e.g., '1.0.0')
  * @property {string} description - Brief description of what this item does
  * @property {boolean} [requiresApproval] - Whether user approval is needed before execution (default: false)
+ * @property {'gate'|'elicitation'} [interaction] - How this tool's approval suspends: `'gate'` (default) awaits a delegable go/no-go decision; `'elicitation'` awaits non-delegable user input (the resolution IS the answer, so approval automation never resolves it — e.g. AskUserQuestion). See `INTERACTION_KIND`.
  * @property {boolean} [refreshable] - Can update content after creation (default: false)
  * @property {'system'|'user'} [contextPosition] - Where content appears: 'system' = system prompt, 'user' = conversation (default: 'user')
  * @property {boolean} [watchesFileChanges] - React to file modifications (default: false)

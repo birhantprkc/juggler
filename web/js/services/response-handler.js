@@ -9,6 +9,7 @@ import { extractErrorInfo, extractErrorMessage } from '../../sdk/lib/error-utils
 import { createContextWriter } from './context-writer.js';
 import { buildApprovalButtons } from './approval-options.js';
 import { RESULT_TYPES, ACTION_STATES, TOOL_STATES } from '../../sdk/lib/message.js';
+import { INTERACTION_KIND } from '../../sdk/context-item.js';
 import { hashString } from '../utils/hash.js';
 import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import toolExecutor from './tool-executor.js';
@@ -838,8 +839,13 @@ class ResponseHandler {
   }
 
   /**
-   * For AskUserQuestion, inject the answer captured from the approval response
-   * into the tool input. All other tools pass through unchanged.
+   * Fold an elicitation tool's captured answer (its approval response) into the
+   * tool input before execution. A gate tool's approval response is a bare
+   * verdict carrying no data, so it passes through unchanged.
+   *
+   * Kind-driven, not name-driven: the tool declares `interaction: 'elicitation'`
+   * and owns the parse via its static `applyApprovalResponse` — there is no
+   * per-tool special-casing here.
    * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
    * @param {Record<string, unknown>} toolInput - Tool input parameters
    * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
@@ -847,29 +853,13 @@ class ResponseHandler {
    * @private
    */
   _resolveFinalToolInput(toolCall, toolInput, messageThread) {
-    // For AskUserQuestion, inject the answer from approval response
-    let finalToolInput = toolInput;
-    if (toolCall.name === 'AskUserQuestion') {
-      const toolAction = messageThread.getToolAction(toolCall.id);
-      const approvalResponse = toolAction?.get('approvalResponse');
-      if (approvalResponse) {
-        let answers;
-        try {
-          // Multi-question: response is JSON-encoded answers object
-          answers = JSON.parse(approvalResponse);
-        } catch {
-          // Single-question: response is the selected label
-          const questions = /** @type {Array<{header?: string}>|undefined} */ (toolInput.questions);
-          const header = questions?.[0]?.header || 'Answer';
-          answers = { [header]: approvalResponse };
-        }
-        finalToolInput = {
-          ...toolInput,
-          answers
-        };
-      }
+    const ActionClass = /** @type {any} */ (contextItemRegistry.getByToolName(toolCall.name));
+    if (ActionClass?.interactionKind?.() !== INTERACTION_KIND.ELICITATION) {
+      return toolInput;
     }
-    return finalToolInput;
+    const approvalResponse = messageThread.getToolAction(toolCall.id)?.get('approvalResponse');
+    if (!approvalResponse) return toolInput;
+    return ActionClass.applyApprovalResponse(toolInput, approvalResponse);
   }
 
   /**

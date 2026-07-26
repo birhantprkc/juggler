@@ -73,7 +73,12 @@ class AskUserQuestionContextItem extends ContextItem {
     version: '1.0.0',
     description: 'Ask the user questions with structured options',
     author: 'Juggler Team',
-    requiresApproval: true
+    requiresApproval: true,
+    // This tool's approval surface is a data-entry form, not a go/no-go gate:
+    // the user's submission IS the tool's answer. Declaring it an elicitation
+    // makes that non-delegable everywhere — approval automation never resolves
+    // it, and its resolution payload is folded back via applyApprovalResponse.
+    interaction: /** @type {const} */ ('elicitation')
   };
 
   /**
@@ -201,9 +206,36 @@ class AskUserQuestionContextItem extends ContextItem {
       title,
       message: '',
       options: [{ label: 'Cancel', value: 'cancel', style: 'secondary' }],
-      display: { questions },
-      customApproval: true
+      display: { questions }
     };
+  }
+
+  /**
+   * Fold the user's captured answer (the approval response) into the tool input
+   * before execution. This is the elicitation half of {@link INTERACTION_KIND}:
+   * the response string carries the answer, not a verdict.
+   *
+   * The form submits a JSON-encoded answers object; a bare single-question
+   * resolution (a lone selected label) is the fallback, keyed under the first
+   * question's header.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Original tool input
+   * @param {string} response - The resolveApproval response string
+   * @returns {Record<string, unknown>} Tool input with `answers` populated
+   */
+  static applyApprovalResponse(toolInput, response) {
+    if (!response) return toolInput;
+    let answers;
+    try {
+      // Multi-question: response is a JSON-encoded answers object.
+      answers = JSON.parse(response);
+    } catch {
+      // Single-question: response is the selected label.
+      const questions = /** @type {Array<{header?: string}>|undefined} */ (toolInput.questions);
+      const header = questions?.[0]?.header || 'Answer';
+      answers = { [header]: response };
+    }
+    return { ...toolInput, answers };
   }
 
   /**

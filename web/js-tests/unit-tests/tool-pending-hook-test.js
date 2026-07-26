@@ -18,6 +18,9 @@
  *      the parked tool PENDING → APPROVED.
  *   4. A throwing onToolPending is swallowed — the tool stays PENDING
  *      (fail-closed) and the gate still returns.
+ *   5. An *elicitation* tool (AskUserQuestion) parks PENDING but does NOT fire
+ *      the hook — the dispatch is gate-only, so approval automation can never
+ *      resolve (and thereby silently answer) a user-input form.
  * @module unit-tests/tool-pending-hook-test
  */
 
@@ -51,6 +54,32 @@ function insertUnstartedBash(conversation, toolUseId, command) {
     toolUseId,
     toolName: 'bash',
     toolInput: { command }
+  }));
+  return toolUseId;
+}
+
+/**
+ * Insert an unstarted AskUserQuestion tool-action — an *elicitation*, whose
+ * approval surface is a user-input form rather than a go/no-go gate.
+ * @param {any} conversation - Test conversation
+ * @param {string} toolUseId - Unique tool-use id
+ * @returns {string} The toolUseId, for convenience
+ */
+function insertUnstartedAsk(conversation, toolUseId) {
+  conversation.rootMessageThread.addEvent(createToolActionMessage({
+    toolUseId,
+    toolName: 'AskUserQuestion',
+    toolInput: {
+      questions: [{
+        question: 'Which approach?',
+        header: 'Approach',
+        options: [
+          { label: 'A', description: 'first' },
+          { label: 'B', description: 'second' }
+        ],
+        multiSelect: false
+      }]
+    }
   }));
   return toolUseId;
 }
@@ -197,6 +226,38 @@ export async function runTests(_ctx) {
     } catch (e) {
       failed++;
       errors.push(`throwing hook is fail-closed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // =======================================================================
+    // Test 5: an elicitation (AskUserQuestion) parks but never fires the hook.
+    // Even under a "review everything" strategy, a user-input form is not a
+    // delegable gate — the dispatch must exclude it so no reviewer can resolve
+    // (and thereby answer) it.
+    // =======================================================================
+    try {
+      const conversation = await createApprovalTestConversation(session);
+      const mt = conversation.rootMessageThread;
+
+      /** @type {any[]} */
+      const calls = [];
+      const toolUseId = insertUnstartedAsk(conversation, 'elicit-1');
+      mt.strategy = {
+        getApprovalPolicy: () => 'require-approval',
+        onToolPending: (/** @type {any} */ info) => { calls.push(info); }
+      };
+
+      await handleNewToolAction(mt, toolUseId, conversation);
+
+      const ta = mt.getToolAction(toolUseId);
+      assert(ta?.get('state') === TOOL_STATES.PENDING,
+        `an elicitation should still park pending, got ${ta?.get('state')}`);
+      assert(calls.length === 0,
+        `onToolPending must NOT fire for an elicitation, got ${calls.length}`);
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`elicitation skips the hook: ${e instanceof Error ? e.message : String(e)}`);
     }
   } finally {
     /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;

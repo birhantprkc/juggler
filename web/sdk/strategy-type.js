@@ -451,6 +451,14 @@ class StrategyType {
    * the Go worker and are not routed through this hook — it covers the
    * browser-executed tools (`bash`, `write`, `edit`, …) that park at the
    * engine approval gate, which is where command auto-approval applies.
+   *
+   * GATE INTERACTIONS ONLY. This hook fires solely for tools whose parked state
+   * is a delegable go/no-go **gate**. It is never called for an *elicitation*
+   * (a tool whose approval surface is a user-input form, e.g. AskUserQuestion,
+   * declared via `MANIFEST.interaction: 'elicitation'` — see `INTERACTION_KIND`):
+   * that resolution is the user's own answer, which no strategy can stand in
+   * for. So a strategy may resolve anything it is handed here without risk of
+   * silently answering a question — the framework has already excluded them.
    * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined}} info
    *   - toolUseId: id to pass to `messageThread.resolveApproval`
    *   - toolName: name of the parked tool

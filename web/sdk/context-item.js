@@ -8,6 +8,28 @@ import { FormattingHelpers } from './lib/formatting-helpers.js';
 import { isEngine, isViewer } from './lib/client-role.js';
 import { coerceToolInputToSchema } from './coerce-schema-types.js';
 
+/**
+ * How a tool that parks for the human suspends — the two are resolved the same
+ * way (`resolveApproval`) but mean opposite things:
+ *
+ *   - `GATE`: awaiting a **delegable decision**. The action is fully specified;
+ *     the human (or a stand-in: a saved permission rule, an auto-approve
+ *     reviewer, YOLO) answers go/no-go. The resolution is a *verdict*.
+ *   - `ELICITATION`: awaiting **non-delegable input**. The tool yielded because
+ *     it is missing an argument that exists only in the user's head (e.g.
+ *     AskUserQuestion). The resolution *is* that content — no proxy can supply
+ *     it, so automation must never resolve one on the user's behalf.
+ *
+ * A tool declares its kind via `MANIFEST.interaction` (default `GATE`). This is
+ * the single discriminant behind form rendering, resolution-payload folding
+ * (`applyApprovalResponse`), and whether `onToolPending` fires at all.
+ * @enum {string}
+ */
+export const INTERACTION_KIND = {
+  GATE: 'gate',
+  ELICITATION: 'elicitation'
+};
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -527,6 +549,16 @@ class ContextItem {
   }
 
   /**
+   * The interaction kind for this item's parked-approval state — `'gate'`
+   * (delegable decision) or `'elicitation'` (non-delegable user input). See
+   * {@link INTERACTION_KIND}. Instance convenience over the static accessor.
+   * @returns {string} One of {@link INTERACTION_KIND}
+   */
+  interactionKind() {
+    return /** @type {any} */ (this.constructor).interactionKind();
+  }
+
+  /**
    * Check if this item cannot be deleted by the user
    * @returns {boolean} True if user deletion is prevented
    */
@@ -631,6 +663,35 @@ class ContextItem {
    */
   static rerunRequiresReprompt() {
     return false;
+  }
+
+  /**
+   * The interaction kind for this tool type — see {@link INTERACTION_KIND}.
+   * Reads `MANIFEST.interaction`, defaulting to `'gate'` (a delegable
+   * approval). Override via the manifest (`interaction: 'elicitation'`) for
+   * tools whose approval surface is a user-input form rather than a go/no-go
+   * gate; those are never resolved by approval automation.
+   * @returns {string} One of {@link INTERACTION_KIND}
+   */
+  static interactionKind() {
+    return /** @type {any} */ (this).MANIFEST?.interaction ?? INTERACTION_KIND.GATE;
+  }
+
+  /**
+   * Fold an elicitation's resolution payload back into the tool input before
+   * execution. For a `'gate'` tool the approval response is a bare verdict and
+   * carries no data, so the default is identity. An `'elicitation'` tool
+   * (e.g. AskUserQuestion) overrides this to parse its captured answer out of
+   * the response string and merge it into the params `execute()` receives.
+   *
+   * Pure and static: it is a type-level transform, not per-invocation behaviour
+   * needing item context — mirroring {@link rerunRequiresReprompt}.
+   * @param {Record<string, unknown>} toolInput - The original tool input
+   * @param {string} _response - The `resolveApproval` response string
+   * @returns {Record<string, unknown>} The tool input to execute with
+   */
+  static applyApprovalResponse(toolInput, _response) {
+    return toolInput;
   }
 
   /**

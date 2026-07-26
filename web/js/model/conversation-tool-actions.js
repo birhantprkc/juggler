@@ -25,6 +25,7 @@ import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isViewer } from '../../sdk/lib/client-role.js';
 import { ENGINE_DERIVED_ORIGIN } from '../utils/document-sync-manager.js';
 import { APPROVAL_POLICY } from 'juggler/strategy-type';
+import { INTERACTION_KIND } from '../../sdk/context-item.js';
 
 /** @typedef {import('../../sdk/lib/message.js').Message} Message */
 
@@ -204,6 +205,15 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
   // Notify the strategy so out-of-band approval automation (e.g. a cheap-model
   // auto-approve classifier) can review it and resolve via resolveApproval.
   //
+  // GATE INTERACTIONS ONLY. An elicitation (e.g. AskUserQuestion) parks with an
+  // approval surface that is a user-input form, not a go/no-go gate — its
+  // resolution IS the user's answer, which no proxy can supply. Handing it to a
+  // reviewer could only produce a resolution that silently answers for the
+  // user, so the dispatch simply never fires for elicitations: there is no code
+  // path by which approval automation can resolve one. onToolPending's contract
+  // (see StrategyType) is therefore gate-only, and strategies need no per-call
+  // guard.
+  //
   // Fire-and-forget by contract: this whole function is engine-only (viewers
   // returned at the top), so the hook runs exactly once per park — no viewer
   // election. We deliberately do NOT await it: getApprovalPolicy above is the
@@ -211,7 +221,7 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
   // stall the evaluate-tool ack. A throw or a rejected promise is swallowed
   // here so it never becomes an unhandled rejection; the tool simply stays
   // PENDING for the human (fail-closed).
-  if (needsApproval) {
+  if (needsApproval && action.interactionKind() === INTERACTION_KIND.GATE) {
     try {
       const pendingResult = messageThread.strategy?.onToolPending?.({
         toolUseId,

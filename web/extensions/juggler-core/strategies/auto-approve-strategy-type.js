@@ -96,6 +96,11 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
    * does not await this and ignores its return value, so any error just leaves
    * the tool parked — fail-closed. We only ever call `resolveApproval(_, 'yes')`
    * on a clean `allow`; for deny (or any failure) we do nothing.
+   * The framework only fires this hook for **gate** interactions (see
+   * StrategyType#onToolPending / INTERACTION_KIND). Elicitations like
+   * AskUserQuestion are never delivered here — their resolution is the user's
+   * own input, which no reviewer can supply — so this method needs no guard
+   * against auto-answering a question.
    * @override
    * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined}} info
    * @returns {Promise<void>}
