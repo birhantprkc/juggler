@@ -435,6 +435,20 @@ class APIService {
   }
 
   /**
+   * Update the name and content of an existing user preset by id.
+   * @param {string} id - User preset id
+   * @param {string} name - Display name for the preset
+   * @param {string} content - Full prompt body to store
+   * @returns {Promise<{success: boolean, preset?: {id: string, name: string, content: string}, error?: string}>} The updated preset
+   */
+  async updateSystemPromptPreset(id, name, content) {
+    return await this.request(`/system-prompt-presets/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name, content })
+    });
+  }
+
+  /**
    * Set which preset (built-in or user) new conversations are seeded from. An
    * empty id clears the explicit default (reverting to the built-in default).
    * @param {string} id - Preset id to make the session default

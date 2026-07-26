@@ -244,6 +244,7 @@ func (s *Server) setupConfigRoutes(configAPI *handlers.ConfigAPI) {
 	api.HandleFunc("/system-prompt-presets", s.handleCreateSystemPromptPreset).Methods("POST")
 	api.HandleFunc("/system-prompt-presets/default", s.handleSetDefaultSystemPromptPreset).Methods("PUT")
 	api.HandleFunc("/system-prompt-presets/{id}", s.handleDeleteSystemPromptPreset).Methods("DELETE")
+	api.HandleFunc("/system-prompt-presets/{id}", s.handleUpdateSystemPromptPreset).Methods("PUT")
 
 	// Recently-selected concrete models, persisted server-side so the list
 	// survives an app relaunch / a port change (browser localStorage is

@@ -100,6 +100,22 @@ export async function deleteUserPreset(id) {
 }
 
 /**
+ * Update the name and content of an existing user preset, then refresh the registry.
+ * @param {string} id - User preset id
+ * @param {string} name - Display name
+ * @param {string} content - Prompt body to store
+ * @returns {Promise<{id: string, name: string, content: string}>} The updated preset
+ */
+export async function updateUserPreset(id, name, content) {
+  const res = await apiService.updateSystemPromptPreset(id, name, content);
+  if (!res || !res.success || !res.preset) {
+    throw new Error(res && res.error ? res.error : 'Failed to update preset');
+  }
+  await refreshUserPresets();
+  return res.preset;
+}
+
+/**
  * Set the session-default preset (built-in or user) and cache it locally.
  * @param {string} id - Preset id to make default
  * @returns {Promise<void>}

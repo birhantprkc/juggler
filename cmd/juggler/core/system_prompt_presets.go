@@ -107,6 +107,36 @@ func (s *SystemPromptPresetStore) Delete(id string) error {
 	return s.write(f)
 }
 
+// Update replaces the name and content of an existing user preset identified by
+// id. Name and content are required (after trimming). Returns the updated preset
+// or an error when the id is not found.
+func (s *SystemPromptPresetStore) Update(id, name, content string) (SystemPromptPreset, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return SystemPromptPreset{}, fmt.Errorf("preset name is required")
+	}
+	if strings.TrimSpace(content) == "" {
+		return SystemPromptPreset{}, fmt.Errorf("preset content is required")
+	}
+
+	f, err := s.read()
+	if err != nil {
+		return SystemPromptPreset{}, err
+	}
+
+	for i, p := range f.Presets {
+		if p.ID == id {
+			f.Presets[i].Name = name
+			f.Presets[i].Content = content
+			if err := s.write(f); err != nil {
+				return SystemPromptPreset{}, err
+			}
+			return f.Presets[i], nil
+		}
+	}
+	return SystemPromptPreset{}, fmt.Errorf("preset %q not found", id)
+}
+
 // SetDefault records which preset id new conversations are seeded from. The id
 // may name a built-in preset (e.g. "default") or a user preset — the store does
 // not validate it against the built-in set, which lives in the frontend. An

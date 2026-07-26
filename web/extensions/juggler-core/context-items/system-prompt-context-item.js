@@ -13,7 +13,8 @@ import {
   getDefaultPresetId,
   setDefaultPreset,
   saveUserPreset,
-  deleteUserPreset
+  deleteUserPreset,
+  updateUserPreset
 } from '../../../js/services/system-prompt-presets.js';
 
 /** @typedef {import('../../../sdk/lib/system-prompt-registry.js').SystemPromptPreset} SystemPromptPreset */
@@ -746,6 +747,42 @@ class SystemPromptContextItem extends ContextItem {
   async _saveCurrentAsPreset(dropdown, container) {
     const content = this._getEffectiveText();
     if (!content.trim()) return;
+
+    // When the editor is already on a user preset, offer to update it in place
+    // instead of always creating a new one.
+    const currentId = this.data.selectedPresetId;
+    if (currentId && currentId.startsWith('user-')) {
+      const existing = systemPromptRegistry.getPreset(currentId);
+      if (existing) {
+        const showChoice = /** @type {any} */ (window).showChoice;
+        if (showChoice) {
+          const choice = await showChoice(
+            `"${existing.name}" is already a preset.`,
+            ['Update', 'Save as new\u2026', 'Cancel'],
+            'Save preset',
+            false
+          );
+          if (choice === 'Update') {
+            try {
+              await updateUserPreset(existing.id, existing.name, content);
+              this.data.selectedPresetId = existing.id;
+              this.data.isModified = false;
+              this._persistData(true);
+              this._renderPresetMenu(dropdown, container);
+            } catch (err) {
+              console.error('[SystemPrompt] update preset failed:', err);
+              const showConfirm = /** @type {any} */ (window).showConfirm;
+              const msg = err instanceof Error ? err.message : String(err);
+              if (showConfirm) await showConfirm(msg, 'Could not update preset', { confirmText: 'OK' });
+            }
+            return;
+          }
+          if (choice === 'Cancel' || choice === null) return;
+          // 'Save as new…' falls through to the name-prompt path below.
+        }
+      }
+    }
+
     const showPrompt = /** @type {any} */ (window).showPrompt;
     const name = showPrompt
       ? await showPrompt('Name this preset:', '', 'Save system prompt preset')
@@ -790,6 +827,25 @@ class SystemPromptContextItem extends ContextItem {
         // Empty leading slot keeps names aligned with the preset-browser rows.
         item.appendChild(createElement('span', 'sp-preset-row-icon'));
         item.appendChild(createElement('span', 'sp-preset-row-name', preset.name));
+
+        const editBtn = document.createElement('button');
+        editBtn.className = 'sp-preset-edit-btn';
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          // Load the preset content into the editor so the user can tweak it,
+          // then close this dialog.
+          this.data.text = preset.content;
+          this.data.selectedPresetId = preset.id;
+          this.data.isModified = false;
+          this._persistData(true);
+          const textArea = container.querySelector('.system-prompt-textarea');
+          if (textArea) {
+            /** @type {HTMLTextAreaElement} */(textArea).value = this._getEffectiveText();
+          }
+          this._closeDropdown();
+        });
+        item.appendChild(editBtn);
 
         const delBtn = document.createElement('button');
         delBtn.className = 'sp-preset-delete-btn';

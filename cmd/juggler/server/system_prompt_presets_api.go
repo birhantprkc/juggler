@@ -67,6 +67,28 @@ func (s *Server) handleDeleteSystemPromptPreset(w http.ResponseWriter, r *http.R
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
 }
 
+// handleUpdateSystemPromptPreset replaces the name and content of an existing
+// user preset by id.
+//
+//	PUT /api/system-prompt-presets/{id} {name, content} → {success, preset}
+func (s *Server) handleUpdateSystemPromptPreset(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	var req struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+		return
+	}
+	preset, err := s.systemPromptPresetStore.Update(id, req.Name, req.Content)
+	if err != nil {
+		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+	handlers.WriteJSON(w, r, 0, map[string]any{"success": true, "preset": preset})
+}
+
 // handleSetDefaultSystemPromptPreset records which preset (built-in or user) new
 // conversations are seeded from. An empty id clears the explicit default.
 //

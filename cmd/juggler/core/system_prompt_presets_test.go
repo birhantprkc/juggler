@@ -136,6 +136,36 @@ func TestPresetsDeletingDefaultClearsIt(t *testing.T) {
 	}
 }
 
+func TestPresetsUpdate(t *testing.T) {
+	s := newTestPresetStore(t)
+	p, err := s.Create("Old Name", "Old content")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	updated, err := s.Update(p.ID, "New Name", "New content")
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Name != "New Name" || updated.Content != "New content" {
+		t.Fatalf("updated preset = %+v, want name=New Name, content=New content", updated)
+	}
+	if updated.ID != p.ID {
+		t.Fatalf("updated id = %q, want %q", updated.ID, p.ID)
+	}
+	// Verify persistence.
+	presets, _, _ := s.Load()
+	if len(presets) != 1 || presets[0].Name != "New Name" || presets[0].Content != "New content" {
+		t.Fatalf("loaded presets = %+v", presets)
+	}
+}
+
+func TestPresetsUpdateMissingID(t *testing.T) {
+	s := newTestPresetStore(t)
+	if _, err := s.Update("nonexistent", "Name", "Content"); err == nil {
+		t.Fatal("expected error for missing id")
+	}
+}
+
 func TestPresetsSetDefaultEmptyClears(t *testing.T) {
 	s := newTestPresetStore(t)
 	_ = s.SetDefault("minimal")
