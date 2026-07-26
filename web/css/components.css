@@ -5061,6 +5061,10 @@ settings-panel .chime-select:focus {
     box-shadow: 0 0 0 0.1875rem rgb(88 166 255 / 10%);
 }
 
+settings-panel .default-model-thinking-select {
+    margin-top: 0.5rem;
+}
+
 settings-panel .default-model-select optgroup {
     font-style: normal;
     font-weight: 600;

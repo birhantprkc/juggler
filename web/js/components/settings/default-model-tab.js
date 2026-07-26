@@ -28,16 +28,16 @@ export class DefaultModelTab {
     this.config = {};
     /** @type {any[]} @private */
     this.providers = [];
-    /** @type {{provider: string, model: string, explicit?: boolean}} @private - Model new conversations are seeded with; explicit=false means automatic. */
+    /** @type {{provider: string, model: string, thinking?: string, explicit?: boolean}} @private - Model new conversations are seeded with; explicit=false means automatic. thinking empty ⇒ the model's default level. */
     this.defaultModel = { provider: '', model: '', explicit: false };
-    /** @type {{provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} @private - Cheap model for out-of-band micro-tasks; explicit=false means Auto. */
+    /** @type {{provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} @private - Cheap model for out-of-band micro-tasks; explicit=false means Auto. */
     this.cheapModel = { explicit: false };
   }
 
   /**
    * Receive the shared loadConfig() payload: store config/providers/defaultModel
    * and (on a full render) build the fields.
-   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}}} data
+   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, thinking?: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}}} data
    * @param {boolean} renderFields
    */
   onConfigLoaded(data, renderFields) {
@@ -173,7 +173,8 @@ export class DefaultModelTab {
       autoLabel: 'Automatic',
       current: this.defaultModel || { provider: '', model: '', explicit: false },
       statusText: (ref) => this._defaultModelStatusText(ref),
-      onSave: (value) => this._saveDefaultModel(value),
+      onSave: (value, thinking) => this._saveDefaultModel(value, thinking),
+      withThinking: true,
     });
   }
 
@@ -196,7 +197,8 @@ export class DefaultModelTab {
       autoLabel: 'Auto',
       current: this.cheapModel || { explicit: false },
       statusText: (ref) => this._cheapModelStatusText(ref),
-      onSave: (value) => this._saveCheapModel(value),
+      onSave: (value, thinking) => this._saveCheapModel(value, thinking),
+      withThinking: true,
     });
   }
 
@@ -212,12 +214,13 @@ export class DefaultModelTab {
    * @param {string} opts.nameLabel - field label text.
    * @param {string} [opts.description] - optional description under the label.
    * @param {string} opts.autoLabel - text for the auto-option (e.g. "Automatic").
-   * @param {{provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} opts.current
+   * @param {{provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} opts.current
    * @param {(ref: any) => string} opts.statusText - builds the status hint.
-   * @param {(value: string) => void} opts.onSave - persists "<provider> <model>" or "".
+   * @param {(value: string, thinking?: string) => void} opts.onSave - persists "<provider> <model>" or "", plus an optional thinking level.
+   * @param {boolean} [opts.withThinking] - also render a thinking-level selector for the chosen model.
    * @private
    */
-  _renderModelField({ containerId, selectId, nameLabel, description, autoLabel, current, statusText, onSave }) {
+  _renderModelField({ containerId, selectId, nameLabel, description, autoLabel, current, statusText, onSave, withThinking }) {
     const container = this.host.querySelector(containerId);
     if (!container) return;
     container.innerHTML = '';
@@ -297,7 +300,58 @@ export class DefaultModelTab {
       select.insertBefore(orphanGroup, select.firstChild ? select.firstChild.nextSibling : null);
     }
 
-    select.addEventListener('change', () => onSave(select.value));
+    // Optional thinking-level selector: a second dropdown shown only when the
+    // chosen model advertises thinking levels. An empty value ⇒ the model's
+    // default level. Levels are model-specific, so switching model resets it.
+    /** @type {HTMLSelectElement|null} */
+    let thinkingSelect = null;
+    const modelEntryFor = (/** @type {string} */ value) => {
+      if (!value) return null;
+      const sep = value.indexOf(' ');
+      const provName = value.slice(0, sep);
+      const modelId = value.slice(sep + 1);
+      const p = this.providers.find((/** @type {any} */ pp) => pp.name === provName);
+      if (!p || !p.modelsWithContext) return null;
+      return p.modelsWithContext.find((/** @type {{id: string}} */ m) => m.id === modelId) || null;
+    };
+    const rebuildThinkingOptions = (/** @type {string} */ value, /** @type {string} */ selectedThinking) => {
+      if (!thinkingSelect) return;
+      const entry = modelEntryFor(value);
+      const levels = (entry && entry.thinkingLevels) || [];
+      thinkingSelect.innerHTML = '';
+      if (levels.length === 0) {
+        thinkingSelect.style.display = 'none';
+        return;
+      }
+      thinkingSelect.style.display = '';
+      const def = entry.defaultThinkingLevel || '';
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = def ? `Default thinking (${def})` : 'Default thinking';
+      if (!selectedThinking) defaultOpt.selected = true;
+      thinkingSelect.appendChild(defaultOpt);
+      for (const lvl of levels) {
+        const opt = document.createElement('option');
+        opt.value = lvl;
+        opt.textContent = `Thinking: ${lvl}`;
+        if (lvl === selectedThinking) opt.selected = true;
+        thinkingSelect.appendChild(opt);
+      }
+    };
+    if (withThinking) {
+      const ts = document.createElement('select');
+      ts.className = 'default-model-select default-model-thinking-select';
+      ts.id = `${selectId}-thinking`;
+      ts.setAttribute('aria-label', `Thinking level for ${nameLabel}`);
+      ts.addEventListener('change', () => onSave(select.value, ts.value));
+      thinkingSelect = ts;
+      rebuildThinkingOptions(currentValue, (explicit && ref.thinking) || '');
+    }
+
+    select.addEventListener('change', () => {
+      if (thinkingSelect) rebuildThinkingOptions(select.value, '');
+      onSave(select.value, thinkingSelect ? thinkingSelect.value : undefined);
+    });
 
     const status = document.createElement('div');
     status.className = 'key-source-hint';
@@ -305,6 +359,7 @@ export class DefaultModelTab {
     status.textContent = statusText(ref);
 
     controlColumn.appendChild(select);
+    if (thinkingSelect) controlColumn.appendChild(thinkingSelect);
     controlColumn.appendChild(status);
 
     row.appendChild(infoColumn);
@@ -315,15 +370,18 @@ export class DefaultModelTab {
   /**
    * Persist the chosen cheap model. An empty value clears it (Auto).
    * @param {string} value - "<provider> <model>" or "" for Auto
+   * @param {string} [thinking] - thinking level; empty/omitted ⇒ the model's default
    * @private
    */
-  async _saveCheapModel(value) {
+  async _saveCheapModel(value, thinking) {
+    /** @type {{provider: string, model: string, thinking?: string}} */
     let body;
     if (!value) {
       body = { provider: '', model: '' };
     } else {
       const sep = value.indexOf(' ');
       body = { provider: value.slice(0, sep), model: value.slice(sep + 1) };
+      if (thinking) body.thinking = thinking;
     }
     try {
       const response = await fetch('/api/cheap-model', {
@@ -337,7 +395,7 @@ export class DefaultModelTab {
       // Reflect the saved state locally. When cleared to Auto, re-fetch so the
       // auto-derived hint under the combo box refreshes; otherwise update in place.
       if (body.provider && body.model) {
-        this.cheapModel = { provider: body.provider, model: body.model, explicit: true };
+        this.cheapModel = { provider: body.provider, model: body.model, thinking: body.thinking || '', explicit: true };
         this.renderCheapModelField();
       } else {
         try {
@@ -410,15 +468,18 @@ export class DefaultModelTab {
   /**
    * Persist the chosen default model. An empty value clears it (Automatic).
    * @param {string} value - "<provider> <model>" or "" for Automatic
+   * @param {string} [thinking] - thinking level; empty/omitted ⇒ the model's default
    * @private
    */
-  async _saveDefaultModel(value) {
+  async _saveDefaultModel(value, thinking) {
+    /** @type {{provider: string, model: string, thinking?: string}} */
     let body;
     if (!value) {
       body = { provider: '', model: '' };
     } else {
       const sep = value.indexOf(' ');
       body = { provider: value.slice(0, sep), model: value.slice(sep + 1) };
+      if (thinking) body.thinking = thinking;
     }
     try {
       const response = await fetch('/api/default-model', {
@@ -431,7 +492,7 @@ export class DefaultModelTab {
       }
       // Reflect the saved state locally and re-render so the status hint
       // and selection update without a full reload.
-      this.defaultModel = { provider: body.provider, model: body.model, explicit: !!(body.provider && body.model) };
+      this.defaultModel = { provider: body.provider, model: body.model, thinking: body.thinking || '', explicit: !!(body.provider && body.model) };
       this.renderDefaultModelField();
     } catch (err) {
       console.error('[SettingsPanel] Failed to save default model:', err);
