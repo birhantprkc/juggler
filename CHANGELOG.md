@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added an 'auto-approve' strategy that uses a cheap model to approve any obviously safe commands that would otherwise have needed user approval
 - New conversations now name their own tab from your first message
 - Added a "cheap model" setting — a small, fast model for background micro-tasks like tab naming
 - Plugins can now request short out-of-band model completions via a generateText op
