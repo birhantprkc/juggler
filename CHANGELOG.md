@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-26
+
 - Added an 'auto-approve' strategy that uses a cheap model to approve any obviously safe commands that would otherwise have needed user approval
 - New conversations now name their own tab from your first message
 - Added a "cheap model" setting — a small, fast model for background micro-tasks like tab naming
