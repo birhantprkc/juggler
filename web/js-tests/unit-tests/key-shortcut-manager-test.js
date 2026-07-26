@@ -20,6 +20,10 @@ import keyShortcutManager, { isMac, eventMatchesBinding, formatBindingForPlatfor
 import {
   isFileEditingAllowed,
   toggleFileEditing,
+  setFileEditingAllowed,
+  isDefaultFileEditingOn,
+  setDefaultFileEditingOn,
+  DEFAULT_FILE_EDITING_META_KEY,
   WRITE_FILE_ITEM_TYPE,
 } from '../../js/services/file-editing-permission.js';
 
@@ -290,6 +294,39 @@ export async function runTests(_ctx) {
     assert(toggleFileEditing(mt) === true, 'toggle turns editing on');
     const booleans = mt.getRulesFor(WRITE_FILE_ITEM_TYPE).filter((r) => r.kind === 'boolean');
     assert(booleans.length === 1 && booleans[0].value === true, 'stale rule replaced by a single value:true');
+  });
+
+  await run('setFileEditingAllowed sets an explicit state idempotently', () => {
+    const mt = fakeThread();
+    assert(setFileEditingAllowed(mt, true) === true, 'enabling returns true');
+    assert(isFileEditingAllowed(mt) === true, 'editing allowed after enable');
+    // Re-enabling must not stack duplicate rules.
+    setFileEditingAllowed(mt, true);
+    assert(mt.getRulesFor(WRITE_FILE_ITEM_TYPE).filter((r) => r.kind === 'boolean').length === 1,
+      'still exactly one boolean rule after a redundant enable');
+    assert(setFileEditingAllowed(mt, false) === false, 'disabling returns false');
+    assert(isFileEditingAllowed(mt) === false, 'editing disallowed after disable');
+    assert(mt.getRulesFor(WRITE_FILE_ITEM_TYPE).filter((r) => r.kind === 'boolean').length === 0,
+      'no boolean rules remain when disabled');
+  });
+
+  // ── Per-project "edits on by default" preference ────────────────────
+  await run('default-file-editing preference round-trips through session metadata', () => {
+    const meta = {};
+    const session = {
+      getMetadata(key) { return meta[key]; },
+      patchMetadata(patch) { Object.assign(meta, patch); },
+    };
+    assert(isDefaultFileEditingOn(session) === false, 'off when unset');
+    setDefaultFileEditingOn(session, true);
+    assert(meta[DEFAULT_FILE_EDITING_META_KEY] === true, 'preference persisted under the metadata key');
+    assert(isDefaultFileEditingOn(session) === true, 'reads back on');
+    setDefaultFileEditingOn(session, false);
+    assert(isDefaultFileEditingOn(session) === false, 'reads back off');
+    // Null-safe: no session, or one without patchMetadata, must not throw.
+    assert(isDefaultFileEditingOn(null) === false, 'null session reads off');
+    setDefaultFileEditingOn(null, true);
+    setDefaultFileEditingOn({}, true);
   });
 
   return { passed, failed, errors };

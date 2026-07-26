@@ -10,6 +10,8 @@
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
 import { modelLabel, modelLabelFromList } from '../../model/model-display.js';
+import { buildToggleRow } from './notifications-tab.js';
+import { isDefaultFileEditingOn, setDefaultFileEditingOn } from '../../services/file-editing-permission.js';
 
 /**
  * "Provider settings" tab (id `default-model`): the single default-model picker
@@ -49,7 +51,43 @@ export class DefaultModelTab {
       this.renderGlobalProviderSettings();
       this.renderDefaultModelField();
       this.renderCheapModelField();
+      this.renderNewTaskDefaults();
     }
+  }
+
+  /**
+   * Resolve the currently attached UI session (for reading/writing per-project
+   * new-task defaults). Null when no session is attached (e.g. settings opened
+   * before a project loads).
+   * @returns {import('../../model/session.js').default|null} The active session, or null.
+   * @private
+   */
+  _getSession() {
+    return /** @type {any} */ (window).jugglerApp?._connectionManager?.getSession?.() || null;
+  }
+
+  /**
+   * Render the "New task defaults" section: per-project toggles applied to each
+   * newly created task. Currently just the file-editing default — whether a task
+   * starts with edits allowed instead of asking. Persisted to session metadata,
+   * so it survives restarts and is shared across windows on the same project.
+   * @private
+   */
+  renderNewTaskDefaults() {
+    const container = this.host.querySelector('#new-task-defaults-form');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const { row } = buildToggleRow(
+      'Allow file edits in new tasks',
+      'Start each new task with file editing already allowed, so the agent can edit ' +
+      'without asking first — handy when your project is in version control. Each task ' +
+      'can still be toggled individually, and edits outside the project and allowed ' +
+      'paths always prompt.',
+      isDefaultFileEditingOn(this._getSession()),
+      (on) => setDefaultFileEditingOn(this._getSession(), on),
+    );
+    container.appendChild(row);
   }
 
   /**

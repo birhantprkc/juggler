@@ -19,6 +19,7 @@ import { recordTape } from '../utils/event-tape.js';
 import { setupWorkerCallbacks } from './session-worker-callbacks.js';
 import { approvePermittedPendingApprovals } from './conversation-tool-actions.js';
 import { ensureUserPresetsLoaded, getDefaultPresetSeed } from '../services/system-prompt-presets.js';
+import { isDefaultFileEditingOn, setFileEditingAllowed } from '../services/file-editing-permission.js';
 import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
 
 
@@ -1353,6 +1354,7 @@ class Session {
     // then clear undo stacks so they aren't undoable.
     // Must await — if clearUndoStacks races with user operations it wipes their undo groups.
     await this.seedConversationAutoItems(conversation);
+    this._seedDefaultFileEditing(conversation);
     await workerManager.clearUndoStacks(conversation.id);
 
     // Ask the UI to open inline rename on the freshly-activated blank tab. Fired
@@ -1396,6 +1398,26 @@ class Session {
       }
     } catch (err) {
       console.warn('[Session] Could not seed default system prompt:', err);
+    }
+  }
+
+  /**
+   * Seed file-editing permission on a freshly created conversation when the
+   * session's "start new tasks with edits allowed" preference is on. The
+   * write-file rule is conversation-scoped, so each task still toggles
+   * independently and a later change to the default never retargets an existing
+   * conversation. When the preference is off (the default) nothing is written and
+   * the task starts in the usual ask-before-editing state.
+   * @param {import('./conversation.js').default} conversation
+   * @private
+   */
+  _seedDefaultFileEditing(conversation) {
+    try {
+      if (!isDefaultFileEditingOn(this)) return;
+      const mt = conversation.rootMessageThread;
+      if (mt) setFileEditingAllowed(mt, true);
+    } catch (err) {
+      console.warn('[Session] Could not seed default file-editing permission:', err);
     }
   }
 

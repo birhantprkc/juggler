@@ -165,6 +165,9 @@ class SettingsPanel extends HTMLElement {
                         </div>
 
                         <div class="settings-form" id="global-provider-settings"></div>
+
+                        <div class="settings-section-heading">New task defaults</div>
+                        <div class="settings-form" id="new-task-defaults-form"></div>
                     </section>
 
                      <section class="settings-tab-content" id="tab-extensions">

@@ -17,6 +17,7 @@ of changes; this project follows semantic versioning.
 - New Thread no longer interrupts an active agent turn
 - Font size and theme are now remembered per project; a new empty window inherits the size and theme of the window you opened it from
 - Recent models are promoted only after sending a message with them
+- Added an option to default new conversations to have file editing allowed
 
 ## [0.4.5] - 2026-07-24
 
