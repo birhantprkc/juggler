@@ -43,7 +43,7 @@ class ThreadContextItem extends ContextItem {
       {
         name: 'create_thread',
         category: 'write',
-        description: 'Run a focused sub-task in an isolated sub-conversation. The thread cannot see this conversation, so its `prompt` must carry every fact it needs and state exactly what to return. This call returns only when the thread calls return_result — a plain text reply will not close it. Give the thread one self-contained task: never a task list, and never tell it to spawn its own threads (run further tasks as separate threads yourself).',
+        description: 'Run a focused sub-task in an isolated sub-conversation. The thread cannot see this conversation, so its `prompt` must carry every fact it needs and state exactly what to return. This call returns only when the thread calls return_result — a plain text reply will not close it. (A human may later open the thread and converse in it, but that is not a channel you take part in — your only exchange with it is this one return.) Give the thread one self-contained task: never a task list, and never tell it to spawn its own threads (run further tasks as separate threads yourself).',
         input_schema: {
           type: 'object',
           properties: {
