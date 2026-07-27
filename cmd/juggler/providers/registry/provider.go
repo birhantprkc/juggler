@@ -664,6 +664,14 @@ type ProviderInfo struct {
 	// force the return_result tool for clean structured output; the rest use a
 	// tool-free plain-text final that every model answers cleanly.
 	ForcedToolChoiceUnsupported bool
+	// StreamsLiveUsage marks a provider that reports authoritative per-step input
+	// usage mid-turn that maps onto our context meter — i.e. its transient `usage`
+	// stream chunks carry a real, monotonic prompt-token total the footer bar can
+	// grow against as the turn proceeds. The zero value (false) keeps the footer's
+	// end-of-turn blob anchor: a provider whose live numbers are absent, cumulative
+	// across calls, or otherwise unfit for the meter (e.g. the claudecode CLI) must
+	// leave this unset so its bar stays pinned to the last completed turn.
+	StreamsLiveUsage bool
 }
 
 // EffectiveAuthType preserves the legacy convention where an empty
