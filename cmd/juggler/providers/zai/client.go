@@ -21,6 +21,7 @@ func Register() {
 		Filter:             openaibase.PrefixModelFilter("glm-", "-embedding", "-vision", "-tts"),
 		ContextWindowCaps:  contextWindowCaps,
 		MaxOutputCaps:      maxOutputCaps,
+		ThinkingSpecFn:     thinkingSpec,
 		UsageStatsOverride: usageStats,
 		BaseURL:            "https://api.z.ai/api/coding/paas/v4",
 		Quirks: openaibase.Quirks{

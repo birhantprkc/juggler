@@ -4,7 +4,13 @@
 
 package zai
 
-import "juggler/cmd/juggler/providers/utils"
+import (
+	"strconv"
+	"strings"
+
+	"juggler/cmd/juggler/providers/openaibase"
+	"juggler/cmd/juggler/providers/utils"
+)
 
 // The model *list* is never hardcoded — ListModelsWithInfo pulls it live from
 // z.ai's /models endpoint, so new GLM releases appear automatically. What lives
@@ -48,3 +54,61 @@ var (
 	contextWindowCaps = utils.ModelCaps{Default: DefaultContextWindow, Overrides: ModelContextWindows}
 	maxOutputCaps     = utils.ModelCaps{Default: DefaultMaxOutputTokens}
 )
+
+// thinkingSpec returns a GLM model's reasoning-effort selector. z.ai accepts the
+// OpenAI-shaped reasoning_effort field only on GLM-5.2 and above; older models
+// (glm-5.1, glm-5, glm-4.x) reject it, so they get the zero spec and the UI
+// hides the control. Those models still stream thinking — z.ai enables it by
+// default — there is simply no wire knob to change the effort.
+//
+// z.ai documents seven values (max/xhigh/high/medium/low/minimal/none) but
+// collapses most of them server-side (low/medium → high, xhigh → max, minimal ≈
+// none), so only the three behaviourally-distinct tiers are advertised: none
+// (skip thinking), high, and max. Levels are sent verbatim, so exposing the
+// collapsed aliases would show knobs that quietly do nothing. max is z.ai's own
+// default — what a GLM turn uses when no level is sent — so it is the labelled
+// default here too.
+func thinkingSpec(modelID string) openaibase.ThinkingSpec {
+	if glmSupportsReasoningEffort(modelID) {
+		return openaibase.EffortSpec("max", "none", "high", "max")
+	}
+	return openaibase.ThinkingSpec{}
+}
+
+// glmSupportsReasoningEffort reports whether a GLM model id accepts the
+// reasoning_effort parameter — GLM-5.2 and above, per z.ai's documentation.
+func glmSupportsReasoningEffort(modelID string) bool {
+	major, minor, ok := glmVersion(modelID)
+	if !ok {
+		return false
+	}
+	return major > 5 || (major == 5 && minor >= 2)
+}
+
+// glmVersion extracts the numeric major.minor version from a GLM model id
+// ("glm-5.2" → 5, 2; "glm-4.5-air" → 4, 5; "glm-5" → 5, 0). ok is false for ids
+// without a "glm-" prefix or a leading numeric version.
+func glmVersion(modelID string) (major, minor int, ok bool) {
+	rest, found := strings.CutPrefix(strings.ToLower(modelID), "glm-")
+	if !found {
+		return 0, 0, false
+	}
+	// Keep only the leading run of digits and dots; a suffix like "-air" or
+	// "-flash" ends the version.
+	if end := strings.IndexFunc(rest, func(r rune) bool {
+		return r != '.' && (r < '0' || r > '9')
+	}); end >= 0 {
+		rest = rest[:end]
+	}
+	parts := strings.SplitN(rest, ".", 2)
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	if len(parts) == 2 && parts[1] != "" {
+		if minor, err = strconv.Atoi(parts[1]); err != nil {
+			return 0, 0, false
+		}
+	}
+	return major, minor, true
+}
