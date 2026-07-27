@@ -39,6 +39,7 @@ export default class YoloStrategyType extends DefaultStrategyType {
     author: 'Juggler Team',
     color: 'var(--accent-red)',
     icon: 'icon-warning',
+    order: 3,
     // Permission toggles are meaningless when the strategy auto-approves
     // everything — hide them rather than show dead controls.
     showsApprovalControls: false,

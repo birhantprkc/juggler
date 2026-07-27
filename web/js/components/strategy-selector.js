@@ -108,6 +108,14 @@ class StrategySelector extends HTMLElement {
     // commit regardless, but only repaint when the buffer accepts the value.
     const incoming = messageThread ? (messageThread.currentStrategyId || 'default') : 'default';
     if (!this._cycle.accepts(incoming)) return;
+    // This runs on every doc update, so it fires many times a second while a turn
+    // streams (thinking tokens, tool output, …). When the strategy id is
+    // unchanged — the overwhelmingly common case — there is nothing to repaint,
+    // and a full render() would rebuild the button's innerHTML out from under the
+    // pointer, making the collapsed button impossible to click mid-stream. Only
+    // re-render when the displayed value actually changes. (The dropdown-open
+    // path in render() updates in place and is unaffected either way.)
+    if (incoming === this._currentStrategyId) return;
     this._currentStrategyId = incoming;
     this.render();
   }

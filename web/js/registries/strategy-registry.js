@@ -5,6 +5,7 @@
 import BaseRegistry from './base-registry.js';
 import { getExtensionCapabilities } from '../services/extensions.js';
 import FallbackStrategy from './fallback-strategy.js';
+import { orderStrategies } from './strategy-order.js';
 
 /**
  * StrategyRegistry - JavaScript-based strategy registry system
@@ -69,14 +70,18 @@ class StrategyRegistry extends BaseRegistry {
   /**
    * Get all strategy manifests for system prompt
    *
-   * Returns manifest metadata for all registered strategies.
-   * Used to generate the strategy section in the system prompt.
+   * Returns manifest metadata for all registered strategies, ordered for
+   * display: built-in strategies first in the host's curated order, then any
+   * remaining strategies by their manifest `order` hint (stable on ties).
+   * Both the strategy selector and the command-editor strategy list read
+   * from here, so this is the single chokepoint for display ordering.
    * @returns {Array<{id: string, manifest: import('juggler/strategy-type').StrategyManifest, modulePath: string, extensionId: string|null}>} Array of strategy metadata
    */
   getAllManifests() {
     // Same shape the base builds (id/manifest/modulePath/extensionId) — every
-    // registered strategy is guaranteed a MANIFEST by validateClass at load.
-    return /** @type {any} */ (this.getManifests());
+    // registered strategy is guaranteed a MANIFEST by validateClass at load —
+    // then reordered for display.
+    return /** @type {any} */ (orderStrategies(this.getManifests()));
   }
 
   /**

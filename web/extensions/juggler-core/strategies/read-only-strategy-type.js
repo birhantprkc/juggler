@@ -33,6 +33,7 @@ export default class ReadOnlyStrategyType extends StrategyType {
     author: 'Juggler Team',
     color: 'var(--accent-purple)',
     icon: 'icon-grep',
+    order: 2,
     showsApprovalControls: false, // Read-only: no write actions to approve
     recommendations: {
       recommendedFor: [

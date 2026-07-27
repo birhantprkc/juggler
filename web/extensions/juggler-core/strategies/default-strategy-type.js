@@ -28,6 +28,8 @@ export default class DefaultStrategyType extends StrategyType {
     description: 'Standard Juggler behavior - general-purpose coding assistant',
     author: 'Juggler Team',
     color: 'var(--accent-yellow)',
+    icon: 'icon-live-help',
+    order: 0,
     showsApprovalControls: true,
     defaultRules: [],
     recommendations: {

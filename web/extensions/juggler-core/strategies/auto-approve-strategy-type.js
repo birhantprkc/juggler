@@ -69,6 +69,7 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
     author: 'Juggler Team',
     color: 'var(--accent-green)',
     icon: 'icon-auto-awesome',
+    order: 1,
     // Denied/unreviewed actions still park and use the permission toggles.
     showsApprovalControls: true,
     // Inherit Default's approval behaviour wholesale; Default ships no default

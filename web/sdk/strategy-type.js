@@ -36,6 +36,10 @@
  * @property {DefaultRule[]} [defaultRules] - Initial permission rules for new conversations
  * @property {string[]} [defaultAllowedPaths] - Initial allowed filesystem roots (default: [session.projectPath])
  * @property {'default'|'all-parallel'|'all-sequential'} [toolExecution] - How tool calls are executed: 'default' = reads parallel/writes sequential, 'all-parallel' = all concurrent, 'all-sequential' = one at a time
+ * @property {number} [order] - Soft display-order hint (lower = earlier in the
+ *   strategy selector and command-editor strategy list). Every strategy —
+ *   built-in or 3rd-party — uses the same field to declare its position; ties
+ *   break by load order. Absent on every strategy, the list stays in load order.
  */
 
 /**
