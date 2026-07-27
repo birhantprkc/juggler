@@ -267,10 +267,12 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 
 	// Commit only against the exact snapshot the reducer consumed. The
 	// fingerprint recheck and the fold run under one ycrdtMu hold inside
-	// FoldPrefixIntoSummaryIfUnchanged, so a concurrent doc change (user edit,
+	// foldPrefixIntoSummaryTracked, so a concurrent doc change (user edit,
 	// queued-message promotion) that lands between check and write cannot leave
-	// the fold splicing at stale indices — it aborts rather than clobbering.
-	if !w.doc.FoldPrefixIntoSummaryIfUnchanged(w.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {
+	// the fold splicing at stale indices — it aborts rather than clobbering. The
+	// tracked variant captures the whole delete+insert as one undo group, so a
+	// single undo reverses the fold (parity with the browser /compact fold).
+	if !w.foldPrefixIntoSummaryTracked(w.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {
 		w.recordCompactionOutcome(compactionKindRecovery, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
 		return contextRecoveryResult{}, &BoundedCompactionError{
 			Reason: BoundedCompactionSourceChanged, Message: "conversation changed during context recovery; nothing was folded",

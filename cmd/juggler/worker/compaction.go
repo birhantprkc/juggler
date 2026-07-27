@@ -239,6 +239,37 @@ func (w *ConversationWorker) writeBoundedCompactionResult(threadID string, resul
 	return true
 }
 
+// foldPrefixIntoSummaryTracked commits a recovery fold as a single, atomically
+// undoable operation. It performs the same fingerprint recheck-and-splice under
+// one ycrdtMu hold as ConversationDocument.FoldPrefixIntoSummaryIfUnchanged, but
+// runs the splice under the author origin with the UndoManager capturing,
+// bracketed by StopCapturing so the whole delete+insert forms its own undo group.
+// This gives recovery folds the same undo semantics as the browser /compact
+// fold: one undo restores the pre-fold history and removes the summary thread,
+// instead of the fold lingering as an un-undoable item while the rest of the
+// conversation undoes around it. Returns false without mutating when the source
+// changed under the recheck.
+func (w *ConversationWorker) foldPrefixIntoSummaryTracked(arr *ycrdt.YArray, start, count int, summary ConversationItem, promptID, expectedFingerprint string) bool {
+	if arr == nil || count <= 0 {
+		return false
+	}
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	if !w.doc.foldFingerprintUnchangedLocked(arr, start, count, promptID, expectedFingerprint) {
+		return false
+	}
+	// Bind the UndoManager to the current items array before capturing, so a
+	// post-load array-pointer swap can't leave the fold untracked.
+	w.tracker.refreshScopeIfNeeded()
+	um := w.tracker.ensureUndoManager()
+	um.StopCapturing()
+	ycrdt.Transact(w.doc.doc, func(_ *ycrdt.Transaction) {
+		spliceSummaryIntoPrefix(arr, start, count, summary)
+	}, w.doc.authorID, true)
+	um.StopCapturing()
+	return true
+}
+
 func (w *ConversationWorker) compactionCancelled() bool {
 	if w.loadState() == StateCancelling {
 		return true

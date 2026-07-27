@@ -159,6 +159,120 @@ func TestContextRecoveryFoldsSubthreadPrefix(t *testing.T) {
 	}
 }
 
+// TestContextRecoveryPreservesFoldedThreadItemOrder pins the nested-item order
+// inside a recovery-folded summary thread. The fold must preserve the source
+// order — the summarized prefix verbatim, then the synthesized summarization
+// prompt LAST — exactly as the browser /compact fold seeds it
+// ([...snapshots, prompt]). The regression it guards: building the folded
+// thread's Y.Map with a fully-populated *prelim* nested Y.Array integrates in
+// reverse (YArray.Integrate's PrelimContent reversal), so the thread rendered
+// as [prompt, ...tools, oldest] — summarization prompt first, original user
+// message last — which corrupts every hidden reduce that reads the nested items.
+func TestContextRecoveryPreservesFoldedThreadItemOrder(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
+	_, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+		t.Fatal(err)
+	}
+
+	folded := w.doc.GetItems()[0]
+	if folded.Type != ItemTypeThread || !folded.BoundedCompaction {
+		t.Fatalf("items[0] = %q (bounded=%v), want a bounded-compaction thread", folded.Type, folded.BoundedCompaction)
+	}
+	var nested []ConversationItem
+	if err := json.Unmarshal(folded.Items, &nested); err != nil {
+		t.Fatalf("folded thread nested items do not decode: %v", err)
+	}
+	// Three verbatim prefix items (old-0..2) in source order, then the prompt.
+	if len(nested) != 4 {
+		t.Fatalf("nested items = %d, want the three folded items plus the prompt", len(nested))
+	}
+	for i, want := range []string{"old-0", "old-1", "old-2"} {
+		if nested[i].ItemID != want {
+			t.Fatalf("nested[%d].ItemID = %q, want %q (nested order reversed?)", i, nested[i].ItemID, want)
+		}
+	}
+	prompt := nested[3]
+	if prompt.ItemID != folded.CompactionPromptItemID || prompt.Content != defaultSummarizationPromptMarker {
+		t.Fatalf("nested[3] = {id:%q content:%.20q}, want the summarization prompt (%q) last",
+			prompt.ItemID, prompt.Content, folded.CompactionPromptItemID)
+	}
+}
+
+// TestContextRecoveryFoldIsAtomicallyUndoable pins that a recovery fold is a
+// single undoable operation, exactly like the browser /compact fold. Before the
+// fix the fold committed under the internal (untracked) origin, so the summary
+// thread lingered as an un-undoable "zombie" while the rest of the conversation
+// undid/redid around it. One undo must reverse the whole fold — restoring the
+// pre-fold history verbatim and removing the summary thread — and redo re-applies
+// it as one unit.
+func TestContextRecoveryFoldIsAtomicallyUndoable(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.tracker.EnsureInitialized()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	// Insert the pre-fold history as separate tracked undo groups (one per turn,
+	// as real usage produces) sitting below the fold on the undo stack.
+	for _, it := range recoveryTestItems() {
+		w.tracker.InsertMessage(w.doc.GetItemsLength(), it)
+		w.tracker.StopCapturing()
+	}
+
+	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
+	_, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.doc.GetItems(); len(got) != 5 || !got[0].BoundedCompaction {
+		t.Fatalf("post-fold items = %s, want a summary thread plus four suffix items", itemIDs(got))
+	}
+
+	// The fold is the top undo group: one undo restores every pre-fold item in
+	// order and removes the summary thread. A lingering thread here is the zombie.
+	if !w.tracker.Undo() {
+		t.Fatal("recovery fold left nothing to undo — it committed untracked")
+	}
+	got := w.doc.GetItems()
+	wantIDs := []string{"old-0", "old-1", "old-2", "old-3", "recent-0", "recent-1", "recent-2"}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("after undoing the fold: %s, want the seven pre-fold items restored", itemIDs(got))
+	}
+	for i, want := range wantIDs {
+		if got[i].ItemID != want {
+			t.Fatalf("restored[%d] = %q, want %q", i, got[i].ItemID, want)
+		}
+		if got[i].BoundedCompaction {
+			t.Fatalf("summary thread survived the undo (zombie): %s", itemIDs(got))
+		}
+	}
+
+	// Redo re-applies the fold atomically.
+	if !w.tracker.Redo() {
+		t.Fatal("recovery fold was not redoable")
+	}
+	if re := w.doc.GetItems(); len(re) != 5 || !re[0].BoundedCompaction {
+		t.Fatalf("after redo: %s, want the fold re-applied as one unit", itemIDs(re))
+	}
+}
+
+func itemIDs(items []ConversationItem) string {
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = fmt.Sprintf("%s(%s)", it.ItemID, it.Type)
+	}
+	return strings.Join(ids, ", ")
+}
+
 func recoveryToolBatch(txnID string, resultRunes int) []ConversationItem {
 	batch := make([]ConversationItem, 2)
 	for i := range batch {
