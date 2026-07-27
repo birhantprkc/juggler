@@ -20,11 +20,11 @@ func serverWithUserExt(userDir string) *Server {
 	return &Server{extensionsAPI: handlers.NewExtensionsAPI(web.Files, "", userDir)}
 }
 
-// TestReadWorkerModuleUserExtension is the core regression for issue #34: a
-// ContextItem discovered under /user-extensions/ must be readable through the
-// worker-module loader (the engine's only import path), not just the static
-// route. Before the fix readWorkerModule only consulted the embedded/static
-// assets, so this 404'd and the capability never loaded in the engine.
+// TestReadWorkerModuleUserExtension checks that a ContextItem discovered under
+// /user-extensions/ is readable through the worker-module loader (the engine's
+// only import path), not just the static route. A loader that consulted only
+// the embedded/static assets would 404 this and never load the capability in
+// the engine.
 func TestReadWorkerModuleUserExtension(t *testing.T) {
 	userDir := t.TempDir()
 	rel := "my-ext/context-items/example-context-item.js"

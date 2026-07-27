@@ -66,9 +66,9 @@ func TestBuildMessages_EmitsStoredThinking(t *testing.T) {
 	}
 }
 
-// TestBuildMessages_BatchesParallelToolCalls is the regression guard for the
-// second DeepSeek failure mode (the one PR #17 caught): a turn with parallel
-// tool calls stores them as consecutive tool-actions sharing one TransactionID.
+// TestBuildMessages_BatchesParallelToolCalls guards the second DeepSeek failure
+// mode: a turn with parallel tool calls stores them as consecutive tool-actions
+// sharing one TransactionID.
 // If buildMessages emits them interleaved (use/result/use/result), the provider
 // transform flushes a separate assistant message per tool-result and DeepSeek's
 // thinking mode carries reasoning_content only on the first — the continued turn

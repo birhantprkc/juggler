@@ -619,6 +619,16 @@ type ProviderInfo struct {
 	// AutoDetect optionally checks if the provider is available (e.g., CLI in PATH).
 	// For keyless providers, returns true if usable. Nil means no auto-detection.
 	AutoDetect func() bool
+	// ReadinessCheck, when non-nil, is a cheap, strictly NON-INTERACTIVE liveness
+	// probe run on each provider refresh after credential resolution. It reports
+	// whether the provider can serve a turn right now and, when it can't, a
+	// user-facing hint (e.g. a CLI whose OAuth login is missing). A not-ready
+	// result marks the provider unavailable and surfaces the hint. The probe must
+	// never itself trigger auth or spawn an interactive login — that is the whole
+	// point of gating here. A provider that sets this must compute its model list
+	// locally (no network, no subprocess), because the refresh still lists its
+	// models when not-ready so the menu can show them disabled alongside the hint.
+	ReadinessCheck func() (ready bool, hint string)
 	// ModelContextWindows is the static context-window map for built-in models.
 	// May be nil for providers whose models come from a runtime source (e.g. a
 	// CLI subprocess or local daemon). Consumers should treat empty/nil as

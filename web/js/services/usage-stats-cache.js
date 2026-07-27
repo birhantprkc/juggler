@@ -6,11 +6,14 @@
  * Client-side cache of provider account/plan usage stats (quota windows).
  *
  * Unlike the provider/model list, usage is pull-based: there is no WS push, so
- * this module owns a debounced GET of `/api/providers/usage`. The endpoint makes
- * live upstream calls per credentialed provider, so `refresh()` collapses bursts
- * to at most one fetch per REFRESH_INTERVAL_MS and de-dupes concurrent callers.
- * The model selector calls `refresh()` each time its menu opens; the 10s floor
- * keeps repeated opens from hammering the upstream APIs.
+ * this module owns a debounced GET of `/api/providers/usage?provider=<name>`.
+ * Callers only ever display the active conversation's provider, so `refresh()`
+ * fetches ONE provider at a time — never a fan-out across providers the user
+ * isn't looking at (fetching an inactive provider's usage is wasted work and, for
+ * CLI-backed providers, can even provoke a login). The cache is
+ * keyed by provider so the model selector and the usage sidebar card can track
+ * different providers without evicting each other. Each provider's live fetch is
+ * debounced to one call per REFRESH_INTERVAL_MS and de-dupes concurrent callers.
  */
 
 /**
@@ -28,14 +31,15 @@
  * @property {UsageStat[]} stats - Per-window usage signals
  */
 
-/** Minimum gap between live fetches; repeated opens within this window reuse the cache. */
+/** Minimum gap between live fetches per provider; repeated opens within this window reuse the cache. */
 const REFRESH_INTERVAL_MS = 10_000;
 
-/** @type {{ usage: UsageStats[], errors: Record<string, string> }|null} */
-let _cache = null;
-let _lastFetch = 0;
-/** @type {Promise<{ usage: UsageStats[], errors: Record<string, string> }>|null} */
-let _inFlight = null;
+/** @type {Map<string, UsageStats|null>} provider name → latest snapshot (null = fetched, none reported). */
+const _byProvider = new Map();
+/** @type {Map<string, number>} provider name → last live-fetch timestamp. */
+const _lastFetch = new Map();
+/** @type {Map<string, Promise<UsageStats|null>>} provider name → in-flight fetch. */
+const _inFlight = new Map();
 
 const usageStatsCache = {
   /**
@@ -44,52 +48,60 @@ const usageStatsCache = {
    * @returns {UsageStats|null} The provider's usage snapshot, or null.
    */
   get(providerName) {
-    if (!_cache || !providerName) return null;
-    return _cache.usage.find(u => u.provider === providerName) || null;
+    if (!providerName) return null;
+    return _byProvider.get(providerName) || null;
   },
 
   /**
-   * Whether any usage snapshot has been received (even an empty one).
-   * @returns {boolean} True once at least one fetch has resolved.
+   * Whether a usage snapshot has been received for a provider (even an empty one).
+   * @param {string} providerName
+   * @returns {boolean} True once at least one fetch for it has resolved.
    */
-  hasData() {
-    return _cache !== null;
+  hasData(providerName) {
+    return !!providerName && _byProvider.has(providerName);
   },
 
   /**
-   * Fetch usage stats, debounced to one live call per REFRESH_INTERVAL_MS.
-   * Concurrent callers share the in-flight request. Resolves with the cached
-   * snapshot (refreshed or not). Never rejects — on failure it resolves with
-   * the last snapshot, or an empty one if none exists yet.
+   * Fetch one provider's usage stats, debounced to one live call per
+   * REFRESH_INTERVAL_MS. Concurrent callers share the in-flight request. Resolves
+   * with the provider's cached snapshot (refreshed or not). Never rejects — on
+   * failure it resolves with the last snapshot, or null if none exists yet. A
+   * falsy providerName is a no-op that resolves null.
+   * @param {string} providerName
    * @param {{ force?: boolean }} [opts]
-   * @returns {Promise<{ usage: UsageStats[], errors: Record<string, string> }>} The cached snapshot.
+   * @returns {Promise<UsageStats|null>} The provider's cached snapshot.
    */
-  async refresh({ force = false } = {}) {
-    const now = Date.now();
-    if (!force && _cache && now - _lastFetch < REFRESH_INTERVAL_MS) {
-      return _cache;
-    }
-    if (_inFlight) return _inFlight;
+  async refresh(providerName, { force = false } = {}) {
+    if (!providerName) return null;
 
-    _inFlight = (async () => {
+    const now = Date.now();
+    const last = _lastFetch.get(providerName) || 0;
+    if (!force && _byProvider.has(providerName) && now - last < REFRESH_INTERVAL_MS) {
+      return _byProvider.get(providerName) || null;
+    }
+    const pending = _inFlight.get(providerName);
+    if (pending) return pending;
+
+    const fetchPromise = (async () => {
       try {
-        const resp = await fetch('/api/providers/usage');
+        const resp = await fetch(`/api/providers/usage?provider=${encodeURIComponent(providerName)}`);
         if (!resp.ok) throw new Error(`usage fetch failed: ${resp.status}`);
         const data = await resp.json();
-        _cache = {
-          usage: Array.isArray(data.usage) ? data.usage : [],
-          errors: (data.errors && typeof data.errors === 'object') ? data.errors : {},
-        };
-        _lastFetch = Date.now();
-        return _cache;
+        /** @type {UsageStats[]} */
+        const list = Array.isArray(data.usage) ? data.usage : [];
+        const snapshot = list.find(u => u && u.provider === providerName) || null;
+        _byProvider.set(providerName, snapshot);
+        _lastFetch.set(providerName, Date.now());
+        return snapshot;
       } catch (err) {
         console.warn('[usageStatsCache] refresh failed:', err);
-        return _cache || { usage: [], errors: {} };
+        return _byProvider.get(providerName) || null;
       } finally {
-        _inFlight = null;
+        _inFlight.delete(providerName);
       }
     })();
-    return _inFlight;
+    _inFlight.set(providerName, fetchPromise);
+    return fetchPromise;
   },
 };
 

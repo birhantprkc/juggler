@@ -337,10 +337,10 @@ func (ops *FileOperations) writeFile(params map[string]any) (any, error) {
 	}
 
 	if dryRun {
-		// Side-effect-free validation: a dryRun must NOT touch the filesystem
-		// (issue #23 — the old probe created the parent tree and transiently
-		// O_CREATE'd the target pre-approval). We probe only what we can
-		// observe without mutating anything.
+		// Side-effect-free validation: a dryRun must NOT touch the filesystem.
+		// We probe only what we can observe without mutating anything —
+		// creating the parent tree or O_CREATE'ing the target here would leak
+		// side effects before the write is approved.
 		if fileExists {
 			// Existing file: open O_WRONLY (no O_CREATE, no O_TRUNC) to check
 			// writability. This modifies neither content, mode, nor mtime.

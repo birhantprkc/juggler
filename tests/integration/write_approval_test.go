@@ -146,11 +146,10 @@ func TestWriteFile_DryRunDoesNotWrite(t *testing.T) {
 	}
 }
 
-// TestWriteFile_DryRunDoesNotCreateParentDirs is the direct regression for
-// issue #23: the pre-approval dryRun used to MkdirAll the whole missing parent
-// tree at whatever path the model invented, leaving directories behind on a
-// denied/never-approved write. A dryRun must create neither the file nor any
-// missing parent directory.
+// TestWriteFile_DryRunDoesNotCreateParentDirs checks that a pre-approval dryRun
+// creates neither the file nor any missing parent directory. MkdirAll'ing the
+// missing parent tree at whatever path the model invented would leave
+// directories behind on a denied/never-approved write.
 func TestWriteFile_DryRunDoesNotCreateParentDirs(t *testing.T) {
 	projectDir := helpers.CreateTempDir(t)
 	defer os.RemoveAll(projectDir)

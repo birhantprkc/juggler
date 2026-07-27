@@ -54,6 +54,14 @@ var usageResetLayouts = func() []string {
 // but /usage is available in print mode and returns the same user-visible
 // percentages without making a model turn.
 func (c *Client) UsageStats(ctx context.Context) (provider.UsageStats, error) {
+	// A logged-out claude CLI opens the browser auth page the instant it's
+	// spawned, so the poll must not fire every tick. claudeUsagePollAllowed lets
+	// usage appear before the first turn for a signed-in user (one startup probe)
+	// while capping a logged-out CLI at a single spawn per process — after that
+	// only a real turn re-enables polling.
+	if !claudeUsagePollAllowed() {
+		return provider.UsageStats{}, fmt.Errorf("claude CLI usage poll skipped: sign-in not yet confirmed")
+	}
 	bin := claudeBinary()
 	if bin == "" {
 		return provider.UsageStats{}, fmt.Errorf("failed to start claude CLI: claude executable not found. Searched $PATH, the login shell, and known install locations (%s). Set %s to its absolute path if it lives elsewhere", claudeInstallLocationsHint, claudePathEnvVar)
@@ -73,6 +81,9 @@ func (c *Client) UsageStats(ctx context.Context) (provider.UsageStats, error) {
 	if parsed.Type != "result" || parsed.Subtype != "success" {
 		return provider.UsageStats{}, fmt.Errorf("claude /usage returned %s/%s", parsed.Type, parsed.Subtype)
 	}
+	// The probe succeeded, so the CLI is signed in: keep the poll enabled for the
+	// rest of the process rather than relying on the one-shot probe latch.
+	markClaudeLoginConfirmed()
 	return parseUsageText(parsed.Result, time.Now()), nil
 }
 

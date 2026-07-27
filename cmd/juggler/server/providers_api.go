@@ -124,11 +124,29 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 			}
 
 			cred, err := credStore.GetProviderCredential(pInfo.Name)
-			available := err == nil
+			credentialed := err == nil
+			available := credentialed
 			authHint := cred.AuthHint
 
+			// Non-interactive readiness probe: a provider can be credentialed yet
+			// unable to serve a turn right now (e.g. a CLI whose OAuth login is
+			// missing). Mark it unavailable with the probe's hint, but still list
+			// its (local) models below so the menu shows them disabled rather than
+			// hiding the provider — the ReadinessCheck contract requires local
+			// model listing precisely so this stays safe.
+			readyGated := false
+			if credentialed && pInfo.ReadinessCheck != nil {
+				if ready, hint := pInfo.ReadinessCheck(); !ready {
+					available = false
+					readyGated = true
+					if hint != "" {
+						authHint = hint
+					}
+				}
+			}
+
 			var modelsWithContext []ModelWithContext
-			if available {
+			if available || readyGated {
 				modelInfos, err := s.fetchModels(ctx, pInfo.Name, cred)
 				if err == nil {
 					for _, modelInfo := range modelInfos {
@@ -146,7 +164,12 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 				} else {
 					available = false
 					jlog.Error("computeProviders: list models from %s failed: %v", pInfo.Name, err)
-					authHint = humanizeModelListError(pInfo.DisplayName, err)
+					// Keep the readiness hint (e.g. "sign in") when the provider was
+					// already gated unready — it's more actionable than a generic
+					// model-list error, and readiness is the real reason it's down.
+					if !readyGated {
+						authHint = humanizeModelListError(pInfo.DisplayName, err)
+					}
 					modelsWithContext = modelContextFallbacks(pInfo)
 				}
 			} else if authType == provider.AuthTypeOAuthBearer {
@@ -688,10 +711,17 @@ func (s *Server) handleRefreshProviders(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// handleProviderUsageStats returns best-effort account/plan usage stats for all
-// currently credentialed providers that support them. Unsupported or unavailable
-// providers are omitted; per-provider fetch errors are returned in `errors` so a
-// single flaky upstream doesn't hide the rest of the snapshot.
+// handleProviderUsageStats returns best-effort account/plan usage stats for
+// credentialed providers that support them. Unsupported or unavailable providers
+// are omitted; per-provider fetch errors are returned in `errors` so a single
+// flaky upstream doesn't hide the rest of the snapshot.
+//
+// The optional `provider` query param scopes the fetch to one provider — the UI
+// only ever shows the active conversation's usage, so it asks for just that one.
+// Fetching a provider's usage can be expensive and, for CLI-backed providers,
+// even provoke a login, so we never fan out across providers the user isn't
+// looking at. With no param the endpoint fetches every credentialed provider
+// (kept for callers that want the whole snapshot).
 func (s *Server) handleProviderUsageStats(w http.ResponseWriter, r *http.Request) {
 	// In test mode, fetching usage would make real upstream HTTPS calls per
 	// credentialed provider — the same flake vector that bit /api/providers.
@@ -712,11 +742,16 @@ func (s *Server) handleProviderUsageStats(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	scope := strings.TrimSpace(r.URL.Query().Get("provider"))
+
 	providerInfos := provider.ListProviderInfos()
 	stats := make([]provider.UsageStats, 0, len(providerInfos))
 	errorsByProvider := map[string]string{}
 
 	for _, info := range providerInfos {
+		if scope != "" && info.Name != scope {
+			continue
+		}
 		cred, credErr := credStore.GetProviderCredential(info.Name)
 		if credErr != nil {
 			continue

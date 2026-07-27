@@ -358,6 +358,10 @@ func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResul
 				}
 				return false, 0, fmt.Errorf("%s", errStr)
 			}
+			// A clean result proves the CLI is signed in — a logged-out CLI never
+			// reaches a result event (it stops to prompt for login). Unlock the
+			// passive /usage poll now that a real turn has run.
+			markClaudeLoginConfirmed()
 			var resultStr string
 			if json.Unmarshal(msg.Result, &resultStr) == nil && resultStr == "" {
 				result.StopReason = "empty_response"

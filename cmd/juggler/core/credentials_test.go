@@ -188,12 +188,12 @@ func TestSetAPIKeyRecoversFromCorruptFile(t *testing.T) {
 }
 
 // Concurrent writes to distinct keys must (a) never produce a torn/corrupt
-// file and (b) never lose an update. Atomic temp+rename gives (a): the old
-// truncate-then-write os.WriteFile left trailing bytes on interleave. Per-path
-// locking of the load→modify→save sequence gives (b): without it two writers
-// each load a snapshot missing the other's key and the last rename drops it —
-// the bug behind "OpenAI-compatible settings all report Saved but persist none"
-// (issue #19). Non-empty values so blanks aren't treated as deletes.
+// file and (b) never lose an update. Atomic temp+rename gives (a): a
+// truncate-then-write os.WriteFile would leave trailing bytes on interleave.
+// Per-path locking of the load→modify→save sequence gives (b): without it two
+// writers each load a snapshot missing the other's key and the last rename
+// drops it, so OpenAI-compatible settings would all report Saved but persist
+// none. Non-empty values so blanks aren't treated as deletes.
 func TestSaveAtomicUnderConcurrentWrites(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials.json")

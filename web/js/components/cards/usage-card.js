@@ -85,7 +85,10 @@ export const usageCard = {
 
     const refresh = async () => {
       if (disposed || !focused()) return;
-      await usageStatsCache.refresh();
+      // Only the active conversation's provider is ever shown, so fetch just that
+      // one — never poll providers the user isn't looking at.
+      const providerName = activeProvider(session);
+      if (providerName) await usageStatsCache.refresh(providerName);
       render();
     };
     const onFocus = () => { refresh(); };

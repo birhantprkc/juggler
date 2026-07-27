@@ -452,10 +452,16 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   async _refreshUsageStats() {
+    // The info column only shows the resolved (active) provider's usage, so fetch
+    // just that one — never fan out across providers the user isn't viewing. No
+    // resolved provider ⇒ nothing to fetch.
+    const resolved = resolveConfig(this._currentConfig, this.providers);
+    const providerName = resolved?.provider || '';
+    if (!providerName) return;
     this._usageLoading = true;
     this._updateInfoColumn();
     try {
-      await usageStatsCache.refresh();
+      await usageStatsCache.refresh(providerName);
     } finally {
       this._usageLoading = false;
       if (this.dropdownOpen) this._updateInfoColumn();

@@ -68,9 +68,9 @@ func (s *Server) readWorkerModule(moduleURL string) ([]byte, error) {
 	// User extensions live on disk under ExtensionsAPI.UserExtensionDir(), served
 	// to the viewer by the /user-extensions/ static route (http.Dir). The engine
 	// worker has no import map, so it fetches the SAME capability URLs through
-	// this loader — which otherwise only sees embedded/static assets, so a
-	// discovered /user-extensions/ module 404'd and never loaded in the engine
-	// (issue #34). Resolve those URLs against the container here, matching
+	// this loader — which otherwise only sees embedded/static assets and would
+	// 404 a discovered /user-extensions/ module, leaving it unloaded in the
+	// engine. Resolve those URLs against the container here, matching
 	// http.Dir's semantics exactly so the two loaders agree: reject lexical ".."
 	// traversal, then read while FOLLOWING symlinks — `juggler ext link` symlinks
 	// an extension's whole subdir out of the container, and both routes must load

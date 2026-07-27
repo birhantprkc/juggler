@@ -49,7 +49,7 @@ export function formatDisplayPath(path) {
   // Windows absolute paths are shown as-is: a drive-letter path (`C:\…` or
   // `C:/…`) or a UNC path (`\\server\share`). Without this they'd get a `./`
   // prefix and render as `./C:\build.bat` — reading as project-relative exactly
-  // when the user most needs to see it isn't (issue #24).
+  // when the user most needs to see it isn't.
   if (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')) return path;
   // Relative paths get ./ prefix
   return `./${path}`;

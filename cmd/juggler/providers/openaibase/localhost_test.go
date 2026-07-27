@@ -19,7 +19,7 @@ func TestNormaliseHost(t *testing.T) {
 		{"full https url", "https://ollama.lan:11434", "https://ollama.lan:11434"},
 		{"trailing slash trimmed", "http://localhost:11434/", "http://localhost:11434"},
 		{"surrounding whitespace", "  http://localhost:11434  ", "http://localhost:11434"},
-		// Missing-`//` typo repair (the exact input from issue #8).
+		// Missing-`//` typo repair.
 		{"http missing slashes", "http:192.168.1.70:11434", "http://192.168.1.70:11434"},
 		{"https missing slashes", "https:ollama.lan:11434", "https://ollama.lan:11434"},
 	}

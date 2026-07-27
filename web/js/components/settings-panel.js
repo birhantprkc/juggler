@@ -429,8 +429,8 @@ class SettingsPanel extends HTMLElement {
     // .settings-value-input marks NON-secret persisted values (gateway base URL,
     // custom headers, Ollama host, Claude Code path, stream idle timeout): those
     // must stay visible across a panel close/reopen, since open() only re-fetches
-    // and re-renders on first load — blanking them here left them empty forever
-    // and made a saved value look lost (issue #19).
+    // and re-renders on first load — blanking them here would leave them empty
+    // forever and make a saved value look lost.
     const inputs = this.querySelectorAll('input[type="text"]:not(.settings-value-input)');
     inputs.forEach(input => {
       /** @type {HTMLInputElement} */ (input).value = '';
