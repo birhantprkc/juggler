@@ -2,11 +2,10 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import HoldToCycleController from './hold-to-cycle.js';
+import HoldToCycleController, { popupAwareShouldHandle } from './hold-to-cycle.js';
 import { isMac } from './key-shortcut-manager.js';
 import recentModels from './recent-models.js';
 import providersCache from './providers-cache.js';
-import { isForeignPopupOpen } from '../utils/popup-manager.js';
 
 /**
  * Hold-to-cycle clients for the model shortcuts: {@link ModelCycler}
@@ -73,28 +72,20 @@ function getModelSelector() {
 const OWN_POPUP_IDS = ['model-selector', 'thinking-mini'];
 
 /**
- * The gesture gate for the model/thinking cyclers. Unlike the strategy
- * switcher's composer-focus gate (`defaultShouldHandle` in hold-to-cycle), these fire from
- * ANYWHERE in the window: their ⌥⌘M / ⌥⌘T chords carry no native in-app meaning
- * to protect, and being lost to the OS when focus sits outside the composer
- * (bare ⌘M minimises the app) is the very bug this gate fixes. Target
+ * The gesture gate for the model/thinking cyclers — the shared window-wide gate
+ * ({@link popupAwareShouldHandle}) allow-listing the cyclers' own HUD popups.
+ * The same gate drives the strategy switcher, so all three cyclers fire from
+ * ANYWHERE in the window on one code path: their chords must reach the right
+ * selector no matter where focus sits (composer, a selected context item, a
+ * conversation column), and ⌥⌘M being lost to the OS when focus sits outside the
+ * composer (bare ⌘M minimises the app) is the very bug this gate fixes. Target
  * resolution (`getModelSelector`) prefers the focused column's selector and
  * falls back to the active tab's root, so the gesture still reaches the right
- * thread no matter where focus is — the whole-window capture just stops the
- * keystroke leaking to the OS first.
- *
- * It stands down only while a FOREIGN overlay is open (a modal dialog, another
- * component's dropdown) — never for the cyclers' own HUD popups. That exception
- * is load-bearing: holding to open the model menu, or a re-press to keep
- * cycling, must never be gated out by the very popup the gesture just opened.
- * (Re-presses during an active gesture bypass this gate anyway; the allow-list
- * covers the idle case where the HUD was already opened by a click.)
- * @param {KeyboardEvent} _e - Trigger event; focus is intentionally ignored.
- * @returns {boolean} True when the gesture may start.
+ * thread; the whole-window capture just stops the keystroke leaking to a foreign
+ * overlay (or the OS) first.
+ * @type {(e: KeyboardEvent) => boolean}
  */
-export function modelGestureShouldHandle(_e) {
-  return !isForeignPopupOpen(OWN_POPUP_IDS);
-}
+export const modelGestureShouldHandle = popupAwareShouldHandle(OWN_POPUP_IDS);
 
 /**
  * ModelCycler - the `cycle-model` hold-to-cycle client. Alt-Tab semantics over

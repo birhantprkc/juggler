@@ -4,6 +4,7 @@
 
 import keyShortcutManager, { eventMatchesBinding } from './key-shortcut-manager.js';
 import { markSeen } from './tips-manager.js';
+import { isForeignPopupOpen } from '../utils/popup-manager.js';
 
 /**
  * HoldToCycleController — the shared "Alt-Tab" gesture behind the strategy,
@@ -233,6 +234,26 @@ export function defaultShouldHandle(e) {
   }
 
   return true;
+}
+
+/**
+ * The window-wide gesture gate, shared by every hold-to-cycle client that must
+ * fire from ANYWHERE in the window rather than only the composer — the strategy,
+ * model, and thinking cyclers all use it, so their focus behaviour stays
+ * identical instead of diverging per client. Focus is intentionally ignored: the
+ * client's own target resolver finds the selector to drive no matter where focus
+ * sits (composer, a selected context item, a conversation column), so the gate's
+ * only job is to keep the chord from leaking to a FOREIGN overlay that owns the
+ * keyboard. It stands down while any modal or other component's popup/dropdown is
+ * open, but never for the gesture's OWN HUD popups, whose ids are allow-listed
+ * (holding to open the cycler's menu, or a re-press to keep cycling, must not be
+ * gated out by the very popup the gesture just opened).
+ * @param {string[]} [ownPopupIds] - Popup ids that are this gesture's own HUD and
+ *   therefore do NOT count as foreign.
+ * @returns {(e: KeyboardEvent) => boolean} A `shouldHandle` gate for the config.
+ */
+export function popupAwareShouldHandle(ownPopupIds = []) {
+  return () => !isForeignPopupOpen(ownPopupIds);
 }
 
 export default HoldToCycleController;

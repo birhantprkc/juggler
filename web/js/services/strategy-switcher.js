@@ -2,7 +2,16 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import HoldToCycleController from './hold-to-cycle.js';
+import HoldToCycleController, { popupAwareShouldHandle } from './hold-to-cycle.js';
+
+/**
+ * Popup id the strategy switcher OWNS — the strategy dropdown, the surface it
+ * opens as its cycling HUD (registered under this id in strategy-selector.js).
+ * Allow-listed in the gesture gate so the window-wide capture never stands the
+ * gesture down for its own HUD.
+ * @type {string[]}
+ */
+const OWN_POPUP_IDS = ['strategy-selector'];
 
 /**
  * StrategySwitcher - Handles the strategy-switch keyboard shortcut (Shift+Tab by
@@ -33,6 +42,12 @@ class StrategySwitcher {
     this._controller = new HoldToCycleController({
       shortcutId: 'strategy-switch',
       modifierKeys: ['Shift'],
+      // Window-wide, same gate as the model/thinking cyclers: Shift+Tab must
+      // cycle the strategy no matter where focus sits — the composer, a selected
+      // context item, or a conversation column — standing down only for a
+      // foreign overlay. Confining it to the composer textarea silently killed
+      // the shortcut whenever focus was on a selected context item.
+      shouldHandle: popupAwareShouldHandle(OWN_POPUP_IDS),
       // Resolve live here (no gesture is in flight yet) so the applicability
       // check reflects the column the user is actually focused in.
       canCycle: () => this._resolveActiveSelector() !== null,
@@ -78,12 +93,12 @@ class StrategySwitcher {
 
   /**
    * Resolve the strategy selector this gesture should drive, preferring the
-   * column the user is actually focused in. The gesture only starts from a
-   * composer textarea (see `defaultShouldHandle`), so the focused element's
-   * enclosing `input-box` identifies the intended thread — the root OR any open
-   * sub-thread column, each of which has its own selector bound to its own
-   * thread. Falling back to the active tab's first selector (its root column's)
-   * covers the no-focus edge case.
+   * column the user is actually focused in. When focus IS in a composer textarea,
+   * its enclosing `input-box` identifies the intended thread — the root OR any
+   * open sub-thread column, each of which has its own selector bound to its own
+   * thread. The gesture fires window-wide, though, so focus may be outside any
+   * composer (a selected context item, a conversation column); falling back to
+   * the active tab's first selector (its root column's) covers that case.
    *
    * This replaces a plain `activeTab.querySelector('strategy-selector')`, which
    * returned the FIRST selector in DOM order — always the root column's — so
