@@ -218,7 +218,13 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
     toolName,
     toolInput: toolInputPlain,
     category: toolDef?.category,
-    defaultApproval
+    defaultApproval,
+    // The parked-state kind (gate vs elicitation). Lets a policy decline to
+    // stand in for the user on an elicitation (e.g. AskUserQuestion), whose
+    // resolution IS the user's typed answer — so a blanket auto-approve (YOLO)
+    // never silently answers a question. Same discriminant the gate-only
+    // onToolPending dispatch keys off below.
+    interactionKind: action.interactionKind()
   });
 
   let needsApproval;

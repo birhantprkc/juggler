@@ -413,16 +413,26 @@ class StrategyType {
    * it can override in either direction.
    * Override this to customize approval behavior per strategy. For example,
    * the read-only strategy auto-approves all read/meta tools; the YOLO
-   * strategy auto-approves every tool.
-   * @param {{toolName: string, toolInput: Record<string, unknown>, category: string|undefined, defaultApproval: boolean}} info
+   * strategy auto-approves every gate.
+   *
+   * ELICITATIONS ARE NOT DELEGABLE. `interactionKind` distinguishes a go/no-go
+   * **gate** from an **elicitation** — a tool whose parked state awaits the
+   * user's own input (e.g. AskUserQuestion), where the "approval" IS that
+   * answer (see {@link import('./context-item.js').INTERACTION_KIND}). Returning
+   * `APPROVE` for an elicitation runs the tool with no answer, silently deciding
+   * for the user; a blanket auto-approve strategy must exclude them (return
+   * `DEFAULT` so it still parks). This mirrors `onToolPending`, which the
+   * framework never fires for elicitations at all.
+   * @param {{toolName: string, toolInput: Record<string, unknown>, category: string|undefined, defaultApproval: boolean, interactionKind: string}} info
    *   - toolName: Name of the tool being called
    *   - toolInput: Input parameters for the tool
    *   - category: Tool category ('read', 'write', 'meta', or undefined)
    *   - defaultApproval: What the existing permission system decided (true = needs approval)
+   *   - interactionKind: The parked-state kind — one of {@link import('./context-item.js').INTERACTION_KIND} ('gate' or 'elicitation')
    * @returns {'approve'|'require-approval'|'default'} Policy decision (use APPROVAL_POLICY constants)
    */
-  getApprovalPolicy({ toolName, toolInput, category, defaultApproval }) {
-    void toolName; void toolInput; void category; void defaultApproval;
+  getApprovalPolicy({ toolName, toolInput, category, defaultApproval, interactionKind }) {
+    void toolName; void toolInput; void category; void defaultApproval; void interactionKind;
     return APPROVAL_POLICY.DEFAULT;
   }
 

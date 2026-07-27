@@ -4,16 +4,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { APPROVAL_POLICY } from 'juggler/strategy-type';
+import { INTERACTION_KIND } from 'juggler/context-item';
 import DefaultStrategyType from './default-strategy-type.js';
 
 /**
  * YoloStrategyType - Default behavior with all tool approvals auto-granted.
  *
  * Identical to the default strategy (it extends DefaultStrategyType), but
- * getApprovalPolicy() returns APPROVE for every tool, so nothing ever halts
- * at an approval prompt — including side-effecting tools (`bash`, `write`,
- * `edit`). The name and the red warning icon are the only safeguard: switching
- * to YOLO is the user's explicit, informed choice.
+ * getApprovalPolicy() returns APPROVE for every **gate**, so nothing ever halts
+ * at a go/no-go approval prompt — including side-effecting tools (`bash`,
+ * `write`, `edit`). The name and the red warning icon are the only safeguard:
+ * switching to YOLO is the user's explicit, informed choice.
+ *
+ * The one thing it does NOT auto-approve is an **elicitation** — a tool whose
+ * parked state is a request for the user's own input (e.g. AskUserQuestion),
+ * where the "approval" IS that answer. Approving one would run the tool with no
+ * answer and silently decide for the user, which is never what "auto-approve
+ * everything" is meant to do. YOLO removes approval prompts; it does not put
+ * words in the user's mouth. Those still park for a human, exactly as under
+ * Default (and mirroring how the framework never routes elicitations to the
+ * auto-approve reviewer at all).
  * @augments {DefaultStrategyType}
  */
 export default class YoloStrategyType extends DefaultStrategyType {
@@ -59,12 +69,20 @@ export default class YoloStrategyType extends DefaultStrategyType {
   };
 
   /**
-   * Auto-approve every tool. YOLO grants master-control approval for all
-   * categories, so the permission system's default decision is bypassed.
+   * Auto-approve every gate. YOLO grants master-control approval for all
+   * categories, so the permission system's default decision is bypassed — with
+   * one deliberate exception: an elicitation (e.g. AskUserQuestion) is left for
+   * the user. Its resolution IS the user's typed answer, which no auto-approval
+   * can supply; approving it would run the tool with no answer. Returning
+   * DEFAULT there lets it park for the human exactly as under Default.
    * @override
+   * @param {{interactionKind: string}} info - Approval context (see StrategyType#getApprovalPolicy)
    * @returns {'approve'|'require-approval'|'default'} Approval policy
    */
-  getApprovalPolicy() {
+  getApprovalPolicy({ interactionKind }) {
+    if (interactionKind === INTERACTION_KIND.ELICITATION) {
+      return APPROVAL_POLICY.DEFAULT;
+    }
     return APPROVAL_POLICY.APPROVE;
   }
 }

@@ -83,6 +83,7 @@ import { runTests as runObserverDecouplingTests } from '../unit-tests/observer-d
 import { runTests as runToolPendingHookTests } from '../unit-tests/tool-pending-hook-test.js';
 import { runTests as runAutoApproveReviewerTests } from '../unit-tests/auto-approve-reviewer-test.js';
 import { runTests as runAutoApproveStrategyTests } from '../unit-tests/auto-approve-strategy-test.js';
+import { runTests as runYoloStrategyUnitTests } from '../unit-tests/yolo-strategy-test.js';
 import { runTests as runHandoffPromotionTests } from '../unit-tests/handoff-promotion-test.js';
 import { runTests as runReadFileActionTests } from '../unit-tests/read-file-action-test.js';
 import { runTests as runPathInputQuotesTests } from '../unit-tests/path-input-quotes-test.js';
@@ -271,6 +272,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:tool-pending-hook', run: runToolPendingHookTests },
   { name: 'unit:auto-approve-reviewer', run: runAutoApproveReviewerTests },
   { name: 'unit:auto-approve-strategy', run: runAutoApproveStrategyTests },
+  { name: 'unit:yolo-strategy', run: runYoloStrategyUnitTests },
   { name: 'unit:handoff-promotion', run: runHandoffPromotionTests },
   { name: 'unit:read-file-action', run: runReadFileActionTests },
   { name: 'unit:path-input-quotes', run: runPathInputQuotesTests },

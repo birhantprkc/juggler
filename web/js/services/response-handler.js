@@ -726,7 +726,11 @@ class ResponseHandler {
       toolName: toolCall.name,
       toolInput,
       category: toolDef?.category,
-      defaultApproval
+      defaultApproval,
+      // The parked-state kind (gate vs elicitation), so a policy can decline to
+      // stand in for the user on an elicitation whose resolution IS the user's
+      // own answer (e.g. AskUserQuestion) — see getApprovalPolicy's contract.
+      interactionKind: action.interactionKind()
     });
 
     let needsApproval;
