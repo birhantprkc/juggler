@@ -93,34 +93,7 @@ export class ContextBuilder {
       messages: []
     };
 
-    // Context params for context item rendering
-    const contextParams = {
-      contextWindowSize: this.contextWindow,
-      modelConfig: this.modelConfig,
-      helpers: FormattingHelpers
-    };
-
-    // The system prompt is assembled from the thread being prepared: root owns
-    // its own, and a sub-thread owns its cloned copy (seeded at creation by the
-    // worker). Fall back to root's items when this thread carries no
-    // system-prompt item yet (first-turn sync race, or a not-yet-seeded thread)
-    // so the prompt is never empty — matching the worker's own fallback in
-    // session-worker-callbacks.js.
-    const ownItems = this.messageThread.contextItems;
-    const contextItems = ownItems.some((/** @type {any} */ f) => f.type === 'system-prompt')
-      ? ownItems
-      : this.conversation.rootMessageThread.contextItems;
-
-    // Assemble the system prompt via the shared builder (single source of
-    // truth shared with the worker context-request callback).
-    const extensionContributions = await buildExtensionSystemPromptContributions();
-    const systemPrompt = await assembleSystemPrompt({
-      contextItems,
-      contextParams,
-      extensionContributions
-    });
-
-    result.systemPrompt = systemPrompt || null;
+    result.systemPrompt = (await this._assembleSystemPrompt()) || null;
 
     const allMessages = this.messageThread.getMessages();
 
@@ -189,18 +162,46 @@ export class ContextBuilder {
 
   /**
    * Get system prompt
-   * @returns {string} The system prompt
+   * @returns {Promise<string>} The system prompt
    */
-  getSystemPrompt() {
-    // Assemble from the thread being prepared; fall back to root when it owns no
-    // system-prompt item yet (see prepare()).
+  async getSystemPrompt() {
+    return await this._assembleSystemPrompt();
+  }
+
+  /**
+   * Assemble the system prompt exactly as it is sent to the LLM, via the shared
+   * builder (the single source of truth shared with the worker context-request
+   * callback). Both prepare() and the UI preview (getSystemPrompt) route through
+   * here so the preview can't drift from what is actually sent — it includes the
+   * other system-position items (rules etc.) and enabled-extension contributions,
+   * not just the system-prompt item's buildPrompt().
+   *
+   * The prompt is assembled from the thread being prepared: root owns its own,
+   * and a sub-thread owns its cloned copy (seeded at creation by the worker).
+   * Fall back to root's items when this thread carries no system-prompt item yet
+   * (first-turn sync race, or a not-yet-seeded thread) so the prompt is never
+   * empty — matching the worker's own fallback in session-worker-callbacks.js.
+   * @returns {Promise<string>} The assembled system prompt (possibly empty)
+   */
+  async _assembleSystemPrompt() {
+    // Context params for context item rendering
+    const contextParams = {
+      contextWindowSize: this.contextWindow,
+      modelConfig: this.modelConfig,
+      helpers: FormattingHelpers
+    };
+
     const ownItems = this.messageThread.contextItems;
-    const systemPromptItem = ownItems.find(item => item.type === 'system-prompt')
-      || this.conversation.rootMessageThread.contextItems.find(item => item.type === 'system-prompt');
-    if (systemPromptItem) {
-      return /** @type {any} */ (systemPromptItem).buildPrompt();
-    }
-    return '';
+    const contextItems = ownItems.some((/** @type {any} */ f) => f.type === 'system-prompt')
+      ? ownItems
+      : this.conversation.rootMessageThread.contextItems;
+
+    const extensionContributions = await buildExtensionSystemPromptContributions();
+    return await assembleSystemPrompt({
+      contextItems,
+      contextParams,
+      extensionContributions
+    });
   }
 
   /**

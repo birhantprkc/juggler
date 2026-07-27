@@ -87,7 +87,7 @@ export class TextSectionRenderer {
     };
 
     // 1. System Prompt
-    const systemPrompt = builder.getSystemPrompt();
+    const systemPrompt = await builder.getSystemPrompt();
     if (systemPrompt) {
       addSection('system', 'System Prompt', systemPrompt);
       addSection('separator', '', '\n---\n');
