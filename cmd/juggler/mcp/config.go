@@ -3,10 +3,10 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 // Package mcp is Juggler's Model Context Protocol client: it owns connections to
-// external MCP servers (stdio child processes), discovers their tools, and
-// proxies tool calls. The engine surfaces discovered tools as first-class
-// context items via the ops seam (see ops.go); this package never imports the
-// engine or the web layer.
+// external MCP servers (stdio child processes or remote http/sse endpoints),
+// discovers their tools, and proxies tool calls. The engine surfaces discovered
+// tools as first-class context items via the ops seam (see ops.go); this package
+// never imports the engine or the web layer.
 package mcp
 
 import (
@@ -24,8 +24,9 @@ type ServerConfig struct {
 	Command   string            `json:"command,omitempty"`
 	Args      []string          `json:"args,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
-	Transport string            `json:"transport,omitempty"` // "stdio" (default); "http" is phase 3
-	URL       string            `json:"url,omitempty"`       // http transport only
+	Transport string            `json:"transport,omitempty"` // "stdio" (default), "http"/"streamable", or "sse"
+	URL       string            `json:"url,omitempty"`       // http/sse transports only
+	Headers   map[string]string `json:"headers,omitempty"`   // http/sse transports only; e.g. {"Authorization": "Bearer …"}
 	Enabled   *bool             `json:"enabled,omitempty"`   // manager-level kill switch; default true
 	LazyTools bool              `json:"lazyTools,omitempty"` // phase 4; parsed but unused in phase 1
 }

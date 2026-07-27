@@ -160,6 +160,11 @@ const MCP_SPEC = {
   argRestPlaceholder: '@modelcontextprotocol/server-github',
   envKeyPlaceholder: 'API_TOKEN',
   saveFailMsg: 'Failed to save the server.',
+  // MCP servers can be local subprocesses (stdio) or remote endpoints (http/sse).
+  supportsTransport: true,
+  urlPlaceholder: 'https://example.com/mcp',
+  urlHint: 'The remote MCP endpoint URL (http/sse transport).',
+  headerKeyPlaceholder: 'Authorization',
 };
 
 /**

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
@@ -287,19 +288,30 @@ func (m *Manager) reconcile(servers map[string]*serverState, project string) {
 	}
 }
 
+// failStart marks a server failed before it could launch (bad config) and wakes
+// any parked callers with the reason. Must run on the manager goroutine.
+func (m *Manager) failStart(s *serverState, msg string) {
+	s.status = statusFailed
+	s.lastErr = msg
+	m.drainWaiters(s, ensureResult{err: fmt.Errorf("mcp server %q: %s", s.name, msg)})
+}
+
 // startServer transitions a stopped server to starting and launches its connect
 // goroutine. Must run on the manager goroutine.
 func (m *Manager) startServer(s *serverState) {
-	if s.cfg.transportKind() != "stdio" {
-		s.status = statusFailed
-		s.lastErr = fmt.Sprintf("transport %q not supported yet (stdio only in this build)", s.cfg.transportKind())
-		m.drainWaiters(s, ensureResult{err: fmt.Errorf("mcp server %q: %s", s.name, s.lastErr)})
-		return
-	}
-	if strings.TrimSpace(s.cfg.Command) == "" {
-		s.status = statusFailed
-		s.lastErr = "no command configured"
-		m.drainWaiters(s, ensureResult{err: fmt.Errorf("mcp server %q: %s", s.name, s.lastErr)})
+	switch s.cfg.transportKind() {
+	case "stdio":
+		if strings.TrimSpace(s.cfg.Command) == "" {
+			m.failStart(s, "no command configured")
+			return
+		}
+	case "http", "streamable", "sse":
+		if strings.TrimSpace(s.cfg.URL) == "" {
+			m.failStart(s, "no url configured")
+			return
+		}
+	default:
+		m.failStart(s, fmt.Sprintf("unsupported transport %q", s.cfg.transportKind()))
 		return
 	}
 	s.generation++
@@ -335,14 +347,11 @@ func (m *Manager) connect(name string, gen int, cfg ServerConfig) {
 	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
 	defer cancel()
 
-	cmd := exec.Command(cfg.Command, cfg.Args...) //nolint:gosec // user-approved server command
-	cmd.Env = os.Environ()
-	for k, v := range cfg.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	transport, err := m.buildTransport(name, cfg)
+	if err != nil {
+		m.reqCh <- mcpReq{kind: evCrashed, server: name, generation: gen, err: err}
+		return
 	}
-	// Route stderr into the server's ring via events so the manager goroutine
-	// remains the sole owner of the ring buffer.
-	cmd.Stderr = &logWriter{ch: m.reqCh, server: name}
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "juggler", Version: "1.0.0"}, &mcp.ClientOptions{
 		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
@@ -350,7 +359,7 @@ func (m *Manager) connect(name string, gen int, cfg ServerConfig) {
 		},
 	})
 
-	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		m.reqCh <- mcpReq{kind: evCrashed, server: name, generation: gen, err: fmt.Errorf("connect: %w", err)}
 		return
@@ -379,6 +388,64 @@ func (m *Manager) connect(name string, gen int, cfg ServerConfig) {
 		werr := session.Wait()
 		m.reqCh <- mcpReq{kind: evCrashed, server: name, generation: gen, err: waitErr(werr)}
 	}()
+}
+
+// buildTransport constructs the SDK transport for a server from its configured
+// transport kind. stdio spawns a child process and routes its stderr into the
+// server's log ring; http/streamable and sse connect to a remote URL, with any
+// configured headers injected on every request. startServer has already
+// validated that the required Command/URL is present for the kind.
+func (m *Manager) buildTransport(name string, cfg ServerConfig) (mcp.Transport, error) {
+	switch cfg.transportKind() {
+	case "stdio":
+		cmd := exec.Command(cfg.Command, cfg.Args...) //nolint:gosec // user-approved server command
+		cmd.Env = os.Environ()
+		for k, v := range cfg.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		// Route stderr into the server's ring via events so the manager goroutine
+		// remains the sole owner of the ring buffer.
+		cmd.Stderr = &logWriter{ch: m.reqCh, server: name}
+		return &mcp.CommandTransport{Command: cmd}, nil
+	case "http", "streamable":
+		return &mcp.StreamableClientTransport{
+			Endpoint:   cfg.URL,
+			HTTPClient: httpClientWithHeaders(cfg.Headers),
+		}, nil
+	case "sse":
+		return &mcp.SSEClientTransport{
+			Endpoint:   cfg.URL,
+			HTTPClient: httpClientWithHeaders(cfg.Headers),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported transport %q", cfg.transportKind())
+	}
+}
+
+// httpClientWithHeaders returns an *http.Client that injects the given static
+// headers (e.g. Authorization) on every request. It returns nil when there are
+// no headers, so the SDK falls back to its default client.
+func httpClientWithHeaders(headers map[string]string) *http.Client {
+	if len(headers) == 0 {
+		return nil
+	}
+	return &http.Client{Transport: &headerRoundTripper{headers: headers, base: http.DefaultTransport}}
+}
+
+// headerRoundTripper is an http.RoundTripper that sets static headers on each
+// outgoing request before delegating to base.
+type headerRoundTripper struct {
+	headers map[string]string
+	base    http.RoundTripper
+}
+
+func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone so the shared request template is never mutated.
+	req = req.Clone(req.Context())
+	for k, v := range h.headers {
+		req.Header.Set(k, v)
+	}
+	return h.base.RoundTrip(req)
 }
 
 // relist re-fetches the tool list after a tools/list_changed notification.

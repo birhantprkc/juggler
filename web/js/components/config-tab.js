@@ -29,33 +29,64 @@
 // ---------------------------------------------------------------------------
 
 /**
- * One subprocess entry as stored in a scope's config map.
+ * One subprocess entry as stored in a scope's config map. stdio entries carry
+ * `command`/`args`/`env`; remote (http/sse) entries carry `transport`/`url` and
+ * optional `headers` instead.
  * @typedef {object} SubprocessConfig
- * @property {string} command - Executable to launch
+ * @property {string} [command] - Executable to launch (stdio transport)
  * @property {string[]} [args] - Command arguments (each may contain spaces)
  * @property {Record<string,string>} [env] - Environment variables
+ * @property {string} [transport] - "stdio" (default), "http"/"streamable", or "sse"
+ * @property {string} [url] - Endpoint URL (http/sse transports)
+ * @property {Record<string,string>} [headers] - Extra request headers (http/sse transports)
  * @property {boolean} [enabled] - Whether the entry is active
  */
 
 /**
- * Convert the add/edit form's working state into a clean config entry: empty
- * `args`/`env` are omitted, arg strings are kept verbatim (never split on
- * spaces), blank env keys are dropped, and `enabled` is coerced to a boolean.
- * @param {{command?: string, args?: string[], env?: Record<string,string>, enabled?: boolean}} form
+ * The transport kinds that connect to a remote URL rather than spawning a
+ * subprocess.
+ * @param {string} [transport]
+ * @returns {boolean} True for http/streamable/sse.
+ */
+export function isRemoteTransport(transport) {
+  return transport === 'http' || transport === 'streamable' || transport === 'sse';
+}
+
+/**
+ * Convert the add/edit form's working state into a clean config entry. For a
+ * remote (http/sse) transport the entry carries `transport`/`url` plus any
+ * non-blank `headers`; otherwise it is an stdio entry with `command`/`args`/`env`
+ * (empty `args`/`env` omitted, arg strings kept verbatim, blank keys dropped).
+ * `enabled` is always coerced to a boolean.
+ * @param {{command?: string, args?: string[], env?: Record<string,string>, transport?: string, url?: string, headers?: Record<string,string>, enabled?: boolean}} form
  * @returns {SubprocessConfig} The config entry to persist under the entry's name.
  */
 export function configFormToConfig(form) {
   /** @type {SubprocessConfig} */
-  const entry = { command: (form.command || '').trim() };
-  const args = (form.args || []).filter((a) => a !== '' && a !== null && a !== undefined);
-  if (args.length) entry.args = args;
-  /** @type {Record<string, string>} */
-  const env = {};
-  for (const [k, v] of Object.entries(form.env || {})) {
-    const key = (k || '').trim();
-    if (key) env[key] = v === null || v === undefined ? '' : String(v);
+  const entry = {};
+  if (isRemoteTransport(form.transport)) {
+    entry.transport = form.transport;
+    const url = (form.url || '').trim();
+    if (url) entry.url = url;
+    /** @type {Record<string, string>} */
+    const headers = {};
+    for (const [k, v] of Object.entries(form.headers || {})) {
+      const key = (k || '').trim();
+      if (key) headers[key] = v === null || v === undefined ? '' : String(v);
+    }
+    if (Object.keys(headers).length) entry.headers = headers;
+  } else {
+    entry.command = (form.command || '').trim();
+    const args = (form.args || []).filter((a) => a !== '' && a !== null && a !== undefined);
+    if (args.length) entry.args = args;
+    /** @type {Record<string, string>} */
+    const env = {};
+    for (const [k, v] of Object.entries(form.env || {})) {
+      const key = (k || '').trim();
+      if (key) env[key] = v === null || v === undefined ? '' : String(v);
+    }
+    if (Object.keys(env).length) entry.env = env;
   }
-  if (Object.keys(env).length) entry.env = env;
   entry.enabled = form.enabled !== false;
   return entry;
 }
@@ -165,6 +196,10 @@ export function makeNameValidator({ article, noun, reserved, reservedMsg }) {
  * @property {string} argRestPlaceholder - Placeholder for subsequent argument rows.
  * @property {string} envKeyPlaceholder - Placeholder for env-var key inputs.
  * @property {string} saveFailMsg - Fallback message when a save fails.
+ * @property {boolean} [supportsTransport] - Offer a transport selector (stdio/http/sse) with URL + headers fields for remote servers.
+ * @property {string} [urlPlaceholder] - Placeholder for the URL input (transport-capable tabs).
+ * @property {string} [urlHint] - Hint shown under the URL input (transport-capable tabs).
+ * @property {string} [headerKeyPlaceholder] - Placeholder for header-name inputs (transport-capable tabs).
  * @property {(ctx: {entry: object, enabled: boolean, scope: string, name: string}) => Promise<void>} [onAfterSave] - Best-effort hook after a successful save.
  */
 
@@ -554,6 +589,9 @@ export class ConfigTabController {
         mode: 'edit',
         scope,
         name,
+        transport: cfg.transport || 'stdio',
+        url: cfg.url || '',
+        headerPairs: Object.entries(cfg.headers || {}).map(([key, value]) => ({ key, value: String(value) })),
         command: cfg.command || '',
         args: Array.isArray(cfg.args) ? cfg.args.slice() : [],
         envPairs: Object.entries(cfg.env || {}).map(([key, value]) => ({ key, value: String(value) })),
@@ -565,6 +603,9 @@ export class ConfigTabController {
         mode: 'add',
         scope: 'global',
         name: '',
+        transport: 'stdio',
+        url: '',
+        headerPairs: [],
         command: '',
         args: [],
         envPairs: [],
@@ -619,6 +660,101 @@ export class ConfigTabController {
     wrap.appendChild(this._formField('Scope', scopeSelect,
       f.mode === 'edit' ? `Moving scope means deleting and re-adding the ${spec.noun}.` : ''));
 
+    // Transport (transport-capable tabs only): switches between the stdio field
+    // group (command/args/env) and the remote field group (url/headers).
+    if (spec.supportsTransport) {
+      const transportSelect = document.createElement('select');
+      transportSelect.className = `mcp-input ${spec.id}-transport-input`;
+      /** @type {Array<[string, string]>} */
+      const transportOptions = [
+        ['stdio', 'Local process (stdio)'],
+        ['http', 'Remote (HTTP)'],
+        ['sse', 'Remote (SSE)'],
+      ];
+      for (const [val, label] of transportOptions) {
+        const opt = document.createElement('option');
+        opt.value = val;
+        opt.textContent = label;
+        transportSelect.appendChild(opt);
+      }
+      transportSelect.value = isRemoteTransport(f.transport) ? f.transport : 'stdio';
+      transportSelect.addEventListener('change', () => {
+        // Persist visible fields before swapping the field group.
+        this._syncFormState();
+        f.transport = transportSelect.value;
+        this.render();
+      });
+      wrap.appendChild(this._formField('Transport', transportSelect,
+        'A local process (stdio) or a remote MCP endpoint (HTTP/SSE).'));
+    }
+
+    if (spec.supportsTransport && isRemoteTransport(f.transport)) {
+      this._buildRemoteFields(f, wrap);
+    } else {
+      this._buildStdioFields(f, wrap);
+    }
+
+    // Enabled
+    const enabledField = document.createElement('div');
+    enabledField.className = 'mcp-form-field mcp-enabled-field';
+    const enabledToggle = document.createElement('label');
+    enabledToggle.className = 'mcp-toggle-wrap';
+    const enabledCb = document.createElement('input');
+    enabledCb.type = 'checkbox';
+    enabledCb.className = `provider-toggle ${spec.id}-enabled-input`;
+    enabledCb.checked = f.enabled !== false;
+    const enabledSw = document.createElement('span');
+    enabledSw.className = 'toggle-switch';
+    enabledToggle.appendChild(enabledCb);
+    enabledToggle.appendChild(enabledSw);
+    const enabledText = document.createElement('span');
+    enabledText.className = 'mcp-field-label';
+    enabledText.textContent = 'Enabled';
+    enabledField.appendChild(enabledText);
+    enabledField.appendChild(enabledToggle);
+    wrap.appendChild(enabledField);
+
+    // Inline error
+    if (f.error) {
+      const err = document.createElement('div');
+      err.className = 'key-source-hint mcp-error-hint';
+      err.style.display = 'block';
+      err.textContent = f.error;
+      wrap.appendChild(err);
+    }
+
+    // Actions
+    const actions = document.createElement('div');
+    actions.className = 'mcp-form-actions';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'settings-btn primary small';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', () => this._save());
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'settings-btn small';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+      this.editing = null;
+      this.render();
+    });
+    actions.appendChild(cancelBtn);
+    actions.appendChild(saveBtn);
+    wrap.appendChild(actions);
+
+    return wrap;
+  }
+
+  /**
+   * Append the stdio field group (Command, repeatable Arguments, repeatable
+   * Environment variables) to the form.
+   * @param {any} f - The form working state.
+   * @param {HTMLElement} wrap - The form element to append to.
+   */
+  _buildStdioFields(f, wrap) {
+    const spec = this.spec;
+
     // Command
     const cmdInput = document.createElement('input');
     cmdInput.type = 'text';
@@ -672,57 +808,47 @@ export class ConfigTabController {
     envField.appendChild(addEnv);
     wrap.appendChild(envField);
     this._renderEnvList(envList);
+  }
 
-    // Enabled
-    const enabledField = document.createElement('div');
-    enabledField.className = 'mcp-form-field mcp-enabled-field';
-    const enabledToggle = document.createElement('label');
-    enabledToggle.className = 'mcp-toggle-wrap';
-    const enabledCb = document.createElement('input');
-    enabledCb.type = 'checkbox';
-    enabledCb.className = `provider-toggle ${spec.id}-enabled-input`;
-    enabledCb.checked = f.enabled !== false;
-    const enabledSw = document.createElement('span');
-    enabledSw.className = 'toggle-switch';
-    enabledToggle.appendChild(enabledCb);
-    enabledToggle.appendChild(enabledSw);
-    const enabledText = document.createElement('span');
-    enabledText.className = 'mcp-field-label';
-    enabledText.textContent = 'Enabled';
-    enabledField.appendChild(enabledText);
-    enabledField.appendChild(enabledToggle);
-    wrap.appendChild(enabledField);
+  /**
+   * Append the remote (http/sse) field group (URL, repeatable Headers) to the
+   * form.
+   * @param {any} f - The form working state.
+   * @param {HTMLElement} wrap - The form element to append to.
+   */
+  _buildRemoteFields(f, wrap) {
+    const spec = this.spec;
 
-    // Inline error
-    if (f.error) {
-      const err = document.createElement('div');
-      err.className = 'key-source-hint mcp-error-hint';
-      err.style.display = 'block';
-      err.textContent = f.error;
-      wrap.appendChild(err);
-    }
+    // URL
+    const urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.className = `mcp-input ${spec.id}-url-input`;
+    urlInput.placeholder = spec.urlPlaceholder || 'https://example.com/mcp';
+    urlInput.value = f.url || '';
+    wrap.appendChild(this._formField('URL', urlInput, spec.urlHint || 'The remote MCP endpoint URL.'));
 
-    // Actions
-    const actions = document.createElement('div');
-    actions.className = 'mcp-form-actions';
-    const saveBtn = document.createElement('button');
-    saveBtn.type = 'button';
-    saveBtn.className = 'settings-btn primary small';
-    saveBtn.textContent = 'Save';
-    saveBtn.addEventListener('click', () => this._save());
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'settings-btn small';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => {
-      this.editing = null;
-      this.render();
+    // Headers
+    const headersField = document.createElement('div');
+    headersField.className = 'mcp-form-field';
+    const headersLabel = document.createElement('label');
+    headersLabel.className = 'mcp-field-label';
+    headersLabel.textContent = 'Headers';
+    headersField.appendChild(headersLabel);
+    const headersList = document.createElement('div');
+    headersList.className = 'mcp-env-list';
+    headersField.appendChild(headersList);
+    const addHeader = document.createElement('button');
+    addHeader.type = 'button';
+    addHeader.className = 'settings-btn small mcp-add-row';
+    addHeader.textContent = 'Add header';
+    addHeader.addEventListener('click', () => {
+      f.headerPairs = this._readHeaderPairs();
+      f.headerPairs.push({ key: '', value: '' });
+      this._renderHeadersList(headersList);
     });
-    actions.appendChild(cancelBtn);
-    actions.appendChild(saveBtn);
-    wrap.appendChild(actions);
-
-    return wrap;
+    headersField.appendChild(addHeader);
+    wrap.appendChild(headersField);
+    this._renderHeadersList(headersList);
   }
 
   /**
@@ -833,6 +959,57 @@ export class ConfigTabController {
   }
 
   /**
+   * Rebuild the repeatable header rows into `container` from working state.
+   * Value inputs are masked, with a per-row reveal (headers such as
+   * Authorization are secret-ish).
+   * @param {HTMLElement} container
+   */
+  _renderHeadersList(container) {
+    const spec = this.spec;
+    container.innerHTML = '';
+    /** @type {Array<{key: string, value: string}>} */
+    const pairs = this.editing.headerPairs || [];
+    pairs.forEach((pair, i) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = `mcp-repeat-row ${spec.id}-header-row`;
+      const key = document.createElement('input');
+      key.type = 'text';
+      key.className = `mcp-input ${spec.id}-header-key`;
+      key.placeholder = spec.headerKeyPlaceholder || 'Authorization';
+      key.value = pair.key;
+      const value = document.createElement('input');
+      value.type = 'password';
+      value.className = `mcp-input ${spec.id}-header-value`;
+      value.placeholder = 'value';
+      value.value = pair.value;
+      value.autocomplete = 'off';
+      const reveal = document.createElement('button');
+      reveal.type = 'button';
+      reveal.className = 'mcp-reveal-btn';
+      reveal.setAttribute('aria-label', 'Reveal value');
+      reveal.textContent = '👁';
+      reveal.addEventListener('click', () => {
+        value.type = value.type === 'password' ? 'text' : 'password';
+      });
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'mcp-remove-row';
+      remove.setAttribute('aria-label', 'Remove header');
+      remove.textContent = '×';
+      remove.addEventListener('click', () => {
+        this.editing.headerPairs = this._readHeaderPairs();
+        this.editing.headerPairs.splice(i, 1);
+        this._renderHeadersList(container);
+      });
+      rowEl.appendChild(key);
+      rowEl.appendChild(value);
+      rowEl.appendChild(reveal);
+      rowEl.appendChild(remove);
+      container.appendChild(rowEl);
+    });
+  }
+
+  /**
    * Read the current argument inputs from the DOM (source of truth between
    * add/remove operations).
    * @returns {string[]} The current argument values in row order.
@@ -854,6 +1031,47 @@ export class ConfigTabController {
   }
 
   /**
+   * Read the current header key/value rows from the DOM.
+   * @returns {Array<{key: string, value: string}>} The current header pairs in row order.
+   */
+  _readHeaderPairs() {
+    return Array.from(this.root.querySelectorAll(`.${this.spec.id}-header-row`)).map((rowEl) => ({
+      key: /** @type {HTMLInputElement} */ (rowEl.querySelector(`.${this.spec.id}-header-key`)).value,
+      value: /** @type {HTMLInputElement} */ (rowEl.querySelector(`.${this.spec.id}-header-value`)).value,
+    }));
+  }
+
+  /**
+   * Read every currently-rendered form field from the DOM into the working
+   * state. Only one field group (stdio or remote) is mounted at a time, so each
+   * read is guarded by the presence of its inputs; this lets the transport
+   * selector swap groups and _save persist without losing values.
+   */
+  _syncFormState() {
+    const spec = this.spec;
+    const f = this.editing;
+    if (!f) return;
+    const q = (/** @type {string} */ cls) => this.root.querySelector(`.${spec.id}-${cls}`);
+    if (f.mode !== 'edit') {
+      const nameEl = /** @type {HTMLInputElement|null} */ (q('name-input'));
+      if (nameEl) f.name = nameEl.value.trim();
+      const scopeEl = /** @type {HTMLSelectElement|null} */ (q('scope-input'));
+      if (scopeEl) f.scope = /** @type {'global'|'project'} */ (scopeEl.value);
+    }
+    const transportEl = /** @type {HTMLSelectElement|null} */ (q('transport-input'));
+    if (transportEl) f.transport = transportEl.value;
+    const cmdEl = /** @type {HTMLInputElement|null} */ (q('command-input'));
+    if (cmdEl) f.command = cmdEl.value.trim();
+    const urlEl = /** @type {HTMLInputElement|null} */ (q('url-input'));
+    if (urlEl) f.url = urlEl.value.trim();
+    if (this.root.querySelector(`.${spec.id}-arg-input`)) f.args = this._readArgs();
+    if (this.root.querySelector(`.${spec.id}-env-row`)) f.envPairs = this._readEnvPairs();
+    if (this.root.querySelector(`.${spec.id}-header-row`)) f.headerPairs = this._readHeaderPairs();
+    const enabledEl = /** @type {HTMLInputElement|null} */ (q('enabled-input'));
+    if (enabledEl) f.enabled = enabledEl.checked;
+  }
+
+  /**
    * Validate the form, build the config entry, write the whole scope map back,
    * and (on success) return to a freshly-fetched list. On validation failure the
    * form stays open with an inline error.
@@ -864,23 +1082,10 @@ export class ConfigTabController {
     if (!f) return;
 
     // Read every field from the DOM so nothing is lost between row rebuilds.
-    const nameEl = /** @type {HTMLInputElement} */ (this.root.querySelector(`.${spec.id}-name-input`));
-    const scopeEl = /** @type {HTMLSelectElement} */ (this.root.querySelector(`.${spec.id}-scope-input`));
-    const cmdEl = /** @type {HTMLInputElement} */ (this.root.querySelector(`.${spec.id}-command-input`));
-    const enabledEl = /** @type {HTMLInputElement} */ (this.root.querySelector(`.${spec.id}-enabled-input`));
-    const name = f.mode === 'edit' ? f.name : (nameEl ? nameEl.value.trim() : '');
-    const scope = f.mode === 'edit' ? f.scope : (scopeEl ? /** @type {'global'|'project'} */ (scopeEl.value) : 'global');
-    const command = cmdEl ? cmdEl.value.trim() : '';
-    const args = this._readArgs();
-    const envPairs = this._readEnvPairs();
-    const enabled = enabledEl ? enabledEl.checked : true;
-
-    // Persist back into working state so a re-render (on error) keeps input.
-    f.command = command;
-    f.args = args;
-    f.envPairs = envPairs;
-    f.enabled = enabled;
-    if (f.mode !== 'edit') { f.name = name; f.scope = scope; }
+    this._syncFormState();
+    const name = f.name;
+    const scope = /** @type {'global'|'project'} */ (f.scope || 'global');
+    const remote = !!spec.supportsTransport && isRemoteTransport(f.transport);
 
     // Validate.
     if (f.mode !== 'edit') {
@@ -888,15 +1093,29 @@ export class ConfigTabController {
       const err = spec.validateName(name, Object.keys(targetMap || {}));
       if (err) { f.error = err; this.render(); return; }
     }
-    if (!command) { f.error = 'Command is required.'; this.render(); return; }
-    for (const p of envPairs) {
-      if (!p.key.trim() && p.value) { f.error = 'Every environment variable needs a name.'; this.render(); return; }
+    if (remote) {
+      if (!f.url) { f.error = 'URL is required for a remote server.'; this.render(); return; }
+      for (const p of (f.headerPairs || [])) {
+        if (!p.key.trim() && p.value) { f.error = 'Every header needs a name.'; this.render(); return; }
+      }
+    } else {
+      if (!f.command) { f.error = 'Command is required.'; this.render(); return; }
+      for (const p of (f.envPairs || [])) {
+        if (!p.key.trim() && p.value) { f.error = 'Every environment variable needs a name.'; this.render(); return; }
+      }
     }
 
     /** @type {Record<string, string>} */
     const env = {};
-    for (const p of envPairs) { const k = p.key.trim(); if (k) env[k] = p.value; }
-    const entry = configFormToConfig({ command, args, env, enabled });
+    for (const p of (f.envPairs || [])) { const k = p.key.trim(); if (k) env[k] = p.value; }
+    /** @type {Record<string, string>} */
+    const headers = {};
+    for (const p of (f.headerPairs || [])) { const k = p.key.trim(); if (k) headers[k] = p.value; }
+    const entry = configFormToConfig({
+      transport: f.transport, url: f.url, headers,
+      command: f.command, args: f.args, env,
+      enabled: f.enabled,
+    });
 
     const src = scope === 'project' ? this.config.project : this.config.global;
     try {
@@ -907,7 +1126,7 @@ export class ConfigTabController {
       return;
     }
     this.editing = null;
-    if (spec.onAfterSave) await spec.onAfterSave({ entry, enabled, scope, name });
+    if (spec.onAfterSave) await spec.onAfterSave({ entry, enabled: f.enabled !== false, scope, name });
     await this.refresh();
   }
 }

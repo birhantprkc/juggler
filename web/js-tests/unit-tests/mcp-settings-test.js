@@ -19,6 +19,7 @@ import {
   deleteConfigEntry as mcpDeleteMap,
   setConfigEntryEnabled as mcpSetEnabledMap,
   configScopeOf as mcpScopeOf,
+  isRemoteTransport,
 } from '../../js/components/config-tab.js';
 import {
   formatMcpTokenCost,
@@ -124,6 +125,55 @@ export async function runTests(_ctx) {
     assert(entry.args.length === 2 && entry.args[0] === 'a' && entry.args[1] === 'b', 'blank arg not filtered');
     assert(entry.env && !('' in entry.env) && entry.env.OK === 'y', 'blank env key not dropped');
     assert(entry.enabled === true, 'enabled should default true');
+  });
+
+  await run('form→config: stdio omits transport/url/headers', () => {
+    const entry = mcpFormToConfig({ command: 'run', enabled: true });
+    assert(!('transport' in entry), 'stdio should not carry transport');
+    assert(!('url' in entry), 'stdio should not carry url');
+    assert(!('headers' in entry), 'stdio should not carry headers');
+  });
+
+  // --- isRemoteTransport ----------------------------------------------------
+
+  await run('isRemoteTransport: http/streamable/sse are remote, stdio is not', () => {
+    assert(isRemoteTransport('http'), 'http should be remote');
+    assert(isRemoteTransport('streamable'), 'streamable should be remote');
+    assert(isRemoteTransport('sse'), 'sse should be remote');
+    assert(!isRemoteTransport('stdio'), 'stdio should not be remote');
+    assert(!isRemoteTransport(undefined), 'undefined should not be remote');
+  });
+
+  // --- mcpFormToConfig (remote transports) ----------------------------------
+
+  await run('form→config: http entry carries transport + url, omits command/args/env', () => {
+    const entry = mcpFormToConfig({
+      transport: 'http', url: '  https://scite.ai/mcp  ',
+      command: 'ignored', args: ['x'], env: { A: 'b' }, enabled: true,
+    });
+    assert(entry.transport === 'http', 'transport not set');
+    assert(entry.url === 'https://scite.ai/mcp', 'url not trimmed/set');
+    assert(!('command' in entry), 'remote entry should not carry command');
+    assert(!('args' in entry), 'remote entry should not carry args');
+    assert(!('env' in entry), 'remote entry should not carry env');
+    assert(entry.enabled === true, 'enabled not set');
+  });
+
+  await run('form→config: remote keeps non-blank headers, drops blank keys', () => {
+    const entry = mcpFormToConfig({
+      transport: 'sse', url: 'https://x/mcp',
+      headers: { Authorization: 'Bearer t', '': 'skip' },
+    });
+    assert(entry.transport === 'sse', 'sse transport not set');
+    assert(entry.headers && entry.headers.Authorization === 'Bearer t', 'header not preserved');
+    assert(!('' in entry.headers), 'blank header key not dropped');
+  });
+
+  await run('form→config: remote omits empty headers and blank url', () => {
+    const entry = mcpFormToConfig({ transport: 'http', url: '   ', headers: {} });
+    assert(entry.transport === 'http', 'transport not set');
+    assert(!('url' in entry), 'blank url should be omitted');
+    assert(!('headers' in entry), 'empty headers should be omitted');
   });
 
   // --- whole-scope-map producers -------------------------------------------

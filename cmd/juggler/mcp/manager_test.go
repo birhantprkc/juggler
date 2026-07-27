@@ -7,6 +7,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -204,6 +206,159 @@ func TestManagerCrashMarksFailed(t *testing.T) {
 	if _, err := m.CallTool(context.Background(), "boom", "whatever", nil); err == nil {
 		t.Errorf("expected error calling a failed server")
 	}
+}
+
+// newHTTPFakeServer starts an httptest server speaking the streamable-HTTP MCP
+// transport via the official SDK handler. If wantAuth is non-empty, requests
+// must carry a matching Authorization header or they are rejected with 401.
+func newHTTPFakeServer(t *testing.T, wantAuth string) *httptest.Server {
+	t.Helper()
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		srv := mcp.NewServer(&mcp.Implementation{Name: "fake-http", Version: "8.8.8"}, nil)
+		srv.AddTool(&mcp.Tool{
+			Name:        "echo",
+			Description: "Echo the arguments back",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"msg": map[string]any{"type": "string"}}},
+		}, echoHandler)
+		return srv
+	}, nil)
+	var h http.Handler = handler
+	if wantAuth != "" {
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != wantAuth {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			handler.ServeHTTP(w, r)
+		})
+	}
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestManagerHTTPTransport(t *testing.T) {
+	ts := newHTTPFakeServer(t, "")
+	writeGlobalConfig(t, map[string]ServerConfig{
+		"remote": {Transport: "http", URL: ts.URL},
+	})
+
+	m := NewManager()
+	m.Start()
+	m.Reconcile("")
+
+	if !waitFor(t, 15*time.Second, func() bool {
+		for _, s := range m.ListServers() {
+			if s.Name == "remote" && s.Status == statusRunning {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("http server never reached running: %+v", m.ListServers())
+	}
+
+	if tools := m.ListTools("remote"); len(tools) != 1 || tools[0].Name != "echo" {
+		t.Fatalf("want one echo tool, got %+v", tools)
+	}
+
+	res, err := m.CallTool(context.Background(), "remote", "echo", map[string]any{"msg": "hi"})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	got := convertContent(res.Content)
+	if len(got) != 1 || !strings.Contains(got[0]["text"].(string), `"msg":"hi"`) {
+		t.Fatalf("echo did not round-trip args: %+v", got)
+	}
+
+	// Close the session so the standalone SSE stream drains before httptest's
+	// Close (registered earlier, so it runs after this) waits on connections.
+	stopAndWait(t, m, "remote")
+}
+
+// stopAndWait stops a running server and blocks until it reports stopped, so any
+// persistent HTTP/SSE connection is torn down before the test's httptest.Server
+// is closed.
+func stopAndWait(t *testing.T, m *Manager, name string) {
+	t.Helper()
+	if err := m.Control(name, "stop"); err != nil {
+		t.Fatalf("stop %q: %v", name, err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		for _, s := range m.ListServers() {
+			if s.Name == name {
+				return s.Status == statusStopped
+			}
+		}
+		return false
+	})
+}
+
+func TestManagerHTTPHeaders(t *testing.T) {
+	ts := newHTTPFakeServer(t, "Bearer sekret")
+
+	// Without the header the connection is rejected.
+	writeGlobalConfig(t, map[string]ServerConfig{"noauth": {Transport: "http", URL: ts.URL}})
+	m := NewManager()
+	m.Start()
+	m.Reconcile("")
+	if !waitFor(t, 15*time.Second, func() bool {
+		for _, s := range m.ListServers() {
+			if s.Name == "noauth" && s.Status == statusFailed {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("unauthenticated http server should have failed: %+v", m.ListServers())
+	}
+
+	// With the header it connects and discovers tools.
+	writeGlobalConfig(t, map[string]ServerConfig{
+		"auth": {Transport: "http", URL: ts.URL, Headers: map[string]string{"Authorization": "Bearer sekret"}},
+	})
+	m2 := NewManager()
+	m2.Start()
+	m2.Reconcile("")
+	if !waitFor(t, 15*time.Second, func() bool {
+		for _, s := range m2.ListServers() {
+			if s.Name == "auth" && s.Status == statusRunning {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("authenticated http server never reached running: %+v", m2.ListServers())
+	}
+	if tools := m2.ListTools("auth"); len(tools) != 1 {
+		t.Fatalf("want one tool from authed server, got %+v", tools)
+	}
+	stopAndWait(t, m2, "auth")
+}
+
+func TestManagerTransportValidation(t *testing.T) {
+	writeGlobalConfig(t, map[string]ServerConfig{
+		"missing-url": {Transport: "http"},
+		"bogus":       {Transport: "carrier-pigeon", URL: "http://example.invalid"},
+	})
+	m := NewManager()
+	m.Start()
+	m.Reconcile("")
+
+	check := func(name, wantSubstr string) {
+		if !waitFor(t, 5*time.Second, func() bool {
+			for _, s := range m.ListServers() {
+				if s.Name == name {
+					return s.Status == statusFailed && strings.Contains(s.Error, wantSubstr)
+				}
+			}
+			return false
+		}) {
+			t.Fatalf("server %q not failed with %q: %+v", name, wantSubstr, m.ListServers())
+		}
+	}
+	check("missing-url", "no url configured")
+	check("bogus", "unsupported transport")
 }
 
 func TestConfigMergeProjectOverridesGlobal(t *testing.T) {
