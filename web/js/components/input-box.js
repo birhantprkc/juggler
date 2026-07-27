@@ -325,6 +325,10 @@ class InputBox extends HTMLElement {
       textarea,
       getWrapper: () => this.querySelector('input-box-wrapper'),
       onResize: () => this.autoResize(textarea),
+      // An argument-less slash command runs on the Enter/click that accepts it,
+      // so accepting it submits the composer directly instead of leaving the
+      // user to press Enter a second time.
+      onSubmit: () => this.sendMessage(),
       providers: [slashCommandProvider, fileMentionProvider],
     });
 

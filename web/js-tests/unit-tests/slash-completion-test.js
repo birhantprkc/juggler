@@ -11,9 +11,10 @@
  *   1. the slash provider triggers only at message start (a bare `/`, `/cl`),
  *      never mid-message and never for an `@` mention,
  *   2. its fetch is filtered by the typed prefix and offers /clear,
- *   3. accepting a command inserts `/name ` (text only) — matching the
- *      `@`-mention model where accept splices text and the user still presses
- *      Enter to run it,
+ *   3. accepting a command splices `/name ` and, for an argument-less command,
+ *      runs it on that same keystroke (submitAfterAccept → menu.onSubmit) so the
+ *      popup never asks for a second Enter; a command taking arguments splices
+ *      the text and waits for the user to type them,
  *   4. the input box wires slash + file-mention providers into one menu, with
  *      slash taking precedence at the message start.
  *
@@ -112,6 +113,17 @@ export async function runTests() {
       // insert() splices text only — "/name " with a trailing space, no send.
       assert(slashCommandProvider.insert({ name: 'clear' }) === '/clear ',
         'insert must produce "/clear " (text only)');
+
+      // submitAfterAccept() decides whether accepting the item runs it on the
+      // same keystroke. An argument-less command is runnable as-is, so it
+      // submits; one declaring an argsHint expects arguments next, so it does
+      // not; the synthetic "New command…" row opens a dialog, never submits.
+      assert(slashCommandProvider.submitAfterAccept({ name: 'clear' }) === true,
+        'an argument-less command must submit on accept');
+      assert(slashCommandProvider.submitAfterAccept({ name: 'review', argsHint: '<pr>' }) === false,
+        'a command declaring an argsHint must NOT submit on accept');
+      assert(slashCommandProvider.submitAfterAccept({ action: 'new-command', query: 'x' }) === false,
+        'the New command row must NOT submit on accept');
       passed++;
     } catch (e) {
       failed++;
@@ -155,16 +167,24 @@ export async function runTests() {
     }
   }
 
-  // ── Test 3: accepting a command inserts "/name " and closes the menu ──────
+  // ── Test 3: accepting a command splices "/name " and runs it in one step ──
   // Driven from explicit menu state, exactly as the @-mention test driver does
   // (bypasses the debounced fetch + popup surface, which are timer/layout bound).
+  // An argument-less command submits on the accepting keystroke (menu.onSubmit),
+  // so the popup never demands a second Enter; a command taking arguments splices
+  // the text and waits, leaving the caret after "/name " for the user to type.
   {
     const { box, textarea, container } = mountInputBox();
     try {
       const menu = box._completions;
+
+      // Spy on the composer submit the menu was wired to fire.
+      let submits = 0;
+      menu._onSubmit = () => { submits++; };
+
+      // (a) Argument-less command: splices "/clear " AND submits once.
       textarea.value = '/cl';
       textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
-
       menu._provider = slashCommandProvider;
       menu._anchorPos = 0;
       menu._items = [{ name: 'clear', label: 'Clear', description: 'Clear the conversation' }];
@@ -174,12 +194,29 @@ export async function runTests() {
       menu.accept();
 
       assert(textarea.value === '/clear ',
-        `accepting /clear must insert "/clear " (text only), got ${JSON.stringify(textarea.value)}`);
+        `accepting /clear must splice "/clear ", got ${JSON.stringify(textarea.value)}`);
+      assert(submits === 1, `accepting an argument-less command must submit once, got ${submits}`);
       assert(!menu.isActive(), 'accepting a command must close the menu');
+
+      // (b) Command taking arguments: splices text, does NOT submit.
+      submits = 0;
+      textarea.value = '/rev';
+      textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+      menu._provider = slashCommandProvider;
+      menu._anchorPos = 0;
+      menu._items = [{ name: 'review', description: 'Review a PR', argsHint: '<pr>' }];
+      menu._index = 0;
+      menu._active = true;
+
+      menu.accept();
+
+      assert(textarea.value === '/review ',
+        `accepting /review must splice "/review ", got ${JSON.stringify(textarea.value)}`);
+      assert(submits === 0, `accepting a command with arguments must NOT submit, got ${submits}`);
       passed++;
     } catch (e) {
       failed++;
-      errors.push('slash-accept-inserts-text: ' + (e instanceof Error ? e.message : String(e)));
+      errors.push('slash-accept-runs-or-waits: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       box._completions.close();
       container.remove();

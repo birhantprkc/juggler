@@ -12,9 +12,10 @@ import { openCommandEditor } from './command-editor-dialog.js';
  * Fires only when the message begins with `/` and the caret is still inside
  * that first command token (no space typed yet) — so it never competes with an
  * `@` mention or a `/` typed mid-sentence, and matches the "slash at the start
- * of the message" affordance. Accepting a command inserts its text (`/name `)
- * and leaves the caret there; the user presses Enter to run it, exactly like
- * an accepted `@` mention only splices text.
+ * of the message" affordance. Accepting a command inserts its text (`/name `);
+ * an argument-less command then runs on that same keystroke (see
+ * `submitAfterAccept`), while a command declaring an `argsHint` leaves the caret
+ * after `/name ` so the user can type its arguments before pressing Enter.
  *
  * User-defined commands appear alongside built-ins with a small provenance badge
  * ("user"/"project"). A pinned "New command…" row is offered last so that typing
@@ -111,6 +112,15 @@ export const slashCommandProvider = {
       return '';
     }
     return '/' + cmd.name + ' ';
+  },
+
+  submitAfterAccept(cmd) {
+    // A command that takes no arguments is runnable the instant it is accepted,
+    // so fire it on that same Enter/click rather than splicing "/name " and
+    // waiting for a second Enter. Commands that declare an argsHint expect the
+    // user to type arguments next, so those keep the accept-then-send flow. The
+    // synthetic "New command…" row opens a dialog (never submits the composer).
+    return cmd.action !== 'new-command' && !cmd.argsHint;
   },
 
   tabCompleteReplacement(items, query) {

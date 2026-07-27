@@ -49,6 +49,11 @@ export function longestCommonPrefix(strs) {
  * @property {(meta: any, query: string) => boolean} [closeOnBareEnter] - Whether
  *   Enter with nothing highlighted should just dismiss the menu (keeping the
  *   typed text) rather than fall through to the send handler.
+ * @property {(item: any, meta: any) => boolean} [submitAfterAccept] - Whether
+ *   accepting `item` should immediately submit the composer (via the menu's
+ *   `onSubmit`) instead of leaving the spliced text for the user to extend. Use
+ *   for a runnable-as-is completion (e.g. an argument-less slash command) so it
+ *   fires on a single Enter rather than accept-then-send.
  * @property {(items: any[], query: string, meta: any) => (string|null)} [tabCompleteReplacement]
  *   Replacement text for a Tab press with no single match (longest common
  *   prefix completion), or null when Tab should do nothing.
@@ -71,12 +76,16 @@ export class CompletionMenu {
    * @param {HTMLTextAreaElement} opts.textarea
    * @param {() => HTMLElement|null} opts.getWrapper - returns the wrapper element for dropdown positioning
    * @param {() => void} opts.onResize - called after text is spliced into the textarea
+   * @param {() => void} [opts.onSubmit] - called when an accepted item asks to
+   *   submit immediately (provider's `submitAfterAccept`), e.g. an argument-less
+   *   slash command that should run on a single Enter rather than accept-then-send.
    * @param {CompletionProvider[]} opts.providers - completion sources, tried in order
    */
-  constructor({ textarea, getWrapper, onResize, providers }) {
+  constructor({ textarea, getWrapper, onResize, onSubmit, providers }) {
     /** @private */ this._textarea = textarea;
     /** @private */ this._getWrapper = getWrapper;
     /** @private */ this._onResize = onResize;
+    /** @type {(() => void)|undefined} @private */ this._onSubmit = onSubmit;
     /** @type {CompletionProvider[]} @private */ this._providers = providers;
 
     /** @type {CompletionProvider|null} @private */ this._provider = null;
@@ -194,8 +203,10 @@ export class CompletionMenu {
 
   /**
    * Accept the highlighted item: splice the provider's replacement text over
-   * the span from the anchor to the caret, then close (re-opening if the
-   * provider asks to, e.g. after stepping into a directory).
+   * the span from the anchor to the caret, then close. If the provider marks the
+   * item `submitAfterAccept` (e.g. an argument-less slash command) the composer
+   * is submitted on this same keystroke; otherwise the provider may ask to
+   * re-open (e.g. after stepping into a directory).
    */
   accept() {
     const item = this._items[this._index];
@@ -211,11 +222,16 @@ export class CompletionMenu {
     textarea.selectionStart = textarea.selectionEnd = anchorPos + replacement.length;
     this._onResize();
 
-    const reopen = this._provider.reopenAfterAccept?.(item) ?? false;
+    // A runnable-as-is item (e.g. an argument-less slash command) submits on the
+    // same Enter that accepted it — one keystroke, not accept-then-send. Checked
+    // before reopen since submitting ends the interaction.
+    const submit = this._provider.submitAfterAccept?.(item, this._ctx) ?? false;
+    const reopen = !submit && (this._provider.reopenAfterAccept?.(item) ?? false);
     this.close();
     textarea.focus();
 
-    if (reopen) this.handleInput();
+    if (submit) this._onSubmit?.();
+    else if (reopen) this.handleInput();
   }
 
   /**

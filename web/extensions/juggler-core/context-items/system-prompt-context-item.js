@@ -912,10 +912,10 @@ class SystemPromptContextItem extends ContextItem {
     const today = (this.conversation?.created || new Date().toISOString()).split('T')[0] || '';
     const projectPath = this.session?.projectPath || '';
     if (!projectPath) {
-        // Field diagnostic: an empty working directory makes the env block read
-        // "Working directory: unknown", which invites the model to invent an
-        // absolute path. The session should be loaded (projectPath set) before
-        // any prompt is built; log if that invariant is ever violated.
+      // Field diagnostic: an empty working directory makes the env block read
+      // "Working directory: unknown", which invites the model to invent an
+      // absolute path. The session should be loaded (projectPath set) before
+      // any prompt is built; log if that invariant is ever violated.
       console.warn('[SystemPrompt] building env block with empty projectPath — "Working directory: unknown"');
     }
     const envBlock = buildEnvBlock(projectPath, this.session?.platform || '', today);
