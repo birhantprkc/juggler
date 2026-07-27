@@ -16,13 +16,6 @@ import (
 	"juggler/cmd/juggler/server/handlers"
 )
 
-// llmCompleteMaxTokensCeiling clamps the HTTP endpoint's requested output cap
-// regardless of what the caller (or plugin) asks for.
-const llmCompleteMaxTokensCeiling int64 = 512
-
-// llmCompleteDefaultMaxTokens is used when a request sets no positive maxTokens.
-const llmCompleteDefaultMaxTokens int64 = 256
-
 // llmCompleteTimeout bounds an HTTP-driven out-of-band completion. Slightly
 // longer than the auto-namer's own bound to accommodate larger caps.
 const llmCompleteTimeout = 30 * time.Second
@@ -37,7 +30,9 @@ const llmCompleteTimeout = 30 * time.Second
 //   - {provider, model, thinking?} → used as-is, validated against the live list.
 //
 // Response: {text, usage:{inputTokens, outputTokens, cachedTokens}}. maxTokens
-// is server-clamped to a sane ceiling.
+// is server-clamped by QuickComplete into a sane [floor, ceiling] band — the
+// floor gives a reasoning cheap model room to think, so plugins never starve it
+// into an empty reply.
 func (s *Server) handleLLMComplete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		System    string          `json:"system"`
@@ -60,19 +55,14 @@ func (s *Server) handleLLMComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	maxTokens := req.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = llmCompleteDefaultMaxTokens
-	}
-	if maxTokens > llmCompleteMaxTokensCeiling {
-		maxTokens = llmCompleteMaxTokensCeiling
-	}
-
 	res, err := s.QuickComplete(r.Context(), QuickCompleteRequest{
-		Model:     modelRef,
-		System:    req.System,
-		Prompt:    req.Prompt,
-		MaxTokens: maxTokens,
+		Model:  modelRef,
+		System: req.System,
+		Prompt: req.Prompt,
+		// MaxTokens passed through verbatim: QuickComplete is the single authority
+		// that clamps the output budget into [floor, ceiling], flooring it so a
+		// reasoning cheap model is not starved into an empty reply.
+		MaxTokens: req.MaxTokens,
 		Timeout:   llmCompleteTimeout,
 	})
 	if err != nil {

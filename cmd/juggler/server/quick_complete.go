@@ -24,11 +24,21 @@ const (
 	// quickCompleteDefaultTimeout is the wall-clock bound applied when a request
 	// leaves Timeout unset.
 	quickCompleteDefaultTimeout = 15 * time.Second
+	// quickCompleteMinMaxTokens is the floor for a request's output budget, and
+	// the single most important guardrail on this channel. A reasoning model
+	// (GLM, DeepSeek-R1, gpt-5-mini, gemini-2.5-flash) spends output-token budget
+	// on hidden chain-of-thought BEFORE it emits any visible text, so too small a
+	// cap truncates the turn at finish=length having produced nothing — an empty
+	// reply. The channel serves such models without being able to detect them in
+	// advance (GLM advertises no thinking capability yet reasons), so every
+	// caller — whatever it asks for — is floored to enough budget to think AND
+	// answer. The cap is only ever a ceiling on generation, never a target, so
+	// this costs a non-reasoning model nothing: it still stops at its natural end.
+	quickCompleteMinMaxTokens int64 = 2048
 	// quickCompleteMaxTokensCeiling hard-caps a request's output regardless of
-	// what the caller asks for — these are micro-tasks, not summaries.
-	quickCompleteMaxTokensCeiling int64 = 512
-	// quickCompleteDefaultMaxTokens is used when a caller sets no positive cap.
-	quickCompleteDefaultMaxTokens int64 = 32
+	// what the caller asks for — these are micro-tasks, not summaries. It sits
+	// above quickCompleteMinMaxTokens so the floor never exceeds the ceiling.
+	quickCompleteMaxTokensCeiling int64 = 4096
 )
 
 // ErrQuickCompleteBusy is returned when the out-of-band concurrency limit is
@@ -65,8 +75,9 @@ type QuickCompleteResult struct {
 // entered into the per-conversation cache), submits one user message,
 // accumulates only text content, and returns.
 //
-// Guardrails: an output cap (MaxOutputTokens), a wall-clock timeout, and a
-// server-wide concurrency limiter. Over-cap callers get ErrQuickCompleteBusy
+// Guardrails: an output budget floored for reasoning headroom and capped
+// (MaxOutputTokens), a wall-clock timeout, and a server-wide concurrency
+// limiter. Over-cap callers get ErrQuickCompleteBusy
 // immediately rather than queueing. Missing credentials, a submit error, or a
 // timeout are returned to the caller to handle (the auto-namer swallows them).
 func (s *Server) QuickComplete(ctx context.Context, req QuickCompleteRequest) (QuickCompleteResult, error) {
@@ -138,9 +149,12 @@ func (s *Server) QuickComplete(ctx context.Context, req QuickCompleteRequest) (Q
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Clamp the output budget into [floor, ceiling]. The floor guarantees a
+	// reasoning model room to think before answering (see quickCompleteMinMaxTokens);
+	// an unset or under-budget request is raised to it rather than starved.
 	maxTokens := req.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = quickCompleteDefaultMaxTokens
+	if maxTokens < quickCompleteMinMaxTokens {
+		maxTokens = quickCompleteMinMaxTokens
 	}
 	if maxTokens > quickCompleteMaxTokensCeiling {
 		maxTokens = quickCompleteMaxTokensCeiling

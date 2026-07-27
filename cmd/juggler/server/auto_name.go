@@ -38,8 +38,6 @@ const (
 	autoNameTimeout = 35 * time.Second
 	// autoNameCompleteTimeout bounds just one QuickComplete call.
 	autoNameCompleteTimeout = 15 * time.Second
-	// autoNameMaxTokens bounds the title output.
-	autoNameMaxTokens = 24
 )
 
 // autoNameSystemPrompt instructs the cheap model to label — not answer — the
@@ -139,11 +137,12 @@ func (s *Server) autoNameConversation(convID, firstMessage string, primary core.
 			system = autoNameRetrySystemPrompt
 		}
 		res, err := s.QuickComplete(ctx, QuickCompleteRequest{
-			Model:     cheap,
-			System:    system,
-			Prompt:    prompt,
-			MaxTokens: autoNameMaxTokens,
-			Timeout:   autoNameCompleteTimeout,
+			Model:  cheap,
+			System: system,
+			Prompt: prompt,
+			// MaxTokens left unset: QuickComplete floors the output budget so a
+			// reasoning cheap model has room to think before emitting the title.
+			Timeout: autoNameCompleteTimeout,
 		})
 		if err != nil {
 			jlog.Info("auto-name %s: completion failed (attempt %d/%d): %v", convID, attempt, autoNameMaxAttempts, err)
@@ -154,7 +153,16 @@ func (s *Server) autoNameConversation(convID, firstMessage string, primary core.
 			title = candidate
 			break
 		}
-		jlog.Info("auto-name %s: rejected candidate %q (attempt %d/%d)", convID, candidate, attempt, autoNameMaxAttempts)
+		if strings.TrimSpace(res.Text) == "" {
+			// No visible text at all — distinct from a bad title. The usual cause
+			// is a reasoning cheap model spending the whole output cap on hidden
+			// thinking (finish=length before any answer). Log the token usage so
+			// that case is recognisable rather than looking like a rejected title.
+			jlog.Info("auto-name %s: model returned no text (attempt %d/%d); input=%d output=%d tokens — a reasoning cheap model may have exhausted its output budget thinking",
+				convID, attempt, autoNameMaxAttempts, res.Usage.InputTokens, res.Usage.OutputTokens)
+		} else {
+			jlog.Info("auto-name %s: rejected candidate %q (attempt %d/%d)", convID, candidate, attempt, autoNameMaxAttempts)
+		}
 	}
 	if title == "" {
 		jlog.Info("auto-name %s: no acceptable title after %d attempts; leaving default name", convID, autoNameMaxAttempts)
