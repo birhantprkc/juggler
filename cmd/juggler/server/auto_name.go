@@ -99,11 +99,12 @@ func (s *Server) autoNamer() worker.AutoNameFunc {
 }
 
 // autoNameConversation derives and applies a short tab title for a freshly-used
-// conversation, out-of-band. Every failure mode — a non-default current name, no
-// resolvable cheap model, a completion error/timeout, empty sanitized output, or
-// a rename race — leaves the "Task N" name untouched, silently (debug log only).
-// There is deliberately no heuristic fallback: a dumb text-derived name is worse
-// than none.
+// conversation, out-of-band. Every failure mode leaves the "Task N" name
+// untouched: the ones the user would want explained — no resolvable cheap model,
+// a completion error/timeout, a rejected candidate, no acceptable title, a rename
+// error — log at info so they surface on the console; the benign guard skips (the
+// current name is no longer "Task N", or a rename race) return silently. There is
+// deliberately no heuristic fallback: a dumb text-derived name is worse than none.
 func (s *Server) autoNameConversation(convID, firstMessage string, primary core.ModelRef) {
 	sm := s.SessionManager()
 	if sm == nil {
@@ -121,7 +122,7 @@ func (s *Server) autoNameConversation(convID, firstMessage string, primary core.
 
 	cheap, ok := s.resolveCheapModel(ctx, primary)
 	if !ok {
-		jlog.Debug("auto-name %s: no cheap model resolvable; leaving default name", convID)
+		jlog.Info("auto-name %s: no cheap model resolvable; leaving default name", convID)
 		return
 	}
 
@@ -145,7 +146,7 @@ func (s *Server) autoNameConversation(convID, firstMessage string, primary core.
 			Timeout:   autoNameCompleteTimeout,
 		})
 		if err != nil {
-			jlog.Debug("auto-name %s: completion failed (attempt %d/%d): %v", convID, attempt, autoNameMaxAttempts, err)
+			jlog.Info("auto-name %s: completion failed (attempt %d/%d): %v", convID, attempt, autoNameMaxAttempts, err)
 			return
 		}
 		candidate := sanitizeAutoName(res.Text)
@@ -153,10 +154,10 @@ func (s *Server) autoNameConversation(convID, firstMessage string, primary core.
 			title = candidate
 			break
 		}
-		jlog.Debug("auto-name %s: rejected candidate %q (attempt %d/%d)", convID, candidate, attempt, autoNameMaxAttempts)
+		jlog.Info("auto-name %s: rejected candidate %q (attempt %d/%d)", convID, candidate, attempt, autoNameMaxAttempts)
 	}
 	if title == "" {
-		jlog.Debug("auto-name %s: no acceptable title after %d attempts; leaving default name", convID, autoNameMaxAttempts)
+		jlog.Info("auto-name %s: no acceptable title after %d attempts; leaving default name", convID, autoNameMaxAttempts)
 		return
 	}
 
@@ -168,7 +169,7 @@ func (s *Server) autoNameConversation(convID, firstMessage string, primary core.
 
 	canonical, err := sm.RenameConversation(convID, title)
 	if err != nil {
-		jlog.Debug("auto-name %s: rename failed: %v", convID, err)
+		jlog.Info("auto-name %s: rename failed: %v", convID, err)
 		return
 	}
 
