@@ -89,6 +89,7 @@ import { runTests as runReadFileActionTests } from '../unit-tests/read-file-acti
 import { runTests as runPathInputQuotesTests } from '../unit-tests/path-input-quotes-test.js';
 import { runTests as runSearchActionTests } from '../unit-tests/search-action-test.js';
 import { runTests as runToolCancellationTests } from '../unit-tests/tool-cancellation-test.js';
+import { runTests as runToolExecutionOrderTests } from '../unit-tests/tool-execution-order-test.js';
 import { runTests as runToolActionRenderTests } from '../unit-tests/tool-action-render-test.js';
 import { runTests as runSubmitPlanActionTests } from '../unit-tests/submit-plan-action-test.js';
 import { runTests as runPlanApprovalTests } from '../unit-tests/plan-approval-test.js';
@@ -281,6 +282,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:slash-completion', run: runSlashCompletionTests },
   { name: 'unit:search-action', run: runSearchActionTests },
   { name: 'unit:tool-cancellation', run: runToolCancellationTests },
+  { name: 'unit:tool-execution-order', run: runToolExecutionOrderTests },
   { name: 'unit:tool-action-render', run: runToolActionRenderTests },
   { name: 'unit:submit-plan-action', run: runSubmitPlanActionTests },
   { name: 'unit:plan-approval', run: runPlanApprovalTests },
