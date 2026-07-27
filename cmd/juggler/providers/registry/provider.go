@@ -655,6 +655,15 @@ type ProviderInfo struct {
 	// step, or no-op). Presentation/selection only — never sent on the wire as-is
 	// without validation against the live model list.
 	CheapModel string
+	// ForcedToolChoiceUnsupported marks a provider that cannot reliably honor a
+	// forced single-tool choice — local daemons and OpenAI-compatible gateways
+	// whose models either reject the tools array, answer a forced tool call as
+	// literal JSON text, or return nothing. The zero value (false) means forced
+	// tool choice is reliable, so natively-registered providers keep it. Bounded
+	// compaction reads this to pick its final-summary call: reliable providers
+	// force the return_result tool for clean structured output; the rest use a
+	// tool-free plain-text final that every model answers cleanly.
+	ForcedToolChoiceUnsupported bool
 }
 
 // EffectiveAuthType preserves the legacy convention where an empty

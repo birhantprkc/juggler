@@ -104,7 +104,21 @@ func (w *ConversationWorker) newBoundedReducer(kind string, pinnedModel ModelCon
 		dispatcher:     w,
 		cancelled:      w.compactionCancelled,
 		hooks:          w.compactionTapeHooks(kind),
+		finalUsesTool:  compactionFinalUsesTool(pinnedModel.Provider),
 	}
+}
+
+// compactionFinalUsesTool reports whether the final compaction call should force
+// the return_result tool for this provider. Providers that cannot reliably honor
+// a forced tool choice (local daemons and OpenAI-compatible gateways) instead get
+// a tool-free plain-text final call. An unregistered provider keeps the tool
+// path, preserving behavior for the mainstream providers.
+func compactionFinalUsesTool(providerName string) bool {
+	info, ok := provider.GetProviderInfo(providerName)
+	if !ok {
+		return true
+	}
+	return !info.ForcedToolChoiceUnsupported
 }
 
 // runReducer builds the reducer, runs it, and records the outcome. On error the
