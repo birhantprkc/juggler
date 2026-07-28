@@ -7,6 +7,7 @@ of changes; this project follows semantic versioning.
 
 - Fixed the Claude Code CLI re-opening its login page in the background when it wasn't the active provider
 - Fixed YOLO auto-approving AskUserQuestion — questions now still wait for your answer
+- Fixed various UI niggles, including some mobile layout problems
 
 ## [0.5.0] - 2026-07-26
 

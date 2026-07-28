@@ -91,6 +91,7 @@ import { runTests as runSearchActionTests } from '../unit-tests/search-action-te
 import { runTests as runToolCancellationTests } from '../unit-tests/tool-cancellation-test.js';
 import { runTests as runToolExecutionOrderTests } from '../unit-tests/tool-execution-order-test.js';
 import { runTests as runToolActionRenderTests } from '../unit-tests/tool-action-render-test.js';
+import { runTests as runExploreCodeFormatTests } from '../unit-tests/explore-code-format-test.js';
 import { runTests as runSubmitPlanActionTests } from '../unit-tests/submit-plan-action-test.js';
 import { runTests as runPlanApprovalTests } from '../unit-tests/plan-approval-test.js';
 import { runTests as runWebFetchTests } from '../unit-tests/test-webfetch.js';
@@ -284,6 +285,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:tool-cancellation', run: runToolCancellationTests },
   { name: 'unit:tool-execution-order', run: runToolExecutionOrderTests },
   { name: 'unit:tool-action-render', run: runToolActionRenderTests },
+  { name: 'unit:explore-code-format', run: runExploreCodeFormatTests },
   { name: 'unit:submit-plan-action', run: runSubmitPlanActionTests },
   { name: 'unit:plan-approval', run: runPlanApprovalTests },
   { name: 'unit:webfetch', run: runWebFetchTests },

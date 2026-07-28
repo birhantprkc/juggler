@@ -3803,6 +3803,7 @@ input-box .send-btn.is-empty {
         flex-basis: auto;
         flex-wrap: nowrap;
         min-width: 0;
+        flex-shrink: 1;
         gap: 0.375rem;
     }
 
