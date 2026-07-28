@@ -855,19 +855,27 @@ func threadArrayHasSystemPromptItem(arr *ycrdt.YArray) bool {
 // itemId, preserving order. No-op when the parent has no seed items. Callers
 // MUST hold ycrdtMu.
 func (cd *ConversationDocument) seedThreadFromParentLocked(parentArr, childArr *ycrdt.YArray) {
-	if parentArr == nil || childArr == nil {
-		return
-	}
-	seeds := collectSeedItemMaps(parentArr)
-	if len(seeds) == 0 {
+	if parentArr == nil || childArr == nil || len(collectSeedItemMaps(parentArr)) == 0 {
 		return
 	}
 	cd.doc.Transact(func(_ *ycrdt.Transaction) {
-		for i, src := range seeds {
-			clone := cloneContextItemYMap(src, generateItemID())
-			childArr.Insert(ycrdt.Number(i), ycrdt.ArrayAny{clone})
-		}
+		cd.seedThreadFromParentInTx(parentArr, childArr)
 	}, cd.txOrigin())
+}
+
+// seedThreadFromParentInTx performs the seed-clone inserts within the caller's
+// active transaction, taking the origin the caller established (untracked for
+// seedThreadFromParentLocked, authorID for the tracked create-thread path). Each
+// clone gets a fresh itemId; order is preserved. Callers MUST hold ycrdtMu and
+// be inside a Transact.
+func (cd *ConversationDocument) seedThreadFromParentInTx(parentArr, childArr *ycrdt.YArray) {
+	if parentArr == nil || childArr == nil {
+		return
+	}
+	for i, src := range collectSeedItemMaps(parentArr) {
+		clone := cloneContextItemYMap(src, generateItemID())
+		childArr.Insert(ycrdt.Number(i), ycrdt.ArrayAny{clone})
+	}
 }
 
 // SeedThreadFromParent clones parentArr's starting-context items into the head
