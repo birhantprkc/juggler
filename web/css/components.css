@@ -6192,7 +6192,7 @@ action-confirmation:focus {
     width: 100%;
     box-sizing: border-box;
     padding: 0.5rem 0;
-    color: var(--accent-orange);
+    color: var(--accent-blue);
     font-family: var(--font-mono);
     font-size: 1rem;
     font-weight: var(--font-weight-normal);

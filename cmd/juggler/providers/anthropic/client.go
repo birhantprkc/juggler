@@ -13,6 +13,7 @@ import (
 
 	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/providers/utils"
+	"juggler/internal/httpx"
 	"juggler/internal/jlog"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
@@ -152,8 +153,11 @@ func NewClient(cfg provider.Config) (provider.Provider, error) {
 		return nil, fmt.Errorf("model is required")
 	}
 
+	// httpx.Client(0) carries the proxy policy with no client-level timeout —
+	// streaming responses need long-lived connections.
 	client := anthropicsdk.NewClient(
 		option.WithAPIKey(cfg.APIKey),
+		option.WithHTTPClient(httpx.Client(0)),
 	)
 
 	return &Client{
