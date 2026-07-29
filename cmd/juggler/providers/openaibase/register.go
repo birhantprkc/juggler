@@ -84,6 +84,15 @@ type Descriptor struct {
 	// for providers whose account plan exposes a custom endpoint.
 	UsageStatsOverride func(ctx context.Context, credential string, headers map[string]string) (provider.UsageStats, error)
 
+	// LiveUsageUnsupported opts a provider OUT of the live-growing footer token
+	// meter. The OpenAI-compatible wire reports authoritative per-call prompt
+	// usage (final-chunk `usage` on Chat Completions, `response.completed` usage
+	// on the Responses API), which the stream loop re-emits as a transient usage
+	// chunk, so ProviderInfo.StreamsLiveUsage defaults ON for every openaibase
+	// provider. Set this only for an endpoint whose reported prompt tokens are
+	// absent, cumulative across calls, or otherwise unfit for the context meter.
+	LiveUsageUnsupported bool
+
 	// openaibase.Client options
 	BaseURL     string        // Static base URL.
 	BaseURLFunc func() string // If set, resolved at NewClient time (overrides BaseURL).
@@ -134,6 +143,10 @@ func Register(d Descriptor) {
 		// honor the return_result tool on bounded compaction's final call, so it
 		// is routed to the tool-free plain-text final instead.
 		ForcedToolChoiceUnsupported: !d.Quirks.ForcedToolChoiceSupported,
+		// The OpenAI-compatible wire reports authoritative per-call prompt usage,
+		// which the stream loop re-emits as a transient usage chunk; the footer
+		// meter can grow against it live. On by default, opt-out per descriptor.
+		StreamsLiveUsage: !d.LiveUsageUnsupported,
 	}
 	switch {
 	case capsSynthesised:

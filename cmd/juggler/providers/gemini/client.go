@@ -466,6 +466,10 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 			// lastToolUseBlock receives standalone ThoughtSignature parts streamed after their FunctionCall.
 			var lastToolUseBlock *provider.ContentBlock
 
+			// Last prompt-token total re-emitted as a usage chunk, so a per-chunk
+			// UsageMetadata (Gemini repeats it) drives one footer update per change.
+			var lastEmittedInput int
+
 			// Running output-token estimate for the UI spinner.
 			progress := provider.NewProgressEmitter(callback)
 
@@ -514,6 +518,20 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 					}
 					if result.UsageMetadata.CandidatesTokenCount > 0 {
 						currentOutputTokens = int(result.UsageMetadata.CandidatesTokenCount)
+					}
+					// Re-emit the authoritative prompt total (incl. cached) as a
+					// transient usage chunk so the footer meter anchors on it
+					// mid-turn. PromptTokenCount recurs on every chunk, so emit only
+					// when it changes.
+					if currentInputTokens > 0 && currentInputTokens != lastEmittedInput {
+						lastEmittedInput = currentInputTokens
+						cached := int(result.UsageMetadata.CachedContentTokenCount)
+						if _, err := callback(provider.StreamChunk{
+							Type:     provider.ContentBlockTypeUsage,
+							Metadata: map[string]any{"inputTokens": currentInputTokens, "cachedTokens": cached},
+						}); err != nil {
+							return false, err
+						}
 					}
 				}
 
@@ -838,5 +856,9 @@ func Info() provider.ProviderInfo {
 		ModelContextWindows: ModelContextWindows,
 		// Flash is Gemini's fast/low-cost tier for out-of-band micro-tasks.
 		CheapModel: "gemini-2.5-flash",
+		// Streaming UsageMetadata carries the authoritative prompt-token total on
+		// each chunk, re-emitted as a transient usage chunk, so the footer meter
+		// can grow against it live through a turn.
+		StreamsLiveUsage: true,
 	}
 }

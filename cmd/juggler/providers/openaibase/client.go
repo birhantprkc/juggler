@@ -682,6 +682,17 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			if completed.Response.Usage.InputTokensDetails.CachedTokens > 0 {
 				cachedTokens = int(completed.Response.Usage.InputTokensDetails.CachedTokens)
 			}
+			// Re-emit authoritative per-call prompt usage as a transient chunk so
+			// the footer meter can anchor on it mid-turn (StreamsLiveUsage
+			// providers). response.completed fires once per call.
+			if inputTokens > 0 {
+				if _, err := callback(provider.StreamChunk{
+					Type:     provider.ContentBlockTypeUsage,
+					Metadata: map[string]any{"inputTokens": inputTokens, "cachedTokens": cachedTokens},
+				}); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 
@@ -1151,7 +1162,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 	// Track tool calls being assembled (OpenAI streams them incrementally)
 	toolCallBuffers := make(map[int]*toolCallAccumulator)
 
-	var inputTokens, outputTokens, cachedTokens int
+	var inputTokens, outputTokens, cachedTokens, lastEmittedInput int
 	var lastFinishReason string
 	var textContent strings.Builder
 	var thinkingContent strings.Builder
@@ -1172,6 +1183,19 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 		}
 		if chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
 			cachedTokens = int(chunk.Usage.PromptTokensDetails.CachedTokens)
+		}
+		// Re-emit authoritative per-call prompt usage as a transient chunk so the
+		// footer meter can anchor on it mid-turn (StreamsLiveUsage providers).
+		// Chat Completions reports usage in the final chunk; guard on change so a
+		// provider that repeats it across chunks emits only once.
+		if inputTokens > 0 && inputTokens != lastEmittedInput {
+			lastEmittedInput = inputTokens
+			if _, err := callback(provider.StreamChunk{
+				Type:     provider.ContentBlockTypeUsage,
+				Metadata: map[string]any{"inputTokens": inputTokens, "cachedTokens": cachedTokens},
+			}); err != nil {
+				return nil, err
+			}
 		}
 
 		for _, choice := range chunk.Choices {
