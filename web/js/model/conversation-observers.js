@@ -169,6 +169,27 @@ export function setupYjsObservers(c) {
   c._yjsMetadataObserver = (/** @type {{keysChanged: Set<string>}} */ event) => {
     if (!event.keysChanged) return;
 
+    // Refresh cached derived state BEFORE any notify below. The general
+    // conversation:changed is delivered synchronously (session._notify is a
+    // plain listener loop) and drives a conversation-tab column rebuild that
+    // repaints the bound strategy selector from root.currentStrategyId. That
+    // cached field must already hold the new id, or the rebuild reads the stale
+    // value, the selector's incoming===current guard skips its render, and a
+    // remote strategy switch never shows until the next unrelated doc change.
+    if (event.keysChanged.has('currentStrategyId')) {
+      const newStrategyId = c.getMetadata('currentStrategyId');
+      const root = c._rootMessageThread;
+      if (newStrategyId && newStrategyId !== root.currentStrategyId) {
+        // Track the active strategy and (re)build its instance so the UI — and
+        // the engine, which shares this observer — operate on the right
+        // strategy. The onActivate lifecycle hook is NOT fired here: session-
+        // wide flow runs only in the engine, driven by the worker at turn-start
+        // (run-strategy-hook), never in an elected viewer.
+        root.currentStrategyId = newStrategyId;
+        root.strategy = strategyRegistry.createStrategy(newStrategyId, root);
+      }
+    }
+
     // Check all relevant metadata keys
     const relevantKeys = ['defaultModelConfig', 'currentStrategyId', 'conversationPermissionRules', 'conversationAllowedPaths', 'processingState', 'completedTurns', 'undoState'];
     const changedRelevantKey = Array.from(event.keysChanged).some(key =>
@@ -194,20 +215,9 @@ export function setupYjsObservers(c) {
     }
 
     if (event.keysChanged.has('currentStrategyId')) {
-      const newStrategyId = c.getMetadata('currentStrategyId');
-      const root = c._rootMessageThread;
-      if (newStrategyId && newStrategyId !== root.currentStrategyId) {
-        // Track the active strategy and (re)build its instance so the UI — and
-        // the engine, which shares this observer — operate on the right
-        // strategy. The onActivate lifecycle hook is NOT fired here: session-
-        // wide flow runs only in the engine, driven by the worker at turn-start
-        // (run-strategy-hook), never in an elected viewer.
-        root.currentStrategyId = newStrategyId;
-        root.strategy = strategyRegistry.createStrategy(newStrategyId, root);
-      }
       c._session.notifyConversationChange('conversation:strategy-changed', {
         conversation: c,
-        strategyId: newStrategyId
+        strategyId: c.getMetadata('currentStrategyId')
       });
     }
 
