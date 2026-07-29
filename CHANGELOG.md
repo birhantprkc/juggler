@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Fixed compaction piling up summary threads — each compaction now merges prior summaries into one
+
 ## [0.5.1] - 2026-07-29
 
 - Reading files with very long lines (e.g. one-paragraph-per-line Markdown) no longer truncates mid-character or too eagerly

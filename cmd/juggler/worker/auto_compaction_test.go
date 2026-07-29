@@ -7,6 +7,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -388,42 +389,167 @@ func TestFoldConversationForCompactionNothingFoldable(t *testing.T) {
 	}
 }
 
-// TestFoldConversationForCompactionSkipsPriorSummary verifies the interior-pin
-// clamp: an existing bounded-compaction summary is never re-swallowed, so a fold
-// covers only the fresh history before it.
-func TestFoldConversationForCompactionSkipsPriorSummary(t *testing.T) {
+// TestFoldConversationForCompactionSwallowsPriorSummary verifies the
+// convergence invariant: a fold swallows an existing summarized compaction
+// thread, so the root converges to a single fold thread instead of
+// accumulating one summary per fold. The swallowed summary nests in condensed
+// form — goal + result only, its raw folded transcript and run-control flags
+// dropped — so the reducer's source sees the prior summary text without any
+// recursively nested history.
+func TestFoldConversationForCompactionSwallowsPriorSummary(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.storeState(StateIdle)
 
 	priorSummaryID := generateItemID()
 	freshUID := generateItemID()
+	oldNested, err := json.Marshal([]ConversationItem{{Type: ItemTypeUser, ItemID: generateItemID(), Content: "ancient history"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		arr := w.doc.ensureItems()
-		// A prior completed compaction summary (non-foldable pin).
-		summary := conversationItemToYMap(ConversationItem{
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{
 			Type: ItemTypeThread, ItemID: priorSummaryID, Goal: "Compacted conversation history",
-			BoundedCompaction: true, Result: json.RawMessage(`"earlier summary"`),
-		})
-		arr.Push(ycrdt.ArrayAny{summary})
-		// Fresh history after it.
+			BoundedCompaction: true, Result: json.RawMessage(`"earlier summary"`), Items: oldNested,
+		})})
 		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: freshUID, Content: "new work"})})
 	}, w.doc.authorID)
 
-	// The leading unit is the pinned prior summary, so skip advances past it and
-	// the fold covers the fresh trailing user turn only.
 	threadID, folded, err := w.foldConversationForCompaction(false)
 	if err != nil || !folded {
 		t.Fatalf("fold = (%q, %v, %v), want folded success", threadID, folded, err)
 	}
 	items := w.doc.GetItems()
-	if len(items) != 2 {
-		t.Fatalf("root item count = %d, want 2 (prior summary + new fold thread)", len(items))
+	if len(items) != 1 || items[0].ItemID != threadID {
+		t.Fatalf("root = %d items (%+v), want the single new fold thread", len(items), items)
 	}
-	if items[0].ItemID != priorSummaryID || !items[0].BoundedCompaction {
-		t.Fatalf("root[0] = %+v, want the untouched prior summary", items[0])
+	nested := w.doc.GetItemsFromArray(w.doc.GetThreadItemsArray(threadID))
+	if len(nested) != 3 {
+		t.Fatalf("nested item count = %d, want 3 (condensed prior summary + fresh user + prompt)", len(nested))
 	}
-	if items[1].ItemID != threadID {
-		t.Fatalf("root[1] id = %q, want new fold thread %q", items[1].ItemID, threadID)
+	condensed := nested[0]
+	if condensed.ItemID != priorSummaryID || !condensed.BoundedCompaction {
+		t.Fatalf("nested[0] = %+v, want the condensed prior summary", condensed)
+	}
+	if got := threadResultString(condensed); got != "earlier summary" {
+		t.Fatalf("condensed summary result = %q, want the prior summary text", got)
+	}
+	if len(condensed.Items) > 0 && string(condensed.Items) != "null" && string(condensed.Items) != "[]" {
+		t.Fatalf("condensed summary still carries a nested transcript: %s", condensed.Items)
+	}
+	if condensed.NeedsStrategyRun || condensed.ForceTool != "" || condensed.CompactionPromptItemID != "" {
+		t.Fatalf("condensed summary kept run-control flags: %+v", condensed)
+	}
+	if nested[1].ItemID != freshUID {
+		t.Fatalf("nested[1] = %q, want the fresh user turn %q", nested[1].ItemID, freshUID)
+	}
+}
+
+// TestFoldConversationForCompactionPinsPendingFold verifies that an in-flight
+// unsummarized fold thread (no result yet) is pinned: the fold covers only the
+// fresh history after it and never nests the pending fold.
+func TestFoldConversationForCompactionPinsPendingFold(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+
+	pendingID := generateItemID()
+	freshUID := generateItemID()
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		arr := w.doc.ensureItems()
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{
+			Type: ItemTypeThread, ItemID: pendingID, Goal: "Compacted conversation history",
+			BoundedCompaction: true, NeedsStrategyRun: true,
+		})})
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: freshUID, Content: "new work"})})
+	}, w.doc.authorID)
+
+	threadID, folded, err := w.foldConversationForCompaction(false)
+	if err != nil || !folded {
+		t.Fatalf("fold = (%q, %v, %v), want folded success", threadID, folded, err)
+	}
+	items := w.doc.GetItems()
+	if len(items) != 2 || items[0].ItemID != pendingID || items[1].ItemID != threadID {
+		t.Fatalf("root = %+v, want [untouched pending fold, new fold thread]", items)
+	}
+}
+
+// TestFoldConversationForCompactionDeclinesSummaryOnly verifies a root whose
+// only conversational content is an existing summarized compaction thread
+// folds nothing — re-summarizing a lone summary gains no context.
+func TestFoldConversationForCompactionDeclinesSummaryOnly(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		arr := w.doc.ensureItems()
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: "rule", ItemID: generateItemID(), Content: "a standing rule"})})
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{
+			Type: ItemTypeThread, ItemID: generateItemID(), Goal: "Compacted conversation history",
+			BoundedCompaction: true, Result: json.RawMessage(`"earlier summary"`),
+		})})
+	}, w.doc.authorID)
+
+	threadID, folded, err := w.foldConversationForCompaction(false)
+	if folded || err != nil || threadID != "" {
+		t.Fatalf("fold = (%q, %v, %v), want no-op (nothing fresh to compact)", threadID, folded, err)
+	}
+	if len(w.doc.GetItems()) != 2 {
+		t.Fatalf("root item count = %d, want unchanged", len(w.doc.GetItems()))
+	}
+}
+
+// TestHandleCompactConvergesToSingleSummary drives two full /compact cycles
+// with fresh history between them and verifies convergence end-to-end: the
+// second compaction swallows the first summary, leaving one thread whose
+// summary was produced from a source containing the first summary's text.
+func TestHandleCompactConvergesToSingleSummary(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	summaries := []string{"first summary", "second summary"}
+	var sources []string
+	w.llmCallFunc = func(_ context.Context, encoded json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		sources = append(sources, string(encoded))
+		s := summaries[0]
+		summaries = summaries[1:]
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"` + s + `"}`)}}}, nil
+	}
+	pushUserTurn := func(content string) {
+		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+			arr := w.doc.ensureItems()
+			arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: generateItemID(), Content: content})})
+			arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "done: " + content})})
+		}, w.doc.authorID)
+	}
+
+	pushUserTurn("first task")
+	waitAck := captureAck(t, w, "client-1", "c1")
+	w.handleCompact(json.RawMessage(`{"type":"compact","ackId":"c1"}`))
+	waitAck()
+
+	pushUserTurn("second task")
+	waitAck = captureAck(t, w, "client-1", "c2")
+	w.handleCompact(json.RawMessage(`{"type":"compact","ackId":"c2"}`))
+	waitAck()
+
+	items := w.doc.GetItems()
+	if len(items) != 1 || items[0].Type != ItemTypeThread {
+		t.Fatalf("root = %d items (%+v), want exactly one summary thread", len(items), items)
+	}
+	thread := w.doc.GetThreadYMap(items[0].ItemID)
+	ycrdtMu.Lock()
+	got, _ := thread.Get("result").(string)
+	ycrdtMu.Unlock()
+	if got != "second summary" {
+		t.Fatalf("final thread result = %q, want the second summary", got)
+	}
+	// The second summarization's source must carry the first summary's text
+	// forward (the swallowed thread's condensed result).
+	if len(sources) != 2 || !strings.Contains(sources[1], "first summary") {
+		t.Fatalf("second summarization source did not contain the first summary (calls=%d)", len(sources))
 	}
 }

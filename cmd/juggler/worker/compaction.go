@@ -377,6 +377,41 @@ func (w *ConversationWorker) handleCompact(payload json.RawMessage) {
 	}
 }
 
+// pendingCompactionFold reports whether an item is an in-flight bounded-
+// compaction fold that has not yet committed its summary. Such a thread is
+// pinned: the pickup still owes it a summarization run, so a fold must not
+// nest it. A summarized compaction thread is ordinary foldable content.
+func pendingCompactionFold(it ConversationItem) bool {
+	return it.Type == ItemTypeThread && it.BoundedCompaction && !hasThreadResult(it)
+}
+
+// summarizedCompactionThread reports whether an item is a compaction summary
+// thread carrying its committed result.
+func summarizedCompactionThread(it ConversationItem) bool {
+	return it.Type == ItemTypeThread && it.BoundedCompaction && hasThreadResult(it)
+}
+
+// condenseForRefold returns the form in which an item nests inside a new
+// compaction fold. A summarized prior compaction thread reduces to its compact
+// wire form — goal + result — dropping the raw folded transcript (Items), the
+// prompt pointer, and the run-control flags, so re-folding never nests
+// transcripts recursively and the reducer's source sees the prior summary
+// exactly as the live conversation rendered it. Every other item nests
+// verbatim.
+func condenseForRefold(it ConversationItem) ConversationItem {
+	if !summarizedCompactionThread(it) {
+		return it
+	}
+	return ConversationItem{
+		Type:              ItemTypeThread,
+		ItemID:            it.ItemID,
+		Timestamp:         it.Timestamp,
+		Goal:              it.Goal,
+		Result:            it.Result,
+		BoundedCompaction: true,
+	}
+}
+
 // foldConversationForCompaction folds the target conversation's foldable history
 // into an UNSUMMARIZED bounded-compaction thread — the worker-side port of the
 // browser /compact fold. It relocates the
@@ -387,10 +422,15 @@ func (w *ConversationWorker) handleCompact(payload json.RawMessage) {
 // The thread is spliced UNSUMMARIZED (needsStrategyRun, no result); the caller
 // then lets checkForNewThreads pick it up and run it through the Phase-3
 // folded-compaction summarizer, which also merges the whole operation into one
-// undo group (compactionMergeFromIdx). The fold classification reuses recovery's
-// unit grouping and foldability rules verbatim, so — like recovery, and unlike
-// the legacy browser /compact — it never re-swallows a prior compaction summary:
-// the range stops before the first interior pinned unit.
+// undo group (compactionMergeFromIdx).
+//
+// Convergence invariant: each fold SWALLOWS prior summarized compaction
+// threads (nested in their condensed goal+result form, see condenseForRefold),
+// so the conversation always converges to [standing context][one summary
+// thread][recent tail] — summaries never accumulate, and each new summary
+// carries the prior one's content forward as part of its source. Only an
+// in-flight fold that has not yet committed its summary is pinned
+// (pendingCompactionFold), along with sticky preventUserDeletion items.
 //
 // handoffPromote tags the thread so the browser promotes its summary into the
 // continued tab's parked first message. Returns the new thread's item id and
@@ -420,8 +460,8 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 				continue // a leading standing-context item — keep at parent
 			}
 		}
-		if it.Type == ItemTypeThread && it.BoundedCompaction {
-			continue // never re-swallow a prior compaction summary (or our own fold)
+		if pendingCompactionFold(it) {
+			continue // an in-flight fold awaiting its summary — pinned, never nested
 		}
 		foldStart = i
 		break
@@ -431,17 +471,31 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 	}
 
 	// Extend the contiguous fold to the end, stopping before the first interior
-	// pin — a prior bounded-compaction summary (never re-swallowed/nested) or a
-	// sticky item that must stay put. With no interior pins this covers everything
-	// after the leading context — exactly the browser /compact range.
+	// pin — an in-flight unsummarized fold or a sticky item that must stay put.
+	// Summarized compaction threads are content and fold along with everything
+	// else, so with no interior pins this covers everything after the leading
+	// context.
 	prefixStart := foldStart
 	prefixEnd := foldStart + 1
 	for prefixEnd < len(items) {
 		it := items[prefixEnd]
-		if it.PreventUserDeletion || (it.Type == ItemTypeThread && it.BoundedCompaction) {
+		if it.PreventUserDeletion || pendingCompactionFold(it) {
 			break
 		}
 		prefixEnd++
+	}
+
+	// A range holding nothing but already-summarized compaction threads would
+	// only re-summarize existing summaries — nothing new to compact.
+	hasFresh := false
+	for _, it := range items[prefixStart:prefixEnd] {
+		if !summarizedCompactionThread(it) {
+			hasFresh = true
+			break
+		}
+	}
+	if !hasFresh {
+		return "", false, nil
 	}
 
 	// Fingerprint the exact snapshot being folded so the splice aborts if the doc
@@ -455,8 +509,9 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 	}
 	fingerprint := compactionSourceFingerprint(records)
 
-	// Nested items: the folded run verbatim + the summarization prompt item. The
-	// prompt content is the full DefaultSummarizationPrompt (matching the browser
+	// Nested items: the folded run (prior summaries condensed to goal+result,
+	// everything else verbatim) + the summarization prompt item. The prompt
+	// content is the full DefaultSummarizationPrompt (matching the browser
 	// fold's visible thread); the Phase-3 reducer's finalPrompt override supplies
 	// the actual instruction, and CompactionPromptItemID excludes it from history.
 	promptItem := ConversationItem{
@@ -464,7 +519,11 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 		ItemID:  promptID,
 		Content: DefaultSummarizationPrompt,
 	}
-	nested := append(append([]ConversationItem{}, items[prefixStart:prefixEnd]...), promptItem)
+	nested := make([]ConversationItem, 0, prefixEnd-prefixStart+1)
+	for _, it := range items[prefixStart:prefixEnd] {
+		nested = append(nested, condenseForRefold(it))
+	}
+	nested = append(nested, promptItem)
 	nestedJSON, err := json.Marshal(nested)
 	if err != nil {
 		return "", false, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "compaction fold could not encode folded items: " + err.Error(), Cause: err}
