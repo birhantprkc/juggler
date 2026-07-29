@@ -134,6 +134,7 @@ import { runTests as runSdkFacadeParityTests } from '../unit-tests/sdk-facade-pa
 import { runTests as runExtensionCollisionTests } from '../unit-tests/extension-collision-test.js';
 import { runTests as runExtensionCatalogTests } from '../unit-tests/extension-catalog-test.js';
 import { runTests as runUserCommandFactoryTests } from '../unit-tests/user-command-factory-test.js';
+import { runTests as runCloseCommandTests } from '../unit-tests/close-command-test.js';
 import { runTests as runEngineApiVectorTests } from '../unit-tests/engineapi-vectors-test.js';
 import { runTests as runStrategyFallbackTests } from '../unit-tests/strategy-fallback-test.js';
 import { runTests as runStrategyOrderTests } from '../unit-tests/strategy-order-test.js';
@@ -322,6 +323,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:extension-collision', run: runExtensionCollisionTests },
   { name: 'unit:extension-catalog', run: runExtensionCatalogTests },
   { name: 'unit:user-command-factory', run: runUserCommandFactoryTests },
+  { name: 'unit:close-command', run: runCloseCommandTests },
   { name: 'unit:engineapi-vectors', run: runEngineApiVectorTests },
   { name: 'unit:strategy-fallback', run: runStrategyFallbackTests },
   { name: 'unit:strategy-order', run: runStrategyOrderTests },
