@@ -9,6 +9,22 @@ import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createFileC
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { buildPickerPanel } from 'juggler/ui';
+import { smartTruncate } from 'juggler/ui';
+
+/**
+ * Safety ceiling (characters) on the file body a single pinned/@-mentioned file
+ * contributes to the request. A pin is deliberate, so this is far more generous
+ * than the per-`read`-call budget — it never touches a normal pinned file — but
+ * a provider rejects any single content field past a hard byte limit (OpenAI:
+ * 10 MiB) regardless of the token budget, and that rejection is not a
+ * context-overflow the compaction/recovery ladder can resolve. The context item
+ * renders live every turn, so an oversized or minified file (one enormous line
+ * slips the per-line cap) would otherwise trip that limit on every turn until
+ * the pin is removed. The ceiling stays under the byte limit even for worst-case
+ * 4-byte UTF-8, and the truncation is applied to the rendered text itself so the
+ * transaction view shows exactly what the model received.
+ */
+const MAX_PINNED_FILE_CHARS = 2_000_000;
 
 // ============================================================================
 // Type Definitions
@@ -499,7 +515,7 @@ class FileContentContextItem extends ContextItem {
       return `File ${r.path}: ${r.warning}`;
     }
 
-    return formatFileContentForLLM({
+    const formatted = formatFileContentForLLM({
       content: r.content || '',
       path: r.path,
       lineOffset: r.lineOffset || 1,
@@ -507,6 +523,13 @@ class FileContentContextItem extends ContextItem {
       totalLines: r.totalLines,
       readMode: r.readMode
     });
+    // Backstop against a single oversized field tripping the provider's per-field
+    // byte cap (see MAX_PINNED_FILE_CHARS). Truncating the rendered text keeps the
+    // transaction view and the wire identical.
+    const { content: bounded, truncated } = smartTruncate(formatted, { maxChars: MAX_PINNED_FILE_CHARS });
+    return truncated
+      ? bounded + `\n\n(File content truncated from ${formatted.length} to ${bounded.length} chars to fit the request)`
+      : formatted;
   }
 
   // ========== PRIVATE HELPERS ==========
