@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -460,6 +461,14 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme string, inheritedZ
 			logf("open window failed to resolve %+v: %v", spec, err)
 			return
 		}
+		// A window born onto a project (New Window, the page's "open in new
+		// window", restore, or a second instance) never routes through the
+		// server's POST /api/project switch, which is the only other place the
+		// recents list is updated. Without this, a folder first opened in its own
+		// window would never appear in the picker's recents.
+		if spec.project != "" {
+			a.rememberRecentProject(spec.project)
+		}
 		saved, hasSaved := fetchWindowState(serverURL)
 		application.InvokeAsync(func() {
 			e := a.buildWindow(spec, serverURL, proc, saved, hasSaved, inheritedTheme, inheritedZoom)
@@ -601,6 +610,34 @@ func (a *appState) setWindowProject(e *winEntry, project string) {
 	if changed {
 		a.persistWorkspace()
 	}
+}
+
+// rememberRecentProject records an opened project folder in the user-level
+// recents list the in-page picker reads (GET /api/recents). The server updates
+// that list when a project is switched in place (POST /api/project), but a
+// window opened directly onto a project bypasses that path, so the app records
+// it here. The path is expanded and absolutised to dedupe against the absolute
+// paths the server stores. Best-effort: a failure only costs a missing recents
+// entry, so errors are ignored.
+func (a *appState) rememberRecentProject(project string) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return
+	}
+	if project == "~" || strings.HasPrefix(project, "~/") || strings.HasPrefix(project, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil {
+			project = home + project[1:]
+		}
+	}
+	abs, err := filepath.Abs(project)
+	if err != nil {
+		return
+	}
+	store, err := core.NewRecentsStore()
+	if err != nil {
+		return
+	}
+	_ = store.Add(abs)
 }
 
 // buildLockedProjectWindow opens an empty native window containing a clear
