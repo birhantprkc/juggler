@@ -298,3 +298,103 @@ func (w *ConversationWorker) cancelToolsInArray(arr *ycrdt.YArray, includeApprov
 	}
 	return executingIDs
 }
+
+// docNumberToInt64 coerces a numeric value read from the Yjs doc to int64. A doc
+// number can surface as int (ycrdt.Number), int64, or float64 depending on
+// whether it was written via convertToYcrdt (which narrows integral float64 to
+// int) or synced from the browser. Returns ok=false for a non-numeric value.
+func docNumberToInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	case float64:
+		return int64(n), true
+	default:
+		return 0, false
+	}
+}
+
+// finalizeStuckRunningTool stamps a single tool-action state=cancelled +
+// result=interrupted IFF it is currently RUNNING with no result — a tool the
+// engine claimed (approved→running) but left non-terminal, the
+// running-with-no-result wedge. Reached two ways: the engine's execute
+// post-condition reports a cancelled-no-write exit, and the liveness backstop
+// finds a running tool no engine is executing.
+//
+// Two guards keep it compatible with the worker-single-writer rule:
+//   - state==running: a re-run resets the tool to approved (a fresh execution the
+//     reducer owns), so a stale finalize can never clobber it and re-open the
+//     restart loop that motivated single-writer cancellation.
+//   - epoch match: when the caller passes a non-zero execution epoch (the
+//     runningStartedAt the sender observed), the tool is finalized ONLY if the doc
+//     still carries that exact epoch. This closes the ABA window where a re-run
+//     re-claimed the SAME toolUseId to a fresh running (new runningStartedAt)
+//     between the report and its processing — the mismatched epoch means the
+//     running execution is a different, innocent one, so it is left untouched. An
+//     epoch of 0 (unknown) falls back to the state==running guard alone.
+//
+// Returns true iff it wrote (so callers reconcile only on a real state change).
+// The whole find-check-write runs under one ycrdtMu hold so a concurrent re-run
+// can't slip between the guard read and the write.
+func (w *ConversationWorker) finalizeStuckRunningTool(toolUseID string, epoch float64, reason string) bool {
+	interruptedResult := convertToYcrdt(map[string]any{
+		"content":   "Interrupted",
+		"cancelled": true,
+		"isError":   false,
+	})
+	wrote := false
+	ycrdtMu.Lock()
+	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
+		if t, _ := m.Get("type").(string); t != ItemTypeToolAction {
+			return false
+		}
+		if id, _ := m.Get("toolUseId").(string); id != toolUseID {
+			return false
+		}
+		// Found the tool-action. Only finalize the exact wedge shape: still
+		// running, no result yet. Anything else (approved re-run, or already
+		// terminal) is left untouched. Stop the walk either way.
+		if state, _ := m.Get("state").(string); state != StateRunning {
+			return true
+		}
+		if r := m.Get("result"); r != nil {
+			return true
+		}
+		// Epoch guard: only finalize the exact execution the caller observed. A
+		// mismatch means a re-run re-claimed this id to a fresh running — leave it.
+		// Skipped when epoch is 0 (caller didn't know it) or the doc carries no
+		// numeric stamp, falling back to the state==running guard alone. The doc
+		// stamp round-trips as int/int64/float64 depending on its write path, so it
+		// is coerced before the compare.
+		if epoch != 0 {
+			if de, ok := docNumberToInt64(m.Get("runningStartedAt")); ok && de != int64(epoch) {
+				return true
+			}
+		}
+		toolName, _ := m.Get("toolName").(string)
+		w.tape.Record("tool-state", map[string]any{
+			"toolUseId": toolUseID,
+			"toolName":  toolName,
+			"from":      StateRunning,
+			"to":        "cancelled",
+			"writer":    "worker-finalize",
+			"reason":    reason,
+		})
+		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+			m.Set("state", StateCancelled)
+			m.Set("result", interruptedResult)
+		}, w.doc.authorID)
+		wrote = true
+		return true
+	})
+	ycrdtMu.Unlock()
+	if wrote {
+		// Belt-and-suspenders: tell the engine to abort any lingering in-flight
+		// execution for this id (idempotent — a no-op if nothing is running there),
+		// so a late-resolving fetch can't overwrite the cancelled result.
+		w.dispatchCancelTools([]string{toolUseID})
+	}
+	return wrote
+}

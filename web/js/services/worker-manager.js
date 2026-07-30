@@ -952,6 +952,16 @@ class WorkerManager {
         });
         break;
 
+      case 'probe-tool-liveness':
+        // Worker-commanded liveness probe (engine-only): the tool-liveness
+        // backstop. If this engine is not actually executing the (browser-executed)
+        // tool the doc flags running, it reports finalize-cancelled-tool so the
+        // worker finalizes the running-with-no-result wedge.
+        protocols.handleProbeToolLiveness(this, conversationId, /** @type {string} */ (data.toolUseId)).catch((err) => {
+          console.error('[WorkerManager] probe-tool-liveness failed:', err);
+        });
+        break;
+
       case 'cancel-strategy-execution': {
         // Worker cancelled — abort engine-driven strategy execution (plan
         // driver) by firing the conversation's stop handlers.

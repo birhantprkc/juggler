@@ -377,6 +377,85 @@ func (w *ConversationWorker) sweepStaleToolCommands() {
 	}
 }
 
+// sweepStuckRunningTools is the tool-liveness backstop — a defense-in-depth
+// companion to the engine's execute post-condition (handleExecuteTool). It runs
+// on the liveness tick and probes the engine about every tool-action stuck in
+// `running` with no result past livenessProbeGraceMs. The engine, sole tool
+// executor and thus the authoritative liveness oracle, answers by reporting
+// (finalize-cancelled-tool) any such tool it is NOT actually executing — so a
+// tool orphaned by an engine crash, a reload, or any path that skips the execute
+// post-condition still can't wedge forever at running-with-no-result. A genuinely
+// long-running tool stays registered in the engine, answers "live", and is left
+// untouched, so this never truncates real work regardless of how long it runs.
+//
+// Run-goroutine only (no lock on the bookkeeping maps). The grace period is
+// tracked by first-observation here rather than the doc's runningStartedAt, so a
+// tool that just entered `running` is never probed while its execution is still
+// spinning up (the engine registers the in-flight action a beat after the claim).
+func (w *ConversationWorker) sweepStuckRunningTools() {
+	if !w.callbacks.engineAttached() {
+		return // no engine to probe; a reattach re-drives this sweep on the next tick
+	}
+
+	// Collect every tool-action currently running with no result.
+	seen := map[string]bool{}
+	ycrdtMu.Lock()
+	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
+		if t, _ := m.Get("type").(string); t != ItemTypeToolAction {
+			return false
+		}
+		if state, _ := m.Get("state").(string); state != StateRunning {
+			return false
+		}
+		if r := m.Get("result"); r != nil {
+			return false
+		}
+		if id, _ := m.Get("toolUseId").(string); id != "" {
+			seen[id] = true
+		}
+		return false
+	})
+	ycrdtMu.Unlock()
+
+	if w.runningToolFirstSeenMs == nil {
+		w.runningToolFirstSeenMs = map[string]int64{}
+	}
+	if w.lastLivenessProbeMs == nil {
+		w.lastLivenessProbeMs = map[string]int64{}
+	}
+	// Prune bookkeeping for tools that left the running-with-no-result shape
+	// (completed, cancelled, re-run to approved) so the maps don't grow unbounded
+	// and a re-run starts its grace clock afresh.
+	for id := range w.runningToolFirstSeenMs {
+		if !seen[id] {
+			delete(w.runningToolFirstSeenMs, id)
+		}
+	}
+	for id := range w.lastLivenessProbeMs {
+		if !seen[id] {
+			delete(w.lastLivenessProbeMs, id)
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	for id := range seen {
+		firstSeen, ok := w.runningToolFirstSeenMs[id]
+		if !ok {
+			w.runningToolFirstSeenMs[id] = now
+			continue // first observation — start the grace clock, probe no earlier than +grace
+		}
+		if now-firstSeen < livenessProbeGraceMs {
+			continue // still within grace — could be legitimately spinning up
+		}
+		if last, ok := w.lastLivenessProbeMs[id]; ok && now-last < livenessProbeIntervalMs {
+			continue // recently probed — await the engine's verdict
+		}
+		w.lastLivenessProbeMs[id] = now
+		w.tape.Record("liveness-probe", map[string]any{"toolUseId": id})
+		w.dispatchToolCommand("probe-tool-liveness", id)
+	}
+}
+
 // clearToolCommandBookkeeping drops every dedup/in-flight/escalation field for a
 // toolUseId at a full-reset site (user-triggered retry, escalation-to-failed).
 // Leaving any field populated wedges the re-drive: a stale in-flight latch makes

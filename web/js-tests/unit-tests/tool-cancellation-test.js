@@ -321,5 +321,72 @@ export async function runTests(_ctx) {
     }
   }
 
+  // Test 6: isExecutingToolUse is the liveness oracle for the worker's stuck-tool
+  // backstop. It must report true for an in-flight action (matched by toolUseId +
+  // conversationId), false for the same id in a different conversation, and false
+  // once the action settles — so the backstop only finalizes tools no engine is
+  // actually running. Mirrors cancelByToolUseId's conversation scoping.
+  {
+    const originalFetch = window.fetch;
+    try {
+      const conversation = await createTestConversation(session);
+      const messageThread = conversation.rootMessageThread;
+
+      let resolveFetchStarted;
+      const fetchStarted = new Promise((r) => { resolveFetchStarted = r; });
+      window.fetch = (/** @type {any} */ _url, /** @type {any} */ opts = {}) =>
+        new Promise((_resolve, reject) => {
+          const signal = opts.signal;
+          resolveFetchStarted();
+          if (!signal) return;
+          const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+          if (signal.aborted) { onAbort(); return; }
+          signal.addEventListener('abort', onAbort);
+        });
+
+      const contextItemRegistry = (await import('../../js/registries/context-item-registry.js')).default;
+      const ActionClass = contextItemRegistry.getByToolName('grep');
+      const actionId = /** @type {any} */ (ActionClass)?.MANIFEST?.id;
+      assert(!!actionId, 'grep tool should resolve to a registered action id');
+
+      const toolUseId = 'tc-liveness-1';
+      // Before execution: nothing is running for this id.
+      assert(actionExecutor.isExecutingToolUse(toolUseId, conversation.id) === false,
+        'isExecutingToolUse must be false before the action starts');
+
+      const execPromise = actionExecutor.execute(
+        actionId,
+        { pattern: 'anything' },
+        { session, conversation, messageThread, toolUseId, _approvalHandled: true }
+      );
+
+      await Promise.race([
+        fetchStarted,
+        new Promise((_r, rej) => setTimeout(() => rej(new Error('op fetch never started')), 4000))
+      ]);
+
+      // While in flight: live for the right conversation, dead for another.
+      assert(actionExecutor.isExecutingToolUse(toolUseId, conversation.id) === true,
+        'isExecutingToolUse must be true while the action is in flight');
+      assert(actionExecutor.isExecutingToolUse(toolUseId, 'some-other-conversation') === false,
+        'isExecutingToolUse must be conversation-scoped (a matching id in another conversation is not live)');
+      assert(actionExecutor.isExecutingToolUse('no-such-id', conversation.id) === false,
+        'isExecutingToolUse must be false for an unknown tool-use id');
+
+      // Settle via cancel, then it must report dead.
+      actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
+      await execPromise;
+      assert(actionExecutor.isExecutingToolUse(toolUseId, conversation.id) === false,
+        'isExecutingToolUse must be false once the action settles');
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`isExecutingToolUse liveness oracle: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      window.fetch = originalFetch;
+    }
+  }
+
   return { passed, failed, errors };
 }

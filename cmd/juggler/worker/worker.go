@@ -287,6 +287,14 @@ type ConversationWorker struct {
 	ackWatchdog  *time.Timer
 	ackWatchdogC chan struct{}
 
+	// Stuck-tool liveness backstop bookkeeping (sweepStuckRunningTools, run
+	// goroutine only). runningToolFirstSeenMs anchors how long each running+no-result
+	// tool-action has been observed (the grace-period clock); lastLivenessProbeMs
+	// rate-limits re-probing the engine per toolUseId. Both are pruned as tools leave
+	// the running-with-no-result shape; lazily initialised on first sweep.
+	runningToolFirstSeenMs map[string]int64
+	lastLivenessProbeMs    map[string]int64
+
 	// ackTimeout is how long the worker waits for the engine to acknowledge a
 	// tool-command before treating it as silently dropped. A field (defaulting to
 	// defaultAckTimeout) so tests can shrink it.
@@ -680,6 +688,16 @@ const (
 	// livenessInterval means ticks were missed because the process wasn't running.
 	// Comfortably above any normal scheduling jitter so live operation never trips it.
 	frozenGapThresholdMs = 4000
+	// livenessProbeGraceMs is how long a tool-action must sit in `running` with no
+	// result before the stuck-tool backstop probes the engine for liveness. Well
+	// past the claim→execution-registration lag, so a tool that is merely spinning
+	// up is never probed; a genuinely long-running tool stays registered in the
+	// engine and answers "live", so it is never finalized regardless of age.
+	livenessProbeGraceMs = 8000
+	// livenessProbeIntervalMs rate-limits re-probing the same stuck tool, so one the
+	// engine keeps reporting live (or whose probe reply is still in flight) isn't
+	// re-probed on every liveness tick.
+	livenessProbeIntervalMs = 10000
 )
 
 // livenessC returns the liveness ticker's channel, or nil when there is no ticker
@@ -839,6 +857,7 @@ func (w *ConversationWorker) run(ctx context.Context) {
 			w.sweepStaleToolCommands()
 		case <-w.livenessC():
 			w.detectFrozenGap()
+			w.sweepStuckRunningTools()
 		}
 		// After every event, drain the reducer. A dispatch may complete
 		// and set needsReconcile again (e.g., child thread completes →
@@ -1050,6 +1069,9 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 
 	case "retry-tool-action":
 		w.handleRetryToolAction(msg.Payload)
+
+	case "finalize-cancelled-tool":
+		w.handleFinalizeCancelledTool(msg.Payload)
 
 	case "update-tool-action-for-retry":
 		w.handleUpdateToolActionForRetry(msg.Payload)

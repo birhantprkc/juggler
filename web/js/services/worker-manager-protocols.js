@@ -15,6 +15,8 @@
 
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { TOOL_STATES } from '../../sdk/lib/message.js';
+import contextItemRegistry from '../registries/context-item-registry.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import {
   handleNewToolAction,
@@ -400,6 +402,23 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
       sendEngineTrace(wm, conversationId, 'execute-error', { toolUseId, error: extractErrorMessage(err) });
       throw err;
     }
+    // Post-condition: execution returned but left the tool NON-TERMINAL with no
+    // result. This is the cancelled-no-write exit (_runActionAndComplete's
+    // `result.cancelled` branch, e.g. a spurious abort of a re-run whose stale
+    // cancel signal fired immediately): the single-writer rule means the browser
+    // deliberately wrote nothing, deferring cancellation to the worker. Without a
+    // strategy-loop turn about to stamp it, the tool would wedge forever at
+    // running-with-no-result. Report it so the worker (sole cancellation writer)
+    // finalizes it. Guarded on `claimed` so a re-driven command that lost the
+    // claim (another invocation owns the live execution) never false-reports.
+    const postResult = ymap.get('result');
+    if (ymap.get('state') === TOOL_STATES.RUNNING && (postResult === undefined || postResult === null)) {
+      // Epoch = this claim's runningStartedAt. Between claim and here nothing else
+      // re-claims this id (it's running), so this is exactly the aborted execution.
+      const runningStartedAt = ymap.get('runningStartedAt');
+      sendEngineTrace(wm, conversationId, 'execute-wedge-finalize', { toolUseId, runningStartedAt });
+      finalizeCancelledToolAction(wm, conversationId, toolUseId, runningStartedAt);
+    }
   }
   return true;
 }
@@ -454,6 +473,55 @@ export async function handleCancelTool(wm, conversationId, toolUseId) {
   // aborted. "Escape visibly cancels" looks identical either way; this disambiguates.
   const hit = c._actionExecutor?.cancelByToolUseId(toolUseId, c.id);
   sendEngineTrace(wm, conversationId, 'cancel', { toolUseId, hit: !!hit });
+}
+
+/**
+ * Engine handler for the worker's `probe-tool-liveness` command — the tool-liveness
+ * backstop. The worker sends this for a tool-action the doc has flagged `running`
+ * with no result for longer than the grace period. The engine is the sole tool
+ * executor, so its action executor is the authoritative liveness oracle: if it is
+ * NOT executing this id (and the tool is browser-executed, not worker-managed),
+ * the doc's `running` flag is a lie — the execution was orphaned (a cancelled
+ * -no-write exit whose report was lost, an engine reload, a crash). Report it via
+ * the same `finalize-cancelled-tool` signal the execute post-condition uses, so
+ * the worker (sole cancellation writer) finalizes it. A genuinely long-running
+ * tool is still registered here, answers "live", and is left untouched.
+ * @param {any} wm - WorkerManager instance
+ * @param {string} conversationId
+ * @param {string} toolUseId
+ * @returns {Promise<void>}
+ */
+export async function handleProbeToolLiveness(wm, conversationId, toolUseId) {
+  if (!isEngine()) {
+    // Only the executing engine can judge liveness; a viewer must never finalize.
+    return;
+  }
+  const c = await loadAndFlush(wm, conversationId);
+  if (!c) { sendEngineTrace(wm, conversationId, 'liveness-noconv', { toolUseId }); return; }
+  const mt = findThreadForTool(c, toolUseId);
+  if (!mt) return;
+  const ymap = mt.getToolAction(toolUseId);
+  if (!ymap) return;
+  // Only judge the wedge shape — still running, no result. If it already moved on
+  // (completed/cancelled, or a re-run reset it to approved), there is nothing to do.
+  const probeResult = ymap.get('result');
+  if (ymap.get('state') !== TOOL_STATES.RUNNING || (probeResult !== undefined && probeResult !== null)) return;
+  // Worker-managed tools (e.g. create_thread) execute in the Go worker, never in
+  // the engine, so the engine's action executor is not their liveness oracle —
+  // leave them for the worker to complete.
+  const ActionClass = contextItemRegistry.getByToolName(ymap.get('toolName'));
+  if (ActionClass?.MANIFEST?.workerManaged) {
+    sendEngineTrace(wm, conversationId, 'liveness-foreign', { toolUseId });
+    return;
+  }
+  const live = c._actionExecutor?.isExecutingToolUse(toolUseId, c.id);
+  sendEngineTrace(wm, conversationId, 'liveness-probe', { toolUseId, live: !!live });
+  if (!live) {
+    // Carry the epoch we just observed so the worker only finalizes THIS running
+    // execution — if a re-run re-claimed the id (fresh runningStartedAt) between
+    // this probe and its processing, the epoch won't match and it's left alone.
+    finalizeCancelledToolAction(wm, conversationId, toolUseId, ymap.get('runningStartedAt'));
+  }
 }
 
 /**
@@ -537,6 +605,28 @@ export function retryToolApproval(wm, conversationId, toolUseId) {
  */
 export function retryToolAction(wm, conversationId, toolUseId) {
   wm.sendToWorker(conversationId, { type: 'retry-tool-action', toolUseId });
+}
+
+/**
+ * Report to the worker that the engine executed a tool-action but left it
+ * non-terminal with no result — a cancelled-no-write exit (the browser aborted
+ * execution and, per the single-writer rule, deliberately didn't write). The
+ * worker (sole cancellation writer) stamps it cancelled iff it is still RUNNING
+ * under the SAME execution, so the tool can never wedge at running-with-no-result.
+ * Emitted from the engine execute post-condition and the liveness backstop.
+ *
+ * `runningStartedAt` is the execution epoch the sender observed (the value
+ * claimRunning stamped). The worker finalizes only if the doc still carries that
+ * exact epoch — so a re-run that re-claimed the same toolUseId to a FRESH running
+ * (a new runningStartedAt) between this report and its processing is never
+ * clobbered. Without it, an ABA on the id would abort the innocent re-run.
+ * @param {any} wm
+ * @param {string} conversationId
+ * @param {string} toolUseId
+ * @param {number|undefined} runningStartedAt - execution epoch observed by the sender
+ */
+export function finalizeCancelledToolAction(wm, conversationId, toolUseId, runningStartedAt) {
+  wm.sendToWorker(conversationId, { type: 'finalize-cancelled-tool', toolUseId, runningStartedAt });
 }
 
 /**

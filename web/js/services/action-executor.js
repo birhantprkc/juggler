@@ -567,6 +567,28 @@ class ActionExecutor {
   }
 
   /**
+   * Report whether an execution is currently in flight for a tool-use ID in a
+   * specific conversation. The liveness oracle for the worker's stuck-tool
+   * backstop: a tool-action the doc flags `running` but that has no entry here is
+   * the running-with-no-result wedge (the engine claimed it but the execution
+   * aborted without writing, or was orphaned by a reload). Conversation-scoped for
+   * the same reason as {@link cancelByToolUseId} — tool-use IDs are unique only
+   * within one conversation.
+   * @param {string} toolUseId - Tool use ID to check
+   * @param {string} conversationId - Conversation the tool belongs to
+   * @returns {boolean} True if a matching action is currently executing
+   */
+  isExecutingToolUse(toolUseId, conversationId) {
+    for (const runningAction of this._runningActions.values()) {
+      if (runningAction.toolUseId === toolUseId &&
+          runningAction.conversationId === conversationId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Cancel all currently running actions
    */
   cancelAllActions() {
