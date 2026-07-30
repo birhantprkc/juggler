@@ -15,15 +15,101 @@
 
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
-import { TOOL_STATES } from '../../sdk/lib/message.js';
-import contextItemRegistry from '../registries/context-item-registry.js';
 import strategyRegistry from '../registries/strategy-registry.js';
+import actionExecutor from './action-executor.js';
 import {
   handleNewToolAction,
   executeToolAction,
   claimRunning,
   saveAutoApprovalPermission,
 } from '../model/conversation-tool-actions.js';
+
+// ── tool-execution reporter (level-based liveness, engine-only) ──────────────
+//
+// A single engine-owned timer, armed while any tool-action is executing, that
+// periodically reports the executor's full executing set to each conversation's
+// worker. The worker uses these reports to finalize a tool stuck at
+// running-with-no-result that no engine is actually executing (INV-B).
+//
+// Reports are emitted ONLY from this timer macrotask — never inline from an
+// execution/completion path. Combined with the await-free contiguity between the
+// executing-set removal and the terminal doc write (action-executor.js execute()
+// finally + ResponseHandler._runActionAndComplete), this is INV-C: any report
+// showing a tool absent was necessarily sent after that tool's terminal write,
+// which rides the same ordered channel and is therefore already applied by the
+// worker before it processes the report.
+//
+// Cadence ~3s, no reports while idle → zero steady-state traffic. Module-level
+// singleton state: the engine is one process, the executor is engine-wide.
+const EXEC_REPORT_INTERVAL_MS = 3000;
+/** @type {ReturnType<typeof setInterval> | null} */
+let _execReportTimer = null;
+let _execReportSeq = 0;
+/** @type {Set<string>} */
+let _execReportPrevConvs = new Set();
+
+/**
+ * Arm the reporter timer if it isn't already running. Called right after the
+ * engine claims a tool (handleExecuteTool), so the executing set is reported
+ * throughout the execution. The timer self-disarms once the executor drains.
+ * @param {any} wm - WorkerManager instance
+ */
+export function noteToolExecutionActivity(wm) {
+  if (!isEngine()) return;
+  if (_execReportTimer) return;
+  _execReportTimer = setInterval(() => sendToolExecutionReports(wm), EXEC_REPORT_INTERVAL_MS);
+}
+
+/**
+ * One reporter tick: send one tool-execution-report per conversation that has
+ * running work, plus one final EMPTY (settle) report per conversation that had
+ * work last tick and has none now, then disarm when the registry is fully drained.
+ * Exported so tests can drive a deterministic tick without waiting on the timer.
+ * @param {any} wm - WorkerManager instance
+ */
+export function sendToolExecutionReports(wm) {
+  if (!isEngine()) return;
+  const byConv = actionExecutor.snapshotRunningByConversation();
+  const nowConvs = new Set(byConv.keys());
+  for (const [conversationId, executing] of byConv) {
+    wm.sendToWorker(conversationId, {
+      type: 'tool-execution-report',
+      conversationId,
+      seq: ++_execReportSeq,
+      sentAt: Date.now(),
+      executing
+    });
+  }
+  // Settle: a conversation that had entries last tick and none now gets one empty
+  // report so the worker sees the set drained (and its freshness clock advances)
+  // rather than inferring it from silence.
+  for (const conversationId of _execReportPrevConvs) {
+    if (!nowConvs.has(conversationId)) {
+      wm.sendToWorker(conversationId, {
+        type: 'tool-execution-report',
+        conversationId,
+        seq: ++_execReportSeq,
+        sentAt: Date.now(),
+        executing: []
+      });
+    }
+  }
+  _execReportPrevConvs = nowConvs;
+  if (nowConvs.size === 0 && _execReportTimer) {
+    clearInterval(_execReportTimer);
+    _execReportTimer = null;
+  }
+}
+
+/**
+ * Test hook: reset the module-level reporter state (timer, seq, prev-conversation
+ * set) so unit tests start from a clean slate. Not used in production.
+ */
+export function __resetToolExecutionReporterForTest() {
+  if (_execReportTimer) { clearInterval(_execReportTimer); _execReportTimer = null; }
+  _execReportSeq = 0;
+  _execReportPrevConvs = new Set();
+}
 
 // ── render-context-items ─────────────────────────────────────────────
 
@@ -395,6 +481,11 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
   sendEngineTrace(wm, conversationId, 'execute-claim', { toolUseId, toolName: ymap.get('toolName'), claimed });
   if (claimed) {
     sendEngineTrace(wm, conversationId, 'execute-start', { toolUseId });
+    // Arm the level-based tool-execution reporter for the duration of this run.
+    // Idempotent (single shared timer); it self-disarms once the executor drains.
+    // Armed here — after the claim, before executeToolAction registers the action —
+    // so the first tick after registration reports this execution to the worker.
+    noteToolExecutionActivity(wm);
     try {
       await executeToolAction(mt, toolUseId, c);
       sendEngineTrace(wm, conversationId, 'execute-done', { toolUseId });
@@ -402,23 +493,11 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
       sendEngineTrace(wm, conversationId, 'execute-error', { toolUseId, error: extractErrorMessage(err) });
       throw err;
     }
-    // Post-condition: execution returned but left the tool NON-TERMINAL with no
-    // result. This is the cancelled-no-write exit (_runActionAndComplete's
-    // `result.cancelled` branch, e.g. a spurious abort of a re-run whose stale
-    // cancel signal fired immediately): the single-writer rule means the browser
-    // deliberately wrote nothing, deferring cancellation to the worker. Without a
-    // strategy-loop turn about to stamp it, the tool would wedge forever at
-    // running-with-no-result. Report it so the worker (sole cancellation writer)
-    // finalizes it. Guarded on `claimed` so a re-driven command that lost the
-    // claim (another invocation owns the live execution) never false-reports.
-    const postResult = ymap.get('result');
-    if (ymap.get('state') === TOOL_STATES.RUNNING && (postResult === undefined || postResult === null)) {
-      // Epoch = this claim's runningStartedAt. Between claim and here nothing else
-      // re-claims this id (it's running), so this is exactly the aborted execution.
-      const runningStartedAt = ymap.get('runningStartedAt');
-      sendEngineTrace(wm, conversationId, 'execute-wedge-finalize', { toolUseId, runningStartedAt });
-      finalizeCancelledToolAction(wm, conversationId, toolUseId, runningStartedAt);
-    }
+    // A cancelled-no-write exit (execution left the tool RUNNING with no result —
+    // _runActionAndComplete's `result.cancelled` branch, where the browser
+    // deliberately wrote nothing under the single-writer rule) is recovered by the
+    // worker's level-based tool-execution-report rule: the executing set this
+    // engine reports no longer contains this id, so the worker finalizes it.
   }
   return true;
 }
@@ -455,73 +534,29 @@ export function sendEngineTrace(wm, conversationId, event, fields = {}) {
 /**
  * Engine handler for the worker's `cancel-tool` command: abort an in-flight
  * execution by id. Idempotent — a no-op unless this engine has the action
- * running.
+ * running. The optional runningEpoch scopes the abort to one execution
+ * generation so a cancel meant for a prior run can't kill a fresh re-run of the
+ * same toolUseId (cancelByToolUseId's generation guard); absent → unscoped.
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @param {string} toolUseId
+ * @param {number} [runningEpoch] - Execution generation the worker cancelled
  * @returns {Promise<void>}
  */
-export async function handleCancelTool(wm, conversationId, toolUseId) {
+export async function handleCancelTool(wm, conversationId, toolUseId, runningEpoch) {
   if (!isEngine()) {
     throw new Error('cancel-tool received in a viewer — tool execution runs only in the engine');
   }
   const c = await loadAndFlush(wm, conversationId);
   if (!c) { sendEngineTrace(wm, conversationId, 'cancel-noconv', { toolUseId }); return; }
-  // hit=false means this engine had NO registered in-flight execution for the id
-  // — the tool was flagged running in the doc but nothing was actually executing
-  // here to abort (the wedge signature). hit=true means a real execution was
-  // aborted. "Escape visibly cancels" looks identical either way; this disambiguates.
-  const hit = c._actionExecutor?.cancelByToolUseId(toolUseId, c.id);
-  sendEngineTrace(wm, conversationId, 'cancel', { toolUseId, hit: !!hit });
-}
-
-/**
- * Engine handler for the worker's `probe-tool-liveness` command — the tool-liveness
- * backstop. The worker sends this for a tool-action the doc has flagged `running`
- * with no result for longer than the grace period. The engine is the sole tool
- * executor, so its action executor is the authoritative liveness oracle: if it is
- * NOT executing this id (and the tool is browser-executed, not worker-managed),
- * the doc's `running` flag is a lie — the execution was orphaned (a cancelled
- * -no-write exit whose report was lost, an engine reload, a crash). Report it via
- * the same `finalize-cancelled-tool` signal the execute post-condition uses, so
- * the worker (sole cancellation writer) finalizes it. A genuinely long-running
- * tool is still registered here, answers "live", and is left untouched.
- * @param {any} wm - WorkerManager instance
- * @param {string} conversationId
- * @param {string} toolUseId
- * @returns {Promise<void>}
- */
-export async function handleProbeToolLiveness(wm, conversationId, toolUseId) {
-  if (!isEngine()) {
-    // Only the executing engine can judge liveness; a viewer must never finalize.
-    return;
-  }
-  const c = await loadAndFlush(wm, conversationId);
-  if (!c) { sendEngineTrace(wm, conversationId, 'liveness-noconv', { toolUseId }); return; }
-  const mt = findThreadForTool(c, toolUseId);
-  if (!mt) return;
-  const ymap = mt.getToolAction(toolUseId);
-  if (!ymap) return;
-  // Only judge the wedge shape — still running, no result. If it already moved on
-  // (completed/cancelled, or a re-run reset it to approved), there is nothing to do.
-  const probeResult = ymap.get('result');
-  if (ymap.get('state') !== TOOL_STATES.RUNNING || (probeResult !== undefined && probeResult !== null)) return;
-  // Worker-managed tools (e.g. create_thread) execute in the Go worker, never in
-  // the engine, so the engine's action executor is not their liveness oracle —
-  // leave them for the worker to complete.
-  const ActionClass = contextItemRegistry.getByToolName(ymap.get('toolName'));
-  if (ActionClass?.MANIFEST?.workerManaged) {
-    sendEngineTrace(wm, conversationId, 'liveness-foreign', { toolUseId });
-    return;
-  }
-  const live = c._actionExecutor?.isExecutingToolUse(toolUseId, c.id);
-  sendEngineTrace(wm, conversationId, 'liveness-probe', { toolUseId, live: !!live });
-  if (!live) {
-    // Carry the epoch we just observed so the worker only finalizes THIS running
-    // execution — if a re-run re-claimed the id (fresh runningStartedAt) between
-    // this probe and its processing, the epoch won't match and it's left alone.
-    finalizeCancelledToolAction(wm, conversationId, toolUseId, ymap.get('runningStartedAt'));
-  }
+  // outcome disambiguates the three cases: 'hit' — a real execution was aborted;
+  // 'miss' — this engine had NO registered in-flight execution for the id (the
+  // tool was flagged running in the doc but nothing was executing here to abort,
+  // the wedge signature); 'epoch-mismatch' — an execution was running but under a
+  // DIFFERENT generation (a re-run re-claimed the id), so this stale cancel was
+  // correctly ignored. "Escape visibly cancels" looks identical for all three.
+  const outcome = c._actionExecutor?.cancelByToolUseId(toolUseId, c.id, runningEpoch);
+  sendEngineTrace(wm, conversationId, 'cancel', { toolUseId, runningEpoch, outcome, hit: outcome === 'hit' });
 }
 
 /**
@@ -605,28 +640,6 @@ export function retryToolApproval(wm, conversationId, toolUseId) {
  */
 export function retryToolAction(wm, conversationId, toolUseId) {
   wm.sendToWorker(conversationId, { type: 'retry-tool-action', toolUseId });
-}
-
-/**
- * Report to the worker that the engine executed a tool-action but left it
- * non-terminal with no result — a cancelled-no-write exit (the browser aborted
- * execution and, per the single-writer rule, deliberately didn't write). The
- * worker (sole cancellation writer) stamps it cancelled iff it is still RUNNING
- * under the SAME execution, so the tool can never wedge at running-with-no-result.
- * Emitted from the engine execute post-condition and the liveness backstop.
- *
- * `runningStartedAt` is the execution epoch the sender observed (the value
- * claimRunning stamped). The worker finalizes only if the doc still carries that
- * exact epoch — so a re-run that re-claimed the same toolUseId to a FRESH running
- * (a new runningStartedAt) between this report and its processing is never
- * clobbered. Without it, an ABA on the id would abort the innocent re-run.
- * @param {any} wm
- * @param {string} conversationId
- * @param {string} toolUseId
- * @param {number|undefined} runningStartedAt - execution epoch observed by the sender
- */
-export function finalizeCancelledToolAction(wm, conversationId, toolUseId, runningStartedAt) {
-  wm.sendToWorker(conversationId, { type: 'finalize-cancelled-tool', toolUseId, runningStartedAt });
 }
 
 /**

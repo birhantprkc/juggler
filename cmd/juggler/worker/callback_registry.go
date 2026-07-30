@@ -30,6 +30,7 @@ const (
 	cbSetEngine
 	cbSendToEngine
 	cbHasEngine
+	cbEngineID
 	cbGet
 	cbStop
 )
@@ -41,6 +42,7 @@ type cbOp struct {
 	data       []byte
 	result     chan func([]byte)
 	boolResult chan bool
+	strResult  chan string
 }
 
 // cbMsg is one unit of work queued to a client's mailbox: a payload to
@@ -119,6 +121,8 @@ func (r *callbackRegistry) run() {
 			}
 		case cbHasEngine:
 			op.boolResult <- (engineID != "")
+		case cbEngineID:
+			op.strResult <- engineID
 		case cbGet:
 			op.result <- fns[op.clientID]
 		case cbStop:
@@ -163,6 +167,16 @@ func (r *callbackRegistry) sendToEngine(data []byte) {
 func (r *callbackRegistry) engineAttached() bool {
 	result := make(chan bool, 1)
 	r.ch <- cbOp{kind: cbHasEngine, boolResult: result}
+	return <-result
+}
+
+// engineClientID returns the currently-attached engine client ID, or "" if none.
+// The tool-execution-report accept-gate uses it to reject reports whose
+// OriginClient is not the current engine (a viewer, or a superseded engine
+// connection) — the identity fence that makes stale reports inadmissible.
+func (r *callbackRegistry) engineClientID() string {
+	result := make(chan string, 1)
+	r.ch <- cbOp{kind: cbEngineID, strResult: result}
 	return <-result
 }
 

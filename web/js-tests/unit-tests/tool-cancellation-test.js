@@ -28,6 +28,49 @@ import {
   assert
 } from '../utilities/test-helpers.js';
 import actionExecutor from '../../js/services/action-executor.js';
+import { claimRunning } from '../../js/model/conversation-tool-actions.js';
+import { createToolActionMessage, TOOL_STATES } from '../../sdk/lib/message.js';
+import {
+  sendToolExecutionReports,
+  __resetToolExecutionReporterForTest
+} from '../../js/services/worker-manager-protocols.js';
+
+/**
+ * Start a hung-fetch grep action in a conversation and resolve once its op is in
+ * flight, so the executor holds a live running action for it. Returns the exec
+ * promise (settle it by cancelling) — the caller controls the fetch stub.
+ * @param {any} session
+ * @param {any} conversation
+ * @param {string} toolUseId
+ * @param {number} runningEpoch
+ * @returns {Promise<{execPromise: Promise<any>}>} The in-flight execution promise.
+ */
+async function startHungGrep(session, conversation, toolUseId, runningEpoch) {
+  const contextItemRegistry = (await import('../../js/registries/context-item-registry.js')).default;
+  const actionId = /** @type {any} */ (contextItemRegistry.getByToolName('grep'))?.MANIFEST?.id;
+  let resolveStarted;
+  const started = new Promise((r) => { resolveStarted = r; });
+  const prevFetch = window.fetch;
+  window.fetch = (/** @type {any} */ _url, /** @type {any} */ opts = {}) =>
+    new Promise((_resolve, reject) => {
+      const signal = opts.signal;
+      resolveStarted();
+      if (!signal) return;
+      const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort);
+    });
+  const execPromise = actionExecutor.execute(
+    actionId, { pattern: 'x' },
+    { session, conversation, messageThread: conversation.rootMessageThread, toolUseId, runningEpoch, _approvalHandled: true }
+  );
+  await Promise.race([
+    started,
+    new Promise((_r, rej) => setTimeout(() => rej(new Error('op fetch never started')), 4000))
+  ]);
+  window.fetch = prevFetch;
+  return { execPromise };
+}
 
 /**
  * @typedef {object} TestResult
@@ -103,11 +146,11 @@ export async function runTests(_ctx) {
       // recur across conversations (every mock test uses call_1; OpenAI
       // reuses call_N), so the match is scoped by conversation.
       const foundElsewhere = actionExecutor.cancelByToolUseId(toolUseId, 'some-other-conversation');
-      assert(foundElsewhere === false, 'cancelByToolUseId must not match the same toolUseId in a different conversation');
+      assert(foundElsewhere === 'miss', 'cancelByToolUseId must not match the same toolUseId in a different conversation');
       assert(actionExecutor.hasRunningActions(), 'action must still be running after a wrong-conversation cancel');
 
       const found = actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
-      assert(found === true, 'cancelByToolUseId should find and abort the running action');
+      assert(found === 'hit', 'cancelByToolUseId should find and abort the running action');
 
       const result = await execPromise;
       assert(result.cancelled === true, `expected cancelled result, got ${JSON.stringify({ cancelled: result.cancelled, success: result.success, error: result.error })}`);
@@ -123,12 +166,12 @@ export async function runTests(_ctx) {
     }
   }
 
-  // Test 2: cancelByToolUseId is a no-op (returns false) when no running
+  // Test 2: cancelByToolUseId is a no-op (returns 'miss') when no running
   // action matches the id — idempotent and safe to call on any cancel.
   {
     try {
       const found = actionExecutor.cancelByToolUseId('no-such-tool-use-id', 'no-such-conversation');
-      assert(found === false, 'cancelByToolUseId should return false when no action matches');
+      assert(found === 'miss', "cancelByToolUseId should return 'miss' when no action matches");
       passed++;
     } catch (e) {
       failed++;
@@ -182,7 +225,7 @@ export async function runTests(_ctx) {
       assert(actionExecutor.hasRunningActions(), 'batch_grep action should be running while its ops are in flight');
 
       const found = actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
-      assert(found === true, 'cancelByToolUseId should find and abort the running batch action');
+      assert(found === 'hit', 'cancelByToolUseId should find and abort the running batch action');
 
       const result = await Promise.race([
         execPromise,
@@ -238,7 +281,7 @@ export async function runTests(_ctx) {
       assert(actionExecutor.hasRunningActions(), 'action should be running while the un-cancellable op is in flight');
 
       const found = actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
-      assert(found === true, 'cancelByToolUseId should find and abort the running action');
+      assert(found === 'hit', 'cancelByToolUseId should find and abort the running action');
 
       const result = await Promise.race([
         execPromise,
@@ -321,11 +364,12 @@ export async function runTests(_ctx) {
     }
   }
 
-  // Test 6: isExecutingToolUse is the liveness oracle for the worker's stuck-tool
-  // backstop. It must report true for an in-flight action (matched by toolUseId +
-  // conversationId), false for the same id in a different conversation, and false
-  // once the action settles — so the backstop only finalizes tools no engine is
-  // actually running. Mirrors cancelByToolUseId's conversation scoping.
+  // Test 7: generation-scoped cancel. A cancel carrying a DIFFERENT execution
+  // generation than the running action must NOT abort it (a stale cancel meant
+  // for a prior run of the same toolUseId) — it returns 'epoch-mismatch' and the
+  // action keeps running. A cancel carrying the MATCHING generation aborts it.
+  // This is the fix that stops a re-run being spuriously killed by the previous
+  // execution's cancel signal.
   {
     const originalFetch = window.fetch;
     try {
@@ -349,42 +393,254 @@ export async function runTests(_ctx) {
       const actionId = /** @type {any} */ (ActionClass)?.MANIFEST?.id;
       assert(!!actionId, 'grep tool should resolve to a registered action id');
 
-      const toolUseId = 'tc-liveness-1';
-      // Before execution: nothing is running for this id.
-      assert(actionExecutor.isExecutingToolUse(toolUseId, conversation.id) === false,
-        'isExecutingToolUse must be false before the action starts');
-
+      const toolUseId = 'tc-epoch-scope-1';
+      // Register the running action under generation 2 (the value claimRunning
+      // would have stamped). The context.runningEpoch is what _createTrackedAction
+      // records on the running-action entry.
       const execPromise = actionExecutor.execute(
         actionId,
         { pattern: 'anything' },
-        { session, conversation, messageThread, toolUseId, _approvalHandled: true }
+        { session, conversation, messageThread, toolUseId, runningEpoch: 2, _approvalHandled: true }
       );
 
       await Promise.race([
         fetchStarted,
         new Promise((_r, rej) => setTimeout(() => rej(new Error('op fetch never started')), 4000))
       ]);
+      assert(actionExecutor.hasRunningActions(), 'action should be running while the op is in flight');
 
-      // While in flight: live for the right conversation, dead for another.
-      assert(actionExecutor.isExecutingToolUse(toolUseId, conversation.id) === true,
-        'isExecutingToolUse must be true while the action is in flight');
-      assert(actionExecutor.isExecutingToolUse(toolUseId, 'some-other-conversation') === false,
-        'isExecutingToolUse must be conversation-scoped (a matching id in another conversation is not live)');
-      assert(actionExecutor.isExecutingToolUse('no-such-id', conversation.id) === false,
-        'isExecutingToolUse must be false for an unknown tool-use id');
+      // Stale cancel (generation 1) — must NOT abort generation 2.
+      const stale = actionExecutor.cancelByToolUseId(toolUseId, conversation.id, 1);
+      assert(stale === 'epoch-mismatch', `stale-epoch cancel must report 'epoch-mismatch', got ${stale}`);
+      assert(actionExecutor.hasRunningActions(), 'a stale-epoch cancel must leave the running action untouched');
 
-      // Settle via cancel, then it must report dead.
-      actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
-      await execPromise;
-      assert(actionExecutor.isExecutingToolUse(toolUseId, conversation.id) === false,
-        'isExecutingToolUse must be false once the action settles');
+      // Matching cancel (generation 2) — aborts it.
+      const match = actionExecutor.cancelByToolUseId(toolUseId, conversation.id, 2);
+      assert(match === 'hit', `matching-epoch cancel must report 'hit', got ${match}`);
+
+      const result = await execPromise;
+      assert(result.cancelled === true, `expected cancelled result after matching-epoch cancel, got ${JSON.stringify({ cancelled: result.cancelled })}`);
+      assert(!actionExecutor.hasRunningActions(), 'running actions should be cleared after the matching-epoch cancel');
 
       passed++;
     } catch (e) {
       failed++;
-      errors.push(`isExecutingToolUse liveness oracle: ${e instanceof Error ? e.message : String(e)}`);
+      errors.push(`generation-scoped cancel: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       window.fetch = originalFetch;
+    }
+  }
+
+  // Test 8: unscoped fallback. When the caller supplies NO epoch, or the running
+  // action carries no epoch (an execution predating generation tracking), the
+  // guard is disabled and the abort falls back to the id+conversation match —
+  // the pre-generation behaviour, so nothing regresses.
+  {
+    const originalFetch = window.fetch;
+    try {
+      const conversation = await createTestConversation(session);
+      const messageThread = conversation.rootMessageThread;
+
+      const startStub = () => {
+        let resolveStarted;
+        const started = new Promise((r) => { resolveStarted = r; });
+        window.fetch = (/** @type {any} */ _url, /** @type {any} */ opts = {}) =>
+          new Promise((_resolve, reject) => {
+            const signal = opts.signal;
+            resolveStarted();
+            if (!signal) return;
+            const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+            if (signal.aborted) { onAbort(); return; }
+            signal.addEventListener('abort', onAbort);
+          });
+        return started;
+      };
+
+      const contextItemRegistry = (await import('../../js/registries/context-item-registry.js')).default;
+      const actionId = /** @type {any} */ (contextItemRegistry.getByToolName('grep'))?.MANIFEST?.id;
+
+      // (a) entry HAS an epoch, caller supplies none → unscoped abort.
+      {
+        const started = startStub();
+        const toolUseId = 'tc-epoch-unscoped-a';
+        const execPromise = actionExecutor.execute(
+          actionId, { pattern: 'x' },
+          { session, conversation, messageThread, toolUseId, runningEpoch: 5, _approvalHandled: true }
+        );
+        await Promise.race([started, new Promise((_r, rej) => setTimeout(() => rej(new Error('op never started')), 4000))]);
+        const outcome = actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
+        assert(outcome === 'hit', `absent caller epoch must abort unscoped ('hit'), got ${outcome}`);
+        const result = await execPromise;
+        assert(result.cancelled === true, 'unscoped cancel (no caller epoch) must abort the action');
+      }
+
+      // (b) entry has NO epoch, caller supplies one → unscoped abort.
+      {
+        const started = startStub();
+        const toolUseId = 'tc-epoch-unscoped-b';
+        const execPromise = actionExecutor.execute(
+          actionId, { pattern: 'x' },
+          { session, conversation, messageThread, toolUseId, _approvalHandled: true }
+        );
+        await Promise.race([started, new Promise((_r, rej) => setTimeout(() => rej(new Error('op never started')), 4000))]);
+        const outcome = actionExecutor.cancelByToolUseId(toolUseId, conversation.id, 9);
+        assert(outcome === 'hit', `epoch-less running action must abort unscoped ('hit'), got ${outcome}`);
+        const result = await execPromise;
+        assert(result.cancelled === true, 'unscoped cancel (no entry epoch) must abort the action');
+      }
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`unscoped-epoch fallback: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      window.fetch = originalFetch;
+    }
+  }
+
+  // Test 9: claimRunning stamps a monotonic runningEpoch that increments across
+  // claim → reattach-reset → re-claim and SURVIVES the reset — the property that
+  // makes the epoch a true per-incarnation generation identity (unlike
+  // runningStartedAt, which the reset clears). A re-run therefore always claims a
+  // strictly higher generation, so a stale cancel can never match it.
+  {
+    try {
+      const conversation = await createTestConversation(session);
+      const mt = conversation.rootMessageThread;
+      const toolUseId = 'tc-epoch-increment-1';
+      mt.addEvent(createToolActionMessage({ toolUseId, toolName: 'grep', toolInput: { pattern: 'x' } }));
+      mt.updateToolActionState(toolUseId, TOOL_STATES.APPROVED);
+      const ymap = mt.getToolAction(toolUseId);
+      assert(!!ymap, 'tool-action ymap should exist');
+      assert(ymap.get('runningEpoch') === undefined, 'no runningEpoch before the first claim');
+
+      // First claim: approved → running, epoch 1.
+      const claimed1 = claimRunning(conversation, ymap);
+      assert(claimed1 === true, 'first claimRunning should win the CAS');
+      assert(ymap.get('state') === TOOL_STATES.RUNNING, 'state should be running after claim');
+      assert(ymap.get('runningEpoch') === 1, `first claim should set runningEpoch=1, got ${ymap.get('runningEpoch')}`);
+
+      // Simulate the worker's reattach reset: back to approved, runningStartedAt
+      // cleared, but runningEpoch deliberately preserved (the worker's reset
+      // paths never touch it).
+      conversation._doc.doc.transact(() => {
+        ymap.set('state', TOOL_STATES.APPROVED);
+        ymap.set('runningStartedAt', null);
+      });
+      assert(ymap.get('runningEpoch') === 1, 'the reset must preserve runningEpoch');
+
+      // Re-claim: epoch increments past the reset, proving monotonicity.
+      const claimed2 = claimRunning(conversation, ymap);
+      assert(claimed2 === true, 're-claim after reset should win the CAS');
+      assert(ymap.get('runningEpoch') === 2, `re-claim should increment runningEpoch to 2, got ${ymap.get('runningEpoch')}`);
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`runningEpoch increments across claim/reset/re-claim: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Test 10: the tool-execution reporter emits one report per conversation that has
+  // running work, tagged with the executing set (toolUseId + runningEpoch), and each
+  // report carries a strictly increasing seq. Guarded by isEngine — a viewer emits
+  // nothing. This is the level-based liveness signal the worker's finalize rule consumes.
+  {
+    const prevEngine = /** @type {any} */ (globalThis).JUGGLER_ENGINE;
+    const originalFetch = window.fetch;
+    try {
+      assert(!actionExecutor.hasRunningActions(), 'precondition: no leftover running actions before the reporter test');
+      __resetToolExecutionReporterForTest();
+
+      const convA = await createTestConversation(session);
+      const convB = await createTestConversation(session);
+      const a = await startHungGrep(session, convA, 'rep-a', 11);
+      const b = await startHungGrep(session, convB, 'rep-b', 22);
+
+      /** @type {Array<{conversationId: string, message: any}>} */
+      const sent = [];
+      const spyWm = { sendToWorker: (/** @type {string} */ conversationId, /** @type {any} */ message) => { sent.push({ conversationId, message }); } };
+
+      // Viewer: the isEngine guard suppresses all reports.
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = false;
+      sendToolExecutionReports(spyWm);
+      assert(sent.length === 0, 'a viewer must emit no tool-execution reports (isEngine guard)');
+
+      // Engine: one report per conversation with running work.
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = true;
+      sendToolExecutionReports(spyWm);
+      assert(sent.length === 2, `expected one report per conversation with work, got ${sent.length}`);
+      const byConv = new Map(sent.map((s) => [s.conversationId, s.message]));
+      const ra = byConv.get(convA.id);
+      const rb = byConv.get(convB.id);
+      assert(!!ra && !!rb, 'both conversations must get a report');
+      assert(ra.type === 'tool-execution-report', 'report must carry the tool-execution-report type');
+      assert(ra.executing.length === 1 && ra.executing[0].toolUseId === 'rep-a', 'convA report must list its own executing tool');
+      assert(ra.executing[0].runningEpoch === 11, `convA report must carry the runningEpoch, got ${ra.executing[0].runningEpoch}`);
+      assert(rb.executing[0].toolUseId === 'rep-b' && rb.executing[0].runningEpoch === 22, 'convB report must list its own executing tool + epoch');
+      assert(typeof ra.seq === 'number' && typeof rb.seq === 'number' && ra.seq !== rb.seq, 'each report must carry a distinct seq');
+
+      // Settle both actions and drain them from the executor.
+      actionExecutor.cancelByToolUseId('rep-a', convA.id);
+      actionExecutor.cancelByToolUseId('rep-b', convB.id);
+      await Promise.all([a.execPromise, b.execPromise]);
+      assert(!actionExecutor.hasRunningActions(), 'both actions should have settled');
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`tool-execution reporter grouping + seq + isEngine: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;
+      window.fetch = originalFetch;
+      __resetToolExecutionReporterForTest();
+    }
+  }
+
+  // Test 11: when a conversation's running work drains, the reporter emits exactly
+  // one EMPTY (settle) report for it on the next tick — so the worker sees the set
+  // cleared rather than inferring it from silence — and thereafter emits nothing
+  // while idle (zero steady-state traffic).
+  {
+    const prevEngine = /** @type {any} */ (globalThis).JUGGLER_ENGINE;
+    const originalFetch = window.fetch;
+    try {
+      assert(!actionExecutor.hasRunningActions(), 'precondition: no leftover running actions before the settle test');
+      __resetToolExecutionReporterForTest();
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = true;
+
+      const conv = await createTestConversation(session);
+      const a = await startHungGrep(session, conv, 'settle-1', 5);
+
+      /** @type {Array<{conversationId: string, message: any}>} */
+      const sent = [];
+      const spyWm = { sendToWorker: (/** @type {string} */ conversationId, /** @type {any} */ message) => { sent.push({ conversationId, message }); } };
+
+      // Tick 1: work present → one non-empty report.
+      sendToolExecutionReports(spyWm);
+      assert(sent.length === 1 && sent[0].message.executing.length === 1, 'first tick must report the running tool');
+
+      // Drain the work, then tick 2: exactly one empty settle report for this conv.
+      actionExecutor.cancelByToolUseId('settle-1', conv.id);
+      await a.execPromise;
+      sent.length = 0;
+      sendToolExecutionReports(spyWm);
+      assert(sent.length === 1, `draining must produce exactly one settle report, got ${sent.length}`);
+      assert(sent[0].conversationId === conv.id && sent[0].message.executing.length === 0, 'the settle report must be empty and for the drained conversation');
+
+      // Tick 3: fully idle → no traffic at all.
+      sent.length = 0;
+      sendToolExecutionReports(spyWm);
+      assert(sent.length === 0, 'an idle reporter must emit nothing (zero steady-state traffic)');
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`tool-execution reporter settle + idle-silence: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;
+      window.fetch = originalFetch;
+      __resetToolExecutionReporterForTest();
     }
   }
 

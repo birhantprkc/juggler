@@ -163,6 +163,35 @@ func TestReattach_RedrivesUndeliveredRunningTool(t *testing.T) {
 	}
 }
 
+// TestReattach_SkipsWorkerExecutedToolByStamp guards the executor="worker" stamp
+// half of resetRunningToolsForReattach's worker-executed skip. A worker-managed
+// tool carrying the stamp (written at evaluate) but NOT named "create_thread" must
+// be treated as worker-executed: never reset to approved, never re-driven against
+// the engine (the worker owns its re-drive). This mirrors the stamp-primary +
+// create_thread-fallback shape in finalizeToolsAbsentFromExecReport; only the
+// stamp can exclude a tool whose name isn't the create_thread fallback.
+func TestReattach_SkipsWorkerExecutedToolByStamp(t *testing.T) {
+	h := newReattachHarness(t, "conv-reattach-worker-stamp")
+	w := h.w
+
+	// Stranded worker-managed tool: state=running, no result, stamped
+	// executor="worker", and deliberately not named create_thread so only the
+	// stamp can exclude it.
+	insertRunningTool(w, "ta-1", "tu-1", "some_worker_tool", 1, 1000)
+	w.doc.UpdateToolActionFieldsRecursive("tu-1", map[string]any{"executor": "worker"})
+
+	h.reattach()
+	h.flush(t)
+
+	if got := h.executeCount("tu-1"); got != 0 {
+		t.Fatalf("reattach re-drove a worker-executed (executor=worker) tool: "+
+			"want 0 execute-tool commands, got %d", got)
+	}
+	if got := toolState(w, "tu-1"); got != StateRunning {
+		t.Fatalf("reattach reset a worker-executed tool off running: want %q, got %q", StateRunning, got)
+	}
+}
+
 func hasToolResultFor(messages []map[string]any, toolUseID string) bool {
 	for _, m := range messages {
 		if m["type"] == "tool-result" {

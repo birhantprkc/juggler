@@ -93,6 +93,8 @@ function warnOnEmptySuccessSummary(rawSummary, className) {
  * @property {import('../model/message-thread.js').MessageThread} messageThread - Message thread for scoped operations
  * @property {string} [toolUseId] - Tool use ID for progress event correlation
  * @property {string} [toolName] - Resolved tool name being executed; forwarded to the item so multi-tool classes can route (see ItemContext.toolName)
+ * @property {number} [runningEpoch] - Execution generation (claimRunning's runningEpoch); scopes a later cancel-tool to this incarnation
+ * @property {number} [runningStartedAt] - Claim stamp (claimRunning's runningStartedAt); feeds the worker's tool-execution-report happens-after guard
  * @property {AbortSignal} [signal] - Abort signal for cancellation
  * @property {(event: ActionProgressEvent) => void} [onProgress] - Progress callback
  * @property {boolean} [_approvalHandled] - INTERNAL: Set only by ResponseHandler/Conversation after approval was shown to user
@@ -115,6 +117,8 @@ function warnOnEmptySuccessSummary(rawSummary, className) {
  * @property {string} actionId - Action type ID
  * @property {string} [toolUseId] - Tool use ID for progress event correlation
  * @property {string} [conversationId] - Conversation ID owning this action
+ * @property {number} [runningEpoch] - Execution generation this action was claimed under (for generation-scoped cancellation)
+ * @property {number} [runningStartedAt] - The tool-action's claim stamp (for the tool-execution-report happens-after guard)
  * @property {number} startTime - Start timestamp
  */
 
@@ -221,6 +225,16 @@ class ActionExecutor {
     } finally {
       // Always clean up tracking — covers prepare()/approval throws and the
       // validation-failed early return in addition to the inner execute path.
+      //
+      // CONTIGUITY INVARIANT (tool-execution-report causality, INV-C): this
+      // delete and the terminal doc write in ResponseHandler._runActionAndComplete
+      // (completeToolAction) run in one await-free microtask region — the caller
+      // does `const result = await execute(...)` then writes the result with no
+      // await between. The tool-execution reporter emits ONLY from its timer
+      // macrotask, which can never interleave into that region, so a report that
+      // shows a tool absent from the executing set was necessarily sent AFTER the
+      // tool's terminal doc write. Do NOT introduce an await between this delete
+      // and that write, or the worker could finalize an already-completed tool.
       this._runningActions.delete(executionId);
     }
   }
@@ -262,6 +276,17 @@ class ActionExecutor {
       actionId,
       toolUseId: context.toolUseId,
       conversationId: /** @type {any} */ (context.conversation)?.id,
+      // The execution generation claimRunning stamped on the tool-action (read
+      // from the ymap where the execute context is built). Lets cancelByToolUseId
+      // scope an abort to this exact incarnation so a stale cancel can't kill a
+      // re-run of the same toolUseId. Undefined when the caller didn't supply one
+      // (e.g. a direct execute() outside the command-driven path) → unscoped.
+      runningEpoch: /** @type {any} */ (context).runningEpoch,
+      // The doc's runningStartedAt claim stamp (browser Date.now(), same clock as
+      // a report's sentAt). Carried into the tool-execution-report so the worker's
+      // happens-after guard can tell a claim that predates a report from one that
+      // postdates it, without a wall-clock skew.
+      runningStartedAt: /** @type {any} */ (context).runningStartedAt,
       startTime: Date.now()
     });
 
@@ -535,14 +560,14 @@ class ActionExecutor {
   }
 
   /**
-   * Cancel a running action by its tool-use ID, scoped to one conversation.
+   * Cancel a running action by its tool-use ID, scoped to one conversation and
+   * (optionally) one execution generation.
    *
-   * Used by the engine's tool-action observer: when the Go worker (the sole
-   * writer of cancellation state) flips a tool-action to `state='cancelled'`,
-   * the engine aborts the matching in-flight action here. Without this the
-   * action's op fetch runs to completion and the reducer overwrites the
-   * worker's `cancelled` with `completed`, so the strategy loop continues as
-   * if no cancel happened.
+   * The worker (sole writer of cancellation state) flips a tool-action to
+   * `state='cancelled'` and commands `cancel-tool`; this aborts the matching
+   * in-flight action. Without it the action's op fetch runs to completion and
+   * the reducer overwrites the worker's `cancelled` with `completed`, so the
+   * strategy loop continues as if no cancel happened.
    *
    * The conversationId match is load-bearing: this executor is an engine-wide
    * singleton running actions for EVERY conversation, and tool-use IDs are
@@ -551,41 +576,78 @@ class ActionExecutor {
    * toolUseId alone let a cancel in conversation A abort an identically-named
    * in-flight tool in conversation B — whose worker never stamps a result, so
    * B's tool wedged at running-with-no-result forever.
+   *
+   * The runningEpoch match is the generation guard: a cancel issued against one
+   * execution must never abort a *different* incarnation of the same toolUseId.
+   * A re-run claims a strictly higher epoch (claimRunning bumps it), so a stale
+   * cancel meant for the previous execution mismatches and is skipped. When the
+   * caller supplies no epoch (0/undefined), the guard is disabled and the abort
+   * is unscoped — the pre-generation behaviour, kept for pre-claim cancels of an
+   * approved tool (no epoch stamped yet) and for engine-local cancelAllActions.
    * @param {string} toolUseId - Tool use ID to cancel
    * @param {string} conversationId - Conversation the cancel belongs to
-   * @returns {boolean} True if a matching running action was found and aborted
+   * @param {number} [runningEpoch] - Execution generation to scope the abort to
+   * @returns {'hit'|'miss'|'epoch-mismatch'} 'hit' if a matching action was
+   *   aborted; 'epoch-mismatch' if the id was running under a different
+   *   generation (left alone); 'miss' if nothing matched.
    */
-  cancelByToolUseId(toolUseId, conversationId) {
+  cancelByToolUseId(toolUseId, conversationId, runningEpoch) {
     for (const runningAction of this._runningActions.values()) {
       if (runningAction.toolUseId === toolUseId &&
           runningAction.conversationId === conversationId) {
+        // Only enforce the generation guard when BOTH sides carry an epoch: an
+        // absent caller epoch means "unscoped", and an absent entry epoch means
+        // the running execution predates generation tracking — either way fall
+        // back to the id+conversation match (today's behaviour).
+        if (runningEpoch && runningAction.runningEpoch &&
+            runningAction.runningEpoch !== runningEpoch) {
+          return 'epoch-mismatch';
+        }
         runningAction.controller.abort();
-        return true;
+        return 'hit';
       }
     }
-    return false;
+    return 'miss';
   }
 
   /**
-   * Report whether an execution is currently in flight for a tool-use ID in a
-   * specific conversation. The liveness oracle for the worker's stuck-tool
-   * backstop: a tool-action the doc flags `running` but that has no entry here is
-   * the running-with-no-result wedge (the engine claimed it but the execution
-   * aborted without writing, or was orphaned by a reload). Conversation-scoped for
-   * the same reason as {@link cancelByToolUseId} — tool-use IDs are unique only
-   * within one conversation.
-   * @param {string} toolUseId - Tool use ID to check
-   * @param {string} conversationId - Conversation the tool belongs to
-   * @returns {boolean} True if a matching action is currently executing
+   * The executing set for one conversation. Returns one entry per in-flight action
+   * in the conversation, carrying the fields the worker's tool-execution-report
+   * rule needs: the tool-use id, its execution generation, and its claim stamp.
+   * Conversation-scoped for the same reason as {@link cancelByToolUseId} —
+   * tool-use IDs are unique only within one conversation.
+   * @param {string} conversationId - Conversation to filter by
+   * @returns {Array<{toolUseId: string, runningEpoch: number|undefined, runningStartedAt: number|undefined}>} One entry per in-flight action in the conversation.
    */
-  isExecutingToolUse(toolUseId, conversationId) {
-    for (const runningAction of this._runningActions.values()) {
-      if (runningAction.toolUseId === toolUseId &&
-          runningAction.conversationId === conversationId) {
-        return true;
+  executingSetFor(conversationId) {
+    /** @type {Array<{toolUseId: string, runningEpoch: number|undefined, runningStartedAt: number|undefined}>} */
+    const out = [];
+    for (const a of this._runningActions.values()) {
+      if (a.conversationId === conversationId && a.toolUseId) {
+        out.push({ toolUseId: a.toolUseId, runningEpoch: a.runningEpoch, runningStartedAt: a.runningStartedAt });
       }
     }
-    return false;
+    return out;
+  }
+
+  /**
+   * Snapshot every in-flight action grouped by conversation. The engine's
+   * tool-execution reporter uses this to emit one report per conversation that
+   * has running work — the executor is an engine-wide singleton spanning every
+   * loaded (and unloaded-but-still-executing) conversation, so grouping here is
+   * what lets a single reporter serve them all.
+   * @returns {Map<string, Array<{toolUseId: string, runningEpoch: number|undefined, runningStartedAt: number|undefined}>>} In-flight actions grouped by conversation id.
+   */
+  snapshotRunningByConversation() {
+    /** @type {Map<string, Array<{toolUseId: string, runningEpoch: number|undefined, runningStartedAt: number|undefined}>>} */
+    const byConv = new Map();
+    for (const a of this._runningActions.values()) {
+      if (!a.conversationId || !a.toolUseId) continue;
+      let arr = byConv.get(a.conversationId);
+      if (!arr) { arr = []; byConv.set(a.conversationId, arr); }
+      arr.push({ toolUseId: a.toolUseId, runningEpoch: a.runningEpoch, runningStartedAt: a.runningStartedAt });
+    }
+    return byConv;
   }
 
   /**

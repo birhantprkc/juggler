@@ -772,6 +772,14 @@ func (w *ConversationWorker) resetRunningToolsForReattach() {
 				return false
 			}
 		}
+		// Worker-executed tools are re-driven by the worker itself, not the
+		// engine's executor, so they must not be reset back to approved here.
+		// Prefer the executor='worker' stamp (written at evaluate); fall back to
+		// the create_thread name for docs predating the stamp. Only create_thread
+		// is worker-managed today, so these two cover every worker-executed tool.
+		if ex, _ := m.Get("executor").(string); ex == "worker" {
+			return false
+		}
 		if name, _ := m.Get("toolName").(string); name == "create_thread" {
 			return false // worker-managed: not executed by the engine
 		}
@@ -1200,36 +1208,6 @@ func (w *ConversationWorker) handleRetryToolAction(payload json.RawMessage) {
 		"result":           nil,
 		"runningStartedAt": nil,
 	})
-}
-
-// handleFinalizeCancelledTool finalizes a tool-action the engine executed but
-// left non-terminal with no result — a cancelled-no-write exit (e.g. a spurious
-// abort of a re-run whose stale cancel signal fired). The engine (sole executor)
-// reports the wedge; the worker (sole cancellation writer) stamps it cancelled
-// so it can't rest forever at running-with-no-result. finalizeStuckRunningTool
-// guards on state==running, so a fresh re-run (already back at approved) is never
-// clobbered — preserving the single-writer anti-race rule. On a write, reconcile
-// so the reducer settles the parked turn.
-func (w *ConversationWorker) handleFinalizeCancelledTool(payload json.RawMessage) {
-	var msg struct {
-		ToolUseID string `json:"toolUseId"`
-		// RunningStartedAt is the execution epoch the sender observed (the value
-		// claimRunning stamped). A pointer so an absent field (no epoch known)
-		// disables the epoch guard rather than matching a zero timestamp.
-		RunningStartedAt *float64 `json:"runningStartedAt"`
-	}
-	if err := json.Unmarshal(payload, &msg); err != nil {
-		return
-	}
-	var epoch float64
-	if msg.RunningStartedAt != nil {
-		epoch = *msg.RunningStartedAt
-	}
-	if w.finalizeStuckRunningTool(msg.ToolUseID, epoch, "engine-report") {
-		// The run loop drains needsReconcile after this message returns, so the
-		// reducer settles the parked turn now that the tool reached terminal.
-		w.needsReconcile = true
-	}
 }
 
 // handleUpdateToolActionForRetry updates approval options and display data for retry

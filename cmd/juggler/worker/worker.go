@@ -287,13 +287,17 @@ type ConversationWorker struct {
 	ackWatchdog  *time.Timer
 	ackWatchdogC chan struct{}
 
-	// Stuck-tool liveness backstop bookkeeping (sweepStuckRunningTools, run
-	// goroutine only). runningToolFirstSeenMs anchors how long each running+no-result
-	// tool-action has been observed (the grace-period clock); lastLivenessProbeMs
-	// rate-limits re-probing the engine per toolUseId. Both are pruned as tools leave
-	// the running-with-no-result shape; lazily initialised on first sweep.
-	runningToolFirstSeenMs map[string]int64
-	lastLivenessProbeMs    map[string]int64
+	// Level-based tool-liveness (tool-execution-report, INV-B/C). lastExecReport and
+	// prevExecReport hold the two most recent ACCEPTED reports from the attached
+	// engine — the finalize rule requires a wedge to be absent from BOTH (the
+	// 2-consecutive belt). execReportSeq fences stale/duplicate reports (per engine
+	// client); execReportClient is the engine the stored reports came from, so the
+	// state is dropped when a different engine attaches. Run goroutine only (set in
+	// handleToolExecutionReport, read in finalizeToolsAbsentFromExecReport).
+	lastExecReport   *execReport
+	prevExecReport   *execReport
+	execReportSeq    int64
+	execReportClient string
 
 	// ackTimeout is how long the worker waits for the engine to acknowledge a
 	// tool-command before treating it as silently dropped. A field (defaulting to
@@ -688,16 +692,15 @@ const (
 	// livenessInterval means ticks were missed because the process wasn't running.
 	// Comfortably above any normal scheduling jitter so live operation never trips it.
 	frozenGapThresholdMs = 4000
-	// livenessProbeGraceMs is how long a tool-action must sit in `running` with no
-	// result before the stuck-tool backstop probes the engine for liveness. Well
-	// past the claim→execution-registration lag, so a tool that is merely spinning
-	// up is never probed; a genuinely long-running tool stays registered in the
-	// engine and answers "live", so it is never finalized regardless of age.
-	livenessProbeGraceMs = 8000
-	// livenessProbeIntervalMs rate-limits re-probing the same stuck tool, so one the
-	// engine keeps reporting live (or whose probe reply is still in flight) isn't
-	// re-probed on every liveness tick.
-	livenessProbeIntervalMs = 10000
+	// execReportFreshMs is how recent the last accepted tool-execution-report must be
+	// for finalizeToolsAbsentFromExecReport to act on it — a few engine report
+	// intervals (the engine reports every ~3s while tools run). Past this the engine
+	// has gone quiet and orphan recovery belongs to the reattach path, not this rule.
+	execReportFreshMs = 9000
+	// execReportClaimGraceMs is the claim→executor-registration lag subtracted in the
+	// happens-after guard, so a tool claimed just before a report was sent (and thus
+	// legitimately not yet in it) is never mistaken for absent.
+	execReportClaimGraceMs = 2000
 )
 
 // livenessC returns the liveness ticker's channel, or nil when there is no ticker
@@ -857,7 +860,7 @@ func (w *ConversationWorker) run(ctx context.Context) {
 			w.sweepStaleToolCommands()
 		case <-w.livenessC():
 			w.detectFrozenGap()
-			w.sweepStuckRunningTools()
+			w.finalizeToolsAbsentFromExecReport()
 		}
 		// After every event, drain the reducer. A dispatch may complete
 		// and set needsReconcile again (e.g., child thread completes →
@@ -1070,9 +1073,6 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 	case "retry-tool-action":
 		w.handleRetryToolAction(msg.Payload)
 
-	case "finalize-cancelled-tool":
-		w.handleFinalizeCancelledTool(msg.Payload)
-
 	case "update-tool-action-for-retry":
 		w.handleUpdateToolActionForRetry(msg.Payload)
 
@@ -1099,6 +1099,9 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 
 	case "tool-command-ack":
 		w.handleToolCommandAck(msg.Payload)
+
+	case "tool-execution-report":
+		w.handleToolExecutionReport(msg.Payload, msg.OriginClient)
 
 	case "engine-trace":
 		w.handleEngineTrace(msg.Payload)

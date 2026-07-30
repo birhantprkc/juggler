@@ -47,6 +47,7 @@ import { setBootstrapSummarizationPrompt } from '../utils/compaction-utils.js';
  * @property {string} [toolName] - Tool name
  * @property {object} [params] - Params
  * @property {string} [toolUseId] - Tool use ID
+ * @property {number} [runningEpoch] - Execution generation for a cancel-tool command (scopes the abort to one incarnation)
  * @property {boolean} [commandDriven] - Tool command: conversation's reactive reducer is disabled
  * @property {object} [toolInput] - Tool input
  * @property {object} [config] - Config
@@ -947,18 +948,8 @@ class WorkerManager {
       case 'cancel-tool':
         // Worker-commanded cancellation (engine-only): abort an in-flight
         // execution for the given tool-action by id.
-        protocols.handleCancelTool(this, conversationId, /** @type {string} */ (data.toolUseId)).catch((err) => {
+        protocols.handleCancelTool(this, conversationId, /** @type {string} */ (data.toolUseId), /** @type {number|undefined} */ (data.runningEpoch)).catch((err) => {
           console.error('[WorkerManager] cancel-tool failed:', err);
-        });
-        break;
-
-      case 'probe-tool-liveness':
-        // Worker-commanded liveness probe (engine-only): the tool-liveness
-        // backstop. If this engine is not actually executing the (browser-executed)
-        // tool the doc flags running, it reports finalize-cancelled-tool so the
-        // worker finalizes the running-with-no-result wedge.
-        protocols.handleProbeToolLiveness(this, conversationId, /** @type {string} */ (data.toolUseId)).catch((err) => {
-          console.error('[WorkerManager] probe-tool-liveness failed:', err);
         });
         break;
 

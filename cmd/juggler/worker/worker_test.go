@@ -1361,11 +1361,10 @@ func TestCancelStaleToolActions(t *testing.T) {
 	w.doc.Destroy()
 }
 
-// TestFinalizeStuckRunningTool verifies the shared finalizer that both the
-// engine execute post-condition (handleFinalizeCancelledTool) and the liveness
-// backstop use: it stamps a tool-action cancelled+interrupted IFF it is running
-// with no result, and leaves every other shape untouched — the anti-race guard
-// that keeps it compatible with the worker-single-writer rule.
+// TestFinalizeStuckRunningTool verifies the shared finalizer the
+// tool-execution-report rule uses: it stamps a tool-action cancelled+interrupted
+// IFF it is running with no result, and leaves every other shape untouched — the
+// anti-race guard that keeps it compatible with the worker-single-writer rule.
 func TestFinalizeStuckRunningTool(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
@@ -1386,23 +1385,23 @@ func TestFinalizeStuckRunningTool(t *testing.T) {
 	}
 
 	// Item 0: the wedge — finalizes and reports true (epoch 0 = state-only guard).
-	if !w.finalizeStuckRunningTool("tu-0", 0, "test") {
+	if !w.finalizeStuckRunningToolOnField("tu-0", "runningEpoch", 0, "test") {
 		t.Error("tu-0 (running, no result): expected finalize to write, got false")
 	}
 	// Item 1: approved re-run — no write, reports false.
-	if w.finalizeStuckRunningTool("tu-1", 0, "test") {
+	if w.finalizeStuckRunningToolOnField("tu-1", "runningEpoch", 0, "test") {
 		t.Error("tu-1 (approved): must not be finalized (would clobber a re-run)")
 	}
 	// Item 2: running with a result — no write.
-	if w.finalizeStuckRunningTool("tu-2", 0, "test") {
+	if w.finalizeStuckRunningToolOnField("tu-2", "runningEpoch", 0, "test") {
 		t.Error("tu-2 (running, has result): must not be finalized")
 	}
 	// Item 3: pending — no write.
-	if w.finalizeStuckRunningTool("tu-3", 0, "test") {
+	if w.finalizeStuckRunningToolOnField("tu-3", "runningEpoch", 0, "test") {
 		t.Error("tu-3 (pending): must not be finalized")
 	}
 	// Unknown id — no write, no panic.
-	if w.finalizeStuckRunningTool("tu-missing", 0, "test") {
+	if w.finalizeStuckRunningToolOnField("tu-missing", "runningEpoch", 0, "test") {
 		t.Error("tu-missing: must not report a write")
 	}
 
@@ -1433,9 +1432,9 @@ func TestFinalizeStuckRunningTool(t *testing.T) {
 }
 
 // TestFinalizeStuckRunningTool_EpochGuard verifies the ABA guard: a finalize
-// carrying a stale execution epoch must NOT clobber a running tool that a re-run
-// re-claimed under a fresh epoch, while a finalize carrying the matching epoch
-// (or none) still finalizes the genuine wedge.
+// carrying a stale execution generation must NOT clobber a running tool that a
+// re-run re-claimed under a fresh generation, while a finalize carrying the
+// matching generation still finalizes the genuine wedge.
 func TestFinalizeStuckRunningTool_EpochGuard(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
@@ -1443,22 +1442,22 @@ func TestFinalizeStuckRunningTool_EpochGuard(t *testing.T) {
 	w.doc.InsertMessage(0, ConversationItem{
 		Type: ItemTypeToolAction, ItemID: "ta-0", ToolUseID: "tu-0", ToolName: "bash", State: StateRunning,
 	})
-	// The current execution's epoch (as a JS Date.now()-style ms number → float64
-	// in the doc). Set it the way claimRunning would.
-	const currentEpoch = 1_700_000_000_000.0
-	w.doc.UpdateToolActionFieldsRecursive("tu-0", map[string]any{"runningStartedAt": currentEpoch})
+	// The current execution's generation (the per-incarnation runningEpoch counter
+	// claimRunning increments). Set it the way claimRunning would.
+	const currentEpoch = 7.0
+	w.doc.UpdateToolActionFieldsRecursive("tu-0", map[string]any{"runningEpoch": currentEpoch})
 
-	// A finalize from a PRIOR execution (stale epoch) must be ignored — this is the
-	// ABA case where a re-run already re-claimed the id to a fresh running.
-	if w.finalizeStuckRunningTool("tu-0", currentEpoch-5000, "stale") {
+	// A finalize from a PRIOR execution (stale generation) must be ignored — this is
+	// the ABA case where a re-run already re-claimed the id to a fresh running.
+	if w.finalizeStuckRunningToolOnField("tu-0", "runningEpoch", currentEpoch-1, "stale") {
 		t.Error("stale-epoch finalize must not clobber a re-claimed running tool")
 	}
 	if it, _ := findToolItem(w.doc.GetItems(), "tu-0"); it.State != StateRunning {
 		t.Errorf("tu-0 must still be running after a stale-epoch finalize, got %q", it.State)
 	}
 
-	// A finalize carrying the CURRENT epoch finalizes the genuine wedge.
-	if !w.finalizeStuckRunningTool("tu-0", currentEpoch, "current") {
+	// A finalize carrying the CURRENT generation finalizes the genuine wedge.
+	if !w.finalizeStuckRunningToolOnField("tu-0", "runningEpoch", currentEpoch, "current") {
 		t.Error("matching-epoch finalize must finalize the wedge")
 	}
 	if it, _ := findToolItem(w.doc.GetItems(), "tu-0"); it.State != StateCancelled {

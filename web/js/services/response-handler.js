@@ -881,6 +881,16 @@ class ResponseHandler {
     try {
       const finalToolInput = this._resolveFinalToolInput(toolCall, toolInput, messageThread);
 
+      // Carry the execution generation + claim stamp claimRunning wrote onto the
+      // tool-action into the executor's running-action registry. runningEpoch
+      // scopes a later cancel-tool to this exact incarnation (cancelByToolUseId's
+      // epoch guard); runningStartedAt feeds the worker's tool-execution-report
+      // happens-after guard. Both read live from the ymap — the single source of
+      // truth the worker's signals are generated against.
+      const ta = messageThread.getToolAction(toolCall.id);
+      const runningEpoch = Number(ta?.get('runningEpoch')) || undefined;
+      const runningStartedAt = Number(ta?.get('runningStartedAt')) || undefined;
+
       const result = await actionExecutor.execute(
         actionId,
         finalToolInput,
@@ -890,9 +900,18 @@ class ResponseHandler {
           messageThread,
           toolUseId: toolCall.id,
           toolName: resolveToolName(toolCall.name),  // route multi-tool classes to the invoked tool
+          runningEpoch,
+          runningStartedAt,
           _approvalHandled: true
         }
       );
+
+      // CONTIGUITY INVARIANT (tool-execution-report causality, INV-C): there must
+      // be NO await between the execute() completion above and completeToolAction
+      // below. The executing-set entry is removed inside execute()'s finally, and
+      // the terminal doc write happens in completeToolAction; keeping them in one
+      // await-free region guarantees any report showing this tool absent was sent
+      // after its terminal write (see action-executor.js execute() finally).
 
       // Build content from result
       let content = typeof result.formatted?.summary === 'string'

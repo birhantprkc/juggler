@@ -637,9 +637,17 @@ const (
 //
 // The conversationId is added by the outbound envelope (FormatWorkerMessage),
 // so only the type and toolUseId travel in the payload.
+//
+// RunningEpoch scopes a cancel-tool command to one execution generation (the
+// value claimRunning stamped on the tool-action). The engine aborts an
+// in-flight execution only when its epoch matches, so a cancel meant for a
+// prior run can't kill a fresh re-run of the same toolUseId. Omitted (0) for
+// evaluate-tool/execute-tool and for pre-claim cancels of an approved tool
+// (no epoch stamped yet), where the abort stays unscoped.
 type ToolCommand struct {
-	Type      string `json:"type"`
-	ToolUseID string `json:"toolUseId"`
+	Type         string `json:"type"`
+	ToolUseID    string `json:"toolUseId"`
+	RunningEpoch int64  `json:"runningEpoch,omitempty"`
 }
 
 // Activity constants for the `activity` field of processingState metadata.

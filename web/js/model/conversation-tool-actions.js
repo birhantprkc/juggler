@@ -163,8 +163,18 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
     return;
   }
 
-  // Worker-managed tools: execution handled by Go worker, skip browser-side execution
+  // Worker-managed tools: execution handled by Go worker, skip browser-side
+  // execution. Stamp executor='worker' authoritatively (this is where the plugin
+  // manifest is actually known) so the worker's tool-execution-report liveness
+  // rule can skip tools it executes itself — the engine's executor is not their
+  // liveness oracle and they never appear in a report. Additive field, tagged
+  // ENGINE_DERIVED_ORIGIN like every other derivation here so undo skips it.
   if (ActionClass.MANIFEST?.workerManaged) {
+    if (toolAction.get('executor') !== 'worker') {
+      conversation._doc.doc.transact(() => {
+        toolAction.set('executor', 'worker');
+      }, ENGINE_DERIVED_ORIGIN);
+    }
     return;
   }
 
@@ -347,6 +357,16 @@ export function claimRunning(c, ymap) {
       // re-runs of old tool-actions — without it the elapsed time would
       // read "50 hours" against the original timestamp.
       ymap.set('runningStartedAt', Date.now());
+      // runningEpoch is the immutable per-incarnation execution generation.
+      // Bump it on every claim so a cancel signal (or liveness evidence) can
+      // be scoped to the exact execution it was issued against: a re-run of
+      // the same toolUseId claims a strictly higher epoch, so a stale cancel
+      // meant for the previous execution mismatches and is ignored. Unlike
+      // runningStartedAt (a wall-clock stamp that two claims can share within a
+      // millisecond, and which the reset paths clear), the epoch is a
+      // monotonic counter that survives reattach resets — the next claim
+      // increments past it — so it is a true generation identity.
+      ymap.set('runningEpoch', (Number(ymap.get('runningEpoch')) || 0) + 1);
       claimed = true;
     }
   }, ENGINE_DERIVED_ORIGIN);

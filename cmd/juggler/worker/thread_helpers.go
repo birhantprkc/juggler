@@ -138,15 +138,26 @@ func (w *ConversationWorker) CancelAllToolActions() {
 	w.dispatchCancelTools(executingIDs)
 }
 
+// toolCancelRef identifies a tool-action to cancel plus the execution generation
+// it was observed in. The engine aborts an in-flight execution only when the
+// running generation matches RunningEpoch, so a cancel meant for a prior run
+// can't kill a fresh re-run of the same toolUseId. RunningEpoch is 0 for a
+// tool cancelled while still StateApproved (never claimed → no epoch stamped),
+// meaning "unscoped" — the gap-closing behaviour dispatchCancelTools documents.
+type toolCancelRef struct {
+	ToolUseID    string
+	RunningEpoch int64
+}
+
 // dispatchCancelTools commands the engine to abort the in-flight execution of
 // each cancelled tool-action. MUST be called with ycrdtMu released — dispatch
 // must not happen under the lock (the engine mailbox send is independent of doc
 // state). handleCancelTool / cancelByToolUseId is idempotent, so a command for
 // an approved-but-not-yet-running tool is harmless: it closes the gap where the
 // engine claimed approved→running but that write hasn't synced back yet.
-func (w *ConversationWorker) dispatchCancelTools(toolUseIDs []string) {
-	for _, id := range toolUseIDs {
-		w.dispatchToolCommand("cancel-tool", id)
+func (w *ConversationWorker) dispatchCancelTools(refs []toolCancelRef) {
+	for _, ref := range refs {
+		w.dispatchToolCommandEpoch("cancel-tool", ref.ToolUseID, ref.RunningEpoch)
 	}
 }
 
@@ -230,14 +241,17 @@ func scanApprovalBlock(arr *ycrdt.YArray) (hasPending, hasExecuting bool) {
 // false, those tools are left alone — approved so the frontend reducer can
 // claim them on reconnect, pending so the browser owns the approval cancel.
 //
-// Returns the toolUseIDs of cancelled tool-actions whose PRIOR state was
+// Returns a toolCancelRef for each cancelled tool-action whose PRIOR state was
 // StateApproved or StateRunning — the "executing" states where the engine may
 // have an in-flight or imminent fetch to abort. The callers dispatch a
 // cancel-tool command for each (AFTER releasing ycrdtMu) so the engine unwinds
 // the in-flight execution; otherwise the fetch would resolve normally and the
-// engine would overwrite 'cancelled' with 'completed'. IDs accumulate across
-// the recursive sub-thread descent.
-func (w *ConversationWorker) cancelToolsInArray(arr *ycrdt.YArray, includeApproved, includePending bool) []string {
+// engine would overwrite 'cancelled' with 'completed'. The ref carries the
+// tool's runningEpoch, read HERE under the same ycrdtMu hold that writes
+// 'cancelled', so the cancel command is scoped to exactly the generation we
+// just cancelled (a StateApproved tool has no epoch yet → 0, unscoped). Refs
+// accumulate across the recursive sub-thread descent.
+func (w *ConversationWorker) cancelToolsInArray(arr *ycrdt.YArray, includeApproved, includePending bool) []toolCancelRef {
 	if arr == nil {
 		return nil
 	}
@@ -247,7 +261,7 @@ func (w *ConversationWorker) cancelToolsInArray(arr *ycrdt.YArray, includeApprov
 		"isError":   false,
 	})
 
-	var executingIDs []string
+	var executingIDs []toolCancelRef
 	length := int(arr.GetLength())
 	for i := 0; i < length; i++ {
 		raw := arr.Get(ycrdt.Number(i))
@@ -284,7 +298,11 @@ func (w *ConversationWorker) cancelToolsInArray(arr *ycrdt.YArray, includeApprov
 				"includeApproved": includeApproved,
 			})
 			if item.State == StateApproved || item.State == StateRunning {
-				executingIDs = append(executingIDs, item.ToolUseID)
+				// Capture the generation under the lock so the cancel command
+				// targets exactly this incarnation. Absent (approved, never
+				// claimed) → 0 → unscoped.
+				epoch, _ := docNumberToInt64(m.Get("runningEpoch"))
+				executingIDs = append(executingIDs, toolCancelRef{ToolUseID: item.ToolUseID, RunningEpoch: epoch})
 			}
 			w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 				m.Set("state", StateCancelled)
@@ -316,35 +334,40 @@ func docNumberToInt64(v any) (int64, bool) {
 	}
 }
 
-// finalizeStuckRunningTool stamps a single tool-action state=cancelled +
+// finalizeStuckRunningToolOnField stamps a single tool-action state=cancelled +
 // result=interrupted IFF it is currently RUNNING with no result — a tool the
 // engine claimed (approved→running) but left non-terminal, the
-// running-with-no-result wedge. Reached two ways: the engine's execute
-// post-condition reports a cancelled-no-write exit, and the liveness backstop
-// finds a running tool no engine is executing.
+// running-with-no-result wedge. The tool-execution-report rule
+// (finalizeToolsAbsentFromExecReport) reaches it for a running tool absent from
+// the attached engine's executing set.
 //
 // Two guards keep it compatible with the worker-single-writer rule:
 //   - state==running: a re-run resets the tool to approved (a fresh execution the
 //     reducer owns), so a stale finalize can never clobber it and re-open the
 //     restart loop that motivated single-writer cancellation.
-//   - epoch match: when the caller passes a non-zero execution epoch (the
-//     runningStartedAt the sender observed), the tool is finalized ONLY if the doc
-//     still carries that exact epoch. This closes the ABA window where a re-run
-//     re-claimed the SAME toolUseId to a fresh running (new runningStartedAt)
-//     between the report and its processing — the mismatched epoch means the
-//     running execution is a different, innocent one, so it is left untouched. An
-//     epoch of 0 (unknown) falls back to the state==running guard alone.
+//   - epoch match: when the caller passes a non-zero execution epoch, the tool is
+//     finalized ONLY if the doc's epochField still carries that exact epoch. This
+//     closes the ABA window where a re-run re-claimed the SAME toolUseId to a fresh
+//     running (new generation) between the report and its processing — the
+//     mismatched epoch means the running execution is a different, innocent one, so
+//     it is left untouched. An epoch of 0 (unknown) falls back to the state==running
+//     guard alone.
+//
+// epochField names the doc generation stamp the caller observed: "runningEpoch"
+// (the tool-execution-report rule — a true per-incarnation generation, immune to
+// Date.now() collisions).
 //
 // Returns true iff it wrote (so callers reconcile only on a real state change).
 // The whole find-check-write runs under one ycrdtMu hold so a concurrent re-run
 // can't slip between the guard read and the write.
-func (w *ConversationWorker) finalizeStuckRunningTool(toolUseID string, epoch float64, reason string) bool {
+func (w *ConversationWorker) finalizeStuckRunningToolOnField(toolUseID, epochField string, epoch float64, reason string) bool {
 	interruptedResult := convertToYcrdt(map[string]any{
 		"content":   "Interrupted",
 		"cancelled": true,
 		"isError":   false,
 	})
 	wrote := false
+	var cancelEpoch int64
 	ycrdtMu.Lock()
 	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
 		if t, _ := m.Get("type").(string); t != ItemTypeToolAction {
@@ -369,10 +392,13 @@ func (w *ConversationWorker) finalizeStuckRunningTool(toolUseID string, epoch fl
 		// stamp round-trips as int/int64/float64 depending on its write path, so it
 		// is coerced before the compare.
 		if epoch != 0 {
-			if de, ok := docNumberToInt64(m.Get("runningStartedAt")); ok && de != int64(epoch) {
+			if de, ok := docNumberToInt64(m.Get(epochField)); ok && de != int64(epoch) {
 				return true
 			}
 		}
+		// Capture the execution generation under the lock so the belt cancel below
+		// aborts exactly this incarnation, not a re-run that re-claims the id.
+		cancelEpoch, _ = docNumberToInt64(m.Get("runningEpoch"))
 		toolName, _ := m.Get("toolName").(string)
 		w.tape.Record("tool-state", map[string]any{
 			"toolUseId": toolUseID,
@@ -393,8 +419,9 @@ func (w *ConversationWorker) finalizeStuckRunningTool(toolUseID string, epoch fl
 	if wrote {
 		// Belt-and-suspenders: tell the engine to abort any lingering in-flight
 		// execution for this id (idempotent — a no-op if nothing is running there),
-		// so a late-resolving fetch can't overwrite the cancelled result.
-		w.dispatchCancelTools([]string{toolUseID})
+		// so a late-resolving fetch can't overwrite the cancelled result. Scoped to
+		// the generation just cancelled so a fresh re-run is never aborted.
+		w.dispatchCancelTools([]toolCancelRef{{ToolUseID: toolUseID, RunningEpoch: cancelEpoch}})
 	}
 	return wrote
 }
