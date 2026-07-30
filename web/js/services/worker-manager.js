@@ -917,30 +917,27 @@ class WorkerManager {
 
       case 'evaluate-tool': {
         // Worker-commanded tool evaluation (engine-only): run handleNewToolAction
-        // for the given tool-action by id, then ack the outcome so the worker can
-        // gate its dedup on a confirmation instead of fire-and-forget. A throw or
-        // a no-op (could-not-act) acks ok=false so the worker re-drives.
+        // for the given tool-action by id. No ack — the worker re-drives from doc
+        // state (level-based): a command that couldn't act leaves the tool at its
+        // prior state, which driveToolActions re-dispatches once it goes stale.
         const toolUseId = /** @type {string} */ (data.toolUseId);
         protocols.handleEvaluateTool(this, conversationId, toolUseId)
-          .then((ok) => protocols.sendToolCommandAck(this, conversationId, 'evaluate-tool', toolUseId, ok !== false))
           .catch((err) => {
             console.error('[WorkerManager] evaluate-tool failed:', err);
-            protocols.sendToolCommandAck(this, conversationId, 'evaluate-tool', toolUseId, false);
           });
         break;
       }
 
       case 'execute-tool': {
         // Worker-commanded tool execution (engine-only): claim approved→running
-        // and run the side effect for the given tool-action by id, then ack the
-        // outcome. handleExecuteTool awaits execution, so an ok=true ack means the
-        // tool ran to a terminal result; a throw or no-op acks ok=false to re-drive.
+        // and run the side effect for the given tool-action by id. No ack — the
+        // worker re-drives from doc state (level-based); once claimRunning moves the
+        // tool to running, driveToolActions no longer selects it, so a re-driven
+        // command is a harmless claimRunning-CAS no-op.
         const toolUseId = /** @type {string} */ (data.toolUseId);
         protocols.handleExecuteTool(this, conversationId, toolUseId)
-          .then((ok) => protocols.sendToolCommandAck(this, conversationId, 'execute-tool', toolUseId, ok !== false))
           .catch((err) => {
             console.error('[WorkerManager] execute-tool failed:', err);
-            protocols.sendToolCommandAck(this, conversationId, 'execute-tool', toolUseId, false);
           });
         break;
       }

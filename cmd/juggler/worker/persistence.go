@@ -174,8 +174,6 @@ func (w *ConversationWorker) onShutdown() {
 		w.saveTimer.Stop()
 		w.saveTimer = nil
 	}
-	// Stop the silent-ack watchdog so no timer outlives the worker.
-	w.disarmAckWatchdog()
 	// Drain any pending save signal (timer may have fired before Stop)
 	select {
 	case <-w.saveChan:

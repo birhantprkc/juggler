@@ -414,14 +414,16 @@ function findThreadForTool(c, toolUseId) {
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @param {string} toolUseId
- * @returns {Promise<boolean>} true if handled (ack ok), false if it could not act (re-drive)
+ * @returns {Promise<boolean>} true if handled, false if it could not act. The
+ *   caller ignores it — the worker re-drives from doc state, not from an ack —
+ *   but the value stays as a diagnostic of whether this command found its tool.
  */
 export async function handleEvaluateTool(wm, conversationId, toolUseId) {
   if (!isEngine()) {
     throw new Error('evaluate-tool received in a viewer — tool execution runs only in the engine');
   }
-  // The boolean return is the ack outcome the worker gates its dedup on:
-  // false → "could not act, re-drive me"; true → "handled, latch it".
+  // false → could not act (conv/tool not loaded yet); the worker re-drives this
+  // tool from its unchanged doc state once the dispatch goes stale.
   const c = await loadAndFlush(wm, conversationId);
   if (!c) return false;
   const mt = findThreadForTool(c, toolUseId);
@@ -449,16 +451,17 @@ export async function handleEvaluateTool(wm, conversationId, toolUseId) {
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @param {string} toolUseId
- * @returns {Promise<boolean>} true if handled (ack ok), false if it could not act (re-drive)
+ * @returns {Promise<boolean>} true if handled, false if it could not act. The
+ *   caller ignores it — the worker re-drives from doc state, not from an ack —
+ *   but the value stays as a diagnostic of whether this command found its tool.
  */
 export async function handleExecuteTool(wm, conversationId, toolUseId) {
   if (!isEngine()) {
     throw new Error('execute-tool received in a viewer — tool execution runs only in the engine');
   }
-  // The boolean return is the ack outcome the worker gates its dedup on:
-  // false → "could not act (conv/tool not loaded yet), re-drive me"; true →
-  // "handled" — claimed and ran to a terminal result, or already running/terminal
-  // (claimRunning lost the CAS), neither of which should be re-driven.
+  // false → could not act (conv/tool not loaded yet); the worker re-drives this
+  // tool from its unchanged doc state. Once claimRunning moves it to running,
+  // driveToolActions no longer selects it, so a re-driven command is a no-op.
   const c = await loadAndFlush(wm, conversationId);
   if (!c) { sendEngineTrace(wm, conversationId, 'execute-noact', { toolUseId, reason: 'conv-not-loaded' }); return false; }
   const mt = findThreadForTool(c, toolUseId);
@@ -500,20 +503,6 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
     // engine reports no longer contains this id, so the worker finalizes it.
   }
   return true;
-}
-
-/**
- * Send a tool-command ack back to the worker so it can gate its dedup on a
- * confirmed outcome rather than fire-and-forget. ok=true → the engine handled the
- * command (latch it); ok=false → it could not act (un-latch and re-drive).
- * @param {any} wm - WorkerManager instance
- * @param {string} conversationId
- * @param {string} action - the command acked ('evaluate-tool' | 'execute-tool')
- * @param {string} toolUseId
- * @param {boolean} ok
- */
-export function sendToolCommandAck(wm, conversationId, action, toolUseId, ok) {
-  wm.sendToWorker(conversationId, { type: 'tool-command-ack', action, toolUseId, ok });
 }
 
 /**

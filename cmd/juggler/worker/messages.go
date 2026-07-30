@@ -23,7 +23,7 @@
 //   - sync/undo: yjs-sync, undo, redo, clear-history, stop-undo-capturing,
 //     begin-undo-coalesce, end-undo-coalesce, request-full-state, resync-request,
 //     resync-to-origin, clear-undo-stacks, get-transaction
-//   - diagnostics: tool-command-ack, engine-trace, rename-log
+//   - diagnostics: engine-trace, rename-log
 //   - test-only: get-yjs-state, ping, flush-persistence, set-mock-responses, release-mock
 //
 // NOTE: State mutations (item add/delete/update) flow through Yjs CRDT sync,

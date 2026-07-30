@@ -701,14 +701,10 @@ func (w *ConversationWorker) handleResyncToOrigin() {
 		w.reply(YjsSyncMessage{Type: "yjs-sync", Bytes: state})
 	}
 	// A freshly (re)attached engine has commanded none of this conversation's
-	// tools yet. Clear the dedup set so every non-terminal tool-action is
-	// commanded again against the new engine instance. Drop in-flight/retry
-	// bookkeeping too: any command awaiting an ack from the previous engine will
-	// never be answered, so it must not block re-driving against the new one.
+	// tools yet. Drop all command bookkeeping so every non-terminal tool-action is
+	// dispatched afresh against the new engine instance (the previous engine's
+	// dispatch state must not suppress the first command to the new one).
 	w.tools.resetAll()
-	// No command is in flight against the new engine yet; disarm the watchdog (the
-	// drive below re-arms it if it dispatches).
-	w.disarmAckWatchdog()
 
 	// A tool stuck in state=running with no result was being executed by the
 	// PREVIOUS engine instance, which has gone away (it never wrote a result).
@@ -799,61 +795,6 @@ func (w *ConversationWorker) resetRunningToolsForReattach() {
 		})
 		w.tools.clear(id)
 	}
-}
-
-// handleToolCommandAck records the engine's acknowledgement of a tool-command
-// (evaluate-tool / execute-tool) and is the confirmed half of the command-driven
-// handshake. driveToolActions only marks a command as in-flight when it sends it;
-// this ack decides its fate:
-//
-//   - ok=true  → the engine handled it (evaluated, or claimed→running and ran the
-//     side effect to a terminal result — handleExecuteTool awaits executeToolAction
-//     before acking). Promote the in-flight entry to commandedToolActions so
-//     steady-state re-drives don't re-command a running/terminal tool.
-//   - ok=false → the engine could not act (conversation/tool not loaded yet, a
-//     lost claim). Clear the in-flight entry and re-drive (needsReconcile) so the
-//     command is reissued. Bounded by toolCommandRetries so a permanently-
-//     unsatisfiable command can't spin; at the cap the worker latches and logs,
-//     deferring recovery to the next engine reattach.
-//
-// This closes the fire-and-forget hole where a single dropped or no-op'd command
-// stranded a tool-action non-terminal forever — "approved a tool, it never
-// executed, the item pulses but the tab isn't busy".
-func (w *ConversationWorker) handleToolCommandAck(payload json.RawMessage) {
-	var msg struct {
-		Action    string `json:"action"`
-		ToolUseID string `json:"toolUseId"`
-		OK        bool   `json:"ok"`
-	}
-	if err := json.Unmarshal(payload, &msg); err != nil {
-		return
-	}
-	state, inFlight := w.tools.inFlightAt(msg.ToolUseID)
-	if !inFlight {
-		// Stale or duplicate ack, or the tool already moved on — nothing to do.
-		return
-	}
-	w.tools.clearInFlight(msg.ToolUseID)
-	// An ack arrived, so the silent-ack watchdog has nothing to do for this id;
-	// disarm once nothing else is in flight (no idle wakeups).
-	defer w.disarmAckWatchdogIfDrained()
-
-	if msg.OK {
-		w.tools.markCommanded(msg.ToolUseID, state)
-		w.tools.clearCounts(msg.ToolUseID)
-		return
-	}
-
-	n := w.tools.bumpRetries(msg.ToolUseID)
-	if n > maxToolCommandRetries {
-		w.log.Error("[worker] tool-command %s for %s no-op'd %d×; latching to stop re-drive (recovery deferred to reattach)",
-			msg.Action, msg.ToolUseID, n)
-		w.tools.markCommanded(msg.ToolUseID, state)
-		return
-	}
-	// Re-drive: with both maps cleared for this id, the next reconcile re-dispatches
-	// the command. The run loop drains needsReconcile after this message returns.
-	w.needsReconcile = true
 }
 
 // handleEngineTrace persists a diagnostic event the engine emits over its WS
@@ -1063,16 +1004,15 @@ func (w *ConversationWorker) handleClearHistory() {
 
 // resetToolActionAndRedrive is the shared tail of the retry handlers: it writes
 // the given field reset onto the tool-action (recursively, so sub-thread tools
-// are found), drops all in-flight/retry/timeout bookkeeping so a wedged command
-// can't block the retry, then re-requests the LLM for the owning thread and
+// are found), drops the tool's command bookkeeping so the retry isn't suppressed
+// as already-dispatched, then re-requests the LLM for the owning thread and
 // re-commands the tool via driveToolActions. Callers supply only the field map
 // that distinguishes a re-ask (state="") from a re-run (state="approved").
 func (w *ConversationWorker) resetToolActionAndRedrive(toolUseID string, fields map[string]any) {
 	w.doc.UpdateToolActionFieldsRecursive(toolUseID, fields)
 
-	// Drop the dedup entry so driveToolActions re-dispatches even though the
-	// tool was already commanded at its prior state, plus all outstanding
-	// in-flight/retry/timeout bookkeeping so a wedged command doesn't block.
+	// Drop the command bookkeeping so driveToolActions re-dispatches immediately
+	// even though the tool was already dispatched at its prior state.
 	w.clearToolCommandBookkeeping(toolUseID)
 
 	// Signal that the reducer should dispatch CallLLM once the tool reaches a

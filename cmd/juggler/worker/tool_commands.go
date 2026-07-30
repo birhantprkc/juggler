@@ -12,26 +12,19 @@ import (
 	ycrdt "github.com/skyterra/y-crdt"
 )
 
-// maxToolCommandRetries bounds how many times a single tool-command is re-driven
-// after the engine reports it could not act (negative ack). Beyond this the
-// worker stops re-driving and latches the command, leaving recovery to the next
-// engine reattach — so a permanently-unsatisfiable command can't spin forever.
-const maxToolCommandRetries = 5
+// maxToolCommandAttempts bounds how many times driveToolActions re-dispatches a
+// tool-command that stays stuck at the same delivery state ("" or approved). Past
+// this the worker escalates the tool to a terminal error so a parked turn unblocks
+// instead of hanging forever, rather than re-driving indefinitely. At the default
+// redriveInterval (~5s) this is ~30s of silence before escalation.
+const maxToolCommandAttempts = 6
 
-// defaultAckTimeout is how long the worker waits for the engine to acknowledge a
-// tool-command before treating it as silently dropped. The engine acks
-// execute-tool only AFTER the tool runs to a terminal result, so this threshold
-// must comfortably exceed a slow-but-legitimate tool (e.g. a long `make test`)
-// — the sweep additionally refuses to re-drive anything the engine has already
-// claimed (state=running), so a slow tool is never re-fired regardless. Exposed
-// as the ackTimeout worker field, which tests shrink.
-const defaultAckTimeout = 20 * time.Second
-
-// maxToolCommandTimeouts bounds the silent-timeout re-drive loop per toolUseId
-// (parallel to maxToolCommandRetries for negative acks). Past this many silent
-// timeouts the worker stops re-driving and escalates the tool to a terminal
-// error result so the parked turn unblocks instead of hanging forever.
-const maxToolCommandTimeouts = 3
+// defaultRedriveInterval is how long driveToolActions waits before re-dispatching
+// a tool-command still stuck at the state it was last sent at. Doc-state
+// progression (the engine claimed/evaluated the tool) suppresses re-drive
+// immediately; this interval only bounds recovery of a silently-dropped command.
+// Exposed as the redriveInterval worker field, which tests shrink.
+const defaultRedriveInterval = 5 * time.Second
 
 // driveToolActions commands the engine — the single tool executor — to advance
 // every non-terminal tool-action in the conversation. It is the worker side of
@@ -46,11 +39,15 @@ const maxToolCommandTimeouts = 3
 // state: "" → evaluate-tool, approved → execute-tool. pending (awaiting the user)
 // and running (already claimed) need no command. Terminal tools are skipped.
 //
-// Dedup: commandedToolActions records the last state each tool was commanded at,
-// so a tool isn't re-dispatched every tick while its state is unchanged. The
-// engine handlers are independently idempotent (handleNewToolAction's ifState CAS
-// and claimRunning's compare-and-set), so a redundant command is harmless — the
-// dedup only suppresses needless traffic. Worker-managed tools (create_thread)
+// Dedup + recovery are one level-based rule: re-dispatch a tool's command only
+// when the doc state still demands one AND it wasn't already dispatched at that
+// state within redriveInterval (tools.shouldRedrive). Doc-state progression is the
+// "engine acted" signal — the engine handlers are independently idempotent
+// (handleNewToolAction's ifState CAS and claimRunning's compare-and-set), so a
+// redundant command is a harmless no-op — so the age test alone both suppresses
+// per-tick spam and recovers a silently-dropped command once it goes stale. A tool
+// stuck at the same delivery state past maxToolCommandAttempts is escalated to a
+// terminal error so the parked turn unblocks. Worker-managed tools (create_thread)
 // are commanded too but the engine no-ops them (its handlers early-return on the
 // workerManaged manifest), so they remain worker-executed.
 func (w *ConversationWorker) driveToolActions() {
@@ -97,49 +94,42 @@ func (w *ConversationWorker) driveToolActions() {
 	})
 	ycrdtMu.Unlock()
 
-	// Filter to the commands not already dispatched at this state.
-	// Comma-ok, not a bare lookup: StateUnevaluated is "" and a missing map
-	// entry also reads "", so a bare `commandedToolActions[c.id] == c.state`
-	// treats a never-commanded tool as already commanded at "" and never
-	// dispatches its first evaluate-tool. Only dedup when the tool was
-	// actually commanded before, at this same state.
-	var toDispatch []toolCmd
+	// Filter to the commands due for dispatch: either the doc demands a fresh
+	// command (never dispatched, or the demanded state changed) or the last
+	// dispatch at this state has aged past redriveInterval. recordDispatch stamps
+	// the dispatch and returns the attempt count; past maxToolCommandAttempts the
+	// tool is escalated to a terminal error instead of re-driven forever.
+	now := time.Now()
+	var toDispatch, escalate []toolCmd
 	for _, c := range cmds {
-		if prev, ok := w.tools.commandedAt(c.id); ok && prev == c.state {
-			continue // engine confirmed it handled this state (positive ack)
+		if !w.tools.shouldRedrive(c.id, c.state, now, w.redriveInterval) {
+			continue // already dispatched at this state and not yet stale
 		}
-		if prev, ok := w.tools.inFlightAt(c.id); ok && prev == c.state {
-			continue // dispatched, awaiting the engine's ack — don't re-spam it
+		if n := w.tools.recordDispatch(c.id, c.state, now); n > maxToolCommandAttempts {
+			escalate = append(escalate, c)
+			continue
 		}
 		toDispatch = append(toDispatch, c)
 	}
-	if len(toDispatch) == 0 {
-		return
+
+	if len(toDispatch) > 0 {
+		// The engine acts solely on these commands and must already hold the
+		// tool-action each refers to. Push the full doc through the SAME ordered
+		// engine mailbox the commands use, so the engine applies the tool-action
+		// before handling the command (engine doc-syncs are batched behind a
+		// setTimeout, so a bare command could arrive before the sync that created
+		// the tool and resolve to nothing). This ordering discipline — commands ride
+		// the doc-sync mailbox; the engine flushes pending syncs before acting — is
+		// the load-bearing invariant of the command-driven engine.
+		w.pushStateToEngine()
+		for _, c := range toDispatch {
+			w.dispatchToolCommand(c.action, c.id)
+		}
 	}
 
-	// The engine acts solely on these commands and must already hold the
-	// tool-action each refers to. Push the full doc through the SAME ordered
-	// engine mailbox the commands use, so the engine applies the tool-action
-	// before handling the command (engine doc-syncs are batched behind a
-	// setTimeout, so a bare command could arrive before the sync that created
-	// the tool and resolve to nothing). This ordering discipline — commands ride
-	// the doc-sync mailbox; the engine flushes pending syncs before acting — is
-	// the load-bearing invariant of the command-driven engine.
-	w.pushStateToEngine()
-
-	for _, c := range toDispatch {
-		// Record as in-flight, NOT commanded: the dedup holds until the engine
-		// acks. A positive ack (handleToolCommandAck) promotes this to
-		// commandedToolActions; a negative ack clears it and the next reconcile
-		// re-dispatches. (This replaced an optimistic latch straight into
-		// commandedToolActions, which wedged the tool forever if the single
-		// command was dropped or no-op'd by the engine.)
-		w.tools.markInFlight(c.id, c.state, time.Now())
-		w.dispatchToolCommand(c.action, c.id)
+	for _, c := range escalate {
+		w.escalateStaleToolCommand(c.id, c.state)
 	}
-	// A command is now outstanding: arm the watchdog so a silently-dropped command
-	// (no execution, no ack) is detected and recovered rather than latching forever.
-	w.armAckWatchdog()
 }
 
 // reevaluatePendingToolsOnStrategyChange resets a thread's tool-actions parked
@@ -237,7 +227,7 @@ func (w *ConversationWorker) reevaluatePendingToolsOnStrategyChange() {
 			"approvalOptions":  nil,
 			"displayData":      nil,
 		})
-		w.tools.clearCommanded(id)
+		w.tools.clear(id)
 	}
 	if len(ids) > 0 {
 		w.tape.Record("strategy-switch-reevaluate", map[string]any{
@@ -266,151 +256,56 @@ func (w *ConversationWorker) dispatchToolCommandEpoch(action, toolUseID string, 
 	w.callbacks.sendToEngine(data)
 }
 
-// armAckWatchdog starts the ack watchdog if it isn't already running. The timer
-// callback only signals ackWatchdogC (mirroring saveTimer → saveChan); all
-// watchdog state is mutated on the run goroutine in sweepStaleToolCommands. Once
-// armed it stays armed until it fires (the sweep re-arms while work remains) or a
-// drain disarms it — so a burst of dispatches doesn't keep pushing the deadline
-// out and starve the sweep.
-func (w *ConversationWorker) armAckWatchdog() {
-	if w.ackWatchdog != nil {
-		return
-	}
-	w.ackWatchdog = time.AfterFunc(w.ackTimeout, func() {
-		select {
-		case w.ackWatchdogC <- struct{}{}:
-		default:
-		}
-	})
+// clearToolCommandBookkeeping drops all command bookkeeping for a toolUseId at a
+// full-reset site (user-triggered retry, escalation-to-failed). Leaving a stale
+// entry would make driveToolActions treat a fresh incarnation as already-dispatched
+// and suppress its first command until the age test elapsed.
+func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
+	w.tools.clear(id)
 }
 
-// disarmAckWatchdog stops the watchdog and drains any already-fired signal so a
-// stale wake can't sweep an empty in-flight set. Run-goroutine only.
-func (w *ConversationWorker) disarmAckWatchdog() {
-	if w.ackWatchdog != nil {
-		w.ackWatchdog.Stop()
-		w.ackWatchdog = nil
-	}
-	select {
-	case <-w.ackWatchdogC:
-	default:
-	}
-}
-
-// disarmAckWatchdogIfDrained disarms the watchdog once no tool-command remains in
-// flight, so an idle worker has no pending wakeups.
-func (w *ConversationWorker) disarmAckWatchdogIfDrained() {
-	if w.tools.inFlightCount() == 0 {
-		w.disarmAckWatchdog()
-	}
-}
-
-// sweepStaleToolCommands is the watchdog body: it inspects every in-flight
-// tool-command and recovers the ones the engine never acknowledged. It runs on
-// the run goroutine (the ackWatchdogC select case), so it touches all the
-// tool-command maps without a lock.
+// escalateStaleToolCommand fails a tool whose engine command stayed stuck at the
+// same delivery state past maxToolCommandAttempts. It writes a terminal error
+// result onto the tool-action — the same recovery shape as a worker-side cancel
+// (cancelToolsInArray) — so the reducer feeds an isError tool-result to the
+// provider and a parked CLI unblocks (doc.go: "degrade to a recoverable error,
+// never an infinite wait").
 //
-// Per stale id (dispatched ≥ ackTimeout ago):
-//   - If the doc state advanced past the state it was dispatched at, the engine
-//     DID act (it CAS-claims approved→running BEFORE any side effect, or ran the
-//     tool to a terminal result) and only the ack was lost — drop the stale
-//     bookkeeping, never re-drive (a side effect may be in flight).
-//   - Otherwise the engine never claimed it (state unchanged, no runningStartedAt),
-//     so a re-drive cannot double-fire a side effect: under the cap, clear the
-//     in-flight latch and request a reconcile (driveToolActions re-pushes the doc
-//     to the engine — forcing it to (re)load this conversation as a peer, the
-//     stateful-peer cause — and re-dispatches); past the cap, escalate to a
-//     terminal error so the parked turn unblocks.
-func (w *ConversationWorker) sweepStaleToolCommands() {
-	// The timer fired; clear the handle so armAckWatchdog can re-arm below.
-	w.ackWatchdog = nil
-
-	if w.tools.inFlightCount() == 0 {
-		return
-	}
-
-	// Snapshot the current doc state of every tool-action (root + nested threads)
-	// so each in-flight command can be classified against the state it was
-	// dispatched at.
-	states := map[string]string{}
+// The walk that selected this id ran earlier and released ycrdtMu, so the engine
+// may have claimed or completed the tool since. Revalidate under the lock: only
+// fail a tool still at expectState with no result; otherwise the engine acted and
+// we just drop the stale bookkeeping. All bookkeeping for the id is cleared.
+func (w *ConversationWorker) escalateStaleToolCommand(id, expectState string) {
+	stillStuck := false
 	ycrdtMu.Lock()
 	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
 		if t, _ := m.Get("type").(string); t != ItemTypeToolAction {
 			return false
 		}
-		if id, _ := m.Get("toolUseId").(string); id != "" {
-			state, _ := m.Get("state").(string)
-			states[id] = state
+		if tid, _ := m.Get("toolUseId").(string); tid != id {
+			return false
 		}
-		return false
+		if state, _ := m.Get("state").(string); state == expectState && m.Get("result") == nil {
+			stillStuck = true
+		}
+		return true // found the tool; stop the walk
 	})
 	ycrdtMu.Unlock()
-
-	now := time.Now()
-	var escalate []string
-	for _, c := range w.tools.inFlightSnapshot() {
-		if c.dispatchedAt.IsZero() {
-			// Missing timestamp (shouldn't happen): stamp it and wait one cycle.
-			w.tools.restamp(c.id, now)
-			continue
-		}
-		if now.Sub(c.dispatchedAt) < w.ackTimeout {
-			continue // not stale yet
-		}
-
-		if cur, present := states[c.id]; !present || cur != c.state {
-			// Engine acted (claimed/ran/removed) — only the ack was lost. Drop the
-			// stale bookkeeping; the normal reconcile handles the rest. Never re-drive.
-			w.tools.clearInFlight(c.id)
-			continue
-		}
-
-		n := w.tools.bumpTimeouts(c.id)
-		if n > maxToolCommandTimeouts {
-			escalate = append(escalate, c.id)
-			continue
-		}
-		w.log.Error("[worker] engine never acked tool-command for %s (state=%q) in %s within %s; re-driving (%d/%d)",
-			c.id, c.state, w.conversationID, w.ackTimeout, n, maxToolCommandTimeouts)
-		w.tools.clearInFlight(c.id)
-		w.needsReconcile = true
+	if !stillStuck {
+		w.clearToolCommandBookkeeping(id)
+		return
 	}
 
-	for _, id := range escalate {
-		w.escalateStaleToolCommand(id)
-	}
-
-	if w.tools.inFlightCount() > 0 {
-		w.armAckWatchdog()
-	}
-}
-
-// clearToolCommandBookkeeping drops every dedup/in-flight/escalation field for a
-// toolUseId at a full-reset site (user-triggered retry, escalation-to-failed).
-// Leaving any field populated wedges the re-drive: a stale in-flight latch makes
-// the staleness sweep think a command is still outstanding, and a stale
-// retry/timeout count prematurely trips the escalation caps on the next run.
-func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
-	w.tools.clear(id)
-}
-
-// escalateStaleToolCommand fails a tool whose engine command went unacknowledged
-// past maxToolCommandTimeouts. It writes a terminal error result onto the
-// tool-action — the same recovery shape as a worker-side cancel
-// (cancelToolsInArray) — so the reducer feeds an isError tool-result to the
-// provider and a parked CLI unblocks (doc.go: "degrade to a recoverable error,
-// never an infinite wait"). All bookkeeping for the id is cleared.
-func (w *ConversationWorker) escalateStaleToolCommand(id string) {
-	w.log.Error("[worker] tool-command for %s in %s went unacknowledged %d×; failing the tool to unblock the turn",
-		id, w.conversationID, w.tools.timeoutCount(id))
-	w.tape.Record("tool-command-timeout-escalate", map[string]any{
-		"id": id, "timeouts": w.tools.timeoutCount(id),
+	w.log.Error("[worker] tool-command for %s in %s stayed at state=%q unhandled %d×; failing the tool to unblock the turn",
+		id, w.conversationID, expectState, maxToolCommandAttempts)
+	w.tape.Record("tool-command-attempts-escalate", map[string]any{
+		"id": id, "state": expectState, "attempts": maxToolCommandAttempts,
 	})
 	w.doc.UpdateToolActionFieldsRecursive(id, map[string]any{
 		"state": StateCompleted,
 		"result": map[string]any{
-			"content": fmt.Sprintf("[internal] The tool engine never acknowledged this command after %s and %d retries; failing it so the turn can proceed.",
-				w.ackTimeout, maxToolCommandTimeouts),
+			"content": fmt.Sprintf("[internal] The tool engine never handled this command after %d attempts; failing it so the turn can proceed.",
+				maxToolCommandAttempts),
 			"isError": true,
 		},
 		"runningStartedAt": nil,

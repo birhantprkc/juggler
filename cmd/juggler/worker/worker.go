@@ -271,21 +271,13 @@ type ConversationWorker struct {
 	// dispatches the action at the top level.
 	needsReconcile bool
 
-	// tools consolidates all per-toolUseId tool-command bookkeeping — the dedup
-	// latch (positively-acked state), the in-flight latch and its dispatch stamp,
-	// and the negative-ack / silent-ack escalation counts — into one map of
-	// *toolCommandState (see tool_command_state.go). Consulted by driveToolActions
-	// (dedup), handleToolCommandAck (promote/re-drive), and sweepStaleToolCommands
-	// (silent-ack recovery). The struct keeps the fields that must move together in
-	// lockstep, so a partial reset can't wedge the re-drive.
+	// tools holds the per-toolUseId tool-command delivery bookkeeping — the state a
+	// command was last dispatched at, its dispatch time, and the attempt count (see
+	// tool_command_state.go). driveToolActions consults it to re-dispatch only when
+	// the doc still demands a command and the last dispatch at that state has aged
+	// past redriveInterval, and to escalate past maxToolCommandAttempts. Run
+	// goroutine only.
 	tools *toolCommandTracker
-
-	// ackWatchdog fires ackTimeout after a tool-command goes in-flight, waking the
-	// run loop (via ackWatchdogC) to sweepStaleToolCommands. nil when nothing is in
-	// flight. Touched only on the run goroutine (no mutex); the timer callback only
-	// signals the channel, exactly like saveTimer → saveChan.
-	ackWatchdog  *time.Timer
-	ackWatchdogC chan struct{}
 
 	// Level-based tool-liveness (tool-execution-report, INV-B/C). lastExecReport and
 	// prevExecReport hold the two most recent ACCEPTED reports from the attached
@@ -299,10 +291,10 @@ type ConversationWorker struct {
 	execReportSeq    int64
 	execReportClient string
 
-	// ackTimeout is how long the worker waits for the engine to acknowledge a
-	// tool-command before treating it as silently dropped. A field (defaulting to
-	// defaultAckTimeout) so tests can shrink it.
-	ackTimeout time.Duration
+	// redriveInterval is how long driveToolActions waits before re-dispatching a
+	// tool-command still stuck at the state it was last sent at. A field (defaulting
+	// to defaultRedriveInterval) so tests can shrink it to force staleness.
+	redriveInterval time.Duration
 
 	// deliveryPumps tracks running task-output delivery pumps, keyed by the
 	// owning pendingRequests entry id. Each pump polls a background task and
@@ -440,8 +432,7 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 		subthreadSpecResultChan:   make(chan json.RawMessage, 1),
 		subthreadErrorResultChan:  make(chan json.RawMessage, 1),
 		tools:                     newToolCommandTracker(),
-		ackWatchdogC:              make(chan struct{}, 1),
-		ackTimeout:                defaultAckTimeout,
+		redriveInterval:           defaultRedriveInterval,
 		deliveryPumps:             make(map[string]*taskDeliveryPump),
 		lastReconciledStrategyIDs: make(map[string]string),
 		saveChan:                  make(chan struct{}, 1),
@@ -856,11 +847,15 @@ func (w *ConversationWorker) run(ctx context.Context) {
 			ack <- err
 		case <-w.docChangeChan:
 			w.handleItemsChange()
-		case <-w.ackWatchdogC:
-			w.sweepStaleToolCommands()
 		case <-w.livenessC():
 			w.detectFrozenGap()
 			w.finalizeToolsAbsentFromExecReport()
+			// Age-based re-drive of a silently-dropped tool-command. driveToolActions
+			// is otherwise only called event-driven (tryReconcile); this periodic tick
+			// is the sole guaranteed wakeup that recovers a dropped command on an
+			// otherwise-idle worker (it early-returns with no engine attached and dedups
+			// on redriveInterval, so running it every tick is cheap).
+			w.driveToolActions()
 		}
 		// After every event, drain the reducer. A dispatch may complete
 		// and set needsReconcile again (e.g., child thread completes →
@@ -1096,9 +1091,6 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 
 	case "resync-to-origin":
 		w.handleResyncToOrigin()
-
-	case "tool-command-ack":
-		w.handleToolCommandAck(msg.Payload)
 
 	case "tool-execution-report":
 		w.handleToolExecutionReport(msg.Payload, msg.OriginClient)

@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Fixed compaction piling up summary threads
+- More reliable tool-command delivery via a simpler level-based re-drive
 
 ## [0.5.1] - 2026-07-29
 
