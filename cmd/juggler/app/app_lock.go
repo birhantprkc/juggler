@@ -50,6 +50,12 @@ func (a *App) acquireInstance() error {
 	}
 
 	if !res.Acquired {
+		if a.flags.sessionChild {
+			// A session child is only ever spawned by a supervisor that has
+			// already arbitrated ownership, so a held lock means a genuinely
+			// live holder: refuse and report, never prompt or kill.
+			return fmt.Errorf("project %s is locked by another juggler instance", a.projectPath)
+		}
 		if err := a.handleExistingInstance(res.Existing); err != nil {
 			return err
 		}

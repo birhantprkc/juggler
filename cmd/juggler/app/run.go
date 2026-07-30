@@ -22,6 +22,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/machineserver"
 	"juggler/cmd/juggler/mcp"
 	"juggler/cmd/juggler/ops"
 	"juggler/cmd/juggler/providers/acp"
@@ -82,6 +83,14 @@ func Run(cfg Config) int {
 		return runDoctor(os.Args[2:])
 	}
 
+	// `juggler serve` runs the machine server: a project-less supervisor that
+	// spawns per-project session children and proxies clients to them. It has
+	// its own small flag set and must not boot the engine/webview path, so
+	// dispatch it before flag parsing like the other subcommands.
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		return machineserver.RunCommand(os.Args[2:])
+	}
+
 	// Determine terminal-vs-icon launch first, before anything writes to stdout.
 	// On Windows an icon launch detaches the console Windows allocated for us as
 	// a side effect (see launchedFromTerminal), so this must run early.
@@ -130,8 +139,12 @@ func Run(cfg Config) int {
 
 	// Self-terminate if our parent dies, so a server spawned by juggler-app (or
 	// the test harness) never outlives its owner. The app passes
-	// --exit-with-parent; the test harness relies on --test.
-	if flags.testMode || flags.exitWithParent {
+	// --exit-with-parent; the test harness relies on --test. A machine-server
+	// session child watches its parent only on Windows, where a server restart
+	// is a new process and the child must notice the old one die; on unix the
+	// supervisor owns child lifetime outright (and survives restart by re-exec,
+	// keeping its PID).
+	if flags.testMode || flags.exitWithParent || (flags.sessionChild && runtime.GOOS == "windows") {
 		startParentWatchdog()
 	}
 
@@ -215,6 +228,7 @@ func parseFlags(hasTerminal bool) (appFlags, bool) {
 		}
 		wanFlags = append(wanFlags, wanFlag{mode: spec.Mode, val: flag.Bool(spec.FlagName, false, spec.FlagUsage)})
 	}
+	sessionChild := flag.Bool("session-child", false, "Run as a machine-server session child (spawned by `juggler serve`; not a user-facing mode)")
 	exitWithParent := flag.Bool("exit-with-parent", false, "Self-terminate if the parent process dies (set by juggler-app for servers it owns, so they never outlive the app)")
 	logFile := flag.String("log-file", "", "Explicit log file path, overriding the centrally-derived per-platform log path (set by juggler-app per spawned server)")
 	flag.Usage = usage
@@ -269,6 +283,7 @@ func parseFlags(hasTerminal bool) (appFlags, bool) {
 		public:         *public,
 		publicSet:      publicSet,
 		startupWAN:     startupWAN,
+		sessionChild:   *sessionChild,
 		exitWithParent: *exitWithParent,
 		logFile:        *logFile,
 		logFileSet:     logFileSet,
@@ -284,6 +299,7 @@ var hiddenFlags = map[string]bool{
 	"assets-from-disk": true,
 	"test":             true,
 	"test-iframes":     true,
+	"session-child":    true,
 	"exit-with-parent": true,
 	"log-file":         true,
 }
