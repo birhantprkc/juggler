@@ -5,7 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Fixed compaction piling up summary threads — each compaction now merges prior summaries into one
+- Fixed compaction piling up summary threads
 
 ## [0.5.1] - 2026-07-29
 

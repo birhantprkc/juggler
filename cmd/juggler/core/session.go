@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -18,6 +19,12 @@ import (
 	"juggler/internal/atomicio"
 	"juggler/internal/jlog"
 )
+
+// taskPlaceholderRe matches the auto-generated placeholder name a blank new tab
+// requests ("Task 1", "Task 2", …). uniqueName treats these as a numbered
+// series rather than a base to suffix, so a fresh tab never inherits a "(copy)"
+// collision suffix.
+var taskPlaceholderRe = regexp.MustCompile(`^Task \d+$`)
 
 // BinnedConvInfo describes a conversation that lives in .juggler/trash/.
 // Sent over the wire to populate the Bin modal. The bin is a permanent holding
@@ -366,6 +373,18 @@ func (fs *FileSessionStore) uniqueName(base, excludeID string) string {
 	}
 	if !taken(base) {
 		return base
+	}
+	// A blank new tab always requests the placeholder name "Task N". Treat that
+	// as a numbered series, not a base to suffix: on collision pick the lowest
+	// unused "Task K" so a fresh tab never inherits a "(copy)" suffix. "(copy)"
+	// stays reserved for genuine duplicates (/duplicate, /handoff), which pass
+	// an explicit, non-placeholder name.
+	if taskPlaceholderRe.MatchString(base) {
+		for k := 1; ; k++ {
+			if c := fmt.Sprintf("Task %d", k); !taken(c) {
+				return c
+			}
+		}
 	}
 	if c := base + " (copy)"; !taken(c) {
 		return c
@@ -831,24 +850,38 @@ func (fs *FileSessionStore) Load() (*Session, error) {
 	fs.binIndex = binIdx
 
 	globalsPath := fs.sessionGlobalsPath()
-	globalsData, err := os.ReadFile(globalsPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, ErrSessionNotFound
-		}
-		return nil, fmt.Errorf("failed to read session globals: %w", err)
-	}
+	globalsData, readErr := os.ReadFile(globalsPath)
 
+	// The conversation folders scanned above are the authoritative source of
+	// truth for which conversations exist. session.json carries only the
+	// manifest (order, active, history, metadata). When that manifest is
+	// missing or corrupt we must NOT discard the conversations — we start from
+	// an empty manifest and let reconcileConversationOrder repopulate the order
+	// from the folders on disk. Anything else strands a fully-scanned index next
+	// to an empty order, so a freshly opened window renders a subset of the real
+	// tabs while the create path still collision-checks against the full set.
 	var session Session
-	if err := json.Unmarshal(globalsData, &session); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal session globals: %w", err)
+	rebuilt := false
+	switch {
+	case readErr == nil:
+		if err := json.Unmarshal(globalsData, &session); err != nil {
+			jlog.Error("[session] session.json unparseable, rebuilding order from disk: %v", err)
+			session = *NewSession()
+			rebuilt = true
+		}
+	case os.IsNotExist(readErr):
+		session = *NewSession()
+		rebuilt = true
+	default:
+		return nil, fmt.Errorf("failed to read session globals: %w", readErr)
 	}
 	session.Conversations = []json.RawMessage{}
 
 	// Reconcile manifest's ConversationOrder against the on-disk index:
 	// drop ids that no longer have a folder, append orphan folders that
-	// aren't yet in the order. Persist if anything changed.
-	if fs.reconcileConversationOrder(&session) {
+	// aren't yet in the order. Persist if anything changed, or if the manifest
+	// was rebuilt from scratch (so session.json is re-created on disk).
+	if fs.reconcileConversationOrder(&session) || rebuilt {
 		if err := fs.Save(&session); err != nil {
 			jlog.Error("[session] failed to persist reconciled order: %v", err)
 		}
