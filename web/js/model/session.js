@@ -1301,7 +1301,7 @@ class Session {
     // "name it now" UX without each caller wiring it up. Named creates
     // (copy/move/promote-to-tab) already have a meaningful name and are skipped.
     const wantsRename = activate && !(name && String(name).trim());
-    const requestedName = name || `Task ${this.conversations.size + 1}`;
+    const requestedName = name || this._nextTaskName();
 
     // Preallocate the id locally so we can mark this create as pending before
     // the POST. The server's `conversations-changed` echo can outrun the HTTP
@@ -1421,6 +1421,31 @@ class Session {
     }
   }
 
+
+  /**
+   * Pick the default "Task N" name for a fresh, unnamed conversation: the
+   * smallest positive N whose "Task N" isn't already in use by an open
+   * conversation. Numbering from the existing names (not `conversations.size`)
+   * keeps the guess collision-free after any tab is closed or archived — a
+   * count-based `size + 1` re-suggests a still-live number the moment the tab
+   * count drifts below the highest Task number (e.g. closing "Task 3" of 1..6
+   * would make `size + 1` land on the still-open "Task 6"), forcing the server
+   * to hand back "Task 6 (copy)". The server's uniqueName still resolves any
+   * genuine cross-lane race, but for the common single-viewer case this returns
+   * a name it accepts verbatim.
+   * @returns {string} An unused "Task N" name
+   * @private
+   */
+  _nextTaskName() {
+    const used = new Set();
+    this.conversations.forEach((conv) => {
+      const m = /^Task (\d+)$/.exec(conv.name || '');
+      if (m) used.add(Number(m[1]));
+    });
+    let n = 1;
+    while (used.has(n)) n++;
+    return `Task ${n}`;
+  }
 
   /**
    * Generate a unique "<base> (<word>)" name for a derived conversation (a clone
