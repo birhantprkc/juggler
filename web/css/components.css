@@ -748,6 +748,72 @@ conversation-bar .conversation-bin-button:hover {
 }
 
 /* ----------------------------------------------------------------------------
+   Info-cards "i" menu (web/js/components/info-cards-button.js) — a small
+   affordance below the info rail that re-shows cards hidden via their ×.
+   Right-aligned in the sidebar. The menu itself is a standard `.dropdown-menu`
+   presented on <body> by popup-surface.js, so only the trigger button lives
+   here; the surface inherits the shared popup chrome and placement.
+   ---------------------------------------------------------------------------- */
+conversation-bar info-cards-button {
+    display: flex;
+    justify-content: flex-end;
+    flex-shrink: 0;
+    margin: 0 0.4rem;
+}
+
+conversation-bar info-cards-button[hidden] {
+    display: none;
+}
+
+conversation-bar .info-cards-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 0.25rem;
+    color: var(--text-secondary, inherit);
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+conversation-bar .info-cards-button svg {
+    width: 1rem;
+    height: 1rem;
+}
+
+conversation-bar .info-cards-button:hover,
+conversation-bar .info-cards-button[aria-expanded="true"] {
+    opacity: 1;
+    background: var(--bg-raised);
+    color: var(--text-primary, inherit);
+}
+
+/* The show/hide tick gutter inside the info-cards menu. The menu is a standard
+   `.dropdown-menu` (heading → `.category-header`, rows → `.menu-item`, shown rows
+   → `.menu-item.active`) hosted on <body>, so these rules are UNSCOPED — a
+   `conversation-bar` prefix would never match the relocated surface. A
+   fixed-width gutter keeps unticked rows aligned with ticked ones; the glyph is
+   the shared material check, greened by `.menu-item.active` on shown rows. */
+.info-cards-menu__check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 0.875rem;
+}
+
+.info-cards-menu__check svg {
+    width: 0.875rem;
+    height: 0.875rem;
+    fill: currentcolor;
+}
+
+/* ----------------------------------------------------------------------------
    Ambient info rail (web/js/components/info-rail.js) — a stack of info cards
    (Tips, Git status, …) filling the empty sidebar space above the Bin, shown only
    while the tabs leave room for them. The rail is the flex child that grows into
@@ -1396,8 +1462,14 @@ strategy-selector {
 }
 
 .strategy-check {
+    display: inline-flex;
     color: var(--accent-blue);
-    font-size: 0.875rem;
+}
+
+.strategy-check svg {
+    width: 0.875rem;
+    height: 0.875rem;
+    fill: currentcolor;
 }
 
 /* Strategy description */

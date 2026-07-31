@@ -41,6 +41,10 @@ func TestValidate(t *testing.T) {
 		{"missing name", func(m Manifest) Manifest { m.Name = ""; return m }, true},
 		{"missing version", func(m Manifest) Manifest { m.Version = ""; return m }, true},
 		{"no capabilities", func(m Manifest) Manifest { m.Provides = Provides{}; return m }, true},
+		{"infoCards only is a capability", func(m Manifest) Manifest {
+			m.Provides = Provides{InfoCards: []string{"cards/*-card.js"}}
+			return m
+		}, false},
 		{"systemPrompt only is a capability", func(m Manifest) Manifest {
 			m.Provides = Provides{SystemPrompt: "system-prompt-contribution.js"}
 			return m

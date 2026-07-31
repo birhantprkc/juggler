@@ -24,7 +24,8 @@ const coreManifest = `{
   "provides": {
     "contextItems": ["context-items/*-context-item.js"],
     "strategies": ["strategies/*-strategy-type.js"],
-    "commands": ["commands/*-command-type.js"]
+    "commands": ["commands/*-command-type.js"],
+    "infoCards": ["cards/*-card.js"]
   }
 }`
 
@@ -40,6 +41,7 @@ func coreFS(manifest, version string) fstest.MapFS {
 		"extensions/juggler-core/context-items/rules/go-idioms.js":        {Data: []byte("// nested, not matched")},
 		"extensions/juggler-core/strategies/default-strategy-type.js":     {Data: []byte("//")},
 		"extensions/juggler-core/commands/clear-command-type.js":          {Data: []byte("//")},
+		"extensions/juggler-core/cards/tips-card.js":                      {Data: []byte("//")},
 		"sdk/version.js": {Data: []byte("export const ENGINE_API_VERSION = '" + version + "';")},
 	}
 }
@@ -82,6 +84,7 @@ func TestExtensionsValidCore(t *testing.T) {
 	assertURLs(t, "contextItems", ext.Capabilities.ContextItems, wantCtx)
 	assertURLs(t, "strategies", ext.Capabilities.Strategies, []string{"/extensions/juggler-core/strategies/default-strategy-type.js"})
 	assertURLs(t, "commands", ext.Capabilities.Commands, []string{"/extensions/juggler-core/commands/clear-command-type.js"})
+	assertURLs(t, "infoCards", ext.Capabilities.InfoCards, []string{"/extensions/juggler-core/cards/tips-card.js"})
 }
 
 // assertURLs compares two URL slices as sets (glob order is filesystem-dependent).

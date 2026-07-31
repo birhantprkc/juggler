@@ -22,6 +22,7 @@
       "juggler/context-item": ["web/sdk/context-item.js"],
       "juggler/strategy-type": ["web/sdk/strategy-type.js"],
       "juggler/command-type": ["web/sdk/command-type.js"],
+      "juggler/info-card-type": ["web/sdk/info-card-type.js"],
       "juggler/ops": ["web/sdk/ops.js"],
       "juggler/sandbox": ["web/sdk/sandbox.js"],
       "juggler/ui": ["web/sdk/ui.js"],

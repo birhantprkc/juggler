@@ -33,6 +33,7 @@ import { registerContextMenuProvider } from '../services/context-menu-service.js
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import './bin-modal.js';
 import './info-rail.js';
+import './info-cards-button.js';
 
 // Leading-edge debounce window for new-conversation creation. Guards against
 // accidental double-activation — most commonly a double-click on the "+"
@@ -596,6 +597,16 @@ class ConversationBar extends HTMLElement {
     }
     infoRail.setSession(this._session);
 
+    // The "i" info-cards menu — the un-hide surface for cards closed via their ×.
+    // Created once and cached; it manages its own visibility (shown only when at
+    // least one info card is enabled) and sits just below the rail, above the Bin.
+    let infoCardsBtn = /** @type {any} */ (this._cachedElements.get('info-cards-button'));
+    if (!infoCardsBtn) {
+      infoCardsBtn = document.createElement('info-cards-button');
+      this._cachedElements.set('info-cards-button', infoCardsBtn);
+      nav.appendChild(infoCardsBtn);
+    }
+
     // Bottom-of-bar "Bin" button — opens the bin modal.
     let binBtn = /** @type {HTMLButtonElement|null} */ (this._cachedElements.get('bin-button'));
     if (!binBtn) {
@@ -692,7 +703,7 @@ class ConversationBar extends HTMLElement {
 
     // Remove tabs for deleted conversations
     for (const [id, element] of this._cachedElements) {
-      if (id !== 'nav' && id !== 'tabs-menu' && id !== 'add-button' && id !== 'bin-button' && id !== 'info-rail' && !currentConversationIds.has(id)) {
+      if (id !== 'nav' && id !== 'tabs-menu' && id !== 'add-button' && id !== 'bin-button' && id !== 'info-rail' && id !== 'info-cards-button' && !currentConversationIds.has(id)) {
         element.remove();
         this._cachedElements.delete(id);
       }

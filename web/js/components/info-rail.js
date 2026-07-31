@@ -5,10 +5,10 @@
 /**
  * <info-rail> — the ambient stack of "info cards" parked in the empty sidebar
  * space just above the Bin (Tips, Git status, …). Each card gets the same chrome:
- * an eyebrow label, a × that hides it (re-enable in Settings › Info cards), and a
- * content region the card fills itself. Cards are supplied as providers by
- * {@link module:services/info-cards-manager}; their content lives in
- * `components/cards/`.
+ * an eyebrow label, a × that hides it (bring it back from the info-cards menu on
+ * the tab column), and a content region the card fills itself. The gate-1 enabled
+ * card instances are supplied by {@link module:services/info-cards-manager}; the
+ * cards themselves are plugins of the `@juggler/core` extension.
  *
  * The conversation tabs always win the column. CSS makes this rail the flex child
  * that grows into whatever the list doesn't use (`flex: 1 1 0`), so the rail's own
@@ -24,22 +24,14 @@
  * @module components/info-rail
  */
 
-import { providers, isCardEnabled, setCardEnabled, INFO_CARDS_CHANGED_EVENT } from '../services/info-cards-manager.js';
+import { providers, isHidden, hideCard, INFO_CARDS_CHANGED_EVENT } from '../services/info-cards-manager.js';
 import { TIPS_CHANGED_EVENT } from '../services/tips-manager.js';
 
 /**
- * @typedef {object} InfoCardProvider
- * @property {string} id - Stable id; also the enabled-state key.
- * @property {string} eyebrow - Small-caps label shown in the card header.
- * @property {string} settingsLabel - Toggle label on the Settings page.
- * @property {string} settingsDescription - Toggle description on the Settings page.
- * @property {boolean} defaultEnabled - Whether the card is on before the user chooses.
- * @property {() => boolean} [hasContent] - Whether the card has anything to show
- *   right now (omit to always show).
- * @property {() => void} [onEnabled] - Optional hook run when the card transitions
- *   from disabled to enabled (the Tips card replays its tips here).
- * @property {(contentEl: HTMLElement, session?: import('../model/session.js').default) => (() => void)|void} mount - Fill the
- *   content region; return a teardown to stop any timers/listeners.
+ * The runtime shape of a mounted card — an {@link import('juggler/info-card-type').default}
+ * instance. Cards expose their manifest metadata as instance getters (id, name,
+ * eyebrow) alongside the lifecycle methods.
+ * @typedef {import('juggler/info-card-type').default} InfoCardProvider
  */
 
 class InfoRail extends HTMLElement {
@@ -173,7 +165,7 @@ class InfoRail extends HTMLElement {
       if (this.hidden) this.hidden = false;
 
       const eligible = providers().filter(
-        (p) => isCardEnabled(p.id) && (typeof p.hasContent !== 'function' || p.hasContent()),
+        (p) => !isHidden(p.id) && (typeof p.hasContent !== 'function' || p.hasContent()),
       );
 
       // Reconcile the mounted set to the eligible providers, in priority order,
@@ -237,10 +229,10 @@ class InfoRail extends HTMLElement {
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'info-card__close';
-    close.setAttribute('aria-label', `Hide ${provider.settingsLabel}`);
-    close.title = `Hide ${provider.settingsLabel}`;
+    close.setAttribute('aria-label', `Hide ${provider.name}`);
+    close.title = `Hide ${provider.name}`;
     close.textContent = '×';
-    close.addEventListener('click', (e) => { e.stopPropagation(); setCardEnabled(provider.id, false); });
+    close.addEventListener('click', (e) => { e.stopPropagation(); hideCard(provider.id); });
     header.appendChild(close);
 
     card.appendChild(header);

@@ -5,6 +5,7 @@
 import strategyRegistry from '../registries/strategy-registry.js';
 import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import { presentPopup } from '../utils/popup-surface.js';
+import { CHECK_SVG } from '../utils/icons.js';
 import CycleBuffer from '../services/cycle-buffer.js';
 
 /**
@@ -309,7 +310,7 @@ class StrategySelector extends HTMLElement {
                             ${iconHtml}
                             <span class="strategy-item-name">${manifest.name}</span>
                         </span>
-                        ${isActive ? '<span class="strategy-check">&#10003;</span>' : ''}
+                        ${isActive ? `<span class="strategy-check" aria-hidden="true">${CHECK_SVG}</span>` : ''}
                     </header>
                     <p class="strategy-item-description">${manifest.description}</p>
                 </li>

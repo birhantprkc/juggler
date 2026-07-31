@@ -1,42 +1,38 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
- * The Git status info card — a live, minimal summary of the project's git
- * working tree. It polls `GET /api/git/status` (see {@link module:services/api}),
- * which reports every repo found under the project root (the root repo plus any
- * nested subrepos/submodules), and renders the absolute minimum: one line per
- * repo that has changes ("2 changed, 1 staged"), or a single "No changed files"
- * when every repo is clean.
+ * The Git status info card — a quiet, live summary of the project's working-tree
+ * state. When there's a single repo at the project root the line is just the
+ * counts. With multiple repos, or a repo below the root, each line is prefixed
+ * with the repo's location (the root repo by the project folder name, nested
+ * repos by their relative path).
  *
- * Labelling is suppressed for the common case of a lone repo at the project root
- * — then the line is just the counts. With multiple repos, or a repo below the
- * root, each line is prefixed with the repo's location (the root repo by the
- * project folder name, nested repos by their relative path).
- *
- * One provider consumed by {@link module:components/info-rail}; the rail owns the
+ * One info-card plugin of the `@juggler/core` extension; the host rail owns the
  * outer card chrome (eyebrow + × close), so this only fills the content region.
  * The latest snapshot is cached at module scope so a remount paints instantly
  * before the next poll returns. Not an ARIA live region — the counts change
  * quietly and the same information is available from git directly.
- * @module components/cards/git-status-card
+ * @module extensions/juggler-core/cards/git-status-card
  */
 
-import api from '../../services/api.js';
+import InfoCardType from 'juggler/info-card-type';
+import api from '../../../js/services/api.js';
 
 /**
  * Re-poll the working-tree status this often (ms), and only while the window is
  * focused. This is a passive background card, so it stays deliberately lazy —
  * infrequent, and never running git while the user is off in their own git
- * client (see the focus gate in {@link module:components/cards/git-status-card~gitStatusCard.mount}).
+ * client (see the focus gate in {@link GitStatusCard#mount}).
  */
 const REFRESH_MS = 20000;
 
 /**
  * Last status snapshot, shared across (re)mounts. `null` means "not fetched yet"
  * so the first paint shows a neutral checking state rather than a false "no repo".
- * @type {{root: string, repos: import('../../services/api.js').GitRepoStatus[]}|null}
+ * @type {{root: string, repos: import('../../../js/services/api.js').GitRepoStatus[]}|null}
  */
 let lastSnapshot = null;
 
@@ -55,7 +51,7 @@ function repoLabel(root, repoPath) {
 
 /**
  * Compose the minimal counts phrase, omitting a zero side entirely.
- * @param {import('../../services/api.js').GitRepoStatus} repo
+ * @param {import('../../../js/services/api.js').GitRepoStatus} repo
  * @returns {string} e.g. "2 changed, 1 staged", "1 staged".
  */
 function countsPhrase(repo) {
@@ -133,20 +129,23 @@ function render(contentEl) {
 }
 
 /**
- * The Git status card provider.
- * @type {import('../info-rail.js').InfoCardProvider}
+ * The Git status info card.
  */
-export const gitStatusCard = {
-  id: 'git-status',
-  eyebrow: 'Git status',
-  settingsLabel: 'Git status',
-  settingsDescription: "Show a summary of your project's git working tree in the sidebar.",
-  defaultEnabled: true,
+export default class GitStatusCard extends InfoCardType {
+  /** @type {import('juggler/info-card-type').InfoCardManifest} */
+  static MANIFEST = {
+    id: 'git-status',
+    name: 'Git status',
+    version: '1.0.0',
+    description: "Show a summary of your project's git working tree in the sidebar.",
+    eyebrow: 'Git status',
+    priority: 10,
+  };
 
   /** @returns {boolean} Always renderable (it reports its own state). */
   hasContent() {
     return true;
-  },
+  }
 
   /**
    * Paint the cached snapshot immediately, then poll the server on an interval,
@@ -203,7 +202,5 @@ export const gitStatusCard = {
       if (timer) { clearInterval(timer); timer = null; }
       if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus);
     };
-  },
-};
-
-export default gitStatusCard;
+  }
+}

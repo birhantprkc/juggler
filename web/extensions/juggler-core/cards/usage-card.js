@@ -1,25 +1,30 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
-//   ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-// ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * The Usage info card — a quiet, live summary of quota windows for the provider
  * configured on the active conversation. It renders cache data immediately and
  * refreshes silently while focused, preserving the existing meter nodes whenever
  * their generated HTML has not changed.
- * @module components/cards/usage-card
+ *
+ * One info-card plugin of the `@juggler/core` extension; the host rail owns the
+ * outer card chrome (eyebrow + × close), so this only fills the content region.
+ * @module extensions/juggler-core/cards/usage-card
  */
 
-import providersCache from '../../services/providers-cache.js';
-import usageStatsCache from '../../services/usage-stats-cache.js';
+import InfoCardType from 'juggler/info-card-type';
+import providersCache from '../../../js/services/providers-cache.js';
+import usageStatsCache from '../../../js/services/usage-stats-cache.js';
 import { escapeHtml } from '../../../sdk/lib/html.js';
-import { formatPlan, renderUsageRow } from '../../utils/usage-renderer.js';
+import { formatPlan, renderUsageRow } from '../../../js/utils/usage-renderer.js';
 
 const REFRESH_MS = 30_000;
 
 /**
  * Return the configured provider name for the session's active conversation.
- * @param {import('../../model/session.js').default|undefined} session
+ * @param {import('../../../js/model/session.js').default|undefined} session
  * @returns {string} Provider name, or ''.
  */
 function activeProvider(session) {
@@ -36,25 +41,28 @@ function providerLabel(providerName) {
 }
 
 /**
- * The Usage info card provider.
- * @type {import('../info-rail.js').InfoCardProvider}
+ * The Usage info card.
  */
-export const usageCard = {
-  id: 'usage',
-  eyebrow: 'Usage',
-  settingsLabel: 'Usage',
-  settingsDescription: 'Show your active model provider’s quota usage in the sidebar.',
-  defaultEnabled: true,
+export default class UsageCard extends InfoCardType {
+  /** @type {import('juggler/info-card-type').InfoCardManifest} */
+  static MANIFEST = {
+    id: 'usage',
+    name: 'Usage',
+    version: '1.0.0',
+    description: 'Show your active model provider’s quota usage in the sidebar.',
+    eyebrow: 'Usage',
+    priority: 20,
+  };
 
   /** @returns {boolean} Always renderable (it reports its own empty state). */
   hasContent() {
     return true;
-  },
+  }
 
   /**
    * Paint cached usage immediately and silently refresh while the window is active.
    * @param {HTMLElement} contentEl
-   * @param {import('../../model/session.js').default} [session]
+   * @param {import('../../../js/model/session.js').default} [session]
    * @returns {() => void} Teardown that stops polling and listeners.
    */
   mount(contentEl, session = undefined) {
@@ -114,7 +122,5 @@ export const usageCard = {
       if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus);
       if (typeof unsubscribe === 'function') unsubscribe();
     };
-  },
-};
-
-export default usageCard;
+  }
+}

@@ -3,117 +3,120 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * InfoCardsManager — the source of truth for the ambient "info cards" that fill
- * the empty sidebar space above the Bin: which cards exist, in what priority
- * order, and which the user has enabled. Presentation lives in
- * {@link module:components/info-rail}; each card's content and metadata live with
- * its own provider module (see `components/cards/`). This module just owns the
- * ordered registry and the persisted on/off state.
+ * InfoCardsManager — the per-viewer hide gate (gate 2) for the ambient "info
+ * cards" that fill the empty sidebar space above the Bin.
  *
- * Enabled state is stored as a sparse map of *user overrides* in localStorage —
- * a card the user has never touched falls back to its provider's `defaultEnabled`,
- * so shipping a new card on-by-default doesn't require migrating everyone's blob.
- * Mirrors the other per-window UI prefs; there's no server round-trip.
+ * Info cards are first-class extension plugins now: which cards *exist* and which
+ * are enabled (gate 1) is owned by the {@link module:registries/info-card-registry}
+ * and the server-side plugin config, toggled from the Extensions catalog. This
+ * module owns only the lightweight, per-window *hide* on top of that: the × on a
+ * card, and the info-cards menu that brings a hidden card back. A hidden card is
+ * simply not mounted in this window — no server round-trip, no registry change.
+ *
+ * The hidden set is a single JSON blob in localStorage, mirroring the other
+ * per-window UI prefs.
  * @module services/info-cards-manager
  */
 
-import { tipsCard } from '../components/cards/tips-card.js';
-import { usageCard } from '../components/cards/usage-card.js';
-import { gitStatusCard } from '../components/cards/git-status-card.js';
+import infoCardRegistry from '../registries/info-card-registry.js';
 import { readPref, writePref, notifyPrefChanged } from './ui-pref-store.js';
+import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
+
+/** localStorage key holding `{ hidden: string[] }` — the per-window hidden set. */
+const STORAGE_KEY = 'juggler-info-cards-hidden';
 
 /**
- * Every info-card provider, in priority order — the info rail stacks them from
- * the top and drops the tail first when the sidebar runs out of room.
- * @type {import('../components/info-rail.js').InfoCardProvider[]}
- */
-const PROVIDERS = [tipsCard, usageCard, gitStatusCard];
-
-/** localStorage key holding `{ overrides: { [id]: boolean } }`. */
-const STORAGE_KEY = 'juggler-info-cards';
-
-/**
- * Fired on `window` whenever a card is enabled or disabled (the Settings toggle,
- * or the × on a card). The info rail and any open Settings panel listen so they
- * re-sync immediately instead of waiting for an unrelated render.
+ * Fired on `window` whenever the shown set changes (the × on a card, the
+ * info-cards menu) or a gate-1 catalog toggle rebuilds the registry. The info
+ * rail and the info-cards button listen so they re-sync immediately instead of
+ * waiting for an unrelated render.
  */
 export const INFO_CARDS_CHANGED_EVENT = 'juggler:info-cards-changed';
 
 /**
- * Read the persisted override map, tolerant of a missing/corrupt blob.
- * @returns {Record<string, boolean>} id → user-chosen enabled state.
+ * Read the persisted hidden set, tolerant of a missing/corrupt blob.
+ * @returns {Set<string>} Ids of cards the user has hidden in this window.
  * @private
  */
-function readOverrides() {
+function readHidden() {
   const raw = readPref(STORAGE_KEY, {});
-  const overrides = raw && typeof raw.overrides === 'object' && raw.overrides ? raw.overrides : {};
-  /** @type {Record<string, boolean>} */
-  const clean = {};
-  for (const [id, on] of Object.entries(overrides)) {
-    if (typeof on === 'boolean') clean[id] = on;
-  }
-  return clean;
+  /** @type {unknown[]} */
+  const list = raw && Array.isArray(raw.hidden) ? raw.hidden : [];
+  return new Set(/** @type {string[]} */ (list.filter((id) => typeof id === 'string')));
 }
 
 /**
- * Persist the override map, best-effort.
- * @param {Record<string, boolean>} overrides
+ * Persist the hidden set, best-effort.
+ * @param {Set<string>} hidden
  * @private
  */
-function writeOverrides(overrides) {
-  writePref(STORAGE_KEY, { overrides });
+function writeHidden(hidden) {
+  writePref(STORAGE_KEY, { hidden: Array.from(hidden) });
 }
 
 /**
- * The card providers, in priority order. Used by the info rail to render.
- * @returns {import('../components/info-rail.js').InfoCardProvider[]} The providers.
+ * The gate-1 enabled card instances, highest priority first. Used by the info
+ * rail to render and by the info-cards menu to list what can be shown/hidden.
+ * @returns {InstanceType<typeof import('juggler/info-card-type').default>[]} The enabled card instances.
  */
 export function providers() {
-  return PROVIDERS;
+  return infoCardRegistry.getEnabledCards();
 }
 
 /**
  * @param {string} id - A card id.
- * @returns {boolean} Whether that card is currently enabled (override, else the
- *   provider default). Unknown ids are treated as disabled.
+ * @returns {boolean} Whether the card is currently hidden in this window.
  */
-export function isCardEnabled(id) {
-  const provider = PROVIDERS.find((p) => p.id === id);
-  if (!provider) return false;
-  const override = readOverrides()[id];
-  return typeof override === 'boolean' ? override : !!provider.defaultEnabled;
+export function isHidden(id) {
+  return readHidden().has(id);
 }
 
 /**
- * Turn a card on or off. Persisted as a user override and broadcast. On a genuine
- * off→on transition the provider's optional `onEnabled` hook runs first (the Tips
- * card uses it to replay all tips).
+ * Hide a card in this window (the × on the card). Persisted locally and
+ * broadcast; never touches the server or the registry.
  * @param {string} id - A card id.
- * @param {boolean} on
  * @returns {void}
  */
-export function setCardEnabled(id, on) {
-  const provider = PROVIDERS.find((p) => p.id === id);
-  if (!provider) return;
-  const wasEnabled = isCardEnabled(id);
-  const overrides = readOverrides();
-  overrides[id] = !!on;
-  writeOverrides(overrides);
-  if (on && !wasEnabled && typeof provider.onEnabled === 'function') provider.onEnabled();
+export function hideCard(id) {
+  const hidden = readHidden();
+  if (hidden.has(id)) return;
+  hidden.add(id);
+  writeHidden(hidden);
   notifyPrefChanged(INFO_CARDS_CHANGED_EVENT);
 }
 
 /**
- * Metadata for every card, in priority order — for the Settings page to render a
- * toggle per card.
- * @returns {Array<{id: string, label: string, description: string, enabled: boolean}>}
- *   One entry per card, in priority order.
+ * Un-hide a card in this window (the info-cards menu). On the genuine
+ * hidden→shown transition the card's optional `onEnabled` hook runs first (the
+ * Tips card uses it to replay all tips).
+ * @param {string} id - A card id.
+ * @returns {void}
+ */
+export function showCard(id) {
+  const hidden = readHidden();
+  if (!hidden.has(id)) return;
+  hidden.delete(id);
+  writeHidden(hidden);
+  const card = providers().find((c) => c.id === id);
+  if (card && typeof card.onEnabled === 'function') {
+    try { card.onEnabled(); } catch { /* hook is best-effort */ }
+  }
+  notifyPrefChanged(INFO_CARDS_CHANGED_EVENT);
+}
+
+/**
+ * Every gate-1 enabled card with its per-window shown/hidden state — for the
+ * info-cards menu to render a show/hide toggle apiece, in priority order.
+ * @returns {Array<{id: string, name: string, hidden: boolean}>} One entry per enabled card.
  */
 export function allInfoCards() {
-  return PROVIDERS.map((p) => ({
-    id: p.id,
-    label: p.settingsLabel,
-    description: p.settingsDescription,
-    enabled: isCardEnabled(p.id),
-  }));
+  const hidden = readHidden();
+  return providers().map((c) => ({ id: c.id, name: c.name, hidden: hidden.has(c.id) }));
+}
+
+// A gate-1 catalog toggle rebuilds the registry (REGISTRIES_RELOADED); re-emit
+// the info-cards change so the rail and menu reconcile against the new enabled
+// set. Viewer-only: guarded on document so the engine worker never binds it.
+if (typeof document !== 'undefined') {
+  document.addEventListener(REGISTRIES_RELOADED, () => notifyPrefChanged(INFO_CARDS_CHANGED_EVENT));
 }

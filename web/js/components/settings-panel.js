@@ -16,7 +16,6 @@ import { ConnectivityTab } from './settings/connectivity-tab.js';
 import { NetworkTab } from './settings/network-tab.js';
 import { NotificationsTab } from './settings/notifications-tab.js';
 import { ShortcutsTab } from './settings/shortcuts-tab.js';
-import { InfoCardsTab } from './settings/info-cards-tab.js';
 import { LogsTab } from './settings/logs-tab.js';
 import { McpTab, AcpTab } from './settings/subprocess-tabs.js';
 import { SkillsTab } from './settings/skills-tab.js';
@@ -81,7 +80,6 @@ class SettingsPanel extends HTMLElement {
       acp: new AcpTab(this),
       skills: new SkillsTab(this),
       notifications: new NotificationsTab(this),
-      'info-cards': new InfoCardsTab(this),
       shortcuts: new ShortcutsTab(this),
       logs: new LogsTab(this),
       updates: new UpdatesTab(this),
@@ -133,7 +131,6 @@ class SettingsPanel extends HTMLElement {
                         <button class="settings-tab" data-tab="mcp">MCP servers</button>
                         <button class="settings-tab" data-tab="acp">ACP agents</button>
                         <button class="settings-tab" data-tab="notifications">Notifications</button>
-                        <button class="settings-tab" data-tab="info-cards">Info cards</button>
                         <button class="settings-tab" data-tab="shortcuts">Keyboard shortcuts</button>
                         <button class="settings-tab" data-tab="logs">Logs</button>
                         <button class="settings-tab" data-tab="updates">Updates</button>
@@ -221,15 +218,6 @@ class SettingsPanel extends HTMLElement {
 
                     <section class="settings-tab-content" id="tab-notifications">
                         <div class="settings-form" id="notifications-form"></div>
-                    </section>
-
-                    <section class="settings-tab-content" id="tab-info-cards">
-                        <p class="settings-description">
-                            Info cards fill the empty space above the Bin in the sidebar
-                            when there's room. Choose which ones to show &mdash; the tabs
-                            always take priority.
-                        </p>
-                        <div class="settings-form" id="info-cards-form"></div>
                     </section>
 
                     <section class="settings-tab-content" id="tab-shortcuts">

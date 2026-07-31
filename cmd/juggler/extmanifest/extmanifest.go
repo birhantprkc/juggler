@@ -32,6 +32,7 @@ type Provides struct {
 	ContextItems []string `json:"contextItems,omitempty"`
 	Strategies   []string `json:"strategies,omitempty"`
 	Commands     []string `json:"commands,omitempty"`
+	InfoCards    []string `json:"infoCards,omitempty"`
 	// SystemPrompt is a single module path (not a glob) whose default export
 	// `({enabledPluginIds}) => string` contributes terse, durable guidance to
 	// the system prompt — the extension's voice on how to use its tools. It is
@@ -81,6 +82,7 @@ func Validate(m Manifest, engineVersion string) error {
 	if len(m.Provides.ContextItems) == 0 &&
 		len(m.Provides.Strategies) == 0 &&
 		len(m.Provides.Commands) == 0 &&
+		len(m.Provides.InfoCards) == 0 &&
 		strings.TrimSpace(m.Provides.SystemPrompt) == "" {
 		return fmt.Errorf("manifest %q provides no capabilities", m.ID)
 	}

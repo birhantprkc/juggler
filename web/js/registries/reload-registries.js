@@ -5,6 +5,7 @@
 import contextItemRegistry from './context-item-registry.js';
 import strategyRegistry from './strategy-registry.js';
 import commandRegistry from './command-registry.js';
+import infoCardRegistry from './info-card-registry.js';
 import { resetExtensionsCache } from '../services/extensions.js';
 import { resetUserCommandsCache } from '../services/user-commands.js';
 import { resetSkillsCache } from '../services/skills.js';
@@ -80,6 +81,12 @@ export async function initAllRegistries() {
     await strategyRegistry.init();
     await contextItemRegistry.init();
     await commandRegistry.init();
+    // Info cards touch the DOM and only render in the sidebar — never init the
+    // registry (which would import DOM-touching card modules) in the engine
+    // worker, which has no document.
+    if (typeof document !== 'undefined') {
+      await infoCardRegistry.init();
+    }
   } finally {
     markRegistriesReady();
   }
@@ -93,6 +100,11 @@ async function rebuildRegistriesNow() {
   strategyRegistry.reset();
   contextItemRegistry.reset();
   commandRegistry.reset();
+  // Viewer-only registry; the engine worker never inits it, so only reset it
+  // where a document exists (initAllRegistries applies the same realm gate).
+  if (typeof document !== 'undefined') {
+    infoCardRegistry.reset();
+  }
   // reset/re-init is deferred to local quiescence, so no turn assembles a
   // prompt against a half-reset registry set.
   await initAllRegistries();

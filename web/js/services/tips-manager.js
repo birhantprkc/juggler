@@ -5,7 +5,7 @@
 /**
  * TipsManager — the source of truth for onboarding tips: short hints that raise
  * awareness of features a new user is unlikely to stumble on. Presentation lives
- * in {@link module:components/cards/tips-card}; this module just owns the tip list
+ * in the `@juggler/core` extension's tips info card; this module just owns the tip list
  * and the persisted "seen" state.
  *
  * Shortcut tips are *derived* from the {@link module:services/key-shortcut-manager

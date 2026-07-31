@@ -33,6 +33,7 @@ import { whenRegistriesReady } from '../registries/registry-ready.js';
  * @property {string[]} contextItems - Served URLs of context-item modules
  * @property {string[]} strategies - Served URLs of strategy modules
  * @property {string[]} commands - Served URLs of command modules
+ * @property {string[]} infoCards - Served URLs of info-card modules
  * @property {string} [systemPrompt] - Served URL of the extension's system-prompt contribution module (omitted when none declared)
  */
 
@@ -73,6 +74,7 @@ const TYPE_TO_KEY = /** @type {const} */ ({
   'context-item': 'contextItems',
   strategy: 'strategies',
   command: 'commands',
+  'info-card': 'infoCards',
 });
 
 /**
@@ -106,7 +108,7 @@ export async function fetchExtensions() {
  * can attribute the loaded class to its extension. Extensions whose manifest
  * failed to validate (`error` set) are skipped — their capabilities are not
  * served.
- * @param {'context-item'|'strategy'|'command'} type - Plugin type
+ * @param {'context-item'|'strategy'|'command'|'info-card'} type - Plugin type
  * @returns {Promise<CapabilityRef[]>} Capability references in extension order
  */
 export async function getExtensionCapabilities(type) {

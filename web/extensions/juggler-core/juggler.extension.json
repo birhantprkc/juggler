@@ -16,6 +16,7 @@
     "contextItems": ["context-items/*-context-item.js"],
     "strategies": ["strategies/*-strategy-type.js"],
     "commands": ["commands/*-command-type.js"],
+    "infoCards": ["cards/*-card.js"],
     "systemPrompt": "system-prompt-contribution.js"
   }
 }

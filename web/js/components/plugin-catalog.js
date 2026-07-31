@@ -5,6 +5,7 @@
 import contextItemRegistry from '../registries/context-item-registry.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import commandRegistry from '../registries/command-registry.js';
+import infoCardRegistry from '../registries/info-card-registry.js';
 import { reloadRegistries } from '../registries/reload-registries.js';
 import { fetchExtensions, fetchExtensionLocations } from '../services/extensions.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
@@ -13,7 +14,7 @@ import { renderMarkdown, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
 /**
  * @typedef {object} CapCard
  * @property {string} url - Served URL of the capability module
- * @property {'context-item'|'strategy'|'command'} itemType - Capability type
+ * @property {'context-item'|'strategy'|'command'|'info-card'} itemType - Capability type
  * @property {string|null} id - Capability id (null if it failed to register)
  * @property {string} name - Display name
  * @property {string} description - Short description
@@ -41,6 +42,7 @@ const CAP_TYPES = /** @type {const} */ ([
   ['contextItems', 'context-item'],
   ['strategies', 'strategy'],
   ['commands', 'command'],
+  ['infoCards', 'info-card'],
 ]);
 
 /** Human labels for an extension's provenance. */
@@ -69,6 +71,7 @@ const CAP_SECTIONS = /** @type {ReadonlyArray<readonly [string, string]>} */ ([
   ['strategy', 'Strategies'],
   ['context-item', 'Context Items'],
   ['command', 'Commands'],
+  ['info-card', 'Info Cards'],
 ]);
 
 /** Human label for a capability itemType (singular, title-cased). */
@@ -76,6 +79,7 @@ const TYPE_LABELS = /** @type {Record<string, string>} */ ({
   'context-item': 'Context Item',
   strategy: 'Strategy',
   command: 'Command',
+  'info-card': 'Info Card',
 });
 
 /**
@@ -120,7 +124,7 @@ export function buildExtensionCards(extensions, entriesByPath, failedByPath, dis
         const selfDisabled = !!capId && disabledIds.has(capId);
         caps.push({
           url,
-          itemType: /** @type {'context-item'|'strategy'|'command'} */ (itemType),
+          itemType: /** @type {'context-item'|'strategy'|'command'|'info-card'} */ (itemType),
           id: capId,
           name: reg?.manifest?.name || url.split('/').pop() || url,
           description: reg?.manifest?.description || '',
@@ -261,6 +265,7 @@ class PluginCatalog extends HTMLElement {
       [contextItemRegistry, 'context-item'],
       [strategyRegistry, 'strategy'],
       [commandRegistry, 'command'],
+      [infoCardRegistry, 'info-card'],
     ]);
     for (const [reg, itemType] of regs) {
       for (const m of reg.getCatalogManifests()) {
@@ -280,7 +285,7 @@ class PluginCatalog extends HTMLElement {
   _collectFailed() {
     /** @type {Map<string, string>} */
     const failed = new Map();
-    for (const reg of [contextItemRegistry, strategyRegistry, commandRegistry]) {
+    for (const reg of [contextItemRegistry, strategyRegistry, commandRegistry, infoCardRegistry]) {
       for (const { path, error } of reg.getFailedModules()) {
         failed.set(path, error);
       }
@@ -1032,6 +1037,7 @@ class PluginCatalog extends HTMLElement {
     if (!cap.id) return undefined;
     if (cap.itemType === 'strategy') return strategyRegistry.getIncludingDisabled(cap.id);
     if (cap.itemType === 'command') return commandRegistry.getIncludingDisabled(cap.id);
+    if (cap.itemType === 'info-card') return infoCardRegistry.getIncludingDisabled(cap.id);
     return contextItemRegistry.getIncludingDisabled(cap.id);
   }
 
