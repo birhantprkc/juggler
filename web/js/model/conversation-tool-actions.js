@@ -21,6 +21,7 @@ import {
 } from '../../sdk/lib/message.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import toolExecutor from '../services/tool-executor.js';
+import { resolveToolName } from '../services/tool-generator.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isViewer } from '../../sdk/lib/client-role.js';
 import { ENGINE_DERIVED_ORIGIN } from '../utils/document-sync-manager.js';
@@ -182,7 +183,11 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
     id: ActionClass.MANIFEST?.id || 'unknown',
     session: conversation._session,
     conversation,
-    messageThread
+    messageThread,
+    // Lets a multi-tool class (e.g. the MCP bridge) route validate/approval to
+    // the invoked tool. Omitting it makes such a class validate with an empty
+    // name and reject its own call — the "Unknown MCP tool """ failure.
+    toolName: resolveToolName(toolName)
   });
 
   let prepared;
