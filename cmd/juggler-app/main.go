@@ -54,6 +54,13 @@ func main() {
 		logf("%s", note)
 	}
 	app := newAppState(devMode)
+	// The visible-window GPU policy is resolved exactly once, in newAppState, and
+	// stored on appState. Log that same resolved reason here so the startup line
+	// provably matches the policy every window actually applied (no independent
+	// re-evaluation that could drift from it).
+	if app.gpuNote != "" {
+		logf("%s", app.gpuNote)
+	}
 
 	// Build the application — and acquire the single-instance lock — BEFORE
 	// resolving any server. If another juggler-app is already running, this call

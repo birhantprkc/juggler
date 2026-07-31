@@ -19,6 +19,7 @@ package webviewenv
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -133,6 +134,139 @@ func sandboxRestrictedFrom(read func(string) (string, bool)) bool {
 		}
 	}
 	return false
+}
+
+// gpuOverrideEnv lets the user override the Linux WebKitGTK webview's hardware
+// acceleration autodetection. Recognised values (case-insensitive, surrounding
+// whitespace ignored): "always" forces acceleration, "never" forces software
+// rendering, and "auto" — the default when unset — autodetects. Any other value
+// is treated as "auto".
+const gpuOverrideEnv = "JUGGLER_WEBVIEW_GPU"
+
+// LinuxWebviewGpuAcceleration decides whether the *visible* Linux WebKitGTK
+// viewer window should use hardware-accelerated compositing (which the caller
+// maps to application.WebviewGpuPolicyAlways) rather than software rendering
+// (WebviewGpuPolicyNever). It returns the decision and a one-line note for the
+// caller to log — the same idiom as PrepareLinuxWebKit.
+//
+// Why this is decided rather than a constant: forcing acceleration on a broken
+// or absent GL stack (VM software GL, no DRI render node, headless) makes
+// WebKitGTK's webview realisation fail and the window never appears — which is
+// why the safe historical default was software. But software compositing
+// re-rasterises every animated frame on the CPU, and Juggler's UI animates
+// continuously while a conversation runs (the busy spinner), so on a machine
+// that genuinely has a working GPU that pins a CPU core near saturation for the
+// whole time work is in flight and stalls the UI. This enables acceleration
+// whenever a display and a DRI render node with a positively identified,
+// non-NVIDIA-proprietary driver are present. Two cases stay on software: a
+// machine whose *only* render node is the crash-prone NVIDIA proprietary driver
+// (WebKitGTK's DMABUF path is unstable there and nothing else can composite),
+// and a node whose driver can't be resolved (the class most likely to fail
+// realisation) — both fail safe. A machine that also has a non-NVIDIA render
+// node (an Optimus/PRIME laptop, or a multi-GPU desktop with an Intel/AMD iGPU)
+// composites fine through that node and is left accelerated. The
+// JUGGLER_WEBVIEW_GPU env var overrides the decision either way.
+//
+// Off Linux the return is (false, ""): the LinuxWindow policy field is ignored
+// on other platforms, and the engine window (off-screen, paints nothing) keeps
+// its own hard-coded Never regardless.
+func LinuxWebviewGpuAcceleration() (enabled bool, note string) {
+	return linuxWebviewGpuAcceleration(
+		runtime.GOOS,
+		os.Getenv(gpuOverrideEnv),
+		os.Getenv("DISPLAY"),
+		os.Getenv("WAYLAND_DISPLAY"),
+		renderNodeDrivers,
+	)
+}
+
+// linuxWebviewGpuAcceleration is the testable core of LinuxWebviewGpuAcceleration:
+// the OS, the override value, the two display env vars, and the render-node probe
+// are all injected so every branch is reachable from any host. renderNodeDrivers
+// returns the DRM driver name behind each /dev/dri/renderD* node ("" when a
+// node's driver can't be identified).
+func linuxWebviewGpuAcceleration(goos, override, display, wayland string, renderNodeDrivers func() []string) (bool, string) {
+	if goos != "linux" {
+		return false, ""
+	}
+	// JUGGLER_WEBVIEW_GPU overrides autodetection. Only the two documented
+	// forcing values are recognised; "auto" (the third documented value), unset,
+	// or anything else falls through to autodetection below.
+	switch strings.ToLower(strings.TrimSpace(override)) {
+	case "always":
+		return true, "webview GPU acceleration forced ON via " + gpuOverrideEnv
+	case "never":
+		return false, "webview GPU acceleration forced OFF via " + gpuOverrideEnv + " — using software rendering"
+	}
+	// Autodetect. Every negative branch is also the crash-safe branch, so
+	// software rendering is chosen whenever acceleration might fail to come up.
+	if display == "" && wayland == "" {
+		// Headless: Preflight already reports the missing display, so stay
+		// software without an extra (redundant) log line.
+		return false, ""
+	}
+	drivers := renderNodeDrivers()
+	if len(drivers) == 0 {
+		return false, "no DRI render node (/dev/dri/renderD*) detected — using software rendering for the webview"
+	}
+	// Enable as long as at least one render node is driven by a positively
+	// identified, non-NVIDIA-proprietary driver: WebKitGTK can composite through
+	// that node (the iGPU on an Optimus/PRIME laptop, or an Intel/AMD GPU on a
+	// multi-GPU desktop). The mere presence of the NVIDIA proprietary module says
+	// nothing about which GPU drives the webview, so the sole-NVIDIA case falls
+	// back to software. A node whose driver can't be resolved ("") is likewise
+	// NOT treated as usable — it is exactly the input class (vkms, restricted
+	// sysfs, exotic SoCs) most likely to fail webview realisation, so it stays on
+	// the crash-safe software path, keeping every negative branch fail-safe.
+	for _, d := range drivers {
+		if isUsableRenderDriver(d) {
+			return true, "GPU acceleration enabled for the webview (usable DRI render node present)"
+		}
+	}
+	return false, "no usable non-NVIDIA DRI render node detected — using software rendering for the webview (set " + gpuOverrideEnv + "=always to override)"
+}
+
+// renderNodeDrivers returns the DRM kernel driver bound to each /dev/dri/renderD*
+// node — the render nodes WebKitGTK's accelerated compositor draws through. The
+// driver name is read from sysfs (/sys/class/drm/<node>/device/driver, a symlink
+// into the bus driver dir), e.g. "i915"/"xe" (Intel), "amdgpu"/"radeon" (AMD),
+// "nvidia" (NVIDIA proprietary), "nouveau" (open NVIDIA). An entry is "" when the
+// node exists but its driver can't be resolved (treated downstream as NOT usable,
+// so it fails safe to software rendering). An empty slice means there is no
+// render node at all (headless CI runners, pure-software-GL setups) — where
+// forcing acceleration would fail to realise a window.
+func renderNodeDrivers() []string {
+	nodes, _ := filepath.Glob("/dev/dri/renderD*")
+	drivers := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		link, err := os.Readlink("/sys/class/drm/" + filepath.Base(n) + "/device/driver")
+		if err != nil {
+			drivers = append(drivers, "")
+			continue
+		}
+		drivers = append(drivers, filepath.Base(link))
+	}
+	return drivers
+}
+
+// isNVIDIAProprietaryDriver reports whether a DRM driver name is the proprietary
+// NVIDIA driver ("nvidia") — the well-known crash/instability case for
+// WebKitGTK's DMABUF and accelerated-compositing path. The open "nouveau" driver
+// is NOT this case and composites fine, so it is deliberately excluded.
+func isNVIDIAProprietaryDriver(driver string) bool {
+	return driver == "nvidia"
+}
+
+// isUsableRenderDriver reports whether a resolved DRM driver name is one
+// WebKitGTK's accelerated compositor can reliably draw through: a non-empty,
+// positively identified driver (Intel i915/xe, AMD amdgpu/radeon, open nouveau)
+// that is not the NVIDIA proprietary one. An empty name — the node exists but
+// its driver could not be resolved — is deliberately NOT usable: treating an
+// unidentifiable node as crash-safe software preserves the "every negative
+// branch fails safe" invariant, since that is the input class most likely to
+// fail webview realisation.
+func isUsableRenderDriver(driver string) bool {
+	return driver != "" && !isNVIDIAProprietaryDriver(driver)
 }
 
 // linuxHost carries the host facts that tailor the Linux remediation message:

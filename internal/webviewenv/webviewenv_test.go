@@ -182,3 +182,98 @@ func TestDetectLinuxHost(t *testing.T) {
 		})
 	}
 }
+
+func TestLinuxWebviewGpuAcceleration(t *testing.T) {
+	// Render-node fixtures: the DRM driver behind each /dev/dri/renderD* node.
+	none := func() []string { return nil }
+	intel := func() []string { return []string{"i915"} }        // ordinary iGPU
+	amd := func() []string { return []string{"amdgpu"} }        // ordinary dGPU
+	nvidiaOnly := func() []string { return []string{"nvidia"} } // sole NVIDIA proprietary
+	nouveauOnly := func() []string { return []string{"nouveau"} }
+	optimus := func() []string { return []string{"i915", "nvidia"} }      // iGPU + NVIDIA dGPU
+	unknown := func() []string { return []string{""} }                    // node present, driver unresolved
+	unknownAndNVIDIA := func() []string { return []string{"", "nvidia"} } // only unresolved + NVIDIA
+	cases := []struct {
+		name             string
+		goos             string
+		override         string
+		display, wayland string
+		renderNodes      func() []string
+		wantEnabled      bool
+		wantNote         bool // whether a (non-empty) note is expected
+	}{
+		// Autodetect: a normal desktop GPU (render node, display, non-NVIDIA).
+		{"linux intel GPU auto-enables", "linux", "", ":0", "", intel, true, true},
+		{"linux amd GPU auto-enables", "linux", "", ":0", "", amd, true, true},
+		{"linux wayland desktop GPU auto-enables", "linux", "", "", "wayland-0", intel, true, true},
+		// The Optimus/PRIME + multi-GPU case the NVIDIA-presence probe got wrong:
+		// a non-NVIDIA render node also exists, so acceleration stays ON.
+		{"linux optimus (iGPU + NVIDIA) auto-enables", "linux", "", ":0", "", optimus, true, true},
+		// Open nouveau composites fine — not the proprietary crash case.
+		{"linux nouveau-only auto-enables", "linux", "", ":0", "", nouveauOnly, true, true},
+		// Autodetect negatives — all must stay software (crash-safe).
+		{"linux headless stays software silently", "linux", "", "", "", intel, false, false},
+		{"linux no render node stays software", "linux", "", ":0", "", none, false, true},
+		{"linux sole-NVIDIA-proprietary stays software", "linux", "", ":0", "", nvidiaOnly, false, true},
+		// A node whose driver can't be resolved is NOT usable — fails safe to
+		// software, like sole-NVIDIA, rather than enabling on an unknown stack.
+		{"linux unknown-driver render node stays software", "linux", "", ":0", "", unknown, false, true},
+		{"linux unresolved + sole-NVIDIA stays software", "linux", "", ":0", "", unknownAndNVIDIA, false, true},
+		// Override wins over autodetection, in both directions.
+		{"force on overrides headless", "linux", "always", "", "", none, true, true},
+		{"force off overrides a good GPU", "linux", "never", ":0", "", intel, false, true},
+		{"force on overrides sole-NVIDIA", "linux", "always", ":0", "", nvidiaOnly, true, true},
+		// "always"/"never" are case-insensitive and whitespace-tolerant.
+		{"force on is case/space-insensitive", "linux", " Always ", "", "", none, true, true},
+		// The other documented value ("auto") and any unrecognised value fall
+		// through to autodetection rather than forcing anything.
+		{"auto autodetects (good GPU → on)", "linux", "auto", ":0", "", intel, true, true},
+		{"unknown value autodetects (headless → software, silent)", "linux", "garbage", "", "", intel, false, false},
+		// Off Linux: never accelerated, never a note (field is ignored there).
+		{"darwin is (false, \"\")", "darwin", "always", ":0", "", intel, false, false},
+		{"windows is (false, \"\")", "windows", "always", ":0", "", intel, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			enabled, note := linuxWebviewGpuAcceleration(tc.goos, tc.override, tc.display, tc.wayland, tc.renderNodes)
+			if enabled != tc.wantEnabled {
+				t.Errorf("enabled = %v, want %v", enabled, tc.wantEnabled)
+			}
+			if (note != "") != tc.wantNote {
+				t.Errorf("note = %q, want non-empty=%v", note, tc.wantNote)
+			}
+		})
+	}
+}
+
+func TestIsNVIDIAProprietaryDriver(t *testing.T) {
+	proprietary := []string{"nvidia"}
+	notProprietary := []string{"nouveau", "i915", "xe", "amdgpu", "radeon", "", "NVIDIA"}
+	for _, d := range proprietary {
+		if !isNVIDIAProprietaryDriver(d) {
+			t.Errorf("isNVIDIAProprietaryDriver(%q) = false, want true", d)
+		}
+	}
+	for _, d := range notProprietary {
+		if isNVIDIAProprietaryDriver(d) {
+			t.Errorf("isNVIDIAProprietaryDriver(%q) = true, want false", d)
+		}
+	}
+}
+
+func TestIsUsableRenderDriver(t *testing.T) {
+	// Positively identified, non-NVIDIA-proprietary drivers are usable.
+	usable := []string{"i915", "xe", "amdgpu", "radeon", "nouveau"}
+	// The NVIDIA proprietary driver and an unresolved ("") driver both fail safe.
+	notUsable := []string{"nvidia", ""}
+	for _, d := range usable {
+		if !isUsableRenderDriver(d) {
+			t.Errorf("isUsableRenderDriver(%q) = false, want true", d)
+		}
+	}
+	for _, d := range notUsable {
+		if isUsableRenderDriver(d) {
+			t.Errorf("isUsableRenderDriver(%q) = true, want false", d)
+		}
+	}
+}
