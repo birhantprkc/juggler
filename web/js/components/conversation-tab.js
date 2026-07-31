@@ -735,6 +735,18 @@ class ConversationTab extends HTMLElement {
               // hard cancel, and (per D7) escalates a pending Pause to a full cancel.
               // @ts-ignore
               window.jugglerApp.cancelLLMOperation(focusedThreadId, { polite: e.shiftKey });
+            } else {
+              // Nothing to stop: Escape clears the visible message box. This
+              // handler only runs when focus ISN'T in the textarea (the early
+              // TEXTAREA/INPUT return above) — the focused case is cleared by
+              // input-box's own keydown handler. Routing through the box's
+              // undoable clear covers Escape from an empty conversation (where
+              // the box never took focus) while keeping the clear recoverable
+              // with Ctrl/Cmd+Z.
+              const inputBox = /** @type {any} */ (this.getInputBox());
+              if (inputBox && typeof inputBox.clearTextUndoable === 'function') {
+                inputBox.clearTextUndoable();
+              }
             }
             // Rule 17: escape while navigating the conversation-area → typing mode.
             if (activeCol.tagName === 'CONVERSATION-AREA') this._focusInput();

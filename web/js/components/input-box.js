@@ -547,17 +547,9 @@ class InputBox extends HTMLElement {
           // @ts-ignore - jugglerApp is added dynamically in app.js
           window.jugglerApp.cancelLLMOperation(this.threadItemId ?? null, { polite: e.shiftKey });
         } else {
-          // No active LLM - save draft to history before clearing
-          const currentValue = textarea.value.trim();
-          if (currentValue && this.session) {
-            // Save the draft message to history so it can be retrieved later
-            this.session.addMessageToHistory(currentValue);
-          }
-
-          // Clear input
-          this.setText('');
-          this.currentDraft = '';
-          this.historyIndex = -1;
+          // No active LLM - clear the box as an undoable edit (Ctrl/Cmd+Z
+          // restores it) so a mis-pressed Escape can't silently lose a draft.
+          this.clearTextUndoable();
         }
         return;
       }
@@ -806,6 +798,46 @@ class InputBox extends HTMLElement {
     textarea.value = text;
     this.autoResize(textarea);
     this._updateSendButtonState();
+  }
+
+  /**
+   * Clear the textarea as an UNDOABLE edit — Ctrl/Cmd+Z restores the text — so a
+   * mis-pressed Escape doesn't silently lose a drafted prompt. Assigning
+   * `textarea.value = ''` wipes the browser's native undo stack; going through
+   * `execCommand` on a full selection keeps the clear on that stack instead.
+   * The draft is saved to history first (retrievable with ArrowUp) as a second
+   * safety net. Focuses + selects the textarea because execCommand edits target
+   * the focused selection, which also makes this work when the box wasn't
+   * focused (e.g. Escape from an empty conversation).
+   * @returns {boolean} True if there was text to clear
+   */
+  clearTextUndoable() {
+    const textarea = this.querySelector('textarea');
+    if (!textarea) return false;
+    if (textarea.value === '') return false;
+
+    // Save the draft to history before clearing so ArrowUp can retrieve it.
+    const trimmed = textarea.value.trim();
+    if (trimmed && this.session) {
+      this.session.addMessageToHistory(trimmed);
+    }
+
+    textarea.focus();
+    textarea.select();
+    // execCommand keeps the edit on the native undo stack; fall back to a direct
+    // clear if the host webview rejects both editing commands.
+    const undoable = document.execCommand('insertText', false, '')
+      || document.execCommand('delete', false);
+    if (!undoable) {
+      textarea.value = '';
+    }
+
+    this.currentDraft = '';
+    this.historyIndex = -1;
+    this.autoResize(textarea);
+    this._updateSendButtonState();
+    this._scheduleDraftSave(textarea.value);
+    return true;
   }
 
   /**
