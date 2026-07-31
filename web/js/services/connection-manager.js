@@ -150,13 +150,6 @@ class ConnectionManager {
     this._wsCallbacks.set('streaming-error', streamingErrorCallback);
     wsService.on('streaming-error', streamingErrorCallback);
 
-    // Handle processing heartbeat for robust status tracking
-    const heartbeatCallback = (/** @type {any} */ data) => {
-      this._handleProcessingHeartbeat(data);
-    };
-    this._wsCallbacks.set('processing-heartbeat', heartbeatCallback);
-    wsService.on('processing-heartbeat', heartbeatCallback);
-
     // Connect only now that all listeners are registered. The studio adopt path
     // flushes buffered realtime frames and emits 'open' synchronously inside
     // connect(); registering first guarantees the flushed 'session' frame is
@@ -203,24 +196,6 @@ class ConnectionManager {
         const messageThread = conversation.resolveMessageThread(data.threadItemId);
         conversation.handleStreamingError(messageThread, data.message);
       }
-    }
-  }
-
-  /**
-   * Handle processing heartbeat from backend.
-   * Records activity and ensures spinner is showing if processing.
-   * @param {{conversationId: string, timestamp: number}} data - Heartbeat data
-   * @private
-   */
-  _handleProcessingHeartbeat(data) {
-    const conversationId = data.conversationId;
-    if (!conversationId) {
-      return;
-    }
-
-    // Skip internal conversations (e.g., _internal:compact:...) - they have no UI state
-    if (conversationId.startsWith('_internal:')) {
-      return;
     }
   }
 
@@ -282,13 +257,6 @@ class ConnectionManager {
       /** @type {any} */ (this._conversationBar).setSession(this._session);
     }
 
-    // Update UI controls (tokens, plan mode, model, etc.)
-    this._updateTokenDisplay();
-    this._updatePlanModeButton();
-    this._updateModelSelector();
-    this._updateProjectPath();
-    this._updateSystemMessagesButton();
-
     if (loadError && typeof window !== 'undefined') {
       // Surface the failure now that the picker overlay (wired above) is
       // available as the recovery path. Viewer-only — the engine worker
@@ -331,40 +299,18 @@ class ConnectionManager {
               }
             }
           }
-          this._updateTokenDisplay();
-          this._updateProjectPath();
           break;
 
         case 'context-items:changed':
-          // Context items are now displayed inline in conversation area
-          this._updateTokenDisplay();
-          break;
-
         case 'conversation:changed':
         case 'processing:started':
         case 'processing:stopped':
-          // UI updates handled by conversation-tab._syncWithConversation()
-          this._updateTokenDisplay();
-          break;
-
         case 'conversation:switched':
-          // Update UI controls when switching conversations
-          // NOTE: conversation-bar handles showing/hiding tabs
-          // NOTE: conversation-tab._syncWithConversation() handles context item/transaction updates
-
-          // Update token display for new conversation
-          this._updateTokenDisplay();
-          // Update plan mode button for new conversation
-          this._updatePlanModeButton();
-          // Update model selector for new conversation
-          this._updateModelSelector();
-          // Update system messages button for new conversation
-          this._updateSystemMessagesButton();
-          break;
-
         case 'conversation:created':
         case 'conversation:deleted':
-          // Conversation bar handles these via its own subscription
+          // UI updates are owned by the per-tab components: conversation-bar
+          // handles tab visibility, conversation-tab._syncWithConversation()
+          // handles context items, model selector, and token display.
           break;
 
         case 'session:save-error':
@@ -389,53 +335,6 @@ class ConnectionManager {
   }
 
   /**
-   * Update the token display in the context panel with current context size
-   * No-op: conversation-controls is per-tab and maintains its own state
-   * @async
-   * @private
-   */
-  async _updateTokenDisplay() {
-    // No-op: each conversation-controls maintains its own state
-  }
-
-
-  /**
-   * Update the plan mode button in the conversation controls
-   * No-op: conversation-controls is per-tab and maintains its own state
-   * @private
-   */
-  _updatePlanModeButton() {
-    // No-op: each conversation-controls maintains its own state
-  }
-
-  /**
-   * Update the model selector to show the current conversation's model
-   * No-op: conversation-controls is per-tab and maintains its own state
-   * @private
-   */
-  _updateModelSelector() {
-    // No-op: each conversation-controls maintains its own state
-  }
-
-  /**
-   * Update the project path display in the conversation controls
-   * No-op: conversation-controls is per-tab and maintains its own state
-   * @private
-   */
-  _updateProjectPath() {
-    // No-op: each conversation-controls maintains its own state
-  }
-
-  /**
-   * Update the system messages button to reflect the current conversation's state
-   * No-op: conversation-controls is per-tab and maintains its own state
-   * @private
-   */
-  _updateSystemMessagesButton() {
-    // No-op: each conversation-controls maintains its own state
-  }
-
-  /**
    * Cleanup resources
    */
   destroy() {
@@ -445,24 +344,13 @@ class ConnectionManager {
       this._unsubscribe = null;
     }
 
-    // Remove WebSocket event listeners
+    // Remove every WebSocket listener registered in setup(). Iterating the map
+    // (rather than hand-listing event names) guarantees none leak when the set
+    // of registered events changes.
     if (wsService) {
-      // ConnectionManager registers these listeners in setup()
-      // We need to remove them to prevent memory leaks
-      const sessionCallback = this._wsCallbacks.get('session');
-      const openCallback = this._wsCallbacks.get('open');
-      const closeCallback = this._wsCallbacks.get('close');
-      const errorCallback = this._wsCallbacks.get('error');
-      const messageCallback = this._wsCallbacks.get('message');
-      const reconnectAttemptCallback = this._wsCallbacks.get('reconnect-attempt');
-
-      if (sessionCallback) wsService.off('session', sessionCallback);
-      if (openCallback) wsService.off('open', openCallback);
-      if (closeCallback) wsService.off('close', closeCallback);
-      if (errorCallback) wsService.off('error', errorCallback);
-      if (messageCallback) wsService.off('message', messageCallback);
-      if (reconnectAttemptCallback) wsService.off('reconnect-attempt', reconnectAttemptCallback);
-
+      for (const [event, callback] of this._wsCallbacks) {
+        wsService.off(/** @type {any} */ (event), callback);
+      }
       this._wsCallbacks.clear();
     }
 

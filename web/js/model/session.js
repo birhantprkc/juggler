@@ -1638,35 +1638,22 @@ class Session {
    * @returns {Promise<boolean>} Whether binning succeeded
    */
   async binConversation(conversationId) {
-    const conv = this.conversations.get(conversationId);
+    // Tear down worker + map entry and pick a fallback tab up-front. Binning the
+    // last conversation leaves the session empty (clearVisibleIfNoFallback) —
+    // the user starts a new one with "+".
+    const conv = await this._dropActiveConversation(conversationId, { clearVisibleIfNoFallback: true });
     if (!conv) {
       return false;
     }
 
-    this._loadQueue?.cancel(conversationId);
-    await workerManager.destroyConversationAndWorker(conv);
-
+    // The worker is already destroyed, so the folder is released before the
+    // backend moves it to .juggler/bin/. Local removal is unconditional, so a
+    // failed bin request still leaves the tab gone (logged, not surfaced).
     try {
       await this._apiService.binConversation(conversationId);
       this.binnedCount += 1;
     } catch (error) {
       console.error(`[Session] Failed to bin conversation ${conversationId}:`, error);
-    }
-
-    this.conversations.delete(conversationId);
-    this._mruList = this._mruList.filter(id => id !== conversationId);
-
-    if (this.visibleConversationId === conversationId) {
-      const fallbackId =
-        this._mruList.find(id => this.conversations.has(id)) ??
-        this.conversations.keys().next().value;
-      if (fallbackId !== undefined) {
-        this.switchConversation(fallbackId);
-      } else {
-        // Binned the last conversation. Leave the session empty rather than
-        // forcing a replacement tab — the user can start a new one with "+".
-        this.visibleConversationId = null;
-      }
     }
 
     this._notify('conversation:deleted', conv);
@@ -1731,41 +1718,21 @@ class Session {
       return false;
     }
 
-    const conv = this.conversations.get(conversationId);
+    // Cancel the load, destroy the worker, drop from the active map, and switch
+    // to the MRU fallback tab. The size>1 guard above means a fallback always
+    // exists, so clearVisibleIfNoFallback is irrelevant here (kept false).
+    const conv = await this._dropActiveConversation(conversationId, { clearVisibleIfNoFallback: false });
     if (!conv) {
       return false;
     }
 
-    this._loadQueue?.cancel(conversationId);
-
-    // Destroy conversation and terminate worker (atomic operation with enforced cleanup order)
-    await workerManager.destroyConversationAndWorker(conv);
-
-    // Call backend DELETE endpoint to remove the file
+    // Call backend DELETE endpoint to remove the file. The worker is already
+    // destroyed, and local removal already happened, so a failed request still
+    // leaves the tab gone (logged, not surfaced).
     try {
       await this._apiService.deleteConversation(conversationId, { reason });
     } catch (error) {
       console.error(`[Session] Failed to delete conversation ${conversationId}:`, error);
-      // Continue with local cleanup even if backend fails
-    }
-
-    this.conversations.delete(conversationId);
-
-    // Prune the deleted conversation from the MRU list
-    this._mruList = this._mruList.filter(id => id !== conversationId);
-
-    // If we deleted the visible conversation, switch to the most recently used
-    // one that still exists, falling back to the first in Map order.
-    // Use switchConversation() so the load queue is prioritized if the
-    // target conversation hasn't been loaded yet (otherwise it would sit
-    // on the spinner indefinitely).
-    if (this.visibleConversationId === conversationId) {
-      const fallbackId =
-        this._mruList.find(id => this.conversations.has(id)) ??
-        this.conversations.keys().next().value;
-      if (fallbackId !== undefined) {
-        this.switchConversation(fallbackId);
-      }
     }
 
     this._notify('conversation:deleted', conv);

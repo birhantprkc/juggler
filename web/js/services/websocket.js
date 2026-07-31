@@ -526,6 +526,37 @@ class WebSocketService {
   }
 
   /**
+   * Serialize `obj` and hand it to the transport, applying the uniform
+   * connected-guard + try/catch that every send* method needs. `label` names
+   * the message in the two error logs ("Not connected, cannot send <label>" /
+   * "Failed to send <label>: <error>"). Pass `{silent: true}` for the
+   * fire-and-forget senders (session-changed, engine-bridge, tool-started) that
+   * must not log on a dead link.
+   * @param {object} obj - Payload object to JSON-serialize and send
+   * @param {string} label - Human name of the message for the error logs
+   * @param {{silent?: boolean}} [opts]
+   * @returns {boolean} True if handed to the transport; false on guard/serialize failure
+   * @private
+   */
+  _sendJson(obj, label, opts = {}) {
+    if (!this.connected || !this._transport) {
+      if (!opts.silent) {
+        console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send ${label}`);
+      }
+      return false;
+    }
+    try {
+      this._sendTransport(JSON.stringify(obj));
+      return true;
+    } catch (error) {
+      if (!opts.silent) {
+        console.error(`[ESSENTIAL] [WebSocket] Failed to send ${label}: ${error}`);
+      }
+      return false;
+    }
+  }
+
+  /**
    * @param {{id?: string, index?: number, total?: number, data?: string}} chunk
    * @private
    */
@@ -602,21 +633,14 @@ class WebSocketService {
       return false;
     }
 
-    try {
-      const payload = JSON.stringify({
-        systemPrompt,
-        messages,
-        tools,
-        conversationId,
-        modelConfig,
-        transactionId: transactionId || '' // Ensure empty string if undefined/null
-      });
-      this._sendTransport(payload);
-      return true;
-    } catch (error) {
-      console.error(`[ESSENTIAL] [WebSocket] Failed to send message: ${error}`);
-      return false;
-    }
+    return this._sendJson({
+      systemPrompt,
+      messages,
+      tools,
+      conversationId,
+      modelConfig,
+      transactionId: transactionId || '' // Ensure empty string if undefined/null
+    }, 'message');
   }
 
   /**
@@ -628,25 +652,13 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendShellStart(shellId, command, cwd, timeout) {
-    if (!this.connected || !this._transport) {
-      console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send shell-start`);
-      return false;
-    }
-
-    try {
-      const payload = JSON.stringify({
-        type: 'shell-start',
-        shellId,
-        command,
-        cwd,
-        timeout
-      });
-      this._sendTransport(payload);
-      return true;
-    } catch (error) {
-      console.error(`[ESSENTIAL] [WebSocket] Failed to send shell-start: ${error}`);
-      return false;
-    }
+    return this._sendJson({
+      type: 'shell-start',
+      shellId,
+      command,
+      cwd,
+      timeout
+    }, 'shell-start');
   }
 
   /**
@@ -658,25 +670,13 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendToolResponse(requestId, content, resultStatus, category) {
-    if (!this.connected || !this._transport) {
-      console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send tool response`);
-      return false;
-    }
-
-    try {
-      const payload = JSON.stringify({
-        type: 'tool_use_response',
-        requestId,
-        content,
-        resultStatus: resultStatus || 'success',
-        category: category || ''
-      });
-      this._sendTransport(payload);
-      return true;
-    } catch (error) {
-      console.error(`[ESSENTIAL] [WebSocket] Failed to send tool response: ${error}`);
-      return false;
-    }
+    return this._sendJson({
+      type: 'tool_use_response',
+      requestId,
+      content,
+      resultStatus: resultStatus || 'success',
+      category: category || ''
+    }, 'tool response');
   }
 
   /**
@@ -685,8 +685,7 @@ class WebSocketService {
    * @param {string} requestId - Request ID from the tool_use_request
    */
   sendToolStarted(requestId) {
-    if (!this.connected || !this._transport) return;
-    this._sendTransport(JSON.stringify({ type: 'tool_use_started', requestId }));
+    this._sendJson({ type: 'tool_use_started', requestId }, 'tool_use_started', { silent: true });
   }
 
   /**
@@ -697,24 +696,12 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendShouldContinueResponse(requestId, shouldContinue, message) {
-    if (!this.connected || !this._transport) {
-      console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send should_continue response`);
-      return false;
-    }
-
-    try {
-      const payload = JSON.stringify({
-        type: 'should_continue_response',
-        requestId,
-        shouldContinue,
-        message
-      });
-      this._sendTransport(payload);
-      return true;
-    } catch (error) {
-      console.error(`[ESSENTIAL] [WebSocket] Failed to send should_continue response: ${error}`);
-      return false;
-    }
+    return this._sendJson({
+      type: 'should_continue_response',
+      requestId,
+      shouldContinue,
+      message
+    }, 'should_continue response');
   }
 
   /**
@@ -723,22 +710,7 @@ class WebSocketService {
    * @returns {boolean} True if sent successfully
    */
   sendShellCancel(shellId) {
-    if (!this.connected || !this._transport) {
-      console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send shell-cancel`);
-      return false;
-    }
-
-    try {
-      const payload = JSON.stringify({
-        type: 'shell-cancel',
-        shellId
-      });
-      this._sendTransport(payload);
-      return true;
-    } catch (error) {
-      console.error(`[ESSENTIAL] [WebSocket] Failed to send shell-cancel: ${error}`);
-      return false;
-    }
+    return this._sendJson({ type: 'shell-cancel', shellId }, 'shell-cancel');
   }
 
   /**
@@ -759,23 +731,17 @@ class WebSocketService {
       return false;
     }
 
-    try {
-      const envelope = {
-        type: 'worker-message',
-        conversationId,
-        workerMsgType: message.type,
-        payload: message
-      };
-      recordTape('ws-out', conversationId, {
-        workerMsgType: message.type,
-        ackId: /** @type {any} */ (message).ackId
-      });
-      this._sendTransport(JSON.stringify(envelope));
-      return true;
-    } catch (error) {
-      console.error(`[ESSENTIAL] [WebSocket] Failed to send worker message: ${error}`);
-      return false;
-    }
+    const envelope = {
+      type: 'worker-message',
+      conversationId,
+      workerMsgType: message.type,
+      payload: message
+    };
+    recordTape('ws-out', conversationId, {
+      workerMsgType: message.type,
+      ackId: /** @type {any} */ (message).ackId
+    });
+    return this._sendJson(envelope, 'worker message');
   }
 
   /**
@@ -784,13 +750,7 @@ class WebSocketService {
    * @returns {boolean} Whether the message was sent
    */
   sendSessionChanged() {
-    if (!this.connected || !this._transport) return false;
-    try {
-      this._sendTransport(JSON.stringify({ type: 'session-changed' }));
-      return true;
-    } catch (error) {
-      return false;
-    }
+    return this._sendJson({ type: 'session-changed' }, 'session-changed', { silent: true });
   }
 
   /**
@@ -802,13 +762,7 @@ class WebSocketService {
    * @returns {boolean} True if sent
    */
   sendEngineBridge(channel, payload) {
-    if (!this.connected || !this._transport) return false;
-    try {
-      this._sendTransport(JSON.stringify({ type: 'engine-bridge', channel, payload }));
-      return true;
-    } catch (error) {
-      return false;
-    }
+    return this._sendJson({ type: 'engine-bridge', channel, payload }, 'engine-bridge', { silent: true });
   }
 
   /**

@@ -219,10 +219,10 @@ class ResponseHandler {
       if (category === 'write') {
         const itemDetails = this._findContextItemForTool(resolvedName);
         if (!itemDetails) {
-          // It's an action - validate params
-          const ActionClass = /** @type {any} */ (contextItemRegistry.getByToolName(resolvedName));
+          // It's an action - resolve and prepare through the shared pipeline so
+          // multi-tool classes get the same toolName-based routing as execution.
+          const { ActionClass, prepared, blockedReason } = await this._resolveAndPrepare(tc, /** @type {Record<string, unknown>} */ (tc.input), messageThread);
           if (!ActionClass) {
-            const blockedReason = getBlockedToolReason(resolvedName);
             return {
               toolId: tc.id,
               toolName: tc.name,
@@ -231,14 +231,6 @@ class ResponseHandler {
               error: blockedReason || `Unknown action: ${tc.name}`
             };
           }
-
-          const action = new ActionClass({
-            id: ActionClass.MANIFEST.id,
-            session: this._conversation.session,
-            conversation: this._conversation,
-            messageThread
-          });
-          const prepared = await action.prepare(tc.input);
           if (!prepared.valid) {
             return { toolId: tc.id, toolName: tc.name, valid: false, errorType: /** @type {const} */ ('invalid_params'), error: prepared.error || 'Validation failed' };
           }
@@ -626,6 +618,40 @@ class ResponseHandler {
   }
 
   /**
+   * Resolve an action class and prepare its parameters — the pipeline shared by
+   * execution (`_prepareAction`) and pre-execution validation (`validateToolCalls`).
+   * When the class is unknown/blocked, `ActionClass` is null and `blockedReason`
+   * carries the reason (if any); otherwise the instance is constructed with
+   * `toolName` set (so a multi-tool class routes validate/approval to the invoked
+   * tool) and `prepare()` has run. Purely computational — no document mutation.
+   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
+   * @param {Record<string, unknown>} toolInput - Tool input parameters
+   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
+   * @returns {Promise<{resolvedName: string, ActionClass: any, actionId?: string, action?: any, prepared?: any, blockedReason: string|null}>} Resolved action context (ActionClass null when unknown/blocked)
+   * @private
+   */
+  async _resolveAndPrepare(toolCall, toolInput, messageThread) {
+    // Resolve aliases (e.g., 'Bash' -> 'bash') for registry lookup
+    const resolvedName = resolveToolName(toolCall.name);
+    const ActionClass = /** @type {any} */ (contextItemRegistry.getByToolName(resolvedName));
+    if (!ActionClass) {
+      return { resolvedName, ActionClass: null, blockedReason: getBlockedToolReason(resolvedName) || null };
+    }
+
+    const actionId = ActionClass.MANIFEST.id;
+    const action = new ActionClass({
+      id: actionId,
+      session: this._conversation.session,
+      conversation: this._conversation,
+      messageThread,
+      toolName: resolvedName  // Lets a multi-tool class route validate/approval to the invoked tool
+    });
+    const prepared = await action.prepare(toolInput);
+
+    return { resolvedName, ActionClass, actionId, action, prepared, blockedReason: null };
+  }
+
+  /**
    * Resolve the action class and prepare its parameters. Returns `{result}`
    * to short-circuit (unknown/blocked tool or invalid params — after updating
    * the tool-action with the error), otherwise the prepared action context.
@@ -636,12 +662,10 @@ class ResponseHandler {
    * @private
    */
   async _prepareAction(toolCall, toolInput, messageThread) {
-    // ========== 1. GET ACTION CLASS ==========
-    // Resolve aliases (e.g., 'Bash' -> 'bash') for registry lookup
-    const resolvedName = resolveToolName(toolCall.name);
-    const ActionClass = /** @type {any} */ (contextItemRegistry.getByToolName(resolvedName));
+    // ========== 1. RESOLVE ACTION CLASS AND PREPARE PARAMETERS ==========
+    const { resolvedName, ActionClass, actionId, action, prepared, blockedReason } =
+      await this._resolveAndPrepare(toolCall, toolInput, messageThread);
     if (!ActionClass) {
-      const blockedReason = getBlockedToolReason(resolvedName);
       const errorMessage = blockedReason
         ? `Tool "${toolCall.name}" is not available: ${blockedReason}`
         : `Unknown action: ${toolCall.name}`;
@@ -663,19 +687,8 @@ class ResponseHandler {
         }
       };
     }
-    const actionId = ActionClass.MANIFEST.id;
 
-    // ========== 2. CREATE ACTION AND PREPARE PARAMETERS ==========
-    const action = new ActionClass({
-      id: actionId,
-      session: this._conversation.session,
-      conversation: this._conversation,
-      messageThread,
-      toolName: resolvedName  // Lets a multi-tool class route validate/approval to the invoked tool
-    });
-
-    const prepared = await action.prepare(toolInput);
-
+    // ========== 2. HANDLE INVALID PARAMETERS ==========
     if (!prepared.valid) {
       const errorMessage = prepared.error || 'Validation failed';
 
@@ -697,7 +710,7 @@ class ResponseHandler {
       };
     }
 
-    return { ActionClass, action, actionId, prepared, resolvedName };
+    return { ActionClass, action, actionId: /** @type {string} */ (actionId), prepared, resolvedName };
   }
 
   /**
