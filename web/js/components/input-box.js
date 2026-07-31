@@ -530,12 +530,11 @@ class InputBox extends HTMLElement {
 
         e.preventDefault();
 
-        // Use the SAME decision as the conversation-area Escape and the
-        // footer Stop button: shouldHandleEscape() also catches the worker
-        // parked in activity='awaiting_llm' (a re-run whose tool is mid-flight
-        // but no LLM is streaming). The old narrower check (isLLMActive ||
-        // hasRunningActions) missed that, so Escape from the input cleared the
-        // textarea instead of stopping the re-run.
+        // Single decision shared with the conversation-area Escape and the
+        // footer Stop button: shouldHandleEscape() is true only while the
+        // VISIBLE conversation is actually running a turn (its worker activity
+        // is claimed). When it's idle — even if a background conversation is
+        // busy — Escape clears this box instead.
         // @ts-ignore - jugglerApp is added dynamically in app.js
         if (window.jugglerApp && window.jugglerApp.shouldHandleEscape()) {
           // Cancel from THIS box's vantage: a sub-thread box (threadItemId set)
@@ -795,7 +794,12 @@ class InputBox extends HTMLElement {
   setText(text) {
     const textarea = this.querySelector('textarea');
     if (!textarea) return;
-    textarea.value = text;
+    // Assigning `.value` — even the same string — resets the browser's native
+    // undo stack. Skip the write when the value is unchanged so a preceding
+    // undoable clear (e.g. New Thread moving the draft out via
+    // _clearMovedTextUndoable, then clearInput() calling setText('')) stays
+    // recoverable with Ctrl/Cmd+Z instead of being wiped by the empty re-set.
+    if (textarea.value !== text) textarea.value = text;
     this.autoResize(textarea);
     this._updateSendButtonState();
   }
@@ -824,11 +828,15 @@ class InputBox extends HTMLElement {
 
     textarea.focus();
     textarea.select();
-    // execCommand keeps the edit on the native undo stack; fall back to a direct
-    // clear if the host webview rejects both editing commands.
-    const undoable = document.execCommand('insertText', false, '')
-      || document.execCommand('delete', false);
-    if (!undoable) {
+    // Clearing the box is the REQUIRED outcome; keeping it on the native undo
+    // stack (Ctrl/Cmd+Z restores the draft) is the nice-to-have. So attempt the
+    // undoable delete, then unconditionally force-empty if anything survived —
+    // never trust execCommand's return value. `delete` on the full selection is
+    // the undoable primitive; `insertText('', '')` is NOT usable here (on WebKit
+    // — the desktop app — an empty insert is a no-op that still returns true, so
+    // the box would silently never clear).
+    document.execCommand('delete', false);
+    if (textarea.value !== '') {
       textarea.value = '';
     }
 
@@ -837,6 +845,47 @@ class InputBox extends HTMLElement {
     this.autoResize(textarea);
     this._updateSendButtonState();
     this._scheduleDraftSave(textarea.value);
+    return true;
+  }
+
+  /**
+   * Clear the textarea as an UNDOABLE edit WITHOUT disturbing focus — used by the
+   * New Thread flow, which moves this box's text into a freshly opened thread and
+   * needs that new thread's box (not this one) to end up with the keyboard.
+   *
+   * Unlike {@link clearTextUndoable}, this deliberately does NOT call focus() or
+   * select-then-refocus: it only acts when the textarea is ALREADY the active
+   * element (execCommand requires a focused, selected target), and it never
+   * blurs. So the focus state is left exactly as the caller found it and the
+   * subsequent column rebuild's focus lands where it should. No-op (returning
+   * false) when the box isn't focused or is empty — the normal clearInput() then
+   * empties it non-undoably, which is an acceptable degradation for that case.
+   * @returns {boolean} True if the text was cleared undoably in place.
+   * @private
+   */
+  _clearMovedTextUndoable() {
+    const textarea = /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
+    if (!textarea || textarea.value === '') return false;
+    if (document.activeElement !== textarea) return false;
+
+    const savedStart = textarea.selectionStart;
+    const savedEnd = textarea.selectionEnd;
+    textarea.select();
+    // `delete` keeps the clear on the native undo stack (Ctrl/Cmd+Z restores it).
+    // Not `insertText('', '')`: an empty insert is a no-op that still returns true
+    // on WebKit (so the box wouldn't actually clear) and corrupts Chromium's undo
+    // stack. If the host rejects the editing command there is nothing we can do
+    // undoably without a focus()-based fallback, so leave it to clearInput.
+    const ok = document.execCommand('delete', false);
+    if (!ok) {
+      try { textarea.setSelectionRange(savedStart, savedEnd); } catch { /* non-fatal */ }
+      return false;
+    }
+
+    this.currentDraft = '';
+    this.historyIndex = -1;
+    this.autoResize(textarea);
+    this._updateSendButtonState();
     return true;
   }
 
@@ -1701,7 +1750,21 @@ class InputBox extends HTMLElement {
     const textarea = this.querySelector('textarea');
     const text = textarea ? textarea.value.trim() : '';
     let command = '/thread';
-    if (text) command += ` --draft-message ${text}`;
+    if (text) {
+      command += ` --draft-message ${text}`;
+      // The text is being MOVED into the new thread, so this box must clear. The
+      // plain clearInput() that the dispatched '/thread' triggers empties it via
+      // `textarea.value = ''`, which wipes the browser's native undo stack — so
+      // the user can't Ctrl/Cmd+Z the moved prompt back. Clear it undoably here
+      // FIRST (an execCommand edit stays on the undo stack; setText() then skips
+      // the no-op re-set of ''), but ONLY when the textarea already holds focus.
+      // execCommand needs a focused, selected target, yet we must NOT call
+      // focus() ourselves: grabbing focus to this box would rob the new thread's
+      // box of the keyboard (its column-rebuild focus is what should win). When
+      // the box isn't focused we simply leave it to clearInput() — undo isn't
+      // preserved in that rare case, but focus behaviour is untouched.
+      this._clearMovedTextUndoable();
+    }
 
     this.dispatchEvent(new CustomEvent('send-message', {
       detail: {

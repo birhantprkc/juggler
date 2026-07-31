@@ -814,20 +814,30 @@ class JugglerApp {
   }
 
   /**
-   * True if Escape should fire `cancelLLMOperation`. Catches three states:
-   * (1) an LLM turn is streaming, (2) a tool action is running outside a
-   * turn (e.g. user-triggered re-run), (3) the worker is parked in
-   * `activity='awaiting_llm'` waiting for a tool result. (3) is the case
-   * where the engine has claimed a tool but its execute() promise is stuck
-   * — without this branch, Escape was a no-op and the user couldn't cancel.
+   * True if Escape should fire `cancelLLMOperation` rather than clear the input.
+   *
+   * Scoped to the VISIBLE conversation, using the worker-authoritative
+   * `processingState.activity` claim: the worker sets it to 'calling_llm' or
+   * 'awaiting_llm' for exactly the span a turn is claimed on that conversation
+   * (an LLM call is streaming, or a tool — including a re-run's — is mid-flight
+   * with an LLM call still owed), and it reads back as none on idle AND on
+   * terminal error/cancel. So Escape cancels only while THIS conversation is
+   * genuinely running, and clears the box in every not-running case.
+   *
+   * Deliberately NOT `isLLMActive()`: that is the cross-conversation llmState
+   * projection (`_statusMessages.size > 0`), true whenever ANY conversation has
+   * a status entry — and a client-side value that can linger after a turn ends.
+   * Using it here let a background turn (or a stale entry) swallow a mis-pressed
+   * Escape meant to clear an idle input box.
    * @returns {boolean} True when Escape should invoke `cancelLLMOperation`
    */
   shouldHandleEscape() {
-    if (this.isLLMActive()) return true;
+    const conv = this._connectionManager?.getSession?.()?.getVisibleConversation?.();
+    const activity = conv?.processingState?.activity;
+    if (activity === 'calling_llm' || activity === 'awaiting_llm') return true;
+    // A tool action running outside a claimed turn (a "Re-run command" click) is
+    // still cancellable even though no LLM turn is claimed on the conversation.
     if (this.hasRunningActions()) return true;
-    const session = this._connectionManager?.getSession?.();
-    const conv = session?.getVisibleConversation?.();
-    if (conv?.processingState?.activity === 'awaiting_llm') return true;
     return false;
   }
 

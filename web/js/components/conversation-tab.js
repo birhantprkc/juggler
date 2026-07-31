@@ -382,8 +382,54 @@ class ConversationTab extends HTMLElement {
    * @private
    */
   _focusInput() {
-    const textarea = this._inputColumn()?.querySelector('input-box textarea');
-    if (textarea) /** @type {HTMLTextAreaElement} */ (textarea).focus();
+    const textarea = /** @type {HTMLTextAreaElement|null} */ (
+      this._inputColumn()?.querySelector('input-box textarea')
+    );
+    if (!textarea) return;
+    // Force a synchronous layout flush before focusing. When this runs during a
+    // column rebuild (e.g. a freshly opened thread) the textarea can be newly
+    // inserted and not yet laid out, and WebKit silently ignores focus() on an
+    // unrendered element — so the new thread's box never actually took the
+    // keyboard. Reading a layout property flushes pending layout so the element
+    // is focusable right now, making the focus deterministic instead of racy.
+    void textarea.offsetHeight;
+    textarea.focus();
+  }
+
+  /**
+   * Re-assert keyboard focus on the input column `target` across a short window.
+   *
+   * A column built during a rebuild isn't focusable in the same synchronous
+   * tick, and a late async re-render of the new column can bounce focus to
+   * <body> a beat later — so a single focus() (sync or deferred) is unreliable.
+   * This retries over a few macrotasks (setTimeout, not requestAnimationFrame:
+   * a backgrounded WKWebView throttles rAF to near-zero and would strand the
+   * focus), re-focusing whenever focus has been lost to <body> or is still
+   * sitting on the previously-focused input column (`staleCol`).
+   *
+   * Tightly bounded and guarded so it never fights a legitimate focus change:
+   * it stops if the tab is hidden, keyboard-nav starts, or the input column
+   * changes again, and it leaves focus alone when it has moved somewhere real
+   * (a dialog, another column the user clicked).
+   * @param {HTMLElement} target - The input column that should hold focus.
+   * @param {HTMLElement|null} staleCol - The previously-focused input column.
+   * @param {number} attempts - Remaining retry ticks.
+   * @private
+   */
+  _reassertInputFocus(target, staleCol, attempts) {
+    if (attempts <= 0) return;
+    if (this._isHidden || this._isKeyboardNavigating) return;
+    if (this._deepestInputColumn() !== target) return;
+    const active = document.activeElement;
+    const inTarget = !!(active && target.contains(active));
+    if (!inTarget) {
+      const lost = !active || active === document.body;
+      const onStale = !!(staleCol && active && staleCol.contains(active));
+      if (lost || onStale) this._focusInput();
+    }
+    // Keep watching even when focus currently looks right: a subsequent
+    // re-render can still bounce it to <body> within this window.
+    setTimeout(() => this._reassertInputFocus(target, staleCol, attempts - 1), 30);
   }
 
   /**
@@ -1180,6 +1226,13 @@ class ConversationTab extends HTMLElement {
       const newInputCol = this._deepestInputColumn();
       if (newInputCol && newInputCol !== prevInputCol && !this._isKeyboardNavigating) {
         this._focusInput();
+        // A synchronous focus() during the rebuild silently no-ops for a
+        // freshly-built column — the new thread's box is in the DOM but not yet
+        // focusable at that instant, and late re-renders of the new column can
+        // bounce focus back to <body> — so a newly opened thread (e.g. New
+        // Thread) never actually took the keyboard. Re-assert across a short
+        // window once rendering settles.
+        this._reassertInputFocus(newInputCol, prevInputCol, 5);
       }
 
     } finally {
