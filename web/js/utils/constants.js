@@ -46,12 +46,10 @@ export const MAX_CONVERSATION_NAME_LENGTH = 48;
 export const TURN_CANCELLED_NOTICE = 'Cancelled the active turn';
 
 /**
- * Notice shown when duplication (Cmd-D, the tab context menu's "Duplicate",
- * branch-from-message, or `/duplicate`) is refused because the source
- * conversation has a turn in flight. A clone taken mid-turn would block on the
- * worker's flush until the turn ends (often visibly hanging), and the copy
- * would capture a `running` item no worker will ever resolve — so duplicating
- * is refused outright rather than silently cancelling the turn.
+ * Notice shown when a duplication opts out of forking a running source (via
+ * refuseWhileActive — currently only /handoff, whose follow-up LLM turn needs a
+ * settled source). Plain duplicate/branch fork mid-turn instead: the server
+ * snapshots the live doc and the clone loads stopped, so they never show this.
  */
 export const DUPLICATE_WHILE_ACTIVE_NOTICE =
   "Can't duplicate while a turn is running — wait for it to finish, or cancel it first.";

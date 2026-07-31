@@ -1479,24 +1479,25 @@ class Session {
    * @param {object} [options] - Options
    * @param {string} [options.nameSuffix] - Suffix word for the derived name
    *   (default 'copy'; /handoff passes 'continued' → "X (continued)")
+   * @param {boolean} [options.refuseWhileActive] - When true, decline (with a
+   *   notice) if the source has a turn in flight instead of forking it live.
+   *   Default false: plain duplicate/branch fork a running conversation, and the
+   *   clone loads stopped. /handoff opts in because its follow-up is an LLM turn
+   *   that a half-forked, still-running source can't cleanly seed.
    * @returns {Promise<string|null>} New conversation ID, or null if source not found
    */
-  async duplicateConversation(conversationId, { nameSuffix = 'copy' } = {}) {
+  async duplicateConversation(conversationId, { nameSuffix = 'copy', refuseWhileActive = false } = {}) {
     const source = this.getConversation(conversationId);
     if (!source) {
       return null;
     }
 
-    // Refuse mid-turn. The server copies the source via FlushConversation,
-    // which can't complete while a turn owns the worker run loop (its inner
-    // selects don't drain flushReq), so a mid-turn duplicate hangs the HTTP
-    // handler until the turn ends and then ships a clone with a `running`
-    // item no worker will ever resolve. Cancelling implicitly would surprise
-    // the user (and discard their in-flight work), so refuse outright and
-    // let them settle or cancel explicitly. Covers every entry point:
-    // Cmd-D, the tab context menu's "Duplicate", branch-from-message, and
-    // `/duplicate` (which checks first to avoid a second notice).
-    if (source.isTurnActive()) {
+    // Forking a running conversation is safe: the server snapshots the live doc
+    // in-memory (race-free, no flush through the busy run loop) and marks the
+    // copy so it loads stopped rather than auto-resuming the in-flight turn. Some
+    // callers (/handoff) still opt out via refuseWhileActive and wait for a
+    // settled source instead.
+    if (refuseWhileActive && source.isTurnActive()) {
       source.showWarning(DUPLICATE_WHILE_ACTIVE_NOTICE, 5000);
       return null;
     }

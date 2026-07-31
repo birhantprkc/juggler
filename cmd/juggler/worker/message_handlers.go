@@ -209,16 +209,9 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	// not user-initiated and should not be undoable.
 	w.tracker.ClearHistory()
 
-	// Reset processingState on first init. Default to idle, but if the
-	// on-disk doc still has a non-terminal tool-action (e.g. user quit while
-	// an approval dialog was open) re-establish activity="awaiting_llm" on
-	// the owning thread. Without this, after restart + approve the tool
-	// completes but the thread reducer sees activity="" and returns
-	// ActionNone, so the next LLM turn never fires.
-	w.sendStatus("idle", "")
-	if threadID, ok := w.findThreadWithIncompleteTool(); ok {
-		w.requestLLM(threadID)
-	}
+	// Reset processingState on first init (idle, plus a conditional crash-recovery
+	// re-drive). Factored out so the fork-parked suppression is unit-testable.
+	w.reconcileProcessingStateOnLoad()
 
 	// Broadcast state to frontend so it can sync
 	w.broadcastFullState()

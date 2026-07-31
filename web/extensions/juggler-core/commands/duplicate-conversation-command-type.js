@@ -46,9 +46,9 @@ class DuplicateConversationCommandType extends CommandType {
     try {
       const newId = await session.duplicateConversation(sourceConversation.id);
       if (!newId) {
-        // A null clone is the session's mid-turn refusal: it already surfaced
-        // DUPLICATE_WHILE_ACTIVE_NOTICE, so don't layer a second message on.
-        // Treat as handled (not an error) so the slash handler stays quiet.
+        // A null clone means the source vanished (plain duplicate forks even a
+        // running conversation, so there's no mid-turn refusal here). Treat as
+        // handled (not an error) so the slash handler stays quiet.
         return { handled: true };
       }
       session.switchConversation(newId);

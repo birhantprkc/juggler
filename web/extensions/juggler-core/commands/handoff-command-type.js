@@ -62,7 +62,9 @@ class HandoffCommandType extends CommandType {
     try {
       // Server-side copy → valid file refs, source left intact. Named
       // "<source> (continued)" up front so there's no "(copy)" flicker.
-      newId = await session.duplicateConversation(source.id, { nameSuffix: 'continued' });
+      // refuseWhileActive: handoff's next step is an LLM summary turn, so it
+      // waits for a settled source rather than forking one mid-turn.
+      newId = await session.duplicateConversation(source.id, { nameSuffix: 'continued', refuseWhileActive: true });
     } catch (error) {
       return { handled: true, message: `Handoff failed: ${extractErrorMessage(error)}`, error: true };
     }

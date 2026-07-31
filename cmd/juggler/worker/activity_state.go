@@ -109,6 +109,28 @@ func (w *ConversationWorker) patchProcessingState(mutate func(map[string]any)) {
 	w.patchProcessingStateIf(func(existing map[string]any) bool { return existing != nil }, mutate)
 }
 
+// reconcileProcessingStateOnLoad resets the doc-native claim to idle after a load
+// and, unless the doc was forked mid-turn, re-establishes activity="awaiting_llm"
+// when a non-terminal tool-action remains. That re-drive is the crash-recovery
+// path: after a quit-while-approving restart, the reducer would otherwise see
+// activity="" and never fire the follow-up LLM turn once the tool finishes.
+//
+// A fork-parked clone carries the same in-flight tool but must REST, not resume:
+// it was copied from a running conversation and should appear stopped. The
+// forkParked marker (stamped on the copy at snapshot time) suppresses the
+// re-drive for exactly this first load, then is consumed so a later reload of the
+// clone behaves like any normal conversation.
+func (w *ConversationWorker) reconcileProcessingStateOnLoad() {
+	w.sendStatus("idle", "")
+	if b, _ := w.doc.GetMetadata(metaForkParked).(bool); b {
+		w.doc.SetMetadata(metaForkParked, false) // one-shot: consume the marker
+		return
+	}
+	if threadID, ok := w.findThreadWithIncompleteTool(); ok {
+		w.requestLLM(threadID)
+	}
+}
+
 // setPolitePending latches the polite-stop (Pause) AND mirrors it into the
 // synced processingState, so a client that reloads mid-pause restores the
 // "Pausing…" cue instead of reverting to a plain Pause button. The atomic latch

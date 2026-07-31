@@ -72,6 +72,12 @@ type WorkerManager interface {
 	// FlushConversation persists the (loaded) worker's doc to disk before an
 	// out-of-band file read such as the server-side duplicate. No-op if unloaded.
 	FlushConversation(conversationID string) error
+	// SnapshotParkedState returns an in-memory, race-free doc snapshot of a loaded
+	// worker (ok=true), marked so the clone loads stopped instead of auto-resuming
+	// an in-flight tool. Lets a duplicate copy a conversation that is mid-turn —
+	// where FlushConversation would block on the busy run loop. ok=false when no
+	// worker is loaded, in which case the on-disk doc is authoritative.
+	SnapshotParkedState(conversationID string) ([]byte, bool)
 	// SeedNewConversation initializes and saves a brand-new conversation's Yjs doc
 	// before it is announced to clients, so every viewer loads a doc with the
 	// authoritative creation metadata already present.
@@ -423,12 +429,6 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 // A source with no doc.yjs yet (never saved) copies nothing, yielding a
 // legitimately empty clone rather than an error.
 func (api *SessionAPI) duplicateConversationFiles(srcID, dstID string) error {
-	if api.workerManager != nil {
-		if err := api.workerManager.FlushConversation(srcID); err != nil {
-			return fmt.Errorf("flush source worker: %w", err)
-		}
-	}
-
 	mgr := api.manager()
 	srcDir, ok := mgr.ConvDir(srcID)
 	if !ok {
@@ -440,8 +440,8 @@ func (api *SessionAPI) duplicateConversationFiles(srcID, dstID string) error {
 	}
 
 	// doc.yjs carries items AND metadata (model config, permission rules, …).
-	if err := copyFileIfExists(filepath.Join(srcDir, "doc.yjs"), filepath.Join(dstDir, "doc.yjs")); err != nil {
-		return fmt.Errorf("copy doc.yjs: %w", err)
+	if err := api.writeCloneDoc(srcID, srcDir, dstDir); err != nil {
+		return fmt.Errorf("write clone doc.yjs: %w", err)
 	}
 	// txns/ holds per-round-trip blobs referenced by items by id.
 	if err := copyDirContents(filepath.Join(srcDir, "txns"), filepath.Join(dstDir, "txns")); err != nil {
@@ -454,6 +454,25 @@ func (api *SessionAPI) duplicateConversationFiles(srcID, dstID string) error {
 		return fmt.Errorf("copy assets: %w", err)
 	}
 	return nil
+}
+
+// writeCloneDoc writes the clone's doc.yjs, choosing the source that is current.
+// A loaded worker may be mid-turn, where FlushConversation would block on the run
+// loop (its inner selects don't drain flushReq); so when one is loaded, take an
+// in-memory parked snapshot instead — race-free (ycrdtMu) and marked so the clone
+// loads stopped. With no worker loaded, the on-disk doc is authoritative: flush
+// (a no-op) then byte-copy it. Split from duplicateConversationFiles so the
+// source-selection is unit-testable without a SessionManager.
+func (api *SessionAPI) writeCloneDoc(srcID, srcDir, dstDir string) error {
+	if api.workerManager != nil {
+		if snap, ok := api.workerManager.SnapshotParkedState(srcID); ok {
+			return os.WriteFile(filepath.Join(dstDir, "doc.yjs"), snap, 0o644)
+		}
+		if err := api.workerManager.FlushConversation(srcID); err != nil {
+			return fmt.Errorf("flush source worker: %w", err)
+		}
+	}
+	return copyFileIfExists(filepath.Join(srcDir, "doc.yjs"), filepath.Join(dstDir, "doc.yjs"))
 }
 
 // copyFileIfExists copies src→dst. A missing src is not an error (it means the
