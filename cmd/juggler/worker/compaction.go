@@ -91,7 +91,7 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 // (tryBoundedCompaction) to map/reduce the transcript. Either way the summary is
 // committed through the one path, writeBoundedCompactionResult. Returns
 // handled=false only when the thread is not a bounded compaction thread.
-func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig) (bool, error) {
+func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig, ctxResult *ContextResult, tools []ToolDefinition) (bool, error) {
 	threadID := w.thread.itemID
 	if threadID == "" || !w.isBoundedCompactionThread(threadID) {
 		return false, nil
@@ -113,6 +113,11 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig)
 		}
 		return true, &BoundedCompactionError{Reason: failReason, Message: message}
 	}
+	// records is the canonical source identity (fingerprint only here); the probe
+	// request below is built from the same items. Both derive from the one
+	// itemWireMessages projection — records per-item, the request batched — so the
+	// fingerprint and the request describe the same wire form, not the old
+	// divergent raw-item-dump versus wire-message pair.
 	records, err := canonicalCompactionRecords(items, promptID)
 	if err != nil {
 		return true, &BoundedCompactionError{
@@ -127,7 +132,24 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig)
 
 	w.recordCompactionStart(compactionKindFolded, 0, 0, 0)
 	probe := w.newBoundedReducer(compactionKindFolded, pinnedModel, boundedCompactionBudget{})
-	result, overflow, probeErr := probe.probeFinal(records)
+	probe.finalUsesTool = false
+	parentThreadID := w.doc.findParentThreadID(threadID)
+	// Preserve the real turn's cacheable prefix: the folded history renders through
+	// the same wire path as a live turn, and the summarization instruction is
+	// appended as a final user message rather than swapping the system prompt.
+	messages, err := providerMessages(w.buildMessagesFromItems(itemsWithoutItemID(items, promptID), false))
+	if err != nil {
+		return true, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "bounded compaction could not encode semantic history: " + err.Error(), Cause: err}
+	}
+	messages = append(messages, provider.Message{Type: ItemTypeUser, Content: plainTextSummarizationPrompt()})
+	probeReq := hiddenLLMRequest{
+		Type: "message", SystemPrompt: w.buildSystemPrompt(ctxResult.SystemPrompt, ctxResult.Contexts),
+		Messages: messages, Tools: w.filterToolsForThreadID(tools, parentThreadID),
+		ConversationID: w.conversationID, ThreadID: parentThreadID, ModelConfig: &pinnedModel,
+		ToolChoice:    map[string]any{"mode": provider.ToolChoiceNone},
+		TransactionID: generateTransactionID(), BypassContextGuard: true,
+	}
+	result, overflow, probeErr := probe.probeRequest(probeReq, compactionSourceFingerprint(records), "")
 	if probeErr != nil {
 		if errors.Is(probeErr, errBoundedCompactionCancelled) {
 			w.recordCompactionOutcome(compactionKindFolded, "cancelled", result, nil)
@@ -159,6 +181,50 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig)
 	}
 	w.recordCompactionOutcome(compactionKindFolded, "result", result, nil)
 	return true, nil
+}
+
+func (w *ConversationWorker) foldedCompactionContextItemIDs(threadID string) []string {
+	parentID := w.doc.findParentThreadID(threadID)
+	var parentItems []ConversationItem
+	if parentID == "" {
+		parentItems = w.doc.GetItems()
+	} else {
+		parentItems = w.doc.GetItemsFromArray(w.doc.GetThreadItemsArray(parentID))
+	}
+	ids := make([]string, 0, len(parentItems)+len(w.getTargetItems()))
+	for _, item := range parentItems {
+		if item.ItemID != "" && item.ItemID != threadID {
+			ids = append(ids, item.ItemID)
+		}
+	}
+	for _, item := range w.getTargetItems() {
+		if item.ItemID != "" && item.ItemID != w.compactionPromptItemID(threadID) {
+			ids = append(ids, item.ItemID)
+		}
+	}
+	return ids
+}
+
+func itemsWithoutItemID(items []ConversationItem, excludedID string) []ConversationItem {
+	filtered := make([]ConversationItem, 0, len(items))
+	for _, item := range items {
+		if item.ItemID != excludedID {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func providerMessages(messages []map[string]any) ([]provider.Message, error) {
+	encoded, err := json.Marshal(messages)
+	if err != nil {
+		return nil, err
+	}
+	var result []provider.Message
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // threadHasResult reports whether the thread already carries a committed result.
@@ -252,6 +318,11 @@ func (w *ConversationWorker) runReducer(kind string, pinnedModel ModelConfig, bu
 	return result, nil
 }
 
+// isBoundedCompactionThread recognizes a fold thread the summarizer still owes a
+// result. The boundedCompaction flag is authoritative; the noAutoSelect +
+// forceTool=="return_result" pair is a legacy-recognition fallback for threads
+// folded before the flag existed. forceTool is only an identity signal here — the
+// summarizer runs tool-free and never honors it as a directive.
 func (w *ConversationWorker) isBoundedCompactionThread(threadID string) bool {
 	m := w.doc.GetThreadYMap(threadID)
 	if m == nil {
@@ -540,9 +611,13 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 		NeedsStrategyRun:       true,
 		NoAutoSelect:           true,
 		NoContextSeed:          true,
-		ForceTool:              "return_result",
-		HandoffPromote:         handoffPromote,
-		Items:                  nestedJSON,
+		// ForceTool is an identity marker (with noAutoSelect it lets
+		// isBoundedCompactionThread recognize a legacy fold), NOT an honored
+		// directive: runFoldedThreadCompaction summarizes tool-free (ToolChoiceNone,
+		// plain text), so no return_result call is ever forced on this thread.
+		ForceTool:      "return_result",
+		HandoffPromote: handoffPromote,
+		Items:          nestedJSON,
 	}
 
 	if !w.foldPrefixIntoSummaryTracked(w.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {

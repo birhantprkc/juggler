@@ -39,6 +39,27 @@ func seedRootTurnWithAnchor(t *testing.T, w *ConversationWorker, txnID string, i
 	}
 }
 
+func feedCompactionContextAndTools(w *ConversationWorker) {
+	go func() {
+		contextResponse, _ := json.Marshal(map[string]any{
+			"type": "render-context-items-response", "systemPrompt": "system prompt", "contexts": []any{},
+		})
+		toolsResponse, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+		for {
+			select {
+			case <-w.done:
+				return
+			case w.contextResultChan <- contextResponse:
+			}
+			select {
+			case <-w.done:
+				return
+			case w.toolsResultChan <- toolsResponse:
+			}
+		}
+	}()
+}
+
 // TestMaybeAutoCompactAtSettleFoldsAndSummarizes drives the whole worker trigger:
 // a 90%-of-window anchor folds the root and the existing pickup path summarizes
 // the fold thread. It also pins self-termination — a second settle after the fold
@@ -49,8 +70,9 @@ func TestMaybeAutoCompactAtSettleFoldsAndSummarizes(t *testing.T) {
 	w.storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.windowResolver = func(ModelConfig) (int, int) { return 10000, 1000 }
+	feedCompactionContextAndTools(w)
 	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
-		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"auto compact summary"}`)}}}, nil
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "auto compact summary"}}}, nil
 	}
 	seedRootTurnWithAnchor(t, w, "txnA", 9000)
 
@@ -262,8 +284,9 @@ func TestHandleCompactFoldsSummarizesAndAcks(t *testing.T) {
 	defer w.doc.Destroy()
 	w.storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedCompactionContextAndTools(w)
 	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
-		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"command compact summary"}`)}}}, nil
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "command compact summary"}}}, nil
 	}
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		arr := w.doc.ensureItems()
@@ -510,13 +533,14 @@ func TestHandleCompactConvergesToSingleSummary(t *testing.T) {
 	defer w.doc.Destroy()
 	w.storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedCompactionContextAndTools(w)
 	summaries := []string{"first summary", "second summary"}
 	var sources []string
 	w.llmCallFunc = func(_ context.Context, encoded json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
 		sources = append(sources, string(encoded))
 		s := summaries[0]
 		summaries = summaries[1:]
-		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"` + s + `"}`)}}}, nil
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: s}}}, nil
 	}
 	pushUserTurn := func(content string) {
 		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {

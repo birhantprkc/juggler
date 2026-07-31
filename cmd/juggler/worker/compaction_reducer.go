@@ -317,12 +317,15 @@ func (r *boundedReducer) run(records []string) (result CompactionResult, err err
 // plain-text retries — but never chunks: chunking is the caller's follow-up
 // through the bounded reducer once the window is known. result carries the
 // accumulated accounting on every path.
-func (r *boundedReducer) probeFinal(records []string) (result CompactionResult, overflow *provider.ContextLimitExceededError, err error) {
+// probeRequest performs the one-pass final attempt for an explicitly prepared
+// request. source is used by the tool-free retry path; callers that preserve a
+// normal conversation prefix pass an already tool-free request.
+func (r *boundedReducer) probeRequest(req hiddenLLMRequest, fingerprint, source string) (result CompactionResult, overflow *provider.ContextLimitExceededError, err error) {
 	started := time.Now()
 	result = CompactionResult{
 		Calls:             r.budget.calls,
 		EstimatedSpend:    r.budget.spend,
-		SourceFingerprint: compactionSourceFingerprint(records),
+		SourceFingerprint: fingerprint,
 	}
 	defer func() {
 		result.Calls = r.budget.calls
@@ -334,12 +337,11 @@ func (r *boundedReducer) probeFinal(records []string) (result CompactionResult, 
 	if r.isCancelled() {
 		return result, nil, errBoundedCompactionCancelled
 	}
-	joined := strings.Join(records, "\n")
-	response, callErr := r.dispatch(r.finalRequest(0, joined), 0)
+	response, callErr := r.dispatch(req, 0)
 	if callErr == nil {
 		summary := strings.TrimSpace(compactionResponseText(response))
 		if summary == "" && r.finalUsesTool {
-			recovered, retryErr := r.dispatchPlainFinal(0, joined)
+			recovered, retryErr := r.dispatchPlainFinal(0, source)
 			if retryErr != nil {
 				return result, nil, retryErr
 			}
@@ -361,7 +363,7 @@ func (r *boundedReducer) probeFinal(records []string) (result CompactionResult, 
 		// A non-overflow failure of the tool-bearing final call (e.g. a model
 		// that rejects the tools array). The tool is only an optimization, so
 		// retry once tool-free before surfacing the original error.
-		recovered, retryErr := r.dispatchPlainFinal(0, joined)
+		recovered, retryErr := r.dispatchPlainFinal(0, source)
 		if retryErr == nil && recovered != "" {
 			result.Summary = recovered
 			return result, nil, nil
@@ -539,12 +541,15 @@ func (r *boundedReducer) packCompactionChunks(pass int, records []string) ([]str
 	return chunks, nil
 }
 
-// canonicalCompactionRecord preserves one persisted item as inert JSON while
-// keeping its original array position explicit. ConversationItem remains the
-// single source of truth for the complete persisted shape.
+// canonicalCompactionRecord is one item's inert wire projection alongside its
+// original array position. Rendering through itemWireMessages — the same
+// allowlist the live turn uses — means UI-only fields such as displayData or the
+// raw result blob's fullResult never enter the record, with no field denylist to
+// keep in sync. Exactly one record per item preserves recovery's index-aligned
+// prefix slicing (recovery.go slices records by item index).
 type canonicalCompactionRecord struct {
-	Index int              `json:"index"`
-	Item  ConversationItem `json:"item"`
+	Index    int              `json:"index"`
+	Messages []map[string]any `json:"messages"`
 }
 
 func canonicalCompactionRecords(items []ConversationItem, promptID string) ([]string, error) {
@@ -553,7 +558,7 @@ func canonicalCompactionRecords(items []ConversationItem, promptID string) ([]st
 		if item.ItemID == promptID {
 			continue
 		}
-		encoded, err := json.Marshal(canonicalCompactionRecord{Index: i, Item: item})
+		encoded, err := json.Marshal(canonicalCompactionRecord{Index: i, Messages: itemWireMessages(item)})
 		if err != nil {
 			return nil, fmt.Errorf("item %d (%q): %w", i, item.ItemID, err)
 		}

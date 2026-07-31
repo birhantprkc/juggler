@@ -197,7 +197,16 @@ strategyLoop:
 		// turn ends here; the deferred cleanup drives idle, which collapses the
 		// fold + summary into one undo group (compactionMergeFromIdx).
 		if w.thread.itemID != "" && w.isBoundedCompactionThread(w.thread.itemID) && !w.threadHasResult(w.thread.itemID) {
-			handled, compactErr := w.runFoldedThreadCompaction(w.resolveModelConfig())
+			itemIDs := w.foldedCompactionContextItemIDs(w.thread.itemID)
+			ctxResult, tools, prepErr := w.requestContextAndToolsForItemIDs(itemIDs)
+			if prepErr != nil {
+				if errors.Is(prepErr, ErrCancelled) {
+					return
+				}
+				w.sendError(fmt.Sprintf("Failed to get context/tools for compaction: %v", prepErr), "")
+				return
+			}
+			handled, compactErr := w.runFoldedThreadCompaction(w.resolveModelConfig(), ctxResult, tools)
 			if handled {
 				if compactErr != nil && !errors.Is(compactErr, errBoundedCompactionCancelled) {
 					w.log.Error("❌ compaction error: %s", compactErr.Error())

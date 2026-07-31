@@ -8,8 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -41,12 +41,10 @@ func insertBoundedCompactionThread(t *testing.T, w *ConversationWorker, content 
 	return threadID
 }
 
-// TestRunFoldedThreadCompactionOnePassUsesRichPrompt pins Phase 3's probe:
-// when the whole transcript fits one call, runFoldedThreadCompaction commits
-// that one-pass summary directly, and the folded final call carries the rich
-// Go-owned DefaultSummarizationPrompt (not the terse reducer prompt), matching
-// the structured handoff the retired return_result strategy turn produced.
-func TestRunFoldedThreadCompactionOnePassUsesRichPrompt(t *testing.T) {
+// TestRunFoldedThreadCompactionOnePassAppendsPrompt pins the cache-preserving
+// probe: ordinary history remains a message prefix and the summary instruction
+// is appended as the final user message rather than replacing the system prompt.
+func TestRunFoldedThreadCompactionOnePassAppendsPrompt(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.storeState(StateProcessing)
@@ -54,26 +52,34 @@ func TestRunFoldedThreadCompactionOnePassUsesRichPrompt(t *testing.T) {
 	threadID := insertBoundedCompactionThread(t, w, "a short conversation history to summarize")
 
 	calls := 0
-	var sawPrompt string
+	var sawReq hiddenLLMRequest
 	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
 		calls++
-		var req hiddenLLMRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
+		if err := json.Unmarshal(raw, &sawReq); err != nil {
 			t.Fatal(err)
 		}
-		sawPrompt = req.SystemPrompt
-		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"the handoff summary"}`)}}}, nil
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "the handoff summary"}}}, nil
 	}
 
-	handled, err := w.runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"})
+	probeTools := []ToolDefinition{{Name: "edit", Description: "Edit a file", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	handled, err := w.runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{SystemPrompt: "ordinary system prompt"}, probeTools)
 	if !handled || err != nil {
 		t.Fatalf("runFoldedThreadCompaction = (%v, %v), want handled success", handled, err)
 	}
 	if calls != 1 {
 		t.Fatalf("hidden calls = %d, want a single one-pass probe", calls)
 	}
-	if sawPrompt != DefaultSummarizationPrompt {
-		t.Fatalf("folded final prompt = %q, want the rich DefaultSummarizationPrompt", sawPrompt)
+	if sawReq.SystemPrompt != "ordinary system prompt" {
+		t.Fatalf("folded probe system prompt = %q, want ordinary prompt unchanged", sawReq.SystemPrompt)
+	}
+	if len(sawReq.Messages) != 2 || sawReq.Messages[0].Content != "a short conversation history to summarize" || sawReq.Messages[1].Content != plainTextSummarizationPrompt() {
+		t.Fatalf("folded probe messages = %#v, want history plus appended summary prompt", sawReq.Messages)
+	}
+	if sawReq.ThreadID != "" || len(sawReq.Tools) != 1 || sawReq.Tools[0].Name != "edit" {
+		t.Fatalf("folded probe identity/tools = (%q, %#v), want parent request shape", sawReq.ThreadID, sawReq.Tools)
+	}
+	if fmt.Sprint(sawReq.ToolChoice["mode"]) != provider.ToolChoiceNone {
+		t.Fatalf("folded probe tool choice = %#v, want tools preserved but disabled", sawReq.ToolChoice)
 	}
 	thread := w.doc.GetThreadYMap(threadID)
 	if got, _ := thread.Get("result").(string); got != "the handoff summary" {
@@ -113,7 +119,7 @@ func TestRunFoldedThreadCompactionProbeOverflowChunks(t *testing.T) {
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
 
-	handled, err := w.runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"})
+	handled, err := w.runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{}, nil)
 	if !handled || err != nil {
 		t.Fatalf("runFoldedThreadCompaction = (%v, %v), want handled success after overflow", handled, err)
 	}
@@ -215,20 +221,15 @@ func TestBoundedCompactionPinsRejectedRequestModel(t *testing.T) {
 	}
 }
 
-func TestCanonicalCompactionRecordsPreserveCompleteItemShape(t *testing.T) {
+func TestCanonicalCompactionRecordsStripDisplaySnapshots(t *testing.T) {
+	large := strings.Repeat("whole file contents", 1000)
 	prompt := ConversationItem{Type: ItemTypeUser, ItemID: "prompt", Content: "exclude me"}
 	source := ConversationItem{
-		Type: ItemTypeToolAction, ItemID: "item", Content: "content", Source: "source",
-		Summary: "summary", Timestamp: "timestamp", ToolUseID: "tool-use", ToolName: "tool",
-		ToolInput: json.RawMessage(`{"input":true}`), State: "complete",
-		ApprovalOptions: json.RawMessage(`[{"option":"allow"}]`), DisplayData: json.RawMessage(`{"display":"value"}`),
-		IsError: true, Data: json.RawMessage(`{"data":"value"}`), Cancelled: true,
-		Result: json.RawMessage(`{"result":"value"}`), Goal: "goal", Items: json.RawMessage(`[{"type":"user","content":"nested"}]`),
-		BoundedCompaction: true, CompactionPromptItemID: "nested-prompt", PreventUserDeletion: true,
-		IsNew: true, Error: "error", TransactionID: "transaction",
-		ProviderData: map[string]any{"opaque": "provider", "count": float64(2)},
-		Attachments:  []AssetRef{{ID: "sha256", Mime: "image/webp", Filename: "original.webp", Bytes: 42, Width: 7, Height: 6}},
-		TaskSource:   &TaskSourceRef{TaskID: "task", Label: "monitor"},
+		Type: ItemTypeToolAction, ItemID: "item", ToolUseID: "tool-use", ToolName: "edit",
+		ToolInput: json.RawMessage(`{"file_path":"file.txt","old_string":"before","new_string":"after"}`), State: StateCompleted,
+		ApprovalOptions: json.RawMessage(`[{"option":"allow"}]`), DisplayData: json.RawMessage(`{"diffData":{"oldContent":` + mustJSON(t, large) + `,"newContent":` + mustJSON(t, large) + `}}`),
+		Result:        json.RawMessage(`{"content":"Edited file: file.txt","isError":false,"fullResult":{"displayData":{"diffData":{"oldContent":` + mustJSON(t, large) + `,"newContent":` + mustJSON(t, large) + `}}}}`),
+		TransactionID: "transaction", TaskSource: &TaskSourceRef{TaskID: "task", Label: "monitor"},
 	}
 	records, err := canonicalCompactionRecords([]ConversationItem{prompt, source}, prompt.ItemID)
 	if err != nil {
@@ -237,22 +238,31 @@ func TestCanonicalCompactionRecordsPreserveCompleteItemShape(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("records = %d, want 1", len(records))
 	}
-	encoded := strings.TrimSuffix(strings.TrimPrefix(records[0], "<record>"), "</record>")
-	var decoded canonicalCompactionRecord
-	if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
-		t.Fatal(err)
+	if strings.Contains(records[0], large) || strings.Contains(records[0], "displayData") || strings.Contains(records[0], "fullResult") {
+		t.Fatalf("canonical record retained UI snapshot: %s", records[0][:min(len(records[0]), 500)])
 	}
-	if decoded.Index != 1 {
-		t.Fatalf("stable index = %d, want 1", decoded.Index)
+	if !strings.Contains(records[0], `Edited file: file.txt`) || !strings.Contains(records[0], `old_string`) {
+		t.Fatalf("canonical record lost semantic tool data: %s", records[0])
 	}
-	if !reflect.DeepEqual(decoded.Item, source) {
-		t.Fatalf("decoded item lost source fields:\n got: %#v\nwant: %#v", decoded.Item, source)
+	if len(records[0]) >= len(large) {
+		t.Fatalf("canonical record length = %d, want smaller than one file snapshot (%d)", len(records[0]), len(large))
 	}
 }
 
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
 func TestCanonicalCompactionRecordsFailClosedOnMarshalError(t *testing.T) {
+	// A thinking item carries providerData onto the wire, so an unmarshalable
+	// value there reaches json.Marshal and must fail closed with item identity.
 	items := []ConversationItem{{
-		Type: ItemTypeAssistant, ItemID: "bad", ProviderData: map[string]any{"invalid": math.NaN()},
+		Type: ItemTypeThinking, ItemID: "bad", Content: "reasoning", ProviderData: map[string]any{"invalid": math.NaN()},
 	}}
 	records, err := canonicalCompactionRecords(items, "prompt")
 	if err == nil {
@@ -263,6 +273,23 @@ func TestCanonicalCompactionRecordsFailClosedOnMarshalError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `item 0 ("bad")`) {
 		t.Fatalf("error = %q, want item identity", err)
+	}
+}
+
+// TestPlainTextSummarizationPromptSwapsInstruction guards the strings.Replace in
+// plainTextSummarizationPrompt: if DefaultSummarizationPrompt's final sentence is
+// ever reworded the replace silently no-ops, leaving the folded probe (which runs
+// tool-free) instructing a return_result call it can never make. Fail loudly.
+func TestPlainTextSummarizationPromptSwapsInstruction(t *testing.T) {
+	plain := plainTextSummarizationPrompt()
+	if plain == DefaultSummarizationPrompt {
+		t.Fatal("plainTextSummarizationPrompt did not change DefaultSummarizationPrompt — the tool-instruction sentence no longer matches, so the swap silently no-op'd")
+	}
+	if strings.Contains(plain, "call return_result") {
+		t.Fatalf("plain-text summarization prompt still instructs a return_result tool call:\n%s", plain)
+	}
+	if !strings.Contains(plain, summarizationTextInstruction) {
+		t.Fatalf("plain-text summarization prompt missing the plain-text instruction:\n%s", plain)
 	}
 }
 

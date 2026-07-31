@@ -40,8 +40,14 @@ func (w *ConversationWorker) requestContextAndTools() (*ContextResult, []ToolDef
 	// seeds were cloned at creation). Idempotent — a no-op once the thread owns
 	// its system-prompt item, and at root.
 	w.doc.SeedThreadIfUnseeded(threadItemID)
-	itemIDs := w.doc.GetContextItemIDsForThread(threadItemID)
+	return w.requestContextAndToolsForItemIDs(w.doc.GetContextItemIDsForThread(threadItemID))
+}
 
+// requestContextAndToolsForItemIDs renders an explicit source snapshot while
+// requesting the current tool definitions. Compaction uses this to reconstruct
+// the request that preceded a fold: standing context remains in the parent array
+// while conversational history lives in the folded thread.
+func (w *ConversationWorker) requestContextAndToolsForItemIDs(itemIDs []string) (*ContextResult, []ToolDefinition, error) {
 	if len(itemIDs) > 0 {
 		// Pin the requestId so only the reply to THIS request is accepted as
 		// this turn's context (handleRenderContextItemsResponse drops the rest).
@@ -131,10 +137,14 @@ func (w *ConversationWorker) buildLLMRequest(ctxResult *ContextResult, tools []T
 // it until a human engages them, so they are leaf workers by default: withholding
 // the tool (rather than refusing at execution) means the model never sees it at all.
 func (w *ConversationWorker) filterToolsForThread(tools []ToolDefinition) []ToolDefinition {
-	if w.thread.itemID == "" {
+	return w.filterToolsForThreadID(tools, w.thread.itemID)
+}
+
+func (w *ConversationWorker) filterToolsForThreadID(tools []ToolDefinition, threadID string) []ToolDefinition {
+	if threadID == "" {
 		return tools
 	}
-	threadYMap := w.doc.GetThreadYMap(w.thread.itemID)
+	threadYMap := w.doc.GetThreadYMap(threadID)
 	if threadYMap == nil {
 		return tools
 	}
@@ -244,6 +254,94 @@ func buildToolResultMap(item ConversationItem) map[string]any {
 	}
 }
 
+// toolResultWire renders one tool-action's tool_result message. A tool that has
+// not completed yields the isError placeholder; a completed tool projects through
+// buildToolResultMap (content + isError only — UI-only fields such as displayData
+// never reach the wire). It performs no logging or doc mutation, so snapshot
+// consumers (compaction) and the live turn share this one projection; the live
+// turn's WARNING/FATAL logging and resultFedTurn stamp wrap it in
+// appendToolActionResult.
+func toolResultWire(item ConversationItem) map[string]any {
+	if item.State != StateCompleted && item.State != StateCancelled {
+		return map[string]any{
+			"type":      "tool-result",
+			"toolUseId": item.ToolUseID,
+			"content":   pendingToolResultPlaceholder,
+			"isError":   true,
+		}
+	}
+	if rm := buildToolResultMap(item); rm != nil {
+		return rm
+	}
+	return map[string]any{
+		"type":      "tool-result",
+		"toolUseId": item.ToolUseID,
+		"content":   "ERROR: Invalid result JSON",
+		"isError":   true,
+	}
+}
+
+// itemWireMessages renders ONE conversation item to its wire message(s) using the
+// same allowlist projection as a live turn, so UI-only fields (displayData, raw
+// result blobs) never appear. It is the single per-item source of truth shared by
+// the live turn (buildMessagesFromItems delegates every non-tool-action case here)
+// and the compaction canonicalizer (canonicalCompactionRecords emits one record
+// per item, so the projection must stay per-item — the live turn layers
+// tool-action batching on top). Returns nil for items that contribute no message.
+func itemWireMessages(item ConversationItem) []map[string]any {
+	switch item.Type {
+	case ItemTypeUser:
+		return []map[string]any{buildUserMessageMap(item)}
+
+	case ItemTypeAssistant:
+		return []map[string]any{{"type": "assistant", "content": item.Content}}
+
+	case ItemTypeThinking:
+		// Replay the turn's chain-of-thought so the provider layer makes the
+		// per-vendor call on it (most drop it; Anthropic round-trips it via a
+		// providerData signature; DeepSeek's thinking mode REQUIRES it echoed back
+		// on a continued turn or the continuation 400s). Empty thinking emits
+		// nothing.
+		if item.Content == "" {
+			return nil
+		}
+		m := map[string]any{"type": "thinking", "content": item.Content}
+		if len(item.ProviderData) > 0 {
+			m["providerData"] = item.ProviderData
+		}
+		return []map[string]any{m}
+
+	case ItemTypeToolAction:
+		if item.ToolUseID == "" || item.ToolName == "" {
+			return nil
+		}
+		return []map[string]any{buildToolUseMap(item), toolResultWire(item)}
+
+	case ItemTypeThread:
+		return appendThreadMessages(nil, item)
+
+	case ItemTypeMetaToolResult:
+		var out []map[string]any
+		if item.ToolName != "" {
+			out = append(out, buildToolUseMap(item))
+		}
+		if item.Result != nil {
+			if rm := buildToolResultMap(item); rm != nil {
+				out = append(out, rm)
+			}
+		}
+		return out
+
+	case ItemTypeSystemReminder, ItemTypeGuidance:
+		// Strategy-injected meta-instruction (injectGuidance). Emitted verbatim;
+		// the provider maps it to the user role.
+		if item.Content != "" {
+			return []map[string]any{{"type": item.Type, "content": item.Content}}
+		}
+	}
+	return nil
+}
+
 // buildThreadResultMap returns a thread result as an assistant message, or nil if no result.
 func buildThreadResultMap(item ConversationItem) map[string]any {
 	result := threadResultString(item)
@@ -312,7 +410,7 @@ func appendThreadMessages(messages []map[string]any, item ConversationItem) []ma
 // as int: y-crdt's YMap.Set accepts Number (=int), and convertToYcrdt leaves an
 // int64 untyped for it (see its float64 case); resetRunningToolsForReattach
 // reads it back numerically.
-func (w *ConversationWorker) appendToolActionResult(messages []map[string]any, item ConversationItem) []map[string]any {
+func (w *ConversationWorker) appendToolActionResult(messages []map[string]any, item ConversationItem, stampPending bool) []map[string]any {
 	if item.State != StateCompleted && item.State != StateCancelled {
 		w.log.Error("WARNING: Tool %s has no result yet — emitting isError tool-result (auto-continue may have raced ahead of execution)", item.ToolUseID)
 		messages = append(messages, map[string]any{
@@ -321,9 +419,11 @@ func (w *ConversationWorker) appendToolActionResult(messages []map[string]any, i
 			"content":   pendingToolResultPlaceholder,
 			"isError":   true,
 		})
-		w.doc.UpdateToolActionFieldsRecursive(item.ToolUseID, map[string]any{
-			"resultFedTurn": int(w.docTurnCounter()),
-		})
+		if stampPending {
+			w.doc.UpdateToolActionFieldsRecursive(item.ToolUseID, map[string]any{
+				"resultFedTurn": int(w.docTurnCounter()),
+			})
+		}
 		return messages
 	}
 
@@ -344,101 +444,66 @@ func (w *ConversationWorker) appendToolActionResult(messages []map[string]any, i
 // buildMessages converts conversation items to LLM message format.
 // Uses provider.Message format with discriminated union via Type field.
 func (w *ConversationWorker) buildMessages(contexts []ItemContext) []map[string]any {
+	return w.buildMessagesFromItems(w.getTargetItems(), true)
+}
+
+// buildMessagesFromItems converts an explicit item snapshot to the same semantic
+// wire messages as a normal turn. Every per-item projection is shared with the
+// compaction canonicalizer through itemWireMessages; this method adds only the
+// live-turn concerns that a snapshot has no business doing: tool-action batching
+// (provider ordering) and, via appendToolActionResult, the incomplete-tool
+// recovery stamp. stampPending gates that stamp — snapshot consumers pass false.
+func (w *ConversationWorker) buildMessagesFromItems(items []ConversationItem, stampPending bool) []map[string]any {
 	var messages []map[string]any
 
-	items := w.getTargetItems()
-
 	// Index-based: the ItemTypeToolAction case consumes a run of same-turn
-	// tool-actions and advances i past them.
+	// tool-actions and advances i past them. Every other item type renders
+	// through the shared per-item projection.
 	for i := 0; i < len(items); i++ {
 		item := items[i]
-		switch item.Type {
-		case ItemTypeUser:
-			messages = append(messages, buildUserMessageMap(item))
+		if item.Type != ItemTypeToolAction {
+			messages = append(messages, itemWireMessages(item)...)
+			continue
+		}
 
-		case ItemTypeAssistant:
-			messages = append(messages, map[string]any{"type": "assistant", "content": item.Content})
+		// Batch the run of tool-actions belonging to the SAME turn and emit
+		// every tool_use before any tool_result. A turn with parallel tool
+		// calls stores them as consecutive tool-action items sharing one
+		// TransactionID (insertTargetMessage stamps currentTxnID on all items
+		// produced during a round-trip). Interleaving use/result/use/result
+		// makes transformMessages flush a separate assistant message per
+		// tool-result — and DeepSeek's thinking mode only carries
+		// reasoning_content on the FIRST, so a continued parallel-tool turn
+		// 400s with "The `reasoning_content` ... must be passed back to the
+		// API". Grouping by TransactionID (not mere adjacency) keeps genuinely
+		// SEQUENTIAL calls from separate turns as separate assistant messages,
+		// so we don't misrepresent them as one parallel turn for other
+		// providers. A tool-action with no TransactionID forms a singleton
+		// batch, i.e. the prior interleaved behavior.
+		end := i + 1
+		if item.TransactionID != "" {
+			for end < len(items) && items[end].Type == ItemTypeToolAction &&
+				items[end].TransactionID == item.TransactionID {
+				end++
+			}
+		}
+		batch := items[i:end]
+		i = end - 1 // -1: the loop's i++ advances past the batch.
 
-		case ItemTypeThinking:
-			// Replay the turn's chain-of-thought so the provider layer can make
-			// the per-vendor call on what to do with it. Most providers treat it
-			// as internal model state and drop it (gemini, the OpenAI Responses
-			// API, non-reasoning OpenAI-compatible models); Anthropic round-trips
-			// it via a signature carried in providerData. DeepSeek's thinking mode
-			// REQUIRES it be echoed back under `reasoning_content` on a continued
-			// (post-tool-call) turn — omit it and the continuation 400s with "The
-			// `reasoning_content` in the thinking mode must be passed back to the
-			// API". Without this case the reasoning never reaches the provider at
-			// all, so the DeepSeek EchoReasoningContent quirk has nothing to echo.
-			if item.Content != "" {
-				m := map[string]any{"type": "thinking", "content": item.Content}
-				if len(item.ProviderData) > 0 {
-					m["providerData"] = item.ProviderData
-				}
-				messages = append(messages, m)
+		// All tool_use messages first.
+		for _, ta := range batch {
+			if ta.ToolUseID == "" || ta.ToolName == "" {
+				w.log.Error("[Worker] WARNING: Tool action skipped - ToolUseID=%q, ToolName=%q", ta.ToolUseID, ta.ToolName)
+				continue
 			}
-
-		case ItemTypeToolAction:
-			// Batch the run of tool-actions belonging to the SAME turn and emit
-			// every tool_use before any tool_result. A turn with parallel tool
-			// calls stores them as consecutive tool-action items sharing one
-			// TransactionID (insertTargetMessage stamps currentTxnID on all items
-			// produced during a round-trip). Interleaving use/result/use/result
-			// makes transformMessages flush a separate assistant message per
-			// tool-result — and DeepSeek's thinking mode only carries
-			// reasoning_content on the FIRST, so a continued parallel-tool turn
-			// 400s with "The `reasoning_content` ... must be passed back to the
-			// API". Grouping by TransactionID (not mere adjacency) keeps genuinely
-			// SEQUENTIAL calls from separate turns as separate assistant messages,
-			// so we don't misrepresent them as one parallel turn for other
-			// providers. A tool-action with no TransactionID forms a singleton
-			// batch, i.e. the prior interleaved behavior.
-			end := i + 1
-			if item.TransactionID != "" {
-				for end < len(items) && items[end].Type == ItemTypeToolAction &&
-					items[end].TransactionID == item.TransactionID {
-					end++
-				}
+			messages = append(messages, buildToolUseMap(ta))
+		}
+		// Then all tool_result messages.
+		for _, ta := range batch {
+			if ta.ToolUseID == "" || ta.ToolName == "" {
+				continue
 			}
-			batch := items[i:end]
-			i = end - 1 // -1: the loop's i++ advances past the batch.
-
-			// All tool_use messages first.
-			for _, ta := range batch {
-				if ta.ToolUseID == "" || ta.ToolName == "" {
-					w.log.Error("[Worker] WARNING: Tool action skipped - ToolUseID=%q, ToolName=%q", ta.ToolUseID, ta.ToolName)
-					continue
-				}
-				messages = append(messages, buildToolUseMap(ta))
-			}
-			// Then all tool_result messages.
-			for _, ta := range batch {
-				if ta.ToolUseID == "" || ta.ToolName == "" {
-					continue
-				}
-				messages = w.appendToolActionResult(messages, ta)
-			}
-
-		case ItemTypeThread:
-			messages = appendThreadMessages(messages, item)
-
-		case ItemTypeMetaToolResult:
-			if item.ToolName != "" {
-				messages = append(messages, buildToolUseMap(item))
-			}
-			if item.Result != nil {
-				if rm := buildToolResultMap(item); rm != nil {
-					messages = append(messages, rm)
-				}
-			}
-
-		case ItemTypeSystemReminder, ItemTypeGuidance:
-			// Strategy-injected meta-instruction (injectGuidance). Emitted
-			// verbatim; the provider maps it to the user role. Mirrors the
-			// context-builder fallback, which passes both types through.
-			if item.Content != "" {
-				messages = append(messages, map[string]any{"type": item.Type, "content": item.Content})
-			}
+			messages = w.appendToolActionResult(messages, ta, stampPending)
 		}
 	}
 

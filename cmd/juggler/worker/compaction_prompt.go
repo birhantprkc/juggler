@@ -4,6 +4,8 @@
 
 package worker
 
+import "strings"
+
 // DefaultSummarizationPrompt is the canonical handoff-summary prompt that seeds
 // a folded compaction thread. Go owns this text; the worker ships it to the
 // browser in the "ready" bootstrap so both sides summarize from one source. The
@@ -24,3 +26,10 @@ Then write the summary with these sections:
 7. Open issues — anything unresolved or uncertain.
 
 Be precise and technical within each section; compress prose, never facts. Then call return_result, passing the summary (sections 1–7, not the <analysis>) in its "result" argument.`
+
+const summarizationToolInstruction = `Then call return_result, passing the summary (sections 1–7, not the <analysis>) in its "result" argument.`
+const summarizationTextInstruction = `Return only the summary (sections 1–7, not the <analysis>) as plain text.`
+
+func plainTextSummarizationPrompt() string {
+	return strings.Replace(DefaultSummarizationPrompt, summarizationToolInstruction, summarizationTextInstruction, 1)
+}
