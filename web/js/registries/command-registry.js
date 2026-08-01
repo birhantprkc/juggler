@@ -54,6 +54,13 @@ class CommandRegistry extends BaseRegistry {
    * @returns {Promise<void>}
    */
   async init() {
+    // Guard the whole override, not just super.init(): user commands are a
+    // second registration source outside super's early-return, so a repeat
+    // init() (e.g. the slash-command handler's own init) would re-run
+    // _registerUserCommands() against an un-cleared item map and every command
+    // would collide with its own first registration. reset() clears
+    // this.initialized, so hot-reload still re-runs everything.
+    if (this.initialized) return;
     await super.init();
     await this._registerUserCommands();
     this._buildAliasMap();

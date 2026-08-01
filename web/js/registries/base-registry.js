@@ -332,7 +332,9 @@ class BaseRegistry {
     }
     const id = /** @type {any} */ (ItemClass).MANIFEST.id;
     if (this.items.has(id) || this._disabledItems.has(id)) {
-      const reason = `"${id}" shadows an existing command; rename it`;
+      const reason =
+        `A command named /${id} already exists (built-in or from an extension), ` +
+        `so your custom /${id} was skipped. Rename your command to a name that isn't taken.`;
       this._failedModules.set(modulePath || id, reason);
       return { registered: false, id, reason };
     }
