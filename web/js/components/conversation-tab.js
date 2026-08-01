@@ -595,6 +595,19 @@ class ConversationTab extends HTMLElement {
 
   /** Mark this tab as hidden (not visible). */
   setHidden() {
+    // Flush every column's live draft to the model before parking the tab. The
+    // draft is otherwise only persisted by the keystroke DEBOUNCE, so leaving a
+    // tab within that window would strand the last-typed characters in the live
+    // textarea while the persisted draft lagged behind — any later restore would
+    // then paint stale/empty text over what was typed. Flushing here keeps the
+    // stored draft exactly current, so a re-activation restore (or reload, or a
+    // second viewer) always sees the real text.
+    this.querySelectorAll('input-box').forEach((box) => {
+      if (typeof (/** @type {any} */ (box).flushDraft) === 'function') {
+        /** @type {any} */ (box).flushDraft();
+      }
+    });
+
     // Relinquish focus while the tab is still rendered. WebKit keeps focus on
     // a textarea whose ancestor becomes display:none, so a hidden tab would
     // keep swallowing keystrokes into its now-invisible input box.

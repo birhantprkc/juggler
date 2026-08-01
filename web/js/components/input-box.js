@@ -239,6 +239,15 @@ class InputBox extends HTMLElement {
     /** @type {import('../model/message-thread.js').MessageThread|null} @private */
     this._messageThread = null;
 
+    // Logical key ("conversationId::threadItemId") of the thread whose draft was
+    // last restored into the textarea. Restoring writes `textarea.value`, which
+    // wipes the browser's native undo stack — so the restore must be STICKY on
+    // this key, not on `_messageThread` object/field state: a re-bind to the
+    // same logical thread (which happens on every doc-driven rebuild, and after
+    // a transient loss of the binding) must be a no-op, never a re-restore.
+    /** @type {string|null} @private */
+    this._restoredThreadKey = null;
+
     // Staged image attachments for the next send (AssetRefs from uploadAsset).
     // Populated by the paste/drag/picker UI (added in a later step); forwarded
     // on the send-message event and cleared after each dispatch.
@@ -1368,17 +1377,28 @@ class InputBox extends HTMLElement {
    * @param {import('../model/message-thread.js').MessageThread} messageThread
    */
   setMessageThread(messageThread) {
-    // Compare LOGICAL identity (conversation + thread item), not object
-    // identity: a sub-thread column rebuilds a fresh MessageThread wrapper for
-    // the SAME underlying thread on every doc update (new items, status
-    // changes). Object-identity here made isNewThread true on every such
-    // rebuild, re-running the draft-restore below and resetting the textarea to
-    // the last debounce-saved draft — clobbering the user's in-flight typing.
-    // Restore the draft only on a genuine switch to a different thread.
-    const prev = this._messageThread;
-    const isNewThread = !prev
-      || prev.conversationId !== messageThread.conversationId
-      || prev.threadItemId !== messageThread.threadItemId;
+    // Key on LOGICAL identity (conversation + thread item), and make the guard
+    // STICKY via `_restoredThreadKey`: a sub-thread column rebuilds a fresh
+    // MessageThread wrapper for the SAME underlying thread on every doc update,
+    // and the binding can transiently reset — either would make an
+    // object/field-identity check think the thread is new, re-run the restore
+    // below, and reset the textarea to the last debounce-saved draft, clobbering
+    // in-flight typing AND wiping the native undo stack. Restoring only when the
+    // logical key genuinely changes means a same-thread re-bind never touches
+    // the textarea. Restore the draft only on a real switch to a different thread.
+    const key = `${messageThread.conversationId}::${messageThread.threadItemId ?? 'root'}`;
+    const isNewThread = this._restoredThreadKey !== key;
+
+    // Switching away from a previously-bound thread: flush its live draft first,
+    // so in-flight typing isn't stranded by the keystroke debounce (which may
+    // not have fired). Guarded — the outgoing thread's container may already be
+    // gone (a closed/deleted sub-thread), and losing the flush there is benign.
+    if (isNewThread && this._messageThread && this._restoredThreadKey !== null) {
+      try {
+        this.flushDraft();
+      } catch { /* outgoing thread torn down — nothing to preserve */ }
+    }
+
     this._messageThread = messageThread;
     this.threadItemId = messageThread.threadItemId;
 
@@ -1393,6 +1413,9 @@ class InputBox extends HTMLElement {
     // as one unit (they were persisted together). Stage the attachments
     // without re-persisting (we're reading from the model, not changing it).
     if (isNewThread) {
+      // Mark this thread's draft as restored BEFORE the writes below, so any
+      // re-entrant/rebuild bind that lands mid-restore sees the key and skips.
+      this._restoredThreadKey = key;
       const draft = messageThread.draft;
       this._stagePendingAttachments(draft.attachments);
       this._stagePendingTextFiles(draft.textFiles);
