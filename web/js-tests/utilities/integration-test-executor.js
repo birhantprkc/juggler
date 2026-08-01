@@ -128,6 +128,7 @@ import { runTests as runChimeRecoveryTests } from '../unit-tests/chime-recovery-
 import { runTests as runKeyShortcutManagerTests } from '../unit-tests/key-shortcut-manager-test.js';
 import { runTests as runHoldToCycleTests } from '../unit-tests/hold-to-cycle-test.js';
 import { runTests as runRecentModelsTests } from '../unit-tests/recent-models-test.js';
+import { runTests as runUsageStatsCacheTests } from '../unit-tests/usage-stats-cache-test.js';
 import { runTests as runThinkingCyclerTests } from '../unit-tests/thinking-cycler-test.js';
 import { runTests as runThinkingChipTests } from '../unit-tests/thinking-chip-test.js';
 import { runTests as runModelSelectorHudTests } from '../unit-tests/model-selector-hud-test.js';
@@ -248,6 +249,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:key-shortcut-manager', run: runKeyShortcutManagerTests },
   { name: 'unit:hold-to-cycle', run: runHoldToCycleTests },
   { name: 'unit:recent-models', run: runRecentModelsTests },
+  { name: 'unit:usage-stats-cache', run: runUsageStatsCacheTests },
   { name: 'unit:thinking-cycler', run: runThinkingCyclerTests },
   { name: 'unit:thinking-chip', run: runThinkingChipTests },
   { name: 'unit:model-selector-hud', run: runModelSelectorHudTests },

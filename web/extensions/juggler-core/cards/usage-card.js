@@ -20,7 +20,12 @@ import usageStatsCache from '../../../js/services/usage-stats-cache.js';
 import { escapeHtml } from '../../../sdk/lib/html.js';
 import { formatPlan, renderUsageRow } from '../../../js/utils/usage-renderer.js';
 
-const REFRESH_MS = 30_000;
+// Re-render/retry tick. Live network fetches are governed by the usage cache's
+// own per-provider debounce (aligned to the upstream ~5-minute refresh), so this
+// timer only needs to be frequent enough to pick up a fresh snapshot shortly
+// after that window clears and to keep the "resets in …" text current — every
+// tick before then is a cheap debounced no-op.
+const REFRESH_MS = 60_000;
 
 /**
  * Return the configured provider name for the session's active conversation.

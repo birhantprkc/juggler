@@ -31,8 +31,15 @@
  * @property {UsageStat[]} stats - Per-window usage signals
  */
 
-/** Minimum gap between live fetches per provider; repeated opens within this window reuse the cache. */
-const REFRESH_INTERVAL_MS = 10_000;
+/**
+ * Minimum gap between live fetches per provider; repeated opens within this
+ * window reuse the cache. Aligned with the upstream usage endpoints' own refresh
+ * cadence (the ChatGPT/Codex `/usage` backend only recomputes its windows every
+ * few minutes and serves an empty/placeholder payload to polls in between), so
+ * we never hammer a rate-limited source. Empty responses that do slip through are
+ * absorbed by the last-known-good retention in refresh().
+ */
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 /** @type {Map<string, UsageStats|null>} provider name → latest snapshot (null = fetched, none reported). */
 const _byProvider = new Map();
@@ -90,9 +97,22 @@ const usageStatsCache = {
         /** @type {UsageStats[]} */
         const list = Array.isArray(data.usage) ? data.usage : [];
         const snapshot = list.find(u => u && u.provider === providerName) || null;
-        _byProvider.set(providerName, snapshot);
+        // Retain the last known-good snapshot when this fetch came back empty.
+        // The upstream usage endpoint refreshes only every few minutes and hands
+        // an empty/placeholder payload to polls in between; blanking the cached
+        // meters on those responses is what makes the display flip-flop between
+        // real numbers and "no usage data". Overwrite only when the new snapshot
+        // actually carries stats, or when we have no good value to preserve (first
+        // load — store the empty result so hasData() flips true and the UI can
+        // show its own empty state).
+        const nextHasStats = !!(snapshot && Array.isArray(snapshot.stats) && snapshot.stats.length > 0);
+        const prev = _byProvider.get(providerName);
+        const prevHasStats = !!(prev && Array.isArray(prev.stats) && prev.stats.length > 0);
+        if (nextHasStats || !prevHasStats) {
+          _byProvider.set(providerName, snapshot);
+        }
         _lastFetch.set(providerName, Date.now());
-        return snapshot;
+        return _byProvider.get(providerName) || null;
       } catch (err) {
         console.warn('[usageStatsCache] refresh failed:', err);
         return _byProvider.get(providerName) || null;
