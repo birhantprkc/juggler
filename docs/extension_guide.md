@@ -264,6 +264,19 @@ live in **`web/sdk/context-item.js`**. Good templates: `glob-context-item.js`
 `write-file-context-item.js` (approval + diff), `search-context-item.js` (many
 params, truncation).
 
+**Per-turn side-effects — `static onTurnEnd(ctx)`:** to do work once at the end of
+every turn — retain a memory, ping an external service, checkpoint state — add a
+static `onTurnEnd(ctx)`. It runs in the engine each time the root conversation
+goes idle, once per completed turn, for **every** context-item type that defines
+it — including turns where your tool was never called. It's a *type*-level hook
+(context items are per-tool-call, so there's no per-conversation instance), so
+keep conversation-scoped state in session/conversation metadata keyed off
+`ctx.conversation.id`. It's fire-and-forget and **side-effects only** — read the
+transcript via `ctx.messageThread` and do external work; to feed something back
+into the next turn use `getContextText()` instead (the read-in half to
+`onTurnEnd`'s write-out). Forward `ctx.signal` to async work so a slow run bails
+when the next turn supersedes it. A throw is logged and isolated.
+
 ### Strategy — control the agentic loop
 
 **How strategies actually run:** in a normal install the **Go worker owns the

@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Claude Code usage polls no longer load user-level plugins or hooks, so unrelated tools don't fire on every quota refresh
+- Context-item extensions can implement `static onTurnEnd()` to run a side-effect (e.g. retain a memory) once per turn
 
 ## [0.5.2] - 2026-08-01
 

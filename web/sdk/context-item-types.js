@@ -290,5 +290,21 @@
  *   failed child's result.
  */
 
+/**
+ * Context passed to the static `onTurnEnd(ctx)` hook. Runs in the engine (no
+ * DOM), once per completed turn when the root conversation goes idle.
+ * @typedef {object} TurnEndContext
+ * @property {any} conversation - The conversation that just went idle. Use
+ *   `conversation.id` as the stable anchor for external per-conversation state.
+ * @property {any} messageThread - The root message thread — the transcript to
+ *   read/distil (the same object a strategy hook sees as `this.messageThread`).
+ * @property {any} session - The owning session, for durable `getMetadata` /
+ *   `patchMetadata` state.
+ * @property {number} turnIndex - The completed-turn counter for this idle
+ *   transition, so a hook can process only what is new since its last run.
+ * @property {AbortSignal} [signal] - Aborts when a later turn's hook supersedes
+ *   this run; forward it to async work so a slow run bails out.
+ */
+
 // no runtime exports; file is imported for typedefs only
 export default {};

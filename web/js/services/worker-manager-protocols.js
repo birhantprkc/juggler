@@ -16,6 +16,7 @@
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import strategyRegistry from '../registries/strategy-registry.js';
+import contextItemRegistry from '../registries/context-item-registry.js';
 import actionExecutor from './action-executor.js';
 import {
   handleNewToolAction,
@@ -355,6 +356,108 @@ async function runStrategyHookGuarded(strategy, hook, previousStrategyId, conver
     await strategy?.[hook]?.(previousStrategyId || null);
   } catch (err) {
     console.error(`[worker-manager] strategy ${hook} threw for ${conversationId}:`, err);
+  }
+}
+
+// ── run-context-hook (worker-driven; engine-only) ────────────────────
+
+/**
+ * Per-conversation abort scope for the in-flight context-turn hook run. Keyed by
+ * conversationId; the newest run's controller supersedes and aborts the previous
+ * one so overlapping turns don't pile up. Module-level: the engine is one
+ * process and this flow only ever runs there.
+ * @type {Map<string, AbortController>}
+ */
+const _contextHookAborters = new Map();
+
+/**
+ * Run a context-item lifecycle hook (onTurnEnd) across every registered
+ * context-item TYPE, on the engine's loaded copy of the conversation, on behalf
+ * of the worker. Dispatched from the worker's root-idle chokepoint (one call per
+ * completed turn), this is the context-item counterpart to the onWorkerIdle
+ * strategy hook.
+ *
+ * Unlike a strategy hook — which runs the conversation's one active strategy
+ * instance — this fans out over the registry and invokes each type's STATIC hook.
+ * That is deliberate: context items are per-tool-call (there is no canonical
+ * per-conversation instance), and the hook must fire even for a type that
+ * produced no items this turn (a memory extension retaining every turn is the
+ * motivating case). A type opts in purely by defining `static onTurnEnd`; types
+ * that don't are skipped, so the fan-out is free unless something opts in.
+ *
+ * Fire-and-forget: onTurnEnd performs external side-effects (not doc writes), so
+ * there is nothing to capture or reply. Each type's call is isolated so one
+ * throwing hook can neither wedge the turn nor stop the others.
+ *
+ * Engine-only, like all session-wide flow — hard-asserted here.
+ * @param {any} wm - WorkerManager instance
+ * @param {string} conversationId
+ * @param {any} data - {hook, turnIndex}
+ * @returns {Promise<void>} Resolves once every type's hook has run
+ */
+export async function handleRunContextHook(wm, conversationId, data) {
+  if (!isEngine()) {
+    throw new Error('run-context-hook received in a viewer — context-item flow runs only in the engine');
+  }
+  const hook = /** @type {string} */ (data.hook);
+  const conversation = await ensureEngineConversationLoaded(wm, conversationId);
+  if (!conversation) return;
+  flushPendingSyncs(conversation);
+
+  // A context hook is fire-and-forget and can still be running when the next
+  // turn's hook arrives. Open a fresh abort scope for this run and abort the
+  // prior one for this conversation, so turn N+1 supersedes turn N: a slow
+  // retain can't pile up or keep running against superseded state. A hook opts
+  // into this by forwarding ctx.signal to its own async work.
+  _contextHookAborters.get(conversationId)?.abort();
+  const aborter = new AbortController();
+  _contextHookAborters.set(conversationId, aborter);
+
+  const ctx = {
+    conversation,
+    messageThread: conversation.rootMessageThread,
+    session: conversation.session,
+    turnIndex: /** @type {number} */ (data.turnIndex),
+    signal: aborter.signal,
+  };
+
+  // Fan out over every registered type concurrently, each isolated: a type that
+  // hangs or throws can't block or break the others (runContextHookGuarded never
+  // rejects). Types without the hook are skipped, so the fan-out is free unless
+  // an extension opts in.
+  const runs = [];
+  for (const { class: ItemClass } of contextItemRegistry.getAll()) {
+    const Typed = /** @type {any} */ (ItemClass);
+    if (typeof Typed[hook] !== 'function') continue;
+    runs.push(runContextHookGuarded(Typed, hook, ctx, conversationId));
+  }
+  try {
+    await Promise.all(runs);
+  } finally {
+    // Only clear if we're still the current scope — a superseding turn may have
+    // already replaced us, and it owns cleanup of its own aborter.
+    if (_contextHookAborters.get(conversationId) === aborter) {
+      _contextHookAborters.delete(conversationId);
+    }
+  }
+}
+
+/**
+ * Run one context-item type's static lifecycle hook, swallowing (and logging)
+ * any error it throws so a misbehaving hook can neither wedge the worker's turn
+ * nor stop the remaining types' hooks from running.
+ * @param {any} ItemClass - The context-item class (static hook holder)
+ * @param {string} hook - Hook name ('onTurnEnd')
+ * @param {any} ctx - The TurnEndContext passed to the hook
+ * @param {string} conversationId - For the error log only
+ * @returns {Promise<void>}
+ */
+async function runContextHookGuarded(ItemClass, hook, ctx, conversationId) {
+  try {
+    await ItemClass[hook](ctx);
+  } catch (err) {
+    const id = ItemClass.MANIFEST?.id || ItemClass.name;
+    console.error(`[worker-manager] context-item ${id} ${hook} threw for ${conversationId}:`, err);
   }
 }
 

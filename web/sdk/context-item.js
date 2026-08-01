@@ -150,6 +150,7 @@ export const INTERACTION_KIND = {
  * | `createContextText()`  | Optional  | Custom LLM context text                    |
  * | `mergeOrReplace()`     | Optional  | Handle duplicate requests                  |
  * | `getBadgeOptions()`    | Optional  | Custom badge color/icon                    |
+ * | `static onTurnEnd(ctx)`| Optional  | Per-turn side-effect hook (e.g. retain memory) |
  *
  * ## Execution Contexts
  *
@@ -172,6 +173,7 @@ export const INTERACTION_KIND = {
  * | `createContextText()`| shared   | Generates LLM context in either instance    |
  * | `getSummary()`       | shared   | Formats results for LLM and UI              |
  * | `getApprovalConfig()`| shared   | Builds approval dialog data                 |
+ * | `static onTurnEnd()` | engine   | No DOM — fires once per turn at root idle    |
  *
  * The `METHOD_CONTEXT` static property declares these assignments and can be
  * overridden by subclasses that add custom context-exclusive methods.
@@ -959,6 +961,44 @@ class ContextItem {
   static mergeOrReplace(newParams, existingItems, context) {
     void newParams, existingItems, context;
     return null;
+  }
+
+  /**
+   * Turn-end lifecycle hook — fires once, in the engine, each time the root
+   * conversation goes idle (one call per completed turn).
+   *
+   * This is a **static** hook, and that is deliberate. Context items are
+   * per-tool-call — there is no canonical per-conversation instance to call an
+   * instance method on — and the hook must fire even on turns where this type
+   * produced no items at all (the motivating case is a memory extension that
+   * retains a summary of every turn, whether or not its own tool was used). So
+   * the framework invokes it once per registered TYPE per turn, regardless of
+   * item activity. A type opts in purely by defining this method; types that
+   * don't are skipped, so the per-turn fan-out costs nothing unless you opt in.
+   *
+   * Keep conversation-scoped state (e.g. a stable id for an external memory
+   * document) in session/conversation metadata keyed off `ctx.conversation.id`
+   * — that survives viewer reload and worker re-exec, unlike instance state.
+   *
+   * Contract:
+   *   - **Side-effects only.** Do external work here (call an op, POST to a
+   *     server). Do NOT write conversation/doc items — the worker is the single
+   *     doc writer at this boundary. To feed content back INTO the next turn,
+   *     use {@link getContextText} (it runs every render); onTurnEnd is the
+   *     write-out half, getContextText the read-in half.
+   *   - **Fire-and-forget.** Nothing awaits the result. It can still be running
+   *     when the next turn starts; that next run aborts `ctx.signal`, so forward
+   *     the signal to your async work to bail out of a superseded run.
+   *   - **Isolated.** A throw or rejection is logged and swallowed — it can
+   *     neither wedge the turn nor stop other types' hooks.
+   *
+   * [Context: engine — no DOM]
+   * @static
+   * @param {import('./context-item-types.js').TurnEndContext} ctx - Turn-end context
+   * @returns {void|Promise<void>} Nothing (the result is discarded)
+   */
+  static onTurnEnd(ctx) {
+    void ctx;
   }
 
   // ============================================================================

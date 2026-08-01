@@ -915,6 +915,16 @@ class WorkerManager {
         });
         break;
 
+      case 'run-context-hook':
+        // Worker-driven context-item lifecycle hook (onTurnEnd), fired once per
+        // completed turn at the same root-idle moment as run-strategy-hook
+        // (engine-only). Fire-and-forget; guard the promise so a viewer-role
+        // assertion or load failure surfaces instead of an unhandled rejection.
+        protocols.handleRunContextHook(this, conversationId, data).catch((err) => {
+          console.error('[WorkerManager] run-context-hook failed:', err);
+        });
+        break;
+
       case 'evaluate-tool': {
         // Worker-commanded tool evaluation (engine-only): run handleNewToolAction
         // for the given tool-action by id. No ack — the worker re-drives from doc

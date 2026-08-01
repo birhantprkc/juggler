@@ -436,6 +436,21 @@ type GuidanceItem struct {
 	Source  string `json:"source,omitempty"`
 }
 
+// RunContextHookRequest asks the engine to run a context-item lifecycle hook
+// (onTurnEnd) across EVERY registered context-item type. Dispatched from the
+// worker's root-idle chokepoint alongside the onWorkerIdle strategy hook, it is
+// fire-and-forget: the engine invokes each type's static hook and there is
+// nothing to wait for (onTurnEnd performs side-effects, not doc writes). Unlike
+// a strategy hook it carries no strategy id — it fans out over the registry, not
+// the conversation's one active strategy. Targeted at the engine only
+// (sendToEngine), never broadcast, so each hook runs exactly once with no
+// per-viewer ownership election.
+type RunContextHookRequest struct {
+	Type      string `json:"type"`      // "run-context-hook"
+	Hook      string `json:"hook"`      // "onTurnEnd"
+	TurnIndex int    `json:"turnIndex"` // completedTurns counter at this idle transition
+}
+
 // SubthreadSpec is the seed for a delegated child thread, produced by the
 // engine's buildSubthreadSpec for a delegatesToSubthread tool. Goal/Prompt/
 // ResultSpec map directly onto CreateThreadOptions.

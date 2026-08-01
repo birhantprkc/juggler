@@ -151,6 +151,12 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 			// post-idle work (e.g. plan execution) in the engine. Fire-and-
 			// forget: its effects re-enter via doc sync + reconcile.
 			w.dispatchWorkerIdleHook()
+
+			// Same idle moment, one call per completed turn: let every
+			// context-item type run its onTurnEnd hook in the engine (e.g. an
+			// extension retaining a memory of the turn). Fire-and-forget; the
+			// hook's effects are external side-effects, not doc writes.
+			w.dispatchContextTurnHook()
 		} else {
 			w.drainReconcile()
 		}

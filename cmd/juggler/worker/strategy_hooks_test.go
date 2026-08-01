@@ -225,6 +225,86 @@ func TestWorkerActivatesSubThreadStrategy(t *testing.T) {
 	}
 }
 
+// TestWorkerDispatchesContextTurnHook proves the worker fires the context-item
+// onTurnEnd hook at the same root-idle chokepoint as onWorkerIdle: once per
+// completed turn, fire-and-forget (no requestId), carrying the just-incremented
+// turn counter. It shares dispatchWorkerIdleHook's exact call site, so it
+// inherits that point's gating (root idle only — never a sub-thread drain or a
+// compaction fold).
+func TestWorkerDispatchesContextTurnHook(t *testing.T) {
+	w := NewConversationWorker("conv-ctxhook", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+
+	initPayload, _ := json.Marshal(InitMessage{
+		Type:         "init",
+		Conversation: SerializedConversation{ID: "conv-ctxhook"},
+		Config:       WorkerConfig{ProjectPath: t.TempDir()},
+	})
+	w.handleInit(initPayload)
+
+	type ctxHookRec struct {
+		hook      string
+		turnIndex int
+		reqID     string
+	}
+	ch := make(chan ctxHookRec, 16)
+	w.SetCallback("engine", func(b []byte) {
+		var m struct {
+			Type      string `json:"type"`
+			Hook      string `json:"hook"`
+			TurnIndex int    `json:"turnIndex"`
+			RequestID string `json:"requestId"`
+		}
+		if json.Unmarshal(b, &m) != nil || m.Type != "run-context-hook" {
+			return
+		}
+		ch <- ctxHookRec{hook: m.Hook, turnIndex: m.TurnIndex, reqID: m.RequestID}
+	})
+	w.SetEngineClientID("engine")
+
+	// Feed context/tools so the turn can build, mirroring newStrategyHookHarness.
+	go func() {
+		ctxResp, _ := json.Marshal(map[string]any{
+			"type": "render-context-items-response", "systemPrompt": "sys", "contexts": []any{},
+		})
+		toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+		for {
+			select {
+			case <-w.done:
+				return
+			case w.contextResultChan <- ctxResp:
+			}
+			select {
+			case <-w.done:
+				return
+			case w.toolsResultChan <- toolsResp:
+			}
+		}
+	}()
+
+	w.setMockResponses([]MockResponse{{
+		Blocks:     []LLMResponseBlock{{Type: "text", Content: "done"}},
+		StopReason: "end_turn",
+	}})
+
+	w.runStrategyLoop("build a feature", false)
+
+	select {
+	case rec := <-ch:
+		if rec.hook != "onTurnEnd" {
+			t.Errorf("context hook should be onTurnEnd, got %q", rec.hook)
+		}
+		if rec.reqID != "" {
+			t.Errorf("onTurnEnd is fire-and-forget and must carry no requestId, got %q", rec.reqID)
+		}
+		if rec.turnIndex < 1 {
+			t.Errorf("onTurnEnd should carry the completed-turn counter (>=1), got %d", rec.turnIndex)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not dispatch a run-context-hook at root idle")
+	}
+}
+
 // TestStrategyActivationDefersWhenEngineSilent proves the worker does NOT record
 // the activation if the engine never answers (torn down / not loaded), so a
 // later turn with a healthy engine retries rather than permanently swallowing

@@ -145,6 +145,29 @@ func (w *ConversationWorker) dispatchWorkerIdleHook() {
 	w.dispatchStrategyHook("", "onWorkerIdle", strategyID, "")
 }
 
+// dispatchContextTurnHook fires the context-item onTurnEnd hook on the engine
+// when the root conversation goes idle — once per completed turn. Dispatched
+// from the same idle chokepoint as dispatchWorkerIdleHook, so it inherits that
+// point's gating (it fires only on a genuine root idle, never on a sub-thread
+// drain or a compaction fold). Fire-and-forget: the engine fans the hook out
+// over every registered context-item type and each hook's effects are external
+// side-effects (e.g. writing to a memory server), so there is nothing to wait
+// for. Carries the just-incremented turn counter so a hook can distil only the
+// content that is new since its last run.
+func (w *ConversationWorker) dispatchContextTurnHook() {
+	data, err := json.Marshal(RunContextHookRequest{
+		Type:      "run-context-hook",
+		Hook:      "onTurnEnd",
+		TurnIndex: int(w.turnCounter),
+	})
+	if err != nil {
+		w.log.Error("[worker] marshal run-context-hook: %v", err)
+		return
+	}
+	w.tape.Record("context-hook-dispatch", map[string]any{"hook": "onTurnEnd", "turn": w.turnCounter})
+	w.callbacks.sendToEngine(data)
+}
+
 // dispatchCancelStrategyExecution tells the engine to abort any in-flight
 // engine-driven strategy execution for this conversation (the plan driver's
 // AbortController). Fire-and-forget; targeted at the engine only.

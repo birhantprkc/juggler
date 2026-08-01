@@ -85,6 +85,7 @@ import { runTests as runExtensionsDisabledTests } from '../unit-tests/extensions
 import { runTests as runStrategyInjectionTests } from '../unit-tests/strategy-injection-test.js';
 import { runTests as runObserverDecouplingTests } from '../unit-tests/observer-decoupling-test.js';
 import { runTests as runToolPendingHookTests } from '../unit-tests/tool-pending-hook-test.js';
+import { runTests as runContextTurnHookTests } from '../unit-tests/context-turn-hook-test.js';
 import { runTests as runAutoApproveReviewerTests } from '../unit-tests/auto-approve-reviewer-test.js';
 import { runTests as runAutoApproveStrategyTests } from '../unit-tests/auto-approve-strategy-test.js';
 import { runTests as runYoloStrategyUnitTests } from '../unit-tests/yolo-strategy-test.js';
@@ -289,6 +290,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:strategy-injection', run: runStrategyInjectionTests },
   { name: 'unit:observer-decoupling', run: runObserverDecouplingTests },
   { name: 'unit:tool-pending-hook', run: runToolPendingHookTests },
+  { name: 'unit:context-turn-hook', run: runContextTurnHookTests },
   { name: 'unit:auto-approve-reviewer', run: runAutoApproveReviewerTests },
   { name: 'unit:auto-approve-strategy', run: runAutoApproveStrategyTests },
   { name: 'unit:yolo-strategy', run: runYoloStrategyUnitTests },

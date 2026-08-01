@@ -190,6 +190,7 @@ Live invariants (each maintained by a Yjs observer):
 | Root thread's strategy follows `metadata.currentStrategyId`. | `setupYjsObservers` metadata observer | metadata observe |
 | Context window fetches follow `metadata.modelConfig`. | `setupYjsObservers` metadata observer → `_fetchContextWindow` | metadata observe |
 | When the root conversation goes idle, the strategy's `onWorkerIdle()` runs once in the engine. | Worker dispatches `run-strategy-hook` to the engine at its idle chokepoint; the engine runs the hook on its loaded copy. No per-viewer election. | worker idle transition |
+| At the same idle moment, every context-item type's static `onTurnEnd()` runs once in the engine (one call per completed turn). | Worker dispatches `run-context-hook` from the same idle chokepoint; the engine fans it out over `contextItemRegistry` (types without the hook are skipped). Fire-and-forget, side-effects only. No per-viewer election. | worker idle transition |
 | On a live strategy switch, the strategy's `onActivate()` runs once in the engine before the next turn. | Worker compares `currentStrategyId` vs `activatedStrategyId` at turn-start, dispatches `run-strategy-hook`, and blocks until the injected guidance syncs back. | worker turn-start |
 
 **Engine vs viewer:** several reactions are gated to one side. The engine
