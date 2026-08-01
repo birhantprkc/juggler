@@ -16,12 +16,12 @@ import strategyRegistry from '../../registries/strategy-registry.js';
 import { getDefaultStrategyId, setDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID } from '../../services/default-strategy.js';
 
 /**
- * "Provider settings" tab (id `default-model`): the single default-model picker
- * plus the global stream-idle-timeout field. Seeded from the shared loadConfig()
- * fetch; the picker persists immediately via PUT /api/default-model and the
- * timeout via PUT /api/config.
+ * "Defaults" tab (id `defaults`): the default-model and cheap-model pickers, the
+ * global stream-idle-timeout field, and the new-task defaults. Seeded from the
+ * shared loadConfig() fetch; the picker persists immediately via PUT
+ * /api/default-model and the timeout via PUT /api/config.
  */
-export class DefaultModelTab {
+export class DefaultsTab {
   /**
    * @param {HTMLElement} host - The settings-panel element (DOM query scope).
    */
@@ -50,7 +50,7 @@ export class DefaultModelTab {
     this.defaultModel = data.defaultModel;
     if (data.cheapModel) this.cheapModel = data.cheapModel;
     if (renderFields) {
-      this.renderGlobalProviderSettings();
+      this.renderGlobalSettings();
       this.renderDefaultModelField();
       this.renderCheapModelField();
       this.renderNewTaskDefaults();
@@ -172,17 +172,16 @@ export class DefaultModelTab {
   }
 
   /**
-   * Render global provider settings that apply across every provider, shown
-   * as a section on the Provider settings tab. Currently just the stream idle
-   * timeout: the
-   * window a streaming provider waits for the next event before declaring the
-   * connection dead ("stream stalled: no data for 3m0s"). Raising it helps
-   * gateways whose cold starts exceed the 180s default. Persists to
-   * credentials.json via PUT /api/config; the server reads it live.
+   * Render global settings that apply across every provider, shown as a section
+   * on the Defaults tab. Currently just the stream idle timeout: the window a
+   * streaming provider waits for the next event before declaring the connection
+   * dead ("stream stalled: no data for 3m0s"). Raising it helps gateways whose
+   * cold starts exceed the 180s default. Persists to credentials.json via PUT
+   * /api/config; the server reads it live.
    * @private
    */
-  renderGlobalProviderSettings() {
-    const container = this.host.querySelector('#global-provider-settings');
+  renderGlobalSettings() {
+    const container = this.host.querySelector('#global-settings');
     if (!container) return;
     container.innerHTML = '';
 

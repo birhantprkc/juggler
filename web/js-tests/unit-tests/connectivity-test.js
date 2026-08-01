@@ -105,8 +105,8 @@ export async function runTests(_ctx) {
   await run('no registered WAN modes -> no WAN section at all', async () => {
     const el = mountWith({ ...baseIdle(), wanModes: [] });
     try {
-      assert(!el.querySelector('#connectivity-form .connectivity-wan'),
-        'WAN section must be absent when the build registers no modes');
+      assert(!el.querySelector('#connectivity-form .settings-section-heading'),
+        'WAN section heading must be absent when the build registers no modes');
       const text = el.querySelector('#connectivity-form').textContent || '';
       assert(!/WAN access/.test(text), `no WAN heading expected; got: ${text}`);
     } finally {

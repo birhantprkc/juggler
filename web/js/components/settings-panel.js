@@ -11,9 +11,8 @@
 
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { ProvidersTab } from './settings/providers-tab.js';
-import { DefaultModelTab } from './settings/default-model-tab.js';
+import { DefaultsTab } from './settings/defaults-tab.js';
 import { ConnectivityTab } from './settings/connectivity-tab.js';
-import { NetworkTab } from './settings/network-tab.js';
 import { NotificationsTab } from './settings/notifications-tab.js';
 import { ShortcutsTab } from './settings/shortcuts-tab.js';
 import { LogsTab } from './settings/logs-tab.js';
@@ -73,9 +72,8 @@ class SettingsPanel extends HTMLElement {
     /** @type {Record<string, SettingsTabController>} @private */
     this._tabs = {
       providers: new ProvidersTab(this),
-      'default-model': new DefaultModelTab(this),
+      defaults: new DefaultsTab(this),
       connectivity: new ConnectivityTab(this),
-      network: new NetworkTab(this),
       mcp: new McpTab(this),
       acp: new AcpTab(this),
       skills: new SkillsTab(this),
@@ -123,9 +121,8 @@ class SettingsPanel extends HTMLElement {
                 <nav class="settings-tabs">
                     <div class="settings-tabs-scroll">
                         <button class="settings-tab active" data-tab="providers">Provider API Keys</button>
-                        <button class="settings-tab" data-tab="default-model">Provider settings</button>
+                        <button class="settings-tab" data-tab="defaults">Defaults</button>
                         <button class="settings-tab" data-tab="connectivity">Connectivity</button>
-                        <button class="settings-tab" data-tab="network">Network</button>
                         <button class="settings-tab" data-tab="extensions">Extensions</button>
                         <button class="settings-tab" data-tab="skills">Skills</button>
                         <button class="settings-tab" data-tab="mcp">MCP servers</button>
@@ -153,7 +150,7 @@ class SettingsPanel extends HTMLElement {
                         </div>
                     </section>
 
-                    <section class="settings-tab-content" id="tab-default-model">
+                    <section class="settings-tab-content" id="tab-defaults">
                         <div class="settings-section-heading">Default model</div>
                         <div class="settings-form" id="default-model-form">
                             <div id="default-model-field-container"></div>
@@ -164,7 +161,7 @@ class SettingsPanel extends HTMLElement {
                             <div id="cheap-model-field-container"></div>
                         </div>
 
-                        <div class="settings-form" id="global-provider-settings"></div>
+                        <div class="settings-form" id="global-settings"></div>
 
                         <div class="settings-section-heading">New task defaults</div>
                         <div class="settings-form" id="new-task-defaults-form"></div>
@@ -206,14 +203,8 @@ class SettingsPanel extends HTMLElement {
                         </p>
                         <div class="settings-form" id="connectivity-form">
                         </div>
-                    </section>
-
-                    <section class="settings-tab-content" id="tab-network">
-                        <p class="settings-description">
-                            Route Juggler's outbound connections through a proxy. Local
-                            addresses (localhost / 127.0.0.1) always bypass the proxy.
-                        </p>
-                        <div class="settings-form" id="network-form"></div>
+                        <div class="settings-section-heading">Proxy Settings</div>
+                        <div class="settings-form" id="proxy-form"></div>
                     </section>
 
                     <section class="settings-tab-content" id="tab-notifications">
@@ -334,9 +325,11 @@ class SettingsPanel extends HTMLElement {
     if (!tabName) return;
 
     // Back-compat: the Extensions tab was historically the "context-items" tab
-    // (it hosts <plugin-catalog>). Accept the old id so any saved/deep-linked
-    // caller still lands on the right tab.
+    // (it hosts <plugin-catalog>), and the Defaults tab was the "default-model"
+    // tab. Accept the old ids so any saved/deep-linked caller still lands on the
+    // right tab.
     if (tabName === 'context-items') tabName = 'extensions';
+    if (tabName === 'default-model') tabName = 'defaults';
 
     const prevTab = this.currentTab;
     this.currentTab = tabName;
@@ -475,11 +468,11 @@ class SettingsPanel extends HTMLElement {
       );
       // Keep the tab's current value if a response isn't ok (matches the old
       // element-level fields, which only updated on a successful fetch).
-      let defaultModel = /** @type {any} */ (this._tabs['default-model']).defaultModel;
+      let defaultModel = /** @type {any} */ (this._tabs.defaults).defaultModel;
       if (defaultModelResponse.ok) {
         defaultModel = await defaultModelResponse.json();
       }
-      let cheapModel = /** @type {any} */ (this._tabs['default-model']).cheapModel;
+      let cheapModel = /** @type {any} */ (this._tabs.defaults).cheapModel;
       if (cheapModelResponse.ok) {
         cheapModel = await cheapModelResponse.json();
       }

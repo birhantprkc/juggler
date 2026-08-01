@@ -1006,7 +1006,7 @@ class ModelSelector extends HTMLElement {
       if (item.id === 'set-default-model-item') {
         this.closeDropdown();
         if (/** @type {any} */(window).openSettings) {
-          /** @type {any} */(window).openSettings('default-model');
+          /** @type {any} */(window).openSettings('defaults');
         }
         return;
       }

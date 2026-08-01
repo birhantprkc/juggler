@@ -5002,10 +5002,10 @@ settings-panel .settings-section-heading:first-child {
     margin-top: 0;
 }
 
-/* Global provider settings sit below the per-provider list, so their heading is
-   the first child of its own container and would otherwise hit the reset above
-   despite not being at the top of the panel. Restore the standard top gap. */
-settings-panel #global-provider-settings .settings-section-heading {
+/* The global settings section's heading is the first child of its own container
+   and would otherwise hit the reset above despite not being at the top of the
+   panel. Restore the standard top gap. */
+settings-panel #global-settings .settings-section-heading {
     margin-top: 1.25rem;
 }
 
@@ -5158,10 +5158,12 @@ settings-panel .provider-active-badge svg {
     flex-shrink: 0;
 }
 
-/* Default-model tab: the single model picker. The Notifications chime menus
-   (Pattern/Sound) reuse the same native-select styling. */
+/* Defaults tab: the model pickers. The Notifications chime menus
+   (Pattern/Sound) and the Connectivity proxy-mode picker reuse the same
+   native-select styling. */
 settings-panel .default-model-select,
-settings-panel .chime-select {
+settings-panel .chime-select,
+settings-panel .proxy-mode-select {
     width: 100%;
     padding: 0.625rem 2rem 0.625rem 0.875rem;
     background: var(--bg-primary);
@@ -5179,12 +5181,14 @@ settings-panel .chime-select {
 }
 
 settings-panel .default-model-select:hover,
-settings-panel .chime-select:hover {
+settings-panel .chime-select:hover,
+settings-panel .proxy-mode-select:hover {
     border-color: var(--text-secondary);
 }
 
 settings-panel .default-model-select:focus,
-settings-panel .chime-select:focus {
+settings-panel .chime-select:focus,
+settings-panel .proxy-mode-select:focus {
     outline: none;
     border-color: var(--accent-blue);
     box-shadow: 0 0 0 0.1875rem rgb(88 166 255 / 10%);
@@ -5352,21 +5356,43 @@ settings-panel .toggle-description {
 
 /* Connectivity tab */
 
-/* Separate the WAN group from the LAN row above it; the heading then governs
-   only its own gap to the first mode box, so the section spaces evenly. */
-settings-panel .connectivity-wan {
-    margin-top: 1.5rem;
-}
-
-settings-panel .connectivity-wan-heading {
-    margin-bottom: 0.625rem;
-    color: var(--text-primary);
-    font-size: 0.9375rem;
-    font-weight: 600;
-}
-
 settings-panel .connectivity-wan-error {
     color: var(--accent-red, #f85149);
+}
+
+/* The proxy-mode picker reuses the shared settings-panel native-select styling
+   (.default-model-select / .chime-select). The Manual URL field mirrors the
+   .mcp-input look: a bordered text control on the panel's primary surface. */
+settings-panel .proxy-url-input {
+    padding: 0.4375rem 0.625rem;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.375rem;
+    font-family: var(--font-ui);
+    font-size: 0.8125rem;
+}
+
+settings-panel .proxy-url-input:focus-visible {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 0.1875rem rgb(88 166 255 / 10%);
+}
+
+/* Manual URL field: revealed only when Manual is selected (JS toggles [hidden]),
+   stacked under the picker with its inline status/error line. */
+settings-panel .proxy-url-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+settings-panel .proxy-url-row[hidden] {
+    display: none;
+}
+
+settings-panel .proxy-status:empty {
+    display: none;
 }
 
 /* "Start on launch" toggle: a compact labelled checkbox sharing the control

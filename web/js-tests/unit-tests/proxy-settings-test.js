@@ -3,15 +3,16 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Network tab — proxy settings UI tests.
+ * Outbound-proxy box — settings UI tests.
  *
- * The Network tab reads the persisted proxy config from GET /api/settings
- * (network.proxy), reflects the mode on a 3-way radio, enables the URL field
- * only for Manual, and PUTs changes. These cases drive the component against a
- * stubbed backend to pin: the radio reflects the loaded mode, switching to a
- * plain mode PUTs it, Manual persists only once a valid URL is committed, and an
- * invalid URL surfaces an error without a PUT.
- * @module unit-tests/network-settings-test
+ * The proxy box lives at the bottom of the Connectivity tab. It reads the
+ * persisted proxy config from GET /api/settings (network.proxy), reflects the
+ * mode on a 3-way <select>, reveals the URL field only for Manual, and PUTs
+ * changes. These cases drive the component against a stubbed backend to pin: the
+ * select reflects the loaded mode, switching to a plain mode PUTs it, Manual
+ * persists only once a valid URL is committed, and an invalid URL surfaces an
+ * error without a PUT.
+ * @module unit-tests/proxy-settings-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
@@ -92,7 +93,8 @@ export async function runTests(_ctx) {
   };
 
   /**
-   * Mount a settings-panel wired to a fake backend, run body, then clean up.
+   * Mount a settings-panel wired to a fake backend, show the Connectivity tab
+   * (which loads the proxy box), run body, then clean up.
    * @param {{mode?: string, url?: string}} opts
    * @param {(el: any, backend: ReturnType<typeof installFetch>) => Promise<void>} body
    */
@@ -101,6 +103,9 @@ export async function runTests(_ctx) {
     const el = /** @type {any} */ (document.createElement('settings-panel'));
     document.body.appendChild(el);
     try {
+      // The proxy box loads its settings when the Connectivity tab is shown.
+      el._tabs.connectivity.show();
+      await settle();
       await body(el, backend);
     } finally {
       el.remove();
@@ -108,38 +113,32 @@ export async function runTests(_ctx) {
     }
   };
 
-  const radios = (el) => [...el.querySelectorAll('.network-mode-radio')];
+  const modeSelect = (el) => el.querySelector('#proxy-mode');
 
-  await run('radio reflects the loaded proxy mode from /api/settings', async () => {
+  await run('select reflects the loaded proxy mode from /api/settings', async () => {
     await withPanel({ mode: 'manual', url: 'http://127.0.0.1:7890' }, async (el) => {
-      el._tabs.network.show();
-      await settle();
-      const rs = radios(el);
-      assert(rs.length === 3, `three modes; got ${rs.length}`);
-      const checked = rs.find((r) => r.checked);
-      assert(checked && checked.value === 'manual', `manual is selected; got ${checked && checked.value}`);
-      const urlInput = el.querySelector('#network-proxy-url');
+      const select = modeSelect(el);
+      assert(select && [...select.options].length === 3, `three modes; got ${select && select.options.length}`);
+      assert(select.value === 'manual', `manual is selected; got ${select.value}`);
+      const urlRow = el.querySelector('#proxy-url-row');
+      assert(urlRow && !urlRow.hidden, 'URL row is visible in manual mode');
+      const urlInput = el.querySelector('#proxy-url');
       assert(urlInput && urlInput.value === 'http://127.0.0.1:7890', 'URL field shows the loaded URL');
-      assert(urlInput && !urlInput.disabled, 'URL field is enabled in manual mode');
     });
   });
 
-  await run('URL field is disabled for non-manual modes', async () => {
+  await run('URL row is hidden for non-manual modes', async () => {
     await withPanel({ mode: 'system' }, async (el) => {
-      el._tabs.network.show();
-      await settle();
-      const urlInput = el.querySelector('#network-proxy-url');
-      assert(urlInput && urlInput.disabled, 'URL field disabled in system mode');
+      const urlRow = el.querySelector('#proxy-url-row');
+      assert(urlRow && urlRow.hidden, 'URL row hidden in system mode');
     });
   });
 
   await run('switching to Direct PUTs the new mode', async () => {
     await withPanel({ mode: 'system' }, async (el, backend) => {
-      el._tabs.network.show();
-      await settle();
-      const none = radios(el).find((r) => r.value === 'none');
-      assert(none, 'none radio present');
-      none.click();
+      const select = modeSelect(el);
+      select.value = 'none';
+      select.dispatchEvent(new Event('change'));
       await settle();
       const put = backend.calls.find((c) => c.url === '/api/settings' && c.method === 'PUT');
       assert(put, 'a PUT /api/settings was issued');
@@ -150,25 +149,26 @@ export async function runTests(_ctx) {
 
   await run('selecting Manual with no URL does not PUT and prompts for a URL', async () => {
     await withPanel({ mode: 'system' }, async (el, backend) => {
-      el._tabs.network.show();
-      await settle();
-      const manual = radios(el).find((r) => r.value === 'manual');
-      manual.click();
+      const select = modeSelect(el);
+      select.value = 'manual';
+      select.dispatchEvent(new Event('change'));
       await settle();
       const put = backend.calls.find((c) => c.url === '/api/settings' && c.method === 'PUT');
       assert(!put, 'no PUT issued for manual without a URL');
-      const statusText = el.querySelector('#network-status').textContent || '';
+      const urlRow = el.querySelector('#proxy-url-row');
+      assert(urlRow && !urlRow.hidden, 'URL row revealed for manual');
+      const statusText = el.querySelector('#proxy-status').textContent || '';
       assert(statusText.length > 0, 'a prompt for the URL is shown');
     });
   });
 
   await run('Manual with a valid URL persists on commit', async () => {
     await withPanel({ mode: 'system' }, async (el, backend) => {
-      el._tabs.network.show();
+      const select = modeSelect(el);
+      select.value = 'manual';
+      select.dispatchEvent(new Event('change'));
       await settle();
-      radios(el).find((r) => r.value === 'manual').click();
-      await settle();
-      const urlInput = el.querySelector('#network-proxy-url');
+      const urlInput = el.querySelector('#proxy-url');
       urlInput.value = 'http://proxy.example:8080';
       urlInput.dispatchEvent(new Event('blur'));
       await settle();
@@ -181,17 +181,17 @@ export async function runTests(_ctx) {
 
   await run('an invalid manual URL surfaces an error and is not persisted', async () => {
     await withPanel({ mode: 'system' }, async (el, backend) => {
-      el._tabs.network.show();
+      const select = modeSelect(el);
+      select.value = 'manual';
+      select.dispatchEvent(new Event('change'));
       await settle();
-      radios(el).find((r) => r.value === 'manual').click();
-      await settle();
-      const urlInput = el.querySelector('#network-proxy-url');
+      const urlInput = el.querySelector('#proxy-url');
       urlInput.value = 'not a url';
       urlInput.dispatchEvent(new Event('blur'));
       await settle();
       const put = backend.calls.find((c) => c.method === 'PUT' && c.body.network.proxy.url === 'not a url');
       assert(!put, 'no PUT for an invalid URL');
-      const statusText = el.querySelector('#network-status').textContent || '';
+      const statusText = el.querySelector('#proxy-status').textContent || '';
       assert(/invalid/i.test(statusText), `an error is shown; got ${JSON.stringify(statusText)}`);
     });
   });

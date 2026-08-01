@@ -12,6 +12,7 @@
 import { formatTimeAgo } from '../../utils/format.js';
 import { createCopyButton } from '../../../sdk/lib/copy-button.js';
 import wsService from '../../services/websocket.js';
+import { ProxySettings } from './proxy-settings.js';
 
 /** Polling interval (ms) for refreshing the Connectivity tab while it's open. */
 const CONNECTIVITY_POLL_MS = 2000;
@@ -112,6 +113,13 @@ export class ConnectivityTab {
   constructor(host) {
     /** @type {HTMLElement} @private */
     this.host = host;
+    /**
+     * The outbound-proxy box shown at the bottom of this tab. It renders into
+     * its own `#proxy-form` container, so the connectivity poll never touches
+     * it; this tab just forwards render()/load() to it.
+     * @type {ProxySettings} @private
+     */
+    this._proxy = new ProxySettings(host);
     /** @type {number|undefined} @private */
     this._connectivityPollId = undefined;
     /** @type {{lanEnabled: boolean, lanURLs: string[], tunnelEnabled: boolean, tunnelURL: string, tunnelMode: string, tunnelRelay: boolean, wanModes: WANMode[], clientCount: number, clients: ClientDescriptor[]}} @private */
@@ -152,6 +160,11 @@ export class ConnectivityTab {
     wsService.on('clients-changed', this._onClientsChanged);
   }
 
+  /** Build the static DOM the shell owns for this tab (the proxy box). */
+  render() {
+    this._proxy.render();
+  }
+
   /**
    * Receive the shared loadConfig() payload: store the connectivity state and
    * (on a full render) build the fields.
@@ -170,6 +183,9 @@ export class ConnectivityTab {
   /** Tab became visible: refresh and arm the background poll (once loaded). */
   show() {
     this._visible = true;
+    // The proxy box fetches its own settings and doesn't depend on the shared
+    // loadConfig(), so load it regardless of whether this tab has been seeded.
+    this._proxy.load();
     if (!this._loaded) return;
     void this._loadLaunchPrefs();
     this.refreshConnectivity();
@@ -553,15 +569,18 @@ export class ConnectivityTab {
    * and a Stop button. Driven purely from connectivity state — never from
    * optimistic local toggles.
    * @param {{tunnelEnabled: boolean, tunnelURL: string, tunnelMode: string, wanModes: WANMode[]}} c - Connectivity state
-   * @returns {HTMLElement} The section element to append to the connectivity form.
+   * @returns {DocumentFragment} The heading + mode blocks to append to the connectivity form.
    * @private
    */
   _buildWANAccessRow(c) {
-    const section = document.createElement('div');
-    section.className = 'connectivity-wan';
+    // A flat fragment (not a wrapper div) so the heading and mode boxes are
+    // direct children of #connectivity-form — matching the Defaults tab, where a
+    // .settings-section-heading is a sibling of its .provider-field rows. That
+    // lets the shared section-heading margins space this section like the others.
+    const section = document.createDocumentFragment();
 
     const heading = document.createElement('div');
-    heading.className = 'connectivity-wan-heading';
+    heading.className = 'settings-section-heading';
     heading.textContent = 'WAN access';
     section.appendChild(heading);
 
