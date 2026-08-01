@@ -12,18 +12,35 @@
  * A mode resolves to a concrete *theme* ('light' or 'dark') for painting.
  *
  * On load the mode is resolved by precedence: this project's saved session mode
- * (window.__sessionThemeMode, server-injected, authoritative) > a resolved
- * ?theme= seed inherited from the window that opened this one > this window's
- * localStorage > 'system'. localStorage sits below the session/seed because every
- * project's server reuses the same origin, so a bare localStorage value may
- * belong to a DIFFERENT project — which is exactly why theme is stored in the
- * session, not left to localStorage alone.
+ * (window.__sessionThemeMode, server-injected, authoritative) > this window's own
+ * mode from a prior load (sessionStorage, survives reload) > a resolved ?theme=
+ * seed inherited from the window that opened this one > this window's localStorage
+ * > 'system'. localStorage sits below the session/seed because every project's
+ * server reuses the same origin, so a bare localStorage value may belong to a
+ * DIFFERENT project — which is exactly why theme is stored in the session, not
+ * left to localStorage alone.
+ *
+ * The per-window sessionStorage layer sits above the seed so a project switch
+ * keeps 'system'/'auto'. Switching projects reloads the page with the same URL,
+ * so the baked ?theme= seed (a resolved concrete 'light'/'dark') is still present
+ * but stale; without a per-window record it would outrank the window's real
+ * 'system' mode and get persisted into the switched-in project, silently pinning
+ * it to a fixed theme. sessionStorage is empty in a genuinely fresh window, so
+ * the seed still wins there (its intended anti-flash handoff).
  */
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
 import { onDocumentReady } from './document-ready.js';
 
 const THEME_KEY = 'juggler-theme';
+
+/**
+ * Per-window record of the resolved mode, in sessionStorage. Survives a same-URL
+ * reload (a project switch reloads the page) but is empty in a genuinely new
+ * window, which is exactly what lets a switch preserve 'system' while a fresh
+ * window still honours the inherited ?theme= seed. See the module doc comment.
+ */
+const WINDOW_MODE_KEY = 'juggler-theme-window';
 
 /** Concrete themes the document can be painted as. */
 const THEMES = {
@@ -131,6 +148,36 @@ function seedTheme() {
     return t === THEMES.LIGHT || t === THEMES.DARK ? t : null;
   } catch (_e) {
     return null;
+  }
+}
+
+/**
+ * This window's own resolved mode from a prior load in the same window, read from
+ * sessionStorage. Non-null only after a same-window reload (e.g. a project
+ * switch), and null in a brand-new window — so it can outrank a stale ?theme=
+ * seed on a switch without stealing a genuine fresh-window hand-off.
+ * @returns {string|null} One of MODES, or null.
+ * @private
+ */
+function windowMode() {
+  try {
+    const m = sessionStorage.getItem(WINDOW_MODE_KEY);
+    return isMode(m) ? m : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Record this window's resolved mode for the next same-window load (best-effort).
+ * @param {string} mode - One of MODES.
+ * @private
+ */
+function rememberWindowMode(mode) {
+  try {
+    sessionStorage.setItem(WINDOW_MODE_KEY, mode);
+  } catch (_e) {
+    /* best-effort — disabled/private storage just loses the per-window record */
   }
 }
 
@@ -248,23 +295,33 @@ function applyTheme(theme, mode) {
 function initTheme() {
   // Resolve the initial mode by precedence: this project's saved session mode
   // (authoritative — a bare localStorage value may be another project's, since
-  // every project's server reuses the same origin) > a resolved ?theme= seed
-  // inherited from the window that opened this one > this window's localStorage >
-  // follow the OS. A ?theme= seed is a *resolved* theme, so it also pins a
-  // concrete mode — intended for the hand-off to a brand-new window.
+  // every project's server reuses the same origin) > this window's own mode from
+  // a prior load (sessionStorage — set on a same-window reload, so a project
+  // switch keeps 'system' instead of getting pinned by the stale seed) > a
+  // resolved ?theme= seed inherited from the window that opened this one > this
+  // window's localStorage > follow the OS. A ?theme= seed is a *resolved* theme,
+  // so it also pins a concrete mode — intended for the hand-off to a brand-new
+  // window, which has no sessionStorage record to outrank it.
   const session = sessionMode();
+  const windowPref = windowMode();
   const seed = seedTheme();
   const stored = localStorage.getItem(THEME_KEY);
-  const mode = session ?? seed ?? (isMode(stored) ? stored : null) ?? MODES.SYSTEM;
+  const mode = session ?? windowPref ?? seed
+    ?? (isMode(stored) ? stored : null) ?? MODES.SYSTEM;
 
-  // Cache the resolved mode so getMode()/cycleTheme() start from it this window.
+  // Cache the resolved mode so getMode()/cycleTheme() start from it this window,
+  // and record it per-window so the next same-window load (e.g. a project switch)
+  // resolves from the window's real mode rather than the stale ?theme= seed.
   localStorage.setItem(THEME_KEY, mode);
+  rememberWindowMode(mode);
   applyTheme(mode === MODES.SYSTEM ? systemTheme() : mode, mode);
 
-  // If we fell through to an inherited seed (the session held no value of its
-  // own), persist it so the project remembers this theme next open. No-ops
-  // server-side for a no-project window.
-  if (session === null && seed !== null) {
+  // If the project session held no mode of its own but this window has one (from
+  // its own prior load, or an inherited seed), persist it so the project
+  // remembers this theme next open. This stores the window's *actual* mode —
+  // 'system' included — so a project switch no longer overwrites 'auto' with a
+  // fixed light/dark. No-ops server-side for a no-project window.
+  if (session === null && (windowPref !== null || seed !== null)) {
     persistThemeToSession(mode);
   }
 
