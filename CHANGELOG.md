@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-01
+
 - File search tools (grep, glob, tree) now respect nested .gitignore files, with a per-conversation toggle to search everything
 - Added a todo checklist tool for frictionless progress tracking; plan is now reserved for approval-gated proposals
 - Large pastes collapse to inline expandable placeholders in the composer
