@@ -718,7 +718,7 @@ func compactionResponseText(response *LLMResponse) string {
 			Result string `json:"result"`
 		}
 		if json.Unmarshal(block.Input, &input) == nil && strings.TrimSpace(input.Result) != "" {
-			return input.Result
+			return stripAnalysisScratchpad(input.Result)
 		}
 	}
 	var text strings.Builder
@@ -727,7 +727,31 @@ func compactionResponseText(response *LLMResponse) string {
 			text.WriteString(block.Content)
 		}
 	}
-	return text.String()
+	return stripAnalysisScratchpad(text.String())
+}
+
+// stripAnalysisScratchpad removes the <analysis> scratchpad the summarization
+// prompt asks for when a model leaves it in the summary it returns. On the
+// tool path the scratchpad belongs to the discarded assistant prose, and a
+// plain-text final asks for sections 1–7 only — but models sometimes prepend
+// the block anyway, or wrap the entire summary in the tags. A leading closed
+// block is dropped; if nothing follows it, its contents ARE the summary, so
+// the wrapper is unwrapped instead. An unclosed opening tag is treated as a
+// wrapper. Text not starting with the tag passes through untouched.
+func stripAnalysisScratchpad(text string) string {
+	const openTag, closeTag = "<analysis>", "</analysis>"
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, openTag) {
+		return text
+	}
+	rest := trimmed[len(openTag):]
+	if idx := strings.Index(rest, closeTag); idx >= 0 {
+		if after := strings.TrimSpace(rest[idx+len(closeTag):]); after != "" {
+			return after
+		}
+		return strings.TrimSpace(rest[:idx])
+	}
+	return strings.TrimSpace(rest)
 }
 
 func boundedCompactionCanReduce(completedPasses int) bool {

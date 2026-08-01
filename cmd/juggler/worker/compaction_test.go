@@ -276,10 +276,10 @@ func TestCanonicalCompactionRecordsFailClosedOnMarshalError(t *testing.T) {
 	}
 }
 
-// TestPlainTextSummarizationPromptSwapsInstruction guards the strings.Replace in
-// plainTextSummarizationPrompt: if DefaultSummarizationPrompt's final sentence is
-// ever reworded the replace silently no-ops, leaving the folded probe (which runs
-// tool-free) instructing a return_result call it can never make. Fail loudly.
+// TestPlainTextSummarizationPromptSwapsInstruction pins the composed prompt
+// variants: both share summarizationPromptBody and differ only in the final
+// instruction, so the folded probe (which runs tool-free) is never instructed
+// to make a return_result call it can't.
 func TestPlainTextSummarizationPromptSwapsInstruction(t *testing.T) {
 	plain := plainTextSummarizationPrompt()
 	if plain == DefaultSummarizationPrompt {
@@ -559,11 +559,34 @@ func TestCompactionResponseTextReturnResultPrecedenceAndFallback(t *testing.T) {
 			{Type: provider.ContentBlockTypeThinking, Content: "ignored"},
 			{Type: provider.ContentBlockTypeText, Content: "second"},
 		}, want: "first second"},
+		{name: "leading scratchpad stripped from text", blocks: []LLMResponseBlock{
+			{Type: provider.ContentBlockTypeText, Content: "<analysis>walked the log</analysis>\n\n1. Intent"},
+		}, want: "1. Intent"},
+		{name: "scratchpad stripped from tool result", blocks: []LLMResponseBlock{
+			{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"<analysis>notes</analysis>\n1. Intent"}`)},
+		}, want: "1. Intent"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if got := compactionResponseText(&LLMResponse{Blocks: test.blocks}); got != test.want {
 				t.Fatalf("compactionResponseText = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestStripAnalysisScratchpad(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{name: "no tag passes through", in: "1. Intent\n2. Files", want: "1. Intent\n2. Files"},
+		{name: "leading block dropped", in: "<analysis>chronological walk</analysis>\n\n1. Intent", want: "1. Intent"},
+		{name: "whole summary wrapped is unwrapped", in: "  <analysis>\n1. Intent\n2. Files\n</analysis>  ", want: "1. Intent\n2. Files"},
+		{name: "unclosed tag is a wrapper", in: "<analysis>\n1. Intent\n2. Files", want: "1. Intent\n2. Files"},
+		{name: "tag mid-text untouched", in: "1. Intent mentions <analysis> literally", want: "1. Intent mentions <analysis> literally"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := stripAnalysisScratchpad(test.in); got != test.want {
+				t.Fatalf("stripAnalysisScratchpad = %q, want %q", got, test.want)
 			}
 		})
 	}

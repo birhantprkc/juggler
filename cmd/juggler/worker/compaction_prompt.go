@@ -4,14 +4,12 @@
 
 package worker
 
-import "strings"
-
-// DefaultSummarizationPrompt is the canonical handoff-summary prompt that seeds
-// a folded compaction thread. Go owns this text; the worker ships it to the
-// browser in the "ready" bootstrap so both sides summarize from one source. The
-// browser keeps a byte-identical fallback in web/js/utils/compaction-utils.js
-// (defaultSummarizationPrompt), guarded against drift by a parity test.
-const DefaultSummarizationPrompt = `You are creating a handoff summary of the conversation so far. Another instance of yourself will use ONLY this summary (plus the most recent messages) to continue the work seamlessly, so completeness matters more than brevity — never drop information you cannot reconstruct later.
+// The summarization prompt is one shared body with two interchangeable final
+// instructions: the tool-bearing variant asks for the summary via the
+// return_result tool, the plain-text variant asks for it as the response text.
+// Composing both from summarizationPromptBody keeps them identical everywhere
+// but that final sentence.
+const summarizationPromptBody = `You are creating a handoff summary of the conversation so far. Another instance of yourself will use ONLY this summary (plus the most recent messages) to continue the work seamlessly, so completeness matters more than brevity — never drop information you cannot reconstruct later.
 
 First, in <analysis> tags, walk the conversation chronologically: note each user request, each significant action you took, every error hit and how it was resolved, and what is in flight right now. This is your scratchpad.
 
@@ -25,11 +23,20 @@ Then write the summary with these sections:
 6. Next step — the immediate next action, which must follow directly from the most recent work above. If continuing an interrupted task, quote the relevant request verbatim. Do not introduce new direction the user didn't ask for.
 7. Open issues — anything unresolved or uncertain.
 
-Be precise and technical within each section; compress prose, never facts. Then call return_result, passing the summary (sections 1–7, not the <analysis>) in its "result" argument.`
+Be precise and technical within each section; compress prose, never facts. `
 
 const summarizationToolInstruction = `Then call return_result, passing the summary (sections 1–7, not the <analysis>) in its "result" argument.`
 const summarizationTextInstruction = `Return only the summary (sections 1–7, not the <analysis>) as plain text.`
 
+// DefaultSummarizationPrompt is the canonical handoff-summary prompt that seeds
+// a folded compaction thread. Go owns this text; the worker ships it to the
+// browser in the "ready" bootstrap so both sides summarize from one source. The
+// browser keeps a byte-identical fallback in web/js/utils/compaction-utils.js
+// (defaultSummarizationPrompt), guarded against drift by a parity test.
+const DefaultSummarizationPrompt = summarizationPromptBody + summarizationToolInstruction
+
+// plainTextSummarizationPrompt is the tool-free variant for calls that carry no
+// return_result tool, so the model is never instructed to make a call it can't.
 func plainTextSummarizationPrompt() string {
-	return strings.Replace(DefaultSummarizationPrompt, summarizationToolInstruction, summarizationTextInstruction, 1)
+	return summarizationPromptBody + summarizationTextInstruction
 }
