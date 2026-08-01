@@ -1363,7 +1363,18 @@ class Conversation {
       // scheduled send firing on a hidden thread doesn't wipe the visible
       // column's in-progress draft. (A command that sets a draft — 'draft' run
       // mode's setDraft side effect — runs after this, so it isn't clobbered.)
+      //
+      // Only clear when the box's current text IS this command — i.e. the user
+      // typed `/foo` and submitted it, so the box holds exactly what we're about
+      // to consume. When the command was invoked another way (picked from the
+      // slash/commands menu, a scheduled or programmatic send) the box instead
+      // holds an unrelated in-progress draft; clearInput() would destroy it
+      // non-undoably (setText('') wipes the native undo stack), so leave it be.
+      const boxText = (inputBox && typeof (/** @type {any} */ (inputBox).getText) === 'function')
+        ? /** @type {any} */ (inputBox).getText().trim()
+        : '';
       if (/^\/[a-zA-Z]/.test(userMessage)
+          && boxText === userMessage.trim()
           && inputBox && typeof (/** @type {any} */ (inputBox).clearInput) === 'function'
           && boundBefore === this._targetThreadId(messageThread, threadItemId)) {
         /** @type {any} */ (inputBox).clearInput();
