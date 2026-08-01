@@ -414,6 +414,8 @@ class PermissionControls extends HTMLElement {
     this._activeSections = [];
     /** @type {Set<string>} */
     const seenIds = new Set();
+    /** @type {Array<{section: any, pluginId: string}>} */
+    const collected = [];
     for (const { id, class: Klass } of contextItemRegistry.getAll()) {
       try {
         const section = /** @type {any} */ (Klass).getPermissionSection?.(mt);
@@ -425,24 +427,35 @@ class PermissionControls extends HTMLElement {
           continue;
         }
         seenIds.add(section.id);
-        const wrapper = document.createElement('div');
-        wrapper.className = 'plugin-section-wrapper';
-        wrapper.dataset.sectionId = section.id;
-        if (section.title) {
-          const heading = document.createElement('h4');
-          heading.className = 'plugin-section-heading';
-          heading.textContent = section.title;
-          wrapper.appendChild(heading);
-        }
-        wrapper.appendChild(section.element);
-        sections.appendChild(wrapper);
-        this._activeSections.push(section);
+        collected.push({ section, pluginId: id });
       } catch (e) {
         // A misbehaving plugin must not bring down the whole popup.
         // Log once; the user still sees the rest of the UI.
 
         console.warn(`permission-controls: plugin ${id} threw in getPermissionSection`, e);
       }
+    }
+
+    // Registry order is the default; an optional numeric `section.order`
+    // (default 0) lets a plugin float its card up or down — e.g. the rarely
+    // used .gitignore toggle uses a negative order to sit right under the
+    // allowed-paths section. Array.sort is stable, so equal orders keep
+    // registry order.
+    collected.sort((a, b) => (a.section.order ?? 0) - (b.section.order ?? 0));
+
+    for (const { section } of collected) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'plugin-section-wrapper';
+      wrapper.dataset.sectionId = section.id;
+      if (section.title) {
+        const heading = document.createElement('h4');
+        heading.className = 'plugin-section-heading';
+        heading.textContent = section.title;
+        wrapper.appendChild(heading);
+      }
+      wrapper.appendChild(section.element);
+      sections.appendChild(wrapper);
+      this._activeSections.push(section);
     }
   }
 

@@ -7,7 +7,8 @@ import ContextItem from 'juggler/context-item';
 import { grep } from 'juggler/ops';
 import { formatPathForStatus } from 'juggler/item-utils';
 import { smartTruncate } from 'juggler/ui';
-import { toolInputPath, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags } from './path-approval.js';
+import { toolInputPath, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags, gitignoreDisabled } from './path-approval.js';
+import { buildGitignoreSection } from './search-scope-section.js';
 
 /**
  * @typedef {object} GrepParams
@@ -132,12 +133,16 @@ class SearchContextItem extends ContextItem {
         offset: {
           type: 'number',
           description: 'Skip first N entries before applying head_limit.'
+        },
+        noIgnore: {
+          type: 'boolean',
+          description: 'Search files ignored by .gitignore too. Default false.'
         }
       },
       required: ['pattern']
     };
 
-    const description = 'A powerful search tool built on ripgrep. Supports full regex syntax, file filtering with glob or type, and multiple output modes.';
+    const description = 'A powerful search tool built on ripgrep. Supports full regex syntax, file filtering with glob or type, and multiple output modes. Results respect nested .gitignore files by default; pass noIgnore to include ignored files.';
 
     return [
       {
@@ -147,6 +152,17 @@ class SearchContextItem extends ContextItem {
         input_schema: inputSchema
       }
     ];
+  }
+
+  /**
+   * Contribute the headerless .gitignore toggle (respect .gitignore) to the
+   * permission popup. Deduplicated with Glob's identical section by the shared `id`.
+   * @override
+   * @param {import('../../../js/model/message-thread.js').MessageThread} messageThread - Owning thread
+   * @returns {{id: string, order: number, element: HTMLElement, dispose: () => void}} Permission section
+   */
+  static getPermissionSection(messageThread) {
+    return buildGitignoreSection(messageThread);
   }
 
   /**
@@ -278,6 +294,11 @@ class SearchContextItem extends ContextItem {
     if (params.maxCount) searchParams.maxCount = params.maxCount;
     if (params.ignoreCase !== undefined) searchParams.ignoreCase = params.ignoreCase;
     if (params.noIgnore !== undefined) searchParams.noIgnore = params.noIgnore;
+
+    // Conversation-level "search all files" toggle: force noIgnore when this
+    // conversation has gitignore filtering switched off (an explicit
+    // model-passed noIgnore already flows above; forcing true merges cleanly).
+    if (gitignoreDisabled(this)) searchParams.noIgnore = true;
 
     // Reaching execute() past the approval gate means an out-of-root non-glob
     // path was explicitly approved; mark it so the backend admits this one

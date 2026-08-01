@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- File search tools (grep, glob, tree) now respect nested .gitignore files, with a per-conversation toggle to search everything
 - Added a todo checklist tool for frictionless progress tracking; plan is now reserved for approval-gated proposals
 - Large pastes collapse to inline expandable placeholders in the composer
 - Info cards (Tips, Usage, Git status) are now extension plugins, toggled in the Extensions catalog and re-shown from a new sidebar menu

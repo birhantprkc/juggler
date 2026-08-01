@@ -30,6 +30,7 @@ type PathIndex struct {
 	searches chan searchReq
 	inserts  chan string
 	deletes  chan string
+	replaces chan replaceReq
 
 	stop     chan struct{}
 	stopped  chan struct{} // closed by run() on exit; lets late callers bail
@@ -48,6 +49,13 @@ type searchReq struct {
 	reply chan []ops.FileMatch
 }
 
+// replaceReq swaps the whole index in one shot (used when a .gitignore change
+// forces a rebuild). The new slice was walked off the owner goroutine.
+type replaceReq struct {
+	paths   []string
+	partial bool
+}
+
 // newPathIndex takes ownership of paths (built by the caller's tree walk) and
 // starts the owning goroutine. partial records whether the walk hit the cap.
 func newPathIndex(paths []string, partial bool) *PathIndex {
@@ -58,6 +66,7 @@ func newPathIndex(paths []string, partial bool) *PathIndex {
 		searches: make(chan searchReq),
 		inserts:  make(chan string),
 		deletes:  make(chan string),
+		replaces: make(chan replaceReq),
 		stop:     make(chan struct{}),
 		stopped:  make(chan struct{}),
 		paths:    paths,
@@ -79,6 +88,9 @@ func (ix *PathIndex) run() {
 			ix.insert(p)
 		case p := <-ix.deletes:
 			ix.remove(p)
+		case r := <-ix.replaces:
+			ix.paths = r.paths
+			ix.partial = r.partial
 		case <-ix.stop:
 			return
 		}
@@ -115,6 +127,16 @@ func (ix *PathIndex) add(p string) {
 func (ix *PathIndex) del(p string) {
 	select {
 	case ix.deletes <- p:
+	case <-ix.stopped:
+	}
+}
+
+// replace swaps the entire index contents (a fresh tree walk after a
+// .gitignore change). Non-blocking against a stopped index. Called from the
+// file-watcher goroutine.
+func (ix *PathIndex) replace(paths []string, partial bool) {
+	select {
+	case ix.replaces <- replaceReq{paths: paths, partial: partial}:
 	case <-ix.stopped:
 	}
 }

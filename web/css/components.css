@@ -4273,6 +4273,56 @@ input-box .permission-btn.open {
     box-shadow: none;
 }
 
+/* The .gitignore search-scope toggle is a rarely-needed control, so it keeps
+ * its section card but stays low-key inside it: a borderless tick/cross line,
+ * not a prominent framed button like the edit toggle. The card's own
+ * background (from .plugin-section-wrapper) is retained. */
+.permissions-popup .plugin-section-wrapper[data-section-id="search-scope"] {
+    padding: 0.375rem 0.5rem;
+}
+
+.permissions-popup .search-scope-btn {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    justify-content: flex-start;
+    gap: 0.375rem;
+    padding: 0.125rem;
+    height: auto;
+    border: none;
+    background: none;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.permissions-popup .search-scope-btn:hover {
+    background: none;
+    color: var(--text-primary);
+}
+
+/* Tick when respecting .gitignore, cross when searching everything. */
+.permissions-popup .search-scope-icon {
+    display: inline-flex;
+    flex: none;
+    width: 0.85rem;
+    height: 0.85rem;
+}
+
+.permissions-popup .search-scope-icon svg {
+    width: 100%;
+    height: 100%;
+    fill: currentcolor;
+}
+
+.permissions-popup .search-scope-btn.allowed .search-scope-icon {
+    color: var(--accent-green);
+}
+
+.permissions-popup .search-scope-btn.ask .search-scope-icon {
+    color: var(--text-tertiary);
+}
+
 /* Modal Dialog Component */
 modal-dialog {
     display: none;

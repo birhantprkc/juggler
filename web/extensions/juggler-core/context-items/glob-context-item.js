@@ -7,12 +7,14 @@ import ContextItem from 'juggler/context-item';
 import { glob } from 'juggler/ops';
 import { formatPathForStatus } from 'juggler/item-utils';
 import { smartTruncate } from 'juggler/ui';
-import { toolInputPath, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags } from './path-approval.js';
+import { toolInputPath, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags, gitignoreDisabled } from './path-approval.js';
+import { buildGitignoreSection } from './search-scope-section.js';
 
 /**
  * @typedef {object} GlobParams
  * @property {string} pattern - Glob pattern (e.g., "src/*.js" or deep patterns)
  * @property {string} [path] - Directory to search in (default: project root)
+ * @property {boolean} [noIgnore] - Match files ignored by .gitignore too
  */
 
 /**
@@ -65,12 +67,16 @@ class GlobContextItem extends ContextItem {
         path: {
           type: 'string',
           description: 'The directory to search in. If not specified, the current working directory will be used.'
+        },
+        noIgnore: {
+          type: 'boolean',
+          description: 'Match files ignored by .gitignore too. Default false.'
         }
       },
       required: ['pattern']
     };
 
-    const description = 'Fast file pattern matching tool that works with any codebase size. Returns matching file paths sorted by modification time.';
+    const description = 'Fast file pattern matching tool that works with any codebase size. Returns matching file paths sorted by modification time. Results respect nested .gitignore files by default; pass noIgnore to include ignored files.';
 
     return [
       {
@@ -148,7 +154,20 @@ class GlobContextItem extends ContextItem {
     if (globParams.path && !isPathAllowed(this, globParams.path)) {
       globParams.outOfRootApproved = true;
     }
+    // Conversation-level "search all files" toggle.
+    if (gitignoreDisabled(this)) globParams.noIgnore = true;
     return await glob(globParams, this.signal, this.getToolAllowedRoots());
+  }
+
+  /**
+   * Contribute the headerless .gitignore toggle (respect .gitignore) to the
+   * permission popup. Deduplicated with Search's identical section by the shared `id`.
+   * @override
+   * @param {import('../../../js/model/message-thread.js').MessageThread} messageThread - Owning thread
+   * @returns {{id: string, order: number, element: HTMLElement, dispose: () => void}} Permission section
+   */
+  static getPermissionSection(messageThread) {
+    return buildGitignoreSection(messageThread);
   }
 
   /**

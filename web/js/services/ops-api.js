@@ -203,6 +203,8 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {string} [pattern] - Filter pattern (e.g., "*.js")
  * @property {'all'|'files'|'dirs'} [fileType] - Filter by type (default "all")
  * @property {boolean} [userInitiated] - If true (a user-pinned folder), paths outside the project root are allowed
+ * @property {boolean} [noIgnore] - Include files ignored by .gitignore (default false)
+ * @property {boolean} [showAll] - Include hidden files and ignored files (implies noIgnore)
  */
 
 /**
@@ -254,6 +256,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {number} [maxResults] - Max results to return (default 100, max 1000)
  * @property {string} [filePattern] - File pattern filter (e.g., "*.js")
  * @property {boolean} [caseSensitive] - Case-sensitive search (default false)
+ * @property {boolean} [noIgnore] - Include files ignored by .gitignore (default false)
  */
 
 /**
@@ -278,6 +281,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * Parameters for findSymbol operation
  * @typedef {object} GrepFindSymbolParams
  * @property {string} symbol - Symbol name to find (function, class, etc.)
+ * @property {boolean} [noIgnore] - Include files ignored by .gitignore (default false)
  */
 
 /**
@@ -581,6 +585,7 @@ export async function treeExpandDirectory(params, allowedPaths) {
  * @typedef {object} TreeGlobParams
  * @property {string} pattern - Glob pattern (e.g., "src/*.js" or deep patterns)
  * @property {string} [path] - Directory to search in (default: project root)
+ * @property {boolean} [noIgnore] - Include files ignored by .gitignore (default false)
  */
 
 /**

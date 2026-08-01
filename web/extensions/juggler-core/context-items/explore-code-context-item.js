@@ -10,6 +10,7 @@ import { ReadOnlyFileSystem } from 'juggler/ops';
 import { grep as grepOp, glob as globOp } from 'juggler/ops';
 import { runInSandbox } from 'juggler/sandbox';
 import { smartTruncate, createLlmDescription } from 'juggler/ui';
+import { gitignoreDisabled } from './path-approval.js';
 
 /**
  * ExploreCodeContextItem - Execute JavaScript against a read-only filesystem SDK
@@ -120,6 +121,10 @@ class ExploreCodeContextItem extends ContextItem {
     // cancellable along with the rest of the explore_code action.
     const signal = this.signal;
     const allowedPaths = this.getToolAllowedRoots();
+    // The conversation's "search all files" toggle applies to the sandbox's
+    // grep/glob delegates too (the raw `fs` helper stays unfiltered — direct
+    // listing, same stance as the file panel).
+    const noIgnore = gitignoreDisabled(this);
     return {
       /**
        * Search file contents (ripgrep-style).
@@ -134,6 +139,7 @@ class ExploreCodeContextItem extends ContextItem {
         if (options?.glob) params.include = options.glob;
         if (options?.maxResults) params.maxResults = options.maxResults;
         if (options?.ignoreCase !== undefined) params.ignoreCase = options.ignoreCase;
+        if (noIgnore) params.noIgnore = true;
         const result = await grepOp(/** @type {any} */ (params), signal, allowedPaths);
         return result.matches || [];
       },
@@ -147,6 +153,7 @@ class ExploreCodeContextItem extends ContextItem {
         /** @type {Record<string, unknown>} */
         const params = { pattern };
         if (options?.cwd) params.path = options.cwd;
+        if (noIgnore) params.noIgnore = true;
         const result = await globOp(/** @type {any} */ (params), signal, allowedPaths);
         const files = result.files || [];
         if (!options?.cwd) return files;

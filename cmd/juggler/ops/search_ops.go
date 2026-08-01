@@ -17,6 +17,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/bmatcuk/doublestar/v4"
+
+	"juggler/internal/gitignore"
 )
 
 // SearchOperations handles code search operations
@@ -150,10 +152,18 @@ func (ops *SearchOperations) grep(ctx context.Context, params map[string]any) (a
 		noIgnore = ni
 	}
 
-	// Load .gitignore patterns (unless noIgnore is true)
-	var gitignorePatterns []string
+	// Build a gitignore matcher unless opted out. A nil matcher means filtering
+	// is off; every walking helper threads the single pointer. A glob path is
+	// expanded relative to the project root, so its matcher is rooted there;
+	// a plain path is walked directly, so its matcher is rooted at that path
+	// (we never read ignore files above the resolved search root).
+	var ign *gitignore.Matcher
 	if !noIgnore {
-		gitignorePatterns = loadGitignorePatterns(ops.scope.Root())
+		if pathIsGlob {
+			ign = gitignore.NewMatcher(ops.scope.Root())
+		} else {
+			ign = gitignore.NewMatcher(searchPath)
+		}
 	}
 
 	// Perform search
@@ -162,9 +172,9 @@ func (ops *SearchOperations) grep(ctx context.Context, params map[string]any) (a
 
 	if pathIsGlob {
 		// Use glob to find matching files, then search in each
-		matches, truncated = ops.searchGlobFiles(ctx, searchPath, re, maxResults, gitignorePatterns, noIgnore)
+		matches, truncated = ops.searchGlobFiles(ctx, searchPath, re, maxResults, ign)
 	} else {
-		matches, truncated = ops.searchFiles(ctx, searchPath, re, maxResults, filePattern, gitignorePatterns, noIgnore)
+		matches, truncated = ops.searchFiles(ctx, searchPath, re, maxResults, filePattern, ign)
 	}
 	fileCount := countUniqueFiles(matches)
 
@@ -187,8 +197,9 @@ func containsGlobChars(path string) bool {
 	return strings.ContainsAny(path, "*?[")
 }
 
-// searchGlobFiles searches files matching a glob pattern
-func (ops *SearchOperations) searchGlobFiles(ctx context.Context, globPattern string, pattern *regexp.Regexp, maxResults int, gitignorePatterns []string, noIgnore bool) ([]map[string]any, bool) {
+// searchGlobFiles searches files matching a glob pattern. A nil matcher
+// disables .gitignore filtering.
+func (ops *SearchOperations) searchGlobFiles(ctx context.Context, globPattern string, pattern *regexp.Regexp, maxResults int, ign *gitignore.Matcher) ([]map[string]any, bool) {
 	matches := make([]map[string]any, 0, maxResults)
 	truncated := false
 
@@ -211,11 +222,10 @@ func (ops *SearchOperations) searchGlobFiles(ctx context.Context, globPattern st
 			continue
 		}
 
-		// Skip files matching .gitignore (unless noIgnore)
-		if !noIgnore && len(gitignorePatterns) > 0 {
-			if isGitignored(filepath.Dir(relFile), filepath.Base(relFile), gitignorePatterns) {
-				continue
-			}
+		// Skip gitignored files (the matcher's excluded-parent check covers
+		// files inside ignored directories).
+		if ign.Ignored(filepath.ToSlash(relFile), false) {
+			continue
 		}
 
 		// Skip binary files and very large files
@@ -236,10 +246,12 @@ func (ops *SearchOperations) searchGlobFiles(ctx context.Context, globPattern st
 	return matches, truncated
 }
 
-// searchFiles performs native Go file search with early termination
-func (ops *SearchOperations) searchFiles(ctx context.Context, searchPath string, pattern *regexp.Regexp, maxResults int, filePattern string, gitignorePatterns []string, noIgnore bool) ([]map[string]any, bool) {
+// searchFiles performs native Go file search with early termination. A nil
+// matcher disables .gitignore filtering (and hidden-entry skipping).
+func (ops *SearchOperations) searchFiles(ctx context.Context, searchPath string, pattern *regexp.Regexp, maxResults int, filePattern string, ign *gitignore.Matcher) ([]map[string]any, bool) {
 	matches := make([]map[string]any, 0, maxResults)
 	truncated := false
+	filter := ign != nil
 
 	// Walk directory tree
 	err := filepath.WalkDir(searchPath, func(path string, d fs.DirEntry, err error) error {
@@ -254,39 +266,38 @@ func (ops *SearchOperations) searchFiles(ctx context.Context, searchPath string,
 			return ctx.Err()
 		}
 
-		// Get relative path for gitignore matching
-		relPath, _ := filepath.Rel(ops.scope.Root(), path)
+		// Relative path for gitignore matching, relative to the matcher root
+		// (the resolved search root), slash-separated.
+		relPath, _ := filepath.Rel(searchPath, path)
+		relPath = filepath.ToSlash(relPath)
 
 		// Skip directories
 		if d.IsDir() {
 			name := d.Name()
-			// Always skip .git and node_modules
+			// Always skip .git and node_modules (cheap first check; the matcher
+			// is never consulted for them).
 			if name == ".git" || name == "node_modules" || name == ".juggler" {
 				return fs.SkipDir
 			}
-			// Skip hidden directories unless noIgnore
-			if !noIgnore && strings.HasPrefix(name, ".") {
+			// Skip hidden directories unless filtering is off.
+			if filter && strings.HasPrefix(name, ".") {
 				return fs.SkipDir
 			}
-			// Skip gitignored directories
-			if !noIgnore && len(gitignorePatterns) > 0 {
-				if isGitignored(filepath.Dir(relPath), name, gitignorePatterns) {
-					return fs.SkipDir
-				}
+			// Prune gitignored directories.
+			if ign.Ignored(relPath, true) {
+				return fs.SkipDir
 			}
 			return nil
 		}
 
-		// Skip hidden files unless noIgnore
-		if !noIgnore && strings.HasPrefix(d.Name(), ".") {
+		// Skip hidden files unless filtering is off.
+		if filter && strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
 
-		// Skip gitignored files
-		if !noIgnore && len(gitignorePatterns) > 0 {
-			if isGitignored(filepath.Dir(relPath), d.Name(), gitignorePatterns) {
-				return nil
-			}
+		// Skip gitignored files.
+		if ign.Ignored(relPath, false) {
+			return nil
 		}
 
 		// Apply file pattern filter if specified
@@ -412,8 +423,15 @@ func (ops *SearchOperations) findSymbol(ctx context.Context, params map[string]a
 	var allResults []map[string]any
 	maxResults := 100
 
-	// Load .gitignore patterns for symbol search
-	gitignorePatterns := loadGitignorePatterns(ops.scope.Root())
+	// Respect .gitignore unless the caller opts out (matches grep's param).
+	noIgnore := false
+	if ni, ok := params["noIgnore"].(bool); ok {
+		noIgnore = ni
+	}
+	var ign *gitignore.Matcher
+	if !noIgnore {
+		ign = gitignore.NewMatcher(ops.scope.Root())
+	}
 
 	for _, patternStr := range patterns {
 		pattern, err := regexp.Compile(patternStr)
@@ -421,7 +439,7 @@ func (ops *SearchOperations) findSymbol(ctx context.Context, params map[string]a
 			continue
 		}
 
-		matches, _ := ops.searchFiles(ctx, ops.scope.Root(), pattern, maxResults-len(allResults), "", gitignorePatterns, false)
+		matches, _ := ops.searchFiles(ctx, ops.scope.Root(), pattern, maxResults-len(allResults), "", ign)
 		allResults = append(allResults, matches...)
 
 		if len(allResults) >= maxResults {

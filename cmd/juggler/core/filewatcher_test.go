@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// writeGitignore writes root/.gitignore with the given content.
+func writeGitignore(t *testing.T, root, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeTree(t *testing.T, root string, rels []string) {
 	t.Helper()
 	for _, rel := range rels {
@@ -72,5 +80,129 @@ func TestFileWatcher_StopReclaimsIndexWithoutStart(t *testing.T) {
 		// Owner goroutine exited — reclaimed, no leak.
 	case <-time.After(2 * time.Second):
 		t.Fatal("index goroutine not reclaimed after Stop() without Start()")
+	}
+}
+
+// TestFileWatcher_GitignoredNotIndexed checks the construction-time walk skips
+// gitignored files and directories (they must not appear in @-completion).
+func TestFileWatcher_GitignoredNotIndexed(t *testing.T) {
+	root := t.TempDir()
+	writeGitignore(t, root, "secret/\n*.log\n")
+	writeTree(t, root, []string{
+		"secret/hidden-widget.go", // in an ignored dir
+		"app-debug.log",           // ignored by *.log
+		"visible-widget.go",       // tracked
+	})
+
+	w, err := NewFileWatcher(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	if got := searchPaths(w.Index(), "hidden-widget", 20); len(got) != 0 {
+		t.Errorf("gitignored dir should not be indexed, got %v", got)
+	}
+	if got := searchPaths(w.Index(), "app-debug", 20); len(got) != 0 {
+		t.Errorf("gitignored *.log should not be indexed, got %v", got)
+	}
+	if got := searchPaths(w.Index(), "visible-widget", 20); !contains(got, "visible-widget.go") {
+		t.Errorf("tracked file should be indexed, got %v", got)
+	}
+}
+
+// TestFileWatcher_RebuildPicksUpGitignoreChange verifies that rebuilding with a
+// fresh matcher (the .gitignore-change code path) re-evaluates the tree.
+func TestFileWatcher_RebuildPicksUpGitignoreChange(t *testing.T) {
+	root := t.TempDir()
+	writeGitignore(t, root, "secret/\n")
+	writeTree(t, root, []string{"secret/hidden-widget.go", "visible-widget.go"})
+
+	w, err := NewFileWatcher(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	if got := searchPaths(w.Index(), "hidden-widget", 20); len(got) != 0 {
+		t.Fatalf("precondition: secret/ should be ignored, got %v", got)
+	}
+
+	// Un-ignore secret/ (empty .gitignore; different size busts the parse cache)
+	// and rebuild — the previously ignored file should now be indexed.
+	writeGitignore(t, root, "")
+	w.rebuild()
+	if got := searchPaths(w.Index(), "hidden-widget", 20); !contains(got, "secret/hidden-widget.go") {
+		t.Errorf("after un-ignoring, secret/hidden-widget.go should be indexed, got %v", got)
+	}
+
+	// Now ignore visible/ instead — the rebuild should drop it.
+	writeGitignore(t, root, "visible-widget.go\n")
+	w.rebuild()
+	if got := searchPaths(w.Index(), "visible-widget", 20); len(got) != 0 {
+		t.Errorf("after ignoring, visible-widget.go should be dropped, got %v", got)
+	}
+}
+
+// TestFileWatcher_CreatedIgnoredFileNotAdded checks the incremental create path
+// consults the matcher so a newly created ignored file never enters the index.
+func TestFileWatcher_CreatedIgnoredFileNotAdded(t *testing.T) {
+	root := t.TempDir()
+	writeGitignore(t, root, "*.log\n")
+	writeTree(t, root, []string{"seed.go"})
+
+	w, err := NewFileWatcher(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	// Simulate the create-event index path for both an ignored and a tracked file.
+	writeTree(t, root, []string{"fresh-debug.log", "fresh-widget.go"})
+	w.indexCreated(filepath.Join(root, "fresh-debug.log"))
+	w.indexCreated(filepath.Join(root, "fresh-widget.go"))
+
+	if got := searchPaths(w.Index(), "fresh-debug", 20); len(got) != 0 {
+		t.Errorf("created gitignored file should not be indexed, got %v", got)
+	}
+	if got := searchPaths(w.Index(), "fresh-widget", 20); !contains(got, "fresh-widget.go") {
+		t.Errorf("created tracked file should be indexed, got %v", got)
+	}
+}
+
+// TestFileWatcher_ScheduleRebuildSignals checks the debounce timer eventually
+// signals watchLoop to rebuild (without depending on fsnotify delivery).
+func TestFileWatcher_ScheduleRebuildSignals(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, []string{"a.go"})
+	w, err := NewFileWatcher(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	w.scheduleRebuild()
+	select {
+	case <-w.rebuildC:
+		// Debounce fired and signalled a rebuild.
+	case <-time.After(3 * time.Second):
+		t.Fatal("scheduleRebuild did not signal within the debounce window")
+	}
+}
+
+// TestIsIgnoreFile checks the ignore-file detector.
+func TestIsIgnoreFile(t *testing.T) {
+	cases := map[string]bool{
+		"/proj/.gitignore":        true,
+		"/proj/sub/.gitignore":    true,
+		"/proj/.git/info/exclude": true,
+		"/proj/src/main.go":       false,
+		"/proj/gitignore":         false,
+		"/proj/.gitignore.bak":    false,
+	}
+	for p, want := range cases {
+		if got := isIgnoreFile(p); got != want {
+			t.Errorf("isIgnoreFile(%q) = %v, want %v", p, got, want)
+		}
 	}
 }

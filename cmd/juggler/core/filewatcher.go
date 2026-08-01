@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
+	"juggler/internal/gitignore"
 	"juggler/internal/jlog"
 	"juggler/internal/skipdirs"
 
@@ -27,6 +29,11 @@ type ChangeNotification struct {
 	Changes []FileChange `json:"changes"`
 }
 
+// gitignoreRebuildDebounce is how long we wait after the last .gitignore edit
+// before rebuilding the watch/index. It coalesces a burst (a branch switch
+// rewrites many ignore files) into one rebuild.
+const gitignoreRebuildDebounce = time.Second
+
 // FileWatcher watches a directory for file changes and sends immediate notifications
 type FileWatcher struct {
 	watcher     *fsnotify.Watcher
@@ -35,6 +42,16 @@ type FileWatcher struct {
 	stopChan    chan struct{}
 	stopOnce    sync.Once
 	index       *PathIndex
+
+	// ign filters gitignored paths out of the watch/index (not the frontend
+	// change stream). Rebuilt from scratch on each walk. Owned by the constructor
+	// then exclusively by watchLoop, so no locking is needed.
+	ign *gitignore.Matcher
+
+	// rebuildC signals watchLoop to rebuild after a debounced .gitignore change;
+	// rebuildTimer (touched only on watchLoop) drives the debounce.
+	rebuildC     chan struct{}
+	rebuildTimer *time.Timer
 }
 
 // NewFileWatcher creates a new file watcher for the given project directory
@@ -52,6 +69,7 @@ func NewFileWatcher(projectPath string) (*FileWatcher, error) {
 		// branch swaps and forces a full re-scan.
 		changeChan: make(chan ChangeNotification, 100),
 		stopChan:   make(chan struct{}),
+		rebuildC:   make(chan struct{}, 1),
 	}
 
 	// One BFS walk registers directory watches and builds the path index.
@@ -92,6 +110,9 @@ func (w *FileWatcher) buildWatchesAndIndex(root string) (paths []string, partial
 	watched := 0
 	skippedWatch := 0
 
+	// Fresh matcher per walk (so a rebuild picks up edited .gitignore files).
+	w.ign = gitignore.NewMatcher(root)
+
 	_ = w.watcher.Add(root)
 	watched++
 
@@ -126,6 +147,12 @@ func (w *FileWatcher) buildWatchesAndIndex(root string) (paths []string, partial
 			rel := name
 			if cur.rel != "" {
 				rel = cur.rel + "/" + name
+			}
+
+			// Gitignored paths are neither watched, indexed, nor queued — so
+			// ignored subtrees don't consume the watch/index caps.
+			if w.ign.Ignored(rel, isDir) {
+				continue
 			}
 
 			if len(paths) >= maxIndexedPaths {
@@ -186,6 +213,10 @@ func (w *FileWatcher) indexCreated(absPath string) {
 	if err != nil {
 		return // vanished already — nothing to index
 	}
+	// Don't leak gitignored paths into the index incrementally.
+	if w.ign.Ignored(rel, info.IsDir()) {
+		return
+	}
 	if !info.IsDir() {
 		w.index.add(rel)
 		return
@@ -237,6 +268,9 @@ func (w *FileWatcher) indexSubtree(absRoot, relRoot string) {
 
 			rel := cur.rel + "/" + name
 			abs := filepath.Join(cur.abs, name)
+			if w.ign.Ignored(rel, isDir) {
+				continue
+			}
 			count++
 			if isDir {
 				w.index.add(rel + "/")
@@ -280,14 +314,58 @@ func (w *FileWatcher) watchLoop() {
 			}
 			jlog.Error("[FileWatcher] Error: %v", err)
 
+		case <-w.rebuildC:
+			w.rebuild()
+
 		case <-w.stopChan:
 			return
 		}
 	}
 }
 
+// isIgnoreFile reports whether an absolute path is a git ignore-rule file whose
+// edit should trigger an index rebuild.
+func isIgnoreFile(absPath string) bool {
+	p := filepath.ToSlash(absPath)
+	return filepath.Base(p) == ".gitignore" || strings.HasSuffix(p, ".git/info/exclude")
+}
+
+// scheduleRebuild (re)arms the debounce timer. Runs only on watchLoop, so the
+// timer field needs no lock. The timer callback signals rebuildC; the actual
+// rebuild then runs on watchLoop, which owns w.ign and the walk.
+func (w *FileWatcher) scheduleRebuild() {
+	if w.rebuildTimer == nil {
+		w.rebuildTimer = time.AfterFunc(gitignoreRebuildDebounce, func() {
+			select {
+			case w.rebuildC <- struct{}{}:
+			case <-w.stopChan:
+			}
+		})
+		return
+	}
+	w.rebuildTimer.Reset(gitignoreRebuildDebounce)
+}
+
+// rebuild re-walks the tree with a fresh matcher and swaps the index contents.
+// Stale watches on now-ignored directories are left in place (harmless: their
+// events are filtered by the fresh matcher); newly un-ignored dirs get watched.
+func (w *FileWatcher) rebuild() {
+	paths, partial := w.buildWatchesAndIndex(w.projectPath)
+	if w.index != nil {
+		w.index.replace(paths, partial)
+	}
+	jlog.Info("[FileWatcher] Rebuilt after .gitignore change (%d paths indexed)", len(paths))
+}
+
 // handleEvent processes a single file system event
 func (w *FileWatcher) handleEvent(event fsnotify.Event) {
+	// A .gitignore (or .git/info/exclude) edit changes what should be indexed —
+	// schedule a debounced rebuild. Checked before the hidden-file skip below,
+	// since .gitignore is a dot-file. No frontend notification is sent for it.
+	if isIgnoreFile(event.Name) {
+		w.scheduleRebuild()
+	}
+
 	// Convert absolute path to relative path
 	relPath, err := filepath.Rel(w.projectPath, event.Name)
 	if err != nil {

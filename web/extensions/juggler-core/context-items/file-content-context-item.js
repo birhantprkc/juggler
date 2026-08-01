@@ -10,6 +10,7 @@ import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { buildPickerPanel } from 'juggler/ui';
 import { smartTruncate } from 'juggler/ui';
+import { gitignoreDisabled } from './path-approval.js';
 
 /**
  * Safety ceiling (characters) on the file body a single pinned/@-mentioned file
@@ -323,7 +324,9 @@ class FileContentContextItem extends ContextItem {
     // is outside working directory".
     if (isDirectory) {
       try {
-        const r = await getTree({ path, depth: 2, maxTokens: 4000, userInitiated: true });
+        const treeParams = /** @type {Record<string, unknown>} */ ({ path, depth: 2, maxTokens: 4000, userInitiated: true });
+        if (gitignoreDisabled(this)) treeParams.noIgnore = true;
+        const r = await getTree(treeParams);
         return {
           path,
           isDirectory: true,

@@ -124,6 +124,7 @@ import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclai
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
 import { runTests as runNewThreadFocusTests } from '../unit-tests/new-thread-focus-test.js';
+import { runTests as runGitignoreScopeTests } from '../unit-tests/gitignore-scope-test.js';
 import { runTests as runNestedApprovalStatusTests } from '../unit-tests/nested-approval-status-test.js';
 import { runTests as runBatchCoerceTests } from '../unit-tests/batch-coerce-test.js';
 import { runTests as runChimeRecoveryTests } from '../unit-tests/chime-recovery-test.js';
@@ -327,6 +328,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
   { name: 'unit:new-thread-focus', run: runNewThreadFocusTests },
+  { name: 'unit:gitignore-scope', run: runGitignoreScopeTests },
   { name: 'unit:nested-approval-status', run: runNestedApprovalStatusTests },
   { name: 'unit:batch-coerce', run: runBatchCoerceTests },
   { name: 'unit:chime-recovery', run: runChimeRecoveryTests },

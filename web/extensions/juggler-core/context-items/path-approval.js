@@ -35,6 +35,44 @@ export function toolInputPath(toolInput, allowFilePathAlias = false) {
 }
 
 /**
+ * Conversation-metadata key holding the per-conversation "don't respect
+ * .gitignore in file searches" flag. Yjs-backed (like the permission rules), so
+ * it persists with the conversation and syncs to every peer and both realms.
+ */
+export const GITIGNORE_DISABLED_KEY = 'gitignoreDisabled';
+
+/**
+ * Whether a conversation has .gitignore filtering switched off for its file
+ * search tools.
+ * @param {{getMetadata?: (key: string) => any}|null|undefined} conversation - The conversation
+ * @returns {boolean} True when filtering is disabled for this conversation
+ */
+export function conversationGitignoreDisabled(conversation) {
+  const v = conversation?.getMetadata?.(GITIGNORE_DISABLED_KEY);
+  return (v?.toJSON ? v.toJSON() : v) === true;
+}
+
+/**
+ * Whether the item's conversation has .gitignore filtering switched off.
+ * @param {{conversation?: {getMetadata?: (key: string) => any}}|null|undefined} item - A context item
+ * @returns {boolean} True when this conversation disables gitignore filtering
+ */
+export function gitignoreDisabled(item) {
+  return conversationGitignoreDisabled(item?.conversation);
+}
+
+/**
+ * Set a conversation's gitignore-filtering state. Storing `false` (rather than
+ * deleting) keeps the metadata key present so observers see the change.
+ * @param {{setMetadata?: (key: string, value: any) => void}|null|undefined} conversation - The conversation
+ * @param {boolean} disabled - True to disable filtering (search all files)
+ * @returns {void}
+ */
+export function setGitignoreDisabled(conversation, disabled) {
+  conversation?.setMetadata?.(GITIGNORE_DISABLED_KEY, disabled === true);
+}
+
+/**
  * Directory portion of a path, handling both `/` and `\` separators (the backend
  * reports native OS paths).
  * @param {string} p - File path

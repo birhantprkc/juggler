@@ -5,10 +5,10 @@
 package ops
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +17,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 
 	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/internal/gitignore"
 )
 
 // TreeOperations handles directory tree operations
@@ -109,15 +110,27 @@ func (ops *TreeOperations) getTree(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("showAll must be a boolean, got %T", params["showAll"])
 	}
 
+	// Get noIgnore parameter (default: false). Unlike showAll it only releases
+	// .gitignore filtering; hidden files stay hidden. showAll implies it.
+	noIgnore := showAll
+	if ni, ok := params["noIgnore"].(bool); ok && ni {
+		noIgnore = true
+	} else if params["noIgnore"] != nil {
+		if _, ok := params["noIgnore"].(bool); !ok {
+			return nil, fmt.Errorf("noIgnore must be a boolean, got %T", params["noIgnore"])
+		}
+	}
+
 	// Ensure path exists
 	if _, err = os.Stat(absPath); err != nil {
 		return nil, fmt.Errorf("path does not exist: %w", err)
 	}
 
-	// Load .gitignore patterns (unless showAll is true)
-	var gitignorePatterns []string
-	if !showAll {
-		gitignorePatterns = loadGitignorePatterns(ops.scope.Root())
+	// Build a gitignore matcher unless opted out (nil = filtering off), rooted
+	// at the project root; relative paths are computed against it.
+	var ign *gitignore.Matcher
+	if !noIgnore {
+		ign = gitignore.NewMatcher(ops.scope.Root())
 	}
 
 	// Build tree with token budget awareness
@@ -129,7 +142,7 @@ func (ops *TreeOperations) getTree(params map[string]any) (any, error) {
 		maxItemsPerDir: 500, // Hard limit to prevent CPU burnout
 		maxDepth:       depth,
 		showAll:        showAll,
-		gitignore:      gitignorePatterns,
+		ign:            ign,
 		workingDir:     ops.scope.Root(),
 	}
 
@@ -164,9 +177,9 @@ type buildContext struct {
 	maxItemsPerDir int
 	maxDepth       int
 	truncated      bool
-	showAll        bool     // When true, include hidden files and ignore .gitignore
-	gitignore      []string // Parsed .gitignore patterns
-	workingDir     string   // Root working directory for relative path calculation
+	showAll        bool               // When true, include hidden files and ignore .gitignore
+	ign            *gitignore.Matcher // gitignore matcher (nil = filtering off)
+	workingDir     string             // Root working directory for relative path calculation
 }
 
 // treeStats holds statistics about the tree
@@ -218,7 +231,7 @@ func buildTreeWithBudget(root string, depth int, ctx *buildContext, stats *treeS
 
 	for _, entry := range entries {
 		// Skip hidden files and common bloat directories
-		shouldSkip, isHidden := shouldSkipEntry(entry.Name(), relPath, ctx)
+		shouldSkip, isHidden := shouldSkipEntry(entry.Name(), relPath, entry.IsDir(), ctx)
 		if shouldSkip {
 			skippedCount++
 			if isHidden {
@@ -372,7 +385,7 @@ func countDirectoryItems(path string, ctx *buildContext) int {
 	count := 0
 	for _, entry := range entries {
 		// Skip hidden files and common bloat
-		shouldSkip, _ := shouldSkipEntry(entry.Name(), relPath, ctx)
+		shouldSkip, _ := shouldSkipEntry(entry.Name(), relPath, entry.IsDir(), ctx)
 		if shouldSkip {
 			continue
 		}
@@ -416,7 +429,7 @@ func formatSize(bytes int64) string {
 
 // shouldSkipEntry determines if a file/directory should be skipped in the tree
 // Returns (shouldSkip, isHidden) - isHidden indicates if it was skipped due to being hidden
-func shouldSkipEntry(name string, relPath string, ctx *buildContext) (bool, bool) {
+func shouldSkipEntry(name string, relPath string, isDir bool, ctx *buildContext) (bool, bool) {
 	// If showAll is true, only skip truly useless directories
 	if ctx.showAll {
 		// Even with showAll, skip node_modules as it's massive and never useful
@@ -450,63 +463,17 @@ func shouldSkipEntry(name string, relPath string, ctx *buildContext) (bool, bool
 		return true, false
 	}
 
-	// Check .gitignore patterns
-	if len(ctx.gitignore) > 0 && isGitignored(relPath, name, ctx.gitignore) {
+	// Check .gitignore patterns (relPath is slash-separated relative to the
+	// project root; the matcher is nil when filtering is off).
+	childRel := name
+	if relPath != "" {
+		childRel = filepath.ToSlash(filepath.Join(relPath, name))
+	}
+	if ctx.ign.Ignored(childRel, isDir) {
 		return true, false
 	}
 
 	return false, false
-}
-
-// loadGitignorePatterns loads patterns from .gitignore file
-func loadGitignorePatterns(workingDir string) []string {
-	gitignorePath := filepath.Join(workingDir, ".gitignore")
-	file, err := os.Open(gitignorePath)
-	if err != nil {
-		return nil // No .gitignore or can't read it
-	}
-	defer file.Close()
-
-	var patterns []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		patterns = append(patterns, line)
-	}
-	return patterns
-}
-
-// isGitignored checks if a path matches any gitignore pattern
-func isGitignored(relPath string, name string, patterns []string) bool {
-	for _, pattern := range patterns {
-		// Handle directory-only patterns (ending with /)
-		dirOnly := strings.HasSuffix(pattern, "/")
-		if dirOnly {
-			pattern = strings.TrimSuffix(pattern, "/")
-		}
-
-		// Try matching against just the name (for patterns like "*.log")
-		if matched, _ := doublestar.Match(pattern, name); matched {
-			return true
-		}
-
-		// Try matching against relative path (for patterns like "logs/*.log")
-		if relPath != "" {
-			fullPath := relPath + "/" + name
-			if matched, _ := doublestar.Match(pattern, fullPath); matched {
-				return true
-			}
-			// Also try with ** prefix for deep matching
-			if matched, _ := doublestar.Match("**/"+pattern, fullPath); matched {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // glob returns files matching a glob pattern, sorted by modification time
@@ -533,11 +500,15 @@ func (ops *TreeOperations) glob(ctx context.Context, params map[string]any) (any
 		return nil, err
 	}
 
-	// Use doublestar for glob matching (supports **)
-	// Root the filesystem at the search path so relative patterns work correctly
-	matches, err := doublestar.Glob(os.DirFS(absPath), pattern)
-	if err != nil {
-		return nil, fmt.Errorf("invalid glob pattern: %w", err)
+	// Build a gitignore matcher unless opted out (nil = filtering off), rooted
+	// at the resolved search directory.
+	noIgnore := false
+	if ni, ok := params["noIgnore"].(bool); ok {
+		noIgnore = ni
+	}
+	var ign *gitignore.Matcher
+	if !noIgnore {
+		ign = gitignore.NewMatcher(absPath)
 	}
 
 	// Collect file info for sorting and filtering
@@ -547,41 +518,62 @@ func (ops *TreeOperations) glob(ctx context.Context, params map[string]any) (any
 	}
 	var files []fileInfo
 
-	for _, match := range matches {
+	// Walk the tree, pruning gitignored directories so large ignored subtrees
+	// (node_modules, build output) are never descended into. This matches
+	// doublestar.Glob's rel-path match semantics but avoids traversing pruned
+	// dirs. An invalid pattern surfaces on the first Match call below.
+	if _, perr := doublestar.Match(pattern, ""); perr != nil {
+		return nil, fmt.Errorf("invalid glob pattern: %w", perr)
+	}
+	fsys := os.DirFS(absPath)
+	_ = fs.WalkDir(fsys, ".", func(rel string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries, keep walking
+		}
 		// Stop early if the client cancelled the request (Escape).
 		if ctx.Err() != nil {
-			break
+			return fs.SkipAll
 		}
-		// Build absolute path for stat
-		absMatch := filepath.Join(absPath, match)
+		if rel == "." {
+			return nil
+		}
 
-		info, err := os.Stat(absMatch)
+		if d.IsDir() {
+			if ign.Ignored(rel, true) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		// Skip gitignored files.
+		if ign.Ignored(rel, false) {
+			return nil
+		}
+
+		if ok, _ := doublestar.Match(pattern, rel); !ok {
+			return nil
+		}
+
+		info, err := d.Info()
 		if err != nil {
-			continue // Skip files we can't stat
+			return nil // skip files we can't stat
 		}
 
-		// Skip directories - only return files
-		if info.IsDir() {
-			continue
-		}
-
-		// Build relative path from working directory
-		// If searchPath is ".", match is already relative to workingDir
-		// If searchPath is "src", we need "src/" + match
-		var relPath string
-		if searchPath == "." {
-			relPath = match
-		} else {
+		// Build relative path from the working directory. If searchPath is ".",
+		// rel is already relative to workingDir; otherwise prefix searchPath.
+		relPath := rel
+		if searchPath != "." {
 			// filepath.Join uses the OS separator (\ on Windows); tool results
 			// are always POSIX-style, so normalise back to forward slashes.
-			relPath = filepath.ToSlash(filepath.Join(searchPath, match))
+			relPath = filepath.ToSlash(filepath.Join(searchPath, rel))
 		}
 
 		files = append(files, fileInfo{
 			path:    relPath,
 			modTime: info.ModTime().Unix(),
 		})
-	}
+		return nil
+	})
 
 	// Sort by modification time (newest first)
 	slices.SortFunc(files, func(a, b fileInfo) int {
