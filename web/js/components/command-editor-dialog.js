@@ -14,7 +14,7 @@
 
 import { writeUserCommand, deleteUserCommand, fetchUserCommands, resetUserCommandsCache, USER_COMMAND_NAME_RE } from '../services/user-commands.js';
 import { expandTemplate } from '../plugins/user-command-factory.js';
-import { reloadRegistries } from '../registries/reload-registries.js';
+import { reloadRegistries, REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
@@ -249,20 +249,37 @@ export function openCommandManager() {
     document.body.appendChild(overlay);
 
     let releasePopup = () => {};
-    const close = () => { releasePopup(); overlay.remove(); resolve(); };
+    let stopLiveRefresh = () => {};
+    const close = () => { stopLiveRefresh(); releasePopup(); overlay.remove(); resolve(); };
     releasePopup = markPopupOpen(close);
 
     const body = /** @type {HTMLElement} */ (overlay.querySelector('#cmd-manager-body'));
 
+    // Only the most recent render writes the DOM. A live-refresh event can fire
+    // while an earlier render is still awaiting its fetch; the sequence guard
+    // stops that stale render from clobbering a newer list when it resumes.
+    let renderSeq = 0;
     const render = async () => {
+      const seq = ++renderSeq;
       const userCommands = await fetchUserCommands();
       await slashCommandHandler.init();
+      if (seq !== renderSeq) return; // superseded by a newer render
       const builtins = slashCommandHandler.getCommands().filter((c) => !c.userDefined);
       body.innerHTML = '';
       body.appendChild(builtinGroup('Built-in', builtins));
       body.appendChild(userGroup('This project', userCommands.filter((d) => d.scope === 'project'), render));
       body.appendChild(userGroup('All projects', userCommands.filter((d) => d.scope === 'user'), render));
     };
+
+    // Live-refresh across clients: any command file changing on disk — from this
+    // client, another connected client, or an external edit — is broadcast by
+    // the server as plugin-changed, driving reloadRegistries → REGISTRIES_RELOADED.
+    // Re-render on that signal so an open manager tracks the change instead of
+    // showing a stale list. The rebuild resets the user-commands cache before
+    // dispatching, so render()'s fetch re-reads fresh from disk.
+    const onRegistriesReloaded = () => { render(); };
+    document.addEventListener(REGISTRIES_RELOADED, onRegistriesReloaded);
+    stopLiveRefresh = () => document.removeEventListener(REGISTRIES_RELOADED, onRegistriesReloaded);
 
     overlay.querySelector('.command-editor-backdrop')?.addEventListener('click', close);
     overlay.querySelector('#cmd-close')?.addEventListener('click', close);
