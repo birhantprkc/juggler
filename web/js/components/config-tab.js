@@ -40,6 +40,8 @@
  * @property {string} [url] - Endpoint URL (http/sse transports)
  * @property {Record<string,string>} [headers] - Extra request headers (http/sse transports)
  * @property {boolean} [enabled] - Whether the entry is active
+ * @property {{allow?: string[], deny?: string[]}} [tools] - Per-server tool visibility filter (MCP only)
+ * @property {Record<string, any>} [defaultArguments] - Fixed arguments merged into every call and hidden from the model (MCP only)
  */
 
 /**
@@ -201,6 +203,9 @@ export function makeNameValidator({ article, noun, reserved, reservedMsg }) {
  * @property {string} [urlHint] - Hint shown under the URL input (transport-capable tabs).
  * @property {string} [headerKeyPlaceholder] - Placeholder for header-name inputs (transport-capable tabs).
  * @property {(ctx: {entry: object, enabled: boolean, scope: string, name: string}) => Promise<void>} [onAfterSave] - Best-effort hook after a successful save.
+ * @property {(cfg: SubprocessConfig) => object} [seedFormExtra] - Map a stored entry to extra working-state fields when the add/edit form opens (edit gets the entry; add gets {}). Lets a tab carry fields the generic form doesn't know about.
+ * @property {(f: any, wrap: HTMLElement, ctrl: ConfigTabController) => void} [renderFormExtra] - Append an extra form section (rendered just before the Enabled toggle).
+ * @property {(f: any) => object} [formToConfigExtra] - Extra keys spread into the persisted entry on save. MUST re-emit any field {@link seedFormExtra} read, or it is dropped (configFormToConfig only keeps the generic fields).
  */
 
 /**
@@ -597,6 +602,7 @@ export class ConfigTabController {
         envPairs: Object.entries(cfg.env || {}).map(([key, value]) => ({ key, value: String(value) })),
         enabled: cfg.enabled !== false,
         error: '',
+        ...(this.spec.seedFormExtra ? this.spec.seedFormExtra(cfg) : {}),
       };
     } else {
       this.editing = {
@@ -611,6 +617,7 @@ export class ConfigTabController {
         envPairs: [],
         enabled: true,
         error: '',
+        ...(this.spec.seedFormExtra ? this.spec.seedFormExtra({}) : {}),
       };
     }
     this.render();
@@ -693,6 +700,9 @@ export class ConfigTabController {
     } else {
       this._buildStdioFields(f, wrap);
     }
+
+    // Tab-specific extra section (e.g. MCP tool filter + fixed arguments).
+    if (spec.renderFormExtra) spec.renderFormExtra(f, wrap, this);
 
     // Enabled
     const enabledField = document.createElement('div');
@@ -1111,11 +1121,23 @@ export class ConfigTabController {
     /** @type {Record<string, string>} */
     const headers = {};
     for (const p of (f.headerPairs || [])) { const k = p.key.trim(); if (k) headers[k] = p.value; }
-    const entry = configFormToConfig({
+    /** @type {SubprocessConfig} */
+    let entry = configFormToConfig({
       transport: f.transport, url: f.url, headers,
       command: f.command, args: f.args, env,
       enabled: f.enabled,
     });
+    if (spec.formToConfigExtra) {
+      // The hook may throw a validation error (e.g. malformed JSON) to keep the
+      // form open with an inline message instead of persisting bad config.
+      try {
+        entry = { ...entry, ...spec.formToConfigExtra(f) };
+      } catch (e) {
+        f.error = e instanceof Error ? e.message : 'Invalid field.';
+        this.render();
+        return;
+      }
+    }
 
     const src = scope === 'project' ? this.config.project : this.config.global;
     try {

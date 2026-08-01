@@ -29,6 +29,26 @@ type ServerConfig struct {
 	Headers   map[string]string `json:"headers,omitempty"`   // http/sse transports only; e.g. {"Authorization": "Bearer …"}
 	Enabled   *bool             `json:"enabled,omitempty"`   // manager-level kill switch; default true
 	LazyTools bool              `json:"lazyTools,omitempty"` // phase 4; parsed but unused in phase 1
+
+	// Tools is a per-server visibility filter: it hides individual tools from the
+	// model (and blocks calls to them) without disabling the whole server. Nil
+	// means every discovered tool is exposed.
+	Tools *ToolFilter `json:"tools,omitempty"`
+	// DefaultArguments are argument keys merged into every call to this server and
+	// hidden from the schema the model sees. The config value wins over anything
+	// the model supplies, so routing keys (e.g. a memory bank id) are decided by
+	// configuration, not by the model.
+	DefaultArguments map[string]any `json:"defaultArguments,omitempty"`
+}
+
+// ToolFilter is a per-server tool visibility policy. Allow, when non-empty, is a
+// strict allowlist — only listed tools are exposed. Deny removes tools from
+// whatever Allow permits (so it also works on its own). Both match the raw MCP
+// tool name exactly. An allowlist is the safer default: a new server version can
+// add a destructive tool that a denylist would not catch.
+type ToolFilter struct {
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
 }
 
 // IsEnabled reports whether the server should be started. Absent means enabled.

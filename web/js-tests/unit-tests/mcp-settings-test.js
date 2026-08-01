@@ -24,6 +24,9 @@ import {
 import {
   formatMcpTokenCost,
   validateMcpServerName,
+  mcpToolAllowed,
+  mcpSeedFormExtra,
+  mcpFormToConfigExtra,
 } from '../../js/components/settings/subprocess-tabs.js';
 
 /**
@@ -227,6 +230,85 @@ export async function runTests(_ctx) {
 
   await run('scope-of: unknown name defaults to global', () => {
     assert(mcpScopeOf({ global: {}, project: {} }, 'nope') === 'global', 'unknown should default global');
+  });
+
+  // --- mcpToolAllowed (mirrors Go ToolFilter.allowsTool) --------------------
+
+  await run('tool filter: nil/empty allows all', () => {
+    assert(mcpToolAllowed('anything', {}) === true, 'empty filter should allow');
+    assert(mcpToolAllowed('anything', { allow: null }) === true, 'null allow should allow');
+  });
+
+  await run('tool filter: non-empty allow is strict', () => {
+    assert(mcpToolAllowed('recall', { allow: ['recall', 'retain'] }) === true, 'allowed tool rejected');
+    assert(mcpToolAllowed('delete_bank', { allow: ['recall', 'retain'] }) === false, 'unlisted tool allowed');
+  });
+
+  await run('tool filter: deny subtracts, including from allow', () => {
+    assert(mcpToolAllowed('delete_bank', { deny: ['delete_bank'] }) === false, 'denied tool allowed');
+    assert(mcpToolAllowed('retain', { allow: ['recall', 'retain'], deny: ['retain'] }) === false, 'deny should override allow');
+  });
+
+  // --- mcpSeedFormExtra -----------------------------------------------------
+
+  await run('seed: extracts allow/deny and pretty-prints default args', () => {
+    const seeded = mcpSeedFormExtra({ tools: { allow: ['recall'], deny: ['x'] }, defaultArguments: { bank_id: 'general' } });
+    assert(Array.isArray(seeded.toolAllow) && seeded.toolAllow[0] === 'recall', 'allow not seeded');
+    assert(seeded.toolDeny[0] === 'x', 'deny not seeded');
+    assert(seeded.defaultArgsText.includes('bank_id'), 'default args not seeded');
+    assert(seeded.toolsLoaded === false, 'should start not-loaded');
+  });
+
+  await run('seed: bare entry yields null allow and empty args', () => {
+    const seeded = mcpSeedFormExtra({});
+    assert(seeded.toolAllow === null, 'no allowlist should be null');
+    assert(seeded.defaultArgsText === '', 'no args should be empty string');
+  });
+
+  // --- mcpFormToConfigExtra -------------------------------------------------
+
+  await run('extra: loaded checkboxes drive an allowlist', () => {
+    const out = mcpFormToConfigExtra({ toolsLoaded: true, toolNames: ['a', 'b', 'c'], toolChecked: { a: true, b: false, c: true }, defaultArgsText: '' });
+    assert(out.tools && out.tools.allow.length === 2 && out.tools.allow[0] === 'a' && out.tools.allow[1] === 'c', 'allowlist wrong');
+  });
+
+  await run('extra: all tools checked omits the filter', () => {
+    const out = mcpFormToConfigExtra({ toolsLoaded: true, toolNames: ['a', 'b'], toolChecked: { a: true, b: true }, defaultArgsText: '' });
+    assert(!('tools' in out), 'fully-allowed server should omit tools');
+  });
+
+  await run('extra: offline edit preserves the seeded filter verbatim', () => {
+    // The regression guard for the silent-wipe hazard: editing a server whose
+    // tool list never loaded must NOT drop its tools/defaultArguments.
+    const seeded = mcpSeedFormExtra({ tools: { allow: ['recall', 'retain'] }, defaultArguments: { bank_id: 'general' } });
+    seeded.name = 'hindsight';
+    seeded.mode = 'edit';
+    const out = mcpFormToConfigExtra(seeded);
+    assert(out.tools && out.tools.allow.length === 2, 'seeded allowlist was dropped');
+    assert(out.defaultArguments && out.defaultArguments.bank_id === 'general', 'seeded default args were dropped');
+  });
+
+  await run('extra: parses fixed-arguments JSON object', () => {
+    const out = mcpFormToConfigExtra({ toolsLoaded: false, defaultArgsText: '{"bank_id": "general", "tags": ["project:x"]}' });
+    assert(out.defaultArguments.bank_id === 'general', 'scalar arg not parsed');
+    assert(Array.isArray(out.defaultArguments.tags) && out.defaultArguments.tags[0] === 'project:x', 'array arg not parsed');
+  });
+
+  await run('extra: rejects malformed JSON', () => {
+    let threw = false;
+    try { mcpFormToConfigExtra({ toolsLoaded: false, defaultArgsText: '{not json}' }); } catch { threw = true; }
+    assert(threw, 'malformed JSON should throw');
+  });
+
+  await run('extra: rejects a non-object JSON value', () => {
+    let threw = false;
+    try { mcpFormToConfigExtra({ toolsLoaded: false, defaultArgsText: '[1,2,3]' }); } catch { threw = true; }
+    assert(threw, 'a JSON array should be rejected');
+  });
+
+  await run('extra: empty form yields no extra keys', () => {
+    const out = mcpFormToConfigExtra({ toolsLoaded: false, toolAllow: null, toolDeny: [], defaultArgsText: '  ' });
+    assert(!('tools' in out) && !('defaultArguments' in out), 'empty form should add nothing');
   });
 
   return { passed, failed, errors };

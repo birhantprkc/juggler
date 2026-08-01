@@ -294,5 +294,11 @@ func (m *Manager) CallTool(ctx context.Context, server, tool string, args map[st
 	if er.session == nil {
 		return nil, fmt.Errorf("mcp server %q has no session", server)
 	}
-	return er.session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	// Defense in depth: a stale engine tool definition (built before the config
+	// changed) could still target a now-hidden tool. Reject it here so a filtered
+	// tool is unreachable even if it slips back into a tool list.
+	if er.allows != nil && !er.allows(tool) {
+		return nil, fmt.Errorf("mcp tool %q is not permitted on server %q", tool, server)
+	}
+	return er.session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: mergeDefaultArgs(er.defaultArgs, args)})
 }

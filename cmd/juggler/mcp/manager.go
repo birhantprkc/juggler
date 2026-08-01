@@ -93,10 +93,14 @@ type serverState struct {
 	waiters []chan ensureResult
 }
 
-// ensureResult is delivered to a parked callTool caller.
+// ensureResult is delivered to a parked callTool caller. defaultArgs and allows
+// are a snapshot of the server's argument/visibility policy taken on the manager
+// goroutine, so CallTool can apply them without touching shared state.
 type ensureResult struct {
-	session *mcp.ClientSession
-	err     error
+	session     *mcp.ClientSession
+	err         error
+	defaultArgs map[string]any    // configured fixed arguments, merged into each call
+	allows      func(string) bool // reports whether a raw tool name is permitted
 }
 
 // reqKind enumerates messages to the manager goroutine.
@@ -241,7 +245,7 @@ func (m *Manager) run() {
 
 		case evSetTools:
 			if s := servers[req.server]; s != nil && s.generation == req.generation {
-				s.tools = req.tools
+				s.tools = applyServerConfig(s.cfg, req.tools)
 				m.notifyChange()
 			}
 		}
@@ -474,13 +478,13 @@ func (m *Manager) handleConnected(servers map[string]*serverState, req mcpReq) {
 		return
 	}
 	s.session = req.session
-	s.tools = req.tools
+	s.tools = applyServerConfig(s.cfg, req.tools)
 	s.srvName = req.srvName
 	s.srvVer = req.srvVer
 	s.status = statusRunning
 	s.lastErr = ""
 	s.attempts = 0
-	m.drainWaiters(s, ensureResult{session: req.session})
+	m.drainWaiters(s, s.readyEnsure())
 	m.notifyChange()
 }
 
@@ -535,7 +539,7 @@ func (m *Manager) handleEnsure(servers map[string]*serverState, req mcpReq) {
 	}
 	switch s.status {
 	case statusRunning:
-		req.resp <- mcpResp{ensure: ensureResult{session: s.session}}
+		req.resp <- mcpResp{ensure: s.readyEnsure()}
 	case statusFailed:
 		// Give an explicit call a fresh attempt.
 		s.attempts = 0
@@ -596,6 +600,17 @@ func forward(resp chan mcpResp) chan ensureResult {
 	ch := make(chan ensureResult, 1)
 	go func() { resp <- mcpResp{ensure: <-ch} }()
 	return ch
+}
+
+// readyEnsure builds the success result for a callTool caller, capturing the
+// server's current fixed-argument and tool-visibility policy alongside the live
+// session. Called only on the manager goroutine, so s.cfg is read race-free.
+func (s *serverState) readyEnsure() ensureResult {
+	return ensureResult{
+		session:     s.session,
+		defaultArgs: s.cfg.DefaultArguments,
+		allows:      s.cfg.Tools.allowsTool,
+	}
 }
 
 // listTools fetches and flattens the server's tool list.

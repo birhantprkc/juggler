@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- MCP servers can now hide individual tools via per-server allow/deny lists, editable as checkboxes in Settings
+- MCP servers can fix default arguments that are merged into every call and hidden from the model
 - Claude Code usage polls no longer load user-level plugins or hooks, so unrelated tools don't fire on every quota refresh
 - Context-item extensions can implement `static onTurnEnd()` to run a side-effect (e.g. retain a memory) once per turn
 - Fixed an auto-instantiate context item that implements `execute()` failing to seed, so its standing context reached the prompt

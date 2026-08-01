@@ -26,6 +26,7 @@ import {
   mcpSetConfig,
   mcpServerControl,
   mcpGetLog,
+  mcpListTools,
   acpListAgents,
   acpGetConfig,
   acpSetConfig,
@@ -50,6 +51,233 @@ export function formatMcpTokenCost(status) {
   const t = (status && status.schemaTokens) || 0;
   const tok = t >= 1000 ? `${(t / 1000).toFixed(1)}k` : String(t);
   return `${n} tool${n === 1 ? '' : 's'}${t ? ` · ~${tok} tokens/request` : ''}`;
+}
+
+/**
+ * The MCP-only working-state fields the add/edit form carries alongside the
+ * generic ones (command/args/url/…). Seeded by {@link mcpSeedFormExtra}.
+ * @typedef {object} McpFormState
+ * @property {string} [name] - Server name (set by the generic controller)
+ * @property {string} [mode] - 'add' | 'edit' (set by the generic controller)
+ * @property {string[]|null} toolAllow - Seeded allowlist, or null when none configured
+ * @property {string[]} toolDeny - Seeded denylist
+ * @property {string} defaultArgsText - Fixed-arguments JSON as edited text
+ * @property {boolean} toolsLoaded - Whether the live tool list has been fetched
+ * @property {boolean} toolsLoading - Whether a fetch is in flight
+ * @property {string[]} toolNames - Discovered raw tool names (once loaded)
+ * @property {Record<string, boolean>} toolChecked - Per-tool exposed/hidden state
+ */
+
+/**
+ * Whether a tool name is exposed under a {allow, deny} filter, mirroring the
+ * Go `ToolFilter.allowsTool` semantics: a non-empty allow list is strict, then
+ * deny subtracts. Pure — exported for unit testing.
+ * @param {string} name - Raw MCP tool name
+ * @param {{allow?: string[]|null, deny?: string[]}} filter - The filter
+ * @returns {boolean} True when the tool is exposed
+ */
+export function mcpToolAllowed(name, filter) {
+  const allow = filter && filter.allow;
+  const deny = (filter && filter.deny) || [];
+  if (Array.isArray(allow) && allow.length && !allow.includes(name)) return false;
+  if (deny.includes(name)) return false;
+  return true;
+}
+
+/**
+ * Seed the MCP form's extra working state from a stored server entry. `toolAllow`
+ * is null when no allowlist is configured (all tools exposed); `defaultArgsText`
+ * is the pretty-printed JSON of the fixed arguments.
+ * @param {import('../config-tab.js').SubprocessConfig} cfg - Stored entry (or {} when adding)
+ * @returns {McpFormState} Extra working-state fields
+ */
+export function mcpSeedFormExtra(cfg) {
+  const tools = (cfg && cfg.tools) || {};
+  const args = (cfg && cfg.defaultArguments) || {};
+  return {
+    toolAllow: Array.isArray(tools.allow) ? tools.allow.slice() : null,
+    toolDeny: Array.isArray(tools.deny) ? tools.deny.slice() : [],
+    defaultArgsText: Object.keys(args).length ? JSON.stringify(args, null, 2) : '',
+    toolsLoaded: false,
+    toolsLoading: false,
+    toolNames: [],
+    toolChecked: {},
+  };
+}
+
+/**
+ * Build the `{tools, defaultArguments}` keys to persist from the MCP form's
+ * working state. When the live tool list was loaded, the checkbox state drives an
+ * allowlist (omitted entirely when every tool is checked). When it was never
+ * loaded (adding, or server offline), the seeded filter is preserved verbatim so
+ * an unreachable server's config is never silently rewritten. Throws on malformed
+ * fixed-arguments JSON. Pure — exported for unit testing.
+ * @param {McpFormState} f - The form working state
+ * @returns {{tools?: {allow?: string[], deny?: string[]}, defaultArguments?: object}} Extra entry keys
+ */
+export function mcpFormToConfigExtra(f) {
+  /** @type {{tools?: {allow?: string[], deny?: string[]}, defaultArguments?: object}} */
+  const out = {};
+
+  if (f.toolsLoaded) {
+    const checked = (f.toolNames || []).filter((n) => f.toolChecked[n]);
+    if (checked.length < (f.toolNames || []).length) {
+      out.tools = { allow: checked };
+    }
+    // Every tool checked ⇒ omit `tools` (expose all).
+  } else {
+    /** @type {{allow?: string[], deny?: string[]}} */
+    const tools = {};
+    if (Array.isArray(f.toolAllow)) tools.allow = f.toolAllow;
+    if (Array.isArray(f.toolDeny) && f.toolDeny.length) tools.deny = f.toolDeny;
+    if (Object.keys(tools).length) out.tools = tools;
+  }
+
+  const text = (f.defaultArgsText || '').trim();
+  if (text) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error('Fixed arguments must be valid JSON.');
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Fixed arguments must be a JSON object.');
+    }
+    if (Object.keys(parsed).length) out.defaultArguments = parsed;
+  }
+  return out;
+}
+
+/**
+ * Render the MCP-only form section: per-tool visibility checkboxes and a
+ * fixed-arguments JSON field. Fetches the server's live tool list once (edit of a
+ * running server); on add or when offline it shows a hint and leaves the seeded
+ * filter untouched. Kept out of the generic controller via the renderFormExtra
+ * spec hook.
+ * @param {McpFormState} f - Form working state
+ * @param {HTMLElement} wrap - Form element to append to
+ * @param {import('../config-tab.js').ConfigTabController} ctrl - Owning controller (for re-render)
+ * @returns {void}
+ */
+function renderMcpFormExtra(f, wrap, ctrl) {
+  // --- Tools section ---
+  const toolsField = document.createElement('div');
+  toolsField.className = 'mcp-form-field';
+  const toolsLabel = document.createElement('label');
+  toolsLabel.className = 'mcp-field-label';
+  toolsLabel.textContent = 'Tools';
+  toolsField.appendChild(toolsLabel);
+
+  if (f.mode === 'add' || !f.name) {
+    toolsField.appendChild(mcpHint('Save the server first, then edit it to choose which tools are exposed. New servers expose all tools.'));
+  } else if (f.toolsLoaded) {
+    const names = f.toolNames || [];
+    if (!names.length) {
+      toolsField.appendChild(mcpHint('No tools discovered yet — the server may be stopped or still connecting. All tools stay exposed until you pick.'));
+    } else {
+      const enabled = names.filter((n) => f.toolChecked[n]).length;
+      const summary = document.createElement('div');
+      summary.className = 'mcp-field-hint';
+      summary.textContent = `${enabled} / ${names.length} tools enabled. Unchecked tools are hidden from the model and cannot be called.`;
+      toolsField.appendChild(summary);
+
+      const list = document.createElement('div');
+      list.className = 'mcp-tool-filter-list';
+      for (const name of names) {
+        list.appendChild(mcpToolRow(f, name, ctrl));
+      }
+      toolsField.appendChild(list);
+
+      // Warn about configured names no longer offered by the server.
+      const configured = [...(f.toolAllow || []), ...(f.toolDeny || [])];
+      const unknown = configured.filter((n) => !names.includes(n));
+      if (unknown.length) {
+        toolsField.appendChild(mcpHint(`Config references tools not offered by this server: ${unknown.join(', ')}. They will be dropped on save.`));
+      }
+    }
+  } else {
+    toolsField.appendChild(mcpHint('Loading tools…'));
+    if (!f.toolsLoading) {
+      f.toolsLoading = true;
+      mcpListTools({ server: f.name })
+        .then((res) => {
+          if (ctrl.editing !== f) return; // form closed or switched
+          const tools = Array.isArray(res && res.tools) ? res.tools : [];
+          f.toolNames = tools.map((t) => t.name);
+          f.toolChecked = {};
+          for (const n of f.toolNames) {
+            f.toolChecked[n] = mcpToolAllowed(n, { allow: f.toolAllow, deny: f.toolDeny });
+          }
+          f.toolsLoaded = true;
+          f.toolsLoading = false;
+          ctrl.render();
+        })
+        .catch(() => {
+          if (ctrl.editing !== f) return;
+          f.toolNames = [];
+          f.toolsLoaded = true;
+          f.toolsLoading = false;
+          ctrl.render();
+        });
+    }
+  }
+  wrap.appendChild(toolsField);
+
+  // --- Fixed arguments section ---
+  const argsField = document.createElement('div');
+  argsField.className = 'mcp-form-field';
+  const argsLabel = document.createElement('label');
+  argsLabel.className = 'mcp-field-label';
+  argsLabel.textContent = 'Fixed arguments';
+  argsField.appendChild(argsLabel);
+  const ta = document.createElement('textarea');
+  ta.className = 'mcp-input mcp-default-args-input';
+  ta.rows = 4;
+  ta.placeholder = '{\n  "bank_id": "general"\n}';
+  ta.value = f.defaultArgsText || '';
+  ta.addEventListener('input', () => { f.defaultArgsText = ta.value; });
+  argsField.appendChild(ta);
+  argsField.appendChild(mcpHint('A JSON object merged into every call to this server and hidden from the model. The configured value overrides anything the model supplies — use it to fix routing keys.'));
+  wrap.appendChild(argsField);
+}
+
+/**
+ * One tool checkbox row for the visibility filter.
+ * @param {McpFormState} f - Form working state
+ * @param {string} name - Raw tool name
+ * @param {import('../config-tab.js').ConfigTabController} ctrl - Owning controller
+ * @returns {HTMLElement} The row element
+ */
+function mcpToolRow(f, name, ctrl) {
+  const row = document.createElement('label');
+  row.className = 'mcp-tool-filter-row';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.className = 'mcp-tool-filter-cb';
+  cb.checked = !!f.toolChecked[name];
+  cb.addEventListener('change', () => {
+    f.toolChecked[name] = cb.checked;
+    ctrl.render(); // refresh the "N / M enabled" summary
+  });
+  const text = document.createElement('span');
+  text.className = 'mcp-tool-filter-name';
+  text.textContent = name;
+  row.appendChild(cb);
+  row.appendChild(text);
+  return row;
+}
+
+/**
+ * A small hint line reusing the form's hint styling.
+ * @param {string} text - Hint text
+ * @returns {HTMLElement} The hint element
+ */
+function mcpHint(text) {
+  const hint = document.createElement('div');
+  hint.className = 'mcp-field-hint';
+  hint.textContent = text;
+  return hint;
 }
 
 /**
@@ -165,6 +393,10 @@ const MCP_SPEC = {
   urlPlaceholder: 'https://example.com/mcp',
   urlHint: 'The remote MCP endpoint URL (http/sse transport).',
   headerKeyPlaceholder: 'Authorization',
+  // Per-server tool visibility filter + fixed arguments (MCP only).
+  seedFormExtra: mcpSeedFormExtra,
+  renderFormExtra: renderMcpFormExtra,
+  formToConfigExtra: mcpFormToConfigExtra,
 };
 
 /**

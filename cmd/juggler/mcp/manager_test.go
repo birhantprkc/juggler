@@ -173,6 +173,62 @@ func TestManagerDiscoveryAndCall(t *testing.T) {
 	}
 }
 
+func TestManagerToolFilterAndDefaultArgs(t *testing.T) {
+	cfg := fakeServerConfig("serve")
+	cfg.Tools = &ToolFilter{Allow: []string{"echo"}} // hide "peek"
+	cfg.DefaultArguments = map[string]any{"msg": "fixed"}
+	writeGlobalConfig(t, map[string]ServerConfig{"fake": cfg})
+
+	m := NewManager()
+	m.Start()
+	m.Reconcile("")
+
+	if !waitFor(t, 15*time.Second, func() bool {
+		for _, s := range m.ListServers() {
+			if s.Name == "fake" && s.Status == statusRunning {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("fake server never reached running: %+v", m.ListServers())
+	}
+
+	// Filter: only the allowed tool is discovered; "peek" is hidden.
+	tools := m.ListTools("fake")
+	if len(tools) != 1 || tools[0].Name != "echo" {
+		t.Fatalf("want only [echo], got %+v", tools)
+	}
+
+	// Schema hiding: the fixed "msg" key is stripped from the exposed schema.
+	if schema, ok := tools[0].InputSchema.(map[string]any); ok {
+		if props, ok := schema["properties"].(map[string]any); ok {
+			if _, present := props["msg"]; present {
+				t.Errorf("fixed-argument key msg should be hidden from schema: %+v", props)
+			}
+		}
+	}
+
+	// Defense in depth: a call to the hidden tool is rejected before dispatch.
+	if _, err := m.CallTool(context.Background(), "fake", "peek", nil); err == nil {
+		t.Errorf("expected a hidden tool call to be rejected")
+	}
+
+	// Merge: config value wins over the model-supplied argument.
+	res, err := m.CallTool(context.Background(), "fake", "echo", map[string]any{"msg": "model"})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	got := convertContent(res.Content)
+	text, _ := got[0]["text"].(string)
+	if !strings.Contains(text, `"msg":"fixed"`) {
+		t.Errorf("config default should win, got %q", text)
+	}
+	if strings.Contains(text, `"msg":"model"`) {
+		t.Errorf("model value should have been overridden, got %q", text)
+	}
+}
+
 func TestManagerCrashMarksFailed(t *testing.T) {
 	old := restartBackoff
 	restartBackoff = 10 * time.Millisecond
