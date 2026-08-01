@@ -95,7 +95,10 @@ core provides:
 - **Monitor** — stream lines from a long-running command as events.
 - **TaskOutput / TaskStop (KillShell)** — read new output from, or stop, a
   background task.
-- **plan** — create and track a multi-step implementation plan.
+- **todo** — track a lightweight, no-approval checklist during multi-step work;
+  each call replaces the whole list.
+- **plan** — propose an approval-gated implementation plan for user review, then
+  track its execution step by step.
 - **memory** — record or remove durable, cross-session project facts.
 - **AskUserQuestion** — ask the user a structured multiple-choice question.
 - **define_command** — save a reusable prompt as a custom "/name" slash command;

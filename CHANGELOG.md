@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added a todo checklist tool for frictionless progress tracking; plan is now reserved for approval-gated proposals
 - Large pastes collapse to inline expandable placeholders in the composer
 - Info cards (Tips, Usage, Git status) are now extension plugins, toggled in the Extensions catalog and re-shown from a new sidebar menu
 - Fixed compaction piling up summary threads

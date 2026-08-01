@@ -197,6 +197,7 @@ select {
     --ci-family-system: #4a2f97;
     --ci-family-ask: var(--ci-preset-yellow);
     --ci-family-thread: var(--ci-preset-magenta);
+    --ci-family-todo: var(--ci-preset-teal);
 
     /* Syntax highlighting colors (dark theme) */
     --syntax-comment: #8b949e;
@@ -530,6 +531,7 @@ select {
     --ci-family-system: #e7e0fb;
     --ci-family-ask: var(--ci-preset-yellow);
     --ci-family-thread: var(--ci-preset-magenta);
+    --ci-family-todo: var(--ci-preset-teal);
 
     /* badge mid-tones (saturated; white glyphs readable) */
     --ci-family-badge-read: var(--ci-preset-badge-cyan);
@@ -542,6 +544,7 @@ select {
     --ci-family-badge-system: #6b3fd0bb;
     --ci-family-badge-ask: var(--ci-preset-badge-yellow);
     --ci-family-badge-thread: var(--ci-preset-badge-magenta);
+    --ci-family-badge-todo: var(--ci-preset-badge-teal);
 
     /* Code block specific colors */
     --bg-code-dark: #f6f8fa;
@@ -2422,6 +2425,11 @@ tool-action-message {
 .color-thread {
     --preset-bg: var(--ci-family-thread);
     --preset-badge-bg: var(--ci-family-badge-thread, var(--ci-family-thread));
+}
+
+.color-todo {
+    --preset-bg: var(--ci-family-todo);
+    --preset-badge-bg: var(--ci-family-badge-todo, var(--ci-family-todo));
 }
 
 /* Apply preset background to icon boxes and context item containers */

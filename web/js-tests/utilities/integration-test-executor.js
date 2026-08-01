@@ -98,6 +98,8 @@ import { runTests as runToolActionRenderTests } from '../unit-tests/tool-action-
 import { runTests as runExploreCodeFormatTests } from '../unit-tests/explore-code-format-test.js';
 import { runTests as runSubmitPlanActionTests } from '../unit-tests/submit-plan-action-test.js';
 import { runTests as runPlanApprovalTests } from '../unit-tests/plan-approval-test.js';
+import { runTests as runTodoActionTests } from '../unit-tests/todo-action-test.js';
+import { runTests as runTodoNoApprovalTests } from '../unit-tests/todo-no-approval-test.js';
 import { runTests as runWebFetchTests } from '../unit-tests/test-webfetch.js';
 import { runTests as runWebSearchTests } from '../unit-tests/test-websearch.js';
 import { runTests as runThreadNestedArrayTests } from '../unit-tests/thread-nested-array-test.js';
@@ -301,6 +303,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:explore-code-format', run: runExploreCodeFormatTests },
   { name: 'unit:submit-plan-action', run: runSubmitPlanActionTests },
   { name: 'unit:plan-approval', run: runPlanApprovalTests },
+  { name: 'unit:todo-action', run: runTodoActionTests },
+  { name: 'unit:todo-no-approval', run: runTodoNoApprovalTests },
   { name: 'unit:webfetch', run: runWebFetchTests },
   { name: 'unit:websearch', run: runWebSearchTests },
   { name: 'unit:thread-nested-array', run: runThreadNestedArrayTests },

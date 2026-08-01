@@ -8,238 +8,7 @@ import { createElement } from 'juggler/ui';
 import {
   createEmptyState
 } from 'juggler/item-utils';
-import { renderMarkdown } from 'juggler/ui';
-
-// ============================================================================
-// Plan Detail View Styles
-// ============================================================================
-
-const PLAN_STYLES = `
-/* Plan Detail View */
-
-.plan-detail-view {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.plan-detail-view .plan-header {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.plan-detail-view .plan-title {
-  font-family: var(--font-sans);
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--context-item-text, var(--text-primary));
-  margin: 0;
-}
-
-.plan-detail-view .plan-status-badge {
-  display: inline-block;
-  font-size: 0.6875rem;
-  font-weight: 500;
-  padding: 0.125rem 0.5rem;
-  border-radius: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.plan-detail-view .plan-status-badge.status-planning {
-  background: rgb(88 166 255 / 15%);
-  color: #58a6ff;
-}
-
-.plan-detail-view .plan-status-badge.status-approved {
-  background: rgb(63 185 80 / 15%);
-  color: #3fb950;
-}
-
-.plan-detail-view .plan-status-badge.status-executing {
-  background: rgb(210 153 34 / 15%);
-  color: #d29922;
-}
-
-.plan-detail-view .plan-status-badge.status-completed {
-  background: rgb(63 185 80 / 15%);
-  color: #3fb950;
-}
-
-/* Items List */
-
-.plan-detail-view .plan-items {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.plan-detail-view .plan-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75rem;
-  padding: 0.25rem 0;
-}
-
-/* Item Indicator */
-.plan-detail-view .plan-item-indicator {
-  flex-shrink: 0;
-  width: 1.25rem;
-  height: 1.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.6875rem;
-  font-family: var(--font-mono);
-  color: var(--context-item-text-secondary, var(--text-secondary));
-}
-
-.plan-detail-view .plan-item-indicator svg {
-  width: 1.25rem;
-  height: 1.25rem;
-}
-
-.plan-detail-view .plan-item.status-completed .plan-item-indicator svg {
-  fill: #3fb950;
-}
-
-.plan-detail-view .plan-item.status-in_progress .plan-item-indicator svg {
-  fill: #58a6ff;
-}
-
-.plan-detail-view .plan-item.status-failed .plan-item-indicator svg {
-  fill: #f85149;
-}
-
-.plan-detail-view .plan-item.status-skipped .plan-item-indicator {
-  color: var(--context-item-text-secondary, var(--text-secondary));
-  opacity: 0.6;
-}
-
-/* Item Content */
-.plan-detail-view .plan-item-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.plan-detail-view .plan-item-text {
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  color: var(--context-item-text, var(--text-primary));
-  margin: 0;
-}
-
-.plan-detail-view .plan-item-text p {
-  margin: 0;
-}
-
-.plan-detail-view .plan-item-text code {
-  background: rgb(255 255 255 / 10%);
-  padding: 0.125rem 0.25rem;
-  border-radius: 0.1875rem;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-}
-
-.plan-detail-view .plan-item.status-completed .plan-item-text {
-  color: var(--context-item-text-secondary, var(--text-secondary));
-}
-
-.plan-detail-view .plan-item.status-skipped .plan-item-text {
-  color: var(--context-item-text-secondary, var(--text-secondary));
-  text-decoration: line-through;
-  opacity: 0.6;
-}
-
-/* Step result summary — a distinct outcome card, not flowed-on text.
-   A left accent bar + inset background separates it from the step
-   description above; the accent colour is keyed to the step status. */
-.plan-detail-view .plan-item-result {
-  margin-top: 0.4375rem;
-  padding: 0.375rem 0.5rem 0.375rem 0.625rem;
-  font-size: 0.75rem;
-  line-height: 1.5;
-  color: var(--context-item-text-secondary, var(--text-secondary));
-  background: var(--overlay-light-5, rgb(255 255 255 / 5%));
-  border-left: 0.1875rem solid var(--overlay-light-20, rgb(255 255 255 / 20%));
-  border-radius: 0 var(--radius-sm, 0.1875rem) var(--radius-sm, 0.1875rem) 0;
-}
-
-.plan-detail-view .plan-item.status-completed .plan-item-result {
-  border-left-color: var(--accent-green, #3fb950);
-}
-
-.plan-detail-view .plan-item.status-failed .plan-item-result {
-  border-left-color: var(--accent-red, #f85149);
-}
-
-.plan-detail-view .plan-item.status-in_progress .plan-item-result {
-  border-left-color: var(--accent-blue, #58a6ff);
-}
-
-/* Thread link icon */
-.plan-detail-view .plan-item-thread-link {
-  flex-shrink: 0;
-  width: 1.25rem;
-  height: 1.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  opacity: 0.5;
-  transition: opacity 0.15s;
-}
-
-.plan-detail-view .plan-item-thread-link:hover {
-  opacity: 1;
-}
-
-.plan-detail-view .plan-item-thread-link svg {
-  width: 0.875rem;
-  height: 0.875rem;
-  fill: #58a6ff;
-}
-
-/* Empty State */
-
-.plan-detail-view .plan-empty {
-  padding: 2rem 1rem;
-  text-align: center;
-  color: var(--context-item-text-secondary, var(--text-secondary));
-  font-size: 0.8125rem;
-}
-
-/* Action Bubble Variant (smaller padding for message context) */
-
-.action-bubble .plan-detail-view {
-  gap: 0.75rem;
-}
-
-.action-bubble .plan-detail-view .plan-title {
-  font-size: 0.875rem;
-}
-
-.action-bubble .plan-detail-view .plan-item {
-  padding: 0.5rem 0.75rem;
-}
-
-.action-bubble .plan-detail-view .plan-item-text {
-  font-size: 0.75rem;
-}
-`;
-
-// Inject styles once when loaded in a document-owning viewer. Engine workers
-// import this module for tool execution and must not touch DOM globals.
-if (typeof document !== 'undefined' && !document.getElementById('plan-styles')) {
-  const style = document.createElement('style');
-  style.id = 'plan-styles';
-  style.textContent = PLAN_STYLES;
-  document.head.appendChild(style);
-}
+import { createChecklistView } from './lib/checklist-view.js';
 
 /**
  * Plan step with status and thread tracking
@@ -366,7 +135,7 @@ class PlanContextItem extends ContextItem {
       {
         name: 'plan',
         category: 'meta',  // meta = internal state only, doesn't modify files. Ensures MCP ReadOnlyHint=true
-        description: 'Manage the implementation plan. Actions: "submit" to create/update plan for approval, "start_step" to begin a step, "complete_step" to finish a step, "fail_step" to mark failure, "skip_step" to skip.',
+        description: 'Propose an implementation plan for user review and approval, then track its execution. Use ONLY when proposing an approach that warrants user sign-off, or when asked to plan — for lightweight progress tracking of routine multi-step work, use the todo tool instead. Actions: "submit" presents the plan for approval; "start_step" / "complete_step" / "fail_step" / "skip_step" track execution of the approved plan.',
         input_schema: {
           type: 'object',
           properties: {
@@ -377,7 +146,7 @@ class PlanContextItem extends ContextItem {
             },
             title: {
               type: 'string',
-              description: 'Descriptive title for the plan (required for submit)'
+              description: 'Descriptive title for the plan, specific enough to distinguish this approach (required for submit)'
             },
             items: {
               type: 'array',
@@ -386,7 +155,7 @@ class PlanContextItem extends ContextItem {
                 properties: {
                   content: {
                     type: 'string',
-                    description: 'What this step will accomplish. Supports markdown (use `backticks` for file paths and code).'
+                    description: 'What this step will accomplish, in enough detail to review: the files involved (`backticks` for paths/code), the change to make, and how it will be verified. One reviewable unit of work per step.'
                   },
                   status: {
                     type: 'string',
@@ -494,7 +263,7 @@ class PlanContextItem extends ContextItem {
   }
 
   /**
-   * Create properties panel view using plan-detail-view component
+   * Create properties panel view using the shared checklist view
    * @returns {HTMLElement} Properties panel element
    */
   createPropertiesPanelElement() {
@@ -1257,93 +1026,13 @@ class PlanContextItem extends ContextItem {
    * @returns {HTMLElement} Plan detail view element
    */
   _createPlanDetailView(planData) {
-    const view = createElement('div', 'plan-detail-view');
-
-    // Header with title, status badge, and progress
-    const header = createElement('div', 'plan-header');
-
-    if (planData.title) {
-      const titleRow = createElement('div', 'plan-title-row');
-      titleRow.style.cssText = 'display:flex;align-items:center;gap:0.5rem';
-
-      const title = createElement('h3', 'plan-title', planData.title);
-      titleRow.appendChild(title);
-
-      if (planData.status && planData.status !== 'planning') {
-        const badge = createElement('span', 'plan-status-badge');
-        badge.classList.add(`status-${planData.status}`);
-        badge.textContent = planData.status;
-        titleRow.appendChild(badge);
-      }
-
-      header.appendChild(titleRow);
-    }
-
-    view.appendChild(header);
-
-    // Steps list
-    const steps = planData.steps || [];
-    const stepsList = createElement('ol', 'plan-items');
-
-    for (const [i, step] of steps.entries()) {
-      const status = step.status || 'pending';
-
-      const stepEl = createElement('li', 'plan-item');
-      stepEl.classList.add(`status-${status}`);
-
-      // Step indicator (SVG icon or number)
-      const indicator = createElement('div', 'plan-item-indicator');
-      if (status === 'completed') {
-        indicator.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M380.1-256.82 168.62-468.31l36-35.74L380.1-328.56l374.87-375.13 36 36L380.1-256.82Z"/></svg>';
-      } else if (status === 'in_progress') {
-        indicator.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M340-237.64v-487.69l383.07 243.84L340-237.64Zm50.26-243.85Zm0 152 239.59-152-239.59-152v304Z"/></svg>';
-      } else if (status === 'failed') {
-        indicator.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="m256-192.35-63.65-63.65L416.35-480 192.35-704l63.65-63.65L480-543.65l224-224 63.65 63.65L543.65-480l224 224-63.65 63.65L480-416.35l-224 224Z"/></svg>';
-      } else if (status === 'skipped') {
-        indicator.textContent = '\u2014';
-      } else {
-        indicator.textContent = String(i + 1);
-      }
-      stepEl.appendChild(indicator);
-
-      // Step content
-      const content = createElement('div', 'plan-item-content');
-      const text = createElement('div', 'plan-item-text markdown');
-      text.innerHTML = renderMarkdown(step.content, { escapeXml: false });
-      content.appendChild(text);
-
-      // Result summary (if present)
-      if (step.result) {
-        const resultEl = createElement('div', 'plan-item-result', step.result);
-        content.appendChild(resultEl);
-      }
-
-      stepEl.appendChild(content);
-
-      // Thread link icon (if present)
-      if (step.threadItemId) {
-        const threadLink = createElement('div', 'plan-item-thread-link');
-        threadLink.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-280H280q-83.33 0-141.67-58.33Q80-396.67 80-480t58.33-141.67Q196.67-680 280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83.33 0 141.67 58.33Q880-563.33 880-480t-58.33 141.67Q763.33-280 680-280H520Z"/></svg>';
-        threadLink.title = 'Open step thread';
-        threadLink.dataset.threadItemId = step.threadItemId;
-        threadLink.addEventListener('click', (e) => {
-          e.stopPropagation();
-          // Dispatch item-selected event (bubbles up to conversation-tab)
-          threadLink.dispatchEvent(new CustomEvent('item-selected', {
-            bubbles: true,
-            composed: true,
-            detail: { itemId: step.threadItemId }
-          }));
-        });
-        stepEl.appendChild(threadLink);
-      }
-
-      stepsList.appendChild(stepEl);
-    }
-
-    view.appendChild(stepsList);
-
-    return view;
+    return createChecklistView(planData.steps || [], {
+      title: planData.title,
+      status: planData.status,
+      showStatusBadge: true,
+      showResults: true,
+      showThreadLinks: true,
+    });
   }
 
   /**

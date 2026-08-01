@@ -90,6 +90,35 @@ export default function systemPromptContribution({ enabledPluginIds }) {
     );
   }
 
+  // Planning vs tracking — steer the model between the two checklist tools:
+  // `todo` for its own live progress tracking, `plan` for an approval-gated
+  // proposal. Gated so it only mentions the tools actually enabled.
+  if (has('plan') || has('todo')) {
+    /** @type {string[]} */
+    const planTrack = ['### Planning vs tracking'];
+    if (has('plan') && has('todo')) {
+      planTrack.push(
+        'For multi-step work, keep a `todo` checklist and update it as you go — exactly one item ' +
+        'in_progress at a time, and each call replaces the whole list. Use the `plan` tool only to ' +
+        'propose an approach for the user\'s review: plans should be detailed enough to evaluate ' +
+        '(steps name the files involved and how the change is verified). Never submit a bare checklist ' +
+        'as a plan.'
+      );
+    } else if (has('todo')) {
+      planTrack.push(
+        'For multi-step work, keep a `todo` checklist and update it as you go — exactly one item ' +
+        'in_progress at a time. Each call replaces the whole list, so include every item.'
+      );
+    } else {
+      planTrack.push(
+        'Use the `plan` tool to propose an approach for the user\'s review, then track its execution. ' +
+        'Plans should be detailed enough to evaluate: steps name the files involved and how the change ' +
+        'is verified.'
+      );
+    }
+    toolUsage.push(planTrack.join('\n'));
+  }
+
   /** @type {string[]} */
   const sections = [];
 
