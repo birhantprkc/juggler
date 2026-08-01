@@ -396,6 +396,32 @@ class SystemPromptContextItem extends ContextItem {
   }
 
   /**
+   * In-place update hook the properties panel calls (via its `_liveUpdater`)
+   * for same-item changes, instead of rebuilding the panel. Rebuilding would
+   * recreate the identity textarea from scratch, discarding a manual drag-resize
+   * height plus the user's focus and caret — visible when the first edit flips
+   * `isModified` and shifts the title scalar the panel diffs on.
+   *
+   * The editable textarea already reflects the user's own keystrokes, so while
+   * it holds focus we leave it entirely untouched. When the change came from
+   * elsewhere (preset apply, undo) and the field is not being edited, we sync its
+   * value from the effective text. Returning true tells the panel the update is
+   * handled and no rebuild is needed.
+   * @param {HTMLElement} content - The context-item body element holding the panel
+   * @returns {boolean} True — the update was handled in place
+   */
+  updatePropertiesPanel(content) {
+    const textArea = /** @type {HTMLTextAreaElement|null} */ (
+      content.querySelector('.system-prompt-textarea')
+    );
+    if (textArea && document.activeElement !== textArea) {
+      const effective = this._getEffectiveText();
+      if (textArea.value !== effective) textArea.value = effective;
+    }
+    return true;
+  }
+
+  /**
    * Build the sectioned preview showing all system prompt layers.
    * The Identity section is editable (preset button + textarea);
    * all other sections are read-only.

@@ -372,6 +372,18 @@ export function renderContextItem(host, container, contextItem) {
     }
     wrapper.appendChild(itemContent);
     container.appendChild(wrapper);
+
+    // A context item with an editable body (e.g. the system prompt's identity
+    // textarea) opts into in-place updates: without this, a same-item Yjs change
+    // — including the item persisting its OWN edit — routes through the panel's
+    // snapshot path and, when the item's title scalar shifts, triggers a full
+    // rebuild that destroys the actively-edited field (its drag-set height,
+    // focus, and caret). The updater patches in place and returns true to skip
+    // the rebuild; returning false (or omitting the method) leaves the snapshot
+    // path in charge, unchanged.
+    if (typeof itemInstance.updatePropertiesPanel === 'function') {
+      host._liveUpdater = () => itemInstance.updatePropertiesPanel(itemContent) !== false;
+    }
     return;
   }
 
