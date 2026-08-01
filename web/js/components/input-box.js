@@ -17,6 +17,16 @@ import { showNotice } from './modal-dialog.js';
 import apiService from '../services/api.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isDesktopWindow } from '../../sdk/lib/window-control.js';
+import {
+  makeToken,
+  parseTokens,
+  hasTokens,
+  expandPasteTokens,
+  nextId as nextPasteId,
+  stripStrayDelimiters,
+  PASTE_TOKEN_OPEN,
+  PASTE_TOKEN_CLOSE
+} from '../utils/paste-tokens.js';
 
 /**
  * Input box component for sending messages
@@ -78,6 +88,17 @@ const MAX_TEXT_DROP_BYTES = 512 * 1024;
 
 /** Reject a drop whose text files sum past this aggregate (bytes). */
 const MAX_TEXT_DROP_TURN_BYTES = 1024 * 1024;
+
+/**
+ * A pasted-text payload at or above EITHER threshold is captured into an inline
+ * placeholder token instead of flooding the textarea: ~2,500 characters (about
+ * one screenful) or 40 lines. Below both, the paste lands as ordinary text
+ * exactly as before. Tuned by feel — a modest snippet stays inline; a source
+ * file or a long log collapses to a chip.
+ */
+const PASTE_CHIP_MIN_CHARS = 2_500;
+/** Line-count companion to {@link PASTE_CHIP_MIN_CHARS}. */
+const PASTE_CHIP_MIN_LINES = 40;
 
 /**
  * Heuristic: does a just-decoded string look like binary rather than text?
@@ -232,6 +253,38 @@ class InputBox extends HTMLElement {
     /** @type {Array<{filename:string,content:string,bytes:number}>} @private */
     this._pendingTextFiles = [];
 
+    // Paste-placeholder side table: token id → captured blob. APPEND-ONLY for
+    // the draft's life (never pruned when a token vanishes from the text), which
+    // is what makes native undo/redo of a token airtight — any resurrected token
+    // character still resolves. GC'd only at draft boundaries (send / clear /
+    // thread-switch restore). See utils/paste-tokens and _capturePaste.
+    /** @type {Map<number, {content:string, bytes:number}>} @private */
+    this._pasteBlobs = new Map();
+    // Backdrop mirror that renders the styled token pills behind a
+    // transparent-text textarea. Built lazily on the first token and torn down
+    // when the last token goes, so a token-free composer is a plain textarea.
+    /** @type {HTMLElement|null} @private */
+    this._pasteMirror = null;
+    /** @type {ResizeObserver|null} @private */
+    this._pasteMirrorRO = null;
+    /** @type {(() => void)|null} @private selectionchange listener while mirrored */
+    this._pasteSelectionListener = null;
+    /** @type {boolean} @private reentrancy guard while snapping the selection */
+    this._snappingSelection = false;
+    // Last reconciled textarea value — the revert base for the input-time token
+    // reconciler. Any input that damages a token's interior is rolled back to
+    // this, so a placeholder's contents can never be edited (only deleted whole).
+    /** @type {string} @private */
+    this._pasteLastValue = '';
+    // Last known caret offset, used to snap a collapsed caret OUT of a token in
+    // the direction of travel (word/line jump into a label → bounce past it).
+    /** @type {number} @private */
+    this._pasteLastCaret = 0;
+    // True between compositionstart/end so the reconciler and caret-snapping keep
+    // hands off an in-flight IME composition.
+    /** @type {boolean} @private */
+    this._pasteComposing = false;
+
     // Scheduled-send ("send after a delay") state. The armed target is an
     // epoch-ms wall-clock time persisted on the bound thread's draft (so it
     // survives a reload and stays bound to that thread). This box only arms,
@@ -308,6 +361,9 @@ class InputBox extends HTMLElement {
     // thread's draft, so reconnecting (or rebinding) restores the countdown —
     // and scheduledSendService fires it whether or not this box is mounted.
     this._stopScheduledCountdown();
+    // Tear down the token mirror — critically, this detaches the document-level
+    // selectionchange listener so a removed box leaves no dangling handler.
+    this._teardownPasteMirror();
     // Release any object URLs held by in-flight upload previews.
     for (const a of this._pendingAttachments) {
       if (a._previewURL) URL.revokeObjectURL(a._previewURL);
@@ -442,6 +498,17 @@ class InputBox extends HTMLElement {
         this._handleFiles(imageFiles);
         return;
       }
+      // Large text paste → collapse into an inline placeholder token instead of
+      // flooding the textarea. Runs after the image branch (images keep
+      // priority) and only for a genuinely large payload; anything smaller falls
+      // through to the browser's normal text paste, unchanged.
+      let pastedText = '';
+      try { pastedText = e.clipboardData?.getData('text/plain') || ''; } catch { /* restricted */ }
+      if (pastedText && this._shouldCapturePaste(pastedText)) {
+        e.preventDefault();
+        this._capturePaste(pastedText);
+        return;
+      }
       // WebKit desktop (WebKitGTK/WKWebView, i.e. the Wails app) routinely leaves
       // the synchronous paste event without the image file, exposing it only
       // through the async Clipboard API. Fall back to that — but only in the
@@ -496,6 +563,11 @@ class InputBox extends HTMLElement {
       // open — it consumes Arrow/Enter/Tab/Escape as needed and reports back.
       if (this._completions?.handleKeydown(e)) return;
 
+      // Paste-placeholder atomicity: a token is many characters but acts like a
+      // single object under Backspace/Delete/Arrow. Skipped while composing (IME
+      // safety) and a fast no-op when the box holds no tokens.
+      if (!e.isComposing && this._handleTokenKeydown(e, textarea)) return;
+
       // Enter to send (without Shift, Alt/Option, or Meta/Command). On a touch
       // composer Enter is the onscreen keyboard's return key, so a plain Enter
       // inserts a newline (handled by the branch below) and the Send button is
@@ -516,6 +588,11 @@ class InputBox extends HTMLElement {
         textarea.value = value.substring(0, start) + '\n' + value.substring(end);
         textarea.selectionStart = textarea.selectionEnd = start + 1;
         this.autoResize(textarea);
+        // Direct value writes don't fire input; keep the token mirror and the
+        // reconciler's known-good base in step so a later edit isn't misjudged.
+        this._syncPasteMirror();
+        this._pasteLastValue = textarea.value;
+        this._pasteLastCaret = textarea.selectionStart;
         return;
       }
 
@@ -579,16 +656,65 @@ class InputBox extends HTMLElement {
     });
 
     textarea.addEventListener('input', () => {
+      // Token reconciler: reject any edit that damaged a placeholder's interior
+      // (revert to the last good value) and strip orphaned delimiters, BEFORE
+      // anything else reads the value. Reachable only by paths that dodge the
+      // caret/selection interceptors (autocorrect/spell replace, dictation,
+      // drag-drop, exotic IME) — the caret can otherwise never rest in a token.
+      this._reconcileTokens(textarea);
       this.autoResize(textarea);
       this._updateSendButtonState();
       // Debounced draft save for page reload restoration
       this._scheduleDraftSave(textarea.value);
       // @ file completions
       this._completions?.handleInput();
+      // Rebuild/teardown the token mirror to match the current text.
+      this._syncPasteMirror();
     });
     // Paste in WKWebView updates value after the input event fires, so
     // re-run detection on the next tick to read the final pasted value.
     textarea.addEventListener('paste', () => setTimeout(() => this._completions?.handleInput(), 0));
+
+    // IME safety: caret-snapping and the token reconciler stand down while a
+    // composition is in flight (they would fight the input method).
+    textarea.addEventListener('compositionstart', () => { this._pasteComposing = true; });
+    textarea.addEventListener('compositionend', () => {
+      this._pasteComposing = false;
+      this._reconcileTokens(textarea);
+      this._syncPasteMirror();
+    });
+
+    // Click on a token pill expands it back to its full content (undoable). The
+    // hit-test is against the mirror's rendered pill geometry, not the caret,
+    // because a click that lands inside a token is snapped to a boundary before
+    // this fires — so a caret-based test would never see the interior.
+    textarea.addEventListener('click', (e) => {
+      if (this._pasteBlobs.size === 0 || !this._pasteMirror) return;
+      const hit = this._tokenAtPoint(e.clientX, e.clientY);
+      if (hit) this._expandTokenWithFeedback(textarea, hit.token, hit.span);
+    });
+
+    // Show a pointer cursor while hovering a pill. The transparent textarea sits
+    // above the (pointer-events:none) mirror, so its own cursor must be swapped;
+    // only meaningful while a mirror exists.
+    textarea.addEventListener('mousemove', (e) => {
+      if (this._pasteBlobs.size === 0 || !this._pasteMirror) {
+        if (textarea.style.cursor) textarea.style.cursor = '';
+        return;
+      }
+      const want = this._tokenAtPoint(e.clientX, e.clientY) ? 'pointer' : '';
+      if (textarea.style.cursor !== want) textarea.style.cursor = want;
+    });
+
+    // Copy/cut of a selection that contains any token writes the EXPANDED text
+    // to the clipboard — the sentinel characters never leave the composer.
+    textarea.addEventListener('copy', (e) => this._onClipboardCopyCut(e, textarea, false));
+    textarea.addEventListener('cut', (e) => this._onClipboardCopyCut(e, textarea, true));
+
+    // Keep the mirror's scroll aligned with the textarea's.
+    textarea.addEventListener('scroll', () => {
+      if (this._pasteMirror) this._pasteMirror.scrollTop = textarea.scrollTop;
+    });
 
     // Losing focus dismisses the completion menu. It is non-modal with no
     // outside-click handling — typing in the textarea is what drives it — so
@@ -748,6 +874,9 @@ class InputBox extends HTMLElement {
       text: value,
       attachments: this._resolvedAttachments(),
       textFiles: this._pendingTextFiles.map(({ filename, content, bytes }) => ({ filename, content, bytes })),
+      // The append-only paste-blob table, so an inline placeholder survives a
+      // reload / thread switch / remote client and resolves at send time.
+      pasteBlobs: Array.from(this._pasteBlobs, ([id, b]) => ({ id, content: b.content, bytes: b.bytes })),
       // Preserve any armed send across the keystroke-driven draft saves — the
       // user keeps typing while a send is scheduled, and each save must not
       // drop the timer.
@@ -802,6 +931,13 @@ class InputBox extends HTMLElement {
     if (textarea.value !== text) textarea.value = text;
     this.autoResize(textarea);
     this._updateSendButtonState();
+    // Programmatic sets (history nav, restored/moved drafts) may carry raw
+    // tokens; the blob table lives on the box, so refresh the mirror to match.
+    this._syncPasteMirror();
+    // Re-baseline the reconciler: a programmatic write is trusted, so it becomes
+    // the new known-good value (never something to revert to a stale base).
+    this._pasteLastValue = textarea.value;
+    this._pasteLastCaret = textarea.selectionStart;
   }
 
   /**
@@ -845,6 +981,11 @@ class InputBox extends HTMLElement {
     this.autoResize(textarea);
     this._updateSendButtonState();
     this._scheduleDraftSave(textarea.value);
+    // Cleared to empty: drop the mirror and re-baseline the reconciler (the
+    // fallback value write above fires no input event of its own).
+    this._syncPasteMirror();
+    this._pasteLastValue = textarea.value;
+    this._pasteLastCaret = textarea.selectionStart;
     return true;
   }
 
@@ -886,6 +1027,9 @@ class InputBox extends HTMLElement {
     this.historyIndex = -1;
     this.autoResize(textarea);
     this._updateSendButtonState();
+    this._syncPasteMirror();
+    this._pasteLastValue = textarea.value;
+    this._pasteLastCaret = textarea.selectionStart;
     return true;
   }
 
@@ -942,7 +1086,11 @@ class InputBox extends HTMLElement {
     const textarea = this.querySelector('textarea');
     if (!textarea) return 'no textarea';
 
-    const message = textarea.value.trim();
+    // Expand any inline paste placeholders to their full content at their exact
+    // positions BEFORE any downstream logic. From here on `message` is the plain
+    // text a normal paste would have produced, so the size cap, @-mention
+    // extraction, the stored user message, and every consumer are unchanged.
+    const message = expandPasteTokens(textarea.value, this._pasteBlobs).trim();
     // A staged image OR a dropped text file makes an otherwise-empty message a
     // valid send: the text files become context items ahead of the (empty) user
     // message, exactly like a caption-less image attachment.
@@ -1077,6 +1225,13 @@ class InputBox extends HTMLElement {
 
     // Drop any staged text files — they were flushed into context items at send.
     this._pendingTextFiles = [];
+
+    // GC the paste-blob side table and tear down the mirror — this draft is done,
+    // so the append-only table's life ends here (a fresh draft starts empty).
+    this._pasteBlobs = new Map();
+    this._teardownPasteMirror();
+    this._pasteLastValue = '';
+    this._pasteLastCaret = 0;
 
     // Clear any pending draft save and clear the saved draft (text +
     // attachments) as one unit.
@@ -1241,12 +1396,20 @@ class InputBox extends HTMLElement {
       const draft = messageThread.draft;
       this._stagePendingAttachments(draft.attachments);
       this._stagePendingTextFiles(draft.textFiles);
+      // Restore the append-only paste-blob table for this thread before staging
+      // its text, so any inline placeholder in that text resolves and renders.
+      this._pasteBlobs = new Map((draft.pasteBlobs || []).map((b) => [b.id, { content: b.content, bytes: b.bytes }]));
       const textarea = this.querySelector('textarea');
       if (textarea) {
         const draftText = draft.text || '';
         if (textarea.value !== draftText) {
           textarea.value = draftText;
         }
+        // Rebuild (or tear down) the token mirror for the newly-bound thread.
+        this._syncPasteMirror();
+        // Baseline the reconciler on the restored text (trusted).
+        this._pasteLastValue = textarea.value;
+        this._pasteLastCaret = textarea.selectionStart;
         textarea.style.height = 'auto';
         const attemptResize = (/** @type {number} */ attempts) => {
           if (textarea.offsetHeight > 0) {
@@ -1527,6 +1690,583 @@ class InputBox extends HTMLElement {
     this._persistDraft();
   }
 
+  // ========================================================================
+  // PASTE PLACEHOLDERS
+  //
+  // A large paste collapses into an inline placeholder token — a run of
+  // ordinary characters (invisible delimiters bracketing a visible label) that
+  // behaves as text in every way (undoable, single-backspace-deletable,
+  // selectable, copyable) yet renders as a styled pill. The full content lives
+  // in the append-only _pasteBlobs table and is inlined at its exact position
+  // at send time, so the model/stored message is identical to a plain paste.
+  // See utils/paste-tokens for the grammar and the pure helpers.
+  // ========================================================================
+
+  /**
+   * Whether a pasted text payload is large enough to capture into a placeholder
+   * token rather than land as ordinary text. Either threshold trips it; a
+   * payload that decodes as binary is also captured (defensive — don't flood the
+   * box with mojibake).
+   * @param {string} text
+   * @returns {boolean} True to capture, false to paste normally.
+   * @private
+   */
+  _shouldCapturePaste(text) {
+    if (looksBinary(text)) return true;
+    if (text.length >= PASTE_CHIP_MIN_CHARS) return true;
+    // Count newlines rather than splitting (cheaper on a big blob).
+    let lines = 1;
+    for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) lines++;
+    return lines >= PASTE_CHIP_MIN_LINES;
+  }
+
+  /**
+   * UTF-8 byte size of a string, for the token label.
+   * @param {string} str
+   * @returns {number} Byte length.
+   * @private
+   */
+  _pasteByteLength(str) {
+    try { return new Blob([str]).size; } catch { return str.length; }
+  }
+
+  /**
+   * Capture `content` as an inline placeholder: allocate (or reuse, on an exact
+   * content match) a token id, store the blob, and insert the token string at
+   * the caret. The insert goes through the native editing path so Cmd+Z undoes
+   * the capture as one edit; the blob stays in the append-only table until GC.
+   * @param {string} content
+   * @private
+   */
+  _capturePaste(content) {
+    const textarea = /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
+    if (!textarea) return;
+    const bytes = this._pasteByteLength(content);
+    // Dedup: identical content already captured reuses that id (double-paste
+    // gives two tokens sharing one blob; both expand at send). Exact === only.
+    let id = null;
+    for (const [existingId, blob] of this._pasteBlobs) {
+      if (blob.content === content) { id = existingId; break; }
+    }
+    if (id === null) {
+      id = nextPasteId(textarea.value, this._pasteBlobs);
+      this._pasteBlobs.set(id, { content, bytes });
+    }
+    this._insertAtCaret(textarea, makeToken(id, bytes));
+    this._afterTokenMutation(textarea);
+  }
+
+  /**
+   * Insert `text` at the caret, preferring the native undoable path
+   * (execCommand) and falling back to a direct value splice where the host
+   * rejects the command (older engines, headless test window). Leaves the caret
+   * after the inserted text.
+   * @param {HTMLTextAreaElement} textarea
+   * @param {string} text
+   * @private
+   */
+  _insertAtCaret(textarea, text) {
+    textarea.focus();
+    const before = textarea.value;
+    // Baseline the reconciler to the pre-insert value: execCommand fires `input`
+    // synchronously below, and it must compare against what the box holds NOW —
+    // never a stale base that would make it revert this trusted insert.
+    this._pasteLastValue = before;
+    let ok = false;
+    try { ok = document.execCommand('insertText', false, text); } catch { ok = false; }
+    if (ok && textarea.value !== before) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    textarea.value = before.slice(0, start) + text + before.slice(end);
+    const pos = start + text.length;
+    try { textarea.setSelectionRange(pos, pos); } catch { /* non-fatal */ }
+  }
+
+  /**
+   * Delete the `[start, end)` character range, preferring the native undoable
+   * path (select + execCommand('delete')) with a direct-splice fallback.
+   * @param {HTMLTextAreaElement} textarea
+   * @param {number} start
+   * @param {number} end
+   * @private
+   */
+  _deleteRange(textarea, start, end) {
+    textarea.focus();
+    const before = textarea.value;
+    // Baseline the reconciler to the pre-delete value (see _insertAtCaret): the
+    // token in [start, end) is fully inside the change, so the delete reads as
+    // legitimate rather than a partial-interior edit to revert.
+    this._pasteLastValue = before;
+    try { textarea.setSelectionRange(start, end); } catch { /* non-fatal */ }
+    let ok = false;
+    try { ok = document.execCommand('delete', false); } catch { ok = false; }
+    if (!ok || textarea.value === before) {
+      textarea.value = before.slice(0, start) + before.slice(end);
+      try { textarea.setSelectionRange(start, start); } catch { /* non-fatal */ }
+    }
+    this._afterTokenMutation(textarea);
+  }
+
+  /**
+   * Replace a token with its full content in place (undoable). Cmd+Z afterwards
+   * restores the placeholder: the token characters come back and the append-only
+   * table still resolves them.
+   * @param {HTMLTextAreaElement} textarea
+   * @param {import('../utils/paste-tokens.js').PasteTokenMatch} tok
+   * @private
+   */
+  _expandToken(textarea, tok) {
+    const entry = this._pasteBlobs.get(tok.id);
+    const content = entry ? entry.content : tok.text.slice(1, -1);
+    textarea.focus();
+    try { textarea.setSelectionRange(tok.start, tok.end); } catch { /* non-fatal */ }
+    const before = textarea.value;
+    // Baseline the reconciler to the pre-expand value (see _insertAtCaret): the
+    // token is fully inside the replaced range, so expansion reads as legitimate.
+    this._pasteLastValue = before;
+    let ok = false;
+    try { ok = document.execCommand('insertText', false, content); } catch { ok = false; }
+    if (!ok || textarea.value === before) {
+      textarea.value = before.slice(0, tok.start) + content + before.slice(tok.end);
+      const pos = tok.start + content.length;
+      try { textarea.setSelectionRange(pos, pos); } catch { /* non-fatal */ }
+    }
+    this._afterTokenMutation(textarea);
+  }
+
+  /**
+   * Atomicity for placeholder tokens under Backspace/Delete/Arrow keys. Returns
+   * true (and prevents the default) when it acted on a token, false to let the
+   * key behave normally. A fast no-op when the text holds no tokens.
+   * @param {KeyboardEvent} e
+   * @param {HTMLTextAreaElement} textarea
+   * @returns {boolean} Whether the key was handled as a token operation.
+   * @private
+   */
+  _handleTokenKeydown(e, textarea) {
+    const key = e.key;
+    if (key !== 'Backspace' && key !== 'Delete' && key !== 'ArrowLeft' && key !== 'ArrowRight') return false;
+    const value = textarea.value;
+    if (!hasTokens(value)) return false;
+    const collapsed = textarea.selectionStart === textarea.selectionEnd;
+    if (!collapsed) return false; // selection-based edits: snapping keeps endpoints out
+    const p = textarea.selectionStart;
+    const tokens = parseTokens(value);
+
+    if (key === 'Backspace' || key === 'Delete') {
+      // Shift/Ctrl deletes keep native behaviour (the reconciler backstops any
+      // partial cut). A plain, word (Alt) or line (Meta) delete that ABUTS a
+      // token in the delete direction would otherwise chew into the label, so
+      // remove the whole token as one unit instead.
+      if (e.shiftKey || e.ctrlKey) return false;
+      const tok = key === 'Backspace'
+        ? tokens.find((t) => t.end === p)
+        : tokens.find((t) => t.start === p);
+      if (!tok) return false;
+      e.preventDefault();
+      this._deleteRange(textarea, tok.start, tok.end);
+      return true;
+    }
+
+    // Plain arrows skip a token as one unit. Modified arrows (word/line move,
+    // shift-select) fall through to native motion; the selection-snapper then
+    // bounces any caret/endpoint that landed inside a token back to a boundary.
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return false;
+    const tok = key === 'ArrowLeft'
+      ? tokens.find((t) => t.end === p)
+      : tokens.find((t) => t.start === p);
+    if (!tok) return false;
+    e.preventDefault();
+    const to = key === 'ArrowLeft' ? tok.start : tok.end;
+    try { textarea.setSelectionRange(to, to); } catch { /* non-fatal */ }
+    this._pasteLastCaret = to;
+    return true;
+  }
+
+  /**
+   * copy/cut handler: when the selection contains any token, write the EXPANDED
+   * text (tokens replaced by their content) to the clipboard and, for cut,
+   * delete the selection undoably. When the selection holds no token the browser
+   * does its normal thing. This keeps sentinel characters from ever leaving the
+   * composer — a paste back into another Juggler box re-captures naturally.
+   * @param {ClipboardEvent} e
+   * @param {HTMLTextAreaElement} textarea
+   * @param {boolean} isCut
+   * @private
+   */
+  _onClipboardCopyCut(e, textarea, isCut) {
+    if (this._pasteBlobs.size === 0) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    if (start === end) return;
+    const selected = textarea.value.slice(start, end);
+    if (!hasTokens(selected)) return;
+    if (!e.clipboardData) return;
+    e.preventDefault();
+    const expanded = expandPasteTokens(selected, this._pasteBlobs);
+    e.clipboardData.setData('text/plain', expanded);
+    if (isCut) this._deleteRange(textarea, start, end);
+  }
+
+  /**
+   * Length of the common leading run of two strings.
+   * @param {string} a
+   * @param {string} b
+   * @returns {number} The shared-prefix length.
+   * @private
+   */
+  _commonPrefixLen(a, b) {
+    const n = Math.min(a.length, b.length);
+    let i = 0;
+    while (i < n && a[i] === b[i]) i++;
+    return i;
+  }
+
+  /**
+   * Whether the single contiguous edit that turned `prev` into `cur` cut into a
+   * token's interior (as opposed to leaving tokens whole — typing outside them,
+   * or deleting one entirely). A textarea `input` is always one contiguous
+   * replacement, so the changed span in `prev` is `[prefix, prev.len - suffix)`;
+   * a token that overlaps that span but isn't fully inside it was damaged.
+   * @param {string} prev - The last known-good value.
+   * @param {string} cur - The current value after the edit.
+   * @returns {{start:number, end:number}|null} The damaged span in `prev`, or null.
+   * @private
+   */
+  _damagedTokenSpan(prev, cur) {
+    const pre = this._commonPrefixLen(prev, cur);
+    let sfx = 0;
+    const maxSfx = Math.min(prev.length - pre, cur.length - pre);
+    while (sfx < maxSfx && prev[prev.length - 1 - sfx] === cur[cur.length - 1 - sfx]) sfx++;
+    const chgStart = pre;
+    const chgEnd = prev.length - sfx; // [chgStart, chgEnd) is the edited span in prev
+    for (const t of parseTokens(prev)) {
+      const overlaps = t.start < chgEnd && t.end > chgStart;
+      const contained = t.start >= chgStart && t.end <= chgEnd;
+      if (overlaps && !contained) return t;
+    }
+    return null;
+  }
+
+  /**
+   * Reconcile the textarea after an `input` so a placeholder's contents can never
+   * be edited — only deleted whole. Two layers:
+   *  1. If the edit cut into a token's interior (a path that dodged the
+   *     caret/selection interceptors — autocorrect, dictation, drag-drop, exotic
+   *     IME), REVERT to the last known-good value: the edit simply doesn't take,
+   *     and the captured content is never silently lost.
+   *  2. Otherwise strip any orphaned delimiter characters as a final safety net,
+   *     then adopt the current value as the new known-good base.
+   * @param {HTMLTextAreaElement} textarea
+   * @returns {boolean} True if the value was changed (reverted or cleaned).
+   * @private
+   */
+  _reconcileTokens(textarea) {
+    const cur = textarea.value;
+    const prev = this._pasteLastValue;
+    const curHasDelims = cur.indexOf(PASTE_TOKEN_OPEN) !== -1 || cur.indexOf(PASTE_TOKEN_CLOSE) !== -1;
+    // Fast path: no tokens are or were in play — nothing to guard.
+    if (!curHasDelims && !hasTokens(prev)) { this._pasteLastValue = cur; return false; }
+
+    if (!this._pasteComposing && hasTokens(prev)) {
+      const damaged = this._damagedTokenSpan(prev, cur);
+      if (damaged) {
+        // Reject the edit: restore the last good value, park the caret at the
+        // start of the token that was hit (a boundary, never its interior).
+        this._snappingSelection = true;
+        textarea.value = prev;
+        try { textarea.setSelectionRange(damaged.start, damaged.start); } catch { /* non-fatal */ }
+        this._snappingSelection = false;
+        this._pasteLastValue = prev;
+        this._pasteLastCaret = damaged.start;
+        return true;
+      }
+    }
+
+    // Edit is legitimate. Strip any stray delimiters (half a token left by a
+    // path this couldn't revert) and adopt the result as the new base.
+    const cleaned = stripStrayDelimiters(cur, this._pasteBlobs);
+    if (cleaned !== cur) {
+      const at = Math.min(textarea.selectionStart, cleaned.length);
+      textarea.value = cleaned;
+      try { textarea.setSelectionRange(at, at); } catch { /* non-fatal */ }
+      this._pasteLastValue = cleaned;
+      this._pasteLastCaret = at;
+      return true;
+    }
+    this._pasteLastValue = cur;
+    this._pasteLastCaret = textarea.selectionStart;
+    return false;
+  }
+
+  /**
+   * Hit-test a viewport point against the mirror's rendered token pills, mapping
+   * a hit to its token in text order. Used for click-to-expand, which can't rely
+   * on the caret (a click inside a token is snapped to a boundary before `click`
+   * fires).
+   * @param {number} x - Client X.
+   * @param {number} y - Client Y.
+   * @returns {{token: import('../utils/paste-tokens.js').PasteTokenMatch, span: Element}|null}
+   *   The hit token and its rendered pill span, or null.
+   * @private
+   */
+  _tokenAtPoint(x, y) {
+    if (!this._pasteMirror) return null;
+    const textarea = /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
+    if (!textarea) return null;
+    const spans = this._pasteMirror.querySelectorAll('.paste-token');
+    const tokens = parseTokens(textarea.value);
+    const n = Math.min(spans.length, tokens.length);
+    for (let i = 0; i < n; i++) {
+      const span = spans[i];
+      const tok = tokens[i];
+      if (!span || !tok) continue;
+      const r = span.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return { token: tok, span };
+    }
+    return null;
+  }
+
+  /**
+   * Expand a token in response to a click, with a visible acknowledgement. The
+   * insert of a large blob is synchronous and can briefly block the main thread,
+   * so paint a "busy" state on the pill FIRST (forcing a layout flush), then run
+   * the expansion on a later frame so that state is on screen before the block.
+   * @param {HTMLTextAreaElement} textarea
+   * @param {import('../utils/paste-tokens.js').PasteTokenMatch} tok
+   * @param {Element} [span] - The pill span to flag as busy.
+   * @private
+   */
+  _expandTokenWithFeedback(textarea, tok, span) {
+    if (span) {
+      span.classList.add('expanding');
+      void (/** @type {HTMLElement} */ (span)).offsetHeight; // force the state to paint
+    }
+    const run = () => {
+      // Re-resolve the token by id from the CURRENT text: the defer opens a small
+      // window in which positions could shift, so never expand a stale span.
+      const cur = parseTokens(textarea.value);
+      const fresh = cur.find((t) => t.id === tok.id && t.start === tok.start) || cur.find((t) => t.id === tok.id);
+      if (fresh) this._expandToken(textarea, fresh);
+    };
+    // A click means the view is frontmost, so rAF is not throttled here; a double
+    // rAF guarantees the busy state has painted before the blocking insert.
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => requestAnimationFrame(run));
+    } else {
+      setTimeout(run, 0);
+    }
+  }
+
+  /**
+   * Shared tail for every token-text mutation (capture, expand, delete, cut):
+   * refresh the mirror, re-measure the textarea, update the empty-sensitive
+   * controls, and persist the draft immediately (a discrete event, like an
+   * attachment add).
+   * @param {HTMLTextAreaElement} textarea
+   * @private
+   */
+  _afterTokenMutation(textarea) {
+    // A capture/expand/delete/cut is trusted, so it becomes the reconciler's new
+    // known-good base (an execCommand mutation also fires input, which must not
+    // then see the pre-mutation value and revert it).
+    this._pasteLastValue = textarea.value;
+    this._pasteLastCaret = textarea.selectionStart;
+    this._syncPasteMirror();
+    this.autoResize(textarea);
+    this._updateSendButtonState();
+    this._persistDraft();
+    this._completions?.handleInput();
+  }
+
+  // ── Token mirror overlay ───────────────────────────────────────────────
+
+  /**
+   * Rebuild or tear down the backdrop mirror to match the current text. With no
+   * tokens the mirror is removed and the textarea is a plain, fully ordinary
+   * textarea — all mirror risk is confined to the moments a placeholder exists.
+   * @private
+   */
+  _syncPasteMirror() {
+    const textarea = /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
+    if (!textarea) return;
+    const tokens = parseTokens(textarea.value);
+    if (tokens.length === 0) {
+      this._teardownPasteMirror(textarea);
+      return;
+    }
+    this._ensurePasteMirror(textarea);
+    this._renderPasteMirror(textarea.value, tokens);
+    this._syncMirrorMetrics(textarea);
+  }
+
+  /**
+   * Create the mirror div (once) behind the textarea, switch the textarea to
+   * transparent-text mode, disable spellcheck (squiggles on invisible text), and
+   * wire the resize + selection-snapping listeners.
+   * @param {HTMLTextAreaElement} textarea
+   * @private
+   */
+  _ensurePasteMirror(textarea) {
+    if (this._pasteMirror) return;
+    const mirror = document.createElement('div');
+    mirror.className = 'paste-mirror';
+    mirror.setAttribute('aria-hidden', 'true');
+    // Insert as the textarea's previous sibling so it sits behind it in the
+    // wrapper's stacking context.
+    textarea.parentElement?.insertBefore(mirror, textarea);
+    this._pasteMirror = mirror;
+    textarea.classList.add('paste-mirrored');
+    textarea.spellcheck = false;
+    if (typeof ResizeObserver === 'function') {
+      this._pasteMirrorRO = new ResizeObserver(() => this._syncMirrorMetrics(textarea));
+      this._pasteMirrorRO.observe(textarea);
+    }
+    // Selection snapping: an endpoint strictly inside a token snaps outward, so
+    // you can select ACROSS a token but never INTO it (also keeps typing/caret
+    // out of the label). Throttled to a microtask-ish guard via a reentrancy flag.
+    this._pasteSelectionListener = () => this._snapSelectionOutOfTokens(textarea);
+    document.addEventListener('selectionchange', this._pasteSelectionListener);
+  }
+
+  /**
+   * Remove the mirror and restore the plain-textarea state. Idempotent.
+   * @param {HTMLTextAreaElement} [textarea]
+   * @private
+   */
+  _teardownPasteMirror(textarea) {
+    const ta = textarea || /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
+    if (this._pasteMirrorRO) {
+      this._pasteMirrorRO.disconnect();
+      this._pasteMirrorRO = null;
+    }
+    if (this._pasteSelectionListener) {
+      document.removeEventListener('selectionchange', this._pasteSelectionListener);
+      this._pasteSelectionListener = null;
+    }
+    if (this._pasteMirror) {
+      this._pasteMirror.remove();
+      this._pasteMirror = null;
+    }
+    if (ta) {
+      ta.classList.remove('paste-mirrored');
+      ta.spellcheck = false; // matches the render() attribute default
+      if (ta.style.cursor) ta.style.cursor = ''; // drop any hover pointer cursor
+    }
+  }
+
+  /**
+   * Render the mirror's content: the same character string as the textarea, with
+   * each token wrapped in a styled `.paste-token` span. Because the label is real
+   * text and the span carries only metric-safe styling, both layers lay out
+   * identically by construction.
+   * @param {string} text
+   * @param {import('../utils/paste-tokens.js').PasteTokenMatch[]} tokens
+   * @private
+   */
+  _renderPasteMirror(text, tokens) {
+    const mirror = this._pasteMirror;
+    if (!mirror) return;
+    mirror.textContent = '';
+    let last = 0;
+    for (const t of tokens) {
+      if (t.start > last) mirror.appendChild(document.createTextNode(text.slice(last, t.start)));
+      const span = document.createElement('span');
+      span.className = 'paste-token';
+      span.textContent = t.text; // full token incl. invisible delimiters
+      mirror.appendChild(span);
+      last = t.end;
+    }
+    // A trailing newline needs a following character for pre-wrap to show the
+    // final empty line; mirror the textarea by appending the remainder plus a
+    // sentinel space when it ends on a newline.
+    let tail = text.slice(last);
+    if (tail.endsWith('\n')) tail += '\u200b';
+    if (tail) mirror.appendChild(document.createTextNode(tail));
+  }
+
+  /**
+   * Copy the textarea's box metrics and scroll onto the mirror so the two layers
+   * overlap exactly. Computed styles are copied (rather than assumed from CSS) so
+   * the mirror inherits the textarea's real font, regardless of theme.
+   * @param {HTMLTextAreaElement} textarea
+   * @private
+   */
+  _syncMirrorMetrics(textarea) {
+    const mirror = this._pasteMirror;
+    if (!mirror) return;
+    const cs = window.getComputedStyle(textarea);
+    for (const prop of [
+      'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariant',
+      'letterSpacing', 'lineHeight', 'textTransform', 'textIndent', 'tabSize',
+      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'
+    ]) {
+      // @ts-ignore indexed style write
+      mirror.style[prop] = cs[prop];
+    }
+    mirror.style.top = `${textarea.offsetTop}px`;
+    mirror.style.left = `${textarea.offsetLeft}px`;
+    mirror.style.width = `${textarea.clientWidth}px`;
+    mirror.style.height = `${textarea.clientHeight}px`;
+    mirror.scrollTop = textarea.scrollTop;
+  }
+
+  /**
+   * Snap a selection endpoint that lands strictly inside a token outward to the
+   * token boundary. Guarded against reentrancy (setting the range re-fires
+   * selectionchange) and a no-op when nothing needs snapping.
+   * @param {HTMLTextAreaElement} textarea
+   * @private
+   */
+  _snapSelectionOutOfTokens(textarea) {
+    if (this._snappingSelection || this._pasteComposing) return;
+    if (document.activeElement !== textarea) return;
+    if (!hasTokens(textarea.value)) return;
+    const tokens = parseTokens(textarea.value);
+    let s = textarea.selectionStart;
+    let en = textarea.selectionEnd;
+
+    // Collapsed caret: it must never rest INSIDE a token. Snap it out in the
+    // direction of travel (a word/line jump or Home/End that landed in a label
+    // continues past it), falling back to the nearer edge when direction is
+    // ambiguous. This is what makes the interior unreachable by the caret, so no
+    // keystroke or paste can target it.
+    if (s === en) {
+      let p = s;
+      for (const t of tokens) {
+        if (p > t.start && p < t.end) {
+          const movingRight = p >= this._pasteLastCaret;
+          p = movingRight ? t.end : t.start;
+          break;
+        }
+      }
+      if (p !== s) {
+        this._snappingSelection = true;
+        try { textarea.setSelectionRange(p, p); } catch { /* non-fatal */ } finally { this._snappingSelection = false; }
+      }
+      this._pasteLastCaret = textarea.selectionStart;
+      return;
+    }
+
+    // Range selection: snap each endpoint outward so you can select ACROSS a
+    // token but never INTO it (also keeps a subsequent typed replacement whole).
+    const dir = textarea.selectionDirection;
+    for (const t of tokens) {
+      if (s > t.start && s < t.end) s = (s - t.start) <= (t.end - s) ? t.start : t.end;
+      if (en > t.start && en < t.end) en = (en - t.start) <= (t.end - en) ? t.start : t.end;
+    }
+    if (s !== textarea.selectionStart || en !== textarea.selectionEnd) {
+      if (s > en) { const tmp = s; s = en; en = tmp; }
+      this._snappingSelection = true;
+      try {
+        textarea.setSelectionRange(s, en, dir === 'none' ? undefined : dir);
+      } catch { /* non-fatal */ } finally {
+        this._snappingSelection = false;
+      }
+    }
+    this._pasteLastCaret = textarea.selectionStart;
+  }
+
   /**
    * Upload one image file to the conversation's asset store, showing an
    * "uploading" chip while in flight and replacing it with the resolved
@@ -1748,7 +2488,10 @@ class InputBox extends HTMLElement {
       return;
     }
     const textarea = this.querySelector('textarea');
-    const text = textarea ? textarea.value.trim() : '';
+    // Expand any inline paste placeholders before moving the text: the new
+    // thread's draft carries the full content inline (no blob table travels
+    // through the slash command), matching what a send would have produced.
+    const text = textarea ? expandPasteTokens(textarea.value, this._pasteBlobs).trim() : '';
     let command = '/thread';
     if (text) {
       command += ` --draft-message ${text}`;

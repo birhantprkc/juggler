@@ -49,7 +49,16 @@ export function normalizeAttachments(raw) {
  */
 
 /**
- * @typedef {{text: string, attachments: AssetRef[], textFiles: TextFileSnapshot[], scheduledSendAt: number|null}} Draft
+ * @typedef {{id:number, content:string, bytes:number}} PasteBlob
+ * The full content of a captured large paste, keyed by the inline token id
+ * (`#N`) that stands in for it in the draft text. Persisted on the draft so a
+ * composer placeholder survives a reload / thread switch / remote client, and
+ * so send-time expansion can resolve every token back to its content. See
+ * utils/paste-tokens.
+ */
+
+/**
+ * @typedef {{text: string, attachments: AssetRef[], textFiles: TextFileSnapshot[], pasteBlobs: PasteBlob[], scheduledSendAt: number|null}} Draft
  * `scheduledSendAt` is an epoch-ms wall-clock target for a deferred "send after
  * a delay": the input box arms a timer to press Send at that moment. Persisting
  * it on the draft (rather than a live-only timer) is what lets a pending send
@@ -79,10 +88,32 @@ export function normalizeTextFiles(raw) {
 }
 
 /**
+ * Normalize a draft's `pasteBlobs` field — the captured contents of large
+ * pastes collapsed into inline placeholder tokens — into plain records. Like
+ * {@link normalizeTextFiles}, it accepts either a plain array or a Y.Array of
+ * Y.Maps. Entries without string content or a finite id are dropped.
+ * @param {any} raw
+ * @returns {PasteBlob[]} Plain paste blobs (empty if none).
+ */
+export function normalizePasteBlobs(raw) {
+  return toPlainList(raw)
+    .map((/** @type {any} */ b) => (b && typeof b.get === 'function')
+      ? { id: b.get('id'), content: b.get('content'), bytes: b.get('bytes') }
+      : b)
+    .filter((/** @type {any} */ b) => b && typeof b.content === 'string' && Number.isFinite(Number(b.id)))
+    .map((/** @type {any} */ b) => ({
+      id: Number(b.id),
+      content: b.content,
+      bytes: typeof b.bytes === 'number' ? b.bytes : 0
+    }));
+}
+
+/**
  * Normalize the `draft` field — the unsent input-box draft, stored as a single
- * `{text, attachments, textFiles}` record (a Y.Map on a thread container, or a
- * plain object synced from conversation metadata) — into a plain Draft. Always
- * returns a well-formed record so callers can read every part unconditionally.
+ * `{text, attachments, textFiles, pasteBlobs}` record (a Y.Map on a thread
+ * container, or a plain object synced from conversation metadata) — into a
+ * plain Draft. Always returns a well-formed record so callers can read every
+ * part unconditionally.
  * Modelling the draft as ONE record (rather than a bare text string plus
  * component-local attachments) is what makes a half-persisted draft — text
  * kept, attachments/text-files lost across a reload — structurally impossible.
@@ -90,7 +121,7 @@ export function normalizeTextFiles(raw) {
  * @returns {Draft} The draft (empty text + no attachments/text-files when absent).
  */
 export function normalizeDraft(raw) {
-  if (!raw) return { text: '', attachments: [], textFiles: [], scheduledSendAt: null };
+  if (!raw) return { text: '', attachments: [], textFiles: [], pasteBlobs: [], scheduledSendAt: null };
   const obj = (typeof raw.toJSON === 'function') ? raw.toJSON() : raw;
   const text = (obj && typeof obj.text === 'string') ? obj.text : '';
   const when = obj && obj.scheduledSendAt;
@@ -98,6 +129,7 @@ export function normalizeDraft(raw) {
     text,
     attachments: normalizeAttachments(obj && obj.attachments),
     textFiles: normalizeTextFiles(obj && obj.textFiles),
+    pasteBlobs: normalizePasteBlobs(obj && obj.pasteBlobs),
     scheduledSendAt: (typeof when === 'number' && Number.isFinite(when)) ? when : null
   };
 }

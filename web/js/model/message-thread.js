@@ -32,7 +32,7 @@ import * as permissionsHelpers from './message-thread-permissions.js';
 import * as contextItemHelpers from './message-thread-context-items.js';
 import { isThreadClosed } from './thread-navigation.js';
 import { recordTape } from '../utils/event-tape.js';
-import { normalizeDraft, normalizeAttachments, normalizeTextFiles } from '../utils/attachments.js';
+import { normalizeDraft, normalizeAttachments, normalizeTextFiles, normalizePasteBlobs } from '../utils/attachments.js';
 
 /**
  * @typedef {import('../../sdk/lib/message.js').Message} Message
@@ -208,8 +208,9 @@ export default class MessageThread {
 
   /**
    * The unsent input-box draft for this thread — its text, its staged image
-   * attachments, AND any dropped text files, as a single
-   * `{text, attachments, textFiles}` record. Stored on the thread container
+   * attachments, any dropped text files, AND the paste-blob side table backing
+   * inline paste placeholders, as a single
+   * `{text, attachments, textFiles, pasteBlobs}` record. Stored on the thread container
    * (sub-threads) or conversation metadata (root). Because every part is one
    * persisted object, a quit/restart restores the whole draft or nothing:
    * "text kept, attachments/text-files lost" is not expressible. See
@@ -224,19 +225,23 @@ export default class MessageThread {
   }
 
   /**
-   * @param {{text?: string, attachments?: import('../utils/attachments.js').AssetRef[], textFiles?: import('../utils/attachments.js').TextFileSnapshot[], scheduledSendAt?: number|null}|null} value
+   * @param {{text?: string, attachments?: import('../utils/attachments.js').AssetRef[], textFiles?: import('../utils/attachments.js').TextFileSnapshot[], pasteBlobs?: import('../utils/attachments.js').PasteBlob[], scheduledSendAt?: number|null}|null} value
    */
   set draft(value) {
     const text = (value && typeof value.text === 'string') ? value.text : '';
     const attachments = normalizeAttachments(value && value.attachments);
     const textFiles = normalizeTextFiles(value && value.textFiles);
+    const pasteBlobs = normalizePasteBlobs(value && value.pasteBlobs);
     const rawWhen = value && value.scheduledSendAt;
     const scheduledSendAt = (typeof rawWhen === 'number' && Number.isFinite(rawWhen)) ? rawWhen : null;
     // A pending scheduled send keeps the draft alive even with no text/
     // attachments — the timer must survive a reload to fire on an empty box.
+    // Paste blobs deliberately do NOT keep an otherwise-empty draft alive: they
+    // are an append-only side table for the token characters, and with no text
+    // there is no token left to resolve, so an empty box GCs them.
     const empty = !text && attachments.length === 0 && textFiles.length === 0 && scheduledSendAt === null;
-    /** @type {{text: string, attachments: import('../utils/attachments.js').AssetRef[], textFiles: import('../utils/attachments.js').TextFileSnapshot[], scheduledSendAt?: number}} */
-    const record = { text, attachments, textFiles };
+    /** @type {{text: string, attachments: import('../utils/attachments.js').AssetRef[], textFiles: import('../utils/attachments.js').TextFileSnapshot[], pasteBlobs: import('../utils/attachments.js').PasteBlob[], scheduledSendAt?: number}} */
+    const record = { text, attachments, textFiles, pasteBlobs };
     if (scheduledSendAt !== null) record.scheduledSendAt = scheduledSendAt;
     if (this.threadItemId) {
       const doc = this.conversation._doc.doc;
@@ -251,7 +256,7 @@ export default class MessageThread {
       // Root: conversation metadata. No metadata-delete exists, so an empty
       // draft is stored as the empty record (matching the prior empty-string
       // behaviour) rather than deleted.
-      this.conversation._doc.setMetadata('draft', empty ? { text: '', attachments: [], textFiles: [] } : record);
+      this.conversation._doc.setMetadata('draft', empty ? { text: '', attachments: [], textFiles: [], pasteBlobs: [] } : record);
     }
   }
 

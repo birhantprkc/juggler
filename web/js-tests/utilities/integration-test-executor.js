@@ -56,6 +56,7 @@ import { runTests as runContextItemPersistenceTests } from '../unit-tests/contex
 import { runTests as runConversationNameTests } from '../unit-tests/conversation-name-persistence-test.js';
 import { runTests as runDraftPersistenceTests } from '../unit-tests/draft-persistence-test.js';
 import { runTests as runDroppedFileTests } from '../unit-tests/dropped-file-test.js';
+import { runTests as runPasteTokenTests } from '../unit-tests/paste-token-test.js';
 import { runTests as runEditPermissionTests } from '../unit-tests/edit-permission-test.js';
 import { runTests as runExecuteActionTests } from '../unit-tests/execute-action-test.js';
 import { runTests as runFileSystemApiTests } from '../unit-tests/filesystem-api-test.js';
@@ -254,6 +255,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:conversation-name-persistence', run: runConversationNameTests },
   { name: 'unit:draft-persistence', run: runDraftPersistenceTests },
   { name: 'unit:dropped-file', run: runDroppedFileTests },
+  { name: 'unit:paste-token', run: runPasteTokenTests },
   { name: 'unit:edit-permission', run: runEditPermissionTests },
   { name: 'unit:execute-action', run: runExecuteActionTests },
   { name: 'unit:filesystem-api', run: runFileSystemApiTests },

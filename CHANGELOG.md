@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Large pastes collapse to inline expandable placeholders in the composer
 - Info cards (Tips, Usage, Git status) are now extension plugins, toggled in the Extensions catalog and re-shown from a new sidebar menu
 - Fixed compaction piling up summary threads
 - Fixed compaction requests duplicating large edit snapshots and missing prompt caches

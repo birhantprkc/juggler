@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { extractFileMentionsAsync } from '../components/file-mention-provider.js';
+import { expandPasteTokens } from '../utils/paste-tokens.js';
 import wsService from './websocket.js';
 
 /**
@@ -212,9 +213,11 @@ class ScheduledSendService {
         return;
       }
 
-      // Off screen: fire from the persisted draft.
+      // Off screen: fire from the persisted draft. Expand any inline paste
+      // placeholders against the draft's blob table first, exactly as the input
+      // box would at send time, so the fired message carries the full content.
       const draft = thread.draft;
-      const text = (draft.text || '').trim();
+      const text = expandPasteTokens(draft.text || '', draft.pasteBlobs).trim();
       const attachments = (draft.attachments || [])
         .filter((a) => a && a.id && !(/** @type {{_uploading?: boolean}} */ (a))._uploading)
         .map(({ id, mime, filename, bytes, width, height }) => ({ id, mime, filename, bytes, width, height }));
