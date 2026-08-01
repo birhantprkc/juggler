@@ -84,8 +84,16 @@ type Client struct {
 
 // NewClient creates a new Claude Code provider client
 func NewClient(cfg provider.Config) (provider.Provider, error) {
-	// Get working directory from environment or current directory
-	workingDir := os.Getenv("JUGGLER_PROJECT_PATH")
+	// The spawned CLI must run in the project the server has open, so the
+	// authoritative source is cfg.ProjectPath (filled from Server.ProjectPath()
+	// at the conversation-cache call site). Fall back to the legacy env seam and
+	// then the process cwd only when no project is carried — the path taken by
+	// model-listing calls that pass a bare Config and never spawn against a
+	// project.
+	workingDir := cfg.ProjectPath
+	if workingDir == "" {
+		workingDir = os.Getenv("JUGGLER_PROJECT_PATH")
+	}
 	if workingDir == "" {
 		var err error
 		workingDir, err = os.Getwd()

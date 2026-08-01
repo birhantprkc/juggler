@@ -581,6 +581,15 @@ type Config struct {
 	Headers     map[string]string
 	Model       string
 
+	// ProjectPath is the loaded project's root — the authoritative working
+	// directory the server currently has open. Providers that spawn a CLI
+	// (claudecode, acp) must root that process here so it resolves the same
+	// project the window shows, not the directory the server was launched
+	// from. Empty means "no project loaded"; providers then fall back to
+	// their own detection (used by model-listing calls that pass a bare
+	// Config and never spawn against a project).
+	ProjectPath string
+
 	ModelCapabilities ModelCapabilities
 	BudgetContract    BudgetContract
 }

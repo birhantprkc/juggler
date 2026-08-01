@@ -83,6 +83,7 @@ type traceRecord struct {
 	ResumeID  string   `json:"resumeId,omitempty"`
 	OneShot   bool     `json:"oneShot"` // -p <full json> (fresh) vs --input-format stream-json (persistent)
 	Mode      string   `json:"mode"`
+	Cwd       string   `json:"cwd,omitempty"` // the spawned process's working directory (cmd.Dir)
 	StartedAt int64    `json:"startedAtUnixNano"`
 }
 
@@ -107,12 +108,14 @@ func runFakeClaude() {
 	oneShot := containsFlag(argv, "-p") && !containsFlagValue(argv, "--input-format", "stream-json")
 
 	if path := os.Getenv(envFakeTrace); path != "" {
+		cwd, _ := os.Getwd()
 		writeTrace(path, traceRecord{
 			Pid:       os.Getpid(),
 			Argv:      argv,
 			ResumeID:  resumeID,
 			OneShot:   oneShot,
 			Mode:      mode,
+			Cwd:       cwd,
 			StartedAt: time.Now().UnixNano(),
 		})
 	}

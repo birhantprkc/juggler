@@ -151,6 +151,16 @@ func (s *Server) SwitchProject(newPath string) error {
 	// Atomic swap.
 	s.projectState.Store(newState)
 
+	// Release the previous project's cached conversations — and the live CLI
+	// subprocesses they hold — now that the project has changed. Conversations
+	// are project-bound (transcript directory, warm-resume sidecar, CLAUDE.md),
+	// so they must not outlive the switch; the next turn re-opens under
+	// newState, re-initializing providers against the new project root. Done
+	// after the swap so any concurrent GetOrOpen re-initializes with newPath.
+	if s.conversationCache != nil {
+		s.conversationCache.CloseAllConversations()
+	}
+
 	// Start the new file-change forwarder if we got a watcher.
 	if newWatcher != nil {
 		go s.forwardFileChanges(newState)

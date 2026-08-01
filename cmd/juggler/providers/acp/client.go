@@ -30,14 +30,20 @@ type Client struct {
 func NewClient(cfg provider.Config) (provider.Provider, error) {
 	return &Client{
 		model:      cfg.Model,
-		workingDir: projectDir(),
+		workingDir: projectDir(cfg.ProjectPath),
 		approver:   defaultApprover{},
 	}, nil
 }
 
 // projectDir is the root used to locate the per-project acp.json and as the
-// spawned agent's working directory: the loaded project, else the cwd.
-func projectDir() string {
+// spawned agent's working directory. The authoritative source is the project
+// the server has open (cfgProjectPath, from Server.ProjectPath()); it falls
+// back to the legacy env seam and then the process cwd only when no project is
+// carried (e.g. model-listing calls that pass a bare Config).
+func projectDir(cfgProjectPath string) string {
+	if cfgProjectPath != "" {
+		return cfgProjectPath
+	}
 	if wd := os.Getenv("JUGGLER_PROJECT_PATH"); wd != "" {
 		return wd
 	}

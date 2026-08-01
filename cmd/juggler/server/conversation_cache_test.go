@@ -56,7 +56,7 @@ func TestConversationCacheCapabilitiesArePartOfIdentity(t *testing.T) {
 		return &capabilityCacheProvider{opened: &opened}, nil
 	})
 
-	cache := newConversationCache()
+	cache := newConversationCache(nil)
 	t.Cleanup(cache.Shutdown)
 	credential := core.ProviderCredential{APIKey: "test-key"}
 	firstCapabilities := provider.ModelCapabilities{ContextWindowTokens: 1000, MaxOutputTokens: 100}
@@ -104,7 +104,7 @@ func TestConversationCacheAdmissionContractFlowsFromProviderInfo(t *testing.T) {
 		return &capabilityCacheProvider{opened: &opened}, nil
 	})
 
-	cache := newConversationCache()
+	cache := newConversationCache(nil)
 	t.Cleanup(cache.Shutdown)
 	_, err := cache.GetOrOpen(context.Background(), "conv", providerName, "model", core.ProviderCredential{APIKey: "test-key"}, provider.ModelCapabilities{})
 	if err != nil {
@@ -122,7 +122,7 @@ func TestConversationCacheAdmissionContractFlowsFromProviderInfo(t *testing.T) {
 func TestConversationCacheAllowUnknownLimitsFlowsToAdmission(t *testing.T) {
 	credential := core.ProviderCredential{APIKey: "test-key"}
 	newCache := func() *conversationCache {
-		cache := newConversationCache()
+		cache := newConversationCache(nil)
 		t.Cleanup(cache.Shutdown)
 		return cache
 	}

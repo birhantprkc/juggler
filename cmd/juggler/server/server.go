@@ -336,7 +336,7 @@ func New(cfg Config) (*Server, error) {
 	s.shutdownChan = make(chan struct{})
 	s.workerManager = wm
 	s.sessionAPI = sessionAPI
-	s.conversationCache = newConversationCache()
+	s.conversationCache = newConversationCache(s.ProjectPath)
 	s.refreshRequests = make(chan struct{}, 1)
 	s.providersReady = make(chan struct{})
 	s.quickCompleteSem = make(chan struct{}, quickCompleteConcurrency)

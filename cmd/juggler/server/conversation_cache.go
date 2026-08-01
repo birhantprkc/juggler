@@ -41,6 +41,12 @@ type conversationCacheKey struct {
 type conversationCache struct {
 	ops  chan cacheOp
 	done chan struct{}
+	// projectPath returns the server's currently-open project root, read when
+	// initializing a provider so CLI-spawning providers (claudecode, acp) root
+	// their subprocess in the open project rather than the server's launch
+	// directory. Injected at construction (before the actor goroutine starts)
+	// so the actor's read never races the wire-up. May be nil in tests.
+	projectPath func() string
 }
 
 type cacheOpKind int
@@ -48,6 +54,7 @@ type cacheOpKind int
 const (
 	cacheOpGetOrOpen cacheOpKind = iota
 	cacheOpCloseConversation
+	cacheOpCloseAll
 	cacheOpCancelConversation
 	cacheOpSetSinkFactory
 	cacheOpShutdown
@@ -77,10 +84,11 @@ type cacheResult struct {
 // newConversationCache spawns the actor and returns the cache handle.
 // Caller must call Shutdown at process exit so any provider-side
 // resources (live subprocesses, open files) get released.
-func newConversationCache() *conversationCache {
+func newConversationCache(projectPath func() string) *conversationCache {
 	cc := &conversationCache{
-		ops:  make(chan cacheOp, 16),
-		done: make(chan struct{}),
+		ops:         make(chan cacheOp, 16),
+		done:        make(chan struct{}),
+		projectPath: projectPath,
 	}
 	go cc.runActor()
 	return cc
@@ -119,6 +127,24 @@ func (cc *conversationCache) CloseConversation(convID string) {
 		doneCh: done,
 	}
 	<-done
+}
+
+// CloseAllConversations drops every cached Conversation across all convIDs and
+// providers while leaving the actor running, so the cache keeps serving after
+// the call. SwitchProject uses it to release the previous project's
+// conversations — and the live CLI subprocesses they hold: a conversation is
+// bound to its project (transcript directory, warm-resume sidecar, CLAUDE.md),
+// so it must not outlive a switch. The next GetOrOpen re-initializes the
+// provider against the new project root (see the projectPath wiring).
+// Idempotent; safe to call after Shutdown.
+func (cc *conversationCache) CloseAllConversations() {
+	done := make(chan struct{}, 1)
+	select {
+	case cc.ops <- cacheOp{kind: cacheOpCloseAll, doneCh: done}:
+		<-done
+	case <-cc.done:
+		// Already shut down — nothing cached to close.
+	}
 }
 
 // CancelConversation invokes Cancel on every cached Conversation for the
@@ -185,11 +211,16 @@ func (cc *conversationCache) runActor() {
 				}
 			}
 			info, _ := provider.GetProviderInfo(op.key.providerName)
+			var projectPath string
+			if cc.projectPath != nil {
+				projectPath = cc.projectPath()
+			}
 			prov, err := provider.InitializeProvider(op.key.providerName, provider.Config{
 				APIKey:            op.credential.APIKey,
 				BearerToken:       op.credential.BearerToken,
 				Headers:           op.credential.Headers,
 				Model:             op.key.model,
+				ProjectPath:       projectPath,
 				ModelCapabilities: op.key.capabilities,
 				BudgetContract: provider.BudgetContract{
 					AllowUnknownLimits: info.AllowUnknownLimits,
@@ -228,6 +259,15 @@ func (cc *conversationCache) runActor() {
 					}
 					delete(entries, k)
 				}
+			}
+			op.doneCh <- struct{}{}
+
+		case cacheOpCloseAll:
+			for k, conv := range entries {
+				if err := conv.Close(); err != nil {
+					jlog.Debug("conversation cache: close-all %s (%s/%s): %v", k.convID, k.providerName, k.model, err)
+				}
+				delete(entries, k)
 			}
 			op.doneCh <- struct{}{}
 

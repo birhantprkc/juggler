@@ -39,7 +39,7 @@ func TestLLMCallerWaitsForStartupCapabilities(t *testing.T) {
 	s := newTestServerState(t)
 	s.providersReady = make(chan struct{})
 	s.shutdownChan = make(chan struct{})
-	s.conversationCache = newConversationCache()
+	s.conversationCache = newConversationCache(s.ProjectPath)
 	t.Cleanup(s.conversationCache.Shutdown)
 
 	request, err := json.Marshal(map[string]any{
@@ -113,7 +113,7 @@ func TestLLMCallerDispatchesEstimatedOversizedRoot(t *testing.T) {
 	s := newTestServerState(t)
 	s.providersReady = make(chan struct{})
 	s.shutdownChan = make(chan struct{})
-	s.conversationCache = newConversationCache()
+	s.conversationCache = newConversationCache(s.ProjectPath)
 	t.Cleanup(s.conversationCache.Shutdown)
 	providers := []ProviderStatus{{Name: providerName, ModelsWithContext: []ModelWithContext{{
 		ID: "tiny", ContextWindow: 100, MaxOutputTokens: 20,
@@ -163,7 +163,7 @@ func TestLLMCallerPropagatesContextGuardBypass(t *testing.T) {
 	s := newTestServerState(t)
 	s.providersReady = make(chan struct{})
 	s.shutdownChan = make(chan struct{})
-	s.conversationCache = newConversationCache()
+	s.conversationCache = newConversationCache(s.ProjectPath)
 	t.Cleanup(s.conversationCache.Shutdown)
 	providers := []ProviderStatus{{Name: providerName, ModelsWithContext: []ModelWithContext{{ID: "model", ContextWindow: 1000, MaxOutputTokens: 100}}}}
 	s.providersList.Store(&providers)
