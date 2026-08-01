@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Claude Code usage polls no longer load user-level plugins or hooks, so unrelated tools don't fire on every quota refresh
+
 ## [0.5.2] - 2026-08-01
 
 - File search tools (grep, glob, tree) now respect nested .gitignore files, with a per-conversation toggle to search everything

@@ -66,7 +66,13 @@ func (c *Client) UsageStats(ctx context.Context) (provider.UsageStats, error) {
 	if bin == "" {
 		return provider.UsageStats{}, fmt.Errorf("failed to start claude CLI: claude executable not found. Searched $PATH, the login shell, and known install locations (%s). Set %s to its absolute path if it lives elsewhere", claudeInstallLocationsHint, claudePathEnvVar)
 	}
-	args := []string{"-p", "--output-format", "json", "--max-turns", "1", "/usage"}
+	// --setting-sources project,local omits "user", so the probe loads only
+	// project/local settings and fires none of the user's Claude Code plugins or
+	// hooks. A usage poll is a transport for a number, not an agent turn — Juggler
+	// supplies its own prompt, project, and tools — so an unrelated tool's
+	// session-lifecycle machinery (memory stores, telemetry, audit hooks) must not
+	// run every time we read a quota percentage.
+	args := []string{"-p", "--output-format", "json", "--max-turns", "1", "--setting-sources", "project,local", "/usage"}
 	cmd := claudeCommand(ctx, bin, args)
 	cmd.Dir = c.workingDir
 	cmd.Env = spawnEnv(bin, testExtraSpawnEnv)
