@@ -1590,10 +1590,23 @@ input, textarea {
     font-size: 1rem;
     outline: none;
     transition: border-color 0.2s;
+}
 
-    /* Override the UA default i-beam, which WebView2 draws white (invisible on
-       the light theme). See the Windows workaround block / --cursor-text. */
+/* Force our SVG i-beam over inputs — Windows-only, for the WebView2 white-cursor
+   bug (see the workaround block / --cursor-text). Left unset elsewhere so
+   macOS/Linux keep the native `auto` cursor, which already draws the i-beam over
+   text AND the resize cursor over a textarea's bottom-right grabber. Setting
+   `cursor: text` on the element blankets that grabber too, so a resizable
+   textarea would wrongly show the i-beam on its handle — hence the platform gate
+   plus the resizer override below (WebView2/Chromium honours ::-webkit-resizer;
+   WebKit ignores it, but native already handles macOS). */
+:root[data-os="windows"] input,
+:root[data-os="windows"] textarea {
     cursor: var(--cursor-text);
+}
+
+:root[data-os="windows"] textarea::-webkit-resizer {
+    cursor: var(--cursor-row-resize);
 }
 
 input:focus, textarea:focus {
