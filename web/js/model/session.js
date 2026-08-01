@@ -20,6 +20,7 @@ import { setupWorkerCallbacks } from './session-worker-callbacks.js';
 import { approvePermittedPendingApprovals } from './conversation-tool-actions.js';
 import { ensureUserPresetsLoaded, getDefaultPresetSeed } from '../services/system-prompt-presets.js';
 import { isDefaultFileEditingOn, setFileEditingAllowed } from '../services/file-editing-permission.js';
+import { resolveDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID } from '../services/default-strategy.js';
 import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
 
 
@@ -1355,6 +1356,7 @@ class Session {
     // Must await — if clearUndoStacks races with user operations it wipes their undo groups.
     await this.seedConversationAutoItems(conversation);
     this._seedDefaultFileEditing(conversation);
+    this._seedDefaultStrategy(conversation);
     await workerManager.clearUndoStacks(conversation.id);
 
     // Ask the UI to open inline rename on the freshly-activated blank tab. Fired
@@ -1418,6 +1420,29 @@ class Session {
       if (mt) setFileEditingAllowed(mt, true);
     } catch (err) {
       console.warn('[Session] Could not seed default file-editing permission:', err);
+    }
+  }
+
+  /**
+   * Seed the strategy of a freshly created conversation from the session's
+   * "default strategy for new tasks" preference. The resolved id honours what is
+   * actually registered (configured pin → built-in `default` → first available),
+   * so disabling the built-in Default strategy seeds a real enabled strategy
+   * instead of silently landing on the inert fallback. The built-in `default`
+   * needs no write — a conversation with no `currentStrategyId` already resolves
+   * to it — so we only pin the root thread when the resolved strategy differs,
+   * mirroring how the model/system-prompt seeds avoid needless doc churn.
+   * @param {import('./conversation.js').default} conversation
+   * @private
+   */
+  _seedDefaultStrategy(conversation) {
+    try {
+      const strategyId = resolveDefaultStrategyId(this);
+      if (!strategyId || strategyId === BUILTIN_DEFAULT_STRATEGY_ID) return;
+      const mt = conversation.rootMessageThread;
+      if (mt) mt.setStrategy(strategyId);
+    } catch (err) {
+      console.warn('[Session] Could not seed default strategy:', err);
     }
   }
 

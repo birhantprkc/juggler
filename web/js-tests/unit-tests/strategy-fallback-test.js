@@ -80,6 +80,29 @@ export async function runTests(_ctx) {
       `expected unknown id to fall back to 'default', got '${s.getManifest().id}'`);
   });
 
+  await run('createStrategy falls back to a real strategy when default is disabled', () => {
+    // Simulate the built-in 'default' being disabled while other strategies stay
+    // enabled: createStrategy('default') must resolve to a REAL registered
+    // strategy (the first in display order), NOT the inert fallback — otherwise
+    // disabling Default strategy silently bricks every new task. Snapshot and
+    // restore so the shared singleton is untouched for other suites.
+    const saved = new Map(strategyRegistry.items);
+    strategyRegistry.items.delete('default');
+    try {
+      assert(strategyRegistry.hasAnyStrategy(),
+        'precondition: at least one non-default strategy is registered in the test build');
+      const expected = strategyRegistry.getAllManifests()[0]?.id;
+      const s = strategyRegistry.createStrategy('default', FAKE_MESSAGE_THREAD);
+      assert(!(s instanceof FallbackStrategy),
+        'a disabled default must fall back to a real strategy, not the inert fallback');
+      assert(s.getManifest().id === expected,
+        `expected first-available strategy '${expected}', got '${s.getManifest().id}'`);
+    } finally {
+      strategyRegistry.items.clear();
+      for (const [k, v] of saved) strategyRegistry.items.set(k, v);
+    }
+  });
+
   await run('createStrategy never throws when NO strategy is registered', () => {
     // Simulate the @juggler/core extension being disabled: the registry holds
     // no strategies at all. Snapshot and restore so the shared singleton is

@@ -12,6 +12,8 @@
 import { modelLabel, modelLabelFromList } from '../../model/model-display.js';
 import { buildToggleRow } from './notifications-tab.js';
 import { isDefaultFileEditingOn, setDefaultFileEditingOn } from '../../services/file-editing-permission.js';
+import strategyRegistry from '../../registries/strategy-registry.js';
+import { getDefaultStrategyId, setDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID } from '../../services/default-strategy.js';
 
 /**
  * "Provider settings" tab (id `default-model`): the single default-model picker
@@ -67,16 +69,18 @@ export class DefaultModelTab {
   }
 
   /**
-   * Render the "New task defaults" section: per-project toggles applied to each
-   * newly created task. Currently just the file-editing default — whether a task
-   * starts with edits allowed instead of asking. Persisted to session metadata,
-   * so it survives restarts and is shared across windows on the same project.
+   * Render the "New task defaults" section: per-project defaults applied to each
+   * newly created task — the strategy a task starts on, and whether it starts
+   * with edits allowed instead of asking. Persisted to session metadata, so they
+   * survive restarts and are shared across windows on the same project.
    * @private
    */
   renderNewTaskDefaults() {
     const container = this.host.querySelector('#new-task-defaults-form');
     if (!container) return;
     container.innerHTML = '';
+
+    container.appendChild(this._buildDefaultStrategyRow());
 
     const { row } = buildToggleRow(
       'Allow file edits in new tasks',
@@ -88,6 +92,83 @@ export class DefaultModelTab {
       (on) => setDefaultFileEditingOn(this._getSession(), on),
     );
     container.appendChild(row);
+  }
+
+  /**
+   * Build the "Default strategy for new tasks" picker row: a dropdown of every
+   * registered strategy (in the registry's display order), preselecting the
+   * configured default, or the built-in Default strategy when none is pinned.
+   * Changing it persists immediately to session metadata; the pin is cleared
+   * when the built-in Default is chosen. Each task can still switch strategy
+   * afterwards — this only sets what a fresh task starts on.
+   * @returns {HTMLElement} The settings row element.
+   * @private
+   */
+  _buildDefaultStrategyRow() {
+    const row = document.createElement('div');
+    row.className = 'settings-group provider-field';
+
+    const infoColumn = document.createElement('div');
+    infoColumn.className = 'provider-info';
+    const name = document.createElement('div');
+    name.className = 'provider-name';
+    name.textContent = 'Default strategy for new tasks';
+    const desc = document.createElement('div');
+    desc.className = 'provider-description';
+    desc.textContent =
+      'The strategy each new task starts on. You can still switch strategy per ' +
+      'task afterwards.';
+    infoColumn.appendChild(name);
+    infoColumn.appendChild(desc);
+
+    const controlColumn = document.createElement('div');
+    controlColumn.className = 'provider-control';
+
+    const select = document.createElement('select');
+    select.className = 'default-model-select';
+    select.id = 'default-strategy-select';
+
+    const configured = getDefaultStrategyId(this._getSession());
+    const manifests = strategyRegistry.getAllManifests();
+    // A configured pin whose strategy is no longer registered (disabled/removed)
+    // — surface it as a selected "unavailable" option so the state stays visible
+    // rather than silently snapping to the built-in Default.
+    const configuredIsRegistered = !configured
+      || manifests.some((/** @type {{id: string}} */ m) => m.id === configured);
+
+    for (const { id, manifest } of manifests) {
+      const opt = document.createElement('option');
+      opt.value = id;
+      // The built-in Default is the "no pin" choice: label it so, and select it
+      // when nothing (or 'default') is configured.
+      opt.textContent = id === BUILTIN_DEFAULT_STRATEGY_ID
+        ? `${manifest.name} (built-in default)`
+        : manifest.name;
+      if (configuredIsRegistered
+        ? (configured ? id === configured : id === BUILTIN_DEFAULT_STRATEGY_ID)
+        : false) {
+        opt.selected = true;
+      }
+      select.appendChild(opt);
+    }
+
+    if (!configuredIsRegistered && configured) {
+      const opt = document.createElement('option');
+      opt.value = configured;
+      opt.textContent = `${configured} — unavailable`;
+      opt.selected = true;
+      select.insertBefore(opt, select.firstChild);
+    }
+
+    select.addEventListener('change', () => {
+      setDefaultStrategyId(this._getSession(), select.value);
+    });
+
+    controlColumn.appendChild(select);
+
+    row.appendChild(infoColumn);
+    row.appendChild(controlColumn);
+    return row;
   }
 
   /**

@@ -96,13 +96,22 @@ class StrategyRegistry extends BaseRegistry {
   createStrategy(id, messageThread) {
     let StrategyClass = this.get(id);
 
-    // A saved session may reference a strategy that was removed/renamed — fall
-    // back to 'default' if it is available (and is not what we already asked for).
-    if (!StrategyClass && id !== 'default') {
-      const fallbackDefault = this.get('default');
-      if (fallbackDefault) {
-        console.warn(`[StrategyRegistry] Strategy "${id}" not found, falling back to "default"`);
-        StrategyClass = fallbackDefault;
+    // The requested id isn't registered — it was removed/renamed, or it (e.g. a
+    // disabled 'default') has been turned off in the extension settings while
+    // other strategies remain enabled. Resolve to a REAL registered strategy
+    // rather than dropping to the inert fallback: prefer 'default' when it's
+    // available, else the first strategy in display order. This is what makes
+    // disabling the built-in "Default strategy" behave sensibly — a new task (or
+    // a session pinned to 'default') lands on an enabled strategy instead of the
+    // placeholder that runs no turn.
+    if (!StrategyClass) {
+      const fallbackId = this.has('default') ? 'default' : this.getAllManifests()[0]?.id;
+      if (fallbackId && fallbackId !== id) {
+        const fallback = this.get(fallbackId);
+        if (fallback) {
+          console.warn(`[StrategyRegistry] Strategy "${id}" not available, falling back to "${fallbackId}"`);
+          StrategyClass = fallback;
+        }
       }
     }
 
