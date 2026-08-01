@@ -53,6 +53,7 @@ import { tests as binGuardTests } from '../integration-tests/bin-guard-tests.js'
 import { tests as modelAvailabilityTests } from '../integration-tests/model-availability-tests.js';
 import { runTests as runApprovalFlowTests } from '../unit-tests/approval-flow-test.js';
 import { runTests as runContextItemPersistenceTests } from '../unit-tests/context-item-persistence-test.js';
+import { runTests as runContextItemSeedExecuteTests } from '../unit-tests/context-item-seed-execute-test.js';
 import { runTests as runConversationNameTests } from '../unit-tests/conversation-name-persistence-test.js';
 import { runTests as runDraftPersistenceTests } from '../unit-tests/draft-persistence-test.js';
 import { runTests as runDroppedFileTests } from '../unit-tests/dropped-file-test.js';
@@ -259,6 +260,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:model-selector-hud', run: runModelSelectorHudTests },
   { name: 'unit:find', run: runFindTests },
   { name: 'unit:context-item-persistence', run: runContextItemPersistenceTests },
+  { name: 'unit:context-item-seed-execute', run: runContextItemSeedExecuteTests },
   { name: 'unit:conversation-name-persistence', run: runConversationNameTests },
   { name: 'unit:draft-persistence', run: runDraftPersistenceTests },
   { name: 'unit:dropped-file', run: runDroppedFileTests },

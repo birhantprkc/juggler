@@ -1034,12 +1034,25 @@ class ContextItem {
   // ============================================================================
 
   /**
-   * Execute a tool call and store results in this.data
+   * Execute a tool call and store results in this.data.
+   *
+   * Action-style items do their tool work in `execute()`, which the tool
+   * dispatcher routes to directly (own `execute` on the prototype) — they never
+   * need `onToolCall()`. Seeding, however, always runs through
+   * `handleToolCall()` -> `onToolCall()` before rendering the standing block, so
+   * a base throw here would abort seeding for an `execute()`-only item before it
+   * is registered, silently dropping its context from the system prompt. So this
+   * is a no-op for items that define `execute()`. An item that defines neither
+   * `execute()` nor its own `onToolCall()` is genuinely incomplete, so it still
+   * throws.
    * @param {string} _toolName - Name of the tool being called
    * @param {Record<string, any>} _params - Tool parameters from LLM
    * @returns {Promise<void>}
    */
   async onToolCall(_toolName, _params) {
+    if (Object.prototype.hasOwnProperty.call(this.constructor.prototype, 'execute')) {
+      return;
+    }
     throw new Error('onToolCall() must be implemented by subclass');
   }
 
