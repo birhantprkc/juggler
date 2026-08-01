@@ -45,6 +45,19 @@ const harnessHTTPTimeout = 60 * time.Second
 // is safe; a genuine boot crash still surfaces once this window elapses.
 const postConnectWindow = 10 * time.Second
 
+// listDiscoveryTimeout bounds the wait for the harness to enumerate its tests
+// and POST them back to /api/test/names after the __list__ trigger. Unlike a
+// per-test run — where the harness iframes are already loaded and connected —
+// discovery is the FIRST thing the suite does, so it races a cold engine boot:
+// the pool releases a slot token the instant the subprocess prints JUGGLER_ADDR=
+// (HTTP listener up), which is well before the WebView2/WebKit host has loaded
+// the test-pool page, brought up every iframe, and connected their sockets. On
+// a loaded CI runner under `-race` that warm-up is slow (Windows especially),
+// and a budget shorter than the boot budget makes discovery time out before the
+// harness is ever ready — failing the whole suite. Match the 60s subprocess-boot
+// and per-test budgets so discovery gets the same slack as everything else.
+const listDiscoveryTimeout = 60 * time.Second
+
 // TestBrowser runs all browser-side tests in parallel. Each JS test becomes a
 // subtest addressable via -run, e.g. go test -run 'TestBrowser/integration:glob-go-files'.
 //
@@ -270,7 +283,7 @@ func listBrowserTests(srv testServerEntry) (names, polluters []string, err error
 		Names     []string `json:"names"`
 		Polluters []string `json:"polluters"`
 	}
-	if err := pollServer(srv.addr, "/api/test/names", 30*time.Second, &payload); err != nil {
+	if err := pollServer(srv.addr, "/api/test/names", listDiscoveryTimeout, &payload); err != nil {
 		return nil, nil, fmt.Errorf("waiting for test names: %w", err)
 	}
 	return payload.Names, payload.Polluters, nil
