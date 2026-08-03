@@ -40,12 +40,14 @@ function buildDiffLines(oldText, newText, startLineNumber = 1) {
     if (i < m && j < n && oldLines[i] === newLines[j]) {
       out.push(/** @type {DiffLine} */ ({ type: 'equal', content: /** @type {string} */ (oldLines[i]), oldLineNum, newLineNum }));
       i++; j++; oldLineNum++; newLineNum++;
-    } else if (j < n && (i === m || (dp[i]?.[j + 1] ?? 0) >= (dp[i + 1]?.[j] ?? 0))) {
-      out.push(/** @type {DiffLine} */ ({ type: 'add', content: /** @type {string} */ (newLines[j]), oldLineNum: null, newLineNum }));
-      j++; newLineNum++;
-    } else {
+    } else if (i < m && (j === n || (dp[i + 1]?.[j] ?? 0) >= (dp[i]?.[j + 1] ?? 0))) {
+      // Prefer emitting the removal on a tie so that within a modified block
+      // the '-' line precedes the '+' line, matching POSIX unified diff order.
       out.push(/** @type {DiffLine} */ ({ type: 'remove', content: /** @type {string} */ (oldLines[i]), oldLineNum, newLineNum: null }));
       i++; oldLineNum++;
+    } else {
+      out.push(/** @type {DiffLine} */ ({ type: 'add', content: /** @type {string} */ (newLines[j]), oldLineNum: null, newLineNum }));
+      j++; newLineNum++;
     }
   }
 
