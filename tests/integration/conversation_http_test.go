@@ -36,6 +36,12 @@ func TestConversationHTTP_SaveAndLoadViaHTTP(t *testing.T) {
 
 	convID := "conv_http_test"
 
+	// Own the conversation first: the binary PUT seam persists only ids this
+	// project owns (it will not fabricate a folder for an unknown id), so create
+	// it through the authoritative entry point before saving bytes for it.
+	_, _, err = manager.CreateConversation("HTTP Test", convID)
+	helpers.AssertNoError(t, err)
+
 	// Create HTTP API (nil workerManager + nil closer fine for this test - no deletions)
 	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 
@@ -143,6 +149,11 @@ func TestConversationHTTP_SaveOverwrite(t *testing.T) {
 	defer manager.Shutdown()
 
 	convID := "conv_overwrite"
+
+	// Own the conversation first (see TestConversationHTTP_SaveAndLoadViaHTTP):
+	// the binary PUT seam persists only owned ids.
+	_, _, err = manager.CreateConversation("Overwrite", convID)
+	helpers.AssertNoError(t, err)
 
 	sessionAPI := handlers.NewSessionAPI(func() *core.SessionManager { return manager }, nil, nil, nil, nil)
 	router := mux.NewRouter()

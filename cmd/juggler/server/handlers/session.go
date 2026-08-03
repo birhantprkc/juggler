@@ -628,9 +628,21 @@ func (api *SessionAPI) HandleUpdateConversation(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		if err := api.manager().SaveConversationBinary(convID, yjsData); err != nil {
+		// Owned-only save, matching the worker persistence seam (SetSaveBinary →
+		// SaveConversationBinaryIfOwned). Refuse to fabricate a folder for an id
+		// this project no longer owns: a late PUT for a binned/deleted
+		// conversation — e.g. from a lagging view after a store reload, where the
+		// in-memory deletedIDs guard no longer holds the id — would otherwise
+		// recreate an "Untitled--<id>" ghost folder that reappears as a phantom
+		// tab. Unowned is a benign no-op (the owning project persists the doc when
+		// it is the loaded project).
+		saved, err := api.manager().SaveConversationBinaryIfOwned(convID, yjsData)
+		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if !saved {
+			jlog.Debug("[session.Update] skipped unowned conv=%s (not in loaded project)", convID)
 		}
 	} else {
 		writeError(w, r, http.StatusBadRequest, "Only binary format (application/octet-stream) is supported")
