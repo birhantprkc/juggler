@@ -108,6 +108,45 @@ function formatDuration(seconds) {
   return remainMins > 0 ? `${hours}h ${remainMins}m` : `${hours}h`;
 }
 
+/**
+ * Display metadata for each approval-provenance value, keyed by the item's
+ * `approvalSource`. Each value names the approving BODY (who granted it), not
+ * the mechanism. Mirrors the vocabulary the approval pipeline stamps (see
+ * MessageThread.resolveApproval): `user` (a human clicked approve), `rule` (a
+ * saved permission rule allowed it), `strategy` (the active strategy approved it
+ * without individual confirmation — a force-approve strategy or an out-of-band
+ * reviewer).
+ * @type {Record<string, {label: string, icon: string, title: string}>}
+ */
+const APPROVAL_SOURCE_META = {
+  user: { label: 'User', icon: 'icon-check', title: 'Approved by the user' },
+  rule: { label: 'Permitted', icon: 'icon-checklist', title: 'Allowed by a saved permission rule' },
+  strategy: { label: 'Strategy', icon: 'icon-auto-awesome', title: 'Approved by the active strategy' }
+};
+
+/**
+ * Build the approval-provenance badge for a tool-action's properties-panel
+ * header — a lozenge matching the item type-name badge, carrying a
+ * source-specific leading icon and short label. Returns null when the item
+ * carries no (or an unknown) `approvalSource` — e.g. an item added out-of-band
+ * that never passed an approval gate — so the header simply omits it.
+ * @param {string|undefined} source - The item's `approvalSource` field
+ * @returns {HTMLSpanElement|null} The badge element, or null when unset/unknown
+ */
+export function buildApprovalSourceBadge(source) {
+  const meta = source ? APPROVAL_SOURCE_META[source] : undefined;
+  if (!meta) return null;
+  const badge = document.createElement('span');
+  badge.className = `context-item-type-badge properties-panel-approval-badge approval-source-${source}`;
+  badge.title = meta.title;
+  const icon = document.createElement('span');
+  icon.className = meta.icon;
+  icon.setAttribute('aria-hidden', 'true');
+  badge.appendChild(icon);
+  badge.appendChild(document.createTextNode(meta.label));
+  return badge;
+}
+
 /** @type {ItemRenderer} */
 export function renderError(host, container, message) {
   const badge = badgeForItem(message, badgeCtx(host));
@@ -462,6 +501,21 @@ export function renderToolAction(host, container, toolAction) {
     badge.typeName, badge, host._renderToolActionControls(toolAction),
     statusText, toolAction.get('transactionId'), toolAction.get('timestamp') || undefined
   );
+
+  // Approval provenance sits in the header beside the type-name badge (and the
+  // duration status), naming who approved this call — only when it was stamped.
+  // Injected here rather than through the shared header helper because only
+  // tool-actions carry an approvalSource.
+  const approvalBadge = buildApprovalSourceBadge(toolAction.get('approvalSource'));
+  if (approvalBadge) {
+    const header = wrapper.querySelector('.properties-panel-header');
+    const iconBadge = header?.querySelector('.message-icon-badge');
+    if (iconBadge) {
+      iconBadge.insertAdjacentElement('afterend', approvalBadge);
+    } else if (header) {
+      header.appendChild(approvalBadge);
+    }
+  }
 
   if (isRunning) wrapper.setAttribute('data-processing', 'true');
 

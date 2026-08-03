@@ -119,27 +119,43 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
    * own input, which no reviewer can supply — so this method needs no guard
    * against auto-answering a question.
    * @override
-   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined, permissionKey: string}} info
+   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined, permissionKey: string, autoApprovable?: boolean}} info
    * @returns {Promise<void>}
    */
-  async onToolPending({ toolUseId, toolName, toolInput, category, permissionKey }) {
+  async onToolPending({ toolUseId, toolName, toolInput, category, permissionKey, autoApprovable }) {
     // `category` is unused in v1 but kept for future use (e.g. skipping review
     // for 'meta' tools). Reference it so the destructure isn't dead.
     void category;
+    // A call the action marked non-auto-approvable (a plan submit, a recursive
+    // delete of the project root or home) must never be resolved by the cheap
+    // reviewer — it is a deliberate human checkpoint. Leave it parked. This is
+    // the same seam the blanket auto-approve toggle honours in
+    // handleNewToolAction; the reviewer is the other silent path, so it enforces
+    // the seam too. (Only an explicit `false` bails — an absent field, e.g. from
+    // an older caller, keeps today's behaviour.)
+    if (autoApprovable === false) return;
     // File edits are never auto-approved by the reviewer — the deterministic
     // file-editing toggle owns them (see the class doc). Leave the write parked
     // for the human. Guarding on the permission key (not a tool-name list) keeps
     // every current and future edit-family plugin covered uniformly.
     if (permissionKey === WRITE_FILE_ITEM_TYPE) return;
     try {
-      const prompt = buildReviewerPrompt(this.messageThread.items, { toolName, toolInput });
+      // Give the reviewer the real project root and home as ground truth, so a
+      // delete/overwrite is judged against where it actually lands — not fooled
+      // by a path substring (e.g. `tmp`) that reads as scratch. Additive signal
+      // on the probabilistic path; it blocks nothing on its own.
+      const session = /** @type {any} */ (this.messageThread.conversation)?.session;
+      const context = { projectRoot: session?.projectPath || '', home: session?.home || '' };
+      const prompt = buildReviewerPrompt(this.messageThread.items, { toolName, toolInput }, { context });
       const model = /** @type {any} */ (this.state)?.reviewerModel ?? 'cheap';
       const { text } = await this._complete(
         { system: POLICY_PROMPT, prompt, model, maxTokens: 16 },
         this._abortController?.signal
       );
       if (parseVerdict(text) === 'allow') {
-        this.messageThread.resolveApproval(toolUseId, 'yes');
+        // Provenance `strategy`: this strategy is the approving body. The value
+        // names WHO approved (a strategy), not the process (an automatic review).
+        this.messageThread.resolveApproval(toolUseId, 'yes', { source: 'strategy' });
       }
       // deny → intentionally do nothing; the tool stays parked for the human.
     } catch (err) {

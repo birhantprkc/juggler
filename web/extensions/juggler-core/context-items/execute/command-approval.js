@@ -3794,6 +3794,162 @@ export function isCommandAutoApproved(command, opts = {}) {
   return validateSegmentSequence(segments, ctx);
 }
 
+// ============================================================================
+// Catastrophic-deletion floor (auto-approve blast-radius guard)
+// ============================================================================
+
+/**
+ * Resolve a single `rm` target argument to a comparable absolute POSIX path, or
+ * null when it cannot be pinned to a concrete location. `$HOME`/`${HOME}` is the
+ * one expansion we resolve (a common, catastrophic-radius way to name the home
+ * dir); every OTHER shell expansion (`$VAR`, `$(…)`, backticks) and every
+ * unexpanded glob (`*`, `?`, `[`) returns null and is deliberately left to the
+ * probabilistic reviewer rather than judged here. `~`/`~/x` expand against
+ * `home`; a relative target resolves against the effective `cwd`; `.`/`./`
+ * collapse to `cwd`.
+ * @param {string} text raw target token text
+ * @param {{home: string, cwd: string}} ctx resolution context
+ * @returns {string|null} normalised absolute path (POSIX, no trailing slash), or null
+ */
+function resolveDeletionTarget(text, { home, cwd }) {
+  if (!text) return null;
+  let p = text;
+  if (p === '$HOME' || p === '${HOME}') {
+    if (!home) return null;
+    p = home;
+  } else if (p.includes('$') || p.includes('`') || p.includes(SUBST_SENTINEL)) {
+    return null; // unresolved shell expansion — reviewer's call
+  } else if (p.includes('*') || p.includes('?') || p.includes('[')) {
+    return null; // unexpanded glob (`rm -rf *`) — explicitly out of floor scope
+  }
+  if (p === '~' || p === '~/') {
+    if (!home) return null;
+    p = home;
+  } else if (p.startsWith('~/')) {
+    if (!home) return null;
+    p = (home.endsWith('/') ? home.slice(0, -1) : home) + '/' + p.slice(2);
+  }
+  if (!p.startsWith('/')) {
+    p = (cwd.endsWith('/') ? cwd.slice(0, -1) : cwd) + '/' + p;
+  }
+  return posixNormalize(p);
+}
+
+/**
+ * Detect a recursive/forced `rm` whose resolved target is a *catastrophic
+ * radius*: the project root itself, an ancestor of it, the user's home dir (or
+ * an ancestor of it), or a filesystem root / bare top-level (`/`, `/usr`, …).
+ *
+ * This is the deterministic floor beneath the auto-approve reviewer. Such a
+ * deletion is the one class that must never be *silently* auto-approved, so a
+ * probabilistic "this looks like scratch" allow can't delete the project — or
+ * more — out from under the user (the incident: `rm -fr /home/crem/tmp/juggler/`
+ * read as safe because the path contained `tmp`). It only ever ADDS a human
+ * prompt; a false positive costs one approval, and the human (or YOLO) can still
+ * proceed.
+ *
+ * It is NOT a general destructive classifier. A recursive delete of a genuine
+ * subdir, `node_modules`, `./build`, or any scratch tree resolves below the
+ * project root, returns false, and flows through the reviewer exactly as before
+ * — long unsupervised runs keep their `rm -rf` latitude. Unexpanded globs
+ * (`rm -rf *`) and shell expansions other than `$HOME` are left unresolved (also
+ * false), by design the reviewer's job.
+ * @param {string} command the command string
+ * @param {object} [opts] options
+ * @param {string} [opts.platform] 'darwin' | 'linux' | 'windows' (default 'darwin')
+ * @param {string} [opts.home] backend user-home dir
+ * @param {string} [opts.projectRoot] absolute project root (the effective cwd)
+ * @param {string} [opts.cwd] effective cwd override (default: projectRoot)
+ * @returns {boolean} true if a recursive/forced delete targets a catastrophic radius
+ */
+export function isCatastrophicDeletion(command, opts = {}) {
+  if (!command || typeof command !== 'string') return false;
+  const platform = opts.platform || 'darwin';
+  const home = opts.home || '';
+  const projectRoot = opts.projectRoot || '';
+  // Without a known project root there is no radius to protect — leave the whole
+  // decision to the reviewer.
+  if (!projectRoot) return false;
+
+  const tokens = tokenize(command);
+  if (!tokens || tokens.length === 0) return false;
+
+  // Windows (git-bash) paths compare case-insensitively and may mix separators;
+  // fold both sides before comparing. Best-effort: MSYS `/c/…` vs `C:\…` drive
+  // spellings aren't unified here, so a missed match simply falls back to the
+  // reviewer (never a false catastrophic-allow).
+  const fold = (/** @type {string} */ p) =>
+    platform === 'windows' ? p.replace(/\\/g, '/').toLowerCase() : p;
+  const stripSlash = (/** @type {string} */ p) =>
+    p.endsWith('/') && p !== '/' ? p.slice(0, -1) : p;
+  const R = fold(posixNormalize(stripSlash(projectRoot)));
+  const H = home ? fold(posixNormalize(stripSlash(home))) : '';
+
+  /**
+   * Is `anc` at or above `desc` in the tree (equal, or a strict ancestor)?
+   * @param {string} anc ancestor candidate
+   * @param {string} desc descendant candidate
+   * @returns {boolean} true if `desc` is `anc` or nested under it
+   */
+  const isAtOrAbove = (anc, desc) => desc === anc || desc.startsWith(anc + '/');
+
+  const segments = splitOnOps(tokens, TOP_LEVEL_SPLIT_OPS);
+  // Effective cwd, adjusted by a leading `cd` chain. Defaults to the project
+  // root; an explicit `opts.cwd` overrides it.
+  let cwd = opts.cwd ? fold(posixNormalize(stripSlash(opts.cwd))) : R;
+
+  for (const seg of segments) {
+    const words = /** @type {WordToken[]} */ (seg.filter((t) => t.type === 'word'));
+    if (words.length === 0) continue;
+    const head = checkedAt(words, 0).text;
+
+    // Track `cd` so a relative `rm` target after `cd sub` resolves correctly.
+    if (head === 'cd') {
+      const arg = words.slice(1).map((w) => w.text).find((t) => !t.startsWith('-'));
+      if (arg) {
+        const resolved = resolveDeletionTarget(arg, { home, cwd });
+        if (resolved) cwd = fold(resolved);
+      }
+      continue;
+    }
+
+    if (head !== 'rm') continue;
+
+    // Recursive (-r/-R/--recursive) OR force (-f/--force) — either is enough; a
+    // false positive only adds one approval prompt. Everything after `--` is a
+    // target, not an option.
+    let recursiveOrForce = false;
+    let optionsEnded = false;
+    /** @type {string[]} */
+    const targets = [];
+    for (let k = 1; k < words.length; k++) {
+      const w = checkedAt(words, k).text;
+      if (!optionsEnded && w === '--') { optionsEnded = true; continue; }
+      if (!optionsEnded && w.startsWith('--')) {
+        if (w === '--recursive' || w === '--force') recursiveOrForce = true;
+        continue;
+      }
+      if (!optionsEnded && w.length > 1 && w.startsWith('-')) {
+        if (/[rRf]/.test(w.slice(1))) recursiveOrForce = true;
+        continue;
+      }
+      targets.push(w);
+    }
+    if (!recursiveOrForce) continue;
+
+    for (const t of targets) {
+      const resolved = resolveDeletionTarget(t, { home, cwd });
+      if (!resolved) continue;
+      const T = fold(resolved);
+      const segs = T.split('/').filter(Boolean);
+      if (T.startsWith('/') && segs.length < 2) return true; // `/` or a bare top-level
+      if (isAtOrAbove(T, R)) return true;      // project root or an ancestor of it
+      if (H && isAtOrAbove(T, H)) return true; // home dir or an ancestor of it
+    }
+  }
+  return false;
+}
+
 /**
  * Upper bound on the length of a glob pattern we will *suggest*. Past this a
  * pattern is almost always the verbatim text of one long command — too

@@ -561,6 +561,22 @@ class PlanContextItem extends ContextItem {
   }
 
   /**
+   * A plan `submit` is a deliberate human checkpoint: the user reviews the
+   * proposed steps and signs off before execution begins. So it must never be
+   * *silently* auto-approved — not by the conversation-wide auto-approve toggle
+   * and not by a strategy's out-of-band reviewer. The human can still approve it
+   * explicitly (or YOLO can), but the mode should not tick past the plan gate on
+   * its own. Step actions (non-`submit`) carry no approval surface at all, so
+   * they stay auto-approvable.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Raw tool input parameters
+   * @returns {boolean} False for a `submit` (force human sign-off), true otherwise
+   */
+  autoApprovable(toolInput) {
+    return toolInput.action !== 'submit';
+  }
+
+  /**
    * Decide whether a `submit` proposes the same plan as the one currently on
    * the thread, so it can skip re-approval. Match rule: same number of steps
    * and each step's content text is identical (whitespace-trimmed). Status is

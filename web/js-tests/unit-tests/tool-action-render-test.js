@@ -25,6 +25,7 @@
  */
 
 import { TOOL_STATES } from '../../sdk/lib/message.js';
+import { buildApprovalSourceBadge } from '../../js/services/renderers/item-renderers.js';
 import '../../js/components/tool-action-message.js'; // registers the custom element
 import '../../js/components/action-confirmation.js'; // registers <action-confirmation>
 
@@ -134,6 +135,38 @@ export async function runTests() {
     if (!rowBeforeButtons) throw new Error('review-status row must be above the buttons');
     passed++;
   } catch (e) { failed++; errors.push(`review-status first paint: ${e.message}`); }
+
+  // E — approval-provenance badge (properties panel only). Each known source
+  // names its approving body with a lozenge carrying a leading icon + label; an
+  // unknown/absent source yields null so the header simply omits it. This badge
+  // lives ONLY in the properties panel — the tool-action row/card carries no
+  // approval marker.
+  try {
+    const cases = [
+      { source: 'user', icon: 'icon-check' },
+      { source: 'rule', icon: 'icon-checklist' },
+      { source: 'strategy', icon: 'icon-auto-awesome' },
+    ];
+    for (const { source, icon } of cases) {
+      const badge = buildApprovalSourceBadge(source);
+      if (!badge) throw new Error(`expected a badge for approvalSource=${source}`);
+      if (!badge.classList.contains('context-item-type-badge'))
+        throw new Error(`${source} badge must reuse the type-name lozenge style`);
+      if (!badge.classList.contains(`approval-source-${source}`))
+        throw new Error(`${source} badge must carry the approval-source-${source} class`);
+      if (!badge.querySelector(`.${icon}`))
+        throw new Error(`${source} badge must contain the ${icon} glyph`);
+      if (!badge.textContent || !badge.textContent.trim())
+        throw new Error(`${source} badge must carry a label`);
+      if (!badge.title) throw new Error(`${source} badge must carry a descriptive tooltip`);
+    }
+    // Legacy/removed value 'auto' is no longer a known source — treated as unknown.
+    for (const source of [undefined, '', 'auto', 'bogus']) {
+      if (buildApprovalSourceBadge(/** @type {any} */ (source)) !== null)
+        throw new Error(`approvalSource=${JSON.stringify(source)} must yield no badge`);
+    }
+    passed++;
+  } catch (e) { failed++; errors.push(`approval-source badge: ${e.message}`); }
 
   return { passed, failed, errors };
 }

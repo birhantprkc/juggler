@@ -215,11 +215,24 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
     return;
   }
 
+  // Whether this specific call may be SILENTLY auto-approved by an unattended
+  // path. Defaults to true; an action returns false for a call that must always
+  // reach a human even in auto-approve mode (a plan submit; a recursive delete
+  // of the project root or home). It gates only the silent paths — the human,
+  // a saved rule, and YOLO are all deliberate grants and stay unaffected.
+  const autoApprovable = action.autoApprovable?.(toolInputPlain) ?? true;
+
+  // Is this call already covered by a saved permission rule? Computed once and
+  // reused for both the approval decision and the provenance stamp below.
+  const permitted = action.isPermitted(toolInputPlain);
+
   // The action's own default decision: needs approval unless it never requires
-  // it, is already permitted by a rule, or the conversation is in auto-approve.
+  // it, or is already permitted by a rule, or the conversation is in the blanket
+  // auto-approve toggle AND this call is auto-approvable. A non-auto-approvable
+  // call ignores the blanket toggle and still parks for a human.
   const defaultApproval = action.requiresApproval() &&
-                          !action.isPermitted(toolInputPlain) &&
-                          !conversation._autoApprove;
+                          !permitted &&
+                          (!conversation._autoApprove || !autoApprovable);
 
   // The strategy has master control over approval (YOLO approves everything,
   // read-only auto-approves read/meta tools).
@@ -244,6 +257,10 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
 
   let needsApproval;
   if (strategyPolicy === APPROVAL_POLICY.APPROVE) {
+    // YOLO (and any strategy that force-approves) is the deliberate unguarded
+    // mode: it approves everything, including non-auto-approvable calls. The
+    // autoApprovable seam intentionally does NOT override an explicit APPROVE —
+    // it only guards the silent/default paths below.
     needsApproval = false;
   } else if (strategyPolicy === APPROVAL_POLICY.REQUIRE_APPROVAL) {
     needsApproval = true;
@@ -282,6 +299,20 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
       // Prevents a late-arriving duplicate handleNewToolAction call from
       // resetting RUNNING → APPROVED and triggering a second execution.
       messageThread.updateToolActionState(toolUseId, TOOL_STATES.APPROVED, { ifState: '' });
+      // Stamp approval provenance for the UI, naming the approving body. A saved
+      // permission rule permitted it → `rule`. Otherwise the active strategy
+      // approved it without individual confirmation — a force-approve strategy
+      // (YOLO / read-only for read+meta tools), or the headless auto-approve
+      // test flag → `strategy`. The value names WHO approved, not the mechanism.
+      const approvalSource = permitted ? 'rule' : 'strategy';
+      const items = messageThread.items;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (isToolActionMessage(/** @type {Message} */ (item)) && item.get('toolUseId') === toolUseId) {
+          messageThread.updateItemField(i, 'approvalSource', approvalSource);
+          break;
+        }
+      }
     }
   }, ENGINE_DERIVED_ORIGIN);
 
@@ -317,7 +348,11 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
         // category — edits and shell commands are both category 'write', but
         // only edits report the 'write-file' key — so e.g. auto-approve can
         // defer all file edits to the deterministic file-editing toggle.
-        permissionKey: action.getPermissionKey(toolInputPlain)
+        permissionKey: action.getPermissionKey(toolInputPlain),
+        // Whether this call may be silently auto-approved. A reviewer must not
+        // resolve a call that is false here (a plan submit, a project-root
+        // deletion) — it stays parked for a human.
+        autoApprovable
       });
       if (pendingResult && typeof pendingResult.then === 'function') {
         // The hook returned a still-pending promise: the strategy is reviewing
@@ -487,7 +522,9 @@ export function approvePermittedPendingApprovals(c, options = {}) {
 
       try {
         if (action.isPermitted(toolInputPlain || {})) {
-          messageThread.resolveApproval(toolUseId, 'yes');
+          // A saved permission rule now covers this call — provenance `rule`
+          // (a prior explicit grant), so the UI leaves it un-flagged.
+          messageThread.resolveApproval(toolUseId, 'yes', { source: 'rule' });
         }
       } catch (err) {
         console.error(`[Conversation] re-check approval ${toolUseId}:`, err);

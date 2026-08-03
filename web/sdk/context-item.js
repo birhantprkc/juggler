@@ -587,6 +587,24 @@ class ContextItem {
   }
 
   /**
+   * May this call be *silently* auto-approved by an unattended approval path —
+   * the conversation-wide auto-approve toggle or a strategy's out-of-band
+   * reviewer? Returns true by default. Override to return false for a call that
+   * must always reach a human decision even in auto-approve mode, because the
+   * mistake is irreversible or the step is a deliberate checkpoint (a plan
+   * submit; a recursive delete of the project root or home). This is a HARD
+   * gate on the silent paths only — the call is still approvable explicitly by
+   * the human, by a saved permission rule, or under YOLO, all of which are
+   * deliberate grants. It is orthogonal to {@link isPermitted}: a call can be
+   * both not-permitted and non-auto-approvable (the common case here).
+   * @param {Record<string, unknown>} _toolInput - Tool input parameters
+   * @returns {boolean} False to force a human decision on the silent paths
+   */
+  autoApprovable(_toolInput) {
+    return true;
+  }
+
+  /**
    * Return auto-approval suggestions for this tool input — an escalating-breadth
    * list of rule-sets the user can choose from when clicking "don't ask again".
    * The framework renders one button per suggestion (narrowest breadth first);

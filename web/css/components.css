@@ -2408,6 +2408,30 @@ properties-panel-tx-metadata .meta-item {
     border-radius: 0.25rem;
 }
 
+/* Approval-provenance badge in a tool-action's properties-panel header. Reuses
+   the type-badge lozenge shape and sits beside it, but carries a leading icon
+   and a source-specific tint so a user / rule / strategy approval reads at a glance.
+   Rendered only when the item was stamped with an approvalSource. */
+.properties-panel-approval-badge {
+    display: inline-flex;
+    align-items: center;
+    align-self: center;
+    gap: 0.25rem;
+    color: var(--text-secondary);
+    background: var(--bg-raised);
+}
+
+.properties-panel-approval-badge.approval-source-strategy {
+    color: var(--accent-green);
+}
+
+.properties-panel-approval-badge .icon-auto-awesome,
+.properties-panel-approval-badge .icon-check,
+.properties-panel-approval-badge .icon-checklist {
+    width: 0.75rem;
+    height: 0.75rem;
+}
+
 /* Model Selector Component */
 model-selector {
     position: relative;

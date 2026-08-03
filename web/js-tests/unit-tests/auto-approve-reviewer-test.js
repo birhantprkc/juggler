@@ -115,6 +115,28 @@ export async function runTests(_ctx) {
     assert(out2.includes('=== ACTION UNDER REVIEW ==='), 'null items must not throw');
   });
 
+  await run('emits a leading ENVIRONMENT ground-truth block when context is given', () => {
+    const items = [userItem('clean up the tmp dir')];
+    const out = buildReviewerPrompt(
+      items,
+      { toolName: 'bash', toolInput: { command: 'rm -rf /home/crem/tmp/juggler' } },
+      { context: { projectRoot: '/home/crem/tmp/juggler', home: '/home/crem' } }
+    );
+    const envIdx = out.indexOf('=== ENVIRONMENT (ground truth) ===');
+    assert(envIdx === 0, `ENVIRONMENT block must lead the prompt, got:\n${out}`);
+    assert(out.includes('PROJECT ROOT: /home/crem/tmp/juggler'), 'project root must be stated verbatim');
+    assert(out.includes('HOME: /home/crem'), 'home must be stated verbatim');
+    // Ordering: environment → history → action.
+    assert(envIdx < out.indexOf('USER: clean up the tmp dir'), 'environment must precede history');
+    assert(out.indexOf('USER: clean up the tmp dir') < out.indexOf('=== ACTION UNDER REVIEW ==='),
+      'history must precede the action block');
+  });
+
+  await run('omits the ENVIRONMENT block when no context paths are supplied', () => {
+    const out = buildReviewerPrompt([userItem('hi')], { toolName: 'bash', toolInput: {} }, { context: {} });
+    assert(!out.includes('=== ENVIRONMENT'), 'no env paths → no environment block');
+  });
+
   // =========================================================================
   // buildReviewerPrompt — stripping (the security-critical part)
   // =========================================================================

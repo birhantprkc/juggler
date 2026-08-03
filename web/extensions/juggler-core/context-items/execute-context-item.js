@@ -6,7 +6,7 @@
 import ContextItem from 'juggler/context-item';
 import { shell, shellStreaming, shellBackground, MAX_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { smartTruncate, createHighlightedCode, createSummaryWithSubtitle } from 'juggler/ui';
-import { isCommandAutoApproved, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
+import { isCommandAutoApproved, isCatastrophicDeletion, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
 import { renderExecutePermissionSection } from './execute/permission-section.js';
 
 /**
@@ -300,6 +300,29 @@ class ExecuteContextItem extends ContextItem {
       allowedRoots: mt.getAllowedPaths(),
       patterns,
       writeEnabled: ExecuteContextItem._isFileWritingEnabled(mt)
+    });
+  }
+
+  /**
+   * A recursive/forced delete of a catastrophic radius — the project root, an
+   * ancestor of it, the home dir, or a filesystem root — must never be silently
+   * auto-approved: not by the conversation auto-approve toggle and not by a
+   * strategy's out-of-band reviewer. Such a command still parks for an explicit
+   * human decision (or YOLO). Every other command — including a routine
+   * `rm -rf ./build` / `node_modules` / any genuine subdir or scratch tree —
+   * stays auto-approvable and flows through the normal permission + reviewer
+   * path. Session-sourced, mirroring {@link isPermitted}'s opts.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input with command
+   * @returns {boolean} False only for a catastrophic-radius recursive delete
+   */
+  autoApprovable(toolInput) {
+    const command = /** @type {string} */ (toolInput?.command || '');
+    if (!command) return true;
+    return !isCatastrophicDeletion(command, {
+      platform: this.conversation.session?.platform || 'darwin',
+      home: this.conversation.session?.home || '',
+      projectRoot: this.conversation.session?.projectPath || ''
     });
   }
 

@@ -8,7 +8,7 @@ import { shellBackground, shellOutput, MAX_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { createSummaryWithSubtitle } from 'juggler/ui';
 import { ansiToFragment, applyAnsi } from '../../../sdk/lib/ansi.js';
 import { renderTaskDeliveryControl } from '../../../sdk/lib/task-delivery-control.js';
-import { isCommandAutoApproved } from './execute/command-approval.js';
+import { isCommandAutoApproved, isCatastrophicDeletion } from './execute/command-approval.js';
 
 /**
  * MonitorContextItem — start a long-running background command whose output is
@@ -119,6 +119,26 @@ class MonitorContextItem extends ContextItem {
       allowedRoots: mt.getAllowedPaths(),
       patterns,
       writeEnabled: false
+    });
+  }
+
+  /**
+   * A monitored command is still a shell command, so it inherits the same
+   * catastrophic-deletion floor as {@link ExecuteContextItem#autoApprovable}: a
+   * recursive/forced delete of the project root, an ancestor, home, or a
+   * filesystem root is never silently auto-approved (it parks for an explicit
+   * human decision or YOLO). Every other command stays auto-approvable.
+   * @override
+   * @param {Record<string, unknown>} toolInput - Tool input with command
+   * @returns {boolean} False only for a catastrophic-radius recursive delete
+   */
+  autoApprovable(toolInput) {
+    const command = /** @type {string} */ (toolInput?.command || '');
+    if (!command) return true;
+    return !isCatastrophicDeletion(command, {
+      platform: this.conversation.session?.platform || 'darwin',
+      home: this.conversation.session?.home || '',
+      projectRoot: this.conversation.session?.projectPath || ''
     });
   }
 

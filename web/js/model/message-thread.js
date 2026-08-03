@@ -882,11 +882,16 @@ export default class MessageThread {
    * @plugin-api
    * @param {string} toolUseId
    * @param {string} response - 'yes', 'no', 'yes-always', or 'cancel'
-   * @param {{approvalRules?: Array<{kind: string, value: any, scope?: string}>, approvalAllowedPaths?: string[], approvalItemType?: string}} [extra]
+   * @param {{approvalRules?: Array<{kind: string, value: any, scope?: string}>, approvalAllowedPaths?: string[], approvalItemType?: string, source?: 'user'|'strategy'|'rule'}} [extra]
    *   For 'yes-always': the exact permission rules (and owning itemType) and/or
    *   the allowed-paths roots the chosen suggestion should persist. Omit for a
    *   bare 'yes-always' — the framework then derives the grant from the plugin's
    *   narrowest `getApprovalSuggestions` entry.
+   *   `source` records approval provenance for the UI, naming the approving
+   *   body: `user` (a human clicked approve), `strategy` (the active strategy
+   *   approved it — a force-approve strategy or an out-of-band reviewer), or
+   *   `rule` (a saved permission rule). Stamped on the tool-action only for an
+   *   approval, never a cancel.
    */
   resolveApproval(toolUseId, response, extra = {}) {
     const message = this.getToolAction(toolUseId);
@@ -925,6 +930,9 @@ export default class MessageThread {
         if (extra.approvalAllowedPaths && extra.approvalAllowedPaths.length > 0) {
           ymap.set('approvalAllowedPaths', convertToYType(extra.approvalAllowedPaths));
         }
+        // Record the approving body (user / strategy / rule) so the UI can show
+        // who approved this call. Approval only — a cancel has no source.
+        if (extra.source) ymap.set('approvalSource', extra.source);
       }
       ymap.set('state', newState);
 

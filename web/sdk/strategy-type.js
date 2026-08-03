@@ -473,7 +473,7 @@ class StrategyType {
    * that resolution is the user's own answer, which no strategy can stand in
    * for. So a strategy may resolve anything it is handed here without risk of
    * silently answering a question — the framework has already excluded them.
-   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined, permissionKey: string}} info
+   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined, permissionKey: string, autoApprovable?: boolean}} info
    *   - toolUseId: id to pass to `messageThread.resolveApproval`
    *   - toolName: name of the parked tool
    *   - toolInput: the tool's input parameters (plain object)
@@ -481,6 +481,9 @@ class StrategyType {
    *   - permissionKey: the action's permission key (e.g. 'write-file' for every
    *     edit-family tool). Discriminates classes of parked call that share a
    *     category — edits and shell commands are both category 'write'.
+   *   - autoApprovable: false when the action forbids silent auto-approval (a
+   *     plan submit, a project-root/home deletion). A strategy reviewer must NOT
+   *     resolve such a call — leave it parked for a human.
    * @returns {void|Promise<void>} Ignored by the framework
    */
   onToolPending(info) {

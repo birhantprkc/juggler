@@ -39,7 +39,7 @@ function makeStrategy(completeImpl, opts = {}) {
   /** @type {any[]} */
   const completeCalls = [];
   const messageThread = /** @type {any} */ ({
-    conversation: { session: {} },
+    conversation: { session: { projectPath: '/home/crem/tmp/juggler', home: '/home/crem', platform: 'linux' } },
     items: opts.items || [],
     resolveApproval: (/** @type {string} */ id, /** @type {string} */ resp) => {
       resolveCalls.push({ id, resp });
@@ -124,6 +124,36 @@ export async function runTests(_ctx) {
       `edits must never reach the reviewer, but _complete ran ${completeCalls.length} time(s)`);
     assert(resolveCalls.length === 0,
       `edits must stay parked for the human, but resolveApproval ran ${resolveCalls.length} time(s)`);
+  });
+
+  // =========================================================================
+  // non-auto-approvable calls (plan submit, catastrophic delete) are never
+  // reviewed — the reviewer honours the autoApprovable seam and stays out
+  // =========================================================================
+  await run("a plan submit (autoApprovable:false) is never reviewed, even on 'allow'", async () => {
+    const { strategy, resolveCalls, completeCalls } = makeStrategy(async () => ({ text: 'allow' }));
+    await strategy.onToolPending({
+      toolUseId: 'tid-plan', toolName: 'plan',
+      toolInput: { action: 'submit', title: 'Do it', items: [{ content: 'step' }] },
+      category: 'meta', permissionKey: 'plan', autoApprovable: false
+    });
+    assert(completeCalls.length === 0,
+      `a plan submit must never reach the reviewer, but _complete ran ${completeCalls.length} time(s)`);
+    assert(resolveCalls.length === 0,
+      `a plan submit must stay parked for the human, but resolveApproval ran ${resolveCalls.length} time(s)`);
+  });
+
+  await run("a catastrophic delete (autoApprovable:false) is never reviewed, even on 'allow'", async () => {
+    const { strategy, resolveCalls, completeCalls } = makeStrategy(async () => ({ text: 'allow' }));
+    await strategy.onToolPending({
+      toolUseId: 'tid-rm', toolName: 'bash',
+      toolInput: { command: 'rm -rf /home/crem/tmp/juggler' },
+      category: 'write', permissionKey: 'execute', autoApprovable: false
+    });
+    assert(completeCalls.length === 0,
+      `a catastrophic delete must never reach the reviewer, but _complete ran ${completeCalls.length} time(s)`);
+    assert(resolveCalls.length === 0,
+      `a catastrophic delete must stay parked for the human, but resolveApproval ran ${resolveCalls.length} time(s)`);
   });
 
   // Note: the guarantee that an elicitation (AskUserQuestion) is never handed to

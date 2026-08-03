@@ -19,7 +19,7 @@
  * @module unit-tests/bash-command-approval-unit-test
  */
 
-import { isCommandAutoApproved, suggestApprovalPatterns, tokenize, posixNormalize, matchesGlob, isGrantableRoot, isPathInsideAllowedRoots } from '../../extensions/juggler-core/context-items/execute/command-approval.js';
+import { isCommandAutoApproved, isCatastrophicDeletion, suggestApprovalPatterns, tokenize, posixNormalize, matchesGlob, isGrantableRoot, isPathInsideAllowedRoots } from '../../extensions/juggler-core/context-items/execute/command-approval.js';
 import ExecuteContextItem from '../../extensions/juggler-core/context-items/execute-context-item.js';
 
 const PROJECT_ROOT = '/Users/jules/code/juggler';
@@ -1815,6 +1815,67 @@ export async function runTests() {
       record({ name: 'shape routes by original', ok: !!asGlob.rules && !asGlob.allowedPaths
         && !!asGrant.allowedPaths && !asGrant.rules, msg: `${JSON.stringify(asGlob)} | ${JSON.stringify(asGrant)}` });
     } catch (e) { record({ name: 'shape routes by original', ok: false, msg: String(e) }); }
+  }
+
+  // === isCatastrophicDeletion (auto-approve blast-radius floor) ===
+  // The deterministic floor that keeps the probabilistic reviewer from silently
+  // approving a recursive/forced delete of the project root, an ancestor, home,
+  // or a filesystem root. It is NOT a general destructive classifier — a delete
+  // of a genuine subdir / scratch tree stays false and flows through the reviewer.
+  const CATASTROPHIC_ROOT = '/home/crem/tmp/juggler';
+  const CATASTROPHIC_HOME = '/home/crem';
+  /** @type {Array<{name: string, command: string, expected: boolean, cwd?: string}>} */
+  const CATASTROPHIC_CASES = [
+    // -- Positive: recursive/forced delete of a catastrophic radius ------------
+    { name: 'exact project root, trailing slash (the incident)', command: 'rm -fr /home/crem/tmp/juggler/', expected: true },
+    { name: 'exact project root, -rf', command: 'rm -rf /home/crem/tmp/juggler', expected: true },
+    { name: '`rm -rf .` at project root', command: 'rm -rf .', expected: true },
+    { name: '`rm -rf ./` at project root', command: 'rm -rf ./', expected: true },
+    { name: 'home via tilde', command: 'rm -rf ~', expected: true },
+    { name: 'home via $HOME', command: 'rm -rf $HOME', expected: true },
+    { name: 'home via ${HOME}', command: 'rm -rf ${HOME}', expected: true },
+    { name: 'filesystem root', command: 'rm -rf /', expected: true },
+    { name: 'bare top-level', command: 'rm -rf /usr', expected: true },
+    { name: 'ancestor of project root', command: 'rm -rf /home/crem/tmp', expected: true },
+    { name: 'home dir directly', command: 'rm -rf /home/crem', expected: true },
+    { name: 'chained after a benign command', command: 'echo hi && rm -rf /home/crem/tmp/juggler', expected: true },
+    { name: 'long-form --recursive --force on root', command: 'rm --recursive --force /home/crem/tmp/juggler', expected: true },
+    { name: 'force-only (-f) on project root still flagged', command: 'rm -f /home/crem/tmp/juggler', expected: true },
+    { name: 'combined -fr order', command: 'rm -fr /home/crem/tmp/juggler', expected: true },
+    { name: 'target after -- separator', command: 'rm -rf -- /home/crem/tmp/juggler', expected: true },
+    { name: 'multiple targets, one catastrophic', command: 'rm -rf build /home/crem/tmp/juggler', expected: true },
+    { name: 'cd out to an ancestor then delete cwd', command: 'cd /home/crem/tmp && rm -rf .', expected: true },
+    // -- Negative: genuine subdir / scratch / no-flag — reviewer's job ---------
+    { name: 'relative build dir', command: 'rm -rf ./build', expected: false },
+    { name: 'node_modules', command: 'rm -rf node_modules', expected: false },
+    { name: 'absolute subdir of project', command: 'rm -rf /home/crem/tmp/juggler/sub', expected: false },
+    { name: 'relative subdir of project', command: 'rm -rf sub/dir', expected: false },
+    { name: 'single file, no recursive/force flag', command: 'rm foo.txt', expected: false },
+    { name: 'not a delete at all', command: 'ls', expected: false },
+    { name: 'unexpanded glob is out of floor scope (reviewer decides)', command: 'rm -rf *', expected: false },
+    { name: 'unresolved variable target left to reviewer', command: 'rm -rf $BUILD_DIR', expected: false },
+    { name: 'in-project cd then delete a subdir', command: 'cd sub && rm -rf .', expected: false },
+    { name: 'a different user home is not ours', command: 'rm -rf /home/other', expected: false },
+  ];
+  for (const c of CATASTROPHIC_CASES) {
+    try {
+      const got = isCatastrophicDeletion(c.command, {
+        platform: 'linux', home: CATASTROPHIC_HOME, projectRoot: CATASTROPHIC_ROOT, cwd: c.cwd
+      });
+      if (got !== c.expected) {
+        failed++;
+        errors.push(`catastrophic/${c.name}: want ${c.expected} for "${c.command}", got ${got}`);
+      } else passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`catastrophic/${c.name}: threw ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  // No project root known → nothing to protect, always false (even for `rm -rf /`).
+  {
+    const got = isCatastrophicDeletion('rm -rf /', { platform: 'linux', home: CATASTROPHIC_HOME, projectRoot: '' });
+    if (got !== false) { failed++; errors.push(`catastrophic/no-root: want false with empty projectRoot, got ${got}`); }
+    else passed++;
   }
 
   return { passed, failed, errors };

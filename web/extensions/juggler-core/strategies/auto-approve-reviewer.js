@@ -50,6 +50,8 @@ Require human approval (do NOT auto-approve) when, absent clear user authorizati
 
 The trust boundary is the current project directory. Writing, deleting, or reading outside it, or reaching the network to an unnamed destination, is suspect.
 
+You may be given an ENVIRONMENT block stating the PROJECT ROOT and HOME directory. Treat those paths as authoritative ground truth. A recursive/forced delete or overwrite (rm -rf, force-push, truncation) of the project root itself, the home directory, or an ancestor of either is a destroy action that requires human approval — no matter how the path is written. A directory name that merely contains words like "tmp", "scratch", "temp", or "cache" does NOT make it a safe scratch area if it resolves to the project root or the home directory: judge the resolved path against the ENVIRONMENT block, not the vibe of its name.
+
 Answer with a single word and nothing else: \`allow\` if you are confident the action is safe AND authorized by the user; otherwise \`deny\`. When uncertain, answer \`deny\`.`;
 
 /**
@@ -140,9 +142,15 @@ function formatAction(action) {
  * entries, truncate each to `maxEntryChars` (head+tail), then drop oldest
  * entries until the whole thing is under `maxTotalChars`. The action under
  * review is always appended last, clearly delimited, and never dropped.
+ *
+ * When `opts.context` supplies a `projectRoot` and/or `home`, a leading
+ * `=== ENVIRONMENT (ground truth) ===` block states them verbatim so the
+ * classifier judges a delete/overwrite target against the real project root and
+ * home — not against a path substring like `tmp` that merely reads as scratch.
+ * The block is authoritative signal only; it never itself blocks a call.
  * @param {any[]} items - Message-thread items (`messageThread.items`)
  * @param {{toolName: string, toolInput: any}} action - The parked call under review
- * @param {{maxEntries?: number, maxEntryChars?: number, maxTotalChars?: number}} [opts] - Caps
+ * @param {{maxEntries?: number, maxEntryChars?: number, maxTotalChars?: number, context?: {projectRoot?: string, home?: string}}} [opts] - Caps + optional environment ground truth
  * @returns {string} The assembled reviewer prompt
  */
 export function buildReviewerPrompt(items, action, opts = {}) {
@@ -173,8 +181,20 @@ export function buildReviewerPrompt(items, action, opts = {}) {
     kept.shift();
   }
 
+  // Leading environment ground-truth block (optional). Authoritative facts the
+  // classifier weighs the action's paths against — never dropped by the caps.
+  const context = opts.context || {};
+  /** @type {string[]} */
+  const envLines = [];
+  if (context.projectRoot) envLines.push(`PROJECT ROOT: ${context.projectRoot}`);
+  if (context.home) envLines.push(`HOME: ${context.home}`);
+  const envBlock = envLines.length
+    ? `=== ENVIRONMENT (ground truth) ===\n${envLines.join('\n')}\n\n`
+    : '';
+
   const actionBlock = `=== ACTION UNDER REVIEW ===\n${formatAction(action)}`;
-  return kept.length ? `${kept.join('\n')}\n\n${actionBlock}` : actionBlock;
+  const body = kept.length ? `${kept.join('\n')}\n\n${actionBlock}` : actionBlock;
+  return `${envBlock}${body}`;
 }
 
 /**

@@ -806,10 +806,11 @@ class ToolActionMessage extends HTMLElement {
         messageThread.resolveApproval(item.get('toolUseId'), 'yes-always', {
           approvalRules: chosen.rules,
           approvalAllowedPaths: chosen.allowedPaths,
-          approvalItemType: chosen.itemType
+          approvalItemType: chosen.itemType,
+          source: 'user'
         });
       } else {
-        messageThread.resolveApproval(item.get('toolUseId'), response);
+        messageThread.resolveApproval(item.get('toolUseId'), response, { source: 'user' });
       }
     }, onRevise ? { onRevise } : undefined);
 

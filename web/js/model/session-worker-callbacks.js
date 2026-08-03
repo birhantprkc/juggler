@@ -154,9 +154,11 @@ export async function handleApprovalRequest(session, request, conversationId) {
     }
 
     // Already permitted (wildcard patterns, write-file toggle, etc.) — auto-approve.
+    // Provenance is `rule`: a saved permission/toggle granted it, a prior
+    // explicit grant, so the UI leaves it un-flagged.
     if (action.isPermitted(toolInput)) {
       if (messageThread) {
-        messageThread.resolveApproval(req.toolUseId, 'yes');
+        messageThread.resolveApproval(req.toolUseId, 'yes', { source: 'rule' });
       }
       return;
     }
