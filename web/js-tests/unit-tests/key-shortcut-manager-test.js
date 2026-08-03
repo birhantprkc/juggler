@@ -163,6 +163,18 @@ export async function runTests(_ctx) {
       'Mod+Shift+Tab should not match a modifier-less binding');
   });
 
+  await run('strategy-switch matches the Linux ISO_Left_Tab keysym via e.code', () => {
+    const strat = keyShortcutManager.getBinding('strategy-switch'); // {shift:true, key:'Tab'}
+    // Linux/WebKit2GTK delivers Shift+Tab with the ISO_Left_Tab keysym, so `key`
+    // is not 'Tab'; the physical `code` is still 'Tab' and must carry the match.
+    assert(eventMatchesBinding(strat, evt({ shiftKey: true, key: 'ISO_Left_Tab', code: 'Tab' })),
+      'Shift+ISO_Left_Tab with code Tab should match strategy-switch');
+    // The code fallback must not bypass the modifier gate: an extra command
+    // modifier still disqualifies the modifier-less binding.
+    assert(!eventMatchesBinding(strat, evt({ ...modProp, shiftKey: true, key: 'ISO_Left_Tab', code: 'Tab' })),
+      'Mod+Shift+ISO_Left_Tab must still be rejected');
+  });
+
   await run('zoom-in folds the shifted "+" onto "=" and ignores Shift', () => {
     const zoomIn = keyShortcutManager.getBinding('zoom-in');
     assert(eventMatchesBinding(zoomIn, evt({ ...modProp, key: '=' })), 'Mod+= should match zoom-in');

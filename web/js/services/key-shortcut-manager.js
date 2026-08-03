@@ -111,6 +111,15 @@ export function eventMatchesBinding(binding, e) {
   if (binding.shift !== undefined && !!binding.shift !== e.shiftKey) return false;
   if (!!binding.alt !== e.altKey) return false;
   if (normalizeKey(e.key) === normalizeKey(binding.key)) return true;
+  // Physical-key fallback for Tab. On Linux the desktop app's WebKit2GTK webview
+  // receives Shift+Tab as the X11 `ISO_Left_Tab` keysym, so `e.key` is not the
+  // plain 'Tab' this binding names and the comparison above misses — leaving the
+  // strategy-switch chord to fall through to native focus traversal. `e.code`
+  // reports the physical key independent of Shift and layout, so it is 'Tab' for
+  // the hardware Tab key regardless of the keysym; match on it. The Shift/mod
+  // gates above already ran, so this never widens the match beyond the intended
+  // modifier combination.
+  if (binding.key === 'Tab' && e.code === 'Tab') return true;
   // macOS reports the Option-MODIFIED glyph in `key` (⌥M → 'µ', ⌥T → '†'), so
   // an Alt binding on a plain letter/digit would never match there by `key`
   // alone. Fall back to the physical `code` ('KeyM'/'Digit5') for those
