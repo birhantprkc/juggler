@@ -69,6 +69,21 @@ function prefersReducedMotion() {
  */
 
 /**
+ * Top-level transcript row tags eligible for the content-visibility skip (see
+ * styles.css `.cv-off` and _reconcileRowVisibility). Deliberately excludes the
+ * footer and pending-message bubbles, which must always render.
+ */
+const CV_ROW_TAGS = new Set([
+  'USER-MESSAGE',
+  'ASSISTANT-MESSAGE',
+  'THINKING-MESSAGE',
+  'TOOL-ACTION-MESSAGE',
+  'THREAD-MESSAGE',
+  'CONTEXT-ITEM-MESSAGE',
+  'ERROR-MESSAGE',
+]);
+
+/**
  * ConversationArea - Fixed conversation panel at bottom of viewport
  */
 class ConversationArea extends HTMLElement {
@@ -104,6 +119,10 @@ class ConversationArea extends HTMLElement {
     this._animationsPrimed = false;
     /** @type {ResizeObserver|null} @private - Recomputes scroll-control visibility on viewport/content resize */
     this._scrollControlsResizeObserver = null;
+    /** @type {IntersectionObserver|null} @private - Toggles the `cv-off` content-visibility skip on transcript rows by viewport proximity */
+    this._rowVisibilityObserver = null;
+    /** @type {WeakSet<Element>} @private - Rows already handed to _rowVisibilityObserver, so reconcile only observes new ones */
+    this._observedRows = new WeakSet();
   }
 
   /**
@@ -462,6 +481,10 @@ class ConversationArea extends HTMLElement {
       this._scrollControlsResizeObserver.disconnect();
       this._scrollControlsResizeObserver = null;
     }
+    if (this._rowVisibilityObserver) {
+      this._rowVisibilityObserver.disconnect();
+      this._rowVisibilityObserver = null;
+    }
   }
 
   get inputBox() {
@@ -804,7 +827,40 @@ class ConversationArea extends HTMLElement {
     const inner = this.querySelector('#message-list-inner');
     if (inner) this._scrollControlsResizeObserver.observe(inner);
 
+    // Drive the content-visibility skip (styles.css `.cv-off`) from an explicit
+    // observer instead of content-visibility:auto's own relevance heuristic,
+    // which WebKitGTK gets wrong for on-screen idle rows (see _reconcileRowVisibility
+    // and the styles.css comment). The generous rootMargin keeps ~1.5 viewports of
+    // rows above and below the visible window rendered, so cv-off is stripped well
+    // before a row scrolls into view and only ever lands on genuinely far rows.
+    if (typeof IntersectionObserver !== 'undefined') {
+      this._rowVisibilityObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          entry.target.classList.toggle('cv-off', !entry.isIntersecting);
+        }
+      }, { root: messageList, rootMargin: '150% 0px' });
+      this._reconcileRowVisibility();
+    }
+
     this._updateScrollControls();
+  }
+
+  /**
+   * Observe any transcript rows not yet handed to the row-visibility observer.
+   * Idempotent and cheap (the WeakSet skips already-observed rows), so it is safe
+   * to call on every render; rows removed from the DOM are auto-dropped by the
+   * observer, so no explicit unobserve is needed.
+   * @private
+   */
+  _reconcileRowVisibility() {
+    if (!this._rowVisibilityObserver) return;
+    const content = this.querySelector('#message-list-inner');
+    if (!content) return;
+    for (const child of Array.from(content.children)) {
+      if (!CV_ROW_TAGS.has(child.tagName) || this._observedRows.has(child)) continue;
+      this._observedRows.add(child);
+      this._rowVisibilityObserver.observe(child);
+    }
   }
 
   /**
@@ -1908,6 +1964,12 @@ class ConversationArea extends HTMLElement {
 
     removeDeletedElements(currentElements, elementsToKeep);
     positionElements(this, content, footer, items, currentElements);
+
+    // Hand any newly inserted rows to the visibility observer that drives the
+    // content-visibility skip. New rows start without `cv-off` (rendered), so the
+    // just-inserted tail is never born blank; the observer applies cv-off only
+    // once it confirms a row has scrolled far out of view.
+    this._reconcileRowVisibility();
 
     // Terminal "Result" block, synthesized from the thread's `result` field
     // (after positioning items so it lands just before the footer). No-op in

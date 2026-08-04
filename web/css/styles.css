@@ -1372,14 +1372,28 @@ conversation-message-list-wrapper {
    in this reversed, bottom-anchored scroller, where an estimate that changed
    while scrolling up would shift content under the pointer. The 6rem fallback
    is a typical short bubble; it only ever applies to a row not yet rendered
-   once. */
-.conversation-message-list-inner > user-message,
-.conversation-message-list-inner > assistant-message,
-.conversation-message-list-inner > thinking-message,
-.conversation-message-list-inner > tool-action-message,
-.conversation-message-list-inner > thread-message,
-.conversation-message-list-inner > context-item-message,
-.conversation-message-list-inner > error-message {
+   once.
+
+   Applied only to rows carrying the `cv-off` class, which conversation-area's
+   IntersectionObserver (_reconcileRowVisibility) toggles on when a row sits far
+   outside the viewport and off again well before it scrolls back in. The skip is
+   driven by that explicit observer rather than content-visibility:auto's own
+   "relevant to the user" heuristic because WebKitGTK gets that heuristic wrong
+   for on-screen but idle rows: a row that has stopped being repainted — e.g. a
+   bash bubble parked awaiting approval — can be left in the skipped state and
+   painted blank until something dirties its subtree (a click). Rows without
+   cv-off carry no containment at all, so an on-screen row can never be blanked;
+   a row only ever gets cv-off while it is genuinely far off-screen, where the
+   heuristic being imperfect is a harmless perf nuance, never a visible blank.
+   `auto` (not `hidden`) so find-in-page and accessibility still reach an
+   off-screen row and its scrollIntoView renders it on the way. */
+.conversation-message-list-inner > user-message.cv-off,
+.conversation-message-list-inner > assistant-message.cv-off,
+.conversation-message-list-inner > thinking-message.cv-off,
+.conversation-message-list-inner > tool-action-message.cv-off,
+.conversation-message-list-inner > thread-message.cv-off,
+.conversation-message-list-inner > context-item-message.cv-off,
+.conversation-message-list-inner > error-message.cv-off {
     content-visibility: auto;
     contain-intrinsic-size: auto 6rem;
 }
