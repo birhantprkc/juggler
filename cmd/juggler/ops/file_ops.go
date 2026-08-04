@@ -418,6 +418,23 @@ func (ops *FileOperations) writeFile(params map[string]any) (any, error) {
 		return nil, err
 	}
 
+	// Optional: expectedHash - the hash of the existing file the caller's
+	// approved diff was computed against. Refuse the overwrite if the file's
+	// current bytes hash differently: the file changed between the approved
+	// preview and this write, so the approved diff no longer describes what
+	// would be destroyed. A file deleted in the interim is not an error — the
+	// write then simply creates it with the approved content.
+	if expectedHash, _ := params["expectedHash"].(string); expectedHash != "" && fileExists {
+		raw, readErr := os.ReadFile(absPath)
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read file '%s' for change detection: %w", path, readErr)
+		}
+		currentHashBytes := sha256.Sum256(raw)
+		if hex.EncodeToString(currentHashBytes[:]) != expectedHash {
+			return nil, fmt.Errorf("file '%s' has changed on disk since the write was prepared. Re-read the file and retry", path)
+		}
+	}
+
 	// Ensure parent directory exists. This runs only on the real
 	// (post-approval) write — never during dryRun — so pre-approval validation
 	// leaves no directories behind.
@@ -437,21 +454,29 @@ func (ops *FileOperations) writeFile(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("failed to write file '%s': %w. Check permissions and disk space", path, err)
 	}
 
+	// Echo the post-write hash: it lands in the transcript's record of this
+	// write, becoming the freshness baseline that lets a follow-up mutation of
+	// the same file pass the JS staleness guard without a re-read.
+	writtenHashBytes := sha256.Sum256([]byte(content))
+	writtenHash := hex.EncodeToString(writtenHashBytes[:])
+
 	// Get file info for response
 	fileInfo, err := os.Stat(absPath)
 	if err != nil {
 		// File was written but we can't stat it - still return success
 		return map[string]any{
-			"path":    path,
-			"created": !fileExists,
-			"size":    len(content),
+			"path":        path,
+			"created":     !fileExists,
+			"size":        len(content),
+			"contentHash": writtenHash,
 		}, nil
 	}
 
 	return map[string]any{
-		"path":    path,
-		"created": !fileExists,
-		"size":    fileInfo.Size(),
+		"path":        path,
+		"created":     !fileExists,
+		"size":        fileInfo.Size(),
+		"contentHash": writtenHash,
 	}, nil
 }
 
@@ -492,12 +517,22 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 	// matching so flexible fallback edits remain surgical and unambiguous.
 	replaceAll, _ := params["replace_all"].(bool)
 
+	// Optional: expectedHash - the caller's staleness baseline (the contentHash
+	// its approved dryRun preview reported). When present, the edit is refused
+	// if the file's current bytes hash differently: the file changed between
+	// the preview the user approved and this write.
+	expectedHash, _ := params["expectedHash"].(string)
+
 	// Sanitise, lock, and read the existing file (see openForMutation).
-	absPath, fileInfo, currentContentStr, unlock, err := ops.openForMutation(path)
+	absPath, fileInfo, currentContentStr, currentHash, unlock, err := ops.openForMutation(path)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+
+	if expectedHash != "" && expectedHash != currentHash {
+		return nil, fmt.Errorf("file '%s' has changed on disk since the edit was prepared. Re-read the file and retry with its current content", path)
+	}
 
 	var newContentStr string
 	var matchStrategy string
@@ -524,7 +559,18 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 		// Strategy 2: Try flexible whitespace match
 		idx, originalMatch := findNormalizedMatch(currentContentStr, oldStr)
 		if idx != -1 {
-			// Found a match with flexible whitespace - use the original text to preserve indentation
+			// Fail closed on ambiguity, exactly as the exact (strategy 1) and
+			// regex (strategy 3) paths do: findNormalizedMatch returns only the
+			// FIRST normalized hit, so without this a flexible match that occurs
+			// in several places would silently rewrite one of them — the wrong
+			// region — instead of surfacing the ambiguity. A stale/imprecise
+			// old_str must fail loudly (the model then re-reads) rather than
+			// corrupt the file at a low-confidence location.
+			normalizedOccurrences := strings.Count(normalizeWhitespace(currentContentStr), normalizeWhitespace(oldStr))
+			if normalizedOccurrences > 1 {
+				return nil, fmt.Errorf("search string matches %d locations in file '%s' (using flexible whitespace matching; replace_all only applies to exact matches). The old_str is ambiguous. Re-read the file and copy the exact text including whitespace, or provide a longer, unique search string", normalizedOccurrences, path)
+			}
+			// Found a unique match with flexible whitespace - use the original text to preserve indentation
 			newContentStr = currentContentStr[:idx] + newStr + currentContentStr[idx+len(originalMatch):]
 			matchStrategy = "flexible-whitespace"
 		} else {
@@ -538,7 +584,7 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 					newContentStr = currentContentStr[:match[0]] + newStr + currentContentStr[match[1]:]
 					matchStrategy = "regex-flexible"
 				} else if len(matches) > 1 {
-					return nil, fmt.Errorf("search string matches %d locations in file '%s' (using flexible whitespace matching). The old_str is ambiguous. Please provide a longer, unique search string", len(matches), path)
+					return nil, fmt.Errorf("search string matches %d locations in file '%s' (using flexible whitespace matching; replace_all only applies to exact matches). The old_str is ambiguous. Re-read the file and copy the exact text including whitespace, or provide a longer, unique search string", len(matches), path)
 				}
 			}
 		}
@@ -564,7 +610,10 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 			}
 		}
 
-		// Return structured error data - frontend action plugin will create messages
+		// Return structured error data - frontend action plugin will create
+		// messages. contentHash lets the JS layer distinguish "your old_str is
+		// wrong" from "the file changed since you read it" when explaining the
+		// failed match to the model.
 		return map[string]any{
 			"success":       false,
 			"errorCode":     "SEARCH_NOT_FOUND",
@@ -573,16 +622,22 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 			"hasNearMatch":  contextLines != "",
 			"nearMatchLine": nearMatchLine,
 			"contextLines":  contextLines, // Include raw context for detailed LLM feedback
+			"contentHash":   currentHash,
 		}, nil
 	}
 
-	// If dry-run mode, return full old and new file content for diff preview
+	// If dry-run mode, return full old and new file content for diff preview.
+	// contentHash is the current on-disk file's hash: the JS edit tool
+	// (replace-text) compares it against the hashes its transcript records for
+	// this path and refuses the edit when none match, then echoes it back as
+	// expectedHash on the real write.
 	if dryRun {
 		return map[string]any{
 			"path":          path,
 			"oldContent":    currentContentStr, // Full old file
 			"newContent":    newContentStr,     // Full new file with edits applied
 			"matchStrategy": matchStrategy,
+			"contentHash":   currentHash,
 			"dryRun":        true,
 		}, nil
 	}
@@ -604,6 +659,11 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 	oldLines := strings.Count(oldStr, "\n") + 1
 	newLines := strings.Count(newStr, "\n") + 1
 
+	// Echo the post-write hash: it lands in the transcript's record of this
+	// edit, becoming the freshness baseline that lets a follow-up mutation of
+	// the same file pass the JS staleness guard without a re-read.
+	newHashBytes := sha256.Sum256([]byte(newContentStr))
+
 	return map[string]any{
 		"path":          path,
 		"method":        "search-replace",
@@ -611,6 +671,7 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 		"oldLines":      oldLines,
 		"newLines":      newLines,
 		"size":          len(newContentStr),
+		"contentHash":   hex.EncodeToString(newHashBytes[:]),
 	}, nil
 }
 
@@ -653,12 +714,19 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 		}
 	}
 
+	// Optional: expectedHash - staleness baseline, as in editFile.
+	expectedHash, _ := params["expectedHash"].(string)
+
 	// Sanitise, lock, and read the existing file (see openForMutation).
-	absPath, fileInfo, currentContentStr, unlock, err := ops.openForMutation(path)
+	absPath, fileInfo, currentContentStr, currentHash, unlock, err := ops.openForMutation(path)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+
+	if expectedHash != "" && expectedHash != currentHash {
+		return nil, fmt.Errorf("file '%s' has changed on disk since the edit was prepared. Re-read the file and retry with its current content", path)
+	}
 
 	lines := strings.Split(currentContentStr, "\n")
 	totalLines := len(lines)
@@ -755,13 +823,15 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 
 	newFileContent := strings.Join(newLines, "\n")
 
-	// If dry-run mode, return full old and new file content for diff preview
+	// If dry-run mode, return full old and new file content for diff preview.
+	// contentHash is the current on-disk file's staleness baseline (see editFile).
 	if dryRun {
 		return map[string]any{
-			"path":       path,
-			"oldContent": currentContentStr, // Full old file (CRLF-normalized, matching newContent)
-			"newContent": newFileContent,    // Full new file with edits applied
-			"dryRun":     true,
+			"path":        path,
+			"oldContent":  currentContentStr, // Full old file (CRLF-normalized, matching newContent)
+			"newContent":  newFileContent,    // Full new file with edits applied
+			"contentHash": currentHash,
+			"dryRun":      true,
 		}, nil
 	}
 
@@ -782,6 +852,10 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 	linesReplaced := endLine - startLine + 1
 	newLinesCount := strings.Count(newContent, "\n") + 1
 
+	// Echo the post-write hash as the freshness baseline for follow-up
+	// mutations (see editFile).
+	newHashBytes := sha256.Sum256([]byte(newFileContent))
+
 	return map[string]any{
 		"path":          path,
 		"method":        "line-range",
@@ -790,6 +864,7 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 		"linesReplaced": linesReplaced,
 		"newLines":      newLinesCount,
 		"size":          len(newFileContent),
+		"contentHash":   hex.EncodeToString(newHashBytes[:]),
 	}, nil
 }
 

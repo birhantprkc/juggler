@@ -35,6 +35,57 @@ export function toolInputPath(toolInput, allowFilePathAlias = false) {
 }
 
 /**
+ * Canonical absolute key for comparing file paths across tool calls. Converts
+ * backslashes to forward slashes, resolves `.`/`..` segments, collapses
+ * duplicate separators, strips trailing slashes, and resolves relative paths
+ * against the session's project root. Recognises POSIX (`/…`), Windows drive
+ * (`C:/…`), and UNC (`//server/…`) absolutes, so the same file referenced as
+ * `src/a.js`, `./src/a.js`, or an absolute form all map to one key.
+ * @param {object|undefined|null} session - Session (provides projectPath)
+ * @param {string|undefined|null} path - File path in any form
+ * @returns {string} Canonical absolute key, or '' when no path was given
+ */
+export function absolutePathKey(session, path) {
+  if (!path) return '';
+  let p = String(path).replace(/\\/g, '/');
+
+  const isAbsolute = p.startsWith('/') || /^[A-Za-z]:(\/|$)/.test(p);
+  if (!isAbsolute) {
+    const root = /** @type {any} */ (session)?.projectPath;
+    if (root) p = `${String(root).replace(/\\/g, '/').replace(/\/+$/, '')}/${p}`;
+  }
+
+  // Split off the absolute prefix so segment resolution can't walk above it.
+  let prefix = '';
+  const drive = /^([A-Za-z]:)(\/|$)/.exec(p)?.[1];
+  if (drive) {
+    prefix = `${drive}/`;
+    p = p.slice(drive.length);
+  } else if (p.startsWith('//')) {
+    prefix = '//';
+  } else if (p.startsWith('/')) {
+    prefix = '/';
+  }
+
+  /** @type {string[]} */
+  const resolved = [];
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (resolved.length > 0 && resolved[resolved.length - 1] !== '..') {
+        resolved.pop();
+      } else if (!prefix) {
+        // Relative path with no root to resolve against: keep the `..`.
+        resolved.push(seg);
+      }
+      continue;
+    }
+    resolved.push(seg);
+  }
+  return prefix + resolved.join('/');
+}
+
+/**
  * Conversation-metadata key holding the per-conversation "don't respect
  * .gitignore in file searches" flag. Yjs-backed (like the permission rules), so
  * it persists with the conversation and syncs to every peer and both realms.

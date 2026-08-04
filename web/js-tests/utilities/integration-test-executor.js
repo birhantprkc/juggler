@@ -60,6 +60,7 @@ import { runTests as runDroppedFileTests } from '../unit-tests/dropped-file-test
 import { runTests as runPasteTokenTests } from '../unit-tests/paste-token-test.js';
 import { runTests as runDraftTabSwitchTests } from '../unit-tests/draft-tab-switch-test.js';
 import { runTests as runEditPermissionTests } from '../unit-tests/edit-permission-test.js';
+import { runTests as runEditStalenessGuardTests } from '../unit-tests/edit-staleness-guard-test.js';
 import { runTests as runExecuteActionTests } from '../unit-tests/execute-action-test.js';
 import { runTests as runFileSystemApiTests } from '../unit-tests/filesystem-api-test.js';
 import { runTests as runGlobActionTests } from '../unit-tests/glob-action-test.js';
@@ -267,6 +268,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:paste-token', run: runPasteTokenTests },
   { name: 'unit:draft-tab-switch', run: runDraftTabSwitchTests },
   { name: 'unit:edit-permission', run: runEditPermissionTests },
+  { name: 'unit:edit-staleness-guard', run: runEditStalenessGuardTests },
   { name: 'unit:execute-action', run: runExecuteActionTests },
   { name: 'unit:filesystem-api', run: runFileSystemApiTests },
   { name: 'unit:glob-action', run: runGlobActionTests },

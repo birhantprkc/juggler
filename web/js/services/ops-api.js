@@ -102,6 +102,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {string} path - File path (relative to project root, or absolute — JS approval is the gate)
  * @property {string} content - Content to write (max 10MB)
  * @property {boolean} [dryRun] - If true, validate path/parent/writability without modifying the file (used for pre-approval feasibility check)
+ * @property {string} [expectedHash] - SHA-256 the existing file's bytes must still hash to; the write is refused if the file changed since the approved diff
  * @property {boolean} [outOfRootApproved] - Marks a write outside the project root + allowed paths as user-approved, satisfying the backend's defence-in-depth check (set only on the modal-approved execution path)
  */
 
@@ -111,6 +112,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {string} path - File path that was written
  * @property {boolean} created - Whether file was newly created (would be created, for dryRun)
  * @property {number} size - File size after write (length of intended content, for dryRun)
+ * @property {string} [contentHash] - SHA-256 of the written bytes (freshness baseline for follow-up mutations; absent for dryRun)
  * @property {boolean} [dryRun] - Present and true when this result is from a dryRun call
  */
 
@@ -132,6 +134,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {string} [replace] - Content to replace with (alternative alias)
  * @property {boolean} [dryRun] - If true, return full file content for diff preview without writing
  * @property {boolean} [replace_all] - If true, replace all exact occurrences of old_str
+ * @property {string} [expectedHash] - SHA-256 the file's bytes must still hash to; the edit is refused if the file changed since the approved dryRun preview
  * @property {boolean} [outOfRootApproved] - Marks an out-of-scope edit as user-approved for the backend defence-in-depth check (set only on the modal-approved execution path)
  */
 
@@ -146,6 +149,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {number} [size] - File size after edit
  * @property {string} [oldContent] - Full old file content (only in dryRun mode)
  * @property {string} [newContent] - Full new file content with edits (only in dryRun mode)
+ * @property {string} [contentHash] - SHA-256 of the file's bytes: current on-disk bytes for dryRun (staleness baseline), written bytes for a real edit
  * @property {boolean} [dryRun] - Whether this was a dry run
  */
 
@@ -171,6 +175,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {number} [contextLine] - Line number for context validation
  * @property {string} [contextText] - Expected text at context line
  * @property {boolean} [dryRun] - If true, validate but don't write (returns oldContent)
+ * @property {string} [expectedHash] - SHA-256 the file's bytes must still hash to; the edit is refused if the file changed since the approved dryRun preview
  * @property {boolean} [outOfRootApproved] - Marks an out-of-scope edit as user-approved for the backend defence-in-depth check (set only on the modal-approved execution path)
  */
 
@@ -188,6 +193,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {number} [linesReplaced] - Number of lines replaced (not present when dryRun=true)
  * @property {number} [newLines] - Number of lines in new content (not present when dryRun=true)
  * @property {number} [size] - File size after edit (not present when dryRun=true)
+ * @property {string} [contentHash] - SHA-256 of the file's bytes: current on-disk bytes for dryRun (staleness baseline), written bytes for a real edit
  */
 
 // ============================================================================

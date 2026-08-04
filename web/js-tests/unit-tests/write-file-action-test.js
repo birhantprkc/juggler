@@ -429,10 +429,13 @@ export async function runTests(ctx) {
     errors.push(`code: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // Test 11: Overwrite a pre-existing file without prior read. The "pre-existing"
-  // file is created in a fresh conversation first (to seed it on disk), then a
-  // second conversation overwrites without reading. Uses a sandboxed test dir path
-  // so the shared iframe-pool fixture isn't polluted across sibling tests.
+  // Test 11: Overwriting a pre-existing file without a prior read is REFUSED by
+  // the read-before-overwrite freshness guard (read-history.js): a blind
+  // overwrite would destroy content the model has never seen. The
+  // "pre-existing" file is created in a fresh conversation first (to seed it on
+  // disk), then a second conversation — with no transcript record of the file —
+  // attempts the overwrite. Uses a sandboxed test dir path so the shared
+  // iframe-pool fixture isn't polluted across sibling tests.
   try {
     const seedConv = await createTestConversation(session);
     await executeToolsAndGetContext(seedConv, session, [
@@ -455,18 +458,39 @@ export async function runTests(ctx) {
       {
         type: 'tool-result',
         toolUseId: '$1',
-        content: `Updated file: ${TD}/overwrite-target.txt`,
-        isError: false
+        content: `Refusing to overwrite '${TD}/overwrite-target.txt': it has not been read this session. Read the file first, then retry using its exact current text.`,
+        isError: true
       },
       { type: 'assistant', content: 'Done.' }
     ];
 
-    assertContextGolden(context, expected, [toolCall], 'overwrite without prior read');
-    assert(await ctx.readFile(`${TD}/overwrite-target.txt`) === 'Overwritten', 'file should be overwritten');
+    assertContextGolden(context, expected, [toolCall], 'blind overwrite refused');
+    assert(await ctx.readFile(`${TD}/overwrite-target.txt`) === 'Original',
+      'refused overwrite must leave the file untouched');
     passed++;
   } catch (e) {
     failed++;
-    errors.push(`overwrite-without-read: ${e instanceof Error ? e.message : String(e)}`);
+    errors.push(`overwrite-without-read refused: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Test 12: reading the file first satisfies the guard — the same overwrite
+  // then succeeds.
+  try {
+    const conversation = await createTestConversation(session);
+    await executeToolsAndGetContext(conversation, session, [
+      createToolCall('read', { file_path: `${TD}/overwrite-target.txt` })
+    ]);
+
+    await executeToolsAndGetContext(conversation, session, [
+      createToolCall('write', { file_path: `${TD}/overwrite-target.txt`, content: 'Overwritten' })
+    ]);
+
+    assert(await ctx.readFile(`${TD}/overwrite-target.txt`) === 'Overwritten',
+      'read-then-overwrite should update the file');
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`read-then-overwrite allowed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   return { passed, failed, errors };

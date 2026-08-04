@@ -140,6 +140,17 @@ export async function runTests(_ctx) {
     // Seed a file in the fixture directory with known content.
     await writeFileOp({ path: 'reg-edit-validate.txt', content: 'hello world\n' });
 
+    // Record the file as read so the read-before-edit freshness guard admits
+    // the edit and validation reaches the dryRun SEARCH_NOT_FOUND path this
+    // test exists to cover.
+    conversation.rootMessageThread.appendToolAction({
+      toolUseId: 'seed_read_reg_edit_validate',
+      toolName: 'read',
+      toolInput: { file_path: 'reg-edit-validate.txt' },
+      state: 'completed',
+      result: { content: 'read ok', isError: false }
+    });
+
     const EditClass = /** @type {any} */ (contextItemRegistry.getByToolName('edit'));
     assert(EditClass !== undefined, 'edit action should be registered');
 

@@ -106,7 +106,7 @@ function badgeCtx(host) {
  */
 const APPROVAL_SOURCE_META = {
   user: { label: 'User', icon: 'icon-check', title: 'Approved by the user' },
-  rule: { label: 'Permitted', icon: 'icon-checklist', title: 'Allowed by a saved permission rule' },
+  rule: { label: 'Permitted', icon: 'icon-checklist', title: 'Allowed by a permission rule' },
   strategy: { label: 'Strategy', icon: 'icon-auto-awesome', title: 'Approved by the active strategy' }
 };
 

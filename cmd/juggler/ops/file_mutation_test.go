@@ -122,6 +122,177 @@ func TestEditFileRejectsIdenticalOldNewStr(t *testing.T) {
 	}
 }
 
+// TestMutationResultsReturnContentHash asserts that loadFile, getFileHash,
+// writeFile, and editFile (dryRun + real) all report a consistent contentHash —
+// the staleness baseline the JS edit tool uses to refuse an edit whose target
+// changed since the model last read it. The invariants: read == getFileHash;
+// editFile dryRun == the current (pre-edit) hash; editFile/writeFile results ==
+// a fresh getFileHash of the bytes they just wrote.
+func TestMutationResultsReturnContentHash(t *testing.T) {
+	dir := t.TempDir()
+	ops := NewFileOperations(NewPathScope(dir, nil))
+
+	const name = "hash.txt"
+	abs := filepath.Join(dir, name)
+	if err := os.WriteFile(abs, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	hashOf := func(op string, params map[string]any) string {
+		t.Helper()
+		res, err := ops.Execute(context.Background(), op, params)
+		if err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		m, ok := res.(map[string]any)
+		if !ok {
+			t.Fatalf("%s: result not a map: %T", op, res)
+		}
+		h, ok := m["contentHash"].(string)
+		if !ok || h == "" {
+			t.Fatalf("%s: missing contentHash in %v", op, m)
+		}
+		return h
+	}
+
+	readHash := hashOf("loadFile", map[string]any{"path": name})
+	if fileHash := hashOf("getFileHash", map[string]any{"path": name}); fileHash != readHash {
+		t.Fatalf("loadFile hash %s != getFileHash %s", readHash, fileHash)
+	}
+
+	// dryRun edit reports the CURRENT (pre-edit) file hash as the baseline.
+	if dryHash := hashOf("editFile", map[string]any{"path": name, "old_str": "beta", "new_str": "BETA", "dryRun": true}); dryHash != readHash {
+		t.Fatalf("editFile dryRun hash %s != current file hash %s", dryHash, readHash)
+	}
+
+	// Real edit reports the POST-edit hash, matching a fresh getFileHash.
+	editHash := hashOf("editFile", map[string]any{"path": name, "old_str": "beta", "new_str": "BETA"})
+	if postHash := hashOf("getFileHash", map[string]any{"path": name}); editHash != postHash {
+		t.Fatalf("editFile result hash %s != post-edit getFileHash %s", editHash, postHash)
+	}
+	if editHash == readHash {
+		t.Fatalf("edit did not change the content hash")
+	}
+
+	// writeFile reports the hash of the exact bytes it wrote.
+	writeHash := hashOf("writeFile", map[string]any{"path": name, "content": "brand new\n"})
+	if postWrite := hashOf("getFileHash", map[string]any{"path": name}); writeHash != postWrite {
+		t.Fatalf("writeFile result hash %s != getFileHash %s", writeHash, postWrite)
+	}
+}
+
+// TestMutationsRejectStaleExpectedHash asserts that editFile, editFileLines,
+// and writeFile refuse to mutate when the caller's expectedHash (the baseline
+// its approved preview was computed against) no longer matches the file's
+// on-disk bytes — the file changed between preview and write — and that a
+// matching expectedHash lets the mutation proceed. A refused mutation must
+// leave the file untouched. writeFile with an expectedHash for a file that was
+// deleted in the interim simply creates it (nothing would be destroyed).
+func TestMutationsRejectStaleExpectedHash(t *testing.T) {
+	dir := t.TempDir()
+	ops := NewFileOperations(NewPathScope(dir, nil))
+
+	const name = "staleness.txt"
+	const seed = "alpha\nbeta\ngamma\n"
+	abs := filepath.Join(dir, name)
+	if err := os.WriteFile(abs, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	currentHash := func() string {
+		t.Helper()
+		res, err := ops.Execute(context.Background(), "getFileHash", map[string]any{"path": name})
+		if err != nil {
+			t.Fatalf("getFileHash: %v", err)
+		}
+		return res.(map[string]any)["contentHash"].(string)
+	}
+
+	requireUnchanged := func() {
+		t.Helper()
+		got, err := os.ReadFile(abs)
+		if err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if string(got) != seed {
+			t.Fatalf("file mutated despite stale expectedHash: %q", string(got))
+		}
+	}
+
+	const stale = "0000000000000000000000000000000000000000000000000000000000000000"
+
+	for _, tc := range []struct {
+		op     string
+		params map[string]any
+	}{
+		{"editFile", map[string]any{"path": name, "old_str": "beta", "new_str": "BETA", "expectedHash": stale}},
+		{"editFileLines", map[string]any{"path": name, "startLine": float64(2), "endLine": float64(2), "newContent": "BETA", "expectedHash": stale}},
+		{"writeFile", map[string]any{"path": name, "content": "clobbered\n", "expectedHash": stale}},
+	} {
+		if _, err := ops.Execute(context.Background(), tc.op, tc.params); err == nil {
+			t.Fatalf("%s: expected stale expectedHash to be rejected, got nil", tc.op)
+		}
+		requireUnchanged()
+	}
+
+	// A matching expectedHash lets the edit through.
+	if _, err := ops.Execute(context.Background(), "editFile", map[string]any{
+		"path": name, "old_str": "beta", "new_str": "BETA", "expectedHash": currentHash(),
+	}); err != nil {
+		t.Fatalf("editFile with matching expectedHash: %v", err)
+	}
+
+	// expectedHash for a since-deleted file: the write creates it.
+	if err := os.Remove(abs); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := ops.Execute(context.Background(), "writeFile", map[string]any{
+		"path": name, "content": "recreated\n", "expectedHash": stale,
+	}); err != nil {
+		t.Fatalf("writeFile after delete: %v", err)
+	}
+	if got, err := os.ReadFile(abs); err != nil || string(got) != "recreated\n" {
+		t.Fatalf("recreate failed: %q, %v", string(got), err)
+	}
+}
+
+// TestEditFileFlexibleMatchRejectsAmbiguous asserts that when the exact match
+// fails and the flexible-whitespace fallback (strategy 2) finds the old_str in
+// more than one place, the edit is REFUSED rather than silently rewriting the
+// first hit — the failure mode that corrupts a file when the model's old_str is
+// stale/imprecise. Mirrors the ambiguity guard the exact and regex strategies
+// already enforce.
+func TestEditFileFlexibleMatchRejectsAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	ops := NewFileOperations(NewPathScope(dir, nil))
+
+	const name = "ambig.txt"
+	abs := filepath.Join(dir, name)
+	// Two regions identical after per-line whitespace trimming but with
+	// different indentation, so the exact substring match fails and the
+	// flexible-whitespace strategy is what finds them — in two places.
+	seed := "start\n        do_a()\n        do_b()\nmiddle\n    do_a()\n    do_b()\nend\n"
+	if err := os.WriteFile(abs, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := ops.Execute(context.Background(), "editFile", map[string]any{
+		"path":    name,
+		"old_str": "do_a()\ndo_b()",
+		"new_str": "REPLACED",
+	}); err == nil {
+		t.Fatal("expected ambiguous flexible-whitespace match to be rejected, got nil")
+	}
+
+	got, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != seed {
+		t.Fatalf("file mutated despite ambiguous edit: %q", string(got))
+	}
+}
+
 // TestWriteEditFailOnReadOnlyDir asserts that an OS-level write failure (EACCES
 // from a read-only parent directory) is surfaced as a non-nil error from both
 // writeFile and editFile, rather than silently swallowed — and that a failed

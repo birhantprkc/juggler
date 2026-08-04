@@ -9,7 +9,7 @@ import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createFileC
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { smartTruncate } from 'juggler/ui';
-import { toolInputPath, dirname, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags } from './path-approval.js';
+import { toolInputPath, dirname, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags, absolutePathKey } from './path-approval.js';
 
 injectFileContentStyles();
 
@@ -295,16 +295,14 @@ class ReadFileContextItem extends ContextItem {
   }
 
   /**
-   * Get the full absolute path by resolving relative paths against the project root
+   * Get the full absolute path by resolving relative paths against the project
+   * root. Delegates to the shared canonicaliser so display and the
+   * read-history freshness guard agree on one form per file.
    * @param {string} path - File path
    * @returns {string} Absolute file path
    */
   getAbsolutePath(path) {
-    if (!path) return '';
-    if (path.startsWith('/')) return path;
-    const root = this.session?.projectPath;
-    if (root) return `${root.replace(/\/+$/, '')}/${path}`;
-    return path;
+    return absolutePathKey(this.session, path);
   }
 
   /**

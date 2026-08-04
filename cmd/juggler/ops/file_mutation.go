@@ -5,6 +5,8 @@
 package ops
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -100,11 +102,18 @@ var fileMutationLock = newPathLocker()
 // On success the caller owns unlock and must `defer unlock()` across the whole
 // read→write window. On any error unlock is already called and returned nil, so
 // the caller only propagates err.
-func (ops *FileOperations) openForMutation(path string) (absPath string, info os.FileInfo, content string, unlock func(), err error) {
+//
+// rawHash is the hex SHA-256 of the file's raw on-disk bytes (before CRLF
+// normalization), identical to what loadFile/getFileHash report. It is the
+// staleness baseline the edit tools echo back in their dryRun result so the JS
+// layer can refuse an edit whose target changed since the model last read it,
+// and the value an incoming expectedHash param is compared against so the same
+// refusal covers the approval-to-write window.
+func (ops *FileOperations) openForMutation(path string) (absPath string, info os.FileInfo, content string, rawHash string, unlock func(), err error) {
 	// JS approval is the policy gate; backend sanitises only.
 	absPath, err = ops.scope.Sanitize(path)
 	if err != nil {
-		return "", nil, "", nil, fmt.Errorf("invalid path '%s': %w", path, err)
+		return "", nil, "", "", nil, fmt.Errorf("invalid path '%s': %w", path, err)
 	}
 
 	// Serialize the whole read-modify-write against concurrent edits of the same
@@ -116,22 +125,23 @@ func (ops *FileOperations) openForMutation(path string) (absPath string, info os
 	if statErr != nil {
 		unlock()
 		if os.IsNotExist(statErr) {
-			return "", nil, "", nil, fmt.Errorf("file does not exist: %s. Use write-file action to create new files", path)
+			return "", nil, "", "", nil, fmt.Errorf("file does not exist: %s. Use write-file action to create new files", path)
 		}
-		return "", nil, "", nil, fmt.Errorf("failed to access file '%s': %w", path, statErr)
+		return "", nil, "", "", nil, fmt.Errorf("failed to access file '%s': %w", path, statErr)
 	}
 	if info.IsDir() {
 		unlock()
-		return "", nil, "", nil, fmt.Errorf("cannot edit directory: %s. Provide a file path instead", path)
+		return "", nil, "", "", nil, fmt.Errorf("cannot edit directory: %s. Provide a file path instead", path)
 	}
 
 	raw, readErr := os.ReadFile(absPath)
 	if readErr != nil {
 		unlock()
-		return "", nil, "", nil, fmt.Errorf("failed to read file '%s': %w. Check file permissions", path, readErr)
+		return "", nil, "", "", nil, fmt.Errorf("failed to read file '%s': %w. Check file permissions", path, readErr)
 	}
 
-	return absPath, info, strings.ReplaceAll(string(raw), "\r\n", "\n"), unlock, nil
+	hashBytes := sha256.Sum256(raw)
+	return absPath, info, strings.ReplaceAll(string(raw), "\r\n", "\n"), hex.EncodeToString(hashBytes[:]), unlock, nil
 }
 
 // writeFileAtomic writes data to path via a temp file in the same directory

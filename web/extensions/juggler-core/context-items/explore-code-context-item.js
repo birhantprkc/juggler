@@ -92,6 +92,14 @@ class ExploreCodeContextItem extends ContextItem {
    * exposing a read-only filesystem plus grep/glob search to the code. The
    * sandbox also injects `path` and `projectRoot`. Only the script's return
    * value enters context.
+   *
+   * The result also carries `filesRead` — path → contentHash for every file
+   * the script's `fs.readFile` pulled — so the read-before-mutate freshness
+   * guard (read-history.js) credits files the model's own script chose to
+   * read. It is a plain object (not an array) so transcript storage keeps it
+   * intact, and it is never rendered into the LLM-visible content (getSummary
+   * stringifies only `result`). grep/glob results earn no credit: matched
+   * fragments and names don't show the model the file.
    * @param {Record<string, unknown>} params - Validated params
    * @returns {Promise<Record<string, unknown>>} Script result
    */
@@ -106,7 +114,16 @@ class ExploreCodeContextItem extends ContextItem {
       capabilities: { fs, grep, glob },
       timeoutMs,
     });
-    return { result: result === undefined ? null : result };
+
+    /** @type {Record<string, unknown>} */
+    const out = { result: result === undefined ? null : result };
+    if (fs.filesRead.size > 0) {
+      /** @type {Record<string, string|null>} */
+      const filesRead = {};
+      for (const [p, hash] of fs.filesRead) filesRead[p] = hash;
+      out.filesRead = filesRead;
+    }
+    return out;
   }
 
   /**

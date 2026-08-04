@@ -81,7 +81,20 @@ export class FileSystem {
   constructor(allowedPaths = []) {
     /** @type {string[]} */
     this._allowedPaths = Array.isArray(allowedPaths) ? allowedPaths : [];
+    /**
+     * Files successfully read through this instance: path → the backend's
+     * contentHash of the raw on-disk bytes (null when the backend reported
+     * none). The explore_code tool records this in its tool-action result so
+     * the read-before-mutate freshness guard (read-history.js) can credit a
+     * sandbox script's reads. Capped so a sweep over thousands of files can't
+     * bloat the transcript — files beyond the cap simply earn no credit.
+     * @type {Map<string, string|null>}
+     */
+    this.filesRead = new Map();
   }
+
+  /** Maximum number of read records retained per instance. */
+  static MAX_FILES_READ = 200;
 
   /**
    * Read a file's content.
@@ -103,6 +116,9 @@ export class FileSystem {
     const result = await readFileLoad(/** @type {any} */ (params), undefined, this._allowedPaths);
     if (!result.exists) {
       throw new FileSystemError('ENOENT', `no such file or directory: ${filePath}`);
+    }
+    if (this.filesRead.size < FileSystem.MAX_FILES_READ || this.filesRead.has(filePath)) {
+      this.filesRead.set(filePath, typeof result.contentHash === 'string' ? result.contentHash : null);
     }
     return result.content;
   }

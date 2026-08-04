@@ -6,6 +6,7 @@
 import EditBase from './edit-base.js';
 import { editFile } from 'juggler/ops';
 import { normalizeFilePath, basename } from 'juggler/item-utils';
+import { checkFileFreshness } from './read-history.js';
 
 /**
  * @typedef {object} ReplaceTextParams
@@ -145,6 +146,18 @@ class ReplaceTextContextItem extends EditBase {
       return { valid: false, error: 'Parameter "new_string" must be a string' };
     }
 
+    // Read-before-edit guard (Claude Code-style): refuse to edit a file the
+    // model hasn't looked at this session, so a blind search-and-replace can't
+    // corrupt a file it's only guessing at. Seen-ness is derived from the
+    // durable transcript (read-history.js) — a prior successful
+    // read/write/edit/batch_read or a pinned file — so it survives relaunch,
+    // extra clients, and both realms. Checked before the dryRun so a never-read
+    // file gets the read-first message rather than a search-mismatch one.
+    const neverRead = checkFileFreshness(this.conversation, this.session, params.path, undefined, 'edit');
+    if (!neverRead.ok) {
+      return { valid: false, error: neverRead.error };
+    }
+
     // Call backend with dryRun to get complete file content for diff
     /** @type {import('../../../js/services/ops-api.js').ReadFileEditResult} */
     let result;
@@ -189,8 +202,24 @@ class ReplaceTextContextItem extends EditBase {
     // diff-less approval modal to the user before the action ultimately
     // fails at execute time.
     if (result && /** @type {any} */ (result).success === false) {
+      // A stale file explains a failed match better than the generic
+      // search-not-found guidance, so check freshness against the hash the
+      // backend reports alongside the structured error.
+      const failedHash = /** @type {any} */ (result).contentHash;
+      const staleOnFail = checkFileFreshness(this.conversation, this.session, params.path, failedHash, 'edit');
+      if (!staleOnFail.ok) {
+        return { valid: false, error: staleOnFail.error };
+      }
       const { llmMessage } = this.formatError(/** @type {any} */ (result), 'edit');
       return { valid: false, error: llmMessage };
+    }
+
+    // Staleness guard: the dryRun echoes the file's current on-disk hash;
+    // refuse when it matches none of the hashes the transcript says the model
+    // has seen — the file changed out-of-band since it was last read.
+    const freshness = checkFileFreshness(this.conversation, this.session, params.path, result.contentHash, 'edit');
+    if (!freshness.ok) {
+      return { valid: false, error: freshness.error };
     }
 
     // Cache dryRun result for getApprovalConfig()
@@ -228,6 +257,17 @@ class ReplaceTextContextItem extends EditBase {
   async execute(params) {
     // Normalize params (may have been passed raw toolInput)
     const normalizedParams = this._normalizeParams(/** @type {Record<string, any>} */ (params));
+
+    // The dryRun result is validation-local: keep it off the wire, but carry
+    // its contentHash as expectedHash so the backend refuses if the file
+    // changed between the approved preview and this write (the approval modal
+    // can be open for arbitrarily long).
+    const anyParams = /** @type {any} */ (normalizedParams);
+    const dryRunResult = /** @type {{contentHash?: string}|undefined} */ (anyParams._dryRunResult);
+    delete anyParams._dryRunResult;
+    if (dryRunResult?.contentHash) {
+      anyParams.expectedHash = dryRunResult.contentHash;
+    }
 
     // Carry the allowed-paths grant and mark an out-of-root target as approved so
     // the backend's defence-in-depth check admits the edit (see EditBase._authorizeWrite).

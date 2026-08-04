@@ -6,6 +6,7 @@
 import EditBase from './edit-base.js';
 import { readFile, writeFile } from 'juggler/ops';
 import { formatDisplayPath, normalizeFilePath, createFileContentBlock, basename } from 'juggler/item-utils';
+import { checkFileFreshness } from './read-history.js';
 
 /** @type {Record<string, string>} */
 const LANG_MAP = {
@@ -131,16 +132,36 @@ class WriteFileContextItem extends EditBase {
       return { valid: false, error: 'Parameter "content" must be a string' };
     }
 
-    // Load existing content (if any) so the approval UI can show a diff.
+    // Load existing content (if any) so the approval UI can show a diff, and
+    // capture its content hash as the overwrite-freshness baseline.
     /** @type {string|undefined} */
     let existingContent;
+    /** @type {string|undefined} */
+    let existingHash;
+    let fileExists = false;
     try {
       const result = await readFile({ path });
+      fileExists = result.exists === true;
       if (result.exists && result.content !== undefined) {
         existingContent = result.content;
       }
+      if (result.exists && typeof (/** @type {any} */ (result).contentHash) === 'string') {
+        existingHash = /** @type {any} */ (result).contentHash;
+      }
     } catch {
       // No existing file to diff against; the approval UI shows a content preview.
+    }
+
+    // Read-before-overwrite guard (mirrors the edit tool's read-before-edit
+    // guard in replace-text): refuse to clobber an existing file the model has
+    // never looked at this session, or whose bytes changed on disk since it
+    // was last read — a blind overwrite silently destroys content the model
+    // has never seen. Creating a new file needs no such history.
+    if (fileExists) {
+      const freshness = checkFileFreshness(this.conversation, this.session, path, existingHash, 'overwrite');
+      if (!freshness.ok) {
+        return { valid: false, error: freshness.error };
+      }
     }
 
     // Pre-approval dry-run: ask the backend whether the write would actually
@@ -158,7 +179,7 @@ class WriteFileContextItem extends EditBase {
 
     return {
       valid: true,
-      params: { ...params, _existingContent: existingContent }
+      params: { ...params, _existingContent: existingContent, _existingHash: existingHash }
     };
   }
 
@@ -216,7 +237,17 @@ class WriteFileContextItem extends EditBase {
    * @returns {Promise<WriteFileResult>} Action result
    */
   async execute(params) {
-    const writeParams = /** @type {WriteFileParams} */ (params);
+    const writeParams = /** @type {WriteFileParams & {_existingContent?: string, _existingHash?: string}} */ ({ ...params });
+
+    // The diff baseline is validation-local: keep it off the wire, but carry
+    // the existing file's hash as expectedHash so the backend refuses if the
+    // file changed between the approved diff and this write.
+    const existingHash = writeParams._existingHash;
+    delete writeParams._existingContent;
+    delete writeParams._existingHash;
+    if (existingHash) {
+      /** @type {any} */ (writeParams).expectedHash = existingHash;
+    }
 
     // Approval is enforced upstream by the JS action-executor flow. Carry the
     // standing allowed-paths grant, and mark an out-of-root target as

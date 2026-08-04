@@ -96,21 +96,26 @@ const TD_editMultiline = testDirFor('edit-multiline');
  */
 export const editMultilineTest = {
   name: 'edit-multiline',
-  description: 'Multi-line search/replace on existing Go file',
+  description: 'Multi-line search/replace across newlines',
   fixture: 'unit-test-fixture',
-  // Seed our own file under the test dir so the edit doesn't mutate the shared
-  // fixture's src/main.go (sibling read-file-* tests would race on the
-  // modified content).
-  setupFiles: {
-    [`${TD_editMultiline}/main.go`]: 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Hello, World!")\n}\n\nfunc add(a, b int) int {\n\treturn a + b\n}\n'
-  },
 
+  // Write the file through the tool (turn 1) before editing it (turn 2). The
+  // write records the read-before-edit staleness baseline so the edit isn't
+  // refused as never-read. A `.txt` target (not `.go`) is deliberate: it keeps
+  // this test from racing sibling glob-go-files, which globs **/*.go across the
+  // shared fixture root and would see a stray .go file created here.
   llmResponses: [
     toolUseResponse(
       'call_1',
+      'write',
+      { file_path: `${TD_editMultiline}/snippet.txt`, content: 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Hello, World!")\n}\n\nfunc add(a, b int) int {\n\treturn a + b\n}\n' },
+      'Creating file.'
+    ),
+    toolUseResponse(
+      'call_2',
       'edit',
       {
-        file_path: `${TD_editMultiline}/main.go`,
+        file_path: `${TD_editMultiline}/snippet.txt`,
         old_string: 'func add(a, b int) int {\n\treturn a + b\n}',
         new_string: 'func add(a, b int) int {\n\treturn a + b // addition\n}'
       },
@@ -120,27 +125,39 @@ export const editMultilineTest = {
   ],
 
   operations: [
-    { type: 'send-message', message: 'Add comment to add function' }
+    { type: 'send-message', message: 'Create snippet.txt then add a comment to the add function' }
   ],
 
   expectedDocument: {
     items: [
       { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Add comment to add function' },
-      { type: 'assistant', content: 'Editing function.' },
+      { type: 'user', content: 'Create snippet.txt then add a comment to the add function' },
+      { type: 'assistant', content: 'Creating file.' },
       {
         type: 'tool-action',
         toolUseId: '$TOOL_1',
+        toolName: 'write',
+        toolInput: { content: 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Hello, World!")\n}\n\nfunc add(a, b int) int {\n\treturn a + b\n}\n', file_path: `${TD_editMultiline}/snippet.txt` },
+        state: 'completed',
+        result: {
+          content: `Created file: ${TD_editMultiline}/snippet.txt`,
+          isError: false
+        }
+      },
+      { type: 'assistant', content: 'Editing function.' },
+      {
+        type: 'tool-action',
+        toolUseId: '$TOOL_2',
         toolName: 'edit',
         toolInput: {
-          file_path: `${TD_editMultiline}/main.go`,
+          file_path: `${TD_editMultiline}/snippet.txt`,
           new_string: 'func add(a, b int) int {\n\treturn a + b // addition\n}',
           old_string: 'func add(a, b int) int {\n\treturn a + b\n}'
         },
         state: 'completed',
 
         result: {
-          content: `Edited file: ${TD_editMultiline}/main.go`,
+          content: `Edited file: ${TD_editMultiline}/snippet.txt`,
           isError: false
         }
       },
@@ -149,7 +166,7 @@ export const editMultilineTest = {
   },
 
   fileAssertions: [
-    { path: `${TD_editMultiline}/main.go`, content: 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Hello, World!")\n}\n\nfunc add(a, b int) int {\n\treturn a + b // addition\n}\n' }
+    { path: `${TD_editMultiline}/snippet.txt`, content: 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Hello, World!")\n}\n\nfunc add(a, b int) int {\n\treturn a + b // addition\n}\n' }
   ]
 };
 

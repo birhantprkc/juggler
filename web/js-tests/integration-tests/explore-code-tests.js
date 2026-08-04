@@ -10,7 +10,7 @@
  * @module integration-tests/explore-code-tests
  */
 
-import { textResponse, toolUseResponse } from '../utilities/integration-test-runner.js';
+import { textResponse, toolUseResponse, testDirFor } from '../utilities/integration-test-runner.js';
 
 /**
  * Helper to build a standard explore_code test definition.
@@ -172,4 +172,77 @@ export const tests = [
     'const c = await fs.readFile("src/main.go");\nconst cap = c.includes("Hello, World!") ? "ok" : "no";\nlet direct;\ntry { await fetch("/api/completions/files?q=main"); direct = "reached"; } catch (_) { direct = "blocked"; }\nreturn `cap=${cap};direct=${direct}`;',
     'cap=ok;direct=blocked'
   ),
+
+  // Read-credit for the freshness guard: an explore_code script's fs.readFile
+  // records the file in the action's filesRead map, which satisfies the edit
+  // tool's read-before-edit guard (read-history.js). The target is seeded via
+  // setupFiles — on disk but with NO transcript record — so only the sandbox
+  // read can make the follow-up edit admissible.
+  exploreReadThenEditTest(),
 ];
+
+/**
+ * Build the explore-read-then-edit test definition.
+ * @returns {import('../utilities/integration-test-runner.js').IntegrationTestDefinition} Test definition
+ */
+function exploreReadThenEditTest() {
+  const TD = testDirFor('explore-read-then-edit');
+  const target = `${TD}/explored.txt`;
+  const code = `const c = await fs.readFile(${JSON.stringify(target)});\nreturn c.trim();`;
+  return {
+    name: 'explore-read-then-edit',
+    description: 'explore_code read satisfies the edit freshness guard',
+    fixture: 'unit-test-fixture',
+    setupFiles: {
+      [target]: 'greeting: hello\n'
+    },
+    llmResponses: [
+      toolUseResponse('call_1', 'explore_code', { code }, 'Exploring.'),
+      toolUseResponse(
+        'call_2',
+        'edit',
+        { file_path: target, old_string: 'greeting: hello', new_string: 'greeting: goodbye' },
+        'Editing.'
+      ),
+      textResponse('Done.')
+    ],
+    operations: [
+      { type: 'send-message', message: 'Explore then edit the greeting' }
+    ],
+    expectedDocument: {
+      items: [
+        { type: 'system-prompt', itemId: '$ITEM_1' },
+        { type: 'user', content: 'Explore then edit the greeting' },
+        { type: 'assistant', content: 'Exploring.' },
+        {
+          type: 'tool-action',
+          toolUseId: '$TOOL_1',
+          toolName: 'explore_code',
+          toolInput: { code },
+          state: 'completed',
+          result: { content: 'greeting: hello', isError: false }
+        },
+        { type: 'assistant', content: 'Editing.' },
+        {
+          type: 'tool-action',
+          toolUseId: '$TOOL_2',
+          toolName: 'edit',
+          toolInput: {
+            file_path: target,
+            old_string: 'greeting: hello',
+            new_string: 'greeting: goodbye'
+          },
+          state: 'completed',
+          result: {
+            content: `Edited file: ${target}`,
+            isError: false
+          }
+        },
+        { type: 'assistant', content: 'Done.' }
+      ]
+    },
+    fileAssertions: [
+      { path: target, content: 'greeting: goodbye\n' }
+    ]
+  };
+}
