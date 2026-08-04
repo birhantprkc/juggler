@@ -7,6 +7,8 @@
  * Provides consistent formatting for all status scenarios during LLM processing
  */
 
+import { formatDuration } from '../utils/format.js';
+
 /**
  * @typedef {object} StreamingStatusData
  * @property {number} [inputTokens] - Tokens sent to LLM
@@ -65,29 +67,14 @@ export class StatusMessageBuilder {
   }
 
   /**
-   * Format elapsed time compactly.
-   * Examples: "3s", "45s", "3m 14s", "2h 15m"
+   * Format elapsed time compactly. Millisecond-input adapter over the canonical
+   * {@link formatDuration}; examples: "3s", "45s", "3m 14s", "2h 15m".
    * @param {number} milliseconds - Elapsed time in milliseconds
    * @returns {string} Formatted elapsed time
    * @private
    */
   static _formatElapsedTime(milliseconds) {
-    if (milliseconds < 1000) {
-      return '0s';
-    }
-
-    const totalSeconds = Math.floor(milliseconds / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-
-    if (hours > 0) {
-      return `${hours}h ${minutes}m`;
-    } else if (minutes > 0) {
-      return `${minutes}m ${seconds}s`;
-    } else {
-      return `${seconds}s`;
-    }
+    return formatDuration(Math.floor(milliseconds / 1000));
   }
 
   /**

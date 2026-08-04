@@ -22,7 +22,7 @@ import { renderTransactionDetail } from './transaction-detail-renderer.js';
 import { dispatchItemRenderer, renderContextItem } from '../services/renderers/item-renderers.js';
 import workerManager from '../services/worker-manager.js';
 import { setupColumnResize } from '../utils/column-resize.js';
-import { formatRelativeDateTime } from '../utils/format.js';
+import { formatDuration, formatRelativeDateTime } from '../utils/format.js';
 
 /**
  * @typedef {import('../model/conversation.js').default} Conversation
@@ -412,24 +412,6 @@ class PropertiesPanel extends HTMLElement {
   }
 
   /**
-   * Format seconds the same way item-renderers.formatDuration does.
-   * Kept inline to avoid a circular dep from the renderer module back into
-   * the panel.
-   * @param {number} seconds
-   * @returns {string} Formatted duration.
-   * @private
-   */
-  _formatElapsedSeconds(seconds) {
-    if (seconds < 60) return `${seconds}s`;
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    if (mins < 60) return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
-    const hours = Math.floor(mins / 60);
-    const remainMins = mins % 60;
-    return remainMins > 0 ? `${hours}h ${remainMins}m` : `${hours}h`;
-  }
-
-  /**
    * Start/stop the 1Hz ticker based on whether the current render contains
    * any [data-elapsed-since] elements. Called after every full render and
    * after every successful live update. Idempotent — calling with the
@@ -475,7 +457,7 @@ class PropertiesPanel extends HTMLElement {
       const startMs = Number(/** @type {HTMLElement} */ (el).dataset.elapsedSince);
       if (!Number.isFinite(startMs)) return;
       const seconds = Math.max(0, Math.round((now - startMs) / 1000));
-      el.textContent = `Running… ${this._formatElapsedSeconds(seconds)}`;
+      el.textContent = `Running… ${formatDuration(seconds)}`;
     });
   }
 

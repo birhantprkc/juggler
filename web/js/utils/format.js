@@ -85,6 +85,25 @@ export function formatTokens(n) {
 }
 
 /**
+ * Format a duration in seconds as a compact string ("3s", "1m 23s", "2h 5m").
+ * A zero lower unit is dropped ("2h", not "2h 0m"). The two parts are joined
+ * with a non-breaking space so a pair like "10m 7s" never wraps across lines.
+ * App-wide canonical duration formatter — route elapsed/duration labels through
+ * this so they read consistently everywhere.
+ * @param {number} seconds Duration in seconds.
+ * @returns {string} Formatted duration.
+ */
+export function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (mins < 60) return secs > 0 ? `${mins}m\u00A0${secs}s` : `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remainMins = mins % 60;
+  return remainMins > 0 ? `${hours}h\u00A0${remainMins}m` : `${hours}h`;
+}
+
+/**
  * Format a date/time as a compact relative string with a longer
  * tooltip-friendly absolute string. App-wide canonical relative
  * date-time formatter — keep all UI date rendering routed through this

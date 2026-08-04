@@ -23,6 +23,7 @@
 
 import { renderAssistantContent, renderMarkdown, decorateCodeBlocks } from '../../../sdk/lib/markdown.js';
 import { stripThinkingTags } from '../../utils/content-utils.js';
+import { formatDuration } from '../../utils/format.js';
 import { badgeForItem } from '../../utils/item-badge.js';
 import { getThreadDisplayContent, getThreadStatus, paintThreadSummary } from '../../utils/thread-display.js';
 import contextItemRegistry from '../../registries/context-item-registry.js';
@@ -92,21 +93,6 @@ function badgeCtx(host) {
  */
 
 /** @typedef {(host: PanelHost, container: Element, item: any) => void} ItemRenderer */
-
-/**
- * Format a duration in seconds as a compact string ("3s", "1m 23s", "2h 5m").
- * @param {number} seconds Duration in seconds.
- * @returns {string} Formatted duration.
- */
-function formatDuration(seconds) {
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  if (mins < 60) return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  const remainMins = mins % 60;
-  return remainMins > 0 ? `${hours}h ${remainMins}m` : `${hours}h`;
-}
 
 /**
  * Display metadata for each approval-provenance value, keyed by the item's
