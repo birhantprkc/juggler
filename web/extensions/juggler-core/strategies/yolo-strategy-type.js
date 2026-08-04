@@ -16,14 +16,21 @@ import DefaultStrategyType from './default-strategy-type.js';
  * `write`, `edit`). The name and the red warning icon are the only safeguard:
  * switching to YOLO is the user's explicit, informed choice.
  *
- * The one thing it does NOT auto-approve is an **elicitation** — a tool whose
- * parked state is a request for the user's own input (e.g. AskUserQuestion),
- * where the "approval" IS that answer. Approving one would run the tool with no
- * answer and silently decide for the user, which is never what "auto-approve
- * everything" is meant to do. YOLO removes approval prompts; it does not put
- * words in the user's mouth. Those still park for a human, exactly as under
- * Default (and mirroring how the framework never routes elicitations to the
- * auto-approve reviewer at all).
+ * Two kinds of parked call are the exception and still stop for a human:
+ *
+ *   - an **elicitation** — a tool whose parked state is a request for the user's
+ *     own input (e.g. AskUserQuestion), where the "approval" IS that answer.
+ *     Approving one would run the tool with no answer and silently decide for
+ *     the user.
+ *   - a **non-auto-approvable checkpoint** (`autoApprovable === false`) — a
+ *     deliberate human review point such as a plan `submit` or a catastrophic
+ *     delete, whose entire purpose is that a human sees it before it proceeds.
+ *
+ * Neither is what "auto-approve everything" is meant to do: YOLO removes routine
+ * approval prompts; it does not put words in the user's mouth nor tick past a
+ * checkpoint that exists to be reviewed. Both still park for a human, exactly as
+ * under Default (mirroring how the framework never routes elicitations, nor a
+ * non-auto-approvable call, to the auto-approve reviewer either).
  * @augments {DefaultStrategyType}
  */
 export default class YoloStrategyType extends DefaultStrategyType {
@@ -70,18 +77,27 @@ export default class YoloStrategyType extends DefaultStrategyType {
   };
 
   /**
-   * Auto-approve every gate. YOLO grants master-control approval for all
-   * categories, so the permission system's default decision is bypassed — with
-   * one deliberate exception: an elicitation (e.g. AskUserQuestion) is left for
-   * the user. Its resolution IS the user's typed answer, which no auto-approval
-   * can supply; approving it would run the tool with no answer. Returning
-   * DEFAULT there lets it park for the human exactly as under Default.
+   * Auto-approve every ordinary gate. YOLO grants master-control approval for
+   * all categories, so the permission system's default decision is bypassed —
+   * with two deliberate exceptions, both of which return DEFAULT so the call
+   * parks for the human exactly as under Default:
+   *
+   *   1. an elicitation (e.g. AskUserQuestion): its resolution IS the user's
+   *      typed answer, which no auto-approval can supply; approving it would run
+   *      the tool with no answer.
+   *   2. a non-auto-approvable call (`autoApprovable === false`, e.g. a plan
+   *      `submit` or a catastrophic delete): a deliberate human checkpoint whose
+   *      whole point is review. A blanket auto-approve must not tick past it —
+   *      the same floor the auto-approve reviewer honours.
    * @override
-   * @param {{interactionKind: string}} info - Approval context (see StrategyType#getApprovalPolicy)
+   * @param {{interactionKind: string, autoApprovable?: boolean}} info - Approval context (see StrategyType#getApprovalPolicy)
    * @returns {'approve'|'require-approval'|'default'} Approval policy
    */
-  getApprovalPolicy({ interactionKind }) {
+  getApprovalPolicy({ interactionKind, autoApprovable }) {
     if (interactionKind === INTERACTION_KIND.ELICITATION) {
+      return APPROVAL_POLICY.DEFAULT;
+    }
+    if (autoApprovable === false) {
       return APPROVAL_POLICY.DEFAULT;
     }
     return APPROVAL_POLICY.APPROVE;

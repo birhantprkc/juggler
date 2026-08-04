@@ -10,6 +10,7 @@ of changes; this project follows semantic versioning.
 - Claude Code usage polls no longer load user-level plugins or hooks, so unrelated tools don't fire on every quota refresh
 - Context-item extensions can implement `static onTurnEnd()` to run a side-effect (e.g. retain a memory) once per turn
 - Fixed an auto-instantiate context item that implements `execute()` failing to seed, so its standing context reached the prompt
+- Fixed YOLO auto-approving plan submissions — plans now still wait for your review before execution begins
 
 ## [0.5.2] - 2026-08-01
 

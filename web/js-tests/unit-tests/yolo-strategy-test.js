@@ -5,19 +5,30 @@
 /**
  * Unit tests for the YOLO strategy's approval policy.
  *
- * YOLO auto-approves every go/no-go **gate**, but must NOT auto-approve an
- * **elicitation** (a tool whose parked state awaits the user's own input, e.g.
- * AskUserQuestion). Approving one would run the tool with no answer and silently
- * decide for the user — "auto-approve everything" is meant to remove approval
- * prompts, not put words in the user's mouth.
+ * YOLO auto-approves every go/no-go **gate**, but must NOT auto-approve two
+ * kinds of parked call:
+ *   - an **elicitation** (a tool whose parked state awaits the user's own
+ *     input, e.g. AskUserQuestion) — approving one runs the tool with no answer
+ *     and silently decides for the user; and
+ *   - a **non-auto-approvable checkpoint** (`autoApprovable(input) === false`) —
+ *     a deliberate human review point such as a plan `submit` or a catastrophic
+ *     delete. Its whole purpose is that a human sees it before it proceeds.
+ * "Auto-approve everything" is meant to remove routine approval prompts, not to
+ * put words in the user's mouth nor tick past a checkpoint that exists to be
+ * reviewed.
  *
  * Contract under test:
- *   1. getApprovalPolicy returns APPROVE for a gate and DEFAULT for an
- *      elicitation (the pure policy decision).
+ *   1. getApprovalPolicy returns APPROVE for an ordinary gate, DEFAULT for an
+ *      elicitation, and DEFAULT for a non-auto-approvable gate (the pure policy
+ *      decision).
  *   2. Driven through the real engine gate (`handleNewToolAction`), a
  *      normally-gated bash auto-approves while an AskUserQuestion stays PENDING
  *      — proving `interactionKind` is threaded into getApprovalPolicy and YOLO
  *      acts on it end to end.
+ *   3. Driven through the same gate, a plan `submit` — a gate, but one whose
+ *      `autoApprovable` is false — stays PENDING, so the user always reviews the
+ *      plan before execution begins even under YOLO. This is the regression
+ *      guard for the "YOLO auto-approves plans" bug.
  * @module unit-tests/yolo-strategy-test
  */
 
@@ -84,6 +95,30 @@ function insertUnstartedAsk(conversation, toolUseId) {
 }
 
 /**
+ * Insert an unstarted plan `submit` tool-action. A plan submit is a *gate*
+ * (delegable go/no-go), but a deliberate human checkpoint: its `autoApprovable`
+ * is false, so even a blanket auto-approve must leave it parked for review.
+ * @param {any} conversation - Test conversation
+ * @param {string} toolUseId - Unique tool-use id
+ * @returns {string} The toolUseId, for convenience
+ */
+function insertUnstartedPlanSubmit(conversation, toolUseId) {
+  conversation.rootMessageThread.addEvent(createToolActionMessage({
+    toolUseId,
+    toolName: 'plan',
+    toolInput: {
+      action: 'submit',
+      title: 'Refactor auth',
+      items: [
+        { content: 'Add user model', status: 'pending' },
+        { content: 'Wire login route', status: 'pending' }
+      ]
+    }
+  }));
+  return toolUseId;
+}
+
+/**
  * Run all YOLO strategy approval-policy tests.
  * @param {object} _ctx - Test context (unused)
  * @returns {Promise<TestResult>} Pass/fail counts
@@ -112,10 +147,19 @@ export async function runTests(_ctx) {
     assert(elicitation === APPROVAL_POLICY.DEFAULT,
       `YOLO must NOT auto-approve an elicitation (expected DEFAULT), got ${elicitation}`);
 
+    // A non-auto-approvable gate (e.g. a plan submit) is also left for the
+    // human: YOLO returns DEFAULT so it parks, exactly as an elicitation does.
+    const guardedGate = strategy.getApprovalPolicy({
+      interactionKind: INTERACTION_KIND.GATE,
+      autoApprovable: false
+    });
+    assert(guardedGate === APPROVAL_POLICY.DEFAULT,
+      `YOLO must NOT auto-approve a non-auto-approvable gate (expected DEFAULT), got ${guardedGate}`);
+
     passed++;
   } catch (e) {
     failed++;
-    errors.push(`policy distinguishes gate vs elicitation: ${e instanceof Error ? e.message : String(e)}`);
+    errors.push(`policy distinguishes gate vs elicitation vs checkpoint: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // The engine gate returns early for viewers; run the remaining tests as the
@@ -168,6 +212,30 @@ export async function runTests(_ctx) {
     } catch (e) {
       failed++;
       errors.push(`leaves an elicitation parked: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // =======================================================================
+    // Test 4: under YOLO, a plan `submit` still parks PENDING — the fix for
+    // "YOLO auto-approves plans". A submit is a gate (not an elicitation), so
+    // interactionKind alone doesn't spare it; its autoApprovable=false must.
+    // The user has to see the plan before execution begins, even under YOLO.
+    // =======================================================================
+    try {
+      const conversation = await createApprovalTestConversation(session);
+      const mt = conversation.rootMessageThread;
+      mt.strategy = new YoloStrategyType({ messageThread: mt });
+
+      const toolUseId = insertUnstartedPlanSubmit(conversation, 'yolo-plan-1');
+      await handleNewToolAction(mt, toolUseId, conversation);
+
+      const ta = mt.getToolAction(toolUseId);
+      assert(ta?.get('state') === TOOL_STATES.PENDING,
+        `YOLO must leave a plan submit parked for the user, got ${ta?.get('state')}`);
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`leaves a plan submit parked: ${e instanceof Error ? e.message : String(e)}`);
     }
   } finally {
     /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;

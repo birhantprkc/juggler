@@ -218,8 +218,10 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
   // Whether this specific call may be SILENTLY auto-approved by an unattended
   // path. Defaults to true; an action returns false for a call that must always
   // reach a human even in auto-approve mode (a plan submit; a recursive delete
-  // of the project root or home). It gates only the silent paths — the human,
-  // a saved rule, and YOLO are all deliberate grants and stay unaffected.
+  // of the project root or home). It gates the silent/default paths (the blanket
+  // auto-approve toggle and its out-of-band reviewer) and is passed to the
+  // strategy's getApprovalPolicy so a blanket auto-approve (YOLO) declines it
+  // too. A saved rule and an explicit human approval are unaffected.
   const autoApprovable = action.autoApprovable?.(toolInputPlain) ?? true;
 
   // Is this call already covered by a saved permission rule? Computed once and
@@ -252,15 +254,20 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
     // resolution IS the user's typed answer — so a blanket auto-approve (YOLO)
     // never silently answers a question. Same discriminant the gate-only
     // onToolPending dispatch keys off below.
-    interactionKind: action.interactionKind()
+    interactionKind: action.interactionKind(),
+    // Whether this specific call may be silently auto-approved. False for a
+    // deliberate human checkpoint (a plan submit; a catastrophic delete), which
+    // must reach a human even under a blanket auto-approve — so YOLO returns
+    // DEFAULT for it and it parks, the same floor the auto-approve reviewer honours.
+    autoApprovable
   });
 
   let needsApproval;
   if (strategyPolicy === APPROVAL_POLICY.APPROVE) {
-    // YOLO (and any strategy that force-approves) is the deliberate unguarded
-    // mode: it approves everything, including non-auto-approvable calls. The
-    // autoApprovable seam intentionally does NOT override an explicit APPROVE —
-    // it only guards the silent/default paths below.
+    // A force-approve strategy (YOLO) has returned APPROVE for this call. Its
+    // own getApprovalPolicy already excludes the calls that must still reach a
+    // human — elicitations and non-auto-approvable checkpoints both come back as
+    // DEFAULT, not APPROVE — so an APPROVE here is a genuine grant to skip the gate.
     needsApproval = false;
   } else if (strategyPolicy === APPROVAL_POLICY.REQUIRE_APPROVAL) {
     needsApproval = true;

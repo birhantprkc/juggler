@@ -427,16 +427,23 @@ class StrategyType {
    * for the user; a blanket auto-approve strategy must exclude them (return
    * `DEFAULT` so it still parks). This mirrors `onToolPending`, which the
    * framework never fires for elicitations at all.
-   * @param {{toolName: string, toolInput: Record<string, unknown>, category: string|undefined, defaultApproval: boolean, interactionKind: string}} info
+   *
+   * NON-AUTO-APPROVABLE CHECKPOINTS. `autoApprovable` is false for a call the
+   * action marks as a deliberate human review point (a plan `submit`; a
+   * catastrophic delete). A blanket auto-approve strategy should likewise return
+   * `DEFAULT` for these so they still park — the same floor `onToolPending`'s
+   * `autoApprovable` guard applies to the out-of-band reviewer.
+   * @param {{toolName: string, toolInput: Record<string, unknown>, category: string|undefined, defaultApproval: boolean, interactionKind: string, autoApprovable: boolean}} info
    *   - toolName: Name of the tool being called
    *   - toolInput: Input parameters for the tool
    *   - category: Tool category ('read', 'write', 'meta', or undefined)
    *   - defaultApproval: What the existing permission system decided (true = needs approval)
    *   - interactionKind: The parked-state kind — one of {@link import('./context-item.js').INTERACTION_KIND} ('gate' or 'elicitation')
+   *   - autoApprovable: false when the action forbids silent auto-approval (a deliberate human checkpoint) — a blanket auto-approve should return DEFAULT so it parks
    * @returns {'approve'|'require-approval'|'default'} Policy decision (use APPROVAL_POLICY constants)
    */
-  getApprovalPolicy({ toolName, toolInput, category, defaultApproval, interactionKind }) {
-    void toolName; void toolInput; void category; void defaultApproval; void interactionKind;
+  getApprovalPolicy({ toolName, toolInput, category, defaultApproval, interactionKind, autoApprovable }) {
+    void toolName; void toolInput; void category; void defaultApproval; void interactionKind; void autoApprovable;
     return APPROVAL_POLICY.DEFAULT;
   }
 
