@@ -24,6 +24,8 @@ func buildCompletionTree(t *testing.T) string {
 		"my_database.go",        // root: name CONTAINS "data" (no prefix)
 		"src/deep/datafile.js",  // nested: name starts with "data"
 		"src/other/has_data.md", // nested: name CONTAINS "data"
+		"scratch/notes.md",      // root dir intentionally omitted from fake index
+		"web/components/file-mention-provider.js",
 		"unrelated.txt",
 	} {
 		full := filepath.Join(root, p)
@@ -50,7 +52,7 @@ func (f *fakeSearcher) Search(query string, limit int) []FileMatch {
 	f.calls++
 	f.lastQ = query
 	q := strings.ToLower(query)
-	var out []FileMatch
+	out := make([]FileMatch, 0)
 	for _, m := range f.all {
 		base := strings.TrimSuffix(m.Path, "/")
 		if i := strings.LastIndex(base, "/"); i >= 0 {
@@ -76,6 +78,9 @@ func treeSearcher() *fakeSearcher {
 		{Path: "src/deep/datafile.js"},
 		{Path: "src/other/", IsDir: true},
 		{Path: "src/other/has_data.md"},
+		{Path: "web/", IsDir: true},
+		{Path: "web/components/", IsDir: true},
+		{Path: "web/components/file-mention-provider.js"},
 		{Path: "unrelated.txt"},
 	}}
 }
@@ -126,22 +131,88 @@ func TestCompleteFiles_UnqualifiedQueryUsesIndex(t *testing.T) {
 	}
 }
 
-// TestCompleteFiles_ShortQueryStaysPrefixOnly keeps a sub-four-character query
-// off the index: only the current-directory prefix scan applies, so nested
-// matches are absent and the searcher is never consulted.
-func TestCompleteFiles_ShortQueryStaysPrefixOnly(t *testing.T) {
+func TestCompleteFiles_RetainsRootPrefixMissingFromIndex(t *testing.T) {
 	root := buildCompletionTree(t)
 	s := treeSearcher()
 
-	paths := completionPaths(t, root, "dat", s) // 3 chars — below the threshold
-	if s.calls != 0 {
-		t.Errorf("short query should not consult the index, got calls=%d", s.calls)
+	paths := completionPaths(t, root, "scratch", s)
+	if s.calls != 1 || s.lastQ != "scratch" {
+		t.Fatalf("expected index consulted once, got calls=%d lastQ=%q", s.calls, s.lastQ)
 	}
-	if hasPath(paths, "src/deep/datafile.js") {
-		t.Errorf("query %q: short query should not surface nested files, got %v", "dat", paths)
+	if !hasPath(paths, "scratch/") {
+		t.Errorf("root prefix match omitted from index should be retained, got %v", paths)
 	}
-	if !hasPath(paths, "database.txt") {
-		t.Errorf("query %q: expected root prefix match database.txt, got %v", "dat", paths)
+}
+
+func TestCompleteFiles_FindsFilenameInsideIgnoredDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("scratch/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "scratch", "disable-auto-refactoring.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := completionPaths(t, root, "disable-auto", &fakeSearcher{})
+	if !hasPath(paths, "scratch/disable-auto-refactoring.md") {
+		t.Errorf("ignored nested filename should be found, got %v", paths)
+	}
+}
+
+func TestSearchIgnoredCompletionPathsIsBounded(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("scratch/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"scratch/00-first.txt",
+		"scratch/01-second.txt",
+		"scratch/02-disable-auto-refactoring.md",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	matches := searchIgnoredCompletionPaths(context.Background(), root, "disable-auto", 20, 2)
+	if len(matches) != 0 {
+		t.Errorf("scan should stop at the entry bound, got %v", matches)
+	}
+}
+
+func TestCompleteFiles_UnqualifiedDashedQueryUsesIndex(t *testing.T) {
+	root := buildCompletionTree(t)
+	s := treeSearcher()
+
+	paths := completionPaths(t, root, "-pro", s)
+	if s.calls != 1 || s.lastQ != "-pro" {
+		t.Fatalf("expected index consulted once with dashed query, got calls=%d lastQ=%q", s.calls, s.lastQ)
+	}
+	if !hasPath(paths, "web/components/file-mention-provider.js") {
+		t.Errorf("dashed query should find nested basename match, got %v", paths)
+	}
+}
+
+// TestCompleteFiles_ShortQueryUsesIndex confirms short filename fragments search
+// the whole tree just like longer unqualified queries.
+func TestCompleteFiles_ShortQueryUsesIndex(t *testing.T) {
+	root := buildCompletionTree(t)
+	s := treeSearcher()
+
+	paths := completionPaths(t, root, "dat", s)
+	if s.calls != 1 || s.lastQ != "dat" {
+		t.Fatalf("expected index consulted once with short query, got calls=%d lastQ=%q", s.calls, s.lastQ)
+	}
+	if !hasPath(paths, "src/deep/datafile.js") {
+		t.Errorf("query %q: expected nested filename match, got %v", "dat", paths)
 	}
 }
 

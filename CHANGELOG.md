@@ -12,6 +12,7 @@ of changes; this project follows semantic versioning.
 - Fixed an auto-instantiate context item that implements `execute()` failing to seed, so its standing context reached the prompt
 - Fixed YOLO auto-approving plan submissions — plans now still wait for your review before execution begins
 - Edit and write tools refuse files never read this session or changed on disk since reading
+- @-mention filename completion searches the whole project for dashed and short queries
 
 ## [0.5.2] - 2026-08-01
 

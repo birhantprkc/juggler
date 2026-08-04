@@ -8,8 +8,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"juggler/internal/gitignore"
 	"juggler/internal/skipdirs"
 )
 
@@ -130,16 +132,18 @@ type FileMatch struct {
 	IsDir bool   `json:"isDir"`
 }
 
+// ignoredCompletionScanLimit bounds the work spent finding files omitted from
+// the persistent index. The fallback only runs for specific filename fragments.
+const ignoredCompletionScanLimit = 10_000
+
 // CompleteFiles returns file and directory paths whose names start with the
 // name component of query, within the directory component of query.
 // Directories are returned first (with trailing "/"), then files, both
 // case-insensitively sorted. Results are capped at limit.
 //
-// For an unqualified query of at least four characters, the whole-tree lookup
-// is delegated to searcher (the file-path index), which finds files anywhere in
-// the project whose basename contains the query as a contiguous substring,
-// instantly and without re-walking the tree. When searcher is nil (no project /
-// no watcher) only the current-directory prefix scan applies.
+// For a non-empty unqualified query, results from the whole-tree path index are
+// merged with the direct prefix matches. The direct scan covers root entries
+// omitted from the index, including gitignored files and directories.
 // The call returns early (with nil, nil) if ctx is cancelled.
 func CompleteFiles(ctx context.Context, workingDir, query string, limit int, searcher PathSearcher) ([]FileMatch, error) {
 	if limit <= 0 {
@@ -234,17 +238,106 @@ func CompleteFiles(ctx context.Context, workingDir, query string, limit int, sea
 		results = results[:limit]
 	}
 
-	// Unqualified query (no slash), at least 4 chars: hand the whole-tree
-	// lookup to the path index. It finds files/dirs anywhere in the project
-	// whose basename contains (or subsequence-matches) the query, ranked by
-	// relevance — instantly, with no per-keystroke tree walk. Shorter or
-	// qualified queries stay on the prefix scan above. If there is no index
-	// (no project / no watcher) the prefix-scan results are all we have.
-	if searcher != nil && !filepath.IsAbs(dirPart) && !strings.Contains(query, "/") && len(namePrefix) >= 4 {
-		if indexed := searcher.Search(namePrefix, limit); indexed != nil {
-			return indexed, nil
+	// Every non-empty unqualified query uses the whole-tree index. Keep direct
+	// prefix matches first because the index intentionally omits ignored paths.
+	if searcher != nil && !filepath.IsAbs(dirPart) && namePrefix != "" && !strings.Contains(query, "/") {
+		indexed := searcher.Search(namePrefix, limit)
+		ignored := []FileMatch(nil)
+		if len(namePrefix) >= 4 {
+			ignored = searchIgnoredCompletionPaths(ctx, workingDir, namePrefix, limit, ignoredCompletionScanLimit)
+		}
+		if indexed != nil {
+			return mergeFileMatches(limit, results, ignored, indexed), nil
 		}
 	}
 
 	return results, nil
+}
+
+func mergeFileMatches(limit int, groups ...[]FileMatch) []FileMatch {
+	merged := make([]FileMatch, 0, limit)
+	seen := make(map[string]struct{}, limit)
+	for _, group := range groups {
+		for _, match := range group {
+			if len(merged) >= limit {
+				return merged
+			}
+			if _, exists := seen[match.Path]; exists {
+				continue
+			}
+			seen[match.Path] = struct{}{}
+			merged = append(merged, match)
+		}
+	}
+	return merged
+}
+
+// searchIgnoredCompletionPaths performs a bounded breadth-first scan of ignored
+// entries directly under the project root. It never descends into the indexed
+// tree, and each directory read is capped by the remaining entry budget.
+func searchIgnoredCompletionPaths(ctx context.Context, workingDir, query string, limit, scanLimit int) []FileMatch {
+	matcher := gitignore.NewMatcher(workingDir)
+	type queued struct{ abs, rel string }
+	queue := []queued{{abs: workingDir}}
+	matches := make([]FileMatch, 0, limit)
+	lowerQuery := strings.ToLower(query)
+	visited := 0
+
+	for len(queue) > 0 && visited < scanLimit {
+		select {
+		case <-ctx.Done():
+			return matches
+		default:
+		}
+		cur := queue[0]
+		queue = queue[1:]
+		entries := readCompletionEntries(cur.abs, scanLimit-visited)
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") || entry.IsDir() && skipdirs.Skip(name) {
+				continue
+			}
+			visited++
+			rel := name
+			if cur.rel != "" {
+				rel = cur.rel + "/" + name
+			}
+			ignored := cur.rel != "" || matcher.Ignored(rel, entry.IsDir())
+			if !ignored {
+				continue
+			}
+			if strings.Contains(strings.ToLower(name), lowerQuery) {
+				path := rel
+				if entry.IsDir() {
+					path += "/"
+				}
+				matches = append(matches, FileMatch{Path: path, IsDir: entry.IsDir()})
+			}
+			if entry.IsDir() {
+				queue = append(queue, queued{abs: filepath.Join(cur.abs, name), rel: rel})
+			}
+		}
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		a, b := strings.ToLower(matches[i].Path), strings.ToLower(matches[j].Path)
+		return a < b
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches
+}
+
+func readCompletionEntries(dir string, limit int) []os.DirEntry {
+	if limit <= 0 {
+		return nil
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	entries, _ := f.ReadDir(limit)
+	return entries
 }
