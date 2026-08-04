@@ -146,6 +146,59 @@ export function externalURLFromHref(rawHref, resolvedHref, currentOrigin) {
 }
 
 /**
+ * Decide whether a clicked anchor points at a *local project file* that should
+ * be opened with the host OS's default handler, and return the project-relative
+ * path to open — the companion to {@link externalURLFromHref} for the other half
+ * of the "an LLM-authored link hijacked my window" problem.
+ *
+ * Markdown-rendered output (LLM/tool/user) routinely emits relative links to
+ * on-disk files, e.g. `[report](.juggler/…/txn_…-context-report.md)`. That
+ * anchor is same-origin and scheme-less, so a plain click navigates the webview
+ * to `http://<app>/.juggler/…` — a path the server does not serve, so it
+ * replaces the whole app with a bare "404 page not found" the user cannot back
+ * out of (no browser chrome in a native window). The click handler instead
+ * hands the path to the OS-open op, which resolves it against the project
+ * working dir (server-side, confined) and opens it like a double-click.
+ *
+ * Returns the decoded, project-relative path (leading slashes stripped) for a
+ * same-origin http(s) navigation that would leave the app's page; null for
+ * external links (handled by {@link externalURLFromHref}), in-page `#hash`
+ * anchors, non-web schemes, and links back to the app root itself.
+ * @param {string} rawHref - The anchor's unresolved `getAttribute('href')`.
+ * @param {string} resolvedHref - The anchor's resolved `.href` (absolute).
+ * @param {string} [currentOrigin] - Origin to treat as "this app" (defaults to
+ *   the current document's origin).
+ * @returns {string|null} The project-relative path to open, or null to leave the click alone.
+ */
+export function localFilePathFromHref(rawHref, resolvedHref, currentOrigin) {
+  const origin = currentOrigin
+    ?? (typeof window !== 'undefined' ? window.location.origin : '');
+  const trimmed = (rawHref || '').trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+
+  // External links (explicit cross-origin, or a scheme-less bare domain like
+  // `github.com/u/r`) open in the system browser via externalURLFromHref — they
+  // are never local files. Deferring to it keeps the two halves in one source.
+  if (externalURLFromHref(rawHref, resolvedHref, origin)) return null;
+
+  let url;
+  try {
+    url = new URL(resolvedHref);
+  } catch {
+    return null;
+  }
+  // Only a same-origin web navigation reaches the app's own server; anything
+  // else (mailto:, file:, a cross-origin host) is left to default handling.
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (url.origin !== origin) return null;
+
+  // A link back to the app root itself (or a pure `?query` on the current page)
+  // is not a file to open — only a path below the root is.
+  const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+  return rel === '' ? null : rel;
+}
+
+/**
  * Open a URL outside the current document. A native app window POSTs to its
  * loopback `open` endpoint so WebKit hands the URL to the system browser
  * (target=_blank on a plain `http://<ip>` link is otherwise swallowed by a

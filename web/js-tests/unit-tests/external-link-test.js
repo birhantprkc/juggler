@@ -143,5 +143,46 @@ export async function runTests(_ctx) {
     assert(/href="docs\/guide\.md"/.test(html), `relative href preserved: ${html}`);
   });
 
+  // localFilePathFromHref — the other half: a same-origin link to an on-disk
+  // file must resolve to a project-relative path the OS-open op can act on,
+  // instead of navigating the webview to a 404 that traps the user.
+  const { localFilePathFromHref } = await import('../../sdk/lib/window-control.js');
+
+  /**
+   * @param {string} raw
+   * @returns {string|null} The project-relative path to open, or null.
+   */
+  const filePath = (raw) => localFilePathFromHref(raw, resolve(raw), ORIGIN);
+
+  run('the report link that trapped the user resolves to its project path', () => {
+    const raw = '.juggler/Implement%20Russian%20offline%20TTS%20app--conv_ir0gg94o6/txn_1785780446765_000001019-context-report.md';
+    assert(
+      filePath(raw) === '.juggler/Implement Russian offline TTS app--conv_ir0gg94o6/txn_1785780446765_000001019-context-report.md',
+      `report link must decode to a project-relative path: ${filePath(raw)}`);
+  });
+
+  run('plain relative file link resolves to itself', () => {
+    assert(filePath('readme.md') === 'readme.md', `readme.md should open as a file: ${filePath('readme.md')}`);
+    assert(filePath('docs/guide.md') === 'docs/guide.md', `nested relative path preserved: ${filePath('docs/guide.md')}`);
+  });
+
+  run('in-page hash anchor is not a file', () => {
+    assert(filePath('#section') === null, 'hash anchor must not open a file');
+  });
+
+  run('app root and pure query are not files', () => {
+    assert(filePath('/') === null, 'root must not open a file');
+    assert(localFilePathFromHref('?q=1', resolve('?q=1'), ORIGIN) === null, 'query-only must not open a file');
+  });
+
+  run('external and bare-domain links are not treated as files', () => {
+    assert(filePath('https://example.com/page') === null, 'cross-origin link is not a local file');
+    assert(filePath('github.com/u/r') === null, 'bare-domain link is not a local file');
+  });
+
+  run('non-web schemes are not treated as files', () => {
+    assert(localFilePathFromHref('mailto:x@y.com', 'mailto:x@y.com', ORIGIN) === null, 'mailto is not a file');
+  });
+
   return { passed, failed, errors };
 }

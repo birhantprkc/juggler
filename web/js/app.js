@@ -25,7 +25,8 @@ import { updateWindowTitle } from './utils/window-title.js';
 import { initAttention } from './utils/attention-manager.js';
 import scheduledSendService from './services/scheduled-send-service.js';
 import { initViewportFit } from './utils/viewport-fit.js';
-import { openExternalURL, externalURLFromHref } from '../sdk/lib/window-control.js';
+import { openExternalURL, externalURLFromHref, localFilePathFromHref } from '../sdk/lib/window-control.js';
+import { osOpenPath } from './services/ops-api.js';
 import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-installs on import)
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
 import { normalizeAttachments } from './utils/attachments.js';
@@ -179,10 +180,22 @@ class JugglerApp {
       const target = /** @type {HTMLElement} */ (e.target);
       const anchor = /** @type {HTMLAnchorElement|null} */ (target.closest?.('a[href]'));
       if (!anchor || anchor.hasAttribute('download')) return;
-      const external = externalURLFromHref(anchor.getAttribute('href') || '', anchor.href);
-      if (!external) return;
-      e.preventDefault();
-      openExternalURL(external);
+      const rawHref = anchor.getAttribute('href') || '';
+      const external = externalURLFromHref(rawHref, anchor.href);
+      if (external) {
+        e.preventDefault();
+        openExternalURL(external);
+        return;
+      }
+      // A same-origin link to an on-disk project file (markdown output routinely
+      // emits these, e.g. a report link). Navigating there 404s and tears the
+      // app off its page with no way back — open it with the OS default handler
+      // instead (the 'os' op resolves it against the project dir, server-side).
+      const filePath = localFilePathFromHref(rawHref, anchor.href);
+      if (filePath) {
+        e.preventDefault();
+        void osOpenPath({ path: filePath }).catch(() => {});
+      }
     });
 
     document.addEventListener('duplicate-conversation', () => {
