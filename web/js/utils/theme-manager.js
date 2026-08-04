@@ -13,9 +13,11 @@
  *
  * On load the mode is resolved by precedence: this project's saved session mode
  * (window.__sessionThemeMode, server-injected, authoritative) > this window's own
- * mode from a prior load (sessionStorage, survives reload) > a resolved ?theme=
- * seed inherited from the window that opened this one > this window's localStorage
- * > 'system'. localStorage sits below the session/seed because every project's
+ * mode from a prior load (sessionStorage, survives reload) > a ?mode= seed
+ * inherited from the window that opened this one (carries 'system' faithfully, so
+ * 'auto' survives the hand-off) > a resolved ?theme= seed (concrete colour only,
+ * a fallback) > this window's localStorage > 'system'. localStorage sits below
+ * the session/seed because every project's
  * server reuses the same origin, so a bare localStorage value may belong to a
  * DIFFERENT project — which is exactly why theme is stored in the session, not
  * left to localStorage alone.
@@ -139,6 +141,8 @@ function sessionMode() {
 /**
  * The resolved theme ('light'/'dark') inherited from the window that opened this
  * one (a ?theme= param the native host bakes into the URL). Null when absent.
+ * This is only the first-frame paint colour; the actual mode comes from
+ * seedMode() when present, so 'system'/'auto' can survive the hand-off.
  * @returns {string|null} The inherited resolved theme ('light'/'dark'), or null.
  * @private
  */
@@ -146,6 +150,25 @@ function seedTheme() {
   try {
     const t = new URL(window.location.href).searchParams.get('theme');
     return t === THEMES.LIGHT || t === THEMES.DARK ? t : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * The theme *mode* inherited from the window that opened this one (a ?mode= param
+ * the native host bakes into the URL alongside ?theme=). Unlike seedTheme(), this
+ * carries 'system' faithfully, so a window opened from an 'auto' window stays on
+ * 'auto' and follows the OS rather than being pinned to whatever the parent was
+ * resolving to at the moment. Null when absent (e.g. an older host, or a launch
+ * that carries only a concrete theme hint).
+ * @returns {string|null} One of MODES, or null.
+ * @private
+ */
+function seedMode() {
+  try {
+    const m = new URL(window.location.href).searchParams.get('mode');
+    return isMode(m) ? m : null;
   } catch (_e) {
     return null;
   }
@@ -297,16 +320,18 @@ function initTheme() {
   // (authoritative — a bare localStorage value may be another project's, since
   // every project's server reuses the same origin) > this window's own mode from
   // a prior load (sessionStorage — set on a same-window reload, so a project
-  // switch keeps 'system' instead of getting pinned by the stale seed) > a
-  // resolved ?theme= seed inherited from the window that opened this one > this
-  // window's localStorage > follow the OS. A ?theme= seed is a *resolved* theme,
-  // so it also pins a concrete mode — intended for the hand-off to a brand-new
-  // window, which has no sessionStorage record to outrank it.
+  // switch keeps 'system' instead of getting pinned by the stale seed) > a ?mode=
+  // seed inherited from the window that opened this one > a resolved ?theme= seed
+  // > this window's localStorage > follow the OS. The ?mode= seed carries the
+  // opener's actual mode ('system' included), so a window opened from an 'auto'
+  // window stays 'auto'; the ?theme= seed is only a *resolved* theme (concrete),
+  // kept below it as a fallback for hosts that hand off just a colour hint.
   const session = sessionMode();
   const windowPref = windowMode();
+  const seedMd = seedMode();
   const seed = seedTheme();
   const stored = localStorage.getItem(THEME_KEY);
-  const mode = session ?? windowPref ?? seed
+  const mode = session ?? windowPref ?? seedMd ?? seed
     ?? (isMode(stored) ? stored : null) ?? MODES.SYSTEM;
 
   // Cache the resolved mode so getMode()/cycleTheme() start from it this window,
@@ -321,7 +346,7 @@ function initTheme() {
   // remembers this theme next open. This stores the window's *actual* mode —
   // 'system' included — so a project switch no longer overwrites 'auto' with a
   // fixed light/dark. No-ops server-side for a no-project window.
-  if (session === null && (windowPref !== null || seed !== null)) {
+  if (session === null && (windowPref !== null || seedMd !== null || seed !== null)) {
     persistThemeToSession(mode);
   }
 

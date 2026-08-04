@@ -72,13 +72,15 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 	id, action := parts[0], parts[1]
 
 	// "new" doesn't need the originating window — it opens another one. If the
-	// caller includes theme/zoom, pass them through so the child window's first
-	// paint and native chrome match the source window (zoom only seeds a child
-	// project that has no saved size of its own; the page gives its session
-	// priority).
+	// caller includes theme/mode/zoom, pass them through so the child window's
+	// first paint and native chrome match the source window. theme is the concrete
+	// first-frame colour; mode is the opener's selected mode, carried so 'system'/
+	// 'auto' survives into the child instead of collapsing to a fixed theme (zoom
+	// only seeds a child project that has no saved size of its own; the page gives
+	// its session priority).
 	if action == "new" {
 		zoom, _ := strconv.Atoi(r.URL.Query().Get("zoom"))
-		a.openWindowForProject(r.URL.Query().Get("project"), r.URL.Query().Get("theme"), zoom)
+		a.openWindowForProject(r.URL.Query().Get("project"), r.URL.Query().Get("theme"), r.URL.Query().Get("mode"), zoom)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

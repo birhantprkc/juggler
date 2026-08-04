@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
-import { getPaintedTheme } from '../utils/theme-manager.js';
+import { getPaintedTheme, getMode } from '../utils/theme-manager.js';
 import { getCurrentZoom } from '../utils/zoom-manager.js';
 
 /**
@@ -502,7 +502,15 @@ class APIService {
    * @returns {Promise<void>} Resolves once the launch was requested.
    */
   async newWindow(path = '') {
-    const params = new URLSearchParams({ theme: getPaintedTheme(), zoom: String(getCurrentZoom()) });
+    // Hand off both the selected mode and the resolved theme: `mode` is what the
+    // child adopts (so 'system'/'auto' survives into the new window instead of
+    // collapsing to whatever it currently resolves to), while `theme` is the
+    // concrete colour the child paints on its first frame to avoid a flash.
+    const params = new URLSearchParams({
+      theme: getPaintedTheme(),
+      mode: getMode(),
+      zoom: String(getCurrentZoom()),
+    });
     if (path) params.set('project', path);
     const url = windowControlURL('new', `?${params.toString()}`);
     if (!url) return; // no native host (browser tab) — nothing to open

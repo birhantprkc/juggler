@@ -285,7 +285,7 @@ func (a *appState) run(specs []windowSpec) error {
 			return fmt.Errorf("start initial window: %w", err)
 		}
 		saved, hasSaved := fetchWindowState(serverURL)
-		initial = a.buildWindow(windowSpec{}, serverURL, proc, saved, hasSaved, "", 0)
+		initial = a.buildWindow(windowSpec{}, serverURL, proc, saved, hasSaved, "", "", 0)
 	}
 
 	// Crash loudly if the initial window never becomes visible (e.g. the webview
@@ -316,7 +316,7 @@ func (a *appState) run(specs []windowSpec) error {
 			})
 		}
 		for _, s := range rest {
-			a.openWindow(s, "", 0)
+			a.openWindow(s, "", "", 0)
 		}
 	})
 
@@ -349,7 +349,7 @@ func (a *appState) tryBuildInitial(spec windowSpec) *winEntry {
 		return nil
 	}
 	saved, hasSaved := fetchWindowState(serverURL)
-	return a.buildWindow(spec, serverURL, proc, saved, hasSaved, "", 0)
+	return a.buildWindow(spec, serverURL, proc, saved, hasSaved, "", "", 0)
 }
 
 // startupSpecs decides which windows to open at launch. An explicit --url or
@@ -401,7 +401,7 @@ func (a *appState) onSecondInstance(data application.SecondInstanceData) {
 			return
 		}
 		logf("second instance: no window open, opening a fresh one (bare relaunch)")
-		a.openWindow(windowSpec{}, "", 0)
+		a.openWindow(windowSpec{}, "", "", 0)
 		return
 	}
 
@@ -419,7 +419,7 @@ func (a *appState) onSecondInstance(data application.SecondInstanceData) {
 		return
 	}
 	logf("second instance: opening new window for %+v", spec.entry())
-	a.openWindow(spec, "", 0)
+	a.openWindow(spec, "", "", 0)
 }
 
 // focusAnyWindow raises and focuses the most-recently-opened window, returning
@@ -473,15 +473,17 @@ func focusEntry(e *winEntry) bool {
 // or connecting to a URL), reads that session's saved geometry, and opens a new
 // in-process window onto it. The blocking resolve + geometry fetch run off the
 // main thread; the window is then created on the main thread.
-func (a *appState) openWindow(spec windowSpec, inheritedTheme string, inheritedZoom int) {
+func (a *appState) openWindow(spec windowSpec, inheritedTheme, inheritedMode string, inheritedZoom int) {
 	inheritedTheme = normaliseTheme(inheritedTheme)
+	inheritedMode = normaliseMode(inheritedMode)
 	go func() {
 		serverURL, proc, err := spec.resolve()
 		if err != nil {
 			if locked, ok := err.(*lockedProjectError); ok {
 				application.InvokeAsync(func() {
 					// A locked window shows a static recovery page, not the app —
-					// there is no root font-size to scale, so zoom is not threaded.
+					// there is no root font-size to scale, so zoom is not threaded,
+					// and the static page has no theme mode to seed either.
 					e := a.buildLockedProjectWindow(spec, locked.message(), inheritedTheme)
 					a.showWindow(e)
 					go a.warnIfWindowNeverVisible(e, "opened locked project")
@@ -501,7 +503,7 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme string, inheritedZ
 		}
 		saved, hasSaved := fetchWindowState(serverURL)
 		application.InvokeAsync(func() {
-			e := a.buildWindow(spec, serverURL, proc, saved, hasSaved, inheritedTheme, inheritedZoom)
+			e := a.buildWindow(spec, serverURL, proc, saved, hasSaved, inheritedTheme, inheritedMode, inheritedZoom)
 			a.showWindow(e)
 			// Don't let a dynamically-opened window fail to appear silently.
 			go a.warnIfWindowNeverVisible(e, "opened dynamically")
@@ -511,8 +513,8 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme string, inheritedZ
 
 // openWindowForProject opens a window onto a project. Used by "New Window" and
 // the page's "open in new window" (via the loopback control endpoint).
-func (a *appState) openWindowForProject(project, inheritedTheme string, inheritedZoom int) {
-	a.openWindow(windowSpec{project: project}, inheritedTheme, inheritedZoom)
+func (a *appState) openWindowForProject(project, inheritedTheme, inheritedMode string, inheritedZoom int) {
+	a.openWindow(windowSpec{project: project}, inheritedTheme, inheritedMode, inheritedZoom)
 }
 
 func normaliseTheme(theme string) string {
@@ -520,6 +522,19 @@ func normaliseTheme(theme string) string {
 		return theme
 	}
 	return ""
+}
+
+// normaliseMode validates a theme *mode* hand-off value. Unlike normaliseTheme
+// (which only accepts concrete paintable themes), 'system' is a valid mode: it
+// is what lets an 'auto' opener hand its mode to a child window. Anything else,
+// including an empty value, yields "".
+func normaliseMode(mode string) string {
+	switch mode {
+	case "system", "light", "dark":
+		return mode
+	default:
+		return ""
+	}
 }
 
 func (a *appState) setWindowTheme(e *winEntry, theme string) (application.RGBA, bool) {
@@ -714,7 +729,7 @@ func (a *appState) buildLockedProjectWindow(spec windowSpec, message, inheritedT
 // main thread, after it (dynamic windows). serverProc is the server this app
 // spawned for the window, or nil for a shared/remote server. Show it with
 // showWindow once the app has launched.
-func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *exec.Cmd, saved core.WindowState, hasSaved bool, inheritedTheme string, inheritedZoom int) *winEntry {
+func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *exec.Cmd, saved core.WindowState, hasSaved bool, inheritedTheme, inheritedMode string, inheritedZoom int) *winEntry {
 	id := <-a.ids
 	nativeCtl := fmt.Sprintf("http://127.0.0.1:%d/win/%s", a.ctlPort, id)
 
@@ -728,6 +743,11 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	if startupTheme == "" {
 		a.reg(func(st *regState) { startupTheme = st.lastTheme })
 	}
+	// The opener's selected mode ('system'/'light'/'dark'), baked into the child
+	// URL as ?mode= so an 'auto' (system) parent hands 'auto' to the child instead
+	// of the child collapsing to the concrete ?theme= colour. Empty for a launch
+	// with no opener (Finder/restore); the page then follows its own precedence.
+	startupMode := normaliseMode(inheritedMode)
 	// Resolve the startup zoom hint the same way: the page uses ?zoom= to paint
 	// at the last-active size before its own preference is read, but only when
 	// the project session has no saved zoom of its own (the page gives that
@@ -742,6 +762,9 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	fullURL := strings.TrimRight(serverURL, "/") + "/?window=1&nativeCtl=" + url.QueryEscape(nativeCtl)
 	if startupTheme != "" {
 		fullURL += "&theme=" + url.QueryEscape(startupTheme)
+	}
+	if startupMode != "" {
+		fullURL += "&mode=" + url.QueryEscape(startupMode)
 	}
 	if startupZoom > 0 {
 		fullURL += "&zoom=" + strconv.Itoa(startupZoom)

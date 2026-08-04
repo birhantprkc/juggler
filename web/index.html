@@ -51,25 +51,33 @@
             // strip under the transparent macOS titlebar) is the right colour on
             // the very first frame. Precedence (mirrors theme-manager.js): this
             // project's saved session theme mode (server-injected, authoritative)
-            // > a resolved ?theme= seed inherited from the window that opened this
-            // one > this window's localStorage > follow the OS. localStorage sits
-            // below the session/seed because every project's server reuses the
-            // same origin, so a bare localStorage value may belong to a DIFFERENT
-            // project. 'system' (and any absent value) follows the OS via
-            // prefers-color-scheme so system-light doesn't flash dark.
+            // > a ?mode= seed inherited from the window that opened this one
+            // (carries 'system' faithfully, so 'auto' survives the hand-off) > a
+            // resolved ?theme= seed (concrete colour only) > this window's
+            // localStorage > follow the OS. localStorage sits below the
+            // session/seed because every project's server reuses the same origin,
+            // so a bare localStorage value may belong to a DIFFERENT project.
+            // 'system' (and any absent value) follows the OS via
+            // prefers-color-scheme so system-light doesn't flash dark — but when a
+            // concrete ?theme= seed rode along we paint that instead, so a window
+            // opened from an 'auto' parent matches the parent's current colour on
+            // its first frame rather than risking a flash from a stale matchMedia.
             // window.__sessionThemeMode is read back by theme-manager.js, which
             // reconciles this at document-ready and reports to the native host.
             var sessionThemeMode = "{{.InitialThemeMode}}";
             window.__sessionThemeMode = sessionThemeMode;
             var isThemeMode = function(m) { return m === 'system' || m === 'light' || m === 'dark'; };
             var seedTheme = new URLSearchParams(window.location.search).get('theme');
+            var seedMode = new URLSearchParams(window.location.search).get('mode');
             var lsThemeMode = localStorage.getItem('juggler-theme');
             var themeMode = isThemeMode(sessionThemeMode) ? sessionThemeMode
+                : isThemeMode(seedMode) ? seedMode
                 : (seedTheme === 'light' || seedTheme === 'dark') ? seedTheme
                 : isThemeMode(lsThemeMode) ? lsThemeMode
                 : 'system';
             var theme = themeMode === 'light' || themeMode === 'dark'
                 ? themeMode
+                : (seedTheme === 'light' || seedTheme === 'dark') ? seedTheme
                 : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
             document.documentElement.setAttribute('data-theme', theme);
             document.documentElement.style.background = theme === 'light' ? '#fff' : '#0d1117';
