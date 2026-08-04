@@ -145,6 +145,26 @@ func (w *ConversationWorker) handleContextOverflow(
 		return overflowResult{verdict: overflowTerminal, err: fmt.Errorf("bounded compaction failed: %w", compactErr)}
 	}
 
+	// Global off switch: when automatic compaction is disabled, the reactive
+	// recovery ladder does not run. The manual-fold summarizer above stays
+	// enabled (a manually folded thread must still summarize). An advisory is a
+	// safety estimate, never terminal — let one guard-bypassed retry through
+	// rather than rewrite the transcript. A real provider rejection surfaces the
+	// provider's own context error so the user hits the wall (and the "Compact
+	// now" affordance) instead of an automatic summarize.
+	if !w.autoCompactEnabled() {
+		if isAdvisory {
+			return overflowResult{verdict: overflowBypassAndRetry}
+		}
+		// Surface the provider's own context error, with a one-line hint that
+		// manual /compact still works — the "Compact now" affordance for a
+		// deliberately-disabled auto-compaction. Wrapping with %w keeps the
+		// provider cause reachable via errors.Is/As.
+		err := fmt.Errorf("%w\n\nContext limit reached — run /compact to summarize the conversation and continue",
+			providerAuthoredContextError(overflowErr))
+		return overflowResult{verdict: overflowTerminal, err: err}
+	}
+
 	// Ordinary root / subthread turn: summarize or shrink durable history, then
 	// rebuild and retry only when its objective shape changed. When the attempt
 	// budget is spent, the terminal move depends on the overflow kind.

@@ -129,6 +129,10 @@ type LLMCallFunc func(ctx context.Context, request json.RawMessage, chunkHandler
 // "no threshold" to callers.
 type WindowResolverFunc func(modelConfig ModelConfig) (windowTokens, reserveTokens int)
 
+// AutoCompactGateFunc reports whether automatic proactive and reactive
+// compaction is enabled. A nil gate preserves the default enabled behavior.
+type AutoCompactGateFunc func() bool
+
 // AutoNameFunc is an injected server callback the worker fires exactly once, on
 // the FIRST user message of the root conversation, so the server can derive a
 // short tab title out-of-band. The worker only signals (convID, the first

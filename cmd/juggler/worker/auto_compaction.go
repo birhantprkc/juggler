@@ -100,6 +100,12 @@ func (w *ConversationWorker) maybeAutoCompactAtSettle() bool {
 	if w.thread.itemID != "" {
 		return false
 	}
+	// Global off switch: when automatic compaction is disabled, the proactive
+	// fold never fires. Manual /compact and /handoff are unaffected (they never
+	// consult this gate).
+	if !w.autoCompactEnabled() {
+		return false
+	}
 	window, _ := w.resolveContextWindow()
 	if window <= 0 {
 		return false

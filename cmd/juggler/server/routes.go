@@ -81,6 +81,7 @@ func (s *Server) seedProjectState(cfg Config) {
 func (s *Server) wireWorkerManager() {
 	s.workerManager.SetLLMCaller(s.createLLMCaller())
 	s.workerManager.SetWindowResolver(s.createWindowResolver())
+	s.workerManager.SetAutoCompactGate(s.createAutoCompactGate())
 
 	// Out-of-band tab auto-naming: the worker fires this on a conversation's
 	// first user message; the server resolves a cheap model and renames the tab.

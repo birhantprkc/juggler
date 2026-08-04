@@ -135,6 +135,11 @@ type ConversationWorker struct {
 	// window and output reserve for the proactive compaction trigger. Nil
 	// (tests / not wired) ⇒ the trigger stays dormant. See WindowResolverFunc.
 	windowResolver WindowResolverFunc
+	// autoCompactGate reports whether automatic proactive and reactive
+	// compaction is enabled. Nil (tests / not wired) ⇒ enabled, preserving the
+	// default-on behavior. Note the polarity is the inverse of windowResolver
+	// (nil there means dormant). See AutoCompactGateFunc.
+	autoCompactGate AutoCompactGateFunc
 	// autoNameFunc is the injected server callback fired once, on the first user
 	// message of the root conversation, to auto-name the tab out-of-band. Nil
 	// (tests / not wired) ⇒ no auto-naming. See AutoNameFunc.
@@ -629,6 +634,18 @@ func (w *ConversationWorker) SetLLMCaller(fn LLMCallFunc) {
 // WindowResolverFunc.
 func (w *ConversationWorker) SetWindowResolver(fn WindowResolverFunc) {
 	w.windowResolver = fn
+}
+
+// SetAutoCompactGate injects the gate that governs whether automatic proactive
+// and reactive compaction runs. See AutoCompactGateFunc.
+func (w *ConversationWorker) SetAutoCompactGate(fn AutoCompactGateFunc) {
+	w.autoCompactGate = fn
+}
+
+// autoCompactEnabled reports whether automatic compaction is enabled. A nil gate
+// (tests / not wired) is treated as enabled, preserving default-on behavior.
+func (w *ConversationWorker) autoCompactEnabled() bool {
+	return w.autoCompactGate == nil || w.autoCompactGate()
 }
 
 // SetAutoNamer registers the out-of-band tab auto-naming callback. See

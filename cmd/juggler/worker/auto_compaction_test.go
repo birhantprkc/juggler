@@ -98,6 +98,51 @@ func TestMaybeAutoCompactAtSettleFoldsAndSummarizes(t *testing.T) {
 	}
 }
 
+// TestMaybeAutoCompactGateOffDoesNotFold pins the global off switch: a
+// would-fold anchor (90% of window, fully wired) does NOT fold when the
+// auto-compaction gate reports disabled — the root is left untouched and no
+// debounce anchor is recorded (the gate short-circuits before that).
+func TestMaybeAutoCompactGateOffDoesNotFold(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.windowResolver = func(ModelConfig) (int, int) { return 10000, 1000 }
+	w.autoCompactGate = func() bool { return false }
+	seedRootTurnWithAnchor(t, w, "txnGate", 9000) // 90% — would fold if enabled
+
+	if w.maybeAutoCompactAtSettle() {
+		t.Fatal("folded with the auto-compaction gate disabled; want no fold")
+	}
+	if w.autoCompactAnchorTxnID != "" {
+		t.Fatalf("debounce anchor = %q, want none recorded when gated off", w.autoCompactAnchorTxnID)
+	}
+	if len(w.doc.GetItems()) != 3 {
+		t.Fatalf("root = %d items, want unchanged (rule + user + assistant)", len(w.doc.GetItems()))
+	}
+}
+
+// TestMaybeAutoCompactNilGateFolds confirms nil-gate polarity: with no gate
+// wired (the default for every existing test) the trigger stays enabled and
+// folds a would-fold anchor.
+func TestMaybeAutoCompactNilGateFolds(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.windowResolver = func(ModelConfig) (int, int) { return 10000, 1000 }
+	feedCompactionContextAndTools(w)
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "auto compact summary"}}}, nil
+	}
+	// No autoCompactGate set: nil ⇒ enabled.
+	seedRootTurnWithAnchor(t, w, "txnNil", 9000)
+
+	if !w.maybeAutoCompactAtSettle() {
+		t.Fatal("nil gate declined to fold; nil must mean enabled")
+	}
+}
+
 // TestMaybeAutoCompactBelowThresholdDoesNotFold pins the negative case and the
 // debounce: under-threshold usage records the anchor without folding.
 func TestMaybeAutoCompactBelowThresholdDoesNotFold(t *testing.T) {

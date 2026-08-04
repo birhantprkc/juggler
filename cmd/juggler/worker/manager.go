@@ -20,6 +20,7 @@ type managerOpKind int
 const (
 	mgrSetLLMCaller managerOpKind = iota
 	mgrSetWindowResolver
+	mgrSetAutoCompactGate
 	mgrSetEngineClient
 	mgrClearEngineClient
 	mgrGetOrCreate
@@ -63,23 +64,24 @@ type SaveBinaryFunc func(convID string, data []byte) error
 
 // managerOp is a message sent to the Manager's run goroutine.
 type managerOp struct {
-	kind           managerOpKind
-	conversationID string
-	authorID       string
-	clientID       string
-	msgType        string
-	payload        json.RawMessage
-	sendCallback   func(msg []byte)
-	llmCallFunc    LLMCallFunc
-	windowResolver WindowResolverFunc
-	autoNameFunc   AutoNameFunc
-	engineCallback func(convID string, msg []byte)
-	pathProvider   PathProviderFunc
-	saveBinaryFn   SaveBinaryFunc
-	cancelLLMFn    CancelLLMSessionFunc
-	engineReadyFn  func() bool
-	syncThrottle   time.Duration
-	initMessage    *InitMessage
+	kind            managerOpKind
+	conversationID  string
+	authorID        string
+	clientID        string
+	msgType         string
+	payload         json.RawMessage
+	sendCallback    func(msg []byte)
+	llmCallFunc     LLMCallFunc
+	windowResolver  WindowResolverFunc
+	autoCompactGate AutoCompactGateFunc
+	autoNameFunc    AutoNameFunc
+	engineCallback  func(convID string, msg []byte)
+	pathProvider    PathProviderFunc
+	saveBinaryFn    SaveBinaryFunc
+	cancelLLMFn     CancelLLMSessionFunc
+	engineReadyFn   func() bool
+	syncThrottle    time.Duration
+	initMessage     *InitMessage
 
 	// Response channels
 	workerResult chan *ConversationWorker
@@ -123,6 +125,7 @@ func (m *Manager) run() {
 	clientConversations := make(map[string]map[string]bool) // clientID -> set of conversationIDs
 	var llmCallFunc LLMCallFunc
 	var windowResolver WindowResolverFunc
+	var autoCompactGate AutoCompactGateFunc
 	var autoNameFunc AutoNameFunc
 	var engineClientID string
 	var engineCallback func(convID string, msg []byte)
@@ -159,6 +162,9 @@ func (m *Manager) run() {
 		if windowResolver != nil {
 			w.SetWindowResolver(windowResolver)
 		}
+		if autoCompactGate != nil {
+			w.SetAutoCompactGate(autoCompactGate)
+		}
 		if autoNameFunc != nil {
 			w.SetAutoNamer(autoNameFunc)
 		}
@@ -193,6 +199,12 @@ func (m *Manager) run() {
 			windowResolver = op.windowResolver
 			for _, w := range workers {
 				w.SetWindowResolver(windowResolver)
+			}
+
+		case mgrSetAutoCompactGate:
+			autoCompactGate = op.autoCompactGate
+			for _, w := range workers {
+				w.SetAutoCompactGate(autoCompactGate)
 			}
 
 		case mgrSetAutoNamer:
@@ -417,6 +429,12 @@ func (m *Manager) SetLLMCaller(fn LLMCallFunc) {
 // worker and any worker created later. See WindowResolverFunc.
 func (m *Manager) SetWindowResolver(fn WindowResolverFunc) {
 	m.ops <- managerOp{kind: mgrSetWindowResolver, windowResolver: fn}
+}
+
+// SetAutoCompactGate sets the automatic-compaction gate applied to every
+// existing worker and any worker created later. See AutoCompactGateFunc.
+func (m *Manager) SetAutoCompactGate(fn AutoCompactGateFunc) {
+	m.ops <- managerOp{kind: mgrSetAutoCompactGate, autoCompactGate: fn}
 }
 
 // SetAutoNamer sets the out-of-band tab auto-naming callback applied to every

@@ -26,6 +26,10 @@ const (
 	openaiCompatibleBaseURLKey = "openai_compatible_base_url"
 	openaiCompatibleHeadersKey = "openai_compatible_headers"
 	streamIdleTimeoutKey       = "stream_idle_timeout" // mirrors streamidle.CredKey
+	// autoCompactDisabledKey stores the disabled state of automatic compaction,
+	// so an absent/empty value means enabled (the default). "1" means disabled.
+	// Mirrored by createAutoCompactGate in server/llm_caller.go.
+	autoCompactDisabledKey = "auto_compact_disabled"
 )
 
 // ConfigAPI handles configuration-related HTTP requests. It reads the
@@ -113,6 +117,7 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"openaiCompatibleBaseURL": c.credStore.GetRawKey(openaiCompatibleBaseURLKey),
 		"openaiCompatibleHeaders": c.credStore.GetRawKey(openaiCompatibleHeadersKey),
 		"streamIdleTimeout":       c.credStore.GetRawKey(streamIdleTimeoutKey),
+		"autoCompactDisabled":     c.credStore.GetRawKey(autoCompactDisabledKey) == "1",
 	}
 
 	WriteJSON(w, r, 0, response)
@@ -228,6 +233,28 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			if err := c.credStore.SetRawKey(streamIdleTimeoutKey, strings.TrimSpace(s)); err != nil {
 				jlog.Error("Failed to save stream idle timeout: %v", err)
 			}
+		}
+	}
+
+	// Handle the global auto-compaction off switch (raw credential). Stored as
+	// the disabled state so an absent/empty key means enabled (default). Accepts
+	// a bool or the string "1"/"" ; empty clears the key (back to default-on).
+	// The gate resolver reads it live (GetRawKey re-reads disk), so a toggle
+	// takes effect on the next turn without a restart.
+	if v, ok := req[autoCompactDisabledKey]; ok {
+		disabled := false
+		switch t := v.(type) {
+		case bool:
+			disabled = t
+		case string:
+			disabled = strings.TrimSpace(t) == "1"
+		}
+		stored := ""
+		if disabled {
+			stored = "1"
+		}
+		if err := c.credStore.SetRawKey(autoCompactDisabledKey, stored); err != nil {
+			jlog.Error("Failed to save auto-compaction setting: %v", err)
 		}
 	}
 

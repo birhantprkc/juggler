@@ -76,6 +76,73 @@ func newRecoveryStub(t *testing.T, pinned *ModelConfig) (*int, func(context.Cont
 	}
 }
 
+// TestHandleContextOverflowGateOffProviderRejectionTerminal pins the reactive
+// gate: with automatic compaction disabled, a real provider rejection is
+// surfaced terminally without running the recovery ladder — the durable history
+// is left untouched and the reducer is never called.
+func TestHandleContextOverflowGateOffProviderRejectionTerminal(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	w.autoCompactGate = func() bool { return false }
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		t.Fatal("recovery reducer ran while auto-compaction was disabled")
+		return nil, nil
+	}
+	pinned := &ModelConfig{Provider: "test", Model: "test"}
+
+	before := len(w.doc.GetItems())
+	recovery := &contextRecoveryState{}
+	res := w.handleContextOverflow(recoveryLimitErr(), false, false, recovery, pinned, recoveryLimitErr())
+
+	if res.verdict != overflowTerminal {
+		t.Fatalf("verdict = %v, want overflowTerminal", res.verdict)
+	}
+	if res.err == nil {
+		t.Fatal("terminal verdict carried no error")
+	}
+	var limit *provider.ContextLimitExceededError
+	if !errors.As(res.err, &limit) {
+		t.Fatalf("terminal error does not wrap the provider context limit: %v", res.err)
+	}
+	if !strings.Contains(res.err.Error(), "/compact") {
+		t.Fatalf("terminal error lacks the compact-now hint: %q", res.err.Error())
+	}
+	if got := len(w.doc.GetItems()); got != before {
+		t.Fatalf("durable items changed %d -> %d; recovery must not run when gated off", before, got)
+	}
+}
+
+// TestHandleContextOverflowGateOffAdvisoryBypasses pins that an advisory
+// (silent-truncation estimate) is never terminal when auto-compaction is
+// disabled: it dispatches one guard-bypassed retry instead of rewriting the
+// transcript.
+func TestHandleContextOverflowGateOffAdvisoryBypasses(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	w.autoCompactGate = func() bool { return false }
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		t.Fatal("recovery reducer ran for an advisory while auto-compaction was disabled")
+		return nil, nil
+	}
+	pinned := &ModelConfig{Provider: "test", Model: "test"}
+
+	recovery := &contextRecoveryState{}
+	res := w.handleContextOverflow(recoveryLimitErr(), true, false, recovery, pinned, recoveryLimitErr())
+
+	if res.verdict != overflowBypassAndRetry {
+		t.Fatalf("verdict = %v, want overflowBypassAndRetry", res.verdict)
+	}
+	if res.err != nil {
+		t.Fatalf("advisory bypass carried an error: %v", res.err)
+	}
+}
+
 func TestContextRecoveryFoldsRootPrefixPreservesSuffix(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()

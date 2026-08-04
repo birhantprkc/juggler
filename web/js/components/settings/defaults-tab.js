@@ -173,11 +173,11 @@ export class DefaultsTab {
 
   /**
    * Render global settings that apply across every provider, shown as a section
-   * on the Defaults tab. Currently just the stream idle timeout: the window a
-   * streaming provider waits for the next event before declaring the connection
-   * dead ("stream stalled: no data for 3m0s"). Raising it helps gateways whose
-   * cold starts exceed the 180s default. Persists to credentials.json via PUT
-   * /api/config; the server reads it live.
+   * on the Defaults tab: the automatic-compaction on/off switch and the stream
+   * idle timeout (the window a streaming provider waits for the next event
+   * before declaring the connection dead, "stream stalled: no data for 3m0s";
+   * raising it helps gateways whose cold starts exceed the 180s default). Both
+   * persist to credentials.json via PUT /api/config; the server reads them live.
    * @private
    */
   renderGlobalSettings() {
@@ -187,8 +187,41 @@ export class DefaultsTab {
 
     const heading = document.createElement('div');
     heading.className = 'settings-section-heading';
-    heading.textContent = 'Stream idle timeout';
+    heading.textContent = 'Context';
     container.appendChild(heading);
+
+    // Automatic compaction on/off. Checked = enabled; we persist the *disabled*
+    // bool so the stored key is absent by default (default-on). The honest
+    // second sentence discloses the "fully off" consequence to the person
+    // deliberately flipping the switch.
+    const { row: autoCompactRow, input: autoCompactInput } = buildToggleRow(
+      'Automatic compaction',
+      'When a conversation nears the model\u2019s context limit, Juggler summarizes ' +
+      'older turns to make room. Turn this off to keep full transcripts \u2014 long ' +
+      'conversations may then hit the model\u2019s limit and error.',
+      !(/** @type {any} */ (this.config).autoCompactDisabled),
+      async (on) => {
+        const previous = autoCompactInput.checked;
+        try {
+          const response = await fetch('/api/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auto_compact_disabled: !on }),
+          });
+          if (!response.ok) throw new Error(`Server returned ${response.status}`);
+          /** @type {any} */ (this.config).autoCompactDisabled = !on;
+        } catch (e) {
+          console.error('[SettingsPanel] Failed to save automatic compaction setting:', e);
+          autoCompactInput.checked = !previous;
+        }
+      },
+    );
+    container.appendChild(autoCompactRow);
+
+    const timeoutHeading = document.createElement('div');
+    timeoutHeading.className = 'settings-section-heading';
+    timeoutHeading.textContent = 'Stream idle timeout';
+    container.appendChild(timeoutHeading);
 
     const fieldGroup = document.createElement('div');
     fieldGroup.className = 'settings-group provider-field';

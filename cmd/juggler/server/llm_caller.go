@@ -52,6 +52,26 @@ func (s *Server) createWindowResolver() worker.WindowResolverFunc {
 	}
 }
 
+// createAutoCompactGate returns the gate injected into every worker
+// (worker.AutoCompactGateFunc) reporting whether automatic compaction is
+// enabled. It reads the raw credentials-store key live — GetRawKey re-reads the
+// file each call — so a settings toggle takes effect on the next turn with no
+// restart or re-push. The key stores the DISABLED state ("1" ⇒ disabled), so an
+// absent/empty value means enabled (default-on). If the credentials store can't
+// be constructed, the gate fails open to enabled (current behavior).
+func (s *Server) createAutoCompactGate() worker.AutoCompactGateFunc {
+	// Raw credential key mirrors handlers/config.go autoCompactDisabledKey.
+	const autoCompactDisabledKey = "auto_compact_disabled"
+	store, err := core.NewCredentialsStore()
+	if err != nil {
+		jlog.Error("auto-compaction gate: credentials store unavailable, defaulting to enabled: %v", err)
+		return func() bool { return true }
+	}
+	return func() bool {
+		return store.GetRawKey(autoCompactDisabledKey) != "1"
+	}
+}
+
 // createLLMCaller creates a function that workers can use to call the
 // LLM directly. The closure captures the per-server conversationCache so
 // Conversation handles are reused across turns for the same (convID,

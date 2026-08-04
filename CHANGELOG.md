@@ -13,6 +13,7 @@ of changes; this project follows semantic versioning.
 - Fixed YOLO auto-approving plan submissions — plans now still wait for your review before execution begins
 - Edit and write tools refuse files never read this session or changed on disk since reading
 - @-mention filename completion searches the whole project for dashed and short queries
+- Automatic compaction can now be turned off in Settings, keeping full transcripts until the context limit is hit
 
 ## [0.5.2] - 2026-08-01
 
