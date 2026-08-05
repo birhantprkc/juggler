@@ -227,6 +227,7 @@ export const ACTION_STATES = Object.freeze({
  * @property {string} [resultType] - Type: 'context' | 'action' | 'meta-tool'
  * @property {string} [itemType] - Context item type when resultType='context' (e.g., 'file-content', 'rule')
  * @property {ActionFullResult} [fullResult] - Full result object for UI rendering (action tools)
+ * @property {import('../../js/services/ops-api.js').AssetRef[]} [attachments] - Image/binary asset refs produced by the tool (e.g. an image read); split out and stored at the tool-action item level, not inside the result blob
  * @property {boolean} [cancelled] - Whether cancelled/rejected by user
  * @property {boolean} [interrupted] - Whether interrupted by page reload
  * @property {number} [lastContentHash] - Hash of context content for cache optimization

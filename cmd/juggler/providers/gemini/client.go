@@ -381,6 +381,19 @@ func convertMessagesToGeminiContents(messages []provider.Message, allowImages bo
 					FunctionResponse: &genai.FunctionResponse{Name: funcName, Response: response},
 				})
 			}
+			// Images returned by a tool (e.g. read on a PNG) can't ride in the
+			// functionResponse, so they follow as inline-data parts in this same
+			// user turn. Gated by allowImages exactly like user-attachment images.
+			if allowImages {
+				for _, part := range msg.Parts {
+					if part.Type != "image" || len(part.Data) == 0 {
+						continue
+					}
+					currentParts = append(currentParts, &genai.Part{
+						InlineData: &genai.Blob{MIMEType: part.Mime, Data: part.Data},
+					})
+				}
+			}
 		}
 	}
 

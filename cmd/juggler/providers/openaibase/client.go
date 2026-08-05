@@ -393,12 +393,28 @@ func convertToolsToResponsesAPI(tools []provider.ToolDefinition) []responses.Too
 func transformMessagesToResponsesInput(messages []provider.Message) responses.ResponseNewParamsInputUnion {
 	var inputItems responses.ResponseInputParam
 
+	// Images returned by a tool ride in a following user message: a
+	// function_call_output item is text-only. Accumulate and flush after each run
+	// of tool results so consecutive outputs stay contiguous (see the Chat
+	// Completions transform for the same ordering constraint).
+	var pendingToolImages responses.ResponseInputMessageContentListParam
+	flushToolImages := func() {
+		if len(pendingToolImages) > 0 {
+			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(pendingToolImages, "user"))
+			pendingToolImages = nil
+		}
+	}
+
 	// System prompt is set separately on params; here we build input items
 	// from the messages.
 	for _, msg := range messages {
 		role := provider.MessageTypeToRole(msg.Type)
 		if role == "" {
 			continue // Skip UI-only messages
+		}
+
+		if msg.Type != "tool-result" {
+			flushToolImages()
 		}
 
 		switch msg.Type {
@@ -451,8 +467,21 @@ func transformMessagesToResponsesInput(messages []provider.Message) responses.Re
 				msg.ToolUseID,
 				content,
 			))
+			// Queue image output to follow this run of tool results as a user turn.
+			for _, part := range msg.Parts {
+				if uri := imageDataURI(part); uri != "" {
+					pendingToolImages = append(pendingToolImages, responses.ResponseInputContentUnionParam{
+						OfInputImage: &responses.ResponseInputImageParam{
+							ImageURL: openai.String(uri),
+							Detail:   responses.ResponseInputImageDetailAuto,
+						},
+					})
+				}
+			}
 		}
 	}
+
+	flushToolImages()
 
 	return responses.ResponseNewParamsInputUnion{
 		OfInputItemList: inputItems,
@@ -1007,10 +1036,29 @@ func transformMessages(messages []provider.Message, useDeveloperRole, echoReason
 		// and replaced by the next thinking block.
 	}
 
+	// A tool-result that returned images can't ride on the role="tool" message
+	// (those are text-only), so images are accumulated here and flushed as a
+	// following role="user" message. Accumulating (rather than emitting inline)
+	// keeps consecutive tool messages contiguous: [tool(A), tool(B), user(imgs)]
+	// stays valid, whereas [tool(A), user(img), tool(B)] would not.
+	var pendingToolImages []openai.ChatCompletionContentPartUnionParam
+	flushToolImages := func() {
+		if len(pendingToolImages) > 0 {
+			apiMessages = append(apiMessages, openai.UserMessage(pendingToolImages))
+			pendingToolImages = nil
+		}
+	}
+
 	for _, msg := range messages {
 		role := provider.MessageTypeToRole(msg.Type)
 		if role == "" {
 			continue // Skip UI-only messages (error, system)
+		}
+
+		// Any non-tool-result message ends a run of tool results: flush their
+		// images as a user turn before this message is emitted.
+		if msg.Type != "tool-result" {
+			flushToolImages()
 		}
 
 		switch msg.Type {
@@ -1073,11 +1121,21 @@ func transformMessages(messages []provider.Message, useDeveloperRole, echoReason
 				content = emptyContentPlaceholder
 			}
 			apiMessages = append(apiMessages, openai.ToolMessage(content, msg.ToolUseID))
+			// Queue any image output to follow this run of tool messages as a
+			// user turn (role="tool" can't carry images).
+			for _, part := range msg.Parts {
+				if uri := imageDataURI(part); uri != "" {
+					pendingToolImages = append(pendingToolImages, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{
+						URL: uri,
+					}))
+				}
+			}
 		}
 	}
 
-	// Flush any remaining assistant content
+	// Flush any remaining assistant content, then any trailing tool-result images.
 	flushAssistant()
+	flushToolImages()
 
 	return apiMessages
 }

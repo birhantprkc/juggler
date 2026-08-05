@@ -195,6 +195,12 @@ func transformToAPIMessagesInternal(messages []provider.Message) []APIMessage {
 				Content:   msg.Content,
 				IsError:   msg.IsError,
 			})
+			// A tool that returned images (e.g. read on a PNG) carries them as
+			// image parts. Emit them as image content blocks in this same user
+			// turn, right after the tool_result block — Anthropic accepts extra
+			// content after tool_result blocks, and both the SDK and CLI paths map
+			// these image blocks natively (transformContentBlock's image case).
+			currentBlocks = appendImageBlocks(currentBlocks, msg.Parts)
 
 		case "context-item", "context-item-updated", "guidance", "system-reminder":
 			// These are user-role messages with text content
@@ -219,8 +225,8 @@ func transformToAPIMessagesInternal(messages []provider.Message) []APIMessage {
 // with resolved bytes. Parts whose Data is empty are skipped defensively — the
 // server resolves bytes from the asset store before Submit, so an unresolved
 // part means the asset was missing and is better dropped than sent malformed.
-// Images attach to user-role messages only (the sole caller cases are user and
-// the user-role context-item family).
+// Images attach to user-role messages only (the caller cases — user, the
+// user-role context-item family, and tool-result — all map to the user role).
 func appendImageBlocks(blocks []APIContentBlock, parts []provider.MediaPart) []APIContentBlock {
 	for _, part := range parts {
 		if part.Type != "image" || len(part.Data) == 0 {

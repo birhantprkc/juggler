@@ -19,6 +19,7 @@
  * @property {boolean} success - Whether the operation succeeded
  * @property {string} [icon] - Optional icon character (e.g., '✓', '✗')
  * @property {string} [feedbackForLLM] - Optional feedback appended to tool_result (e.g., test hints)
+ * @property {import('../js/services/ops-api.js').AssetRef[]} [attachments] - Image/binary asset refs produced by the tool; the framework stores them at the tool-action item level (same field user attachments use) and emits them as image parts in the tool_result
  */
 
 /**

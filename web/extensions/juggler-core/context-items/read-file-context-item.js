@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { readFile } from 'juggler/ops';
+import { readFile, uploadAssetBase64 } from 'juggler/ops';
 import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createFileContentBlock, normalizeFilePath, injectFileContentStyles, basename } from 'juggler/item-utils';
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
@@ -36,6 +36,9 @@ injectFileContentStyles();
  * @property {number} lineOffset - Starting line number (1-indexed)
  * @property {number} lineCount - Number of lines in content
  * @property {string|null} [warning] - Warning message (e.g., for binary files)
+ * @property {boolean} [isImage] - True when the file is a supported image within the inline size cap
+ * @property {string} [mime] - Image mime type (when isImage)
+ * @property {import('../../../js/services/ops-api.js').AssetRef} [attachment] - Stored asset ref for the image (set after snapshot)
  */
 
 /**
@@ -213,7 +216,35 @@ class ReadFileContextItem extends ContextItem {
     if (readParams.path && !isPathAllowed(this, readParams.path)) {
       readParams.outOfRootApproved = true;
     }
-    return await readFile(readParams, this.signal, this.getToolAllowedRoots());
+    const result = /** @type {ReadFileResult & {isImage?: boolean, imageBase64?: string, attachment?: any}} */ (
+      await readFile(readParams, this.signal, this.getToolAllowedRoots())
+    );
+
+    // A supported image within the size cap: upload its bytes to the
+    // conversation's asset store (the same endpoint the composer uses for pasted
+    // images) so a multimodal model receives the actual pixels alongside the
+    // tool_result. The AssetRef rides in getSummary's `attachments`, which the
+    // framework persists at the item level. The base64 bytes are pulled off the
+    // result immediately so they never bloat the doc. If the upload fails (or
+    // there's no conversation context), degrade to a text note — the read itself
+    // still succeeded.
+    if (result && result.isImage && result.imageBase64) {
+      const base64 = result.imageBase64;
+      delete result.imageBase64;
+      const convId = this.conversation?.id;
+      if (convId) {
+        try {
+          result.attachment = await uploadAssetBase64(convId, base64, result.mime, this.signal);
+        } catch (e) {
+          result.isImage = false;
+          result.warning = `Image could not be attached for viewing: ${/** @type {any} */ (e)?.message || e}`;
+        }
+      } else {
+        result.isImage = false;
+        result.warning = 'Image could not be attached for viewing (no conversation context).';
+      }
+    }
+    return result;
   }
 
   /**
@@ -244,6 +275,22 @@ class ReadFileContextItem extends ContextItem {
         details: '',
         success: true,
         icon: '✗'
+      };
+    }
+
+    // Handle image result: the actual pixels are attached to the tool_result as
+    // an image part (the AssetRef in `attachments`), so the LLM-facing text is a
+    // short description rather than file content.
+    if (result && result.isImage && result.attachment) {
+      const ref = result.attachment;
+      const dims = (ref.width && ref.height) ? `${ref.width}\u00d7${ref.height}` : 'image';
+      const size = ref.bytes ? `, ${formatFileSize(ref.bytes)}` : '';
+      return {
+        summary: `Read image ${formatDisplayPath(path)} (${dims}${size}). The image is attached below.`,
+        details: '',
+        success: true,
+        icon: '✓',
+        attachments: [ref]
       };
     }
 
@@ -329,6 +376,12 @@ class ReadFileContextItem extends ContextItem {
       return container;
     }
 
+    // Image result: the pixels are attached to the model, not shown in the panel.
+    if (data.isImage && data.attachment) {
+      container.appendChild(createElement('div', 'file-content-info', 'Image attached to the model.'));
+      return container;
+    }
+
     // Handle warning (e.g., binary file)
     if (data.warning) {
       const warning = createElement('div', 'file-content-warning', data.warning);
@@ -375,6 +428,10 @@ class ReadFileContextItem extends ContextItem {
       } else if (result.exists === false) {
         summary = `File not found: ${filename}`;
         status = 'error';
+      } else if (result.isImage && result.attachment) {
+        const ref = result.attachment;
+        summary = (ref.width && ref.height) ? `${filename} (${ref.width}×${ref.height})` : `${filename} (image)`;
+        status = 'success';
       } else if (result.warning) {
         summary = `${filename} (${result.warning})`;
         status = 'success';

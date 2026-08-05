@@ -434,6 +434,56 @@ export async function readFileLoad(params, signal, allowedPaths) {
 }
 
 /**
+ * @typedef {object} AssetRef
+ * @property {string} id - lowercase hex SHA-256 of the bytes
+ * @property {string} mime - e.g. "image/png"
+ * @property {string} [filename] - original/display filename
+ * @property {number} bytes - size in bytes
+ * @property {number} [width] - image width in px
+ * @property {number} [height] - image height in px
+ */
+
+/**
+ * Upload base64-encoded bytes to the conversation's content-addressed asset
+ * store (the same endpoint the composer uses for pasted/dropped images) and
+ * return the AssetRef. The read tool uses this to store an image it just read so
+ * a multimodal model receives the actual pixels.
+ * @param {string} convId - Conversation that owns the asset
+ * @param {string} base64 - Base64-encoded asset bytes
+ * @param {string} [mime] - Asset mime type (e.g. "image/png"); defaults to octet-stream
+ * @param {AbortSignal} [signal] - Abort signal for cancellation
+ * @returns {Promise<AssetRef>} The stored asset reference
+ */
+export async function uploadAssetBase64(convId, base64, mime, signal) {
+  if (!convId) {
+    throw new TypeError('convId is required');
+  }
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  const headers = /** @type {Record<string, string>} */ ({ 'Content-Type': mime || 'application/octet-stream' });
+  const token = /** @type {{__jugglerToken?: string}} */ (globalThis).__jugglerToken;
+  if (token) {
+    headers['X-Juggler-Token'] = token;
+  }
+  const response = await fetch(
+    `/session/conversations/${encodeURIComponent(convId)}/assets`,
+    { method: 'POST', headers, body: bytes, signal }
+  );
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      if (body && body.error) detail = body.error;
+    } catch { /* non-JSON body */ }
+    throw new OpsError(`Failed to upload image (HTTP ${response.status}): ${detail}`);
+  }
+  return /** @type {Promise<AssetRef>} */ (response.json());
+}
+
+/**
  * Write content to a file (creates or overwrites)
  * @param {ReadFileWriteParams} params
  * @param {AbortSignal} [signal] - Abort signal for cancellation

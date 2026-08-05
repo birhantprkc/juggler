@@ -125,6 +125,105 @@ func TestImageAttachmentReachesProviderRequest(t *testing.T) {
 	}
 }
 
+// imagePartsInToolResults extracts image parts from tool-result messages in the
+// captured request. ImagePartsInRequest scans only user messages; a tool-result
+// wire message has type "tool-result" (it still maps to the user role, and the
+// providers emit its images), so this sibling walks that message type.
+func imagePartsInToolResults(t *testing.T, req json.RawMessage) []map[string]any {
+	t.Helper()
+	var parsed struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(req, &parsed); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	var out []map[string]any
+	for _, msg := range parsed.Messages {
+		if tp, _ := msg["type"].(string); tp != "tool-result" {
+			continue
+		}
+		rawParts, ok := msg["parts"].([]any)
+		if !ok {
+			continue
+		}
+		for _, p := range rawParts {
+			if part, ok := p.(map[string]any); ok {
+				if pt, _ := part["type"].(string); pt == "image" {
+					out = append(out, part)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TestReadImageToolResultReachesProviderRequest is the read-tool analogue of the
+// user-attachment path: a completed read tool-action that returned an image
+// carries the AssetRef at the item level (same field user attachments use), and
+// the worker must replay it as an image "part" on the tool-result message. The
+// capturing mock records the exact request built from the real buildMessages →
+// tool-action → tool-result path.
+func TestReadImageToolResultReachesProviderRequest(t *testing.T) {
+	t.Parallel()
+	ts := helpers.SetupTestSession(t)
+	ts.SetupMockEngine()
+
+	seq := ts.SetLLMSequence(helpers.TextResponse("I can see the image."))
+
+	ts.GetDocument().SetMetadata("defaultModelConfig", map[string]any{
+		"provider": "test",
+		"model":    "test-model",
+	})
+
+	att := worker.AssetRef{
+		ID:     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Mime:   "image/png",
+		Width:  1,
+		Height: 1,
+		Bytes:  95,
+	}
+
+	// A completed read tool-action whose result was an image. The AssetRef rides
+	// at the item level exactly like a user attachment.
+	ts.GetDocument().AppendMessage(
+		worker.ConversationItem{Type: worker.ItemTypeUser, ItemID: "u1", Content: "read pixel.png"},
+		worker.ConversationItem{Type: worker.ItemTypeAssistant, ItemID: "a1", Content: "reading it"},
+		worker.ConversationItem{
+			Type:        worker.ItemTypeToolAction,
+			ItemID:      "ta1",
+			ToolUseID:   "tool_1",
+			ToolName:    "read",
+			ToolInput:   json.RawMessage(`{"file_path":"pixel.png"}`),
+			State:       worker.StateCompleted,
+			Result:      json.RawMessage(`{"content":"Read image pixel.png","isError":false}`),
+			Attachments: []worker.AssetRef{att},
+		},
+	)
+
+	// A follow-up send triggers a turn whose request replays the tool-result.
+	send, _ := json.Marshal(worker.SendMessageMessage{Type: "send-message", Text: "what is it?"})
+	ts.Manager.HandleMessage(ts.ConvID, "send-message", send, nil)
+
+	if err := waitForLLMCall(seq, 1, 5*time.Second); err != nil {
+		t.Fatalf("LLM was never called after send: %v", err)
+	}
+
+	req := seq.LastRequest()
+	if req == nil {
+		t.Fatal("no request captured by the mock LLM")
+	}
+	parts := imagePartsInToolResults(t, req)
+	if len(parts) != 1 {
+		t.Fatalf("expected exactly 1 image part in the tool-result, got %d (req=%s)", len(parts), string(req))
+	}
+	if got, _ := parts[0]["assetId"].(string); got != att.ID {
+		t.Errorf("tool-result image part assetId = %q, want %q", got, att.ID)
+	}
+	if got, _ := parts[0]["mime"].(string); got != att.Mime {
+		t.Errorf("tool-result image part mime = %q, want %q", got, att.Mime)
+	}
+}
+
 // TestTextMessageEmitsNoParts guards the backward-compatible path: a plain
 // user message (no attachments) must produce a request with no image parts and
 // a doc item with no attachment refs — byte-for-byte the legacy shape.

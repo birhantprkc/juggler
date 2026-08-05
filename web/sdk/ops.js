@@ -27,6 +27,7 @@ export {
   DEFAULT_EXEC_TIMEOUT_MS,
   // Filesystem
   readFileLoad as readFile,
+  uploadAssetBase64,
   writeFileOp as writeFile,
   readFileEdit as editFile,
   readFileEditLines as editFileLines,

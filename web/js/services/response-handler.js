@@ -993,11 +993,20 @@ class ResponseHandler {
         llmFeedback,
         durationMs: result.durationMs
       };
+      // A tool that produced image output surfaces AssetRefs via getSummary's
+      // `attachments`. Carry them into the tool-action so they are stored at the
+      // item level (same field user attachments use) and emitted as image parts
+      // in the tool_result.
+      const attachments = Array.isArray(result.formatted?.attachments)
+        ? result.formatted.attachments.filter((/** @type {any} */ a) => a && a.id)
+        : undefined;
+
       messageThread.completeToolAction(toolCall.id, {
         content,
         isError: !result.success,
         resultType: RESULT_TYPES.ACTION,
-        fullResult
+        fullResult,
+        ...(attachments && attachments.length ? { attachments } : {})
       });
 
       // Determine result status

@@ -75,6 +75,7 @@ function warnOnEmptySuccessSummary(rawSummary, className) {
  * @property {string} [icon] - Icon/emoji for display
  * @property {boolean} success - Whether action succeeded
  * @property {string} [feedbackForLLM] - Optional feedback message for LLM
+ * @property {import('./ops-api.js').AssetRef[]} [attachments] - Image/binary asset refs produced by the tool (e.g. an image read), stored at the tool-action item level and emitted as image parts in the tool_result
  */
 
 /**

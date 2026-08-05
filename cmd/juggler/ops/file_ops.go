@@ -7,6 +7,7 @@ package ops
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -25,7 +26,31 @@ const (
 	// through untouched while still bounding minified/generated single-line
 	// files that would otherwise flood the context.
 	MaxLineLength = 10000
+	// MaxImageReadBytes caps an image the read tool will inline for a multimodal
+	// model. Sized at the smallest common provider ceiling (Anthropic's 5 MB per
+	// image) so a read against any provider stays within limits; a larger image
+	// falls back to the binary-file warning instead of being snapshotted.
+	MaxImageReadBytes = 5 << 20
 )
+
+// imageMimeByExt maps a lower-cased file extension (with leading dot) to the
+// canonical image mime type the asset store supports. Kept in lockstep with the
+// worker asset store's extForMime/mimeForExt so a read-tool snapshot round-trips.
+var imageMimeByExt = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+}
+
+// ImageMimeForPath returns the canonical image mime type for a path whose
+// extension names a supported image format, or "" when the extension is not a
+// supported image type. Shared by the read op's image detection and the
+// asset-snapshot route so both agree on which files are inlineable images.
+func ImageMimeForPath(path string) string {
+	return imageMimeByExt[strings.ToLower(filepath.Ext(path))]
+}
 
 // FileOperations handles file I/O operations
 type FileOperations struct {
@@ -126,6 +151,39 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 	// SECURITY: Check file size limit (prevent DoS via huge files)
 	if err := ValidateFileSize(absPath); err != nil {
 		return nil, err
+	}
+
+	// Images: a supported image type within the inline size cap is returned as an
+	// isImage marker carrying the base64 bytes, so the read tool can upload it to
+	// the conversation asset store (via the existing asset-upload endpoint) and
+	// hand a multimodal model the actual pixels. An oversized image, or any other
+	// binary, falls through to the binary-file warning below. This must precede
+	// the IsBinaryFile check since images are binary and would otherwise be
+	// rejected as undisplayable. The path was already validated by ResolveRead
+	// above, so the bytes are safe to read here.
+	if mime := ImageMimeForPath(absPath); mime != "" {
+		if fileInfo.Size() <= MaxImageReadBytes {
+			imgData, readErr := os.ReadFile(absPath)
+			if readErr != nil {
+				return nil, fmt.Errorf("failed to read image file: %w", readErr)
+			}
+			return map[string]any{
+				"isImage":     true,
+				"mime":        mime,
+				"path":        path,
+				"exists":      true,
+				"size":        fileInfo.Size(),
+				"imageBase64": base64.StdEncoding.EncodeToString(imgData),
+			}, nil
+		}
+		return map[string]any{
+			"content":  "",
+			"path":     path,
+			"language": detectLanguage(path),
+			"exists":   true,
+			"size":     fileInfo.Size(),
+			"warning":  fmt.Sprintf("Image is %d bytes, larger than the %d-byte limit for inline viewing.", fileInfo.Size(), MaxImageReadBytes),
+		}, nil
 	}
 
 	// SECURITY: Check if file is binary

@@ -197,23 +197,33 @@ func (w *ConversationWorker) resolveForcedToolChoice(tools []ToolDefinition) map
 	return map[string]any{"mode": "tool", "name": forceTool}
 }
 
+// imagePartsFromAttachments renders an item's attachment refs as the wire
+// "parts" array (one image entry per attachment, referencing the asset by id).
+// The server resolves each assetId to bytes at the LLM-call boundary. Returns
+// nil when the item has no attachments. Shared by user messages and tool-result
+// messages — both map to the user role, so both may carry image parts.
+func imagePartsFromAttachments(item ConversationItem) []map[string]any {
+	if len(item.Attachments) == 0 {
+		return nil
+	}
+	parts := make([]map[string]any, 0, len(item.Attachments))
+	for _, att := range item.Attachments {
+		parts = append(parts, map[string]any{
+			"type":    "image",
+			"mime":    att.Mime,
+			"assetId": att.ID,
+			"width":   att.Width,
+			"height":  att.Height,
+		})
+	}
+	return parts
+}
+
 // buildUserMessageMap returns a user message map carrying the item's text
-// content plus, when the item has attachments, an image "parts" array (one
-// entry per attachment referencing the asset by id). The server resolves each
-// assetId to bytes at the LLM-call boundary. Only user messages carry parts.
+// content plus, when the item has attachments, an image "parts" array.
 func buildUserMessageMap(item ConversationItem) map[string]any {
 	m := map[string]any{"type": "user", "content": item.Content}
-	if len(item.Attachments) > 0 {
-		parts := make([]map[string]any, 0, len(item.Attachments))
-		for _, att := range item.Attachments {
-			parts = append(parts, map[string]any{
-				"type":    "image",
-				"mime":    att.Mime,
-				"assetId": att.ID,
-				"width":   att.Width,
-				"height":  att.Height,
-			})
-		}
+	if parts := imagePartsFromAttachments(item); parts != nil {
 		m["parts"] = parts
 	}
 	return m
@@ -246,12 +256,19 @@ func buildToolResultMap(item ConversationItem) map[string]any {
 	}
 	content, _ := result["content"].(string)
 	isError, _ := result["isError"].(bool)
-	return map[string]any{
+	m := map[string]any{
 		"type":      "tool-result",
 		"toolUseId": item.ToolUseID,
 		"content":   content,
 		"isError":   isError,
 	}
+	// A tool that produced image output (e.g. read on a PNG) carries the asset
+	// refs at the item level, exactly like a user attachment; tool-result maps to
+	// the user role, so the same image "parts" array applies.
+	if parts := imagePartsFromAttachments(item); parts != nil {
+		m["parts"] = parts
+	}
+	return m
 }
 
 // toolResultWire renders one tool-action's tool_result message. A tool that has

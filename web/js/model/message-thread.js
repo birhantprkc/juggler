@@ -826,13 +826,22 @@ export default class MessageThread {
     if (index >= 0 && index < yarray.length) {
       const doc = this.conversation._doc.doc;
       const finalState = result.cancelled ? TOOL_STATES.CANCELLED : TOOL_STATES.COMPLETED;
+      // A tool that returned images passes AssetRefs on `result.attachments`.
+      // Store them at the item level (the same field user attachments use) so
+      // serialization, GC retention, and the worker's image-part emission all
+      // treat them identically — and keep them out of the stored `result` blob
+      // to avoid duplicating the refs.
+      const { attachments, ...resultRest } = result || {};
       // Set state and result atomically so the observer (and the Go worker)
       // never see state=completed/cancelled without a result, or vice versa.
       doc.transact(() => {
         const ymap = yarray.get(index);
         if (ymap instanceof Y.Map) {
           ymap.set('state', finalState);
-          ymap.set('result', convertToYType(result));
+          ymap.set('result', convertToYType(resultRest));
+          if (Array.isArray(attachments) && attachments.length) {
+            ymap.set('attachments', convertToYType(attachments));
+          }
           // Promote displayData from fullResult onto the YMap so the properties
           // panel can render diffs for auto-approved actions (where the approval
           // flow never sets displayData on the YMap directly).
