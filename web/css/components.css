@@ -1498,7 +1498,6 @@ strategy-selector {
     line-height: 1.4;
 }
 
-
 /* Input-controls buttons share the .u-btn-ghost house style (chrome lives in
    utilities.css, keyed off `input-box .input-ctrl-btn`); this owns only their
    size and layout — smaller and shorter than the header buttons. */
@@ -3899,6 +3898,47 @@ input-box .send-btn .send-icon svg {
 input-box .send-btn.is-empty {
     opacity: 0.4;
     pointer-events: none;
+}
+
+/* Context-cache warning — a round amber alert sitting just before Send, shown
+   when the next send would re-read a large slice of cached context (a staged
+   strategy switch that changes the tool set, or a deleted/edited earlier
+   message). Text-free and sized to match the send button; the reason lives in
+   its tooltip (hover, or click/tap). Hidden until the strategy selector flags a
+   bust, and cleared once the transcript matches the last-sent baseline again. */
+input-box .context-cache-warning-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent-yellow);
+    color: #fff;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+/* Override the UA `display` so the flex layout above applies when shown; when
+   `hidden` the attribute wins and the button collapses out of the row. */
+input-box .context-cache-warning-btn[hidden] {
+    display: none;
+}
+
+input-box .context-cache-warning-btn .icon-warning {
+    width: 1rem;
+    height: 1rem;
+}
+
+/* Light theme: --accent-yellow is a dark, murky mustard (tuned to read as text
+   on a light surface), which makes a poor alert fill. Swap in a brighter, more
+   saturated amber with a dark glyph — bright enough to catch the eye, with the
+   symbol still legible (black-on-yellow hazard contrast). */
+:root[data-theme="light"] input-box .context-cache-warning-btn {
+    background: #f5c518;
+    color: #3d2c00;
 }
 
 /* "+" actions sheet: a simple vertical list (commands, attach image, new

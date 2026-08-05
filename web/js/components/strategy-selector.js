@@ -7,6 +7,9 @@ import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import { presentPopup } from '../utils/popup-surface.js';
 import { CHECK_SVG } from '../utils/icons.js';
 import CycleBuffer from '../services/cycle-buffer.js';
+import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
+import { generateToolDefinitions } from '../services/tool-generator.js';
+import { buildPrefixFingerprint, classifyContextCacheImpact, CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
 
 /**
  * Strategy Selector - Dropdown component for selecting conversation strategy
@@ -79,6 +82,53 @@ class StrategySelector extends HTMLElement {
      * @type {import('../model/conversation.js').default|null} @private
      */
     this._observedConversation = null;
+    // ── Context-cache-bust detection (see services/context-cache-impact.js) ──
+    // The composer caution fires when the NEXT send would re-read a large slice
+    // of cached context — for ANY reason (a staged strategy switch that changes
+    // the tool set, a deleted/edited earlier item). Detection is a fingerprint
+    // diff against the transcript as it was when the conversation last went idle.
+    /**
+     * Whether the next send discards a large cached prefix. Computed off the hot
+     * path from the cached inputs below; render() reads only this scalar.
+     * @type {'none'|'busts-large'}
+     * @private
+     */
+    this._pendingImpact = 'none';
+    /**
+     * The prefix fingerprint captured when the conversation last went idle — what
+     * the provider has cached. Null until tools resolve / first idle. The next
+     * send's fingerprint is diffed against this.
+     * @type {string[]|null}
+     * @private
+     */
+    this._baseline = null;
+    /**
+     * Last turn's anchored input tokens (the cached-prefix size), refreshed on
+     * bind and each idle transition. The magnitude gate.
+     * @type {number}
+     * @private
+     */
+    this._anchorTokens = 0;
+    /**
+     * The full generated tool set, cached so the per-edit recompute is sync (it
+     * changes only on a strategy/plugin toggle, not on item edits).
+     * @type {any[]|null}
+     * @private
+     */
+    this._toolsAll = null;
+    /**
+     * The items Y.Array currently observed for edits/deletes, so we rebind only
+     * when the bound thread's array actually changes.
+     * @type {any}
+     * @private
+     */
+    this._observedItemsYArray = null;
+    /**
+     * The deep items observer registered while bound, or null.
+     * @type {(() => void)|null}
+     * @private
+     */
+    this._itemsObserver = null;
   }
 
   connectedCallback() {
@@ -93,6 +143,7 @@ class StrategySelector extends HTMLElement {
       this._boundRegistriesReloaded = null;
     }
     this._bindMetadataObserver(null);
+    this._bindItemsObserver(null);
     // Tear down the open dropdown (surface, scrim, observer, dismissal wiring).
     if (this._popupRelease) {
       this._popupRelease();
@@ -120,6 +171,11 @@ class StrategySelector extends HTMLElement {
     // below, which can early-return) so a remote strategy switch repaints us
     // directly rather than relying on a conversation-tab rebuild re-pushing.
     this._bindMetadataObserver(messageThread ? messageThread.conversation : null);
+    // Observe the bound thread's items so a delete/edit of an earlier message
+    // recomputes the cache-bust caution. Rebinds (and refreshes the async cache
+    // inputs + baseline) only when the array actually changes, so the constant
+    // streaming-repaint calls through here don't stack observers or re-fetch.
+    this._bindItemsObserver(messageThread || null);
     // The CycleBuffer owns the two guards this used to hand-roll: while a gesture
     // buffers, it rejects everything (the preview owns the display); after a
     // commit it pins the landing id and rejects the transient sync bounce until
@@ -139,6 +195,10 @@ class StrategySelector extends HTMLElement {
     if (incoming === this._currentStrategyId) return;
     this._currentStrategyId = incoming;
     this.render();
+    // The staged strategy changed (a local pick, a remote switch, or a reload
+    // landing on a staged strategy). Its tool set is the prefix fingerprint's
+    // head, so re-diff synchronously (tools are cached) — no async needed.
+    this._recomputeImpact();
   }
 
   /**
@@ -156,16 +216,196 @@ class StrategySelector extends HTMLElement {
     this._observedConversation = conversation;
     if (!conversation) return;
     this._metadataObserver = (event) => {
-      if (!event.keysChanged?.has?.('currentStrategyId')) return;
-      // Re-run the bound-thread sync. The conversation's own metadata observer
-      // (setupYjsObservers) refreshes root.currentStrategyId before this fires,
-      // so re-reading the thread yields the new id; the CycleBuffer guard inside
-      // keeps an in-flight local hold-to-cycle gesture from being clobbered by
-      // the echo of its own commit. Re-binding is a no-op here (same
-      // conversation), so this never recurses.
-      this.setMessageThread(this._messageThread);
+      const keys = event.keysChanged;
+      if (!keys) return;
+      if (keys.has?.('currentStrategyId')) {
+        // Re-run the bound-thread sync. The conversation's own metadata observer
+        // (setupYjsObservers) refreshes root.currentStrategyId before this fires,
+        // so re-reading the thread yields the new id; the CycleBuffer guard inside
+        // keeps an in-flight local hold-to-cycle gesture from being clobbered by
+        // the echo of its own commit. Re-binding is a no-op here (same
+        // conversation), so this never recurses. setMessageThread re-diffs the
+        // cache impact itself when the id actually changed.
+        this.setMessageThread(this._messageThread);
+      }
+      if (keys.has?.('completedTurns')) {
+        // A turn reached idle. completedTurns is the durable fence the worker
+        // bumps once per idle transition (it survives Yjs busy→idle batching,
+        // unlike the transient processingState.status edge), so this is the
+        // reliable "rebaseline now" signal: the settled transcript is what the
+        // provider has cached going into the next turn.
+        this._refreshCacheInputs({ rebaseline: true });
+      } else if (keys.has?.('processingState') && !this._isIdle() && this._pendingImpact !== 'none') {
+        // Best-effort: a send is under way, so drop the (now moot) caution. The
+        // authoritative rebaseline lands on the completedTurns bump above.
+        this._setImpact('none');
+      }
     };
     conversation.observeMetadata(this._metadataObserver);
+  }
+
+  /**
+   * Whether the bound conversation is idle, read from the worker's durable
+   * processingState metadata (status 'idle', or unset before the first turn) —
+   * NOT the transient LLMState runtime flag, so it agrees with the metadata event
+   * that drives rebaselining.
+   * @returns {boolean} True when no turn is in flight
+   * @private
+   */
+  _isIdle() {
+    const status = this._messageThread?.conversation?.processingState?.status;
+    return !status || status === 'idle';
+  }
+
+  /**
+   * Register (or move) the deep items observer that recomputes the cache-bust
+   * caution when the bound thread's history is edited (delete / edit / insert /
+   * reorder). Rebinds only when the underlying Y.Array changes — for the root
+   * thread the wrapper is reused, and sub-threads mint a fresh wrapper per doc
+   * update over the SAME array, so keying off the array avoids per-tick churn.
+   * The rebind is also the once-per-thread hook to refresh the async cache
+   * inputs (tool set, anchor tokens) and capture the idle baseline.
+   * @param {import('../model/message-thread.js').default|null} thread
+   * @private
+   */
+  _bindItemsObserver(thread) {
+    const yarray = thread ? thread.yarray : null;
+    if (yarray === this._observedItemsYArray) return;
+    if (this._itemsObserver && this._observedItemsYArray) {
+      this._observedItemsYArray.unobserveDeep?.(this._itemsObserver);
+    }
+    this._itemsObserver = null;
+    this._observedItemsYArray = yarray;
+    if (!yarray) return;
+    // Deep so a content edit of an existing item (not just add/remove) is seen.
+    // Skip while a turn is streaming: the transcript is churning (assistant
+    // tokens, tool output) and the caution is suppressed anyway — recomputing
+    // per change would re-render the button on every token. The turn's end
+    // rebaselines via the completedTurns bump.
+    this._itemsObserver = () => {
+      if (this._isIdle()) this._recomputeImpact();
+    };
+    yarray.observeDeep(this._itemsObserver);
+    this._refreshCacheInputs({ rebaseline: true });
+  }
+
+  /**
+   * A stable, order-independent signature of the tool set a strategy exposes:
+   * the sorted tool names left after its filterTools runs over the full set.
+   * @param {any} strategy - Strategy instance
+   * @param {Array<{name: string}>} tools - Full generated tool definitions
+   * @returns {string} Sorted, comma-joined tool-name signature
+   * @private
+   */
+  _toolSignature(strategy, tools) {
+    const filtered = strategy?.filterTools ? strategy.filterTools(tools) : tools;
+    return (filtered || []).map((/** @type {any} */ t) => t?.name || '').sort().join(',');
+  }
+
+  /**
+   * Resolve the bound thread's last-turn anchored input tokens — the size of the
+   * cached prefix a switch would discard. Reads the same transaction blob the
+   * footer's meter shows (findLastAssistantTxnId → blob inputTokens). Returns 0
+   * when no turn has been anchored (fresh conversation) → predicate says 'none'.
+   * @param {any} thread - The bound message thread
+   * @returns {Promise<number>} Last-turn input tokens, or 0
+   * @private
+   */
+  async _resolvePrefixTokens(thread) {
+    const txnId = findLastAssistantTxnId(thread?.items);
+    const convId = thread?.conversation?.id;
+    if (!txnId || !convId) return 0;
+    try {
+      const { default: workerManager } = await import('../services/worker-manager.js');
+      const blob = /** @type {any} */ (await workerManager.getTransaction(convId, txnId));
+      return Number(blob?.inputTokens) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Refresh the async inputs of the cache-bust detector, off the hot render path
+   * (generateToolDefinitions and the token-blob lookup are async; render() is
+   * sync). Caches the full tool set and the last-turn anchor tokens, optionally
+   * (re)captures the idle baseline fingerprint, then re-diffs synchronously.
+   * Callers: the once-per-thread items rebind, the processing→idle transition,
+   * and a registries reload. render() and the per-edit path never await.
+   * @param {{rebaseline?: boolean}} [opts] - Recapture the baseline (use on bind / idle)
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _refreshCacheInputs({ rebaseline = false } = {}) {
+    const thread = this._messageThread;
+    if (!thread) { this._baseline = null; this._setImpact('none'); return; }
+    try {
+      const tools = await generateToolDefinitions();
+      if (this._messageThread !== thread) return; // thread swapped mid-await
+      this._toolsAll = tools;
+      this._anchorTokens = await this._resolvePrefixTokens(thread);
+      if (this._messageThread !== thread) return;
+      // Rebaseline only when idle: mid-turn the transcript is still growing and
+      // is not a stable cached prefix. When idle, the current transcript is
+      // exactly what the provider has now cached.
+      if ((rebaseline || this._baseline === null) && this._isIdle()) {
+        this._baseline = this._buildCurrentFingerprint();
+      }
+      this._recomputeImpact();
+    } catch (err) {
+      console.error('[StrategySelector] _refreshCacheInputs failed:', err);
+    }
+  }
+
+  /**
+   * Build the outgoing prefix fingerprint from cached inputs: the effective
+   * strategy's tool-set signature followed by one signature per history item.
+   * Sync and cheap (no await) — safe to call on every item edit. Returns null
+   * until the tool set has been resolved.
+   * @returns {string[]|null} The fingerprint, or null when inputs aren't ready
+   * @private
+   */
+  _buildCurrentFingerprint() {
+    const thread = this._messageThread;
+    if (!thread || !this._toolsAll) return null;
+    const strategy = strategyRegistry.createStrategy(thread.currentStrategyId || 'default', thread);
+    const toolsetSig = this._toolSignature(strategy, this._toolsAll);
+    return buildPrefixFingerprint({ toolsetSig, items: thread.items });
+  }
+
+  /**
+   * Re-diff the outgoing prefix against the captured baseline and update the
+   * cache-impact classification (which announces any flip to the composer). Sync
+   * (uses only cached inputs); the hot path for item edits and staged strategy
+   * switches.
+   * @private
+   */
+  _recomputeImpact() {
+    this._setImpact(!this._isIdle()
+      ? 'none'
+      : classifyContextCacheImpact({
+        baseline: this._baseline,
+        current: this._buildCurrentFingerprint(),
+        anchorTokens: this._anchorTokens
+      }));
+  }
+
+  /**
+   * Record the current cache-impact classification and, when it flips, announce
+   * it so the composer can show or hide its warning. The warning affordance — a
+   * round alert beside the send button — lives in input-box, not here; a
+   * bubbling event is the only coupling. Fired only on change, so an unrelated
+   * edit that leaves the classification untouched is silent. Deliberately
+   * carries no token figure: only whether the loss is large enough to mention.
+   * @param {'none'|'busts-large'} next - The new classification
+   * @private
+   */
+  _setImpact(next) {
+    if (next === this._pendingImpact) return;
+    this._pendingImpact = next;
+    this.dispatchEvent(new CustomEvent(CONTEXT_CACHE_IMPACT_CHANGED, {
+      bubbles: true,
+      detail: { busts: next === 'busts-large' },
+    }));
   }
 
   /** @private */
@@ -176,6 +416,9 @@ class StrategySelector extends HTMLElement {
     this._boundRegistriesReloaded = () => {
       this.loadStrategies();
       this.render();
+      // A plugin toggle can change the available tool set, so the cached tool
+      // signature that heads the prefix fingerprint may differ now — refresh it.
+      this._refreshCacheInputs();
     };
     document.addEventListener(REGISTRIES_RELOADED, this._boundRegistriesReloaded);
   }

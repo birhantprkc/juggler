@@ -68,6 +68,22 @@ class TooltipManager {
     this._installed = false;
   }
 
+  /**
+   * Show the tooltip for an element right now, bypassing the hover delay. For
+   * controls whose explanation must also surface on click/tap — touch has no
+   * hover, so a native `title` alone would never appear there. Adopts the anchor
+   * (stashing its `title`) and shows immediately; it then dismisses on the next
+   * pointerdown / scroll / keypress like any other tooltip.
+   * @param {HTMLElement|null} anchor - The titled element to describe.
+   */
+  showFor(anchor) {
+    if (!anchor) return;
+    if (this._anchor !== anchor) this._begin(anchor);
+    clearTimeout(this._showTimer);
+    this._showTimer = 0;
+    this._show(anchor);
+  }
+
   /** Wire the global listeners. Idempotent. */
   install() {
     if (this._installed || typeof document === 'undefined') return;

@@ -14,6 +14,7 @@ of changes; this project follows semantic versioning.
 - Edit and write tools refuse files never read this session or changed on disk since reading
 - @-mention filename completion searches the whole project for dashed and short queries
 - Automatic compaction can now be turned off in Settings, keeping full transcripts until the context limit is hit
+- A warning is shown when your next message will cause a context cache miss (strategy switch, edited or deleted history)
 
 ## [0.5.2] - 2026-08-01
 

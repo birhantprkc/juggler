@@ -14,6 +14,8 @@ import { fileMentionProvider, extractFileMentionsAsync } from './file-mention-pr
 import { slashCommandProvider } from './slash-command-provider.js';
 import { THREAD_ARROW_SVG, IMAGE_ATTACH_SVG, SEND_ARROW_SVG, PLUS_SVG, CLOCK_SVG } from '../utils/icons.js';
 import { showNotice } from './modal-dialog.js';
+import tooltipManager from '../services/tooltip-manager.js';
+import { CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
 import apiService from '../services/api.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isDesktopWindow } from '../../sdk/lib/window-control.js';
@@ -337,6 +339,12 @@ class InputBox extends HTMLElement {
     // undrivable from the headless harness). undefined = use matchMedia.
     /** @type {boolean|undefined} @private */
     this._touchComposerOverride = undefined;
+
+    // Guards the once-only context-cache-impact listener on `this` (setupListeners
+    // reruns on every render, but this listener rides child re-renders and must
+    // not stack). See setupListeners.
+    /** @type {boolean} @private */
+    this._impactListenerBound = false;
   }
 
   connectedCallback() {
@@ -764,6 +772,29 @@ class InputBox extends HTMLElement {
         e.preventDefault();
         e.stopPropagation();
         this.sendMessage();
+      });
+    }
+
+    // Context-cache warning — the round alert just before Send. The strategy
+    // selector owns detection and fires a bubbling event when its classification
+    // flips; mirror that onto the button's visibility. Bound once on `this`: the
+    // event rides up through the child re-renders, so the listener must not stack.
+    if (!this._impactListenerBound) {
+      this._impactListenerBound = true;
+      this.addEventListener(CONTEXT_CACHE_IMPACT_CHANGED, (e) => {
+        const btn = this.querySelector('#context-cache-warning');
+        const busts = !!(/** @type {CustomEvent} */ (e).detail?.busts);
+        if (btn) btn.toggleAttribute('hidden', !busts);
+      });
+    }
+    // Clicking (or tapping) the warning surfaces its explanation — touch has no
+    // hover, so the native-title tooltip would otherwise never appear there.
+    const cacheWarnBtn = this.querySelector('#context-cache-warning');
+    if (cacheWarnBtn) {
+      cacheWarnBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        tooltipManager.showFor(/** @type {HTMLElement} */ (cacheWarnBtn));
       });
     }
 
@@ -3179,6 +3210,11 @@ class InputBox extends HTMLElement {
                         <button class="new-thread-btn input-ctrl-btn" title="Create a new sub-thread">
                             New Thread
                             <span class="new-thread-arrow">${THREAD_ARROW_SVG}</span>
+                        </button>
+                        <button class="context-cache-warning-btn" id="context-cache-warning" hidden
+                                title="Items in the conversation have changed, so the next message will cause a cache-miss"
+                                aria-label="Items in the conversation have changed, so the next message will cause a cache-miss">
+                            <span class="icon-warning" aria-hidden="true"></span>
                         </button>
                         <button class="send-btn is-empty" id="send-button"
                                 title="Send message"
