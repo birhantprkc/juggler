@@ -74,7 +74,7 @@ class ConversationBar extends HTMLElement {
     /** @type {HTMLElement|null} @private */
     this._tabsContainer = null;
 
-    /** @type {{tab: HTMLElement, startY: number, startOrder: string[], startIdx: number, dropIdx: number, pointerId: number}|null} @private */
+    /** @type {{tab: HTMLElement, startY: number, startOrder: string[], startIdx: number, dropIdx: number, pointerId: number, active: boolean, ghost: HTMLElement|null}|null} @private */
     this._drag = null;
 
     /** @type {number|null} @private Auto-scroll rAF handle while dragging near edges */
@@ -769,7 +769,6 @@ class ConversationBar extends HTMLElement {
     // would clear .is-running and restart the CSS pulse animation).
     tab.classList.toggle('active', isActive);
     tab.classList.add('has-close');
-    tab.classList.remove('dragging');
     if (isActive) {
 
       // Scroll active tab into view (preserving overall scroll position for other tabs)
@@ -1251,11 +1250,11 @@ class ConversationBar extends HTMLElement {
    * @private
    */
   _startDrag(e, tab) {
-    const order = Array.from(this.querySelectorAll('.conversation-tab'))
+    const order = Array.from(this.querySelectorAll('.conversation-tab:not(.drag-ghost)'))
       .map(t => /** @type {HTMLElement} */ (t).dataset.conversationId || '');
     const startIdx = order.indexOf(tab.dataset.conversationId || '');
 
-    this._drag = { tab, startY: e.clientY, startOrder: order, startIdx, dropIdx: startIdx, pointerId: e.pointerId };
+    this._drag = { tab, startY: e.clientY, startOrder: order, startIdx, dropIdx: startIdx, pointerId: e.pointerId, active: false, ghost: null };
     tab.setPointerCapture(e.pointerId);
 
     /** @type {HTMLElement|null} */
@@ -1265,25 +1264,35 @@ class ConversationBar extends HTMLElement {
     let lastClientY = e.clientY;
     const EDGE_HOTZONE = 30;
     const MAX_SCROLL_STEP = 18;
+    // Only auto-scroll a genuinely overflowing list. A hair of sub-pixel overflow
+    // (the menu's bottom padding + rounding) must not make a fully-fitting list
+    // creep upward while you drag near its bottom edge.
+    const SCROLL_OVERFLOW_MIN = 4;
+
+    // Tabs in the list, excluding the floating ghost clone — it lives on the host
+    // rather than the scroll container, yet still carries the .conversation-tab class.
+    const listTabs = () =>
+      /** @type {HTMLElement[]} */ (Array.from(this.querySelectorAll('.conversation-tab:not(.drag-ghost)')));
 
     const recomputeDropAndShift = (/** @type {number} */ clientY) => {
       const d = this._drag;
       if (!d) return;
-      const tabs = Array.from(this.querySelectorAll('.conversation-tab'));
+      const tabs = listTabs();
       const draggedId = d.tab.dataset.conversationId;
       let dropIdx = 0;
       for (const t of tabs) {
-        if (/** @type {HTMLElement} */ (t).dataset.conversationId === draggedId) continue;
+        if (t.dataset.conversationId === draggedId) continue;
         const rect = t.getBoundingClientRect();
         const mid = rect.top + rect.height / 2;
         if (clientY > mid) dropIdx++;
       }
       d.dropIdx = dropIdx;
 
-      // Animate siblings along the Y axis
+      // Animate siblings along the Y axis to open a gap at the drop position. The
+      // dragged tab keeps its own slot (as an invisible placeholder), so the
+      // siblings shift around it.
       const tabHeight = d.tab.getBoundingClientRect().height + 8;
-      for (const t of tabs) {
-        const el = /** @type {HTMLElement} */ (t);
+      for (const el of tabs) {
         if (el.dataset.conversationId === draggedId) continue;
         const origIdx = d.startOrder.indexOf(el.dataset.conversationId || '');
         let shift = 0;
@@ -1299,22 +1308,24 @@ class ConversationBar extends HTMLElement {
         return;
       }
       const rect = scrollContainer.getBoundingClientRect();
+      const overflow = scrollContainer.scrollHeight - scrollContainer.clientHeight;
       const dyTop = lastClientY - rect.top;
       const dyBot = rect.bottom - lastClientY;
       let delta = 0;
-      if (dyTop < EDGE_HOTZONE && scrollContainer.scrollTop > 0) {
-        delta = -Math.ceil(MAX_SCROLL_STEP * (1 - Math.max(0, dyTop) / EDGE_HOTZONE));
-      } else if (dyBot < EDGE_HOTZONE &&
-                 scrollContainer.scrollTop + scrollContainer.clientHeight < scrollContainer.scrollHeight) {
-        delta = Math.ceil(MAX_SCROLL_STEP * (1 - Math.max(0, dyBot) / EDGE_HOTZONE));
+      if (overflow > SCROLL_OVERFLOW_MIN) {
+        if (dyTop < EDGE_HOTZONE && scrollContainer.scrollTop > 0) {
+          delta = -Math.ceil(MAX_SCROLL_STEP * (1 - Math.max(0, dyTop) / EDGE_HOTZONE));
+        } else if (dyBot < EDGE_HOTZONE &&
+                   scrollContainer.scrollTop + scrollContainer.clientHeight < scrollContainer.scrollHeight) {
+          delta = Math.ceil(MAX_SCROLL_STEP * (1 - Math.max(0, dyBot) / EDGE_HOTZONE));
+        }
       }
       if (delta !== 0) {
         scrollContainer.scrollTop += delta;
-        // Drop index can change when content moves under the pointer
+        // The drop index can change when content moves under the (stationary)
+        // pointer. The ghost is fixed to the viewport, so it naturally stays under
+        // the pointer as the list scrolls beneath it — nothing to reposition here.
         recomputeDropAndShift(lastClientY);
-        // Keep the dragged tab visually under the pointer
-        const d = this._drag;
-        if (d) d.tab.style.transform = `translateY(${lastClientY - d.startY}px) scale(1.02)`;
         this._autoScrollRaf = requestAnimationFrame(updateAutoScroll);
       } else {
         this._autoScrollRaf = null;
@@ -1327,21 +1338,48 @@ class ConversationBar extends HTMLElement {
       }
     };
 
+    // Build the floating drag ghost: a clone of the tab positioned `fixed` on the
+    // host. No layout ancestor establishes a containing block for fixed elements,
+    // so it anchors to the viewport and escapes the tab list's overflow:auto clip,
+    // free to travel the full height of the sidebar. Its fixed anchor is the tab's
+    // resting rect (captured at grab time), so translating it by the pointer delta
+    // keeps it under the finger exactly. The real tab stays in place as an invisible
+    // placeholder (.drag-source) that the siblings shift around, so render()
+    // reconciliation still finds it where it belongs.
+    const createGhost = () => {
+      const d = this._drag;
+      if (!d) return;
+      const rect = d.tab.getBoundingClientRect();
+      const ghost = /** @type {HTMLElement} */ (d.tab.cloneNode(true));
+      ghost.classList.add('drag-ghost');
+      ghost.classList.remove('is-renaming');
+      ghost.removeAttribute('data-conversation-id');
+      ghost.setAttribute('aria-hidden', 'true');
+      ghost.style.left = `${rect.left}px`;
+      ghost.style.top = `${rect.top}px`;
+      ghost.style.width = `${rect.width}px`;
+      ghost.style.height = `${rect.height}px`;
+      this.appendChild(ghost);
+      d.ghost = ghost;
+      d.tab.classList.add('drag-source');
+    };
+
     const onMove = /** @param {PointerEvent} ev */ (ev) => {
       const d = this._drag;
       if (!d) return;
 
       const delta = ev.clientY - d.startY;
-      if (!d.tab.classList.contains('dragging') && Math.abs(delta) < 5) return;
+      if (!d.active && Math.abs(delta) < 5) return;
 
-      // Activate drag mode
-      if (!d.tab.classList.contains('dragging')) {
-        d.tab.classList.add('dragging');
-        this.querySelector('.conversation-tabs')?.classList.add('is-dragging');
+      // Activate drag mode on the first meaningful movement.
+      if (!d.active) {
+        d.active = true;
+        scrollContainer?.classList.add('is-dragging');
+        createGhost();
       }
 
-      d.tab.style.transform = `translateY(${delta}px) scale(1.02)`;
       lastClientY = ev.clientY;
+      if (d.ghost) d.ghost.style.transform = `translateY(${delta}px) scale(1.02)`;
 
       recomputeDropAndShift(ev.clientY);
       maybeStartAutoScroll();
@@ -1356,8 +1394,8 @@ class ConversationBar extends HTMLElement {
       const d = this._drag;
       if (!d) return;
 
-      // Check if an actual drag occurred (not just a click)
-      const wasDragging = d.tab.classList.contains('dragging');
+      // Whether an actual drag occurred (not just a click)
+      const wasDragging = d.active;
 
       // Commit if position changed
       if (wasDragging && d.dropIdx !== d.startIdx && this._session) {
@@ -1373,11 +1411,15 @@ class ConversationBar extends HTMLElement {
       }
 
       // Cleanup
-      d.tab.classList.remove('dragging');
+      if (d.ghost) {
+        d.ghost.remove();
+        d.ghost = null;
+      }
+      d.tab.classList.remove('drag-source');
       d.tab.style.transform = '';
       d.tab.releasePointerCapture(ev.pointerId);
-      this.querySelector('.conversation-tabs')?.classList.remove('is-dragging');
-      this.querySelectorAll('.conversation-tab').forEach(t => {
+      scrollContainer?.classList.remove('is-dragging');
+      this.querySelectorAll('.conversation-tab:not(.drag-ghost)').forEach(t => {
         /** @type {HTMLElement} */ (t).style.transform = '';
       });
       this._drag = null;
@@ -1414,7 +1456,7 @@ class ConversationBar extends HTMLElement {
    * @private
    */
   _autoFitWidth() {
-    const tabs = Array.from(this.querySelectorAll('.conversation-tab'))
+    const tabs = Array.from(this.querySelectorAll('.conversation-tab:not(.drag-ghost)'))
       .map(el => /** @type {HTMLElement} */ (el));
     const tabsMenu = /** @type {HTMLElement|null} */ (this._cachedElements.get('tabs-menu'));
     if (!tabs.length || !tabsMenu) return;
@@ -1430,9 +1472,11 @@ class ConversationBar extends HTMLElement {
     let maxTabWidth = 0;
     for (const tab of tabs) {
       const clone = /** @type {HTMLElement} */ (tab.cloneNode(true));
-      // Strip any drag-related inline transform/state.
+      // Strip any drag-related inline transform/state so a tab that happens to be
+      // mid-drag (an invisible .drag-source) still measures at its natural size.
       clone.style.transform = '';
-      clone.classList.remove('dragging');
+      clone.style.visibility = '';
+      clone.classList.remove('drag-source');
       // Force natural width on the clone and its name span.
       clone.style.width = 'max-content';
       clone.style.flex = '0 0 auto';

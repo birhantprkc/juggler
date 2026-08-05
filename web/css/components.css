@@ -434,14 +434,32 @@ conversation-bar.tab-list-focused:focus-within .conversation-tab.active {
     box-shadow: 0 0 0 0.1875rem color-mix(in srgb, var(--accent-blue) 30%, transparent);
 }
 
-/* Drag-and-drop states */
-conversation-bar .conversation-tab.dragging {
-    opacity: 0.9;
-    z-index: 100;
+/* Drag-and-drop states.
+   The dragged tab is represented by a floating clone (.drag-ghost) positioned
+   `fixed` on the host, so it escapes the tab list's overflow:auto clip and can
+   travel the full height of the sidebar rather than being cut off at the short
+   list's edge. The real tab stays in place as an invisible placeholder
+   (.drag-source) that the siblings shift around. z-index sits at --z-dropdown:
+   above sidebar chrome, below modals (you can't reorder tabs with one open). */
+conversation-bar .conversation-tab.drag-ghost {
+    position: fixed;
+    margin: 0;
+    z-index: var(--z-dropdown);
+    opacity: 0.95;
     box-shadow: 0 0.25rem 1rem rgb(0 0 0 / 30%);
     cursor: grabbing;
+    pointer-events: none;
     will-change: transform;
-    transition: opacity 150ms ease, box-shadow 150ms ease;
+}
+
+/* Keep the grab handle lit on the ghost — it isn't hovered, so the hover-reveal
+   rule below wouldn't otherwise show it while dragging. */
+conversation-bar .conversation-tab.drag-ghost .tab-drag-handle {
+    opacity: 1;
+}
+
+conversation-bar .conversation-tab.drag-source {
+    visibility: hidden;
 }
 
 conversation-bar .tab-drag-handle {
@@ -480,7 +498,7 @@ conversation-bar .conversation-tabs.is-dragging {
     user-select: none;
 }
 
-conversation-bar .conversation-tabs.is-dragging .conversation-tab:not(.dragging) {
+conversation-bar .conversation-tabs.is-dragging .conversation-tab:not(.drag-source) {
     transition: transform 150ms ease;
 }
 
