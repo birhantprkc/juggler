@@ -83,6 +83,10 @@ const CV_ROW_TAGS = new Set([
   'ERROR-MESSAGE',
 ]);
 
+/** Idle gap (ms) after scrolling stops before queued row collapses are flushed;
+ *  long enough to sit out macOS momentum scrolling. See _flushRowSkips. */
+const SKIP_FLUSH_IDLE_MS = 200;
+
 /**
  * ConversationArea - Fixed conversation panel at bottom of viewport
  */
@@ -119,10 +123,16 @@ class ConversationArea extends HTMLElement {
     this._animationsPrimed = false;
     /** @type {ResizeObserver|null} @private - Recomputes scroll-control visibility on viewport/content resize */
     this._scrollControlsResizeObserver = null;
-    /** @type {IntersectionObserver|null} @private - Toggles the `cv-off` content-visibility skip on transcript rows by viewport proximity */
-    this._rowVisibilityObserver = null;
-    /** @type {WeakSet<Element>} @private - Rows already handed to _rowVisibilityObserver, so reconcile only observes new ones */
+    /** @type {IntersectionObserver|null} @private - Strips `cv-off` (renders a row) once it enters the inner margin; the near edge of the content-visibility hysteresis band */
+    this._rowRenderObserver = null;
+    /** @type {IntersectionObserver|null} @private - Applies `cv-off` (skips a row) once it leaves the outer margin; the far edge of the content-visibility hysteresis band */
+    this._rowSkipObserver = null;
+    /** @type {WeakSet<Element>} @private - Rows already handed to the row-visibility observers, so reconcile only observes new ones */
     this._observedRows = new WeakSet();
+    /** @type {Set<HTMLElement>} @private - Rows past the skip margin whose collapse is deferred until scrolling goes idle (see _flushRowSkips) */
+    this._pendingSkip = new Set();
+    /** @type {number|null} @private - Pending scroll-idle timer that flushes _pendingSkip */
+    this._skipFlushTimer = null;
   }
 
   /**
@@ -481,10 +491,19 @@ class ConversationArea extends HTMLElement {
       this._scrollControlsResizeObserver.disconnect();
       this._scrollControlsResizeObserver = null;
     }
-    if (this._rowVisibilityObserver) {
-      this._rowVisibilityObserver.disconnect();
-      this._rowVisibilityObserver = null;
+    if (this._rowRenderObserver) {
+      this._rowRenderObserver.disconnect();
+      this._rowRenderObserver = null;
     }
+    if (this._rowSkipObserver) {
+      this._rowSkipObserver.disconnect();
+      this._rowSkipObserver = null;
+    }
+    if (this._skipFlushTimer !== null) {
+      clearTimeout(this._skipFlushTimer);
+      this._skipFlushTimer = null;
+    }
+    this._pendingSkip.clear();
   }
 
   get inputBox() {
@@ -818,7 +837,12 @@ class ConversationArea extends HTMLElement {
       this._scrollEndIntoView(true);
     });
 
-    messageList.addEventListener('scroll', () => this._updateScrollControls(), { passive: true });
+    messageList.addEventListener('scroll', () => {
+      this._updateScrollControls();
+      // Any scroll — even a slow drag that crosses no skip margin — counts as
+      // activity, so hold off flushing queued collapses until it stops.
+      if (this._pendingSkip.size) this._armSkipFlush();
+    }, { passive: true });
 
     // Recompute on content growth (streaming, inserts) and viewport resize, both
     // of which change whether — and how far — the list can scroll.
@@ -827,18 +851,35 @@ class ConversationArea extends HTMLElement {
     const inner = this.querySelector('#message-list-inner');
     if (inner) this._scrollControlsResizeObserver.observe(inner);
 
-    // Drive the content-visibility skip (styles.css `.cv-off`) from an explicit
-    // observer instead of content-visibility:auto's own relevance heuristic,
-    // which WebKitGTK gets wrong for on-screen idle rows (see _reconcileRowVisibility
-    // and the styles.css comment). The generous rootMargin keeps ~1.5 viewports of
-    // rows above and below the visible window rendered, so cv-off is stripped well
-    // before a row scrolls into view and only ever lands on genuinely far rows.
+    // Drive the content-visibility skip (styles.css `.cv-off`) explicitly, via two
+    // observers forming a hysteresis band: a row RENDERS at the inner margin and
+    // SKIPS only past the wider outer margin, so a collapse-induced geometry shift
+    // can't carry it back across the render edge and re-toggle it forever.
+    // Renders apply immediately (a row must paint before it scrolls into view);
+    // skips are only queued and flushed once scrolling goes idle (_flushRowSkips),
+    // because collapsing a row below the viewport shifts content mid-gesture — the
+    // clunk the user sees — in this bottom-anchored (column-reverse) scroller.
+    const RENDER_MARGIN = '150% 0px'; // render within ~1.5 viewports (near edge)
+    const SKIP_MARGIN = '300% 0px'; // queue skip beyond ~3 viewports (far edge)
     if (typeof IntersectionObserver !== 'undefined') {
-      this._rowVisibilityObserver = new IntersectionObserver((entries) => {
+      // Near edge: render now and cancel any queued skip — the row is back in range.
+      this._rowRenderObserver = new IntersectionObserver((entries) => {
         for (const entry of entries) {
-          entry.target.classList.toggle('cv-off', !entry.isIntersecting);
+          if (!entry.isIntersecting) continue;
+          const target = /** @type {HTMLElement} */ (entry.target);
+          target.classList.remove('cv-off');
+          this._pendingSkip.delete(target);
         }
-      }, { root: messageList, rootMargin: '150% 0px' });
+      }, { root: messageList, rootMargin: RENDER_MARGIN });
+      // Far edge: queue for collapse and (re)arm the idle timer. Crossings fire
+      // throughout a scroll, so the timer keeps resetting until the gesture stops.
+      this._rowSkipObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) continue;
+          this._pendingSkip.add(/** @type {HTMLElement} */ (entry.target));
+        }
+        this._armSkipFlush();
+      }, { root: messageList, rootMargin: SKIP_MARGIN });
       this._reconcileRowVisibility();
     }
 
@@ -846,21 +887,81 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Observe any transcript rows not yet handed to the row-visibility observer.
-   * Idempotent and cheap (the WeakSet skips already-observed rows), so it is safe
-   * to call on every render; rows removed from the DOM are auto-dropped by the
-   * observer, so no explicit unobserve is needed.
+   * Observe any transcript rows not yet handed to the row-visibility observers.
+   * Each new row is registered with BOTH edges of the hysteresis band — the
+   * render observer (near margin) and the skip observer (far margin). Idempotent
+   * and cheap (the WeakSet skips already-observed rows), so it is safe to call on
+   * every render; rows removed from the DOM are auto-dropped by both observers,
+   * so no explicit unobserve is needed.
    * @private
    */
   _reconcileRowVisibility() {
-    if (!this._rowVisibilityObserver) return;
+    if (!this._rowRenderObserver || !this._rowSkipObserver) return;
     const content = this.querySelector('#message-list-inner');
     if (!content) return;
     for (const child of Array.from(content.children)) {
       if (!CV_ROW_TAGS.has(child.tagName) || this._observedRows.has(child)) continue;
       this._observedRows.add(child);
-      this._rowVisibilityObserver.observe(child);
+      this._rowRenderObserver.observe(child);
+      this._rowSkipObserver.observe(child);
     }
+  }
+
+  /**
+   * (Re)arm the scroll-idle timer that flushes queued row collapses. Each
+   * skip-crossing and scroll event pushes it out, so it fires only once scrolling
+   * has been quiet for SKIP_FLUSH_IDLE_MS.
+   * @private
+   */
+  _armSkipFlush() {
+    if (this._skipFlushTimer !== null) clearTimeout(this._skipFlushTimer);
+    this._skipFlushTimer = window.setTimeout(() => {
+      this._skipFlushTimer = null;
+      this._flushRowSkips();
+    }, SKIP_FLUSH_IDLE_MS);
+  }
+
+  /**
+   * Collapse the rows queued past the skip margin without moving the view. The
+   * freeze into contain-intrinsic-size should make each collapse height-neutral,
+   * but WebKit doesn't honour it exactly and this column-reverse scroller pins the
+   * bottom, so a residual shrink below the viewport lurches the content. So we
+   * don't trust the freeze: anchor on the row at the viewport centre, apply the
+   * batch, then correct scrollTop by however far that anchor actually moved — all
+   * synchronously, so only the corrected frame paints.
+   * @private
+   */
+  _flushRowSkips() {
+    if (!this._pendingSkip.size) return;
+    const list = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
+    const rows = Array.from(this._pendingSkip).filter((row) => row.isConnected);
+    this._pendingSkip.clear();
+    if (!rows.length || !list) return;
+
+    // Anchor on the visible row at the viewport centre (elementFromPoint keeps
+    // this O(1)) — never one of the far-offscreen rows being collapsed.
+    const listRect = list.getBoundingClientRect();
+    let anchor = /** @type {Element|null} */ (
+      document.elementFromPoint(listRect.left + listRect.width / 2, listRect.top + listRect.height / 2)
+    );
+    while (anchor && !CV_ROW_TAGS.has(anchor.tagName)) anchor = anchor.parentElement;
+    const anchorTopBefore = anchor ? anchor.getBoundingClientRect().top : 0;
+
+    // Read all heights first (one shared layout flush), then apply freeze + cv-off.
+    const heights = rows.map((row) => row.getBoundingClientRect().height);
+    for (let i = 0; i < rows.length; i++) {
+      if (heights[i] > 0) rows[i].style.containIntrinsicSize = `${heights[i]}px`;
+      rows[i].classList.add('cv-off');
+    }
+
+    // Cancel the anchor's displacement, forced instant (the list scrolls smooth).
+    if (!anchor) return;
+    const shift = anchor.getBoundingClientRect().top - anchorTopBefore;
+    if (!shift) return;
+    const prevBehavior = list.style.scrollBehavior;
+    list.style.scrollBehavior = 'auto';
+    list.scrollTop += shift;
+    list.style.scrollBehavior = prevBehavior;
   }
 
   /**

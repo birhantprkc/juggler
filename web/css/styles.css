@@ -1308,6 +1308,16 @@ conversation-message-list-wrapper {
     display: flex;
     flex-direction: column-reverse;
 
+    /* Disable the browser's own scroll anchoring. This component does all its own
+       anchoring — column-reverse pins the bottom natively, and the streaming
+       reader-anchor (_setupStreamingScrollObserver) holds a mid-scroll read
+       position by hand — so the built-in mechanism is redundant. It is also
+       actively harmful here: as rows cross the cv-off boundary, WebKit samples the
+       content-visibility relayout mid-flight and nudges scrollTop to "correct" it,
+       then undoes that when the real layout lands — a visible bump/jiggle that
+       fights the user's scroll. `none` hands anchoring authority solely to us. */
+    overflow-anchor: none;
+
     /* Animate the programmatic scrolls that DO move the viewport — jump-to-bottom
        from a scrolled-up position, selection, continue. (Native bottom-anchoring
        during streaming is a layout effect, not a scroll, so it stays instant —
@@ -1332,61 +1342,29 @@ conversation-message-list-wrapper {
 
 /* Let WebKit skip rendering work for transcript rows scrolled out of view.
 
-   The transcript is fully materialised: every item a conversation has ever
-   produced stays in the DOM (there is no windowing layer, and nothing prunes
-   old rows). WebKit's rendering update walks the render tree, so the cost of
-   style recalc + layout + paint scales with the WHOLE conversation rather than
-   with what's on screen. On a long thread that pins the WebProcess main thread
-   near saturation for as long as anything keeps invalidating — and something
-   always does while a turn is in flight (the busy spinner animates
-   continuously) — and because the GTK shell has to composite each of those
-   frames, one heavy window makes every window in the app stutter.
+   The transcript is fully materialised — every item ever produced stays in the
+   DOM, with no windowing — so WebKit's render-tree walk (style, layout, paint)
+   scales with the WHOLE conversation, not what's on screen. On a long thread that
+   pins the WebProcess main thread near saturation whenever anything invalidates
+   (e.g. the busy spinner during a turn), stuttering every window. content-
+   visibility skips that work for off-screen rows; it changes only rendering, so
+   find, selection, copy and body-appended tooltips are unaffected.
 
-   Accelerated compositing does not fix this: it moves rasterisation to the GPU,
-   but the render-tree traversal and geometry stay on the main thread.
+   Skip is driven explicitly by the `.cv-off` class (conversation-area's
+   IntersectionObserver / _reconcileRowVisibility), NOT content-visibility:auto's
+   own proximity heuristic — which WebKit re-evaluates continuously and mid-scroll,
+   flipping a row between its intrinsic and real height (WebKit doesn't reconcile
+   the two) and jiggling everything below it. Hence `hidden`, not `auto`: a row is
+   skipped iff our class says so. The observer renders (cv-off off) ~1.5 viewports
+   out, before a scroll reaches a row, and defers the collapse (cv-off on) to
+   scroll-idle, where _flushRowSkips freezes the row's live height into contain-
+   intrinsic-size and corrects scrollTop for any residual shift, so the visible
+   content never moves. The 6rem fallback below only applies to a row not yet
+   measured.
 
-   content-visibility:auto lets the engine skip style, layout and paint for rows
-   outside the viewport (plus its own margin), so per-frame cost tracks what is
-   visible instead of how long the conversation has grown. It changes only
-   *rendering* — the DOM is untouched — so the things that read the transcript
-   keep working unchanged:
-     - find-controller walks text nodes into Ranges and filters visibility on
-       the `hidden`/`aria-hidden` attributes, never on offsetParent or layout,
-       so off-screen matches are still found; its scrollIntoView renders the row
-       on the way to it, and the Custom Highlight paints once it does.
-     - tooltips and popup surfaces are appended to document.body, so the paint
-       containment content-visibility implies cannot clip them. Nothing inside a
-       message row paints outside its own box.
-     - selection and copy follow DOM order, which is unchanged.
-
-   Deliberately NOT excluding the newest rows (e.g. :not(:nth-last-child(-n+N))
-   to keep the streaming bubble out of it): a structural pseudo-class on a list
-   this long makes every insertion invalidate sibling style, which is the very
-   per-item cost this rule exists to remove. It isn't needed anyway — the rows
-   being streamed into sit at the bottom, on screen, so they render normally;
-   and the FLIP height read (offsetHeight) forces layout on demand regardless.
-
-   contain-intrinsic-size supplies placeholder geometry for rows the engine has
-   not laid out yet. The `auto` keyword makes it remember each row's last real
-   size, so scrollbar geometry settles once a row has been seen — which matters
-   in this reversed, bottom-anchored scroller, where an estimate that changed
-   while scrolling up would shift content under the pointer. The 6rem fallback
-   is a typical short bubble; it only ever applies to a row not yet rendered
-   once.
-
-   Applied only to rows carrying the `cv-off` class, which conversation-area's
-   IntersectionObserver (_reconcileRowVisibility) toggles on when a row sits far
-   outside the viewport and off again well before it scrolls back in. The skip is
-   driven by that explicit observer rather than content-visibility:auto's own
-   "relevant to the user" heuristic because WebKitGTK gets that heuristic wrong
-   for on-screen but idle rows: a row that has stopped being repainted — e.g. a
-   bash bubble parked awaiting approval — can be left in the skipped state and
-   painted blank until something dirties its subtree (a click). Rows without
-   cv-off carry no containment at all, so an on-screen row can never be blanked;
-   a row only ever gets cv-off while it is genuinely far off-screen, where the
-   heuristic being imperfect is a harmless perf nuance, never a visible blank.
-   `auto` (not `hidden`) so find-in-page and accessibility still reach an
-   off-screen row and its scrollIntoView renders it on the way. */
+   Trade-off of `hidden`: find-in-page and a11y can't traverse a skipped subtree
+   and scrollIntoView won't auto-render it — but cv-off is stripped ~1.5 viewports
+   out, so a row renders before a scroll reaches it regardless. */
 .conversation-message-list-inner > user-message.cv-off,
 .conversation-message-list-inner > assistant-message.cv-off,
 .conversation-message-list-inner > thinking-message.cv-off,
@@ -1394,8 +1372,8 @@ conversation-message-list-wrapper {
 .conversation-message-list-inner > thread-message.cv-off,
 .conversation-message-list-inner > context-item-message.cv-off,
 .conversation-message-list-inner > error-message.cv-off {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 6rem;
+    content-visibility: hidden;
+    contain-intrinsic-size: 6rem;
 }
 
 .conversation-message-list::-webkit-scrollbar {
