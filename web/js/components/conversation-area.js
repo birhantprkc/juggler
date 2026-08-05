@@ -83,8 +83,10 @@ const CV_ROW_TAGS = new Set([
   'ERROR-MESSAGE',
 ]);
 
-/** Idle gap (ms) after scrolling stops before queued row collapses are flushed;
- *  long enough to sit out macOS momentum scrolling. See _flushRowSkips. */
+/**
+ * Idle gap (ms) after scrolling stops before queued row collapses are flushed;
+ * long enough to sit out macOS momentum scrolling. See _flushRowSkips.
+ */
 const SKIP_FLUSH_IDLE_MS = 200;
 
 /**
@@ -948,10 +950,10 @@ class ConversationArea extends HTMLElement {
     const anchorTopBefore = anchor ? anchor.getBoundingClientRect().top : 0;
 
     // Read all heights first (one shared layout flush), then apply freeze + cv-off.
-    const heights = rows.map((row) => row.getBoundingClientRect().height);
-    for (let i = 0; i < rows.length; i++) {
-      if (heights[i] > 0) rows[i].style.containIntrinsicSize = `${heights[i]}px`;
-      rows[i].classList.add('cv-off');
+    const measured = rows.map((row) => ({ row, height: row.getBoundingClientRect().height }));
+    for (const { row, height } of measured) {
+      if (height > 0) row.style.containIntrinsicSize = `${height}px`;
+      row.classList.add('cv-off');
     }
 
     // Cancel the anchor's displacement, forced instant (the list scrolls smooth).
