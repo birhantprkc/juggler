@@ -27,6 +27,11 @@ declares today.
 3. **No backtick characters inside the string.** The corpus is a JS template
    literal, so backticks would break it. Use plain text or single quotes for
    paths and commands (e.g. write ~/.juggler/credentials.json, not a code span).
+   For a multi-line code sample, use a 4-space-indented block (markdown renders
+   it as code) rather than a triple-backtick fence, and never use a JS template
+   literal inside the sample. Any backslash the rendered markdown must show
+   (e.g. a regex like /\s+/) has to be DOUBLED in this source (write /\\s+/), or
+   the template literal will swallow it.
    Preserve the two placeholder tokens verbatim — `{{KEYBOARD_SHORTCUTS}}` and
    `{{LOG_LOCATION}}`. The tool substitutes these at call time with text rendered
    for the live session's platform. Do NOT hard-code a keyboard-shortcut table or
@@ -34,9 +39,13 @@ declares today.
    cross-platform; platform-specifics are injected. (Shortcuts with no modifier,
    like Shift+Tab for the strategy switcher, are platform-neutral and may be
    named in prose.)
-4. **Keep it sensibly sized** — a scannable manual (roughly 150–250 lines of
+4. **Keep it sensibly sized** — a scannable manual (roughly 150–280 lines of
    markdown), not an exhaustive dump. Prefer the user-facing shape of a feature
-   over implementation detail.
+   over implementation detail. The one deliberate exception to "user-facing
+   shape over detail" is the "Writing an extension" quickstart (the ext CLI, a
+   minimal manifest, and a minimal context-item example): keep it, because it is
+   the only extension-authoring content that works for a user who has just the
+   app and no repo checkout.
 5. **Audience is the model at runtime**, answering an end user. Factual and
    terse; no marketing.
 
@@ -75,6 +84,18 @@ Paths are relative to the `juggler/` repo root.
   extension ids/names (@juggler/core, @juggler/mcp, and this @juggler/about);
   `cmd/juggler/server/handlers/extensions.go` for how embedded vs user
   (`~/.juggler/extensions/`) extensions are discovered.
+- **Writing an extension (the quickstart section)** — ground it in
+  `docs/extension_guide.md`: the `juggler ext init|validate|link|add` CLI
+  (`cmd/juggler/app/ext.go` is the implementation), the anatomy (manifest +
+  suffix-named capability files), the manifest field table, and the minimal
+  context-item example (the WordCount sample). Keep the required/recommended
+  manifest fields and the three capability suffixes matching the guide, and keep
+  the `outcome.result` gotcha — the guide calls it "the single most common
+  mistake." This @juggler/about extension ALSO ships a second tool,
+  **ReadJugglerSource** (`context-items/juggler-source-context-item.js`), that
+  same-origin-fetches the app-served SDK/example sources; the corpus tells the
+  model to use it. If you rename that tool or change the paths it allows (today:
+  anything under `sdk/` or `extensions/`), update the corpus prose to match.
 - **Source code and deeper documentation** — the corpus ends with a section
   linking the public repo and its docs so the model can dive deeper (especially
   for writing extensions). Keep it grounded: the repo URL is

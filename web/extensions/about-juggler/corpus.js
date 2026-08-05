@@ -197,10 +197,93 @@ Extensions view, which removes this tool entirely.
 
 User extensions can be installed under "~/.juggler/extensions/". Extensions are
 managed in the Extensions view, where each extension and each capability has an
-enable/disable toggle. To write one, see the authoring guide and SDK linked under
-"Source code and deeper documentation" below — an extension is a small folder
-with a juggler.extension.json manifest plus capability classes (context items,
-strategies, commands) that subclass the SDK base classes.
+enable/disable toggle.
+
+### Writing an extension
+
+You do not need Juggler's source checked out to build one — everything you need
+ships with the app.
+
+Fastest start: the Juggler binary has an "ext" subcommand.
+
+- "juggler ext init <name>" scaffolds a complete, working extension (a manifest
+  plus one sample of each capability and a README) that loads and passes
+  validation unedited — edit the samples into what you want.
+- "juggler ext validate <path>" runs the exact admission check the app applies
+  at load: required manifest fields, engineApi compatibility with this host, and
+  that every "provides" glob resolves to real files.
+- "juggler ext link <path>" symlinks your directory into "~/.juggler/extensions/";
+  after that, saving any file hot-reloads the extension in connected viewers with
+  no restart.
+- "juggler ext add github.com/owner/repo" clones a published extension.
+
+Anatomy: an extension is a folder with a "juggler.extension.json" manifest at its
+root plus capability files whose names carry a type suffix, which is how the
+manifest globs find them — "context-items/*-context-item.js" (tools the model can
+call), "strategies/*-strategy-type.js" (agentic-loop policies), and
+"commands/*-command-type.js" (slash commands). Each capability is a class that
+"export default"s, extends an SDK base class ("juggler/context-item",
+"juggler/strategy-type", or "juggler/command-type"), and declares a static
+MANIFEST. (For a reusable prompt you do not need an extension at all — a custom
+slash command is enough.)
+
+Minimal manifest. Required fields are id, name, version, and provides; engineApi
+is recommended and is checked against the host SDK version in web/sdk/version.js:
+
+    {
+      "id": "@you/word-count",
+      "name": "Word Count",
+      "version": "1.0.0",
+      "engineApi": "^1.0.0",
+      "provides": { "contextItems": ["context-items/*-context-item.js"] }
+    }
+
+Minimal tool (a context item). Implement getToolDefinitions() (the schema the
+model sees), execute() (do the work; return RAW data), and getSummary() (format
+the outcome). The single most common mistake is reading outcome.foo instead of
+outcome.result.foo — execute()'s return value is wrapped as outcome.result:
+
+    import ContextItem from 'juggler/context-item';
+
+    class WordCountContextItem extends ContextItem {
+      static MANIFEST = { id: 'word-count', name: 'Word Count', version: '1.0.0',
+        description: 'Count words in a text string' };
+
+      static getToolDefinitions() {
+        return [{
+          name: 'word_count',
+          category: 'read',
+          description: 'Count words in a text string',
+          input_schema: { type: 'object',
+            properties: { text: { type: 'string', description: 'Text to count' } },
+            required: ['text'] }
+        }];
+      }
+
+      async execute(params) {
+        return { count: params.text.split(/\\s+/).filter(Boolean).length };
+      }
+
+      getSummary(outcome) {
+        if (!outcome.success) return { summary: outcome.error, success: false };
+        return { summary: outcome.result.count + ' words', success: true };
+      }
+    }
+
+    export default WordCountContextItem;
+
+For the exact API — every base-class method, the engine-vs-viewer execution
+rules, approval and status-UI hooks, and the full manifest schema — read the SDK
+source and the built-in examples directly. You can pull that source inside this
+app, with no repo and no network, using the ReadJugglerSource tool: pass a path
+under sdk/ or extensions/. The most useful targets are sdk/context-item.js,
+sdk/strategy-type.js, and sdk/command-type.js (each opens with a quickstart and a
+full method reference), plus the working examples under
+extensions/juggler-core/context-items/ (for example read-file-context-item.js for
+validation and status UI, or write-file-context-item.js for an approval gate).
+The same files are also served by the running app at /sdk/... and /extensions/...
+if you would rather open them in a browser tab. The authoring guide itself lives
+in the repo at docs/extension_guide.md (linked below).
 
 ## Updates and connectivity
 
@@ -232,6 +315,10 @@ extend the app), read the source rather than guessing:
   (tools/context items), web/sdk/strategy-type.js (strategies), and
   web/sdk/command-type.js (slash commands). The built-in extensions under
   web/extensions/ (juggler-core and juggler-mcp) are working examples to copy.
+  The guide lives on GitHub, but those SDK base classes and the web/extensions/
+  examples are also readable inside this app via the ReadJugglerSource tool
+  (paths under sdk/ or extensions/) — so you can consult the exact API offline,
+  with no repo checkout.
 - **Configuration and data layout** — docs/config-directory.md (the ~/.juggler
   directory, durable vs. cache).
 - **Custom slash commands** — docs/custom-commands.md (the no-code command
