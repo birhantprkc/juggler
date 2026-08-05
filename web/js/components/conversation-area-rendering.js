@@ -756,6 +756,10 @@ function createContextItemBubble(area, message, itemIndex) {
   // Only render items with a registered context item plugin
   const contextItem = msg.get('itemId') ? area._messageThread?.getContextItem(msg.get('itemId')) : null;
   if (!contextItem) return null;
+  // Items may opt out of a standing transcript card while still contributing
+  // to LLM context and persisting their data (e.g. the todo list, whose live
+  // state shows on each tool-action row and will move to the pinboard).
+  if (!contextItem.isVisible()) return null;
   const itemType = contextItem.type;
   const badge = contextItem?.getBadgeOptions() ?? /** @type {{color: string, icon?: string}} */ ({ color: 'slate' });
   const colorPreset = badge.color;

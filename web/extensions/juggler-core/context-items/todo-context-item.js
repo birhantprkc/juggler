@@ -157,6 +157,17 @@ class TodoContextItem extends ContextItem {
     return 'Todos';
   }
 
+  /**
+   * The todo list contributes to LLM context and shows its live state on each
+   * `todo` tool-action row, so a separate standing card in the transcript only
+   * duplicates that with a confusing, transaction-less tile. Opt out of the
+   * card; persistent todo state will surface on the pinboard instead.
+   * @returns {boolean} False — no standing transcript card for the todo list.
+   */
+  isVisible() {
+    return false;
+  }
+
   /** @returns {string} Brief summary */
   getBriefSummary() {
     const todos = this.data.todos || [];

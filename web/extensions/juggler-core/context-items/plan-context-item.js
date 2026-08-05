@@ -247,6 +247,18 @@ class PlanContextItem extends ContextItem {
   }
 
   /**
+   * The plan contributes to LLM context and its full current state renders on
+   * each plan tool-action row (submit shows the proposal; every step action
+   * carries a plan snapshot), so a separate standing card in the transcript only
+   * duplicates that with a confusing, transaction-less tile. Opt out of the
+   * card; persistent plan state will surface on the pinboard instead.
+   * @returns {boolean} False — no standing transcript card for the plan.
+   */
+  isVisible() {
+    return false;
+  }
+
+  /**
    * Get brief summary string for item display
    * @returns {string} Brief summary
    */
