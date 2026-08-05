@@ -275,6 +275,10 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config API: %w", err)
 	}
+	// Hand the config API the customisable half of the built-in auto-name prompt
+	// so the settings UI shows it verbatim as the custom-instruction placeholder.
+	// The fixed data guard is appended server-side and never surfaced.
+	configAPI.AutoNameDefaultPrompt = autoNameTitleInstruction
 
 	defaultModelStore, err := core.NewDefaultModelStore()
 	if err != nil {

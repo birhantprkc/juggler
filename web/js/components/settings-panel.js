@@ -161,6 +161,9 @@ class SettingsPanel extends HTMLElement {
                             <div id="cheap-model-field-container"></div>
                         </div>
 
+                        <div class="settings-section-heading">Tab auto-naming</div>
+                        <div class="settings-form" id="auto-name-form"></div>
+
                         <div class="settings-form" id="global-settings"></div>
 
                         <div class="settings-section-heading">New task defaults</div>

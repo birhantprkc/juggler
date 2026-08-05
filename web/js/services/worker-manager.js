@@ -535,6 +535,18 @@ class WorkerManager {
   }
 
   /**
+   * Request an on-demand ("auto-name now") tab-title derivation. The worker
+   * re-derives a title from the conversation's first user message and hands off
+   * to the server, which renames and broadcasts the change (a no-op before the
+   * first user message). Fire-and-forget: the rename arrives via the normal
+   * conversations-changed broadcast.
+   * @param {string} conversationId - Conversation ID
+   */
+  requestAutoName(conversationId) {
+    this.sendToWorker(conversationId, { type: 'request-auto-name' });
+  }
+
+  /**
    * Create a sub-thread on the worker (strategy-driven).
    * Blocks until the thread completes and returns its result.
    * @param {string} conversationId - Conversation ID

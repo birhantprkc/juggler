@@ -31,6 +31,7 @@ import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js
 import { formatBytes } from '../utils/format.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
+import { isAutoNameEnabled, refreshAutoNameSetting } from '../services/auto-name-setting.js';
 import './bin-modal.js';
 import './info-rail.js';
 import './info-cards-button.js';
@@ -376,6 +377,10 @@ class ConversationBar extends HTMLElement {
 
     this._session = session;
 
+    // Seed the auto-naming setting cache (best-effort, fire-and-forget) so the
+    // new-tab rename-vs-focus decision reads a current value.
+    void refreshAutoNameSetting();
+
     // Subscribe to LLM status changes so we can update per-tab indicator classes
     // without re-rendering the whole bar. Pull the (shared) llmState off any
     // conversation; new conversations registered later use the same instance.
@@ -396,7 +401,15 @@ class ConversationBar extends HTMLElement {
       } else if (event.type === 'conversation:switched') {
         this._handleConversationSwitched(event.data);
       } else if (event.type === 'conversation:rename-requested') {
-        this._enterRenameMode(event.data.conversationId);
+        // A fresh unnamed tab was activated. With auto-naming on (the default),
+        // leave the "Task N" name for the LLM to replace after the first message
+        // and drop focus straight into the composer; with it off, open the inline
+        // rename editor so the user names it now.
+        if (isAutoNameEnabled()) {
+          this._focusConversationInput(event.data.conversationId);
+        } else {
+          this._enterRenameMode(event.data.conversationId);
+        }
       }
 
       // Re-render tab buttons whenever conversations change
@@ -1093,6 +1106,22 @@ class ConversationBar extends HTMLElement {
     await this._session.createConversation('', { activate: true, origin: 'plus-button' });
   }
 
+  /**
+   * Move keyboard focus into a conversation's message box. Used on new-tab
+   * creation when auto-naming is on: instead of prompting for a name, we drop
+   * the user straight into the composer (the LLM names the tab from the first
+   * message). Deferred a frame so the freshly-activated tab's input-box exists
+   * and is laid out, matching the tab-switch focus path.
+   * @param {string} conversationId
+   * @private
+   */
+  _focusConversationInput(conversationId) {
+    requestAnimationFrame(() => {
+      const activeTab = /** @type {any} */ (this._tabElements.get(conversationId));
+      activeTab?._focusInput?.();
+    });
+  }
+
 
   /**
    * Enter inline rename mode on the tab for the given conversation. Builds a
@@ -1144,6 +1173,7 @@ class ConversationBar extends HTMLElement {
     `;
     const input = /** @type {HTMLInputElement} */ (block.querySelector('.conversation-tab-rename-input'));
     const errorEl = /** @type {HTMLElement} */ (block.querySelector('.conversation-tab-rename-error'));
+    const actions = /** @type {HTMLElement} */ (block.querySelector('.conversation-tab-rename-actions'));
     // UI-level enforcement of the shared name-length cap: the browser blocks
     // further typed input at the limit. This input backs both rename and the
     // "name a new conversation" flow, so both paths are covered here. The data
@@ -1235,6 +1265,31 @@ class ConversationBar extends HTMLElement {
       if (done) return;
       commit();
     });
+
+    // "Auto-name" button: hand off to the model to name the tab from the first
+    // message instead of typing a name. Only shown once the conversation has a
+    // first user message to derive from — for a brand-new empty tab there's
+    // nothing to name, and the request would be a server-side no-op, so we omit
+    // the button entirely (the :empty actions slot then collapses).
+    // pointerdown preventDefault keeps focus on the input so the button press
+    // doesn't trigger a blur→commit of the current (unchanged) value first. The
+    // server renames + broadcasts, which updates the tab; we just close the editor.
+    if (conv.hasAutoNameSource()) {
+      const autoNameBtn = document.createElement('button');
+      autoNameBtn.type = 'button';
+      autoNameBtn.className = 'conversation-tab-rename-auto';
+      autoNameBtn.textContent = 'Auto-name';
+      autoNameBtn.title = 'Let the model name this tab from your first message';
+      autoNameBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); });
+      autoNameBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (done) return;
+        /** @type {NonNullable<typeof this._session>} */ (this._session).requestAutoName(conv.id);
+        teardown();
+      });
+      actions.appendChild(autoNameBtn);
+    }
 
     tab.classList.add('is-renaming');
     tab.appendChild(block);

@@ -322,7 +322,7 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		// first messages.
 		if msg.ThreadItemID == "" && w.autoNameFunc != nil &&
 			strings.TrimSpace(input.Text) != "" && !w.hasExistingUserMessage() {
-			w.autoNameFunc(w.conversationID, input.Text, modelConfig.Provider, modelConfig.Model, modelConfig.Thinking)
+			w.autoNameFunc(w.conversationID, input.Text, modelConfig.Provider, modelConfig.Model, modelConfig.Thinking, false)
 		}
 
 		// Drain any queued items into this thread FIRST, then append the new user
@@ -373,6 +373,41 @@ func (w *ConversationWorker) hasExistingUserMessage() bool {
 		}
 	}
 	return false
+}
+
+// firstRootUserMessageText returns the text of the conversation's first
+// root-level user message, or "" when there is none yet (or it was image-only).
+// Reads root items directly (not the active-thread target) so it is correct
+// regardless of any thread context left set by a prior message.
+func (w *ConversationWorker) firstRootUserMessageText() string {
+	for _, it := range w.doc.GetItems() {
+		if it.Type == ItemTypeUser {
+			return it.Content
+		}
+	}
+	return ""
+}
+
+// handleRequestAutoName services a manual "auto-name now" request: it re-derives
+// a tab title from the conversation's first user message, out-of-band, via the
+// injected server callback with force=true (which bypasses the server's enable
+// gate and its "still named Task N" guard, so the rename always applies). A
+// no-op when auto-naming isn't wired or there is no user message to summarise
+// yet — there is nothing to name before the first turn.
+func (w *ConversationWorker) handleRequestAutoName() {
+	if w.autoNameFunc == nil {
+		return
+	}
+	first := w.firstRootUserMessageText()
+	if strings.TrimSpace(first) == "" {
+		return
+	}
+	mc := w.doc.ResolveEffectiveModelConfig("")
+	provider, model, thinking := "", "", ""
+	if mc != nil {
+		provider, model, thinking = mc.Provider, mc.Model, mc.Thinking
+	}
+	w.autoNameFunc(w.conversationID, first, provider, model, thinking, true)
 }
 
 // handleProviderTurn lands a turn the provider surfaced out-of-band — an

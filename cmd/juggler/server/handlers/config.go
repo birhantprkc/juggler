@@ -30,6 +30,16 @@ const (
 	// so an absent/empty value means enabled (the default). "1" means disabled.
 	// Mirrored by createAutoCompactGate in server/llm_caller.go.
 	autoCompactDisabledKey = "auto_compact_disabled"
+	// autoNameDisabledKey stores the disabled state of tab auto-naming, so an
+	// absent/empty value means enabled (the default). "1" means disabled. Read
+	// live by server/auto_name.go's autoNamer (gates the LLM namer) and mirrored
+	// on the client by services/auto-name-setting.js (gates the new-tab rename
+	// prompt vs. focusing the composer).
+	autoNameDisabledKey = "auto_name_disabled"
+	// autoNameInstructionKey stores an optional custom title instruction for the
+	// tab auto-namer, replacing the built-in autoNameTitleInstruction. Empty ⇒ the
+	// built-in one applies. The fixed data guard is appended server-side either way.
+	autoNameInstructionKey = "auto_name_instruction"
 )
 
 // ConfigAPI handles configuration-related HTTP requests. It reads the
@@ -42,6 +52,12 @@ type ConfigAPI struct {
 	credStore        *core.CredentialsStore
 	onCredsChanged   func()
 	onPluginsChanged func()
+	// AutoNameDefaultPrompt is the built-in tab auto-naming system prompt, echoed
+	// to the client in the config GET so the settings UI shows it verbatim as the
+	// custom-instruction placeholder — the exact prompt a custom one replaces.
+	// Owned by server/auto_name.go and set by the server after construction;
+	// empty for handlers that don't wire it (e.g. one-shot CLI tools).
+	AutoNameDefaultPrompt string
 }
 
 // NewConfigAPI creates a new ConfigAPI. pathProvider must return the current
@@ -118,6 +134,9 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"openaiCompatibleHeaders": c.credStore.GetRawKey(openaiCompatibleHeadersKey),
 		"streamIdleTimeout":       c.credStore.GetRawKey(streamIdleTimeoutKey),
 		"autoCompactDisabled":     c.credStore.GetRawKey(autoCompactDisabledKey) == "1",
+		"autoNameDisabled":        c.credStore.GetRawKey(autoNameDisabledKey) == "1",
+		"autoNameInstruction":     c.credStore.GetRawKey(autoNameInstructionKey),
+		"autoNameDefaultPrompt":   c.AutoNameDefaultPrompt,
 	}
 
 	WriteJSON(w, r, 0, response)
@@ -255,6 +274,38 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := c.credStore.SetRawKey(autoCompactDisabledKey, stored); err != nil {
 			jlog.Error("Failed to save auto-compaction setting: %v", err)
+		}
+	}
+
+	// Handle the global tab auto-naming off switch (raw credential), same shape
+	// as the auto-compaction switch: stored as the disabled state so an
+	// absent/empty key means enabled (default). autoNamer reads it live, so a
+	// toggle takes effect on the next auto-name attempt without a restart.
+	if v, ok := req[autoNameDisabledKey]; ok {
+		disabled := false
+		switch t := v.(type) {
+		case bool:
+			disabled = t
+		case string:
+			disabled = strings.TrimSpace(t) == "1"
+		}
+		stored := ""
+		if disabled {
+			stored = "1"
+		}
+		if err := c.credStore.SetRawKey(autoNameDisabledKey, stored); err != nil {
+			jlog.Error("Failed to save auto-naming setting: %v", err)
+		}
+	}
+
+	// Handle the optional custom auto-name instruction (raw credential). Read
+	// live by autoNamer as the first-attempt system prompt; blank clears it back
+	// to the built-in prompt.
+	if v, ok := req[autoNameInstructionKey]; ok {
+		if s, ok := v.(string); ok {
+			if err := c.credStore.SetRawKey(autoNameInstructionKey, strings.TrimSpace(s)); err != nil {
+				jlog.Error("Failed to save auto-name instruction: %v", err)
+			}
 		}
 	}
 

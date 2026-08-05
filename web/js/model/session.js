@@ -1767,6 +1767,20 @@ class Session {
   }
 
   /**
+   * Request an on-demand ("auto-name now") tab-title derivation for a
+   * conversation. Fire-and-forget: the worker re-derives a title from the
+   * conversation's first user message and the server renames + broadcasts the
+   * change, which arrives via the normal conversations-changed path. A no-op
+   * before the conversation has a first user message.
+   * @param {string} conversationId - Conversation to auto-name.
+   * @returns {void}
+   */
+  requestAutoName(conversationId) {
+    if (!this.conversations.has(conversationId)) return;
+    workerManager.requestAutoName(conversationId);
+  }
+
+  /**
    * Rename a conversation. Renames the on-disk folder via PATCH; on
    * success updates conv.name and the local manifest cache and emits
    * 'conversation:changed' so the tab bar re-renders. Throws an Error

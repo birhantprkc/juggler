@@ -75,3 +75,90 @@ func TestAutoCompactDisabledRoundTrip(t *testing.T) {
 		t.Fatal("after PUT false, autoCompactDisabled = true, want false (cleared)")
 	}
 }
+
+// getAutoNameConfig drives HandleGetConfig and returns the autoNameDisabled and
+// autoNameInstruction fields from the payload.
+func getAutoNameConfig(t *testing.T, api *ConfigAPI) (bool, string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	api.HandleGetConfig(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/config = %d, want 200", rec.Code)
+	}
+	var payload struct {
+		AutoNameDisabled    bool   `json:"autoNameDisabled"`
+		AutoNameInstruction string `json:"autoNameInstruction"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode GET payload: %v", err)
+	}
+	return payload.AutoNameDisabled, payload.AutoNameInstruction
+}
+
+// TestAutoNameDisabledRoundTrip pins the config round-trip for the global tab
+// auto-naming switch: default is enabled (false disabled), PUT true persists,
+// and PUT false clears it back to the default.
+func TestAutoNameDisabledRoundTrip(t *testing.T) {
+	api := newTestConfigAPI(t)
+
+	if disabled, _ := getAutoNameConfig(t, api); disabled {
+		t.Fatal("default autoNameDisabled = true, want false (enabled by default)")
+	}
+
+	putConfig(t, api, map[string]any{"auto_name_disabled": true})
+	if disabled, _ := getAutoNameConfig(t, api); !disabled {
+		t.Fatal("after PUT true, autoNameDisabled = false, want true")
+	}
+
+	putConfig(t, api, map[string]any{"auto_name_disabled": false})
+	if disabled, _ := getAutoNameConfig(t, api); disabled {
+		t.Fatal("after PUT false, autoNameDisabled = true, want false (cleared)")
+	}
+}
+
+// TestAutoNameInstructionRoundTrip pins the custom auto-name instruction:
+// default empty, PUT a value persists (trimmed), and PUT blank clears it.
+func TestAutoNameInstructionRoundTrip(t *testing.T) {
+	api := newTestConfigAPI(t)
+
+	if _, instr := getAutoNameConfig(t, api); instr != "" {
+		t.Fatalf("default autoNameInstruction = %q, want empty", instr)
+	}
+
+	putConfig(t, api, map[string]any{"auto_name_instruction": "  Name it after the file touched  "})
+	if _, instr := getAutoNameConfig(t, api); instr != "Name it after the file touched" {
+		t.Fatalf("after PUT, autoNameInstruction = %q, want trimmed value", instr)
+	}
+
+	putConfig(t, api, map[string]any{"auto_name_instruction": ""})
+	if _, instr := getAutoNameConfig(t, api); instr != "" {
+		t.Fatalf("after PUT blank, autoNameInstruction = %q, want empty (cleared)", instr)
+	}
+}
+
+// TestAutoNameDefaultPromptEchoed pins that whatever built-in naming prompt the
+// server sets on the API is echoed verbatim in the config GET, so the settings
+// UI can show it as the custom-instruction placeholder. Uses a sentinel, not a
+// copy of the real prompt — that string is owned solely by server/auto_name.go
+// (autoNameTitleInstruction) and wired here by the server; duplicating it in the
+// test would just create a second copy to drift.
+func TestAutoNameDefaultPromptEchoed(t *testing.T) {
+	api := newTestConfigAPI(t)
+	const builtin = "test-sentinel-default-prompt"
+	api.AutoNameDefaultPrompt = builtin
+
+	rec := httptest.NewRecorder()
+	api.HandleGetConfig(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/config = %d, want 200", rec.Code)
+	}
+	var payload struct {
+		AutoNameDefaultPrompt string `json:"autoNameDefaultPrompt"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode GET payload: %v", err)
+	}
+	if payload.AutoNameDefaultPrompt != builtin {
+		t.Fatalf("autoNameDefaultPrompt = %q, want %q", payload.AutoNameDefaultPrompt, builtin)
+	}
+}

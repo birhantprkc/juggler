@@ -352,6 +352,24 @@ class Conversation {
   }
 
   /**
+   * Whether this conversation has a first root user message the auto-namer can
+   * derive a tab title from. Mirrors the worker's `firstRootUserMessageText`:
+   * the first root-level user item, non-empty once its text is trimmed. False
+   * for a freshly created tab with no messages yet (or an image-only first
+   * message), so callers can hide the "auto-name now" control when it would be
+   * a no-op.
+   * @returns {boolean} True if there is a non-empty first user message.
+   */
+  hasAutoNameSource() {
+    for (const item of this._rootMessageThread.items) {
+      if (item.get?.('type') === 'user') {
+        return (item.get?.('content') || '').trim() !== '';
+      }
+    }
+    return false;
+  }
+
+  /**
    * Read-only accessor for the root items array.
    * Used for rendering bootstrap (e.g., connection-manager on reconnect).
    * @returns {Array<any>} Root items array

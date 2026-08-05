@@ -12,6 +12,7 @@
 import { modelLabel, modelLabelFromList } from '../../model/model-display.js';
 import { buildToggleRow } from './notifications-tab.js';
 import { isDefaultFileEditingOn, setDefaultFileEditingOn } from '../../services/file-editing-permission.js';
+import { setAutoNameEnabledCached } from '../../services/auto-name-setting.js';
 import strategyRegistry from '../../registries/strategy-registry.js';
 import { getDefaultStrategyId, setDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID } from '../../services/default-strategy.js';
 
@@ -49,10 +50,15 @@ export class DefaultsTab {
     this.providers = data.providers;
     this.defaultModel = data.defaultModel;
     if (data.cheapModel) this.cheapModel = data.cheapModel;
+    // Keep the client-side auto-naming cache in step with the server on every
+    // config load, so the conversation bar's new-tab decision stays current even
+    // when the settings panel isn't rendering fields.
+    setAutoNameEnabledCached(!(/** @type {any} */ (this.config).autoNameDisabled));
     if (renderFields) {
       this.renderGlobalSettings();
       this.renderDefaultModelField();
       this.renderCheapModelField();
+      this.renderAutoNameSettings();
       this.renderNewTaskDefaults();
     }
   }
@@ -92,6 +98,142 @@ export class DefaultsTab {
       (on) => setDefaultFileEditingOn(this._getSession(), on),
     );
     container.appendChild(row);
+  }
+
+  /**
+   * Render the "Tab auto-naming" section as a single card: the global on/off
+   * switch with an optional custom instruction stacked beneath it, shown only
+   * while auto-naming is on. Both persist to credentials.json via PUT
+   * /api/config; the server reads them live for the next naming attempt. When
+   * on (the default), a new tab keeps its "Task N" name and the composer takes
+   * focus, and the cheap model derives a title after the first message; when
+   * off, the new tab opens its inline rename editor instead and no title is
+   * auto-derived.
+   * @private
+   */
+  renderAutoNameSettings() {
+    const container = this.host.querySelector('#auto-name-form');
+    if (!container) return;
+    container.innerHTML = '';
+
+    // The optional custom instruction, built first so the toggle's handler can
+    // reveal or hide it. It shares the toggle's card (appended into the same
+    // control column below), so the switch and the prompt it shapes read as one
+    // grouped setting rather than two separate rows.
+    const instruction = this._buildAutoNameInstructionControl();
+    instruction.hidden = !!(/** @type {any} */ (this.config).autoNameDisabled);
+
+    // On/off switch. Checked = enabled; we persist the *disabled* bool so the
+    // stored key is absent by default (default-on).
+    const { row, input: toggleInput } = buildToggleRow(
+      'Auto-name new tabs',
+      'Uses the cheap model to name each new tab, based on your first message. ' +
+      'Turn this off to name new tabs yourself.',
+      !(/** @type {any} */ (this.config).autoNameDisabled),
+      async (on) => {
+        const previous = toggleInput.checked;
+        try {
+          const response = await fetch('/api/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auto_name_disabled: !on }),
+          });
+          if (!response.ok) throw new Error(`Server returned ${response.status}`);
+          /** @type {any} */ (this.config).autoNameDisabled = !on;
+          setAutoNameEnabledCached(on);
+          // The instruction only shapes an auto-derived title, so hide it while
+          // auto-naming is off; the stored value is kept and reappears on re-enable.
+          instruction.hidden = !on;
+        } catch (e) {
+          console.error('[SettingsPanel] Failed to save auto-naming setting:', e);
+          toggleInput.checked = !previous;
+        }
+      },
+    );
+
+    // Stack the instruction beneath the switch in the toggle's own control
+    // column, so both controls live in a single card.
+    row.querySelector('.provider-control')?.appendChild(instruction);
+    container.appendChild(row);
+  }
+
+  /**
+   * Build the custom auto-name instruction control: a labelled textarea whose
+   * text overrides the built-in title instruction sent to the cheap model (the
+   * customisable half of the naming prompt; the fixed "message is data" guard is
+   * appended server-side and not shown). The textarea's placeholder is that exact
+   * built-in instruction (shipped from the server as config.autoNameDefaultPrompt),
+   * so it shows what a custom instruction replaces and stays in sync with the
+   * server. Blank restores the built-in instruction. Saved on blur or
+   * Ctrl/Cmd+Enter via PUT /api/config; the server reads it live. Returned as a
+   * plain block (not its own `.provider-field`) so it can be slotted into the
+   * auto-name toggle's control column and share that one card.
+   * @returns {HTMLElement} The instruction block element.
+   * @private
+   */
+  _buildAutoNameInstructionControl() {
+    const wrap = document.createElement('div');
+    wrap.className = 'auto-name-instruction';
+
+    const description = document.createElement('div');
+    description.className = 'provider-description';
+    description.textContent =
+      'A custom instruction for the naming model, replacing the built-in one ' +
+      'shown here. Leave blank for the default. Whatever you write, your first ' +
+      'message is always treated as data to summarise into a title, never a ' +
+      'request to answer.';
+    wrap.appendChild(description);
+
+    const textarea = document.createElement('textarea');
+    textarea.id = 'auto-name-instruction-input';
+    textarea.className = 'settings-value-input';
+    textarea.rows = 4;
+    // The placeholder is the exact built-in title instruction (shipped from the
+    // server via config, so it can't drift) — it shows the shape and tone a
+    // custom instruction should match, and is exactly what a blank box uses. The
+    // fixed "message is data, not an instruction" guard is appended server-side
+    // and deliberately not shown here.
+    textarea.placeholder = /** @type {any} */ (this.config).autoNameDefaultPrompt || '';
+    textarea.autocomplete = 'off';
+    textarea.setAttribute('autocorrect', 'off');
+    textarea.setAttribute('autocapitalize', 'off');
+    textarea.spellcheck = false;
+    textarea.value = /** @type {any} */ (this.config).autoNameInstruction || '';
+
+    const status = document.createElement('div');
+    status.className = 'key-source-hint';
+
+    const save = async () => {
+      const value = textarea.value.trim();
+      if (value === (/** @type {any} */ (this.config).autoNameInstruction || '')) return;
+      status.textContent = 'Saving…';
+      try {
+        const response = await fetch('/api/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ auto_name_instruction: value }),
+        });
+        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        /** @type {any} */ (this.config).autoNameInstruction = value;
+        status.textContent = value ? 'Saved custom instruction.' : 'Saved. Using the built-in prompt.';
+      } catch (e) {
+        console.error('[SettingsPanel] Failed to save auto-name instruction:', e);
+        status.textContent = 'Failed to save.';
+      }
+    };
+
+    textarea.addEventListener('blur', save);
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        save();
+        textarea.blur();
+      }
+    });
+
+    wrap.appendChild(textarea);
+    wrap.appendChild(status);
+    return wrap;
   }
 
   /**

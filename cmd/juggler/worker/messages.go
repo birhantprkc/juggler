@@ -24,6 +24,7 @@
 //     begin-undo-coalesce, end-undo-coalesce, request-full-state, resync-request,
 //     resync-to-origin, clear-undo-stacks, get-transaction
 //   - diagnostics: engine-trace, rename-log
+//   - naming: request-auto-name (manual "auto-name now")
 //   - test-only: get-yjs-state, ping, flush-persistence, set-mock-responses, release-mock
 //
 // NOTE: State mutations (item add/delete/update) flow through Yjs CRDT sync,
@@ -133,16 +134,19 @@ type WindowResolverFunc func(modelConfig ModelConfig) (windowTokens, reserveToke
 // compaction is enabled. A nil gate preserves the default enabled behavior.
 type AutoCompactGateFunc func() bool
 
-// AutoNameFunc is an injected server callback the worker fires exactly once, on
-// the FIRST user message of the root conversation, so the server can derive a
-// short tab title out-of-band. The worker only signals (convID, the first
-// message text, and the primary provider/model/thinking it will run under); the
-// server owns the guard, cheap-model resolution, the bounded completion, and the
-// rename + broadcast. Passing provider/model/thinking as plain strings keeps the
-// worker free of any dependency on the server's model-ref type. Fire-and-forget:
-// the callee must not block the worker goroutine (the server hands off to its
-// own goroutine).
-type AutoNameFunc func(convID, firstMessage, provider, model, thinking string)
+// AutoNameFunc is an injected server callback the worker fires so the server can
+// derive a short tab title out-of-band. It fires automatically on the FIRST user
+// message of the root conversation (force=false), and on demand for a manual
+// "auto-name now" request (force=true). The worker only signals (convID, the
+// first message text, the primary provider/model/thinking it will run under, and
+// force); the server owns the enable gate, cheap-model resolution, the bounded
+// completion, and the rename + broadcast. force=true bypasses the server's
+// enable gate and its "still named Task N" guard, so a manual request always
+// renames. Passing provider/model/thinking as plain strings keeps the worker
+// free of any dependency on the server's model-ref type. Fire-and-forget: the
+// callee must not block the worker goroutine (the server hands off to its own
+// goroutine).
+type AutoNameFunc func(convID, firstMessage, provider, model, thinking string, force bool)
 
 // =============================================================================
 // Generic Message Envelope

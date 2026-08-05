@@ -11,6 +11,7 @@ import (
 
 type autoNameCall struct {
 	convID, firstMessage, provider, model, thinking string
+	force                                           bool
 }
 
 // newAutoNameWorker builds an idle worker with a resolvable default model and a
@@ -21,8 +22,8 @@ func newAutoNameWorker(t *testing.T, id string, calls *[]autoNameCall) *Conversa
 	t.Cleanup(func() { w.doc.Destroy() })
 	w.storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "prov-A", "model": "model-A", "thinking": "high"})
-	w.SetAutoNamer(func(convID, firstMessage, provider, model, thinking string) {
-		*calls = append(*calls, autoNameCall{convID, firstMessage, provider, model, thinking})
+	w.SetAutoNamer(func(convID, firstMessage, provider, model, thinking string, force bool) {
+		*calls = append(*calls, autoNameCall{convID, firstMessage, provider, model, thinking, force})
 	})
 	return w
 }
@@ -49,9 +50,44 @@ func TestAutoNameFiresOnFirstRootMessage(t *testing.T) {
 		t.Fatalf("expected exactly 1 auto-name call, got %d", len(calls))
 	}
 	got := calls[0]
-	want := autoNameCall{"conv-first", "Add a dark mode toggle", "prov-A", "model-A", "high"}
+	want := autoNameCall{"conv-first", "Add a dark mode toggle", "prov-A", "model-A", "high", false}
 	if got != want {
 		t.Fatalf("auto-name call = %+v, want %+v", got, want)
+	}
+}
+
+// TestRequestAutoNameFiresForceFromFirstMessage pins the manual "auto-name now"
+// path: it re-derives from the conversation's first user message and signals the
+// namer with force=true (the enable gate and Task-N guard are the server's to
+// bypass).
+func TestRequestAutoNameFiresForceFromFirstMessage(t *testing.T) {
+	var calls []autoNameCall
+	w := newAutoNameWorker(t, "conv-force", &calls)
+
+	w.addUserMessage(UserMessageInput{Text: "Refactor the auth layer"})
+
+	w.handleRequestAutoName()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 auto-name call, got %d", len(calls))
+	}
+	got := calls[0]
+	want := autoNameCall{"conv-force", "Refactor the auth layer", "prov-A", "model-A", "high", true}
+	if got != want {
+		t.Fatalf("force auto-name call = %+v, want %+v", got, want)
+	}
+}
+
+// TestRequestAutoNameNoOpWithoutUserMessage verifies a manual request before any
+// user message is a no-op — there is nothing to summarise.
+func TestRequestAutoNameNoOpWithoutUserMessage(t *testing.T) {
+	var calls []autoNameCall
+	w := newAutoNameWorker(t, "conv-force-empty", &calls)
+
+	w.handleRequestAutoName()
+
+	if len(calls) != 0 {
+		t.Fatalf("expected no auto-name call without a user message, got %+v", calls)
 	}
 }
 
