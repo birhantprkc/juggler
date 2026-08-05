@@ -439,6 +439,41 @@ func (fs *FileSessionStore) jugglerDir() string {
 	return filepath.Join(fs.projectPath, ".juggler")
 }
 
+// removeSpillDir best-effort deletes a conversation's full-output spill
+// directory under .juggler/bash-output/. It never blocks or fails the caller; a
+// missing directory is not an error.
+func removeSpillDir(jugglerDir, convID string) {
+	if convID == "" {
+		return
+	}
+	if err := os.RemoveAll(filepath.Join(jugglerDir, "bash-output", convID)); err != nil {
+		jlog.Info("[session] failed to remove spill dir for %s: %v", convID, err)
+	}
+}
+
+// sweepUnassignedSpills deletes orphaned full-output spill files — those written
+// with no conversation id, or left behind by a crash mid-command — older than
+// 24h. Best-effort; a missing or unreadable directory is silently ignored.
+func sweepUnassignedSpills(jugglerDir string) {
+	dir := filepath.Join(jugglerDir, "bash-output", "_unassigned")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			if rmErr := os.RemoveAll(filepath.Join(dir, e.Name())); rmErr != nil {
+				jlog.Info("[session] failed to sweep spill %s: %v", e.Name(), rmErr)
+			}
+		}
+	}
+}
+
 // sessionGlobalsPath returns the path to session.json
 func (fs *FileSessionStore) sessionGlobalsPath() string {
 	return filepath.Join(fs.jugglerDir(), "session.json")
@@ -566,6 +601,10 @@ func (fs *FileSessionStore) removeConversationFiles(convID string, permanent boo
 	}
 	fs.deletedIDs[convID] = true
 
+	// Best-effort delete the conversation's full-output spill files. Never blocks
+	// or fails the deletion.
+	removeSpillDir(fs.jugglerDir(), convID)
+
 	dir, ok := fs.ConvDir(convID)
 	if !ok {
 		return nil
@@ -613,6 +652,11 @@ func (fs *FileSessionStore) BinConversation(convID string) error {
 		fs.deletedIDs = make(map[string]bool)
 	}
 	fs.deletedIDs[convID] = true
+
+	// Best-effort delete the conversation's full-output spill files. Binning
+	// removes them immediately and RestoreConversation does not resurrect them —
+	// spills are recoverable command output, not conversation state.
+	removeSpillDir(fs.jugglerDir(), convID)
 	return nil
 }
 
@@ -848,6 +892,11 @@ func (fs *FileSessionStore) Load() (*Session, error) {
 		return nil, fmt.Errorf("scan bin dirs: %w", err)
 	}
 	fs.binIndex = binIdx
+
+	// Backstop for full-output spill files that never got a conversation id (or
+	// were orphaned by a crash mid-command): sweep _unassigned entries older than
+	// 24h. Best-effort; never fails the load.
+	sweepUnassignedSpills(fs.jugglerDir())
 
 	globalsPath := fs.sessionGlobalsPath()
 	globalsData, readErr := os.ReadFile(globalsPath)

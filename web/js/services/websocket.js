@@ -646,15 +646,17 @@ class WebSocketService {
   /**
    * Send a shell-start request to execute a command with streaming output
    * @param {string} shellId - Unique ID for this shell execution
+   * @param {string} convId - Conversation that owns this shell (spill-file bucket); '' when unknown
    * @param {string} command - Shell command to execute
    * @param {string} [cwd] - Working directory (optional)
    * @param {number} [timeout] - Timeout in milliseconds (optional)
    * @returns {boolean} True if sent successfully
    */
-  sendShellStart(shellId, command, cwd, timeout) {
+  sendShellStart(shellId, convId, command, cwd, timeout) {
     return this._sendJson({
       type: 'shell-start',
       shellId,
+      convId,
       command,
       cwd,
       timeout

@@ -26,6 +26,7 @@ type ModelConfig struct {
 type ShellStartRequest struct {
 	Type    string `json:"type"`              // "shell-start"
 	ShellID string `json:"shellId"`           // Unique ID for this shell execution
+	ConvId  string `json:"convId,omitempty"`  // Conversation that owns this shell (spill-file bucket)
 	Command string `json:"command"`           // Shell command to execute
 	Cwd     string `json:"cwd,omitempty"`     // Working directory
 	Timeout int    `json:"timeout,omitempty"` // Timeout in milliseconds

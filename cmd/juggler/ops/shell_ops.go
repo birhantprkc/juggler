@@ -42,6 +42,18 @@ func capTimeout(timeoutMs int) time.Duration {
 	return time.Duration(timeoutMs) * time.Millisecond
 }
 
+// spillDirFor returns the per-conversation directory that holds a command's
+// full-output spill file. convID=="" falls back to the _unassigned bucket, which
+// the store sweeps by age. The directory lives under the project's .juggler/ so
+// the model can read the spill back without an approval prompt, and it stays out
+// of git status.
+func spillDirFor(root, convID string) string {
+	if convID == "" {
+		convID = "_unassigned"
+	}
+	return filepath.Join(root, ".juggler", "bash-output", convID)
+}
+
 // exitCodeOf reports the process exit code for a command error. The bool is
 // true only when err is an *exec.ExitError (a real process exit); callers use
 // it to distinguish a non-zero exit from a non-exit failure (spawn error,
@@ -55,10 +67,13 @@ func exitCodeOf(err error) (int, bool) {
 
 // shellStateSnapshot is a snapshot of a shell's mutable state
 type shellStateSnapshot struct {
-	Status   string
-	Output   string
-	ExitCode int
-	Error    string
+	Status          string
+	Output          string
+	ExitCode        int
+	Error           string
+	OutputFile      string
+	OutputBytes     int64
+	OutputTruncated bool
 }
 
 // BackgroundShell represents a background shell process.
@@ -80,6 +95,14 @@ type BackgroundShell struct {
 	errMsg   string
 	cmd      *exec.Cmd
 
+	// Spill accounting for the full-output file, written after
+	// registerBackgroundShell via the terminal updateStatus op — so, like the
+	// other mutable fields, they are owned by the registry goroutine and must NOT
+	// be written directly from the spawner goroutine.
+	outputFile      string
+	outputBytes     int64
+	outputTruncated bool
+
 	// readOffset is how many bytes of output the TaskOutput tool has already
 	// been handed. Advanced by the "getDelta" op so a polling reader receives
 	// each byte exactly once (BashOutput semantics). The Monitor delivery pump
@@ -91,10 +114,13 @@ type BackgroundShell struct {
 // snapshot returns a copy of the mutable state. Only call from the registry goroutine.
 func (shell *BackgroundShell) snapshot() shellStateSnapshot {
 	return shellStateSnapshot{
-		Status:   shell.status,
-		Output:   shell.output.String(),
-		ExitCode: shell.exitCode,
-		Error:    shell.errMsg,
+		Status:          shell.status,
+		Output:          shell.output.String(),
+		ExitCode:        shell.exitCode,
+		Error:           shell.errMsg,
+		OutputFile:      shell.outputFile,
+		OutputBytes:     shell.outputBytes,
+		OutputTruncated: shell.outputTruncated,
 	}
 }
 
@@ -110,6 +136,10 @@ type registryOp struct {
 	output   string
 	exitCode int
 	errMsg   string
+	// terminal updateStatus spill accounting
+	outputFile      string
+	outputBytes     int64
+	outputTruncated bool
 	// response
 	resp chan registryResp
 }
@@ -209,6 +239,9 @@ func runShellRegistry() {
 				shell.output.WriteString(op.output)
 				shell.exitCode = op.exitCode
 				shell.errMsg = op.errMsg
+				shell.outputFile = op.outputFile
+				shell.outputBytes = op.outputBytes
+				shell.outputTruncated = op.outputTruncated
 			}
 
 		case "kill":
@@ -298,9 +331,15 @@ func appendShellOutput(id, delta string) {
 
 // updateShellStatus updates status fields via the registry goroutine. Pass an
 // empty output to set only status/exitCode/errMsg without appending — used when
-// output has already been published incrementally (see startBackground).
-func updateShellStatus(id string, status, output string, exitCode int, errMsg string) {
-	registryCh <- registryOp{kind: "updateStatus", id: id, status: status, output: output, exitCode: exitCode, errMsg: errMsg}
+// output has already been published incrementally (see startBackground). The
+// trailing outputFile/outputBytes/outputTruncated carry the full-output spill
+// accounting, set here (on the registry goroutine) rather than written directly
+// from the spawner goroutine so a concurrent getOutput can't race the write.
+func updateShellStatus(id string, status, output string, exitCode int, errMsg string, outputFile string, outputBytes int64, outputTruncated bool) {
+	registryCh <- registryOp{
+		kind: "updateStatus", id: id, status: status, output: output, exitCode: exitCode, errMsg: errMsg,
+		outputFile: outputFile, outputBytes: outputBytes, outputTruncated: outputTruncated,
+	}
 }
 
 // killShell sends a kill request via the registry goroutine and waits for completion
@@ -451,6 +490,11 @@ func (ops *ShellOperations) getOutput(params map[string]any) (any, error) {
 			result["error"] = state.Error
 		}
 	}
+	if state.OutputFile != "" {
+		result["outputFile"] = state.OutputFile
+		result["outputBytes"] = state.OutputBytes
+		result["truncated"] = state.OutputTruncated
+	}
 
 	return result, nil
 }
@@ -490,6 +534,11 @@ func (ops *ShellOperations) getOutputDelta(params map[string]any) (any, error) {
 		if state.Error != "" {
 			result["error"] = state.Error
 		}
+	}
+	if state.OutputFile != "" {
+		result["outputFile"] = state.OutputFile
+		result["outputBytes"] = state.OutputBytes
+		result["truncated"] = state.OutputTruncated
 	}
 
 	return result, nil
@@ -613,7 +662,7 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 		if startErr := cmd.Start(); startErr != nil {
 			pipeWriter.Close()
 			pipeReader.Close()
-			updateShellStatus(shellID, "failed", "", -1, fmt.Sprintf("command start failed: %v", startErr))
+			updateShellStatus(shellID, "failed", "", -1, fmt.Sprintf("command start failed: %v", startErr), "", 0, false)
 			time.AfterFunc(1*time.Hour, func() { removeBackgroundShell(shellID) })
 			return
 		}
@@ -631,7 +680,7 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 		// head+tail the non-streaming cappedBuffer produces.
 		fwd := newCappedForwarder(outputHeadLimit, outputTailLimit, func(s string) {
 			appendShellOutput(shellID, s)
-		})
+		}).withSpill(ops.scope.Root(), newSpillFile(spillDirFor(ops.scope.Root(), convID), shellID))
 
 		readerDone := make(chan struct{})
 		go func() {
@@ -645,8 +694,12 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 		<-readerDone
 		pipeReader.Close()
 
+		// Close the spill before suffix() composes the marker, so the announced
+		// path always points at a complete, flushed file.
+		fwd.closeSpill()
+
 		// Flush the retained tail (and the dropped-middle marker) so the final
-		// registry output is the capped head+tail, matching the old behaviour.
+		// registry output is the capped head+tail.
 		if suffix := fwd.suffix(); suffix != "" {
 			appendShellOutput(shellID, suffix)
 		}
@@ -678,8 +731,11 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 		}
 
 		// Output was already published incrementally above; pass empty output so
-		// the final update sets only status/exitCode/errMsg (no double-write).
-		updateShellStatus(shellID, status, "", exitCode, errMsg)
+		// the final update sets only status/exitCode/errMsg (no double-write). The
+		// spill accounting is recorded here, on the registry goroutine, so a
+		// concurrent getOutput never races the write.
+		updateShellStatus(shellID, status, "", exitCode, errMsg,
+			fwd.spillPath(), fwd.spillBytes(), fwd.spilled())
 
 		// Schedule cleanup after 1 hour without parking a goroutine for the
 		// whole window. time.AfterFunc dispatches via the runtime's timer
@@ -753,7 +809,10 @@ func (ops *ShellOperations) execute(ctx context.Context, params map[string]any) 
 	setProcGroup(cmd)
 	cmd.Dir = workingDir
 
-	output := newCappedBuffer(outputHeadLimit, outputTailLimit)
+	convID, _ := params["conv_id"].(string)
+	spillID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
+	output := newCappedBuffer(outputHeadLimit, outputTailLimit).
+		withSpill(ops.scope.Root(), newSpillFile(spillDirFor(ops.scope.Root(), convID), spillID))
 	cmd.Stdout = output
 	cmd.Stderr = output // Merge stderr into stdout - interleaved naturally
 
@@ -773,11 +832,13 @@ func (ops *ShellOperations) execute(ctx context.Context, params map[string]any) 
 		// Timeout or caller cancellation - kill the process group (all children).
 		killProcessGroup(cmd)
 		<-done // Wait for the goroutine to finish
+		output.closeSpill()
 		if execCtx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("command execution timeout (exceeded %v)", timeout)
 		}
 		return nil, execCtx.Err()
 	case err := <-done:
+		output.closeSpill()
 		exitCode := 0
 		if err != nil {
 			code, ok := exitCodeOf(err)
@@ -786,13 +847,19 @@ func (ops *ShellOperations) execute(ctx context.Context, params map[string]any) 
 			}
 			exitCode = code
 		}
-		return map[string]any{
+		result := map[string]any{
 			"command":  command,
 			"stdout":   output.String(), // Combined stdout+stderr
 			"stderr":   "",              // Empty - merged into stdout
 			"exitCode": exitCode,
 			"success":  exitCode == 0,
-		}, nil
+		}
+		if output.spilled() {
+			result["outputFile"] = output.spillPath()
+			result["outputBytes"] = output.spillBytes()
+			result["truncated"] = true
+		}
+		return result, nil
 	}
 }
 
@@ -817,11 +884,15 @@ func (ops *ShellOperations) executePythonCode(ctx context.Context, code string, 
 	cmd.Dir = ops.scope.Root()
 	cmd.Stdin = strings.NewReader(code)
 
-	output := newCappedBuffer(outputHeadLimit, outputTailLimit)
+	convID, _ := params["conv_id"].(string)
+	spillID := fmt.Sprintf("pyexec-%d", time.Now().UnixNano())
+	output := newCappedBuffer(outputHeadLimit, outputTailLimit).
+		withSpill(ops.scope.Root(), newSpillFile(spillDirFor(ops.scope.Root(), convID), spillID))
 	cmd.Stdout = output
 	cmd.Stderr = output // Merge stderr into stdout - interleaved naturally
 
 	err := cmd.Run()
+	output.closeSpill()
 	exitCode := 0
 
 	if err != nil {
@@ -835,12 +906,18 @@ func (ops *ShellOperations) executePythonCode(ctx context.Context, code string, 
 		exitCode = code
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"stdout":   output.String(), // Combined stdout+stderr
 		"stderr":   "",              // Empty - merged into stdout
 		"exitCode": exitCode,
 		"success":  exitCode == 0,
-	}, nil
+	}
+	if output.spilled() {
+		result["outputFile"] = output.spillPath()
+		result["outputBytes"] = output.spillBytes()
+		result["truncated"] = true
+	}
+	return result, nil
 }
 
 // ShellStreamChunk represents a chunk of streaming output.
@@ -851,14 +928,20 @@ func (ops *ShellOperations) executePythonCode(ctx context.Context, code string, 
 // Done=false, so the UI can surface why a silent command is still running
 // without it being mistaken for output or completion. Status is empty on every
 // data/completion chunk.
+//
+// OutputFile/OutputBytes/Truncated carry the full-output spill accounting and
+// appear only on the terminal Done chunk (empty/zero when nothing spilled).
 type ShellStreamChunk struct {
-	ShellID  string `json:"shellId"`
-	Data     string `json:"data"`
-	Done     bool   `json:"done"`
-	ExitCode int    `json:"exitCode,omitempty"`
-	Error    string `json:"error,omitempty"`
-	Status   string `json:"status,omitempty"` // "awaiting-permission" | "running"; empty for data/done chunks
-	Hint     string `json:"hint,omitempty"`   // human-readable explanation for the status
+	ShellID     string `json:"shellId"`
+	Data        string `json:"data"`
+	Done        bool   `json:"done"`
+	ExitCode    int    `json:"exitCode,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Status      string `json:"status,omitempty"` // "awaiting-permission" | "running"; empty for data/done chunks
+	Hint        string `json:"hint,omitempty"`   // human-readable explanation for the status
+	OutputFile  string `json:"outputFile,omitempty"`
+	OutputBytes int64  `json:"outputBytes,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
 }
 
 // ExecuteStreaming runs a shell command with real-time output streaming.
@@ -868,6 +951,7 @@ type ShellStreamChunk struct {
 func (ops *ShellOperations) ExecuteStreaming(
 	ctx context.Context,
 	shellID string,
+	convID string,
 	command string,
 	cwd string,
 	timeoutMs int,
@@ -955,7 +1039,7 @@ func (ops *ShellOperations) ExecuteStreaming(
 	// appears so the watchdog can stand down.
 	fwd := newCappedForwarder(outputHeadLimit, outputTailLimit, func(s string) {
 		output <- ShellStreamChunk{ShellID: shellID, Data: s}
-	})
+	}).withSpill(ops.scope.Root(), newSpillFile(spillDirFor(ops.scope.Root(), convID), shellID))
 
 	// Stream output chunks
 	readerWG.Go(func() {
@@ -1073,16 +1157,20 @@ func (ops *ShellOperations) ExecuteStreaming(
 		}
 		pipeReader.Close() // unblock the reader even if the pipe's writer is still open
 		readerWG.Wait()    // bounded: the reader returns once the pipe is closed
+		fwd.closeSpill()   // flush the spill before suffix() names it in the marker
 
 		errMsg := "command cancelled"
 		if ctx.Err() == context.DeadlineExceeded {
 			errMsg = fmt.Sprintf("command timeout (exceeded %v)", timeout)
 		}
 		output <- ShellStreamChunk{
-			ShellID: shellID,
-			Data:    fwd.suffix(),
-			Done:    true,
-			Error:   errMsg,
+			ShellID:     shellID,
+			Data:        fwd.suffix(),
+			Done:        true,
+			Error:       errMsg,
+			OutputFile:  fwd.spillPath(),
+			OutputBytes: fwd.spillBytes(),
+			Truncated:   fwd.spilled(),
 		}
 		return
 
@@ -1090,6 +1178,7 @@ func (ops *ShellOperations) ExecuteStreaming(
 		stopWatchdog()
 		readerWG.Wait() // Wait for reader to exit before closing pipeReader
 		pipeReader.Close()
+		fwd.closeSpill() // flush the spill before suffix() names it in the marker
 		exitCode := 0
 		if err != nil {
 			if code, ok := exitCodeOf(err); ok {
@@ -1097,10 +1186,13 @@ func (ops *ShellOperations) ExecuteStreaming(
 			}
 		}
 		output <- ShellStreamChunk{
-			ShellID:  shellID,
-			Data:     fwd.suffix(),
-			Done:     true,
-			ExitCode: exitCode,
+			ShellID:     shellID,
+			Data:        fwd.suffix(),
+			Done:        true,
+			ExitCode:    exitCode,
+			OutputFile:  fwd.spillPath(),
+			OutputBytes: fwd.spillBytes(),
+			Truncated:   fwd.spilled(),
 		}
 	}
 }

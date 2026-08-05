@@ -71,7 +71,7 @@ func TestExecuteStreaming_TimeoutReturnsDespiteEscapedChild(t *testing.T) {
 	}()
 
 	start := time.Now()
-	shellOps.ExecuteStreaming(context.Background(), "shell-reap", command, "", 200, out)
+	shellOps.ExecuteStreaming(context.Background(), "shell-reap", "", command, "", 200, out)
 	elapsed := time.Since(start)
 
 	// Bound: 200ms timeout + 50ms kill grace + 300ms reap grace + generous slack.

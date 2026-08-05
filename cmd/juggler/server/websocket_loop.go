@@ -140,7 +140,7 @@ func (s *Server) processShellRequest(
 	outputChan := make(chan ops.ShellStreamChunk, 100)
 
 	// Start streaming execution
-	go shellOps.ExecuteStreaming(ctx, req.ShellID, req.Command, req.Cwd, req.Timeout, outputChan)
+	go shellOps.ExecuteStreaming(ctx, req.ShellID, req.ConvId, req.Command, req.Cwd, req.Timeout, outputChan)
 
 	// Forward chunks to the requesting engine (see func doc for why not the
 	// viewer group).
@@ -163,6 +163,12 @@ func (s *Server) processShellRequest(
 			msg["exitCode"] = chunk.ExitCode
 			if chunk.Error != "" {
 				msg["error"] = chunk.Error
+			}
+			// Full-output spill accounting, present only when output was spilled.
+			if chunk.OutputFile != "" {
+				msg["outputFile"] = chunk.OutputFile
+				msg["outputBytes"] = chunk.OutputBytes
+				msg["truncated"] = chunk.Truncated
 			}
 		}
 		requester.Send(msg)

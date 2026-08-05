@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Oversized shell output now spills the full log to a readable file instead of dropping the middle
 - MCP servers can now hide individual tools via per-server allow/deny lists, editable as checkboxes in Settings
 - MCP servers can fix default arguments that are merged into every call and hidden from the model
 - Claude Code usage polls no longer load user-level plugins or hooks, so unrelated tools don't fire on every quota refresh

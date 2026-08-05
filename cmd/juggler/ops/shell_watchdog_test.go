@@ -59,7 +59,7 @@ func TestExecuteStreaming_NeutralHeartbeat(t *testing.T) {
 	shellOps.heartbeatInterval = 80 * time.Millisecond
 
 	out := make(chan ShellStreamChunk, 64)
-	go shellOps.ExecuteStreaming(context.Background(), "shell-hb", "sleep 2", "", 30000, out)
+	go shellOps.ExecuteStreaming(context.Background(), "shell-hb", "", "sleep 2", "", 30000, out)
 
 	c := awaitChunk(t, out, `Status:"running"`, func(c ShellStreamChunk) bool {
 		return c.Status != ""
@@ -94,7 +94,7 @@ func TestExecuteStreaming_AwaitingPermission(t *testing.T) {
 
 	out := make(chan ShellStreamChunk, 64)
 	// Command is silent long enough for the probe to block past its deadline.
-	go shellOps.ExecuteStreaming(context.Background(), "shell-perm", "sleep 0.5", "", 30000, out)
+	go shellOps.ExecuteStreaming(context.Background(), "shell-perm", "", "sleep 0.5", "", 30000, out)
 
 	c := awaitChunk(t, out, `Status:"awaiting-permission"`, func(c ShellStreamChunk) bool {
 		return c.Status != ""
@@ -133,7 +133,7 @@ func TestExecuteStreaming_NoStatusWhenChatty(t *testing.T) {
 	shellOps.heartbeatInterval = 2 * time.Second
 
 	out := make(chan ShellStreamChunk, 64)
-	go shellOps.ExecuteStreaming(context.Background(), "shell-chatty", "printf 'hello world\\n'", "", 30000, out)
+	go shellOps.ExecuteStreaming(context.Background(), "shell-chatty", "", "printf 'hello world\\n'", "", 30000, out)
 
 	for _, c := range drain(out) {
 		if c.Status != "" {

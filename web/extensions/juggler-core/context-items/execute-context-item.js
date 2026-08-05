@@ -767,10 +767,16 @@ class ExecuteContextItem extends ContextItem {
       }
     };
 
+    // Tag the command with its owning conversation so the backend buckets any
+    // full-output spill file under that conversation (deleted when it is).
+    const execParams = /** @type {import('../../../js/services/ops-api.js').ShellExecuteParams} */ (
+      { ...params, conv_id: this.conversation.id }
+    );
+
     // Try streaming execution first, fall back to blocking if WebSocket unavailable
     try {
       const result = await shellStreaming(
-        /** @type {import('../../../js/services/ops-api.js').ShellExecuteParams} */ (params),
+        execParams,
         (chunk) => {
           // Check for cancellation during streaming
           if (this.signal?.aborted) {
@@ -825,12 +831,21 @@ class ExecuteContextItem extends ContextItem {
       // Canonical backend value replaces accumulated streaming chunks
       this.output = result.stdout;
 
+      // The lower head+tail cap shrinks the human-visible final view, so when the
+      // full output was spilled to a file, name it in the preview the user sees.
+      if (result.truncated && result.outputFile) {
+        this.output += `\n… full output saved to ${result.outputFile}`;
+      }
+
       return {
         command: result.command,
         stdout: result.stdout,
         stderr: '', // Merged into stdout
         exitCode: result.exitCode,
-        success: result.success
+        success: result.success,
+        ...(result.outputFile
+          ? { outputFile: result.outputFile, outputBytes: result.outputBytes, truncated: result.truncated }
+          : {})
       };
     } catch (streamError) {
       // Clean up throttle timer
@@ -838,7 +853,7 @@ class ExecuteContextItem extends ContextItem {
 
       // If streaming fails due to WebSocket issues, fall back to blocking execution
       if (streamError instanceof Error && streamError.message.includes('WebSocket')) {
-        const result = await shell(params);
+        const result = await shell(execParams);
 
         if (this.signal?.aborted) {
           const error = new Error('Command execution cancelled');

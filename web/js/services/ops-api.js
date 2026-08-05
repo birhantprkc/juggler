@@ -317,6 +317,7 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {string} [code] - Python code to execute (alternative to command)
  * @property {number} [timeout] - Timeout in milliseconds (default 30000, max 1200000)
  * @property {string} [cwd] - Working directory for command
+ * @property {string} [conv_id] - Conversation that owns this command; buckets its full-output spill file
  */
 
 /**
@@ -703,6 +704,9 @@ export async function shellExecute(params) {
  * @property {string} [error] - Error message (only present on failure)
  * @property {string} [status] - Liveness status for a silent command: "awaiting-permission" | "running" (non-done, empty data)
  * @property {string} [hint] - Human-readable explanation accompanying status
+ * @property {string} [outputFile] - Absolute path to the full-output spill file (only when output was spilled, on the done chunk)
+ * @property {number} [outputBytes] - Complete output byte count (only when spilled)
+ * @property {boolean} [truncated] - Whether output was truncated and spilled to outputFile
  */
 
 /**
@@ -714,6 +718,9 @@ export async function shellExecute(params) {
  * @property {boolean} success - Whether command succeeded (exitCode === 0)
  * @property {string} [error] - Error message if execution failed
  * @property {boolean} [cancelled] - Whether execution was cancelled via AbortSignal
+ * @property {string} [outputFile] - Absolute path to the full-output spill file (only when output was spilled)
+ * @property {number} [outputBytes] - Complete output byte count (only when spilled)
+ * @property {boolean} [truncated] - Whether output was truncated and spilled to outputFile
  */
 
 /**
@@ -804,6 +811,11 @@ export async function shellExecuteStreaming(params, onOutput, signal) {
         resolved = true;
         cleanup();
 
+        // Full-output spill accounting, present only when output was spilled.
+        const spillFields = chunk.outputFile
+          ? { outputFile: chunk.outputFile, outputBytes: chunk.outputBytes, truncated: chunk.truncated }
+          : {};
+
         if (chunk.error) {
           // Error case - still resolve with result, let caller handle
           resolve({
@@ -811,14 +823,16 @@ export async function shellExecuteStreaming(params, onOutput, signal) {
             stdout: stdout.trimEnd(),
             exitCode: chunk.exitCode || 1,
             success: false,
-            error: chunk.error
+            error: chunk.error,
+            ...spillFields
           });
         } else {
           resolve({
             command,
             stdout: stdout.trimEnd(),
             exitCode: chunk.exitCode || 0,
-            success: (chunk.exitCode || 0) === 0
+            success: (chunk.exitCode || 0) === 0,
+            ...spillFields
           });
         }
       }
@@ -872,6 +886,7 @@ export async function shellExecuteStreaming(params, onOutput, signal) {
     // Send shell-start request
     const sent = wsService.sendShellStart(
       shellId,
+      params.conv_id || '',
       command,
       params.cwd,
       params.timeout
