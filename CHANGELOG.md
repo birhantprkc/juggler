@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-06
+
 - Oversized shell output now spills the full log to a readable file instead of dropping the middle
 - Typing '$' allows the user to pick a skill to manually inject into the conversation
 - A warning is shown when your next message will cause a context cache miss (strategy switch, edited or deleted history)
