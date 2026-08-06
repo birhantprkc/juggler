@@ -3884,18 +3884,29 @@ input-box .schedule-send-btn .schedule-send-countdown {
     text-align: center;
 }
 
-/* Touch-only "+" overflow button — icon-only, matching the commands button.
-   Hidden on desktop; the coarse-pointer block below reveals it. */
+/* Touch-only "⋮" overflow button — a filled circular control that opens the
+   actions sheet. Shaped and sized to match the send button so the two read as a
+   peer pair (a neutral "more" beside the accent "send"); the ellipsis glyph
+   reads as "more options". Hidden on desktop; the coarse-pointer block below
+   reveals it. */
 input-box .more-actions-btn {
     display: none;
     justify-content: center;
-    padding: 0.125rem 0.5rem;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--overlay-light-30);
+    color: var(--text-primary);
 }
 
 input-box .more-actions-btn .more-actions-icon {
     display: flex;
-    width: 0.875rem;
-    height: 0.875rem;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
 }
 
 /* Send button — a circular accent control, always visible. On desktop Enter
@@ -3978,8 +3989,9 @@ input-box .context-cache-warning-btn .icon-warning {
     color: #3d2c00;
 }
 
-/* "+" actions sheet: a simple vertical list (commands, attach image, new
-   thread). presentPopup renders it as a bottom sheet on a narrow viewport. */
+/* "⋮" actions sheet: a simple vertical list (commands, attach image, send after
+   a delay, new thread). presentPopup renders it as a bottom sheet on a narrow
+   viewport. */
 .actions-sheet.show {
     display: flex;
     flex-direction: column;
@@ -4017,23 +4029,30 @@ input-box .context-cache-warning-btn .icon-warning {
 
 /* Touch composer layout: Enter inserts a newline (see input-box._isTouchComposer,
    keyed off the same media features), so a Send button is the send affordance
-   and the secondary actions collapse into the "+" sheet to keep the controls
+   and the secondary actions collapse into the "⋮" sheet to keep the controls
    row single-line. Desktop keeps the full visible row. */
 @media (hover: none) and (pointer: coarse) {
     input-box .more-actions-btn {
         display: inline-flex;
     }
 
-    /* Touch has no true hover, but tapping the "+" leaves a sticky :hover/:focus
-       that paints the ghost fill until you tap elsewhere — so it looked stuck-
-       highlighted while its sheet was open, unlike its neighbours. Keep it
-       transparent at rest here; :active still gives press feedback. Permission
-       and model keep their fill via their own .open state, so they're untouched. */
+    /* Touch has no true hover, but tapping the button (or dragging off it) leaves
+       a sticky :hover/:focus that would otherwise paint the ghost pill's wash and
+       hairline border over the circular control. Pin hover/focus to the resting
+       fill so it stays a clean solid circle; :active still dips via the shared
+       .input-ctrl-btn press scale. */
     input-box .more-actions-btn:hover:not(:disabled),
     input-box .more-actions-btn:focus:not(:disabled) {
-        background: transparent;
+        background: var(--overlay-light-30);
         border-color: transparent;
-        color: var(--text-secondary);
+        color: var(--text-primary);
+    }
+
+    /* The schedule-send ("timer") button is rarely used, so on touch it collapses
+       into the "⋮" actions sheet — except while a send is armed, when it stays
+       inline so the live countdown and cancel affordance remain visible. */
+    input-box .schedule-send-btn:not(.armed) {
+        display: none;
     }
 
     /* Focusing the textarea pops the onscreen keyboard, and the browser scrolls
@@ -4047,7 +4066,7 @@ input-box .context-cache-warning-btn .icon-warning {
         scroll-margin-bottom: 4rem;
     }
 
-    /* These now live in the "+" actions sheet: the commands (`/`) and skill (`$`)
+    /* These live in the "⋮" actions sheet: the commands (`/`) and skill (`$`)
        buttons collapse into its Slash-commands and Skills sections, and attach
        image / new thread each become a row. */
     input-box .commands-button,
@@ -4057,13 +4076,13 @@ input-box .context-cache-warning-btn .icon-warning {
         display: none;
     }
 
-    /* The strategy selector is relocated into the "+" sheet (see
+    /* The strategy selector is relocated into the "⋮" sheet (see
        input-box._openActionsSheet); hide its inline slot. */
     input-box input-controls-config > strategy-selector {
         display: none;
     }
 
-    /* One row, never wrapping: [permission] [model] [+] … [send]. Neutralise the
+    /* One row, never wrapping: [permission] [model] [⋮] … [send]. Neutralise the
        narrow-column fold (config never claims a full row here) and let the
        config cluster shrink (min-width:0) so a long model name ellipsises
        rather than pushing the row to a second line. */
@@ -4098,13 +4117,13 @@ input-box .context-cache-warning-btn .icon-warning {
     }
 }
 
-/* Strategy row inside the "+" sheet: the relocated selector fills the row, its
+/* Strategy row inside the "⋮" sheet: the relocated selector fills the row, its
    label sitting left and the selector button pushed to the right edge. */
 .actions-sheet .actions-sheet-strategy {
     justify-content: space-between;
 }
 
-/* Collapsible sections inside the "+" sheet (Slash commands, Skills). Native
+/* Collapsible sections inside the "⋮" sheet (Slash commands, Skills). Native
    <details>, closed by default, so the sheet opens short and each list expands
    on tap with no JS state to manage. */
 .actions-sheet .actions-sheet-section {

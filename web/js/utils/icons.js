@@ -26,8 +26,8 @@ export const IMAGE_ATTACH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height=
 // Material Symbols "arrow_upward" — the touch-only Send button on the input box.
 export const SEND_ARROW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="16" width="16" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M440-160v-487L216-423l-56-57 320-320 320 320-56 57-224-224v487h-80Z"/></svg>';
 
-// Material Symbols "add" — the touch-only overflow-actions ("+") button on the input box.
-export const PLUS_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="16" width="16" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z"/></svg>';
+// Material Symbols "more_vert" — the touch-only overflow-actions (kebab) button on the input box.
+export const KEBAB_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="16" width="16" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M480-160q-33 0-56.5-23.5T400-240q0-33 23.5-56.5T480-320q33 0 56.5 23.5T560-240q0 33-23.5 56.5T480-160Zm0-240q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm0-240q-33 0-56.5-23.5T400-720q0-33 23.5-56.5T480-800q33 0 56.5 23.5T560-720q0 33-23.5 56.5T480-640Z"/></svg>';
 
 // Material Symbols "expand_more" / "expand_less" — the Show more / Show less
 // toggle on oversized collapsible items (long user messages, thread summaries).

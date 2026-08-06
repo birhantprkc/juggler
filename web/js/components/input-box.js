@@ -18,7 +18,7 @@ import {
   extractSkillMentions,
   renderSkillMenuItem,
 } from './skill-mention-provider.js';
-import { THREAD_ARROW_SVG, IMAGE_ATTACH_SVG, SEND_ARROW_SVG, PLUS_SVG, CLOCK_SVG } from '../utils/icons.js';
+import { THREAD_ARROW_SVG, IMAGE_ATTACH_SVG, SEND_ARROW_SVG, KEBAB_SVG, CLOCK_SVG } from '../utils/icons.js';
 import { showNotice } from './modal-dialog.js';
 import tooltipManager from '../services/tooltip-manager.js';
 import { CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
@@ -323,7 +323,7 @@ class InputBox extends HTMLElement {
     /** @type {(() => void)|null} @private - presentPopup release for the open commands menu. */
     this._popupCleanup = null;
 
-    // Touch-only "+" actions sheet state (commands / attach / new thread).
+    // Touch-only "⋮" actions sheet state (commands / attach / new thread).
     /** @type {HTMLElement|null} @private */
     this._actionsSheet = null;
     /** @type {boolean} @private */
@@ -824,7 +824,7 @@ class InputBox extends HTMLElement {
       });
     }
 
-    // Touch-only "+" overflow button: opens the actions sheet (commands, attach
+    // Touch-only "⋮" overflow button: opens the actions sheet (commands, attach
     // image, new thread) so those affordances need no inline row on a phone.
     const moreBtn = this.querySelector('#more-actions-button');
     if (moreBtn) {
@@ -891,7 +891,7 @@ class InputBox extends HTMLElement {
 
   /**
    * Whether this composer should behave as a touch composer: Enter inserts a
-   * newline (the onscreen keyboard's return key) and the touch-only Send / "+"
+   * newline (the onscreen keyboard's return key) and the touch-only Send / "⋮"
    * affordances are active. Gated on a coarse pointer with no hover — the same
    * signal the CSS `@media (hover: none) and (pointer: coarse)` block keys off,
    * so the key behaviour and the layout never disagree. A narrow DESKTOP window
@@ -2795,7 +2795,14 @@ class InputBox extends HTMLElement {
    * @private
    */
   _openSchedulePicker() {
-    const anchor = /** @type {HTMLElement|null} */ (this.querySelector('.schedule-send-btn'));
+    let anchor = /** @type {HTMLElement|null} */ (this.querySelector('.schedule-send-btn'));
+    // On touch the inline clock button is hidden unless a send is armed (it lives
+    // in the "⋮" actions sheet), so anchor to the still-visible overflow button
+    // when it is not laid out. On a phone the picker is a bottom sheet, where the
+    // anchor is moot anyway.
+    if (!anchor || anchor.offsetParent === null) {
+      anchor = /** @type {HTMLElement|null} */ (this.querySelector('#more-actions-button')) || anchor;
+    }
     if (!anchor) return;
 
     const menu = document.createElement('div');
@@ -3222,7 +3229,7 @@ class InputBox extends HTMLElement {
   }
 
   /**
-   * Toggle the touch-only "+" actions sheet.
+   * Toggle the touch-only "⋮" actions sheet.
    * @private
    */
   _toggleActionsSheet() {
@@ -3234,13 +3241,13 @@ class InputBox extends HTMLElement {
   }
 
   /**
-   * Build and present the "+" actions sheet. Essential controls lead — Strategy,
-   * Attach image, New Thread — always visible so they never scroll off behind a
-   * long list. Below them, slash commands and skills each get their own
+   * Build and present the "⋮" actions sheet. Essential controls lead — Strategy,
+   * Attach image, Send after a delay, New Thread — always visible so they never
+   * scroll off behind a long list. Below them, slash commands and skills each get their own
    * closed-by-default collapsible section (standing in for the inline `/` and `$`
    * buttons, which are hidden on touch), so the sheet opens short and each list is
    * one tap away. On a narrow viewport presentPopup renders it as a bottom sheet
-   * (drag-to-dismiss); on a wider one it anchors to the "+" button. The rows reuse
+   * (drag-to-dismiss); on a wider one it anchors to the "⋮" button. The rows reuse
    * the same handlers as the inline controls, so nothing nests a second popup.
    * @private
    * @returns {Promise<void>}
@@ -3305,6 +3312,11 @@ class InputBox extends HTMLElement {
       /** @type {HTMLInputElement|null} */
       (this.querySelector('.attach-file-input'))?.click();
     });
+
+    // Schedule-send ("send after a delay") is a rarely-used control, so on touch
+    // it lives here rather than on the inline row. The row opens the same delay
+    // picker as the inline clock button (which stays visible only while armed).
+    addRow('Send after a delay', CLOCK_SVG, () => this._toggleSchedulePicker());
 
     /**
      * Append a closed-by-default collapsible section of pre-built rows (native
@@ -3405,7 +3417,7 @@ class InputBox extends HTMLElement {
   }
 
   /**
-   * Close the "+" actions sheet.
+   * Close the "⋮" actions sheet.
    * @private
    */
   _closeActionsSheet() {
@@ -3465,7 +3477,7 @@ class InputBox extends HTMLElement {
                         <button class="more-actions-btn input-ctrl-btn" id="more-actions-button"
                                 title="More actions"
                                 aria-label="More actions">
-                            <span class="more-actions-icon">${PLUS_SVG}</span>
+                            <span class="more-actions-icon">${KEBAB_SVG}</span>
                         </button>
                         <button class="schedule-send-btn input-ctrl-btn"
                                 title="Send after a delay"
