@@ -354,14 +354,12 @@ func (fs *FileSessionStore) CreateConversationFolder(name, requestedID string) (
 	return id, finalName, dir, nil
 }
 
-// uniqueName returns a case-folded-unique variant of base by appending
-// " (copy)", " (copy 2)", … if any other conversation already holds the
-// name. Excludes excludeID so a no-op rename of an existing conversation
-// to its current name doesn't trigger a copy suffix.
-func (fs *FileSessionStore) uniqueName(base, excludeID string) string {
+// disambiguateName resolves a name collision by calling suffixFn(base, i) for
+// i=2, 3, … until the name is unique (case-folded, excluding excludeID).
+func disambiguateName(base, excludeID string, names map[string]string, suffixFn func(string, int) string) string {
 	taken := func(candidate string) bool {
 		folded := strings.ToLower(candidate)
-		for id, n := range fs.index.Names {
+		for id, n := range names {
 			if id == excludeID {
 				continue
 			}
@@ -374,27 +372,54 @@ func (fs *FileSessionStore) uniqueName(base, excludeID string) string {
 	if !taken(base) {
 		return base
 	}
+	for i := 2; ; i++ {
+		if c := suffixFn(base, i); !taken(c) {
+			return c
+		}
+	}
+}
+
+// copySuffix produces " (copy)", " (copy 2)", … — the "(copy)" series.
+func copySuffix(base string, i int) string {
+	if i == 2 {
+		return base + " (copy)"
+	}
+	return fmt.Sprintf("%s (copy %d)", base, i)
+}
+
+// uniqueName returns a case-folded-unique variant of base by appending
+// " (copy)", " (copy 2)", … if any other conversation already holds the
+// name. Excludes excludeID so a no-op rename of an existing conversation
+// to its current name doesn't trigger a copy suffix.
+func (fs *FileSessionStore) uniqueName(base, excludeID string) string {
 	// A blank new tab always requests the placeholder name "Task N". Treat that
 	// as a numbered series, not a base to suffix: on collision pick the lowest
 	// unused "Task K" so a fresh tab never inherits a "(copy)" suffix. "(copy)"
 	// stays reserved for genuine duplicates (/duplicate, /handoff), which pass
 	// an explicit, non-placeholder name.
 	if taskPlaceholderRe.MatchString(base) {
+		taken := func(candidate string) bool {
+			folded := strings.ToLower(candidate)
+			for id, n := range fs.index.Names {
+				if id == excludeID {
+					continue
+				}
+				if strings.ToLower(n) == folded {
+					return true
+				}
+			}
+			return false
+		}
+		if !taken(base) {
+			return base
+		}
 		for k := 1; ; k++ {
 			if c := fmt.Sprintf("Task %d", k); !taken(c) {
 				return c
 			}
 		}
 	}
-	if c := base + " (copy)"; !taken(c) {
-		return c
-	}
-	for i := 2; ; i++ {
-		c := fmt.Sprintf("%s (copy %d)", base, i)
-		if !taken(c) {
-			return c
-		}
-	}
+	return disambiguateName(base, excludeID, fs.index.Names, copySuffix)
 }
 
 // ensureConvDir returns the existing folder for convID, or creates an

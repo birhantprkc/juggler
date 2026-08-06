@@ -479,6 +479,20 @@ func (m *SessionManager) ConvNames() map[string]string {
 	return v
 }
 
+// autoNameSuffix appends a plain numeric suffix: "Title 2", "Title 3", …
+func autoNameSuffix(base string, i int) string {
+	return fmt.Sprintf("%s %d", base, i)
+}
+
+// ResolveAutoName returns a collision-free variant of base with plain numeric
+// suffixes. Excludes excludeID from the collision check.
+func (m *SessionManager) ResolveAutoName(base, excludeID string) string {
+	v, _ := runRead(m, func(s *sessionState) (string, error) {
+		return disambiguateName(base, excludeID, s.store.ConvNames(), autoNameSuffix), nil
+	})
+	return v
+}
+
 // BinConversation moves a conversation's folder to .juggler/bin/ and removes
 // it from the active conversation order.
 func (m *SessionManager) BinConversation(convID string) error {

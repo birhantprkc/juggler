@@ -287,13 +287,9 @@ conversation-bar .conversation-tabs {
     gap: 0.375rem;
     margin: 0;
 
-    /* Extra bottom padding (vs. 0.5rem elsewhere) so the last tab's inline
-       rename overlay — which bleeds 0.25rem past the tab and casts a
-       0 0.25rem 0.75rem shadow, ~1.25rem total below the tab — stays inside
-       this scroll container's clip box. overflow:auto (below) clips at the
-       padding edge, and we can't drop it: this is the tab list's scroll
-       container. */
-    padding: 0.5rem 0.5rem 1.25rem;
+    /* Extra bottom padding so the last tab's rename overlay (input + auto-name
+       button + shadow, ~3rem below the tab) stays inside the scroll container. */
+    padding: 0.5rem 0.5rem 3.25rem;
     margin-right: 0.4rem;
     margin-left: 0.4rem;
     list-style: none;

@@ -229,6 +229,8 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 		return
 	}
 
+	// Disambiguate: ResolveAutoName appends " 2", " 3", … on collision.
+	title = sm.ResolveAutoName(title, convID)
 	canonical, err := sm.RenameConversation(convID, title)
 	if err != nil {
 		jlog.Info("auto-name %s: rename failed: %v", convID, err)
