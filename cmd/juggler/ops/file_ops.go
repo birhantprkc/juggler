@@ -582,7 +582,7 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 	expectedHash, _ := params["expectedHash"].(string)
 
 	// Sanitise, lock, and read the existing file (see openForMutation).
-	absPath, fileInfo, currentContentStr, currentHash, unlock, err := ops.openForMutation(path)
+	absPath, fileInfo, currentContentStr, usedCRLF, currentHash, unlock, err := ops.openForMutation(path)
 	if err != nil {
 		return nil, err
 	}
@@ -708,8 +708,15 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 		return nil, err
 	}
 
-	// Write updated content
-	if err := writeFileAtomic(absPath, []byte(newContentStr), fileInfo.Mode()); err != nil {
+	// Write updated content, restoring the file's original CRLF line endings so an
+	// edit to a pure-CRLF (Windows) file doesn't rewrite every line as LF (see
+	// openForMutation). The post-write hash below is taken over these same on-disk
+	// bytes so a follow-up edit's staleness check matches getFileHash's raw hash.
+	outBytes := []byte(newContentStr)
+	if usedCRLF {
+		outBytes = []byte(strings.ReplaceAll(newContentStr, "\n", "\r\n"))
+	}
+	if err := writeFileAtomic(absPath, outBytes, fileInfo.Mode()); err != nil {
 		return nil, fmt.Errorf("failed to write updated file '%s': %w. Check permissions and disk space", path, err)
 	}
 
@@ -720,7 +727,7 @@ func (ops *FileOperations) editFile(params map[string]any) (any, error) {
 	// Echo the post-write hash: it lands in the transcript's record of this
 	// edit, becoming the freshness baseline that lets a follow-up mutation of
 	// the same file pass the JS staleness guard without a re-read.
-	newHashBytes := sha256.Sum256([]byte(newContentStr))
+	newHashBytes := sha256.Sum256(outBytes)
 
 	return map[string]any{
 		"path":          path,
@@ -776,7 +783,7 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 	expectedHash, _ := params["expectedHash"].(string)
 
 	// Sanitise, lock, and read the existing file (see openForMutation).
-	absPath, fileInfo, currentContentStr, currentHash, unlock, err := ops.openForMutation(path)
+	absPath, fileInfo, currentContentStr, usedCRLF, currentHash, unlock, err := ops.openForMutation(path)
 	if err != nil {
 		return nil, err
 	}
@@ -901,8 +908,13 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 		return nil, err
 	}
 
-	// Write updated content
-	if err := writeFileAtomic(absPath, []byte(newFileContent), fileInfo.Mode()); err != nil {
+	// Write updated content, restoring CRLF endings on a pure-CRLF file and
+	// hashing the exact bytes written (see editFile and openForMutation).
+	outBytes := []byte(newFileContent)
+	if usedCRLF {
+		outBytes = []byte(strings.ReplaceAll(newFileContent, "\n", "\r\n"))
+	}
+	if err := writeFileAtomic(absPath, outBytes, fileInfo.Mode()); err != nil {
 		return nil, fmt.Errorf("failed to write updated file '%s': %w. Check permissions and disk space", path, err)
 	}
 
@@ -912,7 +924,7 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 
 	// Echo the post-write hash as the freshness baseline for follow-up
 	// mutations (see editFile).
-	newHashBytes := sha256.Sum256([]byte(newFileContent))
+	newHashBytes := sha256.Sum256(outBytes)
 
 	return map[string]any{
 		"path":          path,

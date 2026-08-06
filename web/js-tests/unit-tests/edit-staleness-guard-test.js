@@ -27,9 +27,10 @@ import {
   assert
 } from '../utilities/test-helpers.js';
 import contextItemRegistry from '../../js/registries/context-item-registry.js';
-import { writeFileOp } from '../../js/services/ops-api.js';
+import { writeFileOp, readFileLoad } from '../../js/services/ops-api.js';
 import {
   recordWrittenHash,
+  pathMatchKey,
   __resetWrittenHashesForTest
 } from '../../extensions/juggler-core/context-items/read-history.js';
 
@@ -210,18 +211,32 @@ export async function runTests(_ctx) {
   });
 
   // =========================================================================
-  // Staleness: a recorded hash that does not match the file's current bytes
-  // means the file changed since the model read it — the edit is REFUSED.
-  // A matching recorded hash is fresh and ALLOWED.
+  // Staleness on EDIT is relaxed: a targeted replace applies whenever the file
+  // was seen this session AND old_str is present verbatim in the file's CURRENT
+  // bytes — even if the recorded hash is stale — because replacing present text
+  // is lossless (any surrounding out-of-band change is preserved). This stops
+  // needless re-read churn after the agent's own formatter/codegen edits a file.
+  // It is refused ONLY when old_str is no longer in the current bytes (the model
+  // is working from content that moved under it), with a re-read message.
   // =========================================================================
-  await test('stale hash refuses edit', async () => {
+  await test('stale hash still allows a matching targeted edit', async () => {
     const conversation = await createTestConversation(session);
     await writeFileOp({ path: 'guard-stale.txt', content: 'hello world\n' });
     seedSeen(conversation, 'read', 'guard-stale.txt', BOGUS_HASH);
 
     const edit = mkItem(EditClass, conversation);
     const res = await edit.validate({ file_path: 'guard-stale.txt', old_string: 'world', new_string: 'there' });
-    assert(res.valid === false, `stale edit must be refused, got ${JSON.stringify(res)}`);
+    assert(res.valid === true, `stale-but-matching edit must be allowed, got ${JSON.stringify(res)}`);
+  });
+
+  await test('stale file with a non-matching old_str is refused (re-read)', async () => {
+    const conversation = await createTestConversation(session);
+    await writeFileOp({ path: 'guard-stale-miss.txt', content: 'hello world\n' });
+    seedSeen(conversation, 'read', 'guard-stale-miss.txt', BOGUS_HASH);
+
+    const edit = mkItem(EditClass, conversation);
+    const res = await edit.validate({ file_path: 'guard-stale-miss.txt', old_string: 'GOODBYE', new_string: 'x' });
+    assert(res.valid === false, `stale + non-matching edit must be refused, got ${JSON.stringify(res)}`);
     assert(/changed on disk/i.test(res.error || ''),
       `error should say the file changed: ${res.error}`);
   });
@@ -274,8 +289,9 @@ export async function runTests(_ctx) {
 
   // =========================================================================
   // explore_code: files the sandbox script fs.readFile-ed are recorded in the
-  // result's filesRead map and earn full hash credit; a stale recorded hash
-  // still refuses.
+  // result's filesRead map and earn full hash credit. As with any edit, a stale
+  // recorded hash no longer blocks a targeted replace whose old_str matches the
+  // current bytes.
   // =========================================================================
   await test('explore_code read allows edit', async () => {
     const conversation = await createTestConversation(session);
@@ -289,7 +305,7 @@ export async function runTests(_ctx) {
     assert(res.valid === true, `explore_code-then-edit must be allowed, got ${JSON.stringify(res)}`);
   });
 
-  await test('stale explore_code read refuses edit', async () => {
+  await test('stale explore_code read still allows a matching edit', async () => {
     const conversation = await createTestConversation(session);
     await writeFileOp({ path: 'guard-explore-stale.txt', content: 'hello world\n' });
     seedAction(conversation, 'explore_code',
@@ -298,9 +314,7 @@ export async function runTests(_ctx) {
 
     const edit = mkItem(EditClass, conversation);
     const res = await edit.validate({ file_path: 'guard-explore-stale.txt', old_string: 'world', new_string: 'there' });
-    assert(res.valid === false, `stale explore_code read must refuse, got ${JSON.stringify(res)}`);
-    assert(/changed on disk/i.test(res.error || ''),
-      `error should say the file changed: ${res.error}`);
+    assert(res.valid === true, `explore_code-seen + matching edit must be allowed, got ${JSON.stringify(res)}`);
   });
 
   await test('stripped batch_read results fall back to input list', async () => {
@@ -383,7 +397,8 @@ export async function runTests(_ctx) {
   // post-edit hash) may not yet be visible in the durable transcript when the
   // next edit validates. recordWrittenHash captures that hash synchronously at
   // execute time, so the follow-up edit is NOT spuriously refused as stale —
-  // while a genuine out-of-band change (a hash we never wrote) still is.
+  // while a genuine out-of-band change the edit cannot apply to (old_str no
+  // longer present) still is.
   // =========================================================================
   await test('same-turn sibling edit passes via written-hash record', async () => {
     __resetWrittenHashesForTest();
@@ -402,18 +417,19 @@ export async function runTests(_ctx) {
     assert(res.valid === true, `sibling edit should pass once its hash is recorded, got ${JSON.stringify(res)}`);
   });
 
-  await test('out-of-band change still refused without a written-hash record', async () => {
+  await test('out-of-band change with a non-matching edit is still refused', async () => {
     __resetWrittenHashesForTest();
     const conversation = await createTestConversation(session);
     const v0 = await writeFileOp({ path: 'guard-oob.txt', content: 'hello world\n' });
     seedSeen(conversation, 'read', 'guard-oob.txt', v0.contentHash);
 
-    // The file changed on disk to bytes we never wrote and never recorded.
+    // The file changed on disk to bytes we never wrote and never recorded, and
+    // the text the model wants to replace ('world') no longer exists in it.
     await writeFileOp({ path: 'guard-oob.txt', content: 'hello there\n' });
 
     const edit = mkItem(EditClass, conversation);
-    const res = await edit.validate({ file_path: 'guard-oob.txt', old_string: 'there', new_string: 'everyone' });
-    assert(res.valid === false, `genuine out-of-band change must still be refused, got ${JSON.stringify(res)}`);
+    const res = await edit.validate({ file_path: 'guard-oob.txt', old_string: 'world', new_string: 'everyone' });
+    assert(res.valid === false, `out-of-band change the edit can't apply to must be refused, got ${JSON.stringify(res)}`);
     assert(/changed on disk/i.test(res.error || ''),
       `error should say the file changed: ${res.error}`);
   });
@@ -430,6 +446,100 @@ export async function runTests(_ctx) {
     const write = mkItem(WriteClass, conversation);
     const res = await write.validate({ file_path: 'guard-sibling-w.txt', content: 'again\n' });
     assert(res.valid === true, `sibling overwrite should pass once its hash is recorded, got ${JSON.stringify(res)}`);
+  });
+
+  // =========================================================================
+  // Parallel same-file batch: a single turn can dispatch several edits to ONE
+  // file that all validate — freezing their expectedHash baseline against the
+  // original bytes — before any executes. execute() serializes them per path
+  // and re-bases each onto the prior sibling's committed bytes, so every edit
+  // applies. Without that serialization the backend's expectedHash guard
+  // rejects every sibling after the first ("changed on disk since the edit was
+  // prepared"). This drives execute() end to end (not just validate()), which
+  // is where the concurrency fix lives.
+  // =========================================================================
+  await test('parallel same-file edit batch all apply', async () => {
+    __resetWrittenHashesForTest();
+    const conversation = await createTestConversation(session);
+    const v0 = await writeFileOp({ path: 'guard-parallel.txt', content: 'AAA\nBBB\nCCC\n' });
+    seedSeen(conversation, 'read', 'guard-parallel.txt', v0.contentHash);
+
+    // Three edits to distinct, non-overlapping regions.
+    const specs = [
+      { old_string: 'AAA', new_string: 'XXX' },
+      { old_string: 'BBB', new_string: 'YYY' },
+      { old_string: 'CCC', new_string: 'ZZZ' }
+    ];
+    const items = specs.map(() => mkItem(EditClass, conversation));
+
+    // All validate first (against the original bytes) — the real batch shape.
+    const validated = await Promise.all(items.map((it, i) =>
+      it.validate({ file_path: 'guard-parallel.txt', ...specs[i] })));
+    validated.forEach((res, i) =>
+      assert(res.valid === true, `edit ${i} should validate, got ${JSON.stringify(res)}`));
+
+    // Then execute concurrently — the failure mode this guards against.
+    const results = await Promise.all(items.map((it, i) => it.execute(validated[i].params)));
+    results.forEach((r, i) =>
+      assert(r && /** @type {any} */ (r).success !== false,
+        `edit ${i} should apply, got ${JSON.stringify(r)}`));
+
+    const final = await readFileLoad({ path: 'guard-parallel.txt' });
+    assert(final.content === 'XXX\nYYY\nZZZ\n',
+      `all three edits should be present, got ${JSON.stringify(final.content)}`);
+  });
+
+  await test('parallel same-file overwrite batch all apply', async () => {
+    __resetWrittenHashesForTest();
+    const conversation = await createTestConversation(session);
+    const v0 = await writeFileOp({ path: 'guard-parallel-w.txt', content: 'v0\n' });
+    seedSeen(conversation, 'read', 'guard-parallel-w.txt', v0.contentHash);
+
+    const contents = ['one\n', 'two\n', 'three\n'];
+    const items = contents.map(() => mkItem(WriteClass, conversation));
+
+    const validated = await Promise.all(items.map((it, i) =>
+      it.validate({ file_path: 'guard-parallel-w.txt', content: contents[i] })));
+    validated.forEach((res, i) =>
+      assert(res.valid === true, `overwrite ${i} should validate, got ${JSON.stringify(res)}`));
+
+    const results = await Promise.all(items.map((it, i) => it.execute(validated[i].params)));
+    results.forEach((r, i) =>
+      assert(r && /** @type {any} */ (r).success !== false,
+        `overwrite ${i} should apply, got ${JSON.stringify(r)}`));
+
+    // Serialized in dispatch order, so the last overwrite wins.
+    const final = await readFileLoad({ path: 'guard-parallel-w.txt' });
+    assert(final.content === 'three\n',
+      `last overwrite should win, got ${JSON.stringify(final.content)}`);
+  });
+
+  // =========================================================================
+  // Case-insensitive filesystems (macOS APFS/HFS+, Windows) resolve differently
+  // cased spellings to ONE file, so the freshness guard's comparison key folds
+  // case on those platforms and stays exact on case-sensitive ones (Linux). A
+  // file read as `README.md` must then be editable as `readme.md` on macOS, but
+  // remain a distinct file on Linux. Tested on pathMatchKey directly so the
+  // assertion is deterministic regardless of the host the suite runs on.
+  // =========================================================================
+  await test('pathMatchKey folds case on macOS/Windows, not Linux', async () => {
+    const mac = { projectPath: '/proj', platform: 'darwin' };
+    const win = { projectPath: 'C:/proj', platform: 'windows' };
+    const lin = { projectPath: '/proj', platform: 'linux' };
+
+    assert(pathMatchKey(mac, 'README.md') === pathMatchKey(mac, 'readme.md'),
+      'macOS should treat README.md and readme.md as one file');
+    assert(pathMatchKey(win, 'SRC/App.JS') === pathMatchKey(win, 'src/app.js'),
+      'Windows should fold case');
+    assert(pathMatchKey(lin, 'README.md') !== pathMatchKey(lin, 'readme.md'),
+      'Linux is case-sensitive: the two are distinct files');
+
+    // Path-form variance still collapses regardless of platform.
+    assert(pathMatchKey(lin, './src/a.js') === pathMatchKey(lin, 'src/a.js'),
+      './-prefixed and plain forms must match on Linux too');
+    // No path yields no key (never accidentally matches).
+    assert(pathMatchKey(mac, '') === '' && pathMatchKey(mac, undefined) === '',
+      'empty/undefined path yields empty key');
   });
 
   return { passed, failed, errors };

@@ -6,7 +6,7 @@
 import EditBase from './edit-base.js';
 import { readFile, writeFile } from 'juggler/ops';
 import { formatDisplayPath, normalizeFilePath, createFileContentBlock, basename } from 'juggler/item-utils';
-import { checkFileFreshness, recordWrittenHash } from './read-history.js';
+import { checkFileFreshness, recordWrittenHash, restageBaseline, acquirePathLock } from './read-history.js';
 
 /** @type {Record<string, string>} */
 const LANG_MAP = {
@@ -245,30 +245,58 @@ class WriteFileContextItem extends EditBase {
     const existingHash = writeParams._existingHash;
     delete writeParams._existingContent;
     delete writeParams._existingHash;
-    if (existingHash) {
-      /** @type {any} */ (writeParams).expectedHash = existingHash;
+    const anyWrite = /** @type {any} */ (writeParams);
+
+    // Serialize writes to the SAME file: a single turn can dispatch several
+    // mutations to one path concurrently, each having frozen its expectedHash
+    // baseline at validation time — before any sibling wrote. Holding this
+    // per-path lock across execute makes those siblings run one at a time, so
+    // each re-bases onto the previous sibling's committed bytes below instead
+    // of carrying a baseline the backend rejects as stale. Different files
+    // never block.
+    const lock = await acquirePathLock(this.session, anyWrite.path);
+    try {
+      if (existingHash) {
+        // A same-turn sibling may have advanced the on-disk bytes past our
+        // frozen baseline. Re-probe and re-base onto the current bytes when
+        // they are our own just-written output (restageBaseline vets them via
+        // the freshness guard); keep the frozen baseline for a genuine
+        // out-of-band change so the backend still refuses it.
+        let currentHash;
+        try {
+          const probe = await readFile({ path: anyWrite.path });
+          currentHash = /** @type {any} */ (probe)?.contentHash;
+        } catch {
+          // Unreadable here (e.g. removed out-of-band): let writeFile surface it.
+        }
+        anyWrite.expectedHash = restageBaseline(
+          this.conversation, this.session, anyWrite.path, existingHash, currentHash
+        );
+      }
+
+      // Approval is enforced upstream by the JS action-executor flow. Carry the
+      // standing allowed-paths grant, and mark an out-of-root target as
+      // user-approved (only reachable here via an explicit modal approval), so the
+      // backend's defence-in-depth check admits the write.
+      const { params: sendParams, allowedPaths } = this._authorizeWrite(writeParams);
+      const result = await writeFile(
+        /** @type {import('../../../js/services/ops-api.js').ReadFileWriteParams} */ (sendParams),
+        this.signal,
+        allowedPaths
+      );
+
+      // Remember the post-write hash synchronously so a follow-up mutation of the
+      // same file later in this turn passes the freshness guard even before this
+      // write's tool-action lands in the durable transcript (see read-history.js).
+      if (result && /** @type {any} */ (result).success !== false &&
+          typeof (/** @type {any} */ (result).contentHash) === 'string') {
+        recordWrittenHash(this.session, anyWrite.path, /** @type {any} */ (result).contentHash);
+      }
+
+      return result;
+    } finally {
+      lock.release();
     }
-
-    // Approval is enforced upstream by the JS action-executor flow. Carry the
-    // standing allowed-paths grant, and mark an out-of-root target as
-    // user-approved (only reachable here via an explicit modal approval), so the
-    // backend's defence-in-depth check admits the write.
-    const { params: sendParams, allowedPaths } = this._authorizeWrite(writeParams);
-    const result = await writeFile(
-      /** @type {import('../../../js/services/ops-api.js').ReadFileWriteParams} */ (sendParams),
-      this.signal,
-      allowedPaths
-    );
-
-    // Remember the post-write hash synchronously so a follow-up mutation of the
-    // same file later in this turn passes the freshness guard even before this
-    // write's tool-action lands in the durable transcript (see read-history.js).
-    if (result && /** @type {any} */ (result).success !== false &&
-        typeof (/** @type {any} */ (result).contentHash) === 'string') {
-      recordWrittenHash(this.session, /** @type {any} */ (writeParams).path, /** @type {any} */ (result).contentHash);
-    }
-
-    return result;
   }
 
   /**

@@ -36,6 +36,26 @@
 import { toolInputPath, absolutePathKey } from './path-approval.js';
 
 /**
+ * Canonical comparison key for the freshness guard. macOS (default APFS/HFS+)
+ * and Windows resolve `README.md` and `readme.md` to the SAME file, so a read
+ * recorded under one spelling must match an edit issued under another — else the
+ * guard refuses a file the model demonstrably read as "not read this session".
+ * Folds absolutePathKey to lower case on those platforms and returns it verbatim
+ * on case-sensitive ones (Linux). Comparison/lock/written-hash keys use this;
+ * display paths keep their original case via absolutePathKey directly.
+ * @param {object|undefined} session - Session (provides projectPath + platform)
+ * @param {string|undefined} path - File path in any form
+ * @returns {string} Comparison key, or '' when no path was given
+ */
+export function pathMatchKey(session, path) {
+  const key = absolutePathKey(session, path);
+  if (!key) return '';
+  const platform = String(/** @type {any} */ (session)?.platform || '').toLowerCase();
+  const caseInsensitive = platform === 'darwin' || platform.startsWith('win');
+  return caseInsensitive ? key.toLowerCase() : key;
+}
+
+/**
  * In-memory, per-realm record of content hashes this process has written via a
  * completed edit/write, keyed by canonical absolute path (absolutePathKey).
  *
@@ -68,7 +88,7 @@ const MAX_WRITTEN_HASHES_PER_PATH = 8;
  */
 export function recordWrittenHash(session, path, hash) {
   if (typeof hash !== 'string' || !hash) return;
-  const target = absolutePathKey(session, path);
+  const target = pathMatchKey(session, path);
   if (!target) return;
   let set = writtenHashes.get(target);
   if (!set) {
@@ -90,6 +110,94 @@ export function recordWrittenHash(session, path, hash) {
  */
 export function __resetWrittenHashesForTest() {
   writtenHashes.clear();
+}
+
+/**
+ * The newest content hash this process recorded for `path`, or undefined if it
+ * has written none. The written-hash Set preserves insertion order, so the last
+ * entry is the most recent write.
+ * @param {object|undefined} session - Session (for path resolution)
+ * @param {string|undefined} path - File path to look up
+ * @returns {string|undefined} The most recently recorded hash, or undefined
+ */
+export function latestWrittenHash(session, path) {
+  const target = pathMatchKey(session, path);
+  const set = target ? writtenHashes.get(target) : undefined;
+  if (!set || set.size === 0) return undefined;
+  let last;
+  for (const h of set) last = h;
+  return last;
+}
+
+/**
+ * Choose the staleness baseline (expectedHash) for a mutation that was queued
+ * behind a sibling mutation to the same path this turn. `frozenHash` is the
+ * baseline captured when this mutation was validated; `currentHash` is the
+ * file's freshly-probed on-disk hash just before the real write.
+ *
+ * Re-base onto `currentHash` only when it is bytes this process has seen or
+ * written (checkFileFreshness accepts it) — i.e. a sibling's just-applied
+ * write, so the backend's expectedHash guard doesn't reject an edit made stale
+ * purely by an earlier same-turn sibling. When the current bytes are an unseen
+ * out-of-band change, keep `frozenHash` so the backend still refuses.
+ * @param {any} conversation - Conversation instance
+ * @param {object|undefined} session - Session (for path resolution)
+ * @param {string|undefined} path - File path being mutated
+ * @param {string} frozenHash - The validation-time baseline
+ * @param {string|undefined} currentHash - The file's current on-disk hash
+ * @returns {string} The expectedHash to send to the backend
+ */
+export function restageBaseline(conversation, session, path, frozenHash, currentHash) {
+  if (typeof currentHash !== 'string' || !currentHash || currentHash === frozenHash) {
+    return frozenHash;
+  }
+  const fresh = checkFileFreshness(conversation, session, path, currentHash, 'edit');
+  return fresh.ok ? currentHash : frozenHash;
+}
+
+/**
+ * Per-path serialization of same-file mutations within this process.
+ *
+ * A single assistant turn can dispatch several edits/writes to one file
+ * concurrently. Each freezes its expectedHash baseline at validation time —
+ * before any sibling executes — so without serialization the first write lands
+ * and every later sibling carries a now-stale baseline the backend rejects.
+ * Holding a per-path lock across each mutation's execute forces those siblings
+ * to run one at a time; each then re-bases onto the previous sibling's written
+ * bytes (see restageBaseline), collapsing a concurrent batch into the
+ * already-correct sequential case. Keyed by canonical absolute path, so only
+ * mutations to the SAME file serialize — different files never block.
+ * @type {Map<string, Promise<void>>}
+ */
+const pathLocks = new Map();
+
+/**
+ * Acquire the per-path mutation lock for `path`. Resolves once any in-flight
+ * sibling mutation to the same path has released, and returns a `release`
+ * callback the caller MUST invoke (in a finally) when its mutation completes.
+ * When the path has no stable canonical key, returns a no-op lock.
+ * @param {object|undefined} session - Session (for path resolution)
+ * @param {string|undefined} path - File path to serialize on
+ * @returns {Promise<{release: () => void}>} The acquired lock handle
+ */
+export async function acquirePathLock(session, path) {
+  const key = pathMatchKey(session, path);
+  if (!key) return { release: () => {} };
+  const prev = pathLocks.get(key);
+  /** @type {() => void} */
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = () => resolve(undefined); });
+  const mine = (prev || Promise.resolve()).then(() => gate);
+  pathLocks.set(key, mine);
+  await (prev || Promise.resolve());
+  const finish = () => {
+    release();
+    // Drop the entry when nobody queued behind us, bounding the map. Safe with
+    // no interleaving await between release() and this check: a later acquirer
+    // synchronously replaces the tail before its first await.
+    if (pathLocks.get(key) === mine) pathLocks.delete(key);
+  };
+  return { release: finish };
 }
 
 /**
@@ -159,7 +267,7 @@ function opsPayload(result) {
 function seenState(conversation, session, path) {
   /** @type {SeenState} */
   const state = { seen: false, pinned: false, hashes: new Set(), unverified: false };
-  const target = absolutePathKey(session, path);
+  const target = pathMatchKey(session, path);
   if (!conversation || !target) return state;
 
   const threads = /** @type {any} */ (conversation).getAllMessageThreads?.() || [];
@@ -169,7 +277,7 @@ function seenState(conversation, session, path) {
     //    rendered into context at send time, so they always count as fresh.
     for (const item of thread.contextItems || []) {
       const p = /** @type {any} */ (item)?.data?.path;
-      if (p && absolutePathKey(session, p) === target) {
+      if (p && pathMatchKey(session, p) === target) {
         state.seen = true;
         state.pinned = true;
       }
@@ -198,7 +306,7 @@ function seenState(conversation, session, path) {
       }
 
       const p = toolInputPath(toolInput, true);
-      if (!p || absolutePathKey(session, p) !== target) continue;
+      if (!p || pathMatchKey(session, p) !== target) continue;
 
       const result = ymap.get('result');
       if (!result || yget(result, 'isError') === true) continue;
@@ -234,7 +342,7 @@ function collectBatchRead(state, session, target, toolInput, ymap) {
   // Cheap pre-filter on the input list before touching the (larger) result.
   const inputFiles = ylist(toolInput?.files);
   const inInput = inputFiles.some(
-    (f) => absolutePathKey(session, /** @type {any} */ (f)?.file_path) === target
+    (f) => pathMatchKey(session, /** @type {any} */ (f)?.file_path) === target
   );
   if (inputFiles.length > 0 && !inInput) return;
 
@@ -254,7 +362,7 @@ function collectBatchRead(state, session, target, toolInput, ymap) {
   for (const entry of entries) {
     if (yget(entry, 'success') !== true) continue;
     const file = yget(entry, 'file');
-    if (!file || absolutePathKey(session, String(file)) !== target) continue;
+    if (!file || pathMatchKey(session, String(file)) !== target) continue;
     const fileResult = yget(entry, 'result');
     if (yget(fileResult, 'exists') === false) continue;
     state.seen = true;
@@ -294,7 +402,7 @@ function collectExploreCode(state, session, target, ymap) {
   const result = ymap.get('result');
   if (!result || yget(result, 'isError') === true) return;
   for (const [file, hash] of yentries(yget(opsPayload(result), 'filesRead'))) {
-    if (absolutePathKey(session, file) !== target) continue;
+    if (pathMatchKey(session, file) !== target) continue;
     state.seen = true;
     if (typeof hash === 'string' && hash) state.hashes.add(hash);
     else state.unverified = true;
@@ -318,7 +426,7 @@ export function checkFileFreshness(conversation, session, path, currentHash, ver
   const state = seenState(conversation, session, path);
   // A hash this process wrote earlier this turn proves the file was seen even
   // if that write's tool-action has not yet surfaced in the durable transcript.
-  const target = absolutePathKey(session, path);
+  const target = pathMatchKey(session, path);
   const written = target ? writtenHashes.get(target) : undefined;
   if (!state.seen && !(written && written.size > 0)) {
     return {

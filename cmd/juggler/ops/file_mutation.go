@@ -109,11 +109,19 @@ var fileMutationLock = newPathLocker()
 // layer can refuse an edit whose target changed since the model last read it,
 // and the value an incoming expectedHash param is compared against so the same
 // refusal covers the approval-to-write window.
-func (ops *FileOperations) openForMutation(path string) (absPath string, info os.FileInfo, content string, rawHash string, unlock func(), err error) {
+//
+// usedCRLF reports whether the file is pure-CRLF (every LF is part of a CRLF).
+// The content returned is always LF-normalized — matching and line-splitting
+// work in LF and the model never sees CR — but a pure-CRLF file must be written
+// back with its CRLF endings restored, otherwise editing one line silently
+// rewrites every line ending to LF. A mixed-ending file reports false and stays
+// LF-normalized: there's no single ending to restore, and re-expanding would
+// itself produce a spurious diff.
+func (ops *FileOperations) openForMutation(path string) (absPath string, info os.FileInfo, content string, usedCRLF bool, rawHash string, unlock func(), err error) {
 	// JS approval is the policy gate; backend sanitises only.
 	absPath, err = ops.scope.Sanitize(path)
 	if err != nil {
-		return "", nil, "", "", nil, fmt.Errorf("invalid path '%s': %w", path, err)
+		return "", nil, "", false, "", nil, fmt.Errorf("invalid path '%s': %w", path, err)
 	}
 
 	// Serialize the whole read-modify-write against concurrent edits of the same
@@ -125,23 +133,28 @@ func (ops *FileOperations) openForMutation(path string) (absPath string, info os
 	if statErr != nil {
 		unlock()
 		if os.IsNotExist(statErr) {
-			return "", nil, "", "", nil, fmt.Errorf("file does not exist: %s. Use write-file action to create new files", path)
+			return "", nil, "", false, "", nil, fmt.Errorf("file does not exist: %s. Use write-file action to create new files", path)
 		}
-		return "", nil, "", "", nil, fmt.Errorf("failed to access file '%s': %w", path, statErr)
+		return "", nil, "", false, "", nil, fmt.Errorf("failed to access file '%s': %w", path, statErr)
 	}
 	if info.IsDir() {
 		unlock()
-		return "", nil, "", "", nil, fmt.Errorf("cannot edit directory: %s. Provide a file path instead", path)
+		return "", nil, "", false, "", nil, fmt.Errorf("cannot edit directory: %s. Provide a file path instead", path)
 	}
 
 	raw, readErr := os.ReadFile(absPath)
 	if readErr != nil {
 		unlock()
-		return "", nil, "", "", nil, fmt.Errorf("failed to read file '%s': %w. Check file permissions", path, readErr)
+		return "", nil, "", false, "", nil, fmt.Errorf("failed to read file '%s': %w. Check file permissions", path, readErr)
 	}
 
 	hashBytes := sha256.Sum256(raw)
-	return absPath, info, strings.ReplaceAll(string(raw), "\r\n", "\n"), hex.EncodeToString(hashBytes[:]), unlock, nil
+	rawStr := string(raw)
+	// Pure-CRLF iff every LF is part of a CRLF pair (no lone LF). Such a file is
+	// written back with CRLF restored; a mixed file stays LF-normalized.
+	crlfCount := strings.Count(rawStr, "\r\n")
+	usedCRLF = crlfCount > 0 && crlfCount == strings.Count(rawStr, "\n")
+	return absPath, info, strings.ReplaceAll(rawStr, "\r\n", "\n"), usedCRLF, hex.EncodeToString(hashBytes[:]), unlock, nil
 }
 
 // writeFileAtomic writes data to path via a temp file in the same directory

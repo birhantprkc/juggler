@@ -4,9 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import EditBase from './edit-base.js';
-import { editFile } from 'juggler/ops';
+import { editFile, readFile } from 'juggler/ops';
 import { normalizeFilePath, basename } from 'juggler/item-utils';
-import { checkFileFreshness, recordWrittenHash } from './read-history.js';
+import { checkFileFreshness, recordWrittenHash, restageBaseline, acquirePathLock } from './read-history.js';
 
 /**
  * @typedef {object} ReplaceTextParams
@@ -214,13 +214,18 @@ class ReplaceTextContextItem extends EditBase {
       return { valid: false, error: llmMessage };
     }
 
-    // Staleness guard: the dryRun echoes the file's current on-disk hash;
-    // refuse when it matches none of the hashes the transcript says the model
-    // has seen — the file changed out-of-band since it was last read.
-    const freshness = checkFileFreshness(this.conversation, this.session, params.path, result.contentHash, 'edit');
-    if (!freshness.ok) {
-      return { valid: false, error: freshness.error };
-    }
+    // Staleness is deliberately NOT re-checked on a successful match. Reaching
+    // here means the file was seen this session (the read-before-edit guard
+    // above) AND old_str uniquely matched the file's CURRENT bytes (the dryRun
+    // succeeded). Replacing text that is present verbatim is lossless even if
+    // the file changed out-of-band since it was read — any surrounding change is
+    // preserved — so refusing would only burn a turn on a needless re-read
+    // (commonly after the agent's own formatter/codegen touched the file). The
+    // "file moved under me" case instead fails to match and is caught above
+    // (staleOnFail) with a re-read message. Full overwrites (the write tool)
+    // stay strict, since they DO destroy unseen bytes. The approval-window race
+    // (file changes between this dryRun and execute) is still caught at execute
+    // time by the backend expectedHash guard.
 
     // Cache dryRun result for getApprovalConfig()
     return {
@@ -265,30 +270,57 @@ class ReplaceTextContextItem extends EditBase {
     const anyParams = /** @type {any} */ (normalizedParams);
     const dryRunResult = /** @type {{contentHash?: string}|undefined} */ (anyParams._dryRunResult);
     delete anyParams._dryRunResult;
-    if (dryRunResult?.contentHash) {
-      anyParams.expectedHash = dryRunResult.contentHash;
+    const frozenHash = dryRunResult?.contentHash;
+
+    // Serialize edits to the SAME file: a single turn can dispatch several to
+    // one path concurrently, each having frozen its expectedHash baseline at
+    // validation time — before any sibling wrote. Holding this per-path lock
+    // across execute makes those siblings run one at a time, so each re-bases
+    // onto the previous sibling's committed bytes below instead of carrying a
+    // baseline the backend rejects as stale. Different files never block.
+    const lock = await acquirePathLock(this.session, anyParams.path);
+    try {
+      if (frozenHash) {
+        // A same-turn sibling may have advanced the on-disk bytes past our
+        // frozen baseline. Re-probe and re-base onto the current bytes when
+        // they are our own just-written output (restageBaseline vets them via
+        // the freshness guard); keep the frozen baseline for a genuine
+        // out-of-band change so the backend still refuses it.
+        let currentHash;
+        try {
+          const probe = await readFile({ path: anyParams.path });
+          currentHash = /** @type {any} */ (probe)?.contentHash;
+        } catch {
+          // Unreadable here (e.g. removed out-of-band): let editFile surface it.
+        }
+        anyParams.expectedHash = restageBaseline(
+          this.conversation, this.session, anyParams.path, frozenHash, currentHash
+        );
+      }
+
+      // Carry the allowed-paths grant and mark an out-of-root target as approved so
+      // the backend's defence-in-depth check admits the edit (see EditBase._authorizeWrite).
+      const { params: sendParams, allowedPaths } = this._authorizeWrite(normalizedParams);
+
+      // Call typed ops API
+      const result = await editFile(
+        /** @type {import('../../../js/services/ops-api.js').ReadFileEditParams} */ (sendParams),
+        this.signal,
+        allowedPaths
+      );
+
+      // Remember the post-edit hash synchronously so a follow-up edit of the same
+      // file later in this turn passes the freshness guard even before this edit's
+      // tool-action lands in the durable transcript (see read-history.js).
+      if (result && /** @type {any} */ (result).success !== false &&
+          typeof (/** @type {any} */ (result).contentHash) === 'string') {
+        recordWrittenHash(this.session, anyParams.path, /** @type {any} */ (result).contentHash);
+      }
+
+      return result;
+    } finally {
+      lock.release();
     }
-
-    // Carry the allowed-paths grant and mark an out-of-root target as approved so
-    // the backend's defence-in-depth check admits the edit (see EditBase._authorizeWrite).
-    const { params: sendParams, allowedPaths } = this._authorizeWrite(normalizedParams);
-
-    // Call typed ops API
-    const result = await editFile(
-      /** @type {import('../../../js/services/ops-api.js').ReadFileEditParams} */ (sendParams),
-      this.signal,
-      allowedPaths
-    );
-
-    // Remember the post-edit hash synchronously so a follow-up edit of the same
-    // file later in this turn passes the freshness guard even before this edit's
-    // tool-action lands in the durable transcript (see read-history.js).
-    if (result && /** @type {any} */ (result).success !== false &&
-        typeof (/** @type {any} */ (result).contentHash) === 'string') {
-      recordWrittenHash(this.session, anyParams.path, /** @type {any} */ (result).contentHash);
-    }
-
-    return result;
   }
 
   /**

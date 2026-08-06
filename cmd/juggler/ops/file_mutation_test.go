@@ -353,3 +353,89 @@ func TestWriteEditFailOnReadOnlyDir(t *testing.T) {
 		t.Fatalf("file mutated despite failed writes: %q", string(got))
 	}
 }
+
+// TestEditPreservesCRLF asserts that editing a pure-CRLF (Windows) file rewrites
+// only the edited region and leaves every other line's CRLF ending intact,
+// rather than silently normalizing the whole file to LF. It also checks that the
+// echoed post-write contentHash matches a fresh getFileHash (over the real
+// CRLF-restored bytes), so a follow-up edit's staleness guard doesn't misfire; a
+// mixed-ending file is left LF-normalized because there's no single ending to
+// restore.
+func TestEditPreservesCRLF(t *testing.T) {
+	dir := t.TempDir()
+	ops := NewFileOperations(NewPathScope(dir, nil))
+
+	fileHash := func(name string) string {
+		t.Helper()
+		res, err := ops.Execute(context.Background(), "getFileHash", map[string]any{"path": name})
+		if err != nil {
+			t.Fatalf("getFileHash: %v", err)
+		}
+		return res.(map[string]any)["contentHash"].(string)
+	}
+
+	t.Run("editFile keeps CRLF and reports a matching hash", func(t *testing.T) {
+		const name = "crlf.txt"
+		abs := filepath.Join(dir, name)
+		if err := os.WriteFile(abs, []byte("alpha\r\nbeta\r\ngamma\r\n"), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		res, err := ops.Execute(context.Background(), "editFile", map[string]any{
+			"path": name, "old_str": "beta", "new_str": "BETA",
+		})
+		if err != nil {
+			t.Fatalf("editFile: %v", err)
+		}
+		got, err := os.ReadFile(abs)
+		if err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if string(got) != "alpha\r\nBETA\r\ngamma\r\n" {
+			t.Fatalf("CRLF not preserved: %q", string(got))
+		}
+		if h := res.(map[string]any)["contentHash"].(string); h != fileHash(name) {
+			t.Fatalf("editFile contentHash %s != getFileHash %s", h, fileHash(name))
+		}
+		// A follow-up edit on the same file must not trip the staleness guard.
+		if _, err := ops.Execute(context.Background(), "editFile", map[string]any{
+			"path": name, "old_str": "gamma", "new_str": "GAMMA",
+		}); err != nil {
+			t.Fatalf("consecutive editFile: %v", err)
+		}
+		if got, _ := os.ReadFile(abs); string(got) != "alpha\r\nBETA\r\nGAMMA\r\n" {
+			t.Fatalf("second CRLF edit wrong: %q", string(got))
+		}
+	})
+
+	t.Run("editFileLines keeps CRLF", func(t *testing.T) {
+		const name = "crlf-lines.txt"
+		abs := filepath.Join(dir, name)
+		if err := os.WriteFile(abs, []byte("alpha\r\nbeta\r\ngamma\r\n"), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if _, err := ops.Execute(context.Background(), "editFileLines", map[string]any{
+			"path": name, "startLine": float64(2), "endLine": float64(2), "newContent": "BETA",
+		}); err != nil {
+			t.Fatalf("editFileLines: %v", err)
+		}
+		if got, _ := os.ReadFile(abs); string(got) != "alpha\r\nBETA\r\ngamma\r\n" {
+			t.Fatalf("CRLF not preserved by editFileLines: %q", string(got))
+		}
+	})
+
+	t.Run("mixed endings are left LF-normalized", func(t *testing.T) {
+		const name = "mixed.txt"
+		abs := filepath.Join(dir, name)
+		if err := os.WriteFile(abs, []byte("alpha\r\nbeta\ngamma\r\n"), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if _, err := ops.Execute(context.Background(), "editFile", map[string]any{
+			"path": name, "old_str": "beta", "new_str": "BETA",
+		}); err != nil {
+			t.Fatalf("editFile: %v", err)
+		}
+		if got, _ := os.ReadFile(abs); string(got) != "alpha\nBETA\ngamma\n" {
+			t.Fatalf("mixed file not LF-normalized: %q", string(got))
+		}
+	})
+}
