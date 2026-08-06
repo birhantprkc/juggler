@@ -6,7 +6,7 @@
 import EditBase from './edit-base.js';
 import { readFile, writeFile } from 'juggler/ops';
 import { formatDisplayPath, normalizeFilePath, createFileContentBlock, basename } from 'juggler/item-utils';
-import { checkFileFreshness } from './read-history.js';
+import { checkFileFreshness, recordWrittenHash } from './read-history.js';
 
 /** @type {Record<string, string>} */
 const LANG_MAP = {
@@ -259,6 +259,14 @@ class WriteFileContextItem extends EditBase {
       this.signal,
       allowedPaths
     );
+
+    // Remember the post-write hash synchronously so a follow-up mutation of the
+    // same file later in this turn passes the freshness guard even before this
+    // write's tool-action lands in the durable transcript (see read-history.js).
+    if (result && /** @type {any} */ (result).success !== false &&
+        typeof (/** @type {any} */ (result).contentHash) === 'string') {
+      recordWrittenHash(this.session, /** @type {any} */ (writeParams).path, /** @type {any} */ (result).contentHash);
+    }
 
     return result;
   }

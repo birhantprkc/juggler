@@ -28,6 +28,10 @@ import {
 } from '../utilities/test-helpers.js';
 import contextItemRegistry from '../../js/registries/context-item-registry.js';
 import { writeFileOp } from '../../js/services/ops-api.js';
+import {
+  recordWrittenHash,
+  __resetWrittenHashesForTest
+} from '../../extensions/juggler-core/context-items/read-history.js';
 
 /** A syntactically valid SHA-256 that matches no real file. */
 const BOGUS_HASH = '0000000000000000000000000000000000000000000000000000000000000000';
@@ -371,6 +375,61 @@ export async function runTests(_ctx) {
     const write = mkItem(WriteClass, conversation);
     const res = await write.validate({ file_path: 'guard-clobber-ok.txt', content: 'replaced\n' });
     assert(res.valid === true, `read-then-overwrite must be allowed, got ${JSON.stringify(res)}`);
+  });
+
+  // =========================================================================
+  // In-flight sibling edits: when several edits to the same file execute within
+  // one assistant turn, an earlier edit's completed tool-action (carrying its
+  // post-edit hash) may not yet be visible in the durable transcript when the
+  // next edit validates. recordWrittenHash captures that hash synchronously at
+  // execute time, so the follow-up edit is NOT spuriously refused as stale —
+  // while a genuine out-of-band change (a hash we never wrote) still is.
+  // =========================================================================
+  await test('same-turn sibling edit passes via written-hash record', async () => {
+    __resetWrittenHashesForTest();
+    const conversation = await createTestConversation(session);
+    // The transcript only knows the v0 the model read.
+    const v0 = await writeFileOp({ path: 'guard-sibling.txt', content: 'hello world\n' });
+    seedSeen(conversation, 'read', 'guard-sibling.txt', v0.contentHash);
+
+    // An earlier edit this turn rewrote the file to v1, but its tool-action has
+    // not surfaced in the transcript yet — only the in-memory record knows v1.
+    const v1 = await writeFileOp({ path: 'guard-sibling.txt', content: 'hello there\n' });
+    recordWrittenHash(session, 'guard-sibling.txt', v1.contentHash);
+
+    const edit = mkItem(EditClass, conversation);
+    const res = await edit.validate({ file_path: 'guard-sibling.txt', old_string: 'there', new_string: 'everyone' });
+    assert(res.valid === true, `sibling edit should pass once its hash is recorded, got ${JSON.stringify(res)}`);
+  });
+
+  await test('out-of-band change still refused without a written-hash record', async () => {
+    __resetWrittenHashesForTest();
+    const conversation = await createTestConversation(session);
+    const v0 = await writeFileOp({ path: 'guard-oob.txt', content: 'hello world\n' });
+    seedSeen(conversation, 'read', 'guard-oob.txt', v0.contentHash);
+
+    // The file changed on disk to bytes we never wrote and never recorded.
+    await writeFileOp({ path: 'guard-oob.txt', content: 'hello there\n' });
+
+    const edit = mkItem(EditClass, conversation);
+    const res = await edit.validate({ file_path: 'guard-oob.txt', old_string: 'there', new_string: 'everyone' });
+    assert(res.valid === false, `genuine out-of-band change must still be refused, got ${JSON.stringify(res)}`);
+    assert(/changed on disk/i.test(res.error || ''),
+      `error should say the file changed: ${res.error}`);
+  });
+
+  await test('same-turn sibling overwrite passes via written-hash record', async () => {
+    __resetWrittenHashesForTest();
+    const conversation = await createTestConversation(session);
+    const v0 = await writeFileOp({ path: 'guard-sibling-w.txt', content: 'precious\n' });
+    seedSeen(conversation, 'read', 'guard-sibling-w.txt', v0.contentHash);
+
+    const v1 = await writeFileOp({ path: 'guard-sibling-w.txt', content: 'changed\n' });
+    recordWrittenHash(session, 'guard-sibling-w.txt', v1.contentHash);
+
+    const write = mkItem(WriteClass, conversation);
+    const res = await write.validate({ file_path: 'guard-sibling-w.txt', content: 'again\n' });
+    assert(res.valid === true, `sibling overwrite should pass once its hash is recorded, got ${JSON.stringify(res)}`);
   });
 
   return { passed, failed, errors };

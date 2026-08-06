@@ -36,6 +36,63 @@
 import { toolInputPath, absolutePathKey } from './path-approval.js';
 
 /**
+ * In-memory, per-realm record of content hashes this process has written via a
+ * completed edit/write, keyed by canonical absolute path (absolutePathKey).
+ *
+ * Layered on top of the durable transcript purely to close a timing window:
+ * when several edits to the same file execute within one assistant turn, an
+ * earlier edit's completed tool-action — which carries its post-edit hash — may
+ * not yet be observable in the Yjs transcript when the next edit validates, so
+ * the follow-up would see its own sibling's freshly-written bytes as an
+ * out-of-band change and be spuriously refused. recordWrittenHash captures every
+ * hash this process actually wrote, synchronously at execute time. Because every
+ * remembered hash is bytes we wrote ourselves, honoring it can never wave
+ * through an unseen out-of-band change — it only recognises our own just-applied
+ * write. Bounded per path to cap memory over a long session.
+ * @type {Map<string, Set<string>>}
+ */
+const writtenHashes = new Map();
+
+/** Cap on remembered hashes per path, bounding memory over a long session. */
+const MAX_WRITTEN_HASHES_PER_PATH = 8;
+
+/**
+ * Record a content hash this process just wrote to `path`, so a follow-up
+ * mutation of the same file within the same assistant turn passes the freshness
+ * guard without waiting for the durable transcript to catch up. Safe by
+ * construction: only hashes of bytes we actually wrote are remembered.
+ * @param {object|undefined} session - Session (for path resolution)
+ * @param {string|undefined} path - File path that was written
+ * @param {string|undefined} hash - The file's on-disk content hash after the write
+ * @returns {void}
+ */
+export function recordWrittenHash(session, path, hash) {
+  if (typeof hash !== 'string' || !hash) return;
+  const target = absolutePathKey(session, path);
+  if (!target) return;
+  let set = writtenHashes.get(target);
+  if (!set) {
+    set = new Set();
+    writtenHashes.set(target, set);
+  }
+  set.add(hash);
+  // A Set preserves insertion order: evict the oldest once over the cap.
+  while (set.size > MAX_WRITTEN_HASHES_PER_PATH) {
+    const oldest = /** @type {string} */ (set.values().next().value);
+    set.delete(oldest);
+  }
+}
+
+/**
+ * Clear the in-memory written-hash record. Test-only — the store is otherwise
+ * process-lifetime and never needs clearing.
+ * @returns {void}
+ */
+export function __resetWrittenHashesForTest() {
+  writtenHashes.clear();
+}
+
+/**
  * Tools whose successful completion means the model has seen the file's bytes.
  * `batch_read` is matched via its per-file results (which carry per-file
  * success and hash) rather than its input list, and `explore_code` via the
@@ -259,18 +316,25 @@ function collectExploreCode(state, session, target, ymap) {
  */
 export function checkFileFreshness(conversation, session, path, currentHash, verb = 'edit') {
   const state = seenState(conversation, session, path);
-  if (!state.seen) {
+  // A hash this process wrote earlier this turn proves the file was seen even
+  // if that write's tool-action has not yet surfaced in the durable transcript.
+  const target = absolutePathKey(session, path);
+  const written = target ? writtenHashes.get(target) : undefined;
+  if (!state.seen && !(written && written.size > 0)) {
     return {
       ok: false,
       error: `Refusing to ${verb} '${path}': it has not been read this session. Read the file first, then retry using its exact current text.`
     };
   }
   if (state.pinned || state.unverified || !currentHash) return { ok: true };
-  if (!state.hashes.has(currentHash)) {
-    return {
-      ok: false,
-      error: `Refusing to ${verb} '${path}': the file has changed on disk since it was last read. Re-read the file, then retry against its current content.`
-    };
-  }
-  return { ok: true };
+  if (state.hashes.has(currentHash)) return { ok: true };
+  // In-flight sibling edit: the current on-disk bytes match a hash we wrote
+  // earlier this turn, whose completing tool-action the transcript may not
+  // reflect yet. Trust it — those bytes are our own just-applied write, not an
+  // unseen out-of-band change.
+  if (written && written.has(currentHash)) return { ok: true };
+  return {
+    ok: false,
+    error: `Refusing to ${verb} '${path}': the file has changed on disk since it was last read. Re-read the file, then retry against its current content.`
+  };
 }

@@ -6,7 +6,7 @@
 import EditBase from './edit-base.js';
 import { editFile } from 'juggler/ops';
 import { normalizeFilePath, basename } from 'juggler/item-utils';
-import { checkFileFreshness } from './read-history.js';
+import { checkFileFreshness, recordWrittenHash } from './read-history.js';
 
 /**
  * @typedef {object} ReplaceTextParams
@@ -279,6 +279,14 @@ class ReplaceTextContextItem extends EditBase {
       this.signal,
       allowedPaths
     );
+
+    // Remember the post-edit hash synchronously so a follow-up edit of the same
+    // file later in this turn passes the freshness guard even before this edit's
+    // tool-action lands in the durable transcript (see read-history.js).
+    if (result && /** @type {any} */ (result).success !== false &&
+        typeof (/** @type {any} */ (result).contentHash) === 'string') {
+      recordWrittenHash(this.session, anyParams.path, /** @type {any} */ (result).contentHash);
+    }
 
     return result;
   }
