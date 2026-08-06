@@ -322,6 +322,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:todo-no-approval', run: runTodoNoApprovalTests },
   { name: 'unit:webfetch', run: runWebFetchTests },
   { name: 'unit:websearch', run: runWebSearchTests },
+  { name: 'unit:exa-search', run: runExaSearchTests },
   { name: 'unit:thread-nested-array', run: runThreadNestedArrayTests },
   { name: 'unit:undo-redo', run: runUndoRedoTests },
   { name: 'unit:header-undo-lock', run: runHeaderUndoLockTests },
