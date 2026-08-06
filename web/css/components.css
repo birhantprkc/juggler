@@ -3450,6 +3450,10 @@ input-box .attachment-chip .attachment-thumb {
     background: var(--bg-primary);
 }
 
+input-box .attachment-chip .attachment-thumb.clickable {
+    cursor: zoom-in;
+}
+
 /* Dropped text file — document glyph in place of the image thumbnail. */
 input-box .attachment-chip.text-file .attachment-icon {
     width: 1.25rem;
