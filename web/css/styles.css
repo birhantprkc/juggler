@@ -964,6 +964,13 @@ header-actions .u-btn-icon-header::before {
     .app-header .logo::before {
         height: 28px;
     }
+
+    /* The help button opens Settings › Keyboard shortcuts — a reference surface
+       with nothing to offer a device that has no keyboard. Drop it from the
+       touch header so it doesn't crowd the button row with a dead affordance. */
+    header-actions .help-button {
+        display: none;
+    }
 }
 /* stylelint-enable rem-over-px/rem-over-px, unit-disallowed-list */
 
