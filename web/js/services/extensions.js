@@ -26,6 +26,19 @@ import { whenRegistriesReady } from '../registries/registry-ready.js';
  * @property {string} [homepage] - Extension homepage URL
  * @property {string} [engineApi] - Required host SDK compat range
  * @property {string[]} [permissions] - Declared host access (filesystem/shell/web) this extension's code uses; shown to the user as disclosure, not enforced
+ * @property {ExtensionSetting[]} [settings] - Declarative global settings rendered by the Extensions catalog
+ */
+
+/**
+ * @typedef {object} ExtensionSetting
+ * @property {string} key - Stable configuration key
+ * @property {'string'|'secret'|'boolean'|'number'|'enum'|'url'} type - Control and value type
+ * @property {string} label - Human-readable label
+ * @property {string} [help] - Supporting text
+ * @property {string|number|boolean} [default] - Effective value when unset
+ * @property {boolean} [required] - Whether the value must be supplied
+ * @property {string[]} [options] - Allowed enum values
+ * @property {'global'} [scope] - Persistence scope
  */
 
 /**

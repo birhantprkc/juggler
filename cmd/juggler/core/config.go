@@ -109,6 +109,9 @@ func DefaultConfig() *Config {
 			},
 			MaxFileSize: 1048576, // 1MB
 		},
+		Plugins: PluginsConfig{
+			Disabled: []string{"@juggler/exa"},
+		},
 		Logging: LoggingConfig{
 			// On-disk logging is on by default so post-mortem diagnostics
 			// (watchdog force-exits, shutdown-path traces) survive after the
@@ -139,8 +142,20 @@ func LoadConfig(projectPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Fill any field left zero by the file with its default.
+	// Fill fields left absent by the file with their defaults.
 	defaults := DefaultConfig()
+	for _, defaultDisabled := range defaults.Plugins.Disabled {
+		found := false
+		for _, disabled := range cfg.Plugins.Disabled {
+			if disabled == defaultDisabled {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.Plugins.Disabled = append(cfg.Plugins.Disabled, defaultDisabled)
+		}
+	}
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = defaults.Server.Port
 	}

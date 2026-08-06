@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"math"
+	"net/url"
 	"path"
 	"regexp"
 	"strconv"
@@ -41,19 +43,42 @@ type Provides struct {
 	SystemPrompt string `json:"systemPrompt,omitempty"`
 }
 
+// Setting describes one user-configurable extension value. Settings are global
+// in the first API version; Scope is retained in the manifest contract so later
+// versions can add project-scoped values without changing its shape.
+type Setting struct {
+	Key      string          `json:"key"`
+	Type     string          `json:"type"`
+	Label    string          `json:"label"`
+	Help     string          `json:"help,omitempty"`
+	Default  json.RawMessage `json:"default,omitempty"`
+	Required bool            `json:"required,omitempty"`
+	Options  []string        `json:"options,omitempty"`
+	Scope    string          `json:"scope,omitempty"`
+}
+
+// EffectiveScope returns the normalized setting scope.
+func (s Setting) EffectiveScope() string {
+	if strings.TrimSpace(s.Scope) == "" {
+		return "global"
+	}
+	return strings.TrimSpace(s.Scope)
+}
+
 // Manifest is the parsed juggler.extension.json. It governs packaging,
 // versioning, permissioning and discovery; per-capability `static MANIFEST`
 // identifies each individual plugin.
 type Manifest struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Version     string   `json:"version"`
-	Author      string   `json:"author,omitempty"`
-	Homepage    string   `json:"homepage,omitempty"`
-	License     string   `json:"license,omitempty"` // informational SPDX id for the extension's own code, e.g. "Apache-2.0"
-	EngineAPI   string   `json:"engineApi,omitempty"`
-	Permissions []string `json:"permissions,omitempty"`
-	Provides    Provides `json:"provides"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Version     string    `json:"version"`
+	Author      string    `json:"author,omitempty"`
+	Homepage    string    `json:"homepage,omitempty"`
+	License     string    `json:"license,omitempty"` // informational SPDX id for the extension's own code, e.g. "Apache-2.0"
+	EngineAPI   string    `json:"engineApi,omitempty"`
+	Permissions []string  `json:"permissions,omitempty"`
+	Settings    []Setting `json:"settings,omitempty"`
+	Provides    Provides  `json:"provides"`
 }
 
 // Parse decodes and structurally validates the manifest JSON. Unknown fields are
@@ -90,7 +115,112 @@ func Validate(m Manifest, engineVersion string) error {
 		return fmt.Errorf("extension %q requires engineApi %q, incompatible with host %s",
 			m.ID, m.EngineAPI, engineVersion)
 	}
+	if err := ValidateSettings(m.Settings); err != nil {
+		return fmt.Errorf("extension %q settings: %w", m.ID, err)
+	}
 	return nil
+}
+
+var settingKeyRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+
+// ValidateSettings validates the declarative settings schema and all defaults.
+func ValidateSettings(settings []Setting) error {
+	seen := make(map[string]bool, len(settings))
+	for i, setting := range settings {
+		prefix := fmt.Sprintf("field %d", i+1)
+		if !settingKeyRe.MatchString(setting.Key) {
+			return fmt.Errorf("%s has invalid key %q (use letters, digits, underscore, or hyphen; start with a letter)", prefix, setting.Key)
+		}
+		if seen[setting.Key] {
+			return fmt.Errorf("duplicate key %q", setting.Key)
+		}
+		seen[setting.Key] = true
+		if strings.TrimSpace(setting.Label) == "" {
+			return fmt.Errorf("setting %q is missing label", setting.Key)
+		}
+		switch setting.Type {
+		case "string", "secret", "boolean", "number", "url":
+			if len(setting.Options) != 0 {
+				return fmt.Errorf("setting %q type %q does not support options", setting.Key, setting.Type)
+			}
+		case "enum":
+			if len(setting.Options) == 0 {
+				return fmt.Errorf("setting %q type enum requires options", setting.Key)
+			}
+			optionSeen := map[string]bool{}
+			for _, option := range setting.Options {
+				if option == "" || optionSeen[option] {
+					return fmt.Errorf("setting %q has empty or duplicate enum option %q", setting.Key, option)
+				}
+				optionSeen[option] = true
+			}
+		default:
+			return fmt.Errorf("setting %q has unsupported type %q", setting.Key, setting.Type)
+		}
+		if setting.EffectiveScope() != "global" {
+			return fmt.Errorf("setting %q has unsupported scope %q; only global is supported", setting.Key, setting.Scope)
+		}
+		if len(setting.Default) != 0 {
+			var value any
+			if err := json.Unmarshal(setting.Default, &value); err != nil {
+				return fmt.Errorf("setting %q has invalid default: %w", setting.Key, err)
+			}
+			if setting.Type == "secret" {
+				return fmt.Errorf("setting %q type secret cannot declare a default", setting.Key)
+			}
+			if _, err := ValidateSettingValue(setting, value); err != nil {
+				return fmt.Errorf("setting %q has invalid default: %w", setting.Key, err)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateSettingValue validates and normalizes a decoded JSON setting value.
+func ValidateSettingValue(setting Setting, value any) (any, error) {
+	switch setting.Type {
+	case "string", "secret":
+		v, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("must be a string")
+		}
+		return v, nil
+	case "url":
+		v, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("must be a string URL")
+		}
+		parsed, err := url.ParseRequestURI(v)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return nil, fmt.Errorf("must be an absolute URL")
+		}
+		return v, nil
+	case "boolean":
+		v, ok := value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("must be a boolean")
+		}
+		return v, nil
+	case "number":
+		v, ok := value.(float64)
+		if !ok || math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, fmt.Errorf("must be a finite number")
+		}
+		return v, nil
+	case "enum":
+		v, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("must be a string")
+		}
+		for _, option := range setting.Options {
+			if v == option {
+				return v, nil
+			}
+		}
+		return nil, fmt.Errorf("must be one of %q", setting.Options)
+	default:
+		return nil, fmt.Errorf("has unsupported type %q", setting.Type)
+	}
 }
 
 // Warnings returns non-fatal advisories about a manifest that passed validation.

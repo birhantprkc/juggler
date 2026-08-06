@@ -22,6 +22,7 @@ import (
 	"github.com/gorilla/mux"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/extconfig"
 	"juggler/cmd/juggler/machineserver"
 	"juggler/cmd/juggler/mcp"
 	"juggler/cmd/juggler/ops"
@@ -135,6 +136,10 @@ func Run(cfg Config) int {
 	ops.RegisterAll()
 	mcp.Register()
 	acp.RegisterOps()
+	if err := extconfig.RegisterOps(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to register extension config: %v\n", err)
+		return 1
+	}
 	registerProviders()
 
 	// Self-terminate if our parent dies, so a server spawned by juggler-app (or

@@ -107,6 +107,7 @@ import { runTests as runTodoActionTests } from '../unit-tests/todo-action-test.j
 import { runTests as runTodoNoApprovalTests } from '../unit-tests/todo-no-approval-test.js';
 import { runTests as runWebFetchTests } from '../unit-tests/test-webfetch.js';
 import { runTests as runWebSearchTests } from '../unit-tests/test-websearch.js';
+import { runTests as runExaSearchTests } from '../unit-tests/exa-search-test.js';
 import { runTests as runThreadNestedArrayTests } from '../unit-tests/thread-nested-array-test.js';
 import { runTests as runUndoRedoTests } from '../unit-tests/undo-redo-test.js';
 import { runTests as runHeaderUndoLockTests } from '../unit-tests/header-undo-lock-test.js';
@@ -147,6 +148,7 @@ import { runTests as runExtensionRegistryTests } from '../unit-tests/extension-r
 import { runTests as runSdkFacadeParityTests } from '../unit-tests/sdk-facade-parity-test.js';
 import { runTests as runExtensionCollisionTests } from '../unit-tests/extension-collision-test.js';
 import { runTests as runExtensionCatalogTests } from '../unit-tests/extension-catalog-test.js';
+import { runTests as runExtensionSettingsTests } from '../unit-tests/extension-settings-test.js';
 import { runTests as runUserCommandFactoryTests } from '../unit-tests/user-command-factory-test.js';
 import { runTests as runCloseCommandTests } from '../unit-tests/close-command-test.js';
 import { runTests as runEngineApiVectorTests } from '../unit-tests/engineapi-vectors-test.js';
@@ -350,6 +352,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:sdk-facade-parity', run: runSdkFacadeParityTests },
   { name: 'unit:extension-collision', run: runExtensionCollisionTests },
   { name: 'unit:extension-catalog', run: runExtensionCatalogTests },
+  { name: 'unit:extension-settings', run: runExtensionSettingsTests },
   { name: 'unit:user-command-factory', run: runUserCommandFactoryTests },
   { name: 'unit:close-command', run: runCloseCommandTests },
   { name: 'unit:engineapi-vectors', run: runEngineApiVectorTests },

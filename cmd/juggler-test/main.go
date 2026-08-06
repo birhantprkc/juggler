@@ -175,6 +175,9 @@ func main() {
 			// Count how many credentials were loaded
 			credCount := 0
 			for key, value := range creds {
+				if strings.HasPrefix(key, "ext:") {
+					continue
+				}
 				if value != "" {
 					credCount++
 					// Convert config key name to environment variable name

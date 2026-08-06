@@ -357,8 +357,19 @@ func (c *ConfigAPI) HandleGetPluginConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	disabled := make([]string, 0, len(cfg.GetDisabledPlugins()))
+	enabled := make(map[string]bool, len(cfg.GetEnabledPlugins()))
+	for _, id := range cfg.GetEnabledPlugins() {
+		enabled[id] = true
+	}
+	for _, id := range cfg.GetDisabledPlugins() {
+		if !enabled[id] {
+			disabled = append(disabled, id)
+		}
+	}
+
 	WriteJSON(w, r, 0, map[string]any{
-		"disabled": cfg.GetDisabledPlugins(),
+		"disabled": disabled,
 		"enabled":  cfg.GetEnabledPlugins(),
 	})
 }
@@ -389,6 +400,18 @@ func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Requ
 
 	cfg.Plugins.Disabled = req.Disabled
 	cfg.Plugins.Enabled = req.Enabled
+	for _, id := range req.Enabled {
+		found := false
+		for _, disabledID := range cfg.Plugins.Disabled {
+			if disabledID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.Plugins.Disabled = append(cfg.Plugins.Disabled, id)
+		}
+	}
 
 	if err := cfg.Save(c.projectPath()); err != nil {
 		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{

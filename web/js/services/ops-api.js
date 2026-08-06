@@ -1083,6 +1083,45 @@ export async function shellKill(params) {
 }
 
 // ============================================================================
+// HTTP Operations
+// ============================================================================
+
+/**
+ * Parameters for a generic server-side HTTP request.
+ * @typedef {object} HTTPRequestParams
+ * @property {'GET'|'POST'|'PUT'|'PATCH'|'DELETE'|'HEAD'} [method] - HTTP method (default GET)
+ * @property {string} url - Absolute HTTP or HTTPS URL
+ * @property {Record<string, string>} [headers] - Request headers
+ * @property {string} [body] - Request body
+ * @property {number} [timeoutMs] - Timeout in milliseconds (default 30000, max 120000)
+ * @property {boolean} [followRedirects] - Follow redirects (default true)
+ * @property {boolean} [allowPrivateHosts] - Permit private, loopback, and link-local targets (default false)
+ */
+
+/**
+ * Result from a generic server-side HTTP request.
+ * @typedef {object} HTTPRequestResult
+ * @property {number} status - HTTP status code
+ * @property {string} statusText - Standard HTTP status text
+ * @property {Record<string, string>} headers - Response headers
+ * @property {string} body - Response body, capped at 4 MiB
+ * @property {boolean} truncated - Whether the response exceeded the body cap
+ */
+
+/**
+ * Make a generic server-side HTTP request.
+ * @param {HTTPRequestParams} params
+ * @param {AbortSignal} [signal] - Abort signal for cancellation
+ * @returns {Promise<HTTPRequestResult>} HTTP response
+ */
+export async function httpRequest(params, signal) {
+  if (!params.url) {
+    throw new TypeError('url is required');
+  }
+  return callOp('http', 'request', params, signal);
+}
+
+// ============================================================================
 // WebFetch Operations
 // ============================================================================
 
@@ -1455,4 +1494,46 @@ export async function acpGetConfig(signal) {
  */
 export async function acpSetConfig(params, signal) {
   return callOp('acp', 'setConfig', params, signal);
+}
+
+// ============================================================================
+// Extension configuration
+// ============================================================================
+
+/**
+ * Read effective extension settings. Secret values are represented by presence
+ * markers and are never returned by this viewer-safe operation.
+ * @param {{extId: string}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<object>} Effective values and secret presence markers
+ */
+export async function extensionConfigGet(params, signal) {
+  if (!params?.extId) throw new TypeError('extId is required');
+  return callOp('extconfig', 'get', params, signal);
+}
+
+/**
+ * Update a subset of global extension settings.
+ * @param {{extId: string, values: object, scope?: 'global'}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<object>} Effective viewer-safe values after the update
+ */
+export async function extensionConfigSet(params, signal) {
+  if (!params?.extId) throw new TypeError('extId is required');
+  if (!params.values || typeof params.values !== 'object') {
+    throw new TypeError('values is required');
+  }
+  return callOp('extconfig', 'set', params, signal);
+}
+
+/**
+ * Resolve effective extension settings for trusted extension execution,
+ * including secret values.
+ * @param {{extId: string}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<object>} Full effective setting values
+ */
+export async function extensionConfigResolve(params, signal) {
+  if (!params?.extId) throw new TypeError('extId is required');
+  return callOp('extconfig', 'resolve', params, signal);
 }

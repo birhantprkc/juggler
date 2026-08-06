@@ -33,6 +33,9 @@ func RegisterAll() {
 	Register("websearch", func(scope PathScope) Operations {
 		return NewWebSearchOperations(scope)
 	})
+	Register("http", func(scope PathScope) Operations {
+		return NewHTTPOperations(scope)
+	})
 
 	go runShellRegistry()
 	go cacheManager()

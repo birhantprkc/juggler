@@ -314,7 +314,7 @@ class ReplaceTextContextItem extends EditBase {
       // tool-action lands in the durable transcript (see read-history.js).
       if (result && /** @type {any} */ (result).success !== false &&
           typeof (/** @type {any} */ (result).contentHash) === 'string') {
-        recordWrittenHash(this.session, anyParams.path, /** @type {any} */ (result).contentHash);
+        recordWrittenHash(this.conversation, this.session, anyParams.path, /** @type {any} */ (result).contentHash);
       }
 
       return result;

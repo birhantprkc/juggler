@@ -410,7 +410,7 @@ export async function runTests(_ctx) {
     // An earlier edit this turn rewrote the file to v1, but its tool-action has
     // not surfaced in the transcript yet — only the in-memory record knows v1.
     const v1 = await writeFileOp({ path: 'guard-sibling.txt', content: 'hello there\n' });
-    recordWrittenHash(session, 'guard-sibling.txt', v1.contentHash);
+    recordWrittenHash(conversation, session, 'guard-sibling.txt', v1.contentHash);
 
     const edit = mkItem(EditClass, conversation);
     const res = await edit.validate({ file_path: 'guard-sibling.txt', old_string: 'there', new_string: 'everyone' });
@@ -434,6 +434,29 @@ export async function runTests(_ctx) {
       `error should say the file changed: ${res.error}`);
   });
 
+  await test('written hash is isolated by conversation', async () => {
+    __resetWrittenHashesForTest();
+    const writerConversation = await createTestConversation(session);
+    const otherConversation = await createTestConversation(session);
+    const written = await writeFileOp({ path: 'guard-conversation-isolation.txt', content: 'private\n' });
+    recordWrittenHash(
+      writerConversation,
+      session,
+      'guard-conversation-isolation.txt',
+      written.contentHash
+    );
+
+    const write = mkItem(WriteClass, otherConversation);
+    const res = await write.validate({
+      file_path: 'guard-conversation-isolation.txt',
+      content: 'clobbered\n'
+    });
+    assert(res.valid === false,
+      `another conversation must not inherit write authorization, got ${JSON.stringify(res)}`);
+    assert(/not been read this session/i.test(res.error || ''),
+      `error should require a read in this conversation: ${res.error}`);
+  });
+
   await test('same-turn sibling overwrite passes via written-hash record', async () => {
     __resetWrittenHashesForTest();
     const conversation = await createTestConversation(session);
@@ -441,7 +464,7 @@ export async function runTests(_ctx) {
     seedSeen(conversation, 'read', 'guard-sibling-w.txt', v0.contentHash);
 
     const v1 = await writeFileOp({ path: 'guard-sibling-w.txt', content: 'changed\n' });
-    recordWrittenHash(session, 'guard-sibling-w.txt', v1.contentHash);
+    recordWrittenHash(conversation, session, 'guard-sibling-w.txt', v1.contentHash);
 
     const write = mkItem(WriteClass, conversation);
     const res = await write.validate({ file_path: 'guard-sibling-w.txt', content: 'again\n' });

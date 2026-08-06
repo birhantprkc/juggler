@@ -66,6 +66,65 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestValidateSettings(t *testing.T) {
+	defaults := func(v string) json.RawMessage { return json.RawMessage(v) }
+	good := []Setting{
+		{Key: "name", Type: "string", Label: "Name", Default: defaults(`"Ada"`)},
+		{Key: "token", Type: "secret", Label: "Token"},
+		{Key: "enabled", Type: "boolean", Label: "Enabled", Default: defaults(`true`)},
+		{Key: "limit", Type: "number", Label: "Limit", Default: defaults(`5`)},
+		{Key: "mode", Type: "enum", Label: "Mode", Options: []string{"fast", "deep"}, Default: defaults(`"fast"`)},
+		{Key: "base_url", Type: "url", Label: "Base URL", Default: defaults(`"https://example.com/api"`), Scope: "global"},
+	}
+	if err := ValidateSettings(good); err != nil {
+		t.Fatalf("ValidateSettings(valid): %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		setting Setting
+	}{
+		{"invalid key", Setting{Key: "../key", Type: "string", Label: "Key"}},
+		{"duplicate enum option", Setting{Key: "mode", Type: "enum", Label: "Mode", Options: []string{"x", "x"}}},
+		{"missing enum options", Setting{Key: "mode", Type: "enum", Label: "Mode"}},
+		{"options on string", Setting{Key: "name", Type: "string", Label: "Name", Options: []string{"x"}}},
+		{"unknown type", Setting{Key: "name", Type: "object", Label: "Name"}},
+		{"missing label", Setting{Key: "name", Type: "string"}},
+		{"project scope", Setting{Key: "name", Type: "string", Label: "Name", Scope: "project"}},
+		{"secret default", Setting{Key: "token", Type: "secret", Label: "Token", Default: defaults(`"secret"`)}},
+		{"wrong default type", Setting{Key: "enabled", Type: "boolean", Label: "Enabled", Default: defaults(`"yes"`)}},
+		{"invalid URL default", Setting{Key: "host", Type: "url", Label: "Host", Default: defaults(`"relative"`)}},
+		{"invalid enum default", Setting{Key: "mode", Type: "enum", Label: "Mode", Options: []string{"x"}, Default: defaults(`"y"`)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateSettings([]Setting{tc.setting}); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+	if err := ValidateSettings([]Setting{good[0], good[0]}); err == nil {
+		t.Fatal("expected duplicate key error")
+	}
+}
+
+func TestParseSettingsDefaultsScopeToGlobal(t *testing.T) {
+	manifest, err := Parse([]byte(`{
+		"id":"@x/y","name":"Y","version":"1.0.0","engineApi":"^1.0.0",
+		"settings":[{"key":"enabled","type":"boolean","label":"Enabled","default":true}],
+		"provides":{"commands":["commands/*.js"]}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := Validate(manifest, "1.0.0"); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got := manifest.Settings[0].EffectiveScope(); got != "global" {
+		t.Fatalf("EffectiveScope = %q, want global", got)
+	}
+}
+
 func TestWarnings(t *testing.T) {
 	// A blank engineApi disables the compat check silently — warn, don't error.
 	if w := Warnings(Manifest{ID: "x", Name: "X", Version: "1.0.0"}); len(w) != 1 {

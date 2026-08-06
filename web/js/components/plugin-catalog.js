@@ -10,6 +10,7 @@ import { reloadRegistries } from '../registries/reload-registries.js';
 import { fetchExtensions, fetchExtensionLocations } from '../services/extensions.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
 import { renderMarkdown, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
+import { ExtensionSettingsEditor } from './settings/extensions-settings.js';
 
 /**
  * @typedef {object} CapCard
@@ -415,7 +416,13 @@ class PluginCatalog extends HTMLElement {
     this._busy = true;
     try {
       let next = [...this._disabledIds];
-      for (const id of ids) next = computeNextDisabled(next, id, shouldEnable);
+      const enabled = new Set(this._enabledIds);
+      for (const id of ids) {
+        next = computeNextDisabled(next, id, shouldEnable);
+        if (shouldEnable) enabled.add(id);
+        else enabled.delete(id);
+      }
+      this._enabledIds = [...enabled];
       if (!await this._quiesceBeforeToggle()) return;
       await this._persist(next);
       await this._reinitRegistries();
@@ -831,6 +838,9 @@ class PluginCatalog extends HTMLElement {
     if (file) content.appendChild(file);
     const perms = this._permissionsSection(card.manifest?.permissions);
     if (perms) content.appendChild(perms);
+    if (card.extId && Array.isArray(card.manifest?.settings) && card.manifest.settings.length > 0) {
+      content.appendChild(new ExtensionSettingsEditor(card.manifest).render());
+    }
     if (card.caps.length > 0) content.appendChild(this._renderBundledCaps(card));
     container.appendChild(content);
 

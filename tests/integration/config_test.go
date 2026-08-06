@@ -18,6 +18,8 @@ func TestConfig_Default(t *testing.T) {
 	helpers.AssertEqual(t, cfg.Server.Host, "localhost")
 	helpers.AssertEqual(t, cfg.Context.TokenBudget, 0) // 0 = auto-calculate
 	helpers.AssertTrue(t, len(cfg.Project.Exclude) > 0, "should have default excludes")
+	helpers.AssertTrue(t, len(cfg.GetDisabledPlugins()) == 1 && cfg.GetDisabledPlugins()[0] == "@juggler/exa",
+		"Exa should be disabled by default")
 }
 
 func TestConfig_LoadNonExistent(t *testing.T) {

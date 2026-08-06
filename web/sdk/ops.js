@@ -19,7 +19,9 @@
  * `grep`, `shell`, …) — deliberately decoupled from the internal `ops-api`
  * implementation names, which carry a subsystem prefix (`readFileLoad`,
  * `treeGlob`, `grepSearch`, …). Import what you need by name; there is no bare
- * `fetch`/`search` (those would shadow web globals — use `webFetch`/`webSearch`).
+ * `fetch`/`search` (those would shadow web globals). Use `httpRequest` for
+ * generic server-side HTTP, or `webFetch`/`webSearch` for the convenience
+ * specialisations.
  */
 export {
   OpsError,
@@ -50,8 +52,13 @@ export {
   shellGetOutputDelta as shellOutputDelta,
   shellKill,
   // Web
+  httpRequest,
   webFetch,
   webSearch,
+  // Extension configuration
+  extensionConfigGet,
+  extensionConfigSet,
+  extensionConfigResolve,
   // LLM (out-of-band text generation)
   generateText,
   // OS integration

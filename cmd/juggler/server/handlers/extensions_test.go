@@ -105,6 +105,21 @@ func assertURLs(t *testing.T, label string, got, want []string) {
 	}
 }
 
+func TestExtensionsSurfaceSettingsSchema(t *testing.T) {
+	manifest := `{
+	  "id":"@juggler/core","name":"Juggler Core","version":"1.0.0","engineApi":"^1.0.0",
+	  "settings":[{"key":"enabled","type":"boolean","label":"Enabled","default":true}],
+	  "provides":{"commands":["commands/*-command-type.js"]}
+	}`
+	ext := loadOne(t, coreFS(manifest, "1.0.0"))
+	if ext.Error != "" {
+		t.Fatalf("unexpected error: %s", ext.Error)
+	}
+	if len(ext.Manifest.Settings) != 1 || ext.Manifest.Settings[0].Key != "enabled" {
+		t.Fatalf("settings = %#v", ext.Manifest.Settings)
+	}
+}
+
 func TestExtensionsEngineAPIMismatch(t *testing.T) {
 	// Manifest requires ^2.0.0 but the host SDK is 1.0.0 → incompatible.
 	m := `{"id":"@x/y","name":"Y","version":"1.0.0","engineApi":"^2.0.0",` +

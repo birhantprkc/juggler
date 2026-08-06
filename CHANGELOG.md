@@ -5,6 +5,9 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added an optional Exa extension for authenticated, ranked web search
+- Extensions can make authenticated server-side HTTP requests through the host operations API
+
 ## [0.5.3] - 2026-08-06
 
 - Oversized shell output now spills the full log to a readable file instead of dropping the middle
