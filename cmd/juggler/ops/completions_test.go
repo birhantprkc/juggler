@@ -168,10 +168,13 @@ func TestSearchIgnoredCompletionPathsIsBounded(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("scratch/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// All three match the query; the scan budget (2) is spent entering the
+	// scratch dir (1) plus reading a single file (1), so at most one match is
+	// collected regardless of the OS's directory iteration order.
 	for _, rel := range []string{
-		"scratch/00-first.txt",
-		"scratch/01-second.txt",
-		"scratch/02-disable-auto-refactoring.md",
+		"scratch/disable-auto-01.md",
+		"scratch/disable-auto-02.md",
+		"scratch/disable-auto-03.md",
 	} {
 		path := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -183,8 +186,8 @@ func TestSearchIgnoredCompletionPathsIsBounded(t *testing.T) {
 	}
 
 	matches := searchIgnoredCompletionPaths(context.Background(), root, "disable-auto", 20, 2)
-	if len(matches) != 0 {
-		t.Errorf("scan should stop at the entry bound, got %v", matches)
+	if len(matches) > 1 {
+		t.Errorf("scan should stop at the entry bound (at most 1 of 3 matching files read), got %v", matches)
 	}
 }
 
