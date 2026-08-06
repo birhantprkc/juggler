@@ -795,7 +795,7 @@ class JugglerApp {
       if (existingText && this._connectionManager) {
         const session = this._connectionManager.getSession();
         if (session) {
-          session.addMessageToHistory(existingText);
+          session.addMessageToHistory({ content: existingText, attachments: [] });
         }
       }
 

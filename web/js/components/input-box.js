@@ -225,10 +225,10 @@ class InputBox extends HTMLElement {
     this.session = null;           // Session reference for accessing messages
     /** @type {number} @private */
     this.historyIndex = -1;        // -1 = current draft, 0+ = index into history
-    /** @type {string} @private */
-    this.currentDraft = '';        // Save work-in-progress when navigating
-    /** @type {Record<number, string>} @private */
-    this._historyEdits = {};       // Per-level edits preserved across navigation
+    /** @type {import('../model/session.js').HistoryMessage} @private */
+    this.currentDraft = { content: '', attachments: [] }; // Work-in-progress (text + staged images) saved when navigating
+    /** @type {Record<number, import('../model/session.js').HistoryMessage>} @private */
+    this._historyEdits = {};       // Per-level edits (text + staged images) preserved across navigation
 
     // Draft save debounce timer
     /** @type {number|null} @private */
@@ -1026,7 +1026,7 @@ class InputBox extends HTMLElement {
     // Save the draft to history before clearing so ArrowUp can retrieve it.
     const trimmed = textarea.value.trim();
     if (trimmed && this.session) {
-      this.session.addMessageToHistory(trimmed);
+      this.session.addMessageToHistory({ content: trimmed, attachments: [] });
     }
 
     textarea.focus();
@@ -1043,7 +1043,7 @@ class InputBox extends HTMLElement {
       textarea.value = '';
     }
 
-    this.currentDraft = '';
+    this.currentDraft = { content: '', attachments: [] };
     this.historyIndex = -1;
     this.autoResize(textarea);
     this._updateSendButtonState();
@@ -1090,7 +1090,7 @@ class InputBox extends HTMLElement {
       return false;
     }
 
-    this.currentDraft = '';
+    this.currentDraft = { content: '', attachments: [] };
     this.historyIndex = -1;
     this.autoResize(textarea);
     this._updateSendButtonState();
@@ -1308,7 +1308,7 @@ class InputBox extends HTMLElement {
 
     // Reset history navigation state
     this.historyIndex = -1;
-    this.currentDraft = '';
+    this.currentDraft = { content: '', attachments: [] };
     this._historyEdits = {};
 
     // Drop any staged text files — they were flushed into context items at send.
@@ -1541,8 +1541,8 @@ class InputBox extends HTMLElement {
   }
 
   /**
-   * Get user message history from session (most recent first)
-   * @returns {string[]} Array of user messages
+   * Get user message history from session (most recent first).
+   * @returns {import('../model/session.js').HistoryMessage[]} History entries, newest first.
    */
   getUserHistory() {
     if (!this.session) return [];
@@ -1550,6 +1550,32 @@ class InputBox extends HTMLElement {
     // Return session-level message history (shared across all conversations)
     // Reverse for arrow-up navigation (most recent first)
     return [...this.session.messageHistory].reverse();
+  }
+
+  /**
+   * Snapshot the live composer as a history level: its text plus the currently
+   * staged (uploaded) image attachments. Used to preserve the -1 draft and any
+   * per-level edits before navigating away from them.
+   * @returns {import('../model/session.js').HistoryMessage} The composer's current text and staged attachments.
+   * @private
+   */
+  _snapshotComposerLevel() {
+    return { content: this.getText(), attachments: this._resolvedAttachments() };
+  }
+
+  /**
+   * Load a history level into the composer: set the text, re-stage its image
+   * attachments as chips (a GC'd asset simply renders broken and is dropped at
+   * send), park the caret at the end, and persist the whole draft.
+   * @param {HTMLTextAreaElement} textarea
+   * @param {import('../model/session.js').HistoryMessage} entry
+   * @private
+   */
+  _applyHistoryLevel(textarea, entry) {
+    this.setText(entry.content);
+    this._stagePendingAttachments(entry.attachments || []);
+    textarea.selectionStart = textarea.selectionEnd = entry.content.length;
+    this._scheduleDraftSave(textarea.value);
   }
 
   /**
@@ -1563,19 +1589,20 @@ class InputBox extends HTMLElement {
     if (textarea.selectionStart !== prevStart || textarea.selectionEnd !== prevEnd) return;
     const history = this.getUserHistory();
     if (history.length === 0) return;
+    // Preserve the level we're leaving: the work-in-progress draft at -1,
+    // otherwise this level's in-place edit (text + staged attachments).
     if (this.historyIndex === -1) {
-      this.currentDraft = textarea.value;
+      this.currentDraft = this._snapshotComposerLevel();
     } else {
-      this._historyEdits[this.historyIndex] = textarea.value;
+      this._historyEdits[this.historyIndex] = this._snapshotComposerLevel();
     }
     if (this.historyIndex < history.length - 1) {
       this.historyIndex++;
-      const text = /** @type {string} */ (this._historyEdits[this.historyIndex] !== undefined
-        ? this._historyEdits[this.historyIndex]
-        : history[this.historyIndex]);
-      this.setText(text);
-      textarea.selectionStart = textarea.selectionEnd = text.length;
-      this._scheduleDraftSave(textarea.value);
+      const entry = /** @type {import('../model/session.js').HistoryMessage} */ (
+        this._historyEdits[this.historyIndex] !== undefined
+          ? this._historyEdits[this.historyIndex]
+          : history[this.historyIndex]);
+      this._applyHistoryLevel(textarea, entry);
     }
   }
 
@@ -1589,20 +1616,20 @@ class InputBox extends HTMLElement {
     if (this._completions?.isActive()) return;
     if (textarea.selectionStart !== prevStart || textarea.selectionEnd !== prevEnd) return;
     if (this.historyIndex > -1) {
-      this._historyEdits[this.historyIndex] = textarea.value;
+      this._historyEdits[this.historyIndex] = this._snapshotComposerLevel();
       this.historyIndex--;
-      let text;
+      /** @type {import('../model/session.js').HistoryMessage} */
+      let entry;
       if (this.historyIndex === -1) {
-        text = this.currentDraft;
+        entry = this.currentDraft;
       } else {
         const history = this.getUserHistory();
-        text = /** @type {string} */ (this._historyEdits[this.historyIndex] !== undefined
-          ? this._historyEdits[this.historyIndex]
-          : history[this.historyIndex]);
+        entry = /** @type {import('../model/session.js').HistoryMessage} */ (
+          this._historyEdits[this.historyIndex] !== undefined
+            ? this._historyEdits[this.historyIndex]
+            : history[this.historyIndex]);
       }
-      this.setText(text);
-      textarea.selectionStart = textarea.selectionEnd = text.length;
-      this._scheduleDraftSave(textarea.value);
+      this._applyHistoryLevel(textarea, entry);
     }
   }
 

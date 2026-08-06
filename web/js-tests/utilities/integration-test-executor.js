@@ -58,6 +58,7 @@ import { runTests as runContextItemSeedExecuteTests } from '../unit-tests/contex
 import { runTests as runConversationNameTests } from '../unit-tests/conversation-name-persistence-test.js';
 import { runTests as runDraftPersistenceTests } from '../unit-tests/draft-persistence-test.js';
 import { runTests as runDroppedFileTests } from '../unit-tests/dropped-file-test.js';
+import { runTests as runMessageHistoryTests } from '../unit-tests/message-history-test.js';
 import { runTests as runPasteTokenTests } from '../unit-tests/paste-token-test.js';
 import { runTests as runDraftTabSwitchTests } from '../unit-tests/draft-tab-switch-test.js';
 import { runTests as runEditPermissionTests } from '../unit-tests/edit-permission-test.js';
@@ -268,6 +269,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:conversation-name-persistence', run: runConversationNameTests },
   { name: 'unit:draft-persistence', run: runDraftPersistenceTests },
   { name: 'unit:dropped-file', run: runDroppedFileTests },
+  { name: 'unit:message-history', run: runMessageHistoryTests },
   { name: 'unit:paste-token', run: runPasteTokenTests },
   { name: 'unit:draft-tab-switch', run: runDraftTabSwitchTests },
   { name: 'unit:edit-permission', run: runEditPermissionTests },

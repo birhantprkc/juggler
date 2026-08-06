@@ -254,7 +254,7 @@ func (api *SessionAPI) HandleUpdateSession(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		Conversations        []json.RawMessage `json:"conversations"`
 		ActiveConversationID string            `json:"activeConversationId"`
-		MessageHistory       []string          `json:"messageHistory"`
+		MessageHistory       []json.RawMessage `json:"messageHistory"`
 		Metadata             map[string]any    `json:"metadata"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

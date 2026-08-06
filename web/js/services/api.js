@@ -21,7 +21,7 @@ import { getCurrentZoom } from '../utils/zoom-manager.js';
  * @property {string[]} [conversationOrder] - Conversation IDs in order (v4 binary storage)
  * @property {string} activeConversationId - Active conversation ID
  * @property {{provider: string, model: string, contextWindow: number}} providerInfo - Provider information
- * @property {string[]} [messageHistory] - Session-level message history for input navigation
+ * @property {Array<string|import('../model/session.js').HistoryMessage>} [messageHistory] - Session-level message history for input navigation (legacy entries may be bare strings)
  * @property {Record<string, any>} [metadata] - General-purpose key-value store for frontend flags
  */
 
@@ -171,7 +171,7 @@ class APIService {
    * /api/session/conversations/reorder.
    * @param {object[]} conversations
    * @param {string|null} activeConversationId
-   * @param {string[]} [messageHistory] - Session-level message history for input navigation
+   * @param {import('../model/session.js').HistoryMessage[]} [messageHistory] - Session-level message history for input navigation
    * @param {Record<string, any>} [metadata] - General-purpose key-value store for frontend flags
    * @returns {Promise<{success: boolean}>} Success indicator
    */

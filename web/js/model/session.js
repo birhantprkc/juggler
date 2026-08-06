@@ -11,6 +11,7 @@ import {
   MAX_CONVERSATION_NAME_LENGTH
 } from '../utils/constants.js';
 import { readFileLoad } from '../services/ops-api.js';
+import { normalizeAttachments } from '../utils/attachments.js';
 import workerManager from '../services/worker-manager.js';
 import ConversationLoadQueue from '../services/conversation-load-queue.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
@@ -28,7 +29,7 @@ import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
  * @typedef {object} ApiService
  * @property {function(): Promise<SessionData>} getSession - Get session
  * @property {function(): Promise<{active: boolean, conversationIds: string[]}>} getActiveConversations - Conversations actively running a turn (excludes approval-parked)
- * @property {function(object[], string | null, string[]|undefined, Record<string, any>|undefined): Promise<{success: boolean}>} updateSession - Update session state
+ * @property {function(object[], string | null, HistoryMessage[]|undefined, Record<string, any>|undefined): Promise<{success: boolean}>} updateSession - Update session state
  * @property {function(Record<string, any>): Promise<{metadata: Record<string, any>}>} patchSessionMetadata - Patch session metadata keys
  * @property {function(string, string=, {lane?: string, duplicateFrom?: string, origin?: string}=): Promise<{id: string, name: string, created: string}>} createConversation - Atomically create a new conversation (POST /api/conversations); duplicateFrom clones that conversation's files server-side before announcing; origin is a gesture label logged for create attribution
  * @property {function(string, string): Promise<{name: string}>} renameConversation - Rename a conversation's on-disk folder
@@ -53,7 +54,7 @@ import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
  * @property {string} activeConversationId - Active conversation ID
  * @property {string} [home] - Backend user-home directory (e.g. /Users/jules)
  * @property {ProviderInfo} providerInfo - Provider information
- * @property {string[]} [messageHistory] - Session-level message history for input navigation
+ * @property {Array<string|HistoryMessage>} [messageHistory] - Session-level message history for input navigation. Entries may be legacy bare strings until normalized.
  * @property {Record<string, any>} [metadata] - General-purpose key-value store for frontend flags
  */
 
@@ -62,6 +63,16 @@ import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
  * @property {string} provider - Provider name
  * @property {string} model - Model name
  * @property {number} contextWindow - Context window size
+ */
+
+/**
+ * One entry in the session-level prompt history (up/down-arrow navigation).
+ * The persisted shape of a sent user message: expanded prose plus any image
+ * attachments. This mirrors a committed user item's fields on purpose — history
+ * carries a denormalized copy of the message, not a bespoke type — so anything
+ * that consumes a message can consume a history entry. Draft-only affordances
+ * (paste-placeholder blobs) are NOT part of a sent message and stay out.
+ * @typedef {{content: string, attachments: import('../utils/attachments.js').AssetRef[]}} HistoryMessage
  */
 
 /**
@@ -101,6 +112,27 @@ import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
  * @type {number}
  */
 export const MAX_CONVERSATIONS = 32;
+
+/**
+ * Coerce one persisted history entry into a {@link HistoryMessage}. Tolerates
+ * the legacy shape (a bare string, from before history stored attachments) by
+ * wrapping it as `{content, attachments: []}`, and defends against a
+ * malformed/null entry by degrading to an empty message. Attachments are run
+ * through {@link normalizeAttachments} so they are always plain AssetRefs.
+ * @param {unknown} entry - A raw entry from the persisted messageHistory array.
+ * @returns {HistoryMessage} The normalized entry.
+ */
+export function normalizeHistoryEntry(entry) {
+  if (typeof entry === 'string') return { content: entry, attachments: [] };
+  if (entry && typeof entry === 'object') {
+    const e = /** @type {{content?: unknown, attachments?: unknown}} */ (entry);
+    return {
+      content: typeof e.content === 'string' ? e.content : '',
+      attachments: normalizeAttachments(e.attachments)
+    };
+  }
+  return { content: '', attachments: [] };
+}
 
 /**
  * User-facing message shown when a creation path is blocked by the cap.
@@ -203,9 +235,9 @@ class Session {
     this.providerInfo = null;
 
     /**
-     * Session-level message history for input navigation
-     * Simple array of raw user messages shared across all conversations
-     * @type {string[]}
+     * Session-level message history for input navigation.
+     * Normalized {@link HistoryMessage} entries shared across all conversations.
+     * @type {HistoryMessage[]}
      */
     this.messageHistory = [];
 
@@ -965,7 +997,7 @@ class Session {
         this.home = data.home;
       }
       if (data.messageHistory) {
-        this.messageHistory = data.messageHistory;
+        this.messageHistory = data.messageHistory.map(normalizeHistoryEntry);
       } else {
         this.messageHistory = [];
       }
@@ -1261,20 +1293,27 @@ class Session {
   }
 
   /**
-   * Add a message to the session-level message history
-   * Used for input navigation (arrow up/down)
-   * Deduplicates - if message already exists, removes old occurrence and adds at end
-   * @param {string} message - Raw user message to add to history
+   * Add a message to the session-level message history.
+   * Used for input navigation (arrow up/down). Accepts a {@link HistoryMessage}
+   * or a bare string (wrapped as text with no attachments), normalizing either
+   * to the stored shape.
+   *
+   * Deduplicates on `content` (the message identity): an existing entry with the
+   * same text is removed and the new one re-added at the most-recent position,
+   * so a resend floats to the top AND carries its latest attachments.
+   * @param {HistoryMessage|string} message - User message to add to history.
    */
   addMessageToHistory(message) {
-    // Remove any existing occurrence of this message (deduplication)
-    const existingIndex = this.messageHistory.indexOf(message);
+    const entry = normalizeHistoryEntry(message);
+
+    // Remove any existing entry with the same text (dedup on content identity).
+    const existingIndex = this.messageHistory.findIndex((e) => e.content === entry.content);
     if (existingIndex !== -1) {
       this.messageHistory.splice(existingIndex, 1);
     }
 
     // Add to end (most recent position)
-    this.messageHistory.push(message);
+    this.messageHistory.push(entry);
 
     // Limit history size to last 100 messages (FIFO)
     if (this.messageHistory.length > MAX_MESSAGE_HISTORY) {
@@ -1863,7 +1902,7 @@ class Session {
         remote: true
       });
     }
-    if (data.messageHistory) this.messageHistory = data.messageHistory;
+    if (data.messageHistory) this.messageHistory = data.messageHistory.map(normalizeHistoryEntry);
 
     // Preserve existing conversations in the server's order
     /** @type {import('./conversation.js').default[]} */
@@ -2098,7 +2137,7 @@ class Session {
 
   /**
    * Get session state as plain object
-   * @returns {{projectPath: string, conversations: object[], activeConversationId: string | null, messageHistory: string[]}} Session state
+   * @returns {{projectPath: string, conversations: object[], activeConversationId: string | null, messageHistory: HistoryMessage[]}} Session state
    */
   toJSON() {
     return {

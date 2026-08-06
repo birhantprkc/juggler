@@ -153,6 +153,43 @@ func TestManager_MissingGlobalsNoSplitBrain(t *testing.T) {
 	}
 }
 
+// A legacy session.json whose messageHistory is a plain string array (the
+// pre-structured shape) must still load. Entries are now opaque
+// json.RawMessage, so each string survives verbatim rather than failing the
+// manifest parse and triggering a rebuild that would drop the history.
+func TestLoad_LegacyStringMessageHistory(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileSessionStore: %v", err)
+	}
+	if err := store.Save(NewSession()); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	globals := filepath.Join(dir, ".juggler", "session.json")
+	legacy := `{"version":5,"conversationOrder":[],"activeConversationId":"","messageHistory":["hello","world"],"metadata":{}}`
+	if err := os.WriteFile(globals, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy session.json: %v", err)
+	}
+
+	fresh, err := NewFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileSessionStore: %v", err)
+	}
+	sess, err := fresh.Load()
+	if err != nil {
+		t.Fatalf("Load legacy session.json: %v", err)
+	}
+	if len(sess.MessageHistory) != 2 {
+		t.Fatalf("MessageHistory = %v, want 2 legacy entries", sess.MessageHistory)
+	}
+	if string(sess.MessageHistory[0]) != `"hello"` || string(sess.MessageHistory[1]) != `"world"` {
+		t.Fatalf("legacy entries not preserved verbatim: %q, %q",
+			string(sess.MessageHistory[0]), string(sess.MessageHistory[1]))
+	}
+}
+
 // A brand-new "Task N" create must resolve to the lowest unused "Task K" and
 // never a "(copy)" suffix — even when "Task 1 (copy)" already sits on disk.
 // Mirrors the reported state: "Task 1" and "Task 1 (copy)" exist, with a gap

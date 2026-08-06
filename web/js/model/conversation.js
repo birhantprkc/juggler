@@ -1482,7 +1482,7 @@ class Conversation {
     // Add to session-level message history for input navigation. An image-only
     // send has empty text — don't push a blank entry into up-arrow history.
     if (userMessage) {
-      this._session.addMessageToHistory(userMessage);
+      this._session.addMessageToHistory({ content: userMessage, attachments: options.attachments || [] });
     }
 
     // Auto-recents: a send is a genuine local user action, so float this

@@ -5,6 +5,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -32,7 +33,7 @@ func TestGetSessionSnapshotIsolation(t *testing.T) {
 	snap.Metadata["k"] = "mutated"
 	snap.Metadata["new"] = "x"
 	snap.ConversationOrder = append(snap.ConversationOrder, "ghost")
-	snap.MessageHistory = append(snap.MessageHistory, "ghost")
+	snap.MessageHistory = append(snap.MessageHistory, json.RawMessage(`"ghost"`))
 
 	got := m.GetSession()
 	if got.Metadata["k"] != "v" {

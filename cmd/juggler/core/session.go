@@ -86,7 +86,7 @@ type Session struct {
 	ConversationOrder    []string          `json:"conversationOrder"`     // Ordered list of conversation IDs (for tab ordering)
 	Conversations        []json.RawMessage `json:"-"`                     // In-memory only, not serialized to session.json
 	ActiveConversationID string            `json:"activeConversationId"`  // Currently selected conversation tab (persisted for refresh)
-	MessageHistory       []string          `json:"messageHistory"`        // Session-level history of raw user messages for input navigation
+	MessageHistory       []json.RawMessage `json:"messageHistory"`        // Session-level history of user messages for input navigation. Opaque JSON entries: the server stores and forwards them verbatim (the client owns the shape).
 	Metadata             map[string]any    `json:"metadata,omitempty"`    // General-purpose key-value store for frontend flags
 	WindowState          *WindowState      `json:"windowState,omitempty"` // Native-window geometry for this project (nil until first save)
 	UIZoom               int               `json:"uiZoom,omitempty"`      // UI zoom (root font-size %) for this project's window; 0 until first set
@@ -99,7 +99,7 @@ func NewSession() *Session {
 		Version:           5,
 		ConversationOrder: []string{},
 		Conversations:     []json.RawMessage{},
-		MessageHistory:    []string{},
+		MessageHistory:    []json.RawMessage{},
 	}
 }
 
@@ -117,7 +117,7 @@ func (s *Session) Clone() *Session {
 	c := *s
 	c.ConversationOrder = append([]string(nil), s.ConversationOrder...)
 	c.Conversations = append([]json.RawMessage(nil), s.Conversations...)
-	c.MessageHistory = append([]string(nil), s.MessageHistory...)
+	c.MessageHistory = append([]json.RawMessage(nil), s.MessageHistory...)
 	if s.Metadata != nil {
 		c.Metadata = make(map[string]any, len(s.Metadata))
 		for k, v := range s.Metadata {
