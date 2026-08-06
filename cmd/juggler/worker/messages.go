@@ -204,6 +204,13 @@ type SendMessageMessage struct {
 	IsContinuation bool       `json:"isContinuation,omitempty"`
 	ThreadItemID   string     `json:"threadItemId,omitempty"`
 	Attachments    []AssetRef `json:"attachments,omitempty"`
+	// Skills lists Agent Skill names the user explicitly chose to load before
+	// this turn (via the composer `$name` mention or picker). Each is loaded as a
+	// real `skill` tool-action — the same visible, auto-approved action the model
+	// issues — injected ahead of the assistant's response so its instructions are
+	// in context first. A skills-only send (empty Text) is a preload: the skills
+	// load and the worker rests without starting an LLM turn.
+	Skills []string `json:"skills,omitempty"`
 }
 
 // UserInput returns the send's payload as the single inseparable submission

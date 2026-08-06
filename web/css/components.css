@@ -1544,6 +1544,22 @@ input-box .commands-button .icon-slash {
     height: 0.75rem;
 }
 
+/* Skill button - icon-only, centered (mirrors the commands button). Its glyph is
+   the `$` skill-mention trigger, just as the commands button shows the `/` slash
+   trigger — a text character rather than a mask icon, so it stays crisp at any
+   zoom and follows currentcolor for free. */
+input-box .skill-button {
+    justify-content: center;
+    padding: 0.125rem 0.5rem;
+}
+
+input-box .skill-button .skill-glyph {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.875rem;
+    font-weight: 700;
+    line-height: 1;
+}
+
 /* Commands menu - two-column grid so command names and their descriptions
    line up vertically. Each menu-item spans both columns and adopts them via
    subgrid, so the row still highlights on hover as one unit. */
@@ -3970,10 +3986,14 @@ input-box .context-cache-warning-btn .icon-warning {
     min-width: 13rem;
 }
 
+/* Every sheet row shares one comfortable tap height with the section headers, so
+   the essentials (attach image, new thread, strategy) and the command/skill rows
+   line up as a single consistent list rather than a mix of heights. */
 .actions-sheet .actions-sheet-item {
     display: flex;
     align-items: center;
     gap: 0.625rem;
+    min-height: 2.75rem;
 }
 
 .actions-sheet .actions-sheet-icon {
@@ -4027,8 +4047,11 @@ input-box .context-cache-warning-btn .icon-warning {
         scroll-margin-bottom: 4rem;
     }
 
-    /* These now live in the "+" actions sheet. */
+    /* These now live in the "+" actions sheet: the commands (`/`) and skill (`$`)
+       buttons collapse into its Slash-commands and Skills sections, and attach
+       image / new thread each become a row. */
     input-box .commands-button,
+    input-box .skill-button,
     input-box .attach-image-btn,
     input-box .new-thread-btn {
         display: none;
@@ -4079,6 +4102,73 @@ input-box .context-cache-warning-btn .icon-warning {
    label sitting left and the selector button pushed to the right edge. */
 .actions-sheet .actions-sheet-strategy {
     justify-content: space-between;
+}
+
+/* Collapsible sections inside the "+" sheet (Slash commands, Skills). Native
+   <details>, closed by default, so the sheet opens short and each list expands
+   on tap with no JS state to manage. */
+.actions-sheet .actions-sheet-section {
+    display: flex;
+    flex-direction: column;
+}
+
+/* The <summary> is the tappable section header: a small caps label with a caret
+   that rotates from ▸ (closed) to ▾ (open). list-style/marker removal drops the
+   native disclosure triangle so only our caret shows. */
+.actions-sheet .actions-sheet-section-header {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    /* A comfortable touch target — this is the sheet's primary tap affordance,
+       so it clears the ~44px minimum rather than sitting at row height. */
+    min-height: 2.75rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-popup-item);
+    color: var(--text-secondary);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.actions-sheet .actions-sheet-section-header::-webkit-details-marker {
+    display: none;
+}
+
+.actions-sheet .actions-sheet-section-header::after {
+    content: "";
+    width: 0.4rem;
+    height: 0.4rem;
+    border-right: 0.09rem solid currentcolor;
+    border-bottom: 0.09rem solid currentcolor;
+    transform: rotate(-45deg);
+    transition: transform 150ms ease;
+    opacity: 0.7;
+}
+
+.actions-sheet .actions-sheet-section[open] .actions-sheet-section-header::after {
+    transform: rotate(45deg);
+}
+
+.actions-sheet .actions-sheet-section-header:hover {
+    background: var(--bg-raised);
+    color: var(--text-primary);
+}
+
+/* A skill description can be a full sentence — keep each expanded row a single
+   ellipsised line so the list stays tidy (command labels are short and
+   unaffected). */
+.actions-sheet .actions-sheet-section .actions-sheet-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Shell lock icon in permission button */
@@ -7436,8 +7526,11 @@ textarea[data-confirmation-pending="true"] {
     background: color-mix(in srgb, var(--accent-blue) 25%, transparent);
 }
 
-/* Slash-command rows: monospace `/name` followed by its label. */
-.completions-menu .slash-command-item {
+/* Slash-command and `$`-skill rows: monospace name followed by its description.
+   Both share these classes so the two `/` and `$` completion menus read
+   identically — same colour scheme, spacing and single-line ellipsised desc. */
+.completions-menu .slash-command-item,
+.completions-menu .skill-mention-item {
     gap: 0.5rem;
     align-items: baseline;
 }
@@ -7450,6 +7543,11 @@ textarea[data-confirmation-pending="true"] {
 }
 
 .completions-menu .menu-item-desc {
+    /* Fill the row and ellipsise to the popup width rather than being clipped
+       to a short character cap — the JS cap is only a pathological-length
+       guard, so the wide popup shows as much description as fits. */
+    flex: 1;
+    min-width: 0;
     color: var(--text-secondary);
     font-size: 0.8125rem;
     overflow: hidden;
@@ -7459,6 +7557,40 @@ textarea[data-confirmation-pending="true"] {
 
 .completions-menu .slash-command-item.danger .menu-item-command {
     color: var(--danger, #e5484d);
+}
+
+/* Skill picker popup — the composer's button-anchored `$` picker. It borrows the
+   slash-command popup's `commands-menu` class wholesale for the justified
+   two-column grid and colour scheme; these rules only add what is skill-specific.
+
+   Width: the grid's `1fr` description column has nothing to size against under
+   the base `.dropdown-menu` `width:max-content`, so pin an explicit, comfortable
+   width (clamped to the viewport on a phone) that gives every description room. */
+.skill-menu {
+    width: 32rem;
+    max-width: calc(100vw - 2rem);
+}
+
+/* Keep each description to a single ellipsised line so a long one can't wrap and
+   grow its row tall — the `commands-menu` base leaves descriptions free to wrap
+   (its slash labels are short; skill descriptions are full sentences). */
+.skill-menu .menu-item-desc {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The skill-only footer sits inside the two-column grid, so its divider and
+   "Manage skills…" action must span both columns as ordinary full-width rows. */
+.skill-menu .menu-divider {
+    grid-column: 1 / -1;
+}
+
+.skill-menu li.skill-menu-manage {
+    display: block;
+    grid-column: 1 / -1;
+    color: var(--text-secondary);
 }
 
 /* ===================================================================

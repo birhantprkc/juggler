@@ -12,6 +12,12 @@ import { presentPopup } from '../utils/popup-surface.js';
 import { CompletionMenu } from './completion-menu.js';
 import { fileMentionProvider, extractFileMentionsAsync } from './file-mention-provider.js';
 import { slashCommandProvider } from './slash-command-provider.js';
+import {
+  createSkillMentionProvider,
+  getThreadSkillSnapshot,
+  extractSkillMentions,
+  renderSkillMenuItem,
+} from './skill-mention-provider.js';
 import { THREAD_ARROW_SVG, IMAGE_ATTACH_SVG, SEND_ARROW_SVG, PLUS_SVG, CLOCK_SVG } from '../utils/icons.js';
 import { showNotice } from './modal-dialog.js';
 import tooltipManager from '../services/tooltip-manager.js';
@@ -402,7 +408,13 @@ class InputBox extends HTMLElement {
       // so accepting it submits the composer directly instead of leaving the
       // user to press Enter a second time.
       onSubmit: () => this.sendMessage(),
-      providers: [slashCommandProvider, fileMentionProvider],
+      // `$name` skill mentions resolve against THIS thread's frozen snapshot,
+      // evaluated lazily per fetch so a later thread swap is picked up.
+      providers: [
+        slashCommandProvider,
+        fileMentionProvider,
+        createSkillMentionProvider(() => getThreadSkillSnapshot(this._messageThread)),
+      ],
     });
 
     // Re-run autoResize whenever the textarea's width changes (e.g. column
@@ -480,6 +492,20 @@ class InputBox extends HTMLElement {
         this._toggleCommandsMenu();
       });
     }
+
+    // Skill picker button: a mouse-first alternative to typing `$`, mirroring the
+    // commands (`/`) button. It opens a menu of this thread's skills and inserts
+    // NOTHING on open or dismissal — only SELECTING a skill splices `$name ` into
+    // the composer, which then flows through the identical send-time activation
+    // path. Hidden when this thread has no skills (visibility refreshed on bind).
+    const skillButton = this.querySelector('#skill-button');
+    if (skillButton) {
+      skillButton.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._toggleSkillMenu();
+      });
+    }
+    this._refreshSkillButtonVisibility();
 
     // Image attachments: file-picker button, paste, and drag-and-drop. All
     // three funnel image files through _handleFiles, which validates size /
@@ -1188,15 +1214,35 @@ class InputBox extends HTMLElement {
     // Dropped files go through the same path as mentions, differing only in that
     // they carry inline content (a `dropped-file` snapshot) rather than a path
     // the server re-reads.
+    // The prose actually sent: the typed text with any `$name` skill triggers
+    // removed (they become tool-calls, never prose). Reassigned in the thread
+    // block below; equals `message` when there is no thread or no `$name`.
+    let outgoingMessage = message;
+    // Agent Skills the user explicitly chose via `$name` mentions, forwarded to
+    // the worker (NOT loaded here). Resolved against THIS thread's FROZEN
+    // snapshot — never the live catalog — so we only ever forward names the
+    // `skill` tool will accept; unknown `$foo` is left verbatim as prose. The
+    // worker loads each as a real, visible `skill` TOOL-ACTION before the turn:
+    // that document-driven action is the only path that injects the SKILL.md
+    // body (a plain context-item call would merely re-seed the standing
+    // "## Skills" list), so the composer forwards names rather than loading.
+    /** @type {string[]} */
+    let skillNames = [];
     if (this._messageThread) {
-      // Parses the raw message text, so it works even if the user submits
-      // before setupListeners() runs (paste + Enter immediately after mount) —
-      // no dependency on the completion menu being initialised.
-      const paths = await extractFileMentionsAsync(message);
+      const mt = this._messageThread;
+
+      const snapshot = await getThreadSkillSnapshot(mt);
+      const extracted = extractSkillMentions(message, snapshot.map((s) => s.name));
+      skillNames = extracted.names;
+      outgoingMessage = extracted.text;
+
+      // Create context items for all @-mentions AND dropped text files before
+      // sending (from the trigger-stripped prose — stripping `$name` never
+      // affects an `@` token). Awaited here so these land BEFORE the user message.
+      const paths = await extractFileMentionsAsync(outgoingMessage);
       const textFiles = this._pendingTextFiles;
       this._pendingTextFiles = [];
       if (paths.length > 0 || textFiles.length > 0) {
-        const mt = this._messageThread;
         const runFile = busy
           ? (/** @type {string} */ p) => mt.executeContextItemIntoPending('file-content', { path: p })
           : (/** @type {string} */ p) => mt.executeContextItem('file-content', { path: p });
@@ -1231,10 +1277,11 @@ class InputBox extends HTMLElement {
     this._renderAttachmentChips();
     this.dispatchEvent(new CustomEvent('send-message', {
       detail: {
-        message,
+        message: outgoingMessage,
         threadItemId: this.threadItemId || null,
         messageThread: this._messageThread || null,
-        attachments
+        attachments,
+        skills: skillNames
       },
       bubbles: true,
       composed: true
@@ -1434,6 +1481,8 @@ class InputBox extends HTMLElement {
     this.threadItemId = messageThread.threadItemId;
 
     this._syncStrategySelector();
+    // The skill picker button is shown only when this thread advertises skills.
+    this._refreshSkillButtonVisibility();
 
     const modelSelector = this.querySelector('model-selector');
     if (modelSelector && 'setMessageThread' in modelSelector) {
@@ -2951,6 +3000,167 @@ class InputBox extends HTMLElement {
   }
 
   /**
+   * Toggle the skill picker menu.
+   * @private
+   */
+  _toggleSkillMenu() {
+    if (this._skillMenuOpen) {
+      this._closeSkillMenu();
+    } else {
+      this._openSkillMenu();
+    }
+  }
+
+  /**
+   * Open the skill picker: a button-anchored menu of this thread's available
+   * skills, mirroring the commands (`/`) button. Nothing is inserted on open or
+   * on dismissal — only SELECTING a skill splices `$name ` into the composer (via
+   * {@link _insertSkillMention}), so the choice flows through the same send-time
+   * activation path as typing `$name`.
+   * @private
+   * @returns {Promise<void>}
+   */
+  async _openSkillMenu() {
+    const button = this.querySelector('#skill-button');
+    if (!button) return;
+    const skills = await getThreadSkillSnapshot(this._messageThread);
+    if (!Array.isArray(skills) || skills.length === 0) return;
+
+    this._createSkillMenu(skills);
+    if (!this._skillMenu) return;
+
+    this._skillMenu.classList.add('show');
+    this._skillMenuOpen = true;
+
+    // presentPopup owns body-append, dismissal wiring (outside-click via
+    // insideSelectors + Escape) and the reposition observer, exactly as the
+    // commands menu uses it. A dedicated cleanup handle keeps it independent of
+    // the commands-menu popup.
+    this._skillPopupCleanup = presentPopup({
+      surface: this._skillMenu,
+      anchor: /** @type {HTMLElement} */ (button),
+      id: 'skill-picker',
+      onClose: () => this._closeSkillMenu(),
+      align: 'left',
+      gap: 4,
+      insideSelectors: ['#skill-button', '.skill-menu'],
+    });
+  }
+
+  /**
+   * Close the skill picker menu.
+   * @private
+   */
+  _closeSkillMenu() {
+    if (!this._skillMenu) return;
+    this._skillMenuOpen = false;
+    // Release tears down the surface, observer and dismissal wiring.
+    if (this._skillPopupCleanup) {
+      this._skillPopupCleanup();
+      this._skillPopupCleanup = null;
+    }
+    this._skillMenu = null;
+  }
+
+  /**
+   * Build the skill picker menu: one row per available skill (mono `$name` +
+   * one-line description), each inserting `$name ` on click, followed by a
+   * "Manage skills…" footer that opens the Skills settings page. Carries the
+   * `commands-menu` class so it borrows the slash-command popup's justified
+   * two-column grid and colour scheme verbatim, and shares the `$` completion
+   * menu's row builder ({@link renderSkillMenuItem}). presentPopup (in
+   * _openSkillMenu) owns body-append and teardown.
+   * @param {import('../services/skills.js').SkillMeta[]} skills - This thread's snapshot skills
+   * @private
+   */
+  _createSkillMenu(skills) {
+    if (this._skillMenu) {
+      this._skillMenu.remove();
+    }
+    const menu = document.createElement('menu');
+    menu.className = 'dropdown-menu commands-menu skill-menu';
+    menu.id = 'skill-menu';
+
+    // Name-sorted, matching the `$` autocomplete's stable ordering.
+    const sorted = [...skills].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const skill of sorted) {
+      // Same row builder as the `$` completion menu; only the click handler
+      // differs (the picker splices the mention; the autocomplete accepts it).
+      const item = renderSkillMenuItem(skill);
+      item.addEventListener('click', () => {
+        this._insertSkillMention(skill.name);
+      });
+      menu.appendChild(item);
+    }
+
+    // Footer: a jump to the Skills settings page (install / edit / remove
+    // skills). The picker is a deliberate, mouse-first surface — unlike the `$`
+    // autocomplete — so it carries the management affordance the typed path omits.
+    const divider = document.createElement('li');
+    divider.className = 'menu-divider';
+    menu.appendChild(divider);
+
+    const manage = document.createElement('li');
+    manage.className = 'menu-item skill-menu-manage';
+    manage.dataset.action = 'manage-skills';
+    manage.textContent = 'Manage skills…';
+    manage.addEventListener('click', () => {
+      this._closeSkillMenu();
+      /** @type {any} */ (window).openSettings?.('skills');
+    });
+    menu.appendChild(manage);
+
+    this._skillMenu = menu;
+  }
+
+  /**
+   * Splice a `$name ` skill mention into the composer at the caret (prefixed with
+   * a space when the preceding char isn't a mention boundary), then close the
+   * menu and focus the textarea. Identical to accepting the `$` autocomplete, so
+   * the mention is loaded and stripped by the normal send-time path.
+   * @param {string} name - Exact skill name
+   * @private
+   */
+  _insertSkillMention(name) {
+    this._closeSkillMenu();
+    const textarea = /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
+    if (!textarea) return;
+    const pos = textarea.selectionStart ?? textarea.value.length;
+    const before = textarea.value.slice(0, pos);
+    // Mirror the mention-boundary rule: a `$` only triggers at start-of-text or
+    // after whitespace, so insert a leading space when the caret sits on a
+    // non-boundary char.
+    const needsSpace = before.length > 0 && !/\s$/.test(before);
+    const insertText = (needsSpace ? ' ' : '') + '$' + name + ' ';
+    textarea.value = before + insertText + textarea.value.slice(pos);
+    const newPos = pos + insertText.length;
+    textarea.selectionStart = textarea.selectionEnd = newPos;
+    this.autoResize(textarea);
+    textarea.focus();
+  }
+
+  /**
+   * Show the skill picker button only when this thread advertises at least one
+   * skill (mirrors the standing Skills item's own gating). Resolves the frozen
+   * snapshot asynchronously and toggles the button's `hidden` attribute; a guard
+   * against a null button keeps this safe before/after render.
+   * @private
+   * @returns {Promise<void>}
+   */
+  async _refreshSkillButtonVisibility() {
+    const button = /** @type {HTMLButtonElement|null} */ (this.querySelector('#skill-button'));
+    if (!button) return;
+    let hasSkills = false;
+    try {
+      const skills = await getThreadSkillSnapshot(this._messageThread);
+      hasSkills = Array.isArray(skills) && skills.length > 0;
+    } catch {
+      hasSkills = false;
+    }
+    button.hidden = !hasSkills;
+  }
+
+  /**
    * Open the commands menu
    * @private
    * @returns {Promise<void>}
@@ -3025,11 +3235,13 @@ class InputBox extends HTMLElement {
 
   /**
    * Build and present the "+" actions sheet. Essential controls lead — Strategy,
-   * Attach image, New Thread — so they never scroll off behind a long slash-
-   * command list; a divider then separates them from every slash command. On a
-   * narrow viewport presentPopup renders it as a bottom sheet (drag-to-dismiss);
-   * on a wider one it anchors to the "+" button. The rows reuse the same handlers
-   * as the inline controls, so nothing nests a second popup.
+   * Attach image, New Thread — always visible so they never scroll off behind a
+   * long list. Below them, slash commands and skills each get their own
+   * closed-by-default collapsible section (standing in for the inline `/` and `$`
+   * buttons, which are hidden on touch), so the sheet opens short and each list is
+   * one tap away. On a narrow viewport presentPopup renders it as a bottom sheet
+   * (drag-to-dismiss); on a wider one it anchors to the "+" button. The rows reuse
+   * the same handlers as the inline controls, so nothing nests a second popup.
    * @private
    * @returns {Promise<void>}
    */
@@ -3093,10 +3305,26 @@ class InputBox extends HTMLElement {
       /** @type {HTMLInputElement|null} */
       (this.querySelector('.attach-file-input'))?.click();
     });
-    addRow('New Thread', THREAD_ARROW_SVG, () => this._createThread(), 'new-thread');
-    this._updateNewThreadControls();
 
-    // Slash commands follow the essentials, fenced off by a divider.
+    /**
+     * Append a closed-by-default collapsible section of pre-built rows (native
+     * `<details>`, so the header toggle needs no JS state). Skipped when empty.
+     * @param {string} title - Section header label
+     * @param {HTMLElement[]} rows - Row elements revealed when the section expands
+     */
+    const addSection = (title, rows) => {
+      if (!rows.length) return;
+      const section = document.createElement('details');
+      section.className = 'actions-sheet-section';
+      const summary = document.createElement('summary');
+      summary.className = 'actions-sheet-section-header';
+      summary.textContent = title;
+      section.appendChild(summary);
+      for (const row of rows) section.appendChild(row);
+      menu.appendChild(section);
+    };
+
+    // Slash commands section (collapsed).
     const commands = slashCommandHandler.getCommands();
     const ORDER = ['new', 'duplicate', 'thread', 'clear', 'compact'];
     commands.sort((a, b) => {
@@ -3104,12 +3332,7 @@ class InputBox extends HTMLElement {
       const bi = ORDER.indexOf(b.name);
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
     });
-    if (commands.length) {
-      const divider = document.createElement('li');
-      divider.className = 'menu-divider';
-      menu.appendChild(divider);
-    }
-    for (const cmd of commands) {
+    const commandRows = commands.map((cmd) => {
       const displayLabel = cmd.label || cmd.name.charAt(0).toUpperCase() + cmd.name.slice(1);
       const row = document.createElement('li');
       row.className = 'menu-item actions-sheet-item' + (cmd.danger ? ' danger' : '');
@@ -3125,8 +3348,48 @@ class InputBox extends HTMLElement {
         this._closeActionsSheet();
         this._executeSlashCommand(cmd.name);
       });
-      menu.appendChild(row);
+      return row;
+    });
+    addSection('Slash commands', commandRows);
+
+    // Skills section (collapsed) — this thread's frozen snapshot, standing in for
+    // the inline `$` picker on touch. Selecting one splices `$name ` into the
+    // composer via the same path as the picker/autocomplete; the section is
+    // omitted entirely when the thread advertises no skills.
+    /** @type {import('../services/skills.js').SkillMeta[]} */
+    let skills = [];
+    try {
+      skills = await getThreadSkillSnapshot(this._messageThread);
+    } catch {
+      skills = [];
     }
+    const skillRows = (Array.isArray(skills) ? skills : [])
+      .slice()
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((skill) => {
+        const row = document.createElement('li');
+        row.className = 'menu-item actions-sheet-item';
+        row.dataset.skill = skill.name;
+        const code = document.createElement('code');
+        code.textContent = '$' + skill.name;
+        row.appendChild(code);
+        const desc = document.createElement('span');
+        desc.className = 'actions-sheet-label';
+        desc.textContent = skill.description || skill.name;
+        row.appendChild(desc);
+        row.addEventListener('click', () => {
+          this._closeActionsSheet();
+          this._insertSkillMention(skill.name);
+        });
+        return row;
+      });
+    addSection('Skills', skillRows);
+
+    // New Thread closes the sheet — it starts a fresh sub-thread rather than
+    // acting on this composer, so it sits apart at the bottom below the command
+    // and skill sections.
+    addRow('New Thread', THREAD_ARROW_SVG, () => this._createThread(), 'new-thread');
+    this._updateNewThreadControls();
 
     this._actionsSheet = menu;
     this._actionsSheetOpen = true;
@@ -3188,6 +3451,11 @@ class InputBox extends HTMLElement {
                                 title="Commands"
                                 aria-label="Commands menu">
                             <span class="icon-slash"></span>
+                        </button>
+                        <button class="skill-button input-ctrl-btn" id="skill-button" hidden
+                                title="Load a skill ($)"
+                                aria-label="Load a skill">
+                            <span class="skill-glyph" aria-hidden="true">$</span>
                         </button>
                         <button class="attach-image-btn input-ctrl-btn" id="attach-image-button"
                                 title="Attach image"

@@ -48,7 +48,7 @@ import keyShortcutManager from './key-shortcut-manager.js';
 class UIEventManager {
   /**
    * @param {object} options - Configuration options
-   * @param {function(string, string|null, *, Array<*>=): void} options.onSendMessage - Callback when user sends message (message, threadItemId, messageThread, attachments)
+   * @param {function(string, string|null, *, Array<*>=, string[]=): void} options.onSendMessage - Callback when user sends message (message, threadItemId, messageThread, attachments, skills)
    * @param {function(object): Promise<void>} options.onContextItemAction - Callback for context item actions
    * UI elements (conversationControls, contextPanel, conversationArea, inputBox) are per-tab.
    */
@@ -97,7 +97,7 @@ class UIEventManager {
     /** @param {Event} event */
     const handler = (event) => {
       const detail = /** @type {any} */ (event).detail;
-      this._onSendMessage(detail.message, detail.threadItemId || null, detail.messageThread || null, detail.attachments || []);
+      this._onSendMessage(detail.message, detail.threadItemId || null, detail.messageThread || null, detail.attachments || [], detail.skills || []);
     };
 
     document.addEventListener('send-message', handler);

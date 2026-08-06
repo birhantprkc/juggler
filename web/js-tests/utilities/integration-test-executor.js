@@ -124,6 +124,7 @@ import { runTests as runPermissionRulesTests } from '../unit-tests/permission-ru
 import { runTests as runNewTabUxTests } from '../unit-tests/new-tab-ux-test.js';
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
+import { runTests as runSkillCompletionTests } from '../unit-tests/skill-completion-test.js';
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
@@ -305,6 +306,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:path-input-quotes', run: runPathInputQuotesTests },
   { name: 'unit:mobile-composer', run: runMobileComposerTests },
   { name: 'unit:slash-completion', run: runSlashCompletionTests },
+  { name: 'unit:skill-completion', run: runSkillCompletionTests },
   { name: 'unit:search-action', run: runSearchActionTests },
   { name: 'unit:tool-cancellation', run: runToolCancellationTests },
   { name: 'unit:tool-execution-order', run: runToolExecutionOrderTests },

@@ -1350,7 +1350,7 @@ class Conversation {
    * @param {string} userMessage - User's message content
    * @param {string|null} [threadItemId] - Thread item ID if sending from a thread column
    * @param {import('./message-thread.js').MessageThread} [messageThread] - Column-scoped message thread
-   * @param {{preemptProcessing?: boolean, attachments?: Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>}} [options] -
+   * @param {{preemptProcessing?: boolean, attachments?: Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>, skills?: string[]}} [options] -
    *   When `preemptProcessing` is set, an in-flight turn is cancelled-and-settled
    *   (worker truth) before this message is delivered, instead of the message
    *   being silently dropped by the "already processing" guard. A visible notice
@@ -1506,7 +1506,7 @@ class Conversation {
     // Route to worker - the worker owns the strategy loop. Turns are driven
     // exclusively by the Go worker; there is no viewer-side fallback loop.
     if (workerManager.isWorkerReady(this.id)) {
-      workerManager.sendMessage(this.id, userMessage, messageThread?.threadItemId || threadItemId, options.attachments);
+      workerManager.sendMessage(this.id, userMessage, messageThread?.threadItemId || threadItemId, options.attachments, options.skills);
       const acceptedConfig = messageThread?.modelConfig || this.modelConfig;
       if (acceptedConfig?.provider && acceptedConfig?.model) {
         recentModels.record(acceptedConfig.provider, acceptedConfig.model, acceptedConfig.thinking);

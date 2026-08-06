@@ -7,9 +7,12 @@
  *
  *   1. The new tab MUST appear at the top of the sidebar — the very first
  *      `<li>` after the `.conversation-add-item` add button.
- *   2. The new tab MUST be in inline-rename mode — the `<li>` carries the
- *      `.is-renaming` class and the seeded input value matches the canonical
- *      "Task N" name so the user can type the real name straight away.
+ *   2. With auto-naming OFF, the new tab MUST be in inline-rename mode — the
+ *      `<li>` carries the `.is-renaming` class and the seeded input value
+ *      matches the canonical "Task N" name so the user can type the real name
+ *      straight away. (With auto-naming ON — the default — the tab instead
+ *      keeps its "Task N" name for the LLM to replace and focuses the composer;
+ *      this test pins the rename-on-create branch, so it disables auto-naming.)
  *
  * Both must hold synchronously after the user-facing handler resolves: any
  * intermediate "tab at bottom, then jumps to top" or "no rename popover"
@@ -23,6 +26,7 @@ import {
   assert
 } from '../utilities/test-helpers.js';
 import { unclaimedConversationIds } from '../utilities/conversation-claims.js';
+import { isAutoNameEnabled, setAutoNameEnabledCached } from '../../js/services/auto-name-setting.js';
 import workerManager from '../../js/services/worker-manager.js';
 import { MAX_CONVERSATIONS } from '../../js/model/session.js';
 import '../../js/components/conversation-bar.js';
@@ -44,6 +48,42 @@ export async function runTests() {
   // the real new-tab scenario actually runs. Restored in `finally`.
   /** @type {(msg: string, title?: string) => Promise<void>} */
   const origShowAlert = /** @type {any} */ (window).showAlert;
+
+  // Pin the auto-naming-OFF branch. With auto-naming ON (the default) a fresh
+  // "+" tab keeps its "Task N" name for the LLM and focuses the composer; only
+  // with it OFF does the bar open the inline rename editor this test asserts.
+  // The bar decides via a synchronous module cache (auto-name-setting.js) that
+  // setSession seeds fire-and-forget from GET /api/config. Just setting the
+  // cache OFF races that in-flight refresh, which resolves to the server
+  // default (ON) during createConversation's awaits and clobbers it back — so
+  // instead intercept /api/config for this iframe to report auto-naming
+  // disabled, making every refresh (the in-flight one and any later) settle
+  // OFF deterministically. Both are restored in `finally`.
+  const origAutoNameEnabled = isAutoNameEnabled();
+  const origFetch = /** @type {typeof fetch} */ (/** @type {any} */ (window).fetch.bind(window));
+  /** @type {any} */ (window).fetch = async (/** @type {any} */ input, /** @type {any} */ init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const resp = await origFetch(input, init);
+    if (url.includes('/api/config') && resp.ok) {
+      // Duck-typed response carrying the real config with auto-naming forced
+      // off. refreshAutoNameSetting only reads `.ok` and `.json()`, and this
+      // wrapper preserves the rest for any other /api/config reader.
+      const cfg = await resp.clone().json();
+      cfg.autoNameDisabled = true;
+      return {
+        ok: resp.ok,
+        status: resp.status,
+        statusText: resp.statusText,
+        headers: resp.headers,
+        json: async () => cfg,
+        text: async () => JSON.stringify(cfg),
+        clone() { return this; },
+      };
+    }
+    return resp;
+  };
+  setAutoNameEnabledCached(false);
+
   let blockingModalMessage = '';
   /** @type {any} */ (window).showAlert = async (/** @type {string} */ msg) => {
     blockingModalMessage = msg;
@@ -206,6 +246,8 @@ export async function runTests() {
     // conversation-claims.js) and deleted by the executor's unit-suite
     // cleanup, so it never accumulates in the shared session.
     /** @type {any} */ (window).showAlert = origShowAlert;
+    /** @type {any} */ (window).fetch = origFetch;
+    setAutoNameEnabledCached(origAutoNameEnabled);
     container.remove();
   }
 

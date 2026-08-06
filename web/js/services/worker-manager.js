@@ -477,8 +477,10 @@ class WorkerManager {
    * @param {string|null} [threadItemId] - Thread item ID if sending from a thread column
    * @param {Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>} [attachments] -
    *   Content-addressed asset references (uploaded images) to store on the user item.
+   * @param {string[]} [skills] - Agent Skill names the user explicitly chose to load
+   *   before this turn; the worker injects each as a visible `skill` tool-action.
    */
-  sendMessage(conversationId, text, threadItemId, attachments) {
+  sendMessage(conversationId, text, threadItemId, attachments, skills) {
     // Store only the reference fields on the doc item — never raw bytes / data
     // URLs. Omit the key entirely when there are no attachments so the worker
     // writes a byte-identical user item to a plain text message.
@@ -492,7 +494,8 @@ class WorkerManager {
         height: a.height
       }))
       : undefined;
-    this.sendToWorker(conversationId, { type: 'send-message', text, threadItemId: threadItemId || undefined, attachments: refs });
+    const skillNames = Array.isArray(skills) && skills.length ? skills : undefined;
+    this.sendToWorker(conversationId, { type: 'send-message', text, threadItemId: threadItemId || undefined, attachments: refs, skills: skillNames });
   }
 
   /**

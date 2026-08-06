@@ -5,18 +5,19 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Reading an image file now shows it to multimodal models instead of a binary-file warning
 - Oversized shell output now spills the full log to a readable file instead of dropping the middle
+- Typing '$' allows the user to pick a skill to manually inject into the conversation
+- A warning is shown when your next message will cause a context cache miss (strategy switch, edited or deleted history)
+- Automatic compaction can now be turned off in Settings, keeping full transcripts until the context limit is hit
+- Edit and write tools refuse files never read this session or changed on disk since reading
+- Reading an image file now shows it to multimodal models instead of a binary-file warning
 - MCP servers can now hide individual tools via per-server allow/deny lists, editable as checkboxes in Settings
 - MCP servers can fix default arguments that are merged into every call and hidden from the model
 - Claude Code usage polls no longer load user-level plugins or hooks, so unrelated tools don't fire on every quota refresh
 - Context-item extensions can implement `static onTurnEnd()` to run a side-effect (e.g. retain a memory) once per turn
 - Fixed an auto-instantiate context item that implements `execute()` failing to seed, so its standing context reached the prompt
 - Fixed YOLO auto-approving plan submissions — plans now still wait for your review before execution begins
-- Edit and write tools refuse files never read this session or changed on disk since reading
 - @-mention filename completion searches the whole project for dashed and short queries
-- Automatic compaction can now be turned off in Settings, keeping full transcripts until the context limit is hit
-- A warning is shown when your next message will cause a context cache miss (strategy switch, edited or deleted history)
 
 ## [0.5.2] - 2026-08-01
 

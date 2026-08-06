@@ -247,9 +247,17 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	// queue at its next boundary; Stop and Deny promote it and stay idle. Empty
 	// messages and continuations have nothing to queue.
 	input := msg.UserInput()
+	skillsToLoad := dedupSkills(msg.Skills)
 	if w.getActivity() != ActivityNone || w.loadState() != StateIdle {
-		if !msg.IsContinuation && !input.isEmpty() {
-			w.enqueuePendingMessage(msg.ThreadItemID, input)
+		if !msg.IsContinuation {
+			// Skills chosen while a turn is in flight ride the pending queue ahead
+			// of the message, so they promote and execute before its turn.
+			for _, name := range skillsToLoad {
+				w.enqueuePendingSkill(msg.ThreadItemID, name)
+			}
+			if !input.isEmpty() {
+				w.enqueuePendingMessage(msg.ThreadItemID, input)
+			}
 		}
 		return
 	}
@@ -263,8 +271,9 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	w.clearPolitePending()
 
 	// Guard: empty message (no text AND no attachments) with no incomplete
-	// tools = nothing to do.
-	if input.isEmpty() && !msg.IsContinuation && !w.hasIncompleteTools() {
+	// tools = nothing to do. An explicit skills-only send is the exception — it
+	// carries no text but must still load the chosen skills (handled below).
+	if input.isEmpty() && !msg.IsContinuation && !w.hasIncompleteTools() && len(skillsToLoad) == 0 {
 		return
 	}
 
@@ -335,6 +344,13 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		// of order. Harmless when the queue is empty.
 		w.promotePendingItems(msg.ThreadItemID)
 		w.addUserMessage(input)
+		// Explicit skill preloads land immediately AFTER the user message, so the
+		// transcript reads user → assistant(skill) → tool_result → reply and the
+		// skill's instructions are in context before the assistant responds. The
+		// reducer rests on these non-terminal tool-actions, drives them to
+		// completion, then dispatches the LLM call (requestLLM below sets the
+		// awaiting_llm activity that authorises that dispatch).
+		w.injectSkillPreloads(skillsToLoad)
 		w.batcher.Flush()
 		w.handleItemsChange()
 
@@ -345,6 +361,18 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		// attention. No-op at root (full tool list already) and for delegated
 		// subthreads. See promoteThreadSpawnCapable.
 		w.promoteThreadSpawnCapable(msg.ThreadItemID)
+	} else if !msg.IsContinuation && len(skillsToLoad) > 0 {
+		// Skills-only send (no prose): load the chosen skills as visible
+		// tool-actions but start NO turn. driveToolActions (via handleItemsChange)
+		// evaluates, approves, and executes them; because we never requestLLM,
+		// activity stays idle and the reducer rests on the completed tool-action
+		// rather than dispatching an empty turn.
+		w.promotePendingItems(msg.ThreadItemID)
+		w.injectSkillPreloads(skillsToLoad)
+		w.batcher.Flush()
+		w.handleItemsChange()
+		w.needsReconcile = true
+		return
 	}
 
 	// Explicit Continue clicks have no new user item to make the reducer's

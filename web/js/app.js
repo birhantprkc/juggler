@@ -282,7 +282,7 @@ class JugglerApp {
     // Initialize UI event manager with callbacks. UI elements are per-tab, so
     // UIEventManager listens at document level.
     this._uiEventManager = new UIEventManager({
-      onSendMessage: (message, threadItemId, messageThread, attachments) => this._sendMessage(message, threadItemId, messageThread, attachments),
+      onSendMessage: (message, threadItemId, messageThread, attachments, skills) => this._sendMessage(message, threadItemId, messageThread, attachments, skills),
       onContextItemAction: (detail) => this._handleContextItemAction(detail)
     });
   }
@@ -391,10 +391,11 @@ class JugglerApp {
    * @param {string|null} [threadItemId] - Thread item ID if sending from a thread column
    * @param {*} [messageThread] - Column-scoped message thread
    * @param {Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>} [attachments] - Staged image attachments
+   * @param {string[]} [skills] - Agent Skill names the user explicitly chose to load before this turn
    * @private
    * @async
    */
-  async _sendMessage(message, threadItemId, messageThread, attachments) {
+  async _sendMessage(message, threadItemId, messageThread, attachments, skills) {
     const conversation = messageThread?.conversation;
     if (!conversation) {
       console.error('[Juggler] Cannot send message: no target conversation');
@@ -403,7 +404,7 @@ class JugglerApp {
 
     // The conversation owns its own handlers and manages everything;
     // validation (including model selection) happens inside sendMessage().
-    conversation.sendMessage(message, threadItemId, messageThread, { attachments: attachments || [] });
+    conversation.sendMessage(message, threadItemId, messageThread, { attachments: attachments || [], skills: skills || [] });
   }
 
   /**

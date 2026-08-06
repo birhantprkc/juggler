@@ -199,6 +199,21 @@ class SkillContextItem extends ContextItem {
     }
   }
 
+  /**
+   * The frozen skill snapshot for this conversation, for composer-driven
+   * activation (the `$name` completion provider and picker button in the input
+   * box). Returns exactly the set advertised to the model this conversation —
+   * the same list {@link execute} resolves against — so the composer can never
+   * offer or send a `$name` the `skill` tool would then reject. A thin public
+   * wrapper over {@link _effectiveSkills} (the panel/system-block share that
+   * private path); the composer reaches it through the message thread's Skills
+   * item rather than the private method.
+   * @returns {Promise<import('../../../js/services/skills.js').SkillMeta[]>} The frozen snapshot rows
+   */
+  async getSnapshotSkills() {
+    return this._effectiveSkills();
+  }
+
   /** @returns {string} Item title */
   getTitle() {
     return 'Skills';
