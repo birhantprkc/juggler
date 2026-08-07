@@ -95,6 +95,83 @@ func TestRollingCacheBreakpointOnLastMessageOnly(t *testing.T) {
 	}
 }
 
+// countEphemeralBreakpoints returns the total number of ephemeral cache_control
+// breakpoints across all message content blocks.
+func countEphemeralBreakpoints(messages []anthropicsdk.MessageParam) int {
+	n := 0
+	for _, m := range messages {
+		for _, blk := range m.Content {
+			if cc := blk.GetCacheControl(); cc != nil && string(cc.Type) == "ephemeral" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// TestRollingBreakpointSitsBeforeContextItemTail: standing context items ride as
+// trailing context-item messages that re-render live every turn. The rolling
+// breakpoint must land on the last STABLE (non-context) block so the cached
+// history prefix survives a context change; the volatile context tail carries no
+// breakpoint. Covers both shapes: context merged into the final user message, and
+// context as its own message after an assistant turn.
+func TestRollingBreakpointSitsBeforeContextItemTail(t *testing.T) {
+	c := &Client{model: "claude-test"}
+
+	// Shape 1: last real message is user ("second") → context merges into it as a
+	// trailing text block. Breakpoint on "second", not on the context block.
+	merged := c.buildMessageParams(provider.MessageRequest{
+		SystemPrompt: "SYS",
+		Messages: []provider.Message{
+			{Type: "user", Content: "first"},
+			{Type: "assistant", Content: "reply"},
+			{Type: "user", Content: "second"},
+			{Type: "context-item", Content: "=== Context: TODO_1 ===\n# Todo list"},
+		},
+	})
+	if got := countEphemeralBreakpoints(merged.Messages); got != 1 {
+		t.Fatalf("expected exactly one rolling breakpoint, got %d", got)
+	}
+	last := merged.Messages[len(merged.Messages)-1]
+	if len(last.Content) < 2 {
+		t.Fatalf("expected the final user message to carry [history, context] blocks, got %d", len(last.Content))
+	}
+	// The final (context) block must NOT carry the breakpoint.
+	if cc := last.Content[len(last.Content)-1].GetCacheControl(); cc != nil && string(cc.Type) == "ephemeral" {
+		t.Errorf("the volatile context block must not carry the rolling breakpoint")
+	}
+	// The block just before it (the last stable block) must.
+	if cc := last.Content[len(last.Content)-2].GetCacheControl(); cc == nil || string(cc.Type) != "ephemeral" {
+		t.Errorf("the last stable block must carry the rolling breakpoint")
+	}
+
+	// Shape 2: last real message is assistant → context is its own trailing user
+	// message. The breakpoint moves back onto the assistant message; the
+	// context-only final message carries none.
+	separate := c.buildMessageParams(provider.MessageRequest{
+		SystemPrompt: "SYS",
+		Messages: []provider.Message{
+			{Type: "user", Content: "u"},
+			{Type: "assistant", Content: "a"},
+			{Type: "context-item", Content: "=== Context: FILE_1 ===\npackage main"},
+		},
+	})
+	if got := countEphemeralBreakpoints(separate.Messages); got != 1 {
+		t.Fatalf("shape 2: expected exactly one rolling breakpoint, got %d", got)
+	}
+	sepLast := separate.Messages[len(separate.Messages)-1]
+	for j, blk := range sepLast.Content {
+		if cc := blk.GetCacheControl(); cc != nil && string(cc.Type) == "ephemeral" {
+			t.Errorf("shape 2: context-only final message block[%d] must not carry the breakpoint", j)
+		}
+	}
+	// The breakpoint is on the assistant message (the last stable block).
+	assistantMsg := separate.Messages[len(separate.Messages)-2]
+	if cc := assistantMsg.Content[len(assistantMsg.Content)-1].GetCacheControl(); cc == nil || string(cc.Type) != "ephemeral" {
+		t.Errorf("shape 2: the last stable (assistant) block must carry the rolling breakpoint")
+	}
+}
+
 // TestNoBreakpointWhenNoSystemPrompt: an empty system prompt yields no system
 // block (and so no system breakpoint); the rolling message breakpoint still
 // applies.

@@ -7,8 +7,12 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 )
+
+// messageTypeContextItem is the wire message type for a standing (non-system)
+// context item rendered at the tail of a turn. The provider layer maps it to the
+// user role (see registry.MessageTypeToRole).
+const messageTypeContextItem = "context-item"
 
 // compactionSummaryWireHeader prefixes a bounded-compaction thread's summary on
 // the wire so the model treats it as an inert record of earlier conversation,
@@ -94,7 +98,11 @@ func (w *ConversationWorker) buildLLMRequest(ctxResult *ContextResult, tools []T
 	// forced tool against the FILTERED list, never against a tool we're stripping.
 	tools = w.filterToolsForThread(tools)
 	messages := w.buildMessages(ctxResult.Contexts)
-	systemPrompt := w.buildSystemPrompt(ctxResult.SystemPrompt, ctxResult.Contexts)
+	// The base prompt (identity + environment + system-position items + extension
+	// contributions) is already fully assembled by the frontend. Standing context
+	// items ride as trailing messages (buildMessages), NOT in the system prompt, so
+	// a todo update or a pinned-file edit can't cold-start the cached prefix.
+	systemPrompt := ctxResult.SystemPrompt
 
 	request := map[string]any{
 		"type":           "message",
@@ -461,7 +469,8 @@ func (w *ConversationWorker) appendToolActionResult(messages []map[string]any, i
 // buildMessages converts conversation items to LLM message format.
 // Uses provider.Message format with discriminated union via Type field.
 func (w *ConversationWorker) buildMessages(contexts []ItemContext) []map[string]any {
-	return w.buildMessagesFromItems(w.getTargetItems(), true)
+	messages := w.buildMessagesFromItems(w.getTargetItems(), true)
+	return appendContextItemMessages(messages, contexts)
 }
 
 // buildMessagesFromItems converts an explicit item snapshot to the same semantic
@@ -527,20 +536,35 @@ func (w *ConversationWorker) buildMessagesFromItems(items []ConversationItem, st
 	return messages
 }
 
-// buildSystemPrompt constructs the system prompt with context.
-// The base system prompt is provided by the frontend (via SystemPromptType.buildPrompt()).
-// This function appends context item contexts (contextPosition !== 'system') to the base prompt.
-func (w *ConversationWorker) buildSystemPrompt(basePrompt string, contexts []ItemContext) string {
-	var prompt strings.Builder
-	prompt.WriteString(basePrompt)
+// contextItemMessageContent formats one standing context item's rendered text as
+// the body of a trailing context-item message. The `=== Context: <id> ===`
+// header preserves the historical framing so the model still reads these as
+// ambient, tool-independent context rather than a conversational turn.
+func contextItemMessageContent(ctx ItemContext) string {
+	return fmt.Sprintf("=== Context: %s ===\n%s", ctx.ItemID, ctx.Content)
+}
 
-	// Context items with non-system position are appended here; system-position
-	// items (rules etc.) are already in basePrompt from the frontend.
+// appendContextItemMessages renders the thread's non-system-position context
+// items (todo list, @-mentioned/pinned file contents, plan, …) as trailing
+// user-role context-item messages, AFTER all conversation history.
+//
+// These items re-render their LIVE state every turn, so their content is
+// volatile: a todo status update or a pinned-file edit changes it turn-to-turn.
+// Placing them at the tail — rather than appending them into the system prompt —
+// keeps the tools+system prefix (and the whole stable history) byte-identical
+// across such a change, so the provider prompt cache rolls forward instead of
+// cold-starting the entire conversation every turn. The provider layer maps
+// context-item to the user role; the Anthropic client keeps its rolling cache
+// breakpoint BEFORE this trailing run so only the small context tail is re-read.
+func appendContextItemMessages(messages []map[string]any, contexts []ItemContext) []map[string]any {
 	for _, ctx := range contexts {
-		if ctx.Content != "" {
-			fmt.Fprintf(&prompt, "\n\n=== Context: %s ===\n%s", ctx.ItemID, ctx.Content)
+		if ctx.Content == "" {
+			continue
 		}
+		messages = append(messages, map[string]any{
+			"type":    messageTypeContextItem,
+			"content": contextItemMessageContent(ctx),
+		})
 	}
-
-	return prompt.String()
+	return messages
 }

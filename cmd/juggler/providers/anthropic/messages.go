@@ -35,6 +35,13 @@ type APIContentBlock struct {
 
 	// For image blocks
 	Source *APIImageSource `json:"source,omitempty"`
+
+	// FromContextItem marks a text block that came from a standing context item
+	// (todo list, pinned-file contents, …) rendered at the tail of the turn. It is
+	// process-local (never serialized to the wire — the CLI path marshals this
+	// struct directly) and exists only so the rolling cache breakpoint can be
+	// placed BEFORE this volatile trailing run, keeping the stable prefix cached.
+	FromContextItem bool `json:"-"`
 }
 
 // APIImageSource is the Anthropic `source` object for an image content block.
@@ -203,11 +210,16 @@ func transformToAPIMessagesInternal(messages []provider.Message) []APIMessage {
 			currentBlocks = appendImageBlocks(currentBlocks, msg.Parts)
 
 		case "context-item", "context-item-updated", "guidance", "system-reminder":
-			// These are user-role messages with text content
+			// These are user-role messages with text content. context-item(-updated)
+			// blocks are the volatile standing-context tail (re-rendered live every
+			// turn); mark them so the rolling cache breakpoint lands before them.
+			// guidance/system-reminder are stable once written, so they are not marked.
+			fromContextItem := msg.Type == "context-item" || msg.Type == "context-item-updated"
 			if msg.Content != "" {
 				currentBlocks = append(currentBlocks, APIContentBlock{
-					Type: "text",
-					Text: msg.Content,
+					Type:            "text",
+					Text:            msg.Content,
+					FromContextItem: fromContextItem,
 				})
 			}
 			currentBlocks = appendImageBlocks(currentBlocks, msg.Parts)

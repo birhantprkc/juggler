@@ -36,9 +36,19 @@ type thinkingAccumulator struct {
 	signature      string
 }
 
-// transformMessages converts unified Message[] to Anthropic SDK format.
-// Uses TransformToAPIMessages() for message grouping and alternation,
-// then converts to SDK-specific types.
+// transformMessages converts unified Message[] to Anthropic SDK format and
+// places the rolling cache breakpoint. Uses TransformToAPIMessages() for message
+// grouping and alternation, then converts to SDK-specific types, tracking the
+// last STABLE (non-context-item) content block so the breakpoint lands before the
+// volatile standing-context tail.
+//
+// Standing context items (todo list, pinned-file contents, …) are re-rendered
+// live every turn and arrive as trailing context-item messages. Caching them
+// would force a cold read of everything before them each time they change, so the
+// rolling breakpoint is kept on the last stable block: Anthropic then caches the
+// whole tools+system+history prefix and re-reads only the small context tail.
+// With no context-item blocks the breakpoint lands on the final block —
+// byte-identical to a plain tail breakpoint.
 func transformMessages(messages []provider.Message) []anthropicsdk.MessageParam {
 	// Use shared message transformation (defined in messages.go)
 	apiMessages := TransformToAPIMessages(messages)
@@ -46,14 +56,11 @@ func transformMessages(messages []provider.Message) []anthropicsdk.MessageParam 
 		return nil
 	}
 
-	// Convert to SDK format
-	return convertToSDKMessages(apiMessages)
-}
-
-// convertToSDKMessages converts APIMessage[] to anthropicsdk.MessageParam[].
-// Handles SDK-specific type conversions for each content block type.
-func convertToSDKMessages(apiMessages []APIMessage) []anthropicsdk.MessageParam {
 	result := make([]anthropicsdk.MessageParam, 0, len(apiMessages))
+	// (message index, block index) of the last non-context-item block, in SDK
+	// space. Tracked during conversion so the mapping survives any block that
+	// convertBlockToSDK drops.
+	bpMsg, bpBlock := -1, -1
 
 	for _, msg := range apiMessages {
 		var role anthropicsdk.MessageParamRole
@@ -66,8 +73,14 @@ func convertToSDKMessages(apiMessages []APIMessage) []anthropicsdk.MessageParam 
 		var blocks []anthropicsdk.ContentBlockParamUnion
 		for _, block := range msg.Content {
 			sdkBlock := convertBlockToSDK(block)
-			if sdkBlock != nil {
-				blocks = append(blocks, *sdkBlock)
+			if sdkBlock == nil {
+				continue
+			}
+			blocks = append(blocks, *sdkBlock)
+			if !block.FromContextItem {
+				// This message will be appended (blocks is non-empty), so its final
+				// index equals the current result length.
+				bpMsg, bpBlock = len(result), len(blocks)-1
 			}
 		}
 
@@ -79,6 +92,15 @@ func convertToSDKMessages(apiMessages []APIMessage) []anthropicsdk.MessageParam 
 		}
 	}
 
+	if bpMsg >= 0 {
+		if cc := result[bpMsg].Content[bpBlock].GetCacheControl(); cc != nil {
+			*cc = anthropicsdk.NewCacheControlEphemeralParam()
+		}
+	} else {
+		// Every block is context (or none was stable) — fall back to the final
+		// block so a breakpoint is always written.
+		setRollingCacheBreakpoint(result)
+	}
 	return result
 }
 
@@ -255,23 +277,30 @@ func convertTools(tools []provider.ToolDefinition) []anthropicsdk.ToolUnionParam
 // Prompt cache layout (Anthropic matches the longest previously-written prefix,
 // in tools → system → messages order):
 //
-//		[ tools ][ system ] | cache_control | [ history ] | cache_control |
+//		[ tools ][ system ] | cache_control | [ history ] | cache_control | [ context tail ]
 //
 //	  - The system breakpoint caches tools+system. This prefix is stable across a
-//	    strategy change and across turns (it varies only on a plugin enable/disable
-//	    or a pinned-file edit), so the breakpoint actually hits instead of
-//	    cold-starting every phase change.
-//	  - The history breakpoint sits on the final block of the final message, so
-//	    each turn writes an incrementally longer prefix and the next turn reads
-//	    the prior one — a rolling cache over the growing conversation, with no
-//	    offset bookkeeping on our side.
+//	    strategy change and across turns (it varies only on a plugin
+//	    enable/disable), so the breakpoint actually hits instead of cold-starting
+//	    every phase change. Standing context items (todo list, pinned-file
+//	    contents) are NOT in the system prompt — they ride as trailing messages —
+//	    so a todo update or a file edit no longer busts this prefix.
+//	  - The history breakpoint sits on the last STABLE block — the final block that
+//	    did not come from a context item — so each turn writes an incrementally
+//	    longer prefix and the next turn reads the prior one: a rolling cache over
+//	    the growing conversation, with no offset bookkeeping on our side.
+//	  - The volatile context tail (re-rendered live every turn) trails the history
+//	    breakpoint, so its churn only re-reads that short tail, never the cached
+//	    prefix. When there is no context tail the history breakpoint lands on the
+//	    final block, exactly as before.
 //
 // Two breakpoints, well within Anthropic's limit of four. Below the model's
 // minimum cacheable size the breakpoints are silently ignored by the API, so
 // always emitting them is safe.
 func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.MessageNewParams {
+	// transformMessages also places the rolling cache breakpoint (before any
+	// volatile standing-context tail — see its doc comment).
 	messages := transformMessages(req.Messages)
-	setRollingCacheBreakpoint(messages)
 
 	// The capability snapshot (c.maxOutputTokens) may carry a *derived* reserve
 	// when the model resolved from window only — e.g. a static-map id the live
