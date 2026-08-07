@@ -41,6 +41,15 @@ type Provides struct {
 	// a function of the enabled-plugin set only, so it is cache-stable across
 	// turns and a strategy change (it changes only when plugins are toggled).
 	SystemPrompt string `json:"systemPrompt,omitempty"`
+	// Tests declares the extension's own test suites (globs relative to the
+	// extension root), so each extension owns its tests instead of dumping them
+	// into the shared js-tests/ pool. Test-only: not a runtime capability (it is
+	// ignored by Validate's capability check and never served via /api/extensions),
+	// and it is surfaced only through the test harness's extension-tests endpoint.
+	// Conventionally the files live under a "_tests/" directory, whose leading
+	// underscore makes `//go:embed extensions/*` skip them so test code never
+	// ships in a production binary (mirroring the js-tests/ build-tag exclusion).
+	Tests []string `json:"tests,omitempty"`
 }
 
 // Setting describes one user-configurable extension value. Settings are global

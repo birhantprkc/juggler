@@ -1,5 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
-//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   AGPL-3.0-or-later - see LICENSE
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Unit tests for the MCP tool bridge's pure decision logic: LLM tool naming,
@@ -10,14 +12,14 @@
  * @module unit-tests/mcp-tool-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
+import { assert } from '../../../js-tests/utilities/test-helpers.js';
 import {
   mcpLLMName,
   buildToolDefinition,
   mcpRuleValues,
   mcpApprovalSuggestions,
   mcpIsPermitted
-} from '../../extensions/juggler-mcp/context-items/mcp-tool-context-item.js';
+} from '../context-items/mcp-tool-context-item.js';
 
 /**
  * @typedef {object} TestResult

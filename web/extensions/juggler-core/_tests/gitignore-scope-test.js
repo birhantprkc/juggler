@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Tests the per-conversation "search scope" (respect .gitignore) toggle: the
@@ -14,15 +15,15 @@ import {
   createTestSession,
   createTestConversation,
   assert
-} from '../utilities/test-helpers.js';
-import contextItemRegistry from '../../js/registries/context-item-registry.js';
+} from '../../../js-tests/utilities/test-helpers.js';
+import contextItemRegistry from '../../../js/registries/context-item-registry.js';
 import {
   GITIGNORE_DISABLED_KEY,
   conversationGitignoreDisabled,
   setGitignoreDisabled,
   gitignoreDisabled
-} from '../../extensions/juggler-core/context-items/path-approval.js';
-import { buildGitignoreSection } from '../../extensions/juggler-core/context-items/search-scope-section.js';
+} from '../context-items/path-approval.js';
+import { buildGitignoreSection } from '../context-items/search-scope-section.js';
 
 /**
  * @typedef {object} TestResult

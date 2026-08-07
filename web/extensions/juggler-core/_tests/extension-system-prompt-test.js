@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Extension system-prompt contribution tests.
@@ -16,15 +17,15 @@
  * @module unit-tests/extension-system-prompt-test
  */
 
-import systemPromptContribution from '../../extensions/juggler-core/system-prompt-contribution.js';
-import { buildExtensionSystemPromptContributions } from '../../js/services/extensions.js';
+import systemPromptContribution from '../system-prompt-contribution.js';
+import { buildExtensionSystemPromptContributions } from '../../../js/services/extensions.js';
 import {
   initializeRegistries,
   createTestSession,
   createTestConversation,
   buildContext,
   assert
-} from '../utilities/test-helpers.js';
+} from '../../../js-tests/utilities/test-helpers.js';
 
 /**
  * @typedef {object} TestResult

@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Unit tests for the static command-approval analyser.
@@ -19,8 +20,8 @@
  * @module unit-tests/bash-command-approval-unit-test
  */
 
-import { isCommandAutoApproved, isCatastrophicDeletion, suggestApprovalPatterns, tokenize, posixNormalize, matchesGlob, isGrantableRoot, isPathInsideAllowedRoots } from '../../extensions/juggler-core/context-items/execute/command-approval.js';
-import ExecuteContextItem from '../../extensions/juggler-core/context-items/execute-context-item.js';
+import { isCommandAutoApproved, isCatastrophicDeletion, suggestApprovalPatterns, tokenize, posixNormalize, matchesGlob, isGrantableRoot, isPathInsideAllowedRoots } from '../context-items/execute/command-approval.js';
+import ExecuteContextItem from '../context-items/execute-context-item.js';
 
 const PROJECT_ROOT = '/Users/jules/code/juggler';
 const TEST_HOME = '/Users/jules';

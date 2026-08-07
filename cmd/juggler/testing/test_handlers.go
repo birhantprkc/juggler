@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"juggler/cmd/juggler/extmanifest"
 	"juggler/cmd/juggler/server/handlers"
 )
 
@@ -35,6 +37,7 @@ type SessionResetter interface {
 type TestAPI struct {
 	testsDir      string
 	fixturesDir   string
+	webExtDir     string
 	session       SessionResetter
 	tapeDumper    func(string) any
 	convOwnership *ConvOwnership
@@ -47,6 +50,7 @@ func NewTestAPIWithSession(projectRoot string, session SessionResetter) *TestAPI
 	return &TestAPI{
 		testsDir:      filepath.Join(projectRoot, "tests", "benchmarks", "tasks"),
 		fixturesDir:   filepath.Join(projectRoot, "tests", "benchmarks", "fixtures"),
+		webExtDir:     filepath.Join(projectRoot, "web", "extensions"),
 		session:       session,
 		convOwnership: NewConvOwnership(),
 	}
@@ -87,6 +91,83 @@ func (api *TestAPI) ReleaseConvOwner(convID string) {
 // MAX_CONVERSATIONS cap.
 func (api *TestAPI) HandleConversationOwners(w http.ResponseWriter, r *http.Request) {
 	handlers.WriteJSON(w, r, 0, map[string]any{"owners": api.convOwnership.Dump()})
+}
+
+// extensionTest is one discovered extension-owned test suite: its addressable
+// name (e.g. "unit:exa-search") and the served, extension-root-relative path
+// of its module (e.g. "/extensions/exa/_tests/exa-search-test.js"). The browser
+// harness prepends the version prefix and dynamic-imports the module, whose
+// runTests export it registers as a unit suite.
+type extensionTest struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// HandleExtensionTests discovers extension-owned test suites by scanning the
+// on-disk web/extensions/* tree, reading each juggler.extension.json, and
+// expanding its `provides.tests` globs. GET /api/test/extension-tests.
+//
+// Test suites are discovered from disk (not the embedded FS) because the test
+// files live under a "_tests/" directory that `//go:embed extensions/*` skips
+// so they never ship in a production binary — and the test harness always runs
+// with --assets-from-disk, so the real files are present. This is the
+// manifest-driven replacement for hand-listing each extension test in
+// integration-test-executor.js: an extension owns its tests via its manifest.
+func (api *TestAPI) HandleExtensionTests(w http.ResponseWriter, r *http.Request) {
+	tests := []extensionTest{}
+
+	entries, err := os.ReadDir(api.webExtDir)
+	if err != nil {
+		// No extensions dir (e.g. running outside a source checkout) — return an
+		// empty list rather than an error; the harness treats it as "no extension
+		// tests" and runs the internal suites normally.
+		handlers.WriteJSON(w, r, 0, map[string]any{"tests": tests})
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		extDir := filepath.Join(api.webExtDir, entry.Name())
+		data, err := os.ReadFile(filepath.Join(extDir, extmanifest.ManifestFileName))
+		if err != nil {
+			continue // not an extension dir
+		}
+		manifest, err := extmanifest.Parse(data)
+		if err != nil || len(manifest.Provides.Tests) == 0 {
+			continue
+		}
+		// Expand the tests globs against the extension root, applying the same
+		// traversal guard the server uses for capability globs.
+		matches, err := extmanifest.ExpandGlobs(os.DirFS(extDir), manifest.Provides.Tests)
+		if err != nil {
+			continue
+		}
+		for _, rel := range matches {
+			tests = append(tests, extensionTest{
+				Name: extensionTestName(rel),
+				Path: "/extensions/" + entry.Name() + "/" + rel,
+			})
+		}
+	}
+
+	// Stable order so the discovered list (and thus test scheduling) is
+	// deterministic across runs regardless of filesystem enumeration order.
+	sort.Slice(tests, func(i, j int) bool { return tests[i].Name < tests[j].Name })
+	handlers.WriteJSON(w, r, 0, map[string]any{"tests": tests})
+}
+
+// extensionTestName derives the harness-addressable suite name from a test
+// module's root-relative path, e.g. "_tests/exa-search-test.js" →
+// "unit:exa-search". The "unit:" prefix and "-test" suffix stripping match the
+// naming the shared js-tests/ pool already uses, so an extension test keeps the
+// same name after being moved into its extension.
+func extensionTestName(rel string) string {
+	base := filepath.Base(rel)
+	base = strings.TrimSuffix(base, ".js")
+	base = strings.TrimSuffix(base, "-test")
+	return "unit:" + base
 }
 
 // HandleGetTask returns a specific task by ID

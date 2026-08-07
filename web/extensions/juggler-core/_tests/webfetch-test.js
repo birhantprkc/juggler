@@ -1,18 +1,19 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Unit tests for WebFetch action plugin
  * Tests parameter validation and result formatting in isolation
  */
 
-import WebFetchContextItem from '../../extensions/juggler-core/context-items/web-fetch-context-item.js';
+import WebFetchContextItem from '../context-items/web-fetch-context-item.js';
 import {
   initializeRegistries,
   createTestSession,
   createTestConversation
-} from '../utilities/test-helpers.js';
+} from '../../../js-tests/utilities/test-helpers.js';
 
 /**
  * Test valid URLs pass validation

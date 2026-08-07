@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * The AskUserQuestion properties-panel details view must tick EVERY option the
@@ -13,8 +14,8 @@
  * @module unit-tests/ask-user-question-details
  */
 
-import { assert } from '../utilities/test-helpers.js';
-import AskUserQuestionContextItem from '../../extensions/juggler-core/context-items/ask-user-question-context-item.js';
+import { assert } from '../../../js-tests/utilities/test-helpers.js';
+import AskUserQuestionContextItem from '../context-items/ask-user-question-context-item.js';
 
 /**
  * @typedef {object} TestResult

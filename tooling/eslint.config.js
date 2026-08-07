@@ -277,7 +277,8 @@ export default [
     files: [
       'web/js/services/ops-api.js',
       'web/js/services/action-executor.js',
-      'web/js-tests/**/*.js'
+      'web/js-tests/**/*.js',
+      'web/extensions/**/_tests/**/*.js'
     ],
     rules: {
       // These files are allowed to call /api/ops/call directly
@@ -396,7 +397,7 @@ export default [
   // Test files configuration - enforce proper logging
   // ===================================================================
   {
-    files: ['web/js-tests/**/*.js'],
+    files: ['web/js-tests/**/*.js', 'web/extensions/**/_tests/**/*.js'],
     ignores: ['web/js-tests/test-logger.js'], // Exclude logger itself
     rules: {
       // In test files, console.log should not be used directly

@@ -284,6 +284,7 @@ func (s *Server) RegisterTestRoutes(testAPI any) {
 		HandleDeleteFile(w http.ResponseWriter, r *http.Request)
 		HandleMkdir(w http.ResponseWriter, r *http.Request)
 		HandleDumpTape(w http.ResponseWriter, r *http.Request)
+		HandleExtensionTests(w http.ResponseWriter, r *http.Request)
 	}
 	tapi, ok := testAPI.(taskAPI)
 	mustMatch(ok, "task-API")
@@ -292,6 +293,7 @@ func (s *Server) RegisterTestRoutes(testAPI any) {
 	api.HandleFunc("/delete-file", tapi.HandleDeleteFile).Methods("POST")
 	api.HandleFunc("/mkdir", tapi.HandleMkdir).Methods("POST")
 	api.HandleFunc("/dump-tape", tapi.HandleDumpTape).Methods("GET")
+	api.HandleFunc("/extension-tests", tapi.HandleExtensionTests).Methods("GET")
 
 	// Wire the worker manager's tape dumper into the test API so the
 	// dump-tape endpoint can surface per-conv worker tapes at failure

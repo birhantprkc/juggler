@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Framework tests for approval flow pipeline.
@@ -21,13 +22,13 @@ import {
   withTimeout,
   waitFor,
   assert
-} from '../utilities/test-helpers.js';
-import { TOOL_STATES, ACTION_STATES, createToolActionMessage } from '../../sdk/lib/message.js';
-import { observeUntil } from '../utilities/turn-sync.js';
-import workerManager from '../../js/services/worker-manager.js';
-import ExecuteContextItem from '../../extensions/juggler-core/context-items/execute-context-item.js';
-import { buildApprovalButtons } from '../../js/services/approval-options.js';
-import '../../js/components/action-confirmation.js';
+} from '../../../js-tests/utilities/test-helpers.js';
+import { TOOL_STATES, ACTION_STATES, createToolActionMessage } from '../../../sdk/lib/message.js';
+import { observeUntil } from '../../../js-tests/utilities/turn-sync.js';
+import workerManager from '../../../js/services/worker-manager.js';
+import ExecuteContextItem from '../context-items/execute-context-item.js';
+import { buildApprovalButtons } from '../../../js/services/approval-options.js';
+import '../../../js/components/action-confirmation.js';
 
 /**
  * Ask the real `ExecuteContextItem.isPermitted` whether a command would be
@@ -751,7 +752,7 @@ export async function runTests(_ctx) {
   // =========================================================================
   try {
     // Import ExecuteContextItem for pattern extraction test
-    const { default: ExecuteContextItem } = await import('../../extensions/juggler-core/context-items/execute-context-item.js');
+    const { default: ExecuteContextItem } = await import('../context-items/execute-context-item.js');
 
     // Simple command should get wildcard
     const simplePattern = ExecuteContextItem.extractDefaultPattern('npm install', 'darwin');

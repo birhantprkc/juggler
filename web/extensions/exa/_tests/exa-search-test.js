@@ -1,9 +1,16 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
-import ExaSearchContextItem from '../../extensions/exa/context-items/exa-search-context-item.js';
-import { assert, createTestConversation, createTestSession, initializeRegistries } from '../utilities/test-helpers.js';
+// This suite lives inside the exa extension (declared via `provides.tests` in
+// juggler.extension.json) rather than the shared js-tests/ pool, so the
+// extension owns its tests. The test harness discovers it through the
+// /api/test/extension-tests endpoint. Imports are extension-local; only the
+// shared test harness is reached across the tree (../../../js-tests/utilities).
+
+import ExaSearchContextItem from '../context-items/exa-search-context-item.js';
+import { assert, createTestConversation, createTestSession, initializeRegistries } from '../../../js-tests/utilities/test-helpers.js';
 
 /**
  * @typedef {object} TestResult

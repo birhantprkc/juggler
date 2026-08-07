@@ -126,7 +126,12 @@
     <!-- Test entry point -->
     <script type="module" nonce="{{.CSPNonce}}">
         import TestOrchestrator from '/v{{.StaticVersion}}/js-tests/utilities/test-orchestrator.js';
-        import { listTests, listPolluters, runTestByName } from '/v{{.StaticVersion}}/js-tests/utilities/integration-test-executor.js';
+        import { listTests, listPolluters, runTestByName, ensureExtensionSuitesLoaded } from '/v{{.StaticVersion}}/js-tests/utilities/integration-test-executor.js';
+
+        // Register extension-owned suites (discovered from each extension's
+        // manifest) before anything calls the synchronous listTests(), so the
+        // reported name list and any single-test run include them.
+        await ensureExtensionSuitesLoaded();
 
         const urlParams = new URLSearchParams(window.location.search);
 

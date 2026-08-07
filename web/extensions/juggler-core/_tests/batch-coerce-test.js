@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * BatchContextItem argument-coercion unit tests.
@@ -22,8 +23,8 @@
  * @module unit-tests/batch-coerce-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
-import BatchContextItem from '../../extensions/juggler-core/context-items/batch-context-item.js';
+import { assert } from '../../../js-tests/utilities/test-helpers.js';
+import BatchContextItem from '../context-items/batch-context-item.js';
 
 /**
  * @typedef {object} TestResult

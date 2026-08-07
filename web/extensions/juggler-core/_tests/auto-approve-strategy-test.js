@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Unit tests for the `auto-approve` strategy's orchestration (`onToolPending`).
@@ -16,8 +17,8 @@
  * @module unit-tests/auto-approve-strategy-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
-import AutoApproveStrategyType from '../../extensions/juggler-core/strategies/auto-approve-strategy-type.js';
+import { assert } from '../../../js-tests/utilities/test-helpers.js';
+import AutoApproveStrategyType from '../strategies/auto-approve-strategy-type.js';
 
 /**
  * @typedef {object} TestResult

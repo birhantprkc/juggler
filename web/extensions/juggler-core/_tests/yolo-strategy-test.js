@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Unit tests for the YOLO strategy's approval policy.
@@ -37,12 +38,12 @@ import {
   createTestSession,
   createApprovalTestConversation,
   assert
-} from '../utilities/test-helpers.js';
-import { handleNewToolAction } from '../../js/model/conversation-tool-actions.js';
-import { createToolActionMessage, TOOL_STATES } from '../../sdk/lib/message.js';
-import { INTERACTION_KIND } from '../../sdk/context-item.js';
-import { APPROVAL_POLICY } from '../../sdk/strategy-type.js';
-import YoloStrategyType from '../../extensions/juggler-core/strategies/yolo-strategy-type.js';
+} from '../../../js-tests/utilities/test-helpers.js';
+import { handleNewToolAction } from '../../../js/model/conversation-tool-actions.js';
+import { createToolActionMessage, TOOL_STATES } from '../../../sdk/lib/message.js';
+import { INTERACTION_KIND } from '../../../sdk/context-item.js';
+import { APPROVAL_POLICY } from '../../../sdk/strategy-type.js';
+import YoloStrategyType from '../strategies/yolo-strategy-type.js';
 
 /**
  * @typedef {object} TestResult

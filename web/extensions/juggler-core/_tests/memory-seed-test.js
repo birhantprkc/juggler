@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Auto-instantiate capability + memory seeding tests.
@@ -18,15 +19,15 @@
  * @module unit-tests/memory-seed-test
  */
 
-import MemoryContextItem from '../../extensions/juggler-core/context-items/memory-context-item.js';
-import GlobContextItem from '../../extensions/juggler-core/context-items/glob-context-item.js';
-import { writeFileOp } from '../../js/services/ops-api.js';
+import MemoryContextItem from '../context-items/memory-context-item.js';
+import GlobContextItem from '../context-items/glob-context-item.js';
+import { writeFileOp } from '../../../js/services/ops-api.js';
 import {
   initializeRegistries,
   createTestSession,
   createTestConversation,
   assert
-} from '../utilities/test-helpers.js';
+} from '../../../js-tests/utilities/test-helpers.js';
 
 /**
  * @typedef {object} TestResult

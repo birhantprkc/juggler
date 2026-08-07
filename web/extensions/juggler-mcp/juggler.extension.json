@@ -9,6 +9,7 @@
   "permissions": [],
   "provides": {
     "contextItems": ["context-items/*-context-item.js"],
-    "commands": ["commands/*-command-type.js"]
+    "commands": ["commands/*-command-type.js"],
+    "tests": ["_tests/*-test.js"]
   }
 }

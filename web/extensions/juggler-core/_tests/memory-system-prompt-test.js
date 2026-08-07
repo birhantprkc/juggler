@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Memory ↔ system-prompt integration + cache-stability proof.
@@ -16,14 +17,14 @@
  * @module unit-tests/memory-system-prompt-test
  */
 
-import { assembleSystemPrompt } from '../../js/services/system-prompt-builder.js';
-import MemoryContextItem from '../../extensions/juggler-core/context-items/memory-context-item.js';
+import { assembleSystemPrompt } from '../../../js/services/system-prompt-builder.js';
+import MemoryContextItem from '../context-items/memory-context-item.js';
 import {
   initializeRegistries,
   createTestSession,
   createTestConversation,
   assert
-} from '../utilities/test-helpers.js';
+} from '../../../js-tests/utilities/test-helpers.js';
 
 /**
  * @typedef {object} TestResult

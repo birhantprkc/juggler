@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Tests the read-before-mutate freshness guard (Claude Code-style).
@@ -25,14 +26,14 @@ import {
   createTestSession,
   createTestConversation,
   assert
-} from '../utilities/test-helpers.js';
-import contextItemRegistry from '../../js/registries/context-item-registry.js';
-import { writeFileOp, readFileLoad } from '../../js/services/ops-api.js';
+} from '../../../js-tests/utilities/test-helpers.js';
+import contextItemRegistry from '../../../js/registries/context-item-registry.js';
+import { writeFileOp, readFileLoad } from '../../../js/services/ops-api.js';
 import {
   recordWrittenHash,
   pathMatchKey,
   __resetWrittenHashesForTest
-} from '../../extensions/juggler-core/context-items/read-history.js';
+} from '../context-items/read-history.js';
 
 /** A syntactically valid SHA-256 that matches no real file. */
 const BOGUS_HASH = '0000000000000000000000000000000000000000000000000000000000000000';

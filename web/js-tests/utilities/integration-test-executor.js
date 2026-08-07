@@ -51,48 +51,33 @@ import { tests as memoryTests } from '../integration-tests/memory-tests.js';
 import { tests as attentionAlertTests } from '../integration-tests/attention-alert-tests.js';
 import { tests as binGuardTests } from '../integration-tests/bin-guard-tests.js';
 import { tests as modelAvailabilityTests } from '../integration-tests/model-availability-tests.js';
-import { runTests as runApprovalFlowTests } from '../unit-tests/approval-flow-test.js';
 import { runTests as runContextCacheImpactTests } from '../unit-tests/context-cache-impact-test.js';
 import { runTests as runContextItemPersistenceTests } from '../unit-tests/context-item-persistence-test.js';
 import { runTests as runContextItemSeedExecuteTests } from '../unit-tests/context-item-seed-execute-test.js';
 import { runTests as runConversationNameTests } from '../unit-tests/conversation-name-persistence-test.js';
 import { runTests as runDraftPersistenceTests } from '../unit-tests/draft-persistence-test.js';
-import { runTests as runDroppedFileTests } from '../unit-tests/dropped-file-test.js';
 import { runTests as runMessageHistoryTests } from '../unit-tests/message-history-test.js';
 import { runTests as runPasteTokenTests } from '../unit-tests/paste-token-test.js';
 import { runTests as runDraftTabSwitchTests } from '../unit-tests/draft-tab-switch-test.js';
 import { runTests as runEditPermissionTests } from '../unit-tests/edit-permission-test.js';
-import { runTests as runEditStalenessGuardTests } from '../unit-tests/edit-staleness-guard-test.js';
 import { runTests as runExecuteActionTests } from '../unit-tests/execute-action-test.js';
 import { runTests as runFileSystemApiTests } from '../unit-tests/filesystem-api-test.js';
 import { runTests as runGlobActionTests } from '../unit-tests/glob-action-test.js';
-import { runTests as runAskUserQuestionDetailsTests } from '../unit-tests/ask-user-question-details-test.js';
 import { runTests as runItemAccessorTests } from '../unit-tests/item-accessor-test.js';
 import { runTests as runMessageTypeGuardTests } from '../unit-tests/message-type-guard-test.js';
 import { runTests as runModelFilterTests } from '../unit-tests/model-filter-test.js';
 import { runTests as runMonitorToolsTests } from '../unit-tests/monitor-tools-test.js';
-import { runTests as runMcpToolTests } from '../unit-tests/mcp-tool-test.js';
 import { runTests as runMcpApprovalToolNameTests } from '../unit-tests/mcp-approval-toolname-test.js';
 import { runTests as runMcpEvaluateToolNameTests } from '../unit-tests/mcp-evaluate-toolname-test.js';
 import { runTests as runMcpSettingsTests } from '../unit-tests/mcp-settings-test.js';
 import { runTests as runAcpSettingsTests } from '../unit-tests/acp-settings-test.js';
-import { runTests as runMemoryFormatTests } from '../unit-tests/memory-format-test.js';
-import { runTests as runMemoryItemTests } from '../unit-tests/memory-item-test.js';
-import { runTests as runMemorySeedTests } from '../unit-tests/memory-seed-test.js';
-import { runTests as runMemorySystemPromptTests } from '../unit-tests/memory-system-prompt-test.js';
-import { runTests as runSkillItemTests } from '../unit-tests/skill-item-test.js';
 import { runTests as runSystemPromptBuilderTests } from '../unit-tests/system-prompt-builder-test.js';
-import { runTests as runSystemPromptContextItemTests } from '../unit-tests/system-prompt-context-item-test.js';
 import { runTests as runSystemPromptRegistryTests } from '../unit-tests/system-prompt-registry-test.js';
-import { runTests as runExtensionSystemPromptTests } from '../unit-tests/extension-system-prompt-test.js';
 import { runTests as runExtensionsDisabledTests } from '../unit-tests/extensions-disabled-test.js';
 import { runTests as runStrategyInjectionTests } from '../unit-tests/strategy-injection-test.js';
 import { runTests as runObserverDecouplingTests } from '../unit-tests/observer-decoupling-test.js';
 import { runTests as runToolPendingHookTests } from '../unit-tests/tool-pending-hook-test.js';
 import { runTests as runContextTurnHookTests } from '../unit-tests/context-turn-hook-test.js';
-import { runTests as runAutoApproveReviewerTests } from '../unit-tests/auto-approve-reviewer-test.js';
-import { runTests as runAutoApproveStrategyTests } from '../unit-tests/auto-approve-strategy-test.js';
-import { runTests as runYoloStrategyUnitTests } from '../unit-tests/yolo-strategy-test.js';
 import { runTests as runHandoffPromotionTests } from '../unit-tests/handoff-promotion-test.js';
 import { runTests as runReadFileActionTests } from '../unit-tests/read-file-action-test.js';
 import { runTests as runPathInputQuotesTests } from '../unit-tests/path-input-quotes-test.js';
@@ -100,14 +85,10 @@ import { runTests as runSearchActionTests } from '../unit-tests/search-action-te
 import { runTests as runToolCancellationTests } from '../unit-tests/tool-cancellation-test.js';
 import { runTests as runToolExecutionOrderTests } from '../unit-tests/tool-execution-order-test.js';
 import { runTests as runToolActionRenderTests } from '../unit-tests/tool-action-render-test.js';
-import { runTests as runExploreCodeFormatTests } from '../unit-tests/explore-code-format-test.js';
 import { runTests as runSubmitPlanActionTests } from '../unit-tests/submit-plan-action-test.js';
 import { runTests as runPlanApprovalTests } from '../unit-tests/plan-approval-test.js';
 import { runTests as runTodoActionTests } from '../unit-tests/todo-action-test.js';
 import { runTests as runTodoNoApprovalTests } from '../unit-tests/todo-no-approval-test.js';
-import { runTests as runWebFetchTests } from '../unit-tests/test-webfetch.js';
-import { runTests as runWebSearchTests } from '../unit-tests/test-websearch.js';
-import { runTests as runExaSearchTests } from '../unit-tests/exa-search-test.js';
 import { runTests as runThreadNestedArrayTests } from '../unit-tests/thread-nested-array-test.js';
 import { runTests as runUndoRedoTests } from '../unit-tests/undo-redo-test.js';
 import { runTests as runHeaderUndoLockTests } from '../unit-tests/header-undo-lock-test.js';
@@ -119,10 +100,7 @@ import { runTests as runMarkdownSanitizerTests } from '../unit-tests/markdown-sa
 import { runTests as runUserMessageMarkdownTests } from '../unit-tests/user-message-markdown-test.js';
 import { runTests as runExternalLinkTests } from '../unit-tests/external-link-test.js';
 import { runTests as runAnsiTests } from '../unit-tests/ansi-test.js';
-import { runTests as runBashHighlightTests } from '../unit-tests/bash-highlight-test.js';
 import { runTests as runToolNameResolutionTests } from '../unit-tests/tool-name-resolution-test.js';
-import { runTests as runCommandApprovalUnitTests } from '../unit-tests/bash-command-approval-unit-test.js';
-import { runTests as runPermissionRulesTests } from '../unit-tests/permission-rules-test.js';
 import { runTests as runNewTabUxTests } from '../unit-tests/new-tab-ux-test.js';
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
@@ -131,9 +109,7 @@ import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclai
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
 import { runTests as runNewThreadFocusTests } from '../unit-tests/new-thread-focus-test.js';
-import { runTests as runGitignoreScopeTests } from '../unit-tests/gitignore-scope-test.js';
 import { runTests as runNestedApprovalStatusTests } from '../unit-tests/nested-approval-status-test.js';
-import { runTests as runBatchCoerceTests } from '../unit-tests/batch-coerce-test.js';
 import { runTests as runChimeRecoveryTests } from '../unit-tests/chime-recovery-test.js';
 import { runTests as runKeyShortcutManagerTests } from '../unit-tests/key-shortcut-manager-test.js';
 import { runTests as runHoldToCycleTests } from '../unit-tests/hold-to-cycle-test.js';
@@ -150,7 +126,6 @@ import { runTests as runExtensionCollisionTests } from '../unit-tests/extension-
 import { runTests as runExtensionCatalogTests } from '../unit-tests/extension-catalog-test.js';
 import { runTests as runExtensionSettingsTests } from '../unit-tests/extension-settings-test.js';
 import { runTests as runUserCommandFactoryTests } from '../unit-tests/user-command-factory-test.js';
-import { runTests as runCloseCommandTests } from '../unit-tests/close-command-test.js';
 import { runTests as runEngineApiVectorTests } from '../unit-tests/engineapi-vectors-test.js';
 import { runTests as runStrategyFallbackTests } from '../unit-tests/strategy-fallback-test.js';
 import { runTests as runStrategyOrderTests } from '../unit-tests/strategy-order-test.js';
@@ -256,7 +231,6 @@ const ALL_TESTS = [
  * Names appear as individual test entries in listTests() and are addressable via -run.
  */
 const UNIT_TEST_SUITES = [
-  { name: 'unit:approval-flow', run: runApprovalFlowTests },
   { name: 'unit:context-cache-impact', run: runContextCacheImpactTests },
   { name: 'unit:key-shortcut-manager', run: runKeyShortcutManagerTests },
   { name: 'unit:hold-to-cycle', run: runHoldToCycleTests },
@@ -270,12 +244,10 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:context-item-seed-execute', run: runContextItemSeedExecuteTests },
   { name: 'unit:conversation-name-persistence', run: runConversationNameTests },
   { name: 'unit:draft-persistence', run: runDraftPersistenceTests },
-  { name: 'unit:dropped-file', run: runDroppedFileTests },
   { name: 'unit:message-history', run: runMessageHistoryTests },
   { name: 'unit:paste-token', run: runPasteTokenTests },
   { name: 'unit:draft-tab-switch', run: runDraftTabSwitchTests },
   { name: 'unit:edit-permission', run: runEditPermissionTests },
-  { name: 'unit:edit-staleness-guard', run: runEditStalenessGuardTests },
   { name: 'unit:execute-action', run: runExecuteActionTests },
   { name: 'unit:filesystem-api', run: runFileSystemApiTests },
   { name: 'unit:glob-action', run: runGlobActionTests },
@@ -283,28 +255,17 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:message-type-guard', run: runMessageTypeGuardTests },
   { name: 'unit:model-filter', run: runModelFilterTests },
   { name: 'unit:monitor-tools', run: runMonitorToolsTests },
-  { name: 'unit:mcp-tool', run: runMcpToolTests },
   { name: 'unit:mcp-approval-toolname', run: runMcpApprovalToolNameTests },
   { name: 'unit:mcp-evaluate-toolname', run: runMcpEvaluateToolNameTests },
   { name: 'unit:mcp-settings', run: runMcpSettingsTests },
   { name: 'unit:acp-settings', run: runAcpSettingsTests },
-  { name: 'unit:memory-format', run: runMemoryFormatTests },
-  { name: 'unit:memory-item', run: runMemoryItemTests },
-  { name: 'unit:memory-seed', run: runMemorySeedTests },
-  { name: 'unit:memory-system-prompt', run: runMemorySystemPromptTests },
-  { name: 'unit:skill-item', run: runSkillItemTests },
   { name: 'unit:system-prompt-builder', run: runSystemPromptBuilderTests },
-  { name: 'unit:system-prompt-context-item', run: runSystemPromptContextItemTests },
   { name: 'unit:system-prompt-registry', run: runSystemPromptRegistryTests },
-  { name: 'unit:extension-system-prompt', run: runExtensionSystemPromptTests },
   { name: 'unit:extensions-disabled', run: runExtensionsDisabledTests },
   { name: 'unit:strategy-injection', run: runStrategyInjectionTests },
   { name: 'unit:observer-decoupling', run: runObserverDecouplingTests },
   { name: 'unit:tool-pending-hook', run: runToolPendingHookTests },
   { name: 'unit:context-turn-hook', run: runContextTurnHookTests },
-  { name: 'unit:auto-approve-reviewer', run: runAutoApproveReviewerTests },
-  { name: 'unit:auto-approve-strategy', run: runAutoApproveStrategyTests },
-  { name: 'unit:yolo-strategy', run: runYoloStrategyUnitTests },
   { name: 'unit:handoff-promotion', run: runHandoffPromotionTests },
   { name: 'unit:read-file-action', run: runReadFileActionTests },
   { name: 'unit:path-input-quotes', run: runPathInputQuotesTests },
@@ -315,14 +276,10 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:tool-cancellation', run: runToolCancellationTests },
   { name: 'unit:tool-execution-order', run: runToolExecutionOrderTests },
   { name: 'unit:tool-action-render', run: runToolActionRenderTests },
-  { name: 'unit:explore-code-format', run: runExploreCodeFormatTests },
   { name: 'unit:submit-plan-action', run: runSubmitPlanActionTests },
   { name: 'unit:plan-approval', run: runPlanApprovalTests },
   { name: 'unit:todo-action', run: runTodoActionTests },
   { name: 'unit:todo-no-approval', run: runTodoNoApprovalTests },
-  { name: 'unit:webfetch', run: runWebFetchTests },
-  { name: 'unit:websearch', run: runWebSearchTests },
-  { name: 'unit:exa-search', run: runExaSearchTests },
   { name: 'unit:thread-nested-array', run: runThreadNestedArrayTests },
   { name: 'unit:undo-redo', run: runUndoRedoTests },
   { name: 'unit:header-undo-lock', run: runHeaderUndoLockTests },
@@ -334,28 +291,21 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:user-message-markdown', run: runUserMessageMarkdownTests },
   { name: 'unit:external-link', run: runExternalLinkTests },
   { name: 'unit:ansi', run: runAnsiTests },
-  { name: 'unit:bash-highlight', run: runBashHighlightTests },
   { name: 'unit:tool-name-resolution', run: runToolNameResolutionTests },
-  { name: 'unit:bash-command-approval', run: runCommandApprovalUnitTests },
-  { name: 'unit:permission-rules', run: runPermissionRulesTests },
   { name: 'unit:new-tab-ux', run: runNewTabUxTests },
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
   { name: 'unit:new-thread-focus', run: runNewThreadFocusTests },
-  { name: 'unit:gitignore-scope', run: runGitignoreScopeTests },
   { name: 'unit:nested-approval-status', run: runNestedApprovalStatusTests },
-  { name: 'unit:batch-coerce', run: runBatchCoerceTests },
   { name: 'unit:chime-recovery', run: runChimeRecoveryTests },
   { name: 'unit:context-menu', run: runContextMenuTests },
-  { name: 'unit:ask-user-question-details', run: runAskUserQuestionDetailsTests },
   { name: 'unit:extension-registry', run: runExtensionRegistryTests },
   { name: 'unit:sdk-facade-parity', run: runSdkFacadeParityTests },
   { name: 'unit:extension-collision', run: runExtensionCollisionTests },
   { name: 'unit:extension-catalog', run: runExtensionCatalogTests },
   { name: 'unit:extension-settings', run: runExtensionSettingsTests },
   { name: 'unit:user-command-factory', run: runUserCommandFactoryTests },
-  { name: 'unit:close-command', run: runCloseCommandTests },
   { name: 'unit:engineapi-vectors', run: runEngineApiVectorTests },
   { name: 'unit:strategy-fallback', run: runStrategyFallbackTests },
   { name: 'unit:strategy-order', run: runStrategyOrderTests },
@@ -373,6 +323,65 @@ const UNIT_TEST_SUITES = [
 ];
 
 /**
+ * Extension-owned unit suites, discovered at runtime rather than hand-listed
+ * here. Each extension declares its tests in its manifest (provides.tests); the
+ * test harness resolves them and serves the list at /api/test/extension-tests.
+ * Populated by ensureExtensionSuitesLoaded().
+ * @type {{name: string, run: function(any): Promise<{passed: number, failed: number, errors: string[]}>}[]}
+ */
+let EXTENSION_SUITES = [];
+
+/** @type {Promise<void>|null} Memoized loader promise; see ensureExtensionSuitesLoaded. */
+let _extensionSuitesPromise = null;
+
+/**
+ * Discover and register extension-owned test suites, once. Fetches the
+ * manifest-driven list from the test harness, dynamic-imports each module
+ * (whose runTests export becomes a unit suite named e.g. "unit:exa-search"),
+ * and memoizes the result so repeated calls are cheap. Idempotent and safe to
+ * await from listTests()'s callers, runTests(), and runTestByName().
+ * @returns {Promise<void>}
+ */
+export function ensureExtensionSuitesLoaded() {
+  if (!_extensionSuitesPromise) {
+    _extensionSuitesPromise = (async () => {
+      const prefix = /** @type {any} */ (window).__assetPrefix || '';
+      /** @type {{name: string, path: string}[]} */
+      let list = [];
+      try {
+        const resp = await fetch('/api/test/extension-tests');
+        if (resp.ok) {
+          const data = await resp.json();
+          list = Array.isArray(data.tests) ? data.tests : [];
+        }
+      } catch (_) { /* endpoint absent (e.g. no source checkout) — run internal suites only */ }
+      /** @type {typeof EXTENSION_SUITES} */
+      const suites = [];
+      for (const entry of list) {
+        if (!entry || !entry.name || !entry.path) continue;
+        try {
+          const mod = await import(prefix + entry.path);
+          if (typeof mod.runTests === 'function') {
+            suites.push({ name: entry.name, run: mod.runTests });
+            continue;
+          }
+          throw new Error('module has no runTests export');
+        } catch (err) {
+          // A broken/unloadable extension test must fail loudly as its own
+          // suite, never silently vanish from the run.
+          suites.push({
+            name: entry.name,
+            run: async () => ({ passed: 0, failed: 1, errors: [`${entry.name}: failed to load ${entry.path}: ${err}`] }),
+          });
+        }
+      }
+      EXTENSION_SUITES = suites;
+    })();
+  }
+  return _extensionSuitesPromise;
+}
+
+/**
  * Run all integration tests sequentially.
  * @param {TestContext} ctx - Test context with fixtureDir
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Aggregated test results
@@ -380,8 +389,9 @@ const UNIT_TEST_SUITES = [
 export async function runTests(ctx) {
   installClaimAutoRegistration();
   await waitForEngineConnected();
+  await ensureExtensionSuitesLoaded();
   logger.essential(`Starting integration tests...`);
-  logger.info(`Running ${ALL_TESTS.length} mock-LLM tests + ${UNIT_TEST_SUITES.length} unit suites`);
+  logger.info(`Running ${ALL_TESTS.length} mock-LLM tests + ${UNIT_TEST_SUITES.length + EXTENSION_SUITES.length} unit suites`);
   logger.info(`Fixture: ${ctx.fixtureDir}`);
 
   /** @type {string[]} */
@@ -397,7 +407,7 @@ export async function runTests(ctx) {
 
   let unitPassed = 0;
   let unitFailed = 0;
-  for (const suite of UNIT_TEST_SUITES) {
+  for (const suite of [...UNIT_TEST_SUITES, ...EXTENSION_SUITES]) {
     const result = await runUnitSuiteWithConvCleanup(suite, /** @type {any} */ (ctx));
     unitPassed += result.passed;
     unitFailed += result.failed;
@@ -517,10 +527,13 @@ async function waitForEngineConnected() {
 export async function runTestByName(testName, ctx) {
   installClaimAutoRegistration();
   await waitForEngineConnected();
+  await ensureExtensionSuitesLoaded();
   const names = testName.split(',').map(s => s.trim()).filter(Boolean);
 
-  // Check if any name belongs to a unit test suite
-  const unitSuite = names.length === 1 ? UNIT_TEST_SUITES.find(s => s.name === names[0]) : null;
+  // Check if any name belongs to a unit test suite (internal or extension-owned)
+  const unitSuite = names.length === 1
+    ? [...UNIT_TEST_SUITES, ...EXTENSION_SUITES].find(s => s.name === names[0])
+    : null;
   if (unitSuite) {
     await setupWebSocketForUnitTests();
 
@@ -586,6 +599,7 @@ export function listTests() {
   return [
     ...ALL_TESTS.map(t => t.name),
     ...UNIT_TEST_SUITES.map(s => s.name),
+    ...EXTENSION_SUITES.map(s => s.name),
   ];
 }
 

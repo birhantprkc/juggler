@@ -1,18 +1,19 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Unit tests for WebSearch action plugin
  * Tests parsing, domain filtering, and URL building in isolation
  */
 
-import WebSearchContextItem from '../../extensions/juggler-core/context-items/web-search-context-item.js';
+import WebSearchContextItem from '../context-items/web-search-context-item.js';
 import {
   initializeRegistries,
   createTestSession,
   createTestConversation
-} from '../utilities/test-helpers.js';
+} from '../../../js-tests/utilities/test-helpers.js';
 
 /**
  * Fixture: DuckDuckGo HTML response

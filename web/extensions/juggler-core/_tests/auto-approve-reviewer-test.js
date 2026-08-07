@@ -1,6 +1,7 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Unit tests for the pure `auto-approve` reviewer helpers — the transcript
@@ -14,12 +15,12 @@
  * @module unit-tests/auto-approve-reviewer-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
+import { assert } from '../../../js-tests/utilities/test-helpers.js';
 import {
   POLICY_PROMPT,
   buildReviewerPrompt,
   parseVerdict
-} from '../../extensions/juggler-core/strategies/auto-approve-reviewer.js';
+} from '../strategies/auto-approve-reviewer.js';
 
 /**
  * @typedef {object} TestResult

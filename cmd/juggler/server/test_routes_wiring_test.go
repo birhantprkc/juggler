@@ -27,6 +27,7 @@ func TestRegisterTestRoutesStructuralMatches(t *testing.T) {
 		HandleDeleteFile(w http.ResponseWriter, r *http.Request)
 		HandleMkdir(w http.ResponseWriter, r *http.Request)
 		HandleDumpTape(w http.ResponseWriter, r *http.Request)
+		HandleExtensionTests(w http.ResponseWriter, r *http.Request)
 	}); !ok {
 		t.Error("TestService no longer satisfies the task-API structural interface")
 	}

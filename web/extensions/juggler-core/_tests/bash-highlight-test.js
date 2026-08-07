@@ -1,13 +1,14 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Command-oriented bash highlighting unit tests.
  * @module unit-tests/bash-highlight-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
+import { assert } from '../../../js-tests/utilities/test-helpers.js';
 
 /**
  * @typedef {object} TestResult
@@ -26,7 +27,7 @@ export async function runTests(_ctx) {
   /** @type {string[]} */
   const errors = [];
 
-  const { highlightCode } = await import('../../sdk/lib/syntax-highlight.js');
+  const { highlightCode } = await import('../../../sdk/lib/syntax-highlight.js');
 
   /**
    * @param {string} label
@@ -139,7 +140,7 @@ export async function runTests(_ctx) {
 
   // === formatCommandForDisplay: newline-splitting for the properties panel ===
 
-  const { formatCommandForDisplay } = await import('../../extensions/juggler-core/context-items/execute-context-item.js');
+  const { formatCommandForDisplay } = await import('../context-items/execute-context-item.js');
 
   /**
    * @param {string} label

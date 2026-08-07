@@ -42,6 +42,7 @@
   ],
   "exclude": [
     "../web/js/vendor/**",
+    "../web/extensions/**/_tests/**",
     "node_modules"
   ]
 }
