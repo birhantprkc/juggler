@@ -28,13 +28,13 @@ export function renderWriteFilePermissionSection(messageThread) {
   section.className = 'permission-section permission-section-write-file';
   section.dataset.itemType = ITEM_TYPE;
 
-  /** Render the toggle. Edit permission is intentionally scoped to this tab only. */
+  /** Render the toggle. Edit permission is intentionally scoped to this conversation only. */
   function render() {
     const allowed = isFileEditingAllowed(messageThread);
     section.innerHTML = `
       <button class="permission-btn input-ctrl-btn write-file-btn ${allowed ? 'allowed' : 'ask'}"
               role="switch" aria-checked="${allowed}"
-              title="Toggle file write permission for this tab. Writes outside the project and allowed paths always prompt." data-shortcut-id="toggle-file-editing">
+              title="Toggle file write permission for this conversation. Writes outside the project and allowed paths always prompt." data-shortcut-id="toggle-file-editing">
         <span class="write-file-icon">${allowed ? TICK_SVG : LOCK_SVG}</span>
         <span class="write-file-label">${allowed ? 'File editing allowed in allowed paths' : 'File edits prompt for confirmation'}</span>
       </button>

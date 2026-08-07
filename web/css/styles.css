@@ -1163,16 +1163,16 @@ column-container conversation-area:not(.active-column) .conversation-item.select
     background: var(--overlay-light-5);
 }
 
-/* A closed thread column swaps its message box for a reopen affordance: hide
-   the real input box and show the reopen-box in the same slot. data-hide-input
+/* A closed thread column swaps its composer for a reopen affordance: hide
+   the real composer and show the reopen-box in the same slot. data-hide-input
    is set by ConversationTab only on closed columns, so it means exactly
    "this column's thread is closed". */
-conversation-area[data-hide-input] input-box {
+conversation-area[data-hide-input] composer-box {
     display: none;
 }
 
 /* Reopen affordance — occupies the message-box slot on closed thread columns,
-   mirroring input-box's outer padding and the user message bubble so it sits in
+   mirroring composer-box's outer padding and the user message bubble so it sits in
    exactly the same place, at the same size and style. Hidden on open columns. */
 conversation-area reopen-box {
     display: none;
@@ -1181,7 +1181,7 @@ conversation-area reopen-box {
 conversation-area[data-hide-input] reopen-box {
     display: block;
     flex-shrink: 0;
-    padding: 0.3rem 1rem 0.75rem; /* match input-box */
+    padding: 0.3rem 1rem 0.75rem; /* match composer-box */
     background: var(--bg-secondary);
     cursor: pointer;
 }
@@ -1191,7 +1191,7 @@ reopen-box reopen-box-bubble {
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    padding: 0.875rem 1rem 1rem; /* match input-box-wrapper */
+    padding: 0.875rem 1rem 1rem; /* match composer-box-wrapper */
     background: var(--bubble-user-bg);
     color: var(--bubble-user-text);
     border-radius: 1.25rem;
@@ -1438,7 +1438,7 @@ conversation-message-list-wrapper {
     display: none;
 }
 
-conversation-area input-box {
+conversation-area composer-box {
     flex-shrink: 0;
 }
 

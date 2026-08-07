@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -19,12 +18,6 @@ import (
 	"juggler/internal/atomicio"
 	"juggler/internal/jlog"
 )
-
-// taskPlaceholderRe matches the auto-generated placeholder name a blank new tab
-// requests ("Task 1", "Task 2", …). uniqueName treats these as a numbered
-// series rather than a base to suffix, so a fresh tab never inherits a "(copy)"
-// collision suffix.
-var taskPlaceholderRe = regexp.MustCompile(`^Task \d+$`)
 
 // BinnedConvInfo describes a conversation that lives in .juggler/trash/.
 // Sent over the wire to populate the Bin modal. The bin is a permanent holding
@@ -322,7 +315,7 @@ func (fs *FileSessionStore) CreateConversationFolder(name, requestedID string) (
 	}
 	sanitized := SanitizeName(name)
 	if sanitized == "" {
-		sanitized = "Untitled"
+		sanitized = UntitledBase
 	}
 	id := requestedID
 	if id == "" {
@@ -392,12 +385,12 @@ func copySuffix(base string, i int) string {
 // name. Excludes excludeID so a no-op rename of an existing conversation
 // to its current name doesn't trigger a copy suffix.
 func (fs *FileSessionStore) uniqueName(base, excludeID string) string {
-	// A blank new tab always requests the placeholder name "Task N". Treat that
+	// A blank new tab always requests the placeholder name "Untitled N". Treat that
 	// as a numbered series, not a base to suffix: on collision pick the lowest
-	// unused "Task K" so a fresh tab never inherits a "(copy)" suffix. "(copy)"
+	// unused "Untitled K" so a fresh tab never inherits a "(copy)" suffix. "(copy)"
 	// stays reserved for genuine duplicates (/duplicate, /handoff), which pass
 	// an explicit, non-placeholder name.
-	if taskPlaceholderRe.MatchString(base) {
+	if IsUntitledName(base) {
 		taken := func(candidate string) bool {
 			folded := strings.ToLower(candidate)
 			for id, n := range fs.index.Names {
@@ -414,7 +407,7 @@ func (fs *FileSessionStore) uniqueName(base, excludeID string) string {
 			return base
 		}
 		for k := 1; ; k++ {
-			if c := fmt.Sprintf("Task %d", k); !taken(c) {
+			if c := UntitledName(k); !taken(c) {
 				return c
 			}
 		}
@@ -441,7 +434,7 @@ func (fs *FileSessionStore) ensureConvDir(convID string) (string, error) {
 		}
 		return dir, nil
 	}
-	dirName := BuildDirName("Untitled", convID)
+	dirName := BuildDirName(UntitledBase, convID)
 	dir := filepath.Join(fs.jugglerDir(), dirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create conv dir: %w", err)
@@ -450,7 +443,7 @@ func (fs *FileSessionStore) ensureConvDir(convID string) (string, error) {
 		fs.index = NewConvDirIndex()
 	}
 	fs.index.ByID[convID] = dir
-	fs.index.Names[convID] = "Untitled"
+	fs.index.Names[convID] = UntitledBase
 	return dir, nil
 }
 

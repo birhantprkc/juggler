@@ -498,7 +498,7 @@ func (w *ConversationWorker) waitForRetryDelay(d time.Duration) RetryWaitResult 
 						}
 					}
 				}
-				// Has partial streamed tokens — input box should still be locked; ignore.
+				// Has partial streamed tokens — composer should still be locked; ignore.
 
 			default:
 				w.handleMessageInWait(msg)

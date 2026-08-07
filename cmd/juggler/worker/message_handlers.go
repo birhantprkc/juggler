@@ -419,7 +419,7 @@ func (w *ConversationWorker) firstRootUserMessageText() string {
 // handleRequestAutoName services a manual "auto-name now" request: it re-derives
 // a tab title from the conversation's first user message, out-of-band, via the
 // injected server callback with force=true (which bypasses the server's enable
-// gate and its "still named Task N" guard, so the rename always applies). A
+// gate and its "still named Untitled N" guard, so the rename always applies). A
 // no-op when auto-naming isn't wired or there is no user message to summarise
 // yet — there is nothing to name before the first turn.
 func (w *ConversationWorker) handleRequestAutoName() {

@@ -9,7 +9,7 @@
  * halves must survive a save/reload cycle (the user's quit-and-restart): the
  * historical bug kept the text but silently dropped the attachments, because
  * the text lived in the Yjs doc while the attachments lived only on the
- * input-box component. This test sets a draft as a single {text, attachments}
+ * composer-box component. This test sets a draft as a single {text, attachments}
  * record on the model, reloads the conversation from the backend, and asserts
  * both halves come back.
  *

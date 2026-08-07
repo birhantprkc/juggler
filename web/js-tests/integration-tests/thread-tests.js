@@ -413,7 +413,7 @@ export const nestedThreadLifecycleTest = {
  * A thread whose turn ends on a plain assistant message — with NO return_result
  * call — stays OPEN. It does not auto-close on the trailing text (a thread
  * closes only on an explicit return_result call or a hard error), so the tile
- * is not closed and the input box stays in the thread for continued interaction.
+ * is not closed and the composer stays in the thread for continued interaction.
  *
  * Uses a user-created /thread (the interactive case): after the thread replies
  * in text, the thread column must remain open and the thread must carry no
@@ -448,12 +448,12 @@ export const threadStaysOpenWithoutReturnResultTest = {
     if (thread.get('result')) {
       throw new Error(`thread-stays-open: thread should stay OPEN, got result ${JSON.stringify(thread.get('result'))}`);
     }
-    // The thread column stays open (input box stays in the thread) — it must
+    // The thread column stays open (composer stays in the thread) — it must
     // not snap back to the parent.
     const tab = conversation.getTabElement?.();
     const cols = Array.from(tab?.querySelectorAll('conversation-area.thread-column') || []);
     if (cols.length === 0) {
-      throw new Error('thread-stays-open: thread column closed — the input box did not stay in the thread');
+      throw new Error('thread-stays-open: thread column closed — the composer did not stay in the thread');
     }
   },
 

@@ -26,7 +26,7 @@
     7.  Context Item Type Badge           ln 1074
     8.  Model Selector                    ln 1090
     9.  Diff Viewer                       ln 1235
-   10.  Input Box                         ln 1382
+   10.  Composer                         ln 1382
    11.  Permission Controls               ln 1628
    12.  Welcome Modal                     ln 2055
    13.  About Modal                       ln 2293
@@ -1516,9 +1516,9 @@ strategy-selector {
 }
 
 /* Input-controls buttons share the .u-btn-ghost house style (chrome lives in
-   utilities.css, keyed off `input-box .input-ctrl-btn`); this owns only their
+   utilities.css, keyed off `composer-box .input-ctrl-btn`); this owns only their
    size and layout — smaller and shorter than the header buttons. */
-input-box .input-ctrl-btn {
+composer-box .input-ctrl-btn {
     display: flex;
     align-items: center;
     gap: 0.375rem;
@@ -1530,12 +1530,12 @@ input-box .input-ctrl-btn {
 }
 
 /* Commands button - icon-only, centered */
-input-box .commands-button {
+composer-box .commands-button {
     justify-content: center;
     padding: 0.125rem 0.5rem;
 }
 
-input-box .commands-button .icon-slash {
+composer-box .commands-button .icon-slash {
     width: 0.75rem;
     height: 0.75rem;
 }
@@ -1544,12 +1544,12 @@ input-box .commands-button .icon-slash {
    the `$` skill-mention trigger, just as the commands button shows the `/` slash
    trigger — a text character rather than a mask icon, so it stays crisp at any
    zoom and follows currentcolor for free. */
-input-box .skill-button {
+composer-box .skill-button {
     justify-content: center;
     padding: 0.125rem 0.5rem;
 }
 
-input-box .skill-button .skill-glyph {
+composer-box .skill-button .skill-glyph {
     font-family: var(--font-mono, monospace);
     font-size: 0.875rem;
     font-weight: 700;
@@ -2489,7 +2489,7 @@ model-selector {
     align-items: center;
 }
 
-model-selector:not(input-box *) .model-selector-button {
+model-selector:not(composer-box *) .model-selector-button {
     background: transparent;
     border: 0.0625rem solid var(--border-color);
     color: var(--text-primary);
@@ -2502,16 +2502,16 @@ model-selector:not(input-box *) .model-selector-button {
     min-width: 8rem;
 }
 
-model-selector:not(input-box *) .model-selector-button:hover {
+model-selector:not(composer-box *) .model-selector-button:hover {
     background: var(--bg-raised);
     border-color: var(--text-tertiary);
 }
 
 
-/* Model Selector in input-box — floor its width so cycling the model/thinking
+/* Model Selector in composer-box — floor its width so cycling the model/thinking
    level doesn't resize the button under its own open popup. The label caps and
    ellipsises past the floor rather than growing the row. */
-input-box .model-selector-button {
+composer-box .model-selector-button {
     min-width: var(--config-model-min);
     justify-content: flex-start;
 }
@@ -2522,7 +2522,7 @@ input-box .model-selector-button {
    floor above: the slack sits at the button's right edge, past the chip, reading
    as padding. `max-width` only bounds a pathologically long id, which ellipsises
    with the full name kept in the title/popup. */
-input-box .model-selector-button .model-name {
+composer-box .model-selector-button .model-name {
     flex: 0 1 auto;
     max-width: var(--config-model-name-max);
     min-width: 0;
@@ -3364,8 +3364,8 @@ diff-viewer diff-stats .remove-count {
     max-height: none;
 }
 
-/* Input Box Component */
-input-box {
+/* Composer Component */
+composer-box {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
@@ -3374,8 +3374,8 @@ input-box {
     background: var(--bg-secondary);
 }
 
-/* Input box wrapper - the visual bubble containing textarea and button */
-input-box input-box-wrapper {
+/* Composer wrapper - the visual bubble containing textarea and button */
+composer-box composer-box-wrapper {
     display: flex;
     flex-direction: column;
     background: var(--bubble-user-bg);
@@ -3388,7 +3388,7 @@ input-box input-box-wrapper {
     position: relative;
 }
 
-input-box textarea {
+composer-box textarea {
     flex: none;
     width: 100%;
     background: transparent;
@@ -3402,26 +3402,26 @@ input-box textarea {
     max-height: none;
 }
 
-/* Drop-target highlight while dragging image files over the message box. */
-input-box input-box-wrapper.drag-over {
+/* Drop-target highlight while dragging image files over the composer. */
+composer-box composer-box-wrapper.drag-over {
     box-shadow: 0 0 0 0.125rem var(--accent-color, #4a9eff);
 }
 
 /* Staged image-attachment chip row. Hidden until it holds chips so it adds no
    vertical space to an empty input. Rebuilt independently of the textarea so
    re-rendering chips never disturbs the caret. */
-input-box input-box-attachments {
+composer-box composer-box-attachments {
     display: none;
 }
 
-input-box input-box-attachments.has-attachments {
+composer-box composer-box-attachments.has-attachments {
     display: flex;
     flex-wrap: wrap;
     gap: 0.375rem;
     margin-bottom: 0.5rem;
 }
 
-input-box .attachment-chip {
+composer-box .attachment-chip {
     display: flex;
     align-items: center;
     gap: 0.375rem;
@@ -3433,11 +3433,11 @@ input-box .attachment-chip {
     font-size: 0.75rem;
 }
 
-input-box .attachment-chip.uploading {
+composer-box .attachment-chip.uploading {
     opacity: 0.6;
 }
 
-input-box .attachment-chip .attachment-thumb {
+composer-box .attachment-chip .attachment-thumb {
     width: 1.75rem;
     height: 1.75rem;
     object-fit: cover;
@@ -3446,26 +3446,26 @@ input-box .attachment-chip .attachment-thumb {
     background: var(--bg-primary);
 }
 
-input-box .attachment-chip .attachment-thumb.clickable {
+composer-box .attachment-chip .attachment-thumb.clickable {
     cursor: zoom-in;
 }
 
 /* Dropped text file — document glyph in place of the image thumbnail. */
-input-box .attachment-chip.text-file .attachment-icon {
+composer-box .attachment-chip.text-file .attachment-icon {
     width: 1.25rem;
     height: 1.25rem;
     flex-shrink: 0;
     color: var(--text-secondary);
 }
 
-input-box .attachment-chip .attachment-name {
+composer-box .attachment-chip .attachment-name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text-secondary);
 }
 
-input-box .attachment-chip .attachment-remove {
+composer-box .attachment-chip .attachment-remove {
     flex-shrink: 0;
     border: none;
     background: transparent;
@@ -3476,32 +3476,32 @@ input-box .attachment-chip .attachment-remove {
     padding: 0 0.125rem;
 }
 
-input-box .attachment-chip .attachment-remove:hover {
+composer-box .attachment-chip .attachment-remove:hover {
     color: var(--text-primary);
 }
 
 /* Attach-image button — icon-only, matching the commands button. */
-input-box .attach-image-btn {
+composer-box .attach-image-btn {
     justify-content: center;
     padding: 0.125rem 0.5rem;
 }
 
-input-box .attach-image-btn .attach-image-icon {
+composer-box .attach-image-btn .attach-image-icon {
     display: flex;
     width: 0.875rem;
     height: 0.875rem;
 }
 
-input-box textarea:focus {
+composer-box textarea:focus {
     outline: none;
 }
 
-input-box textarea:disabled {
+composer-box textarea:disabled {
     opacity: 0.5;
     cursor: not-allowed;
 }
 
-input-box textarea::placeholder {
+composer-box textarea::placeholder {
     /* Explicit colour so transparent-text (mirrored) mode can't blank it. */
     color: var(--text-secondary);
 }
@@ -3512,7 +3512,7 @@ input-box textarea::placeholder {
    each token wrapped in a styled span, while the textarea's own text goes
    transparent (caret preserved). The mirror is present ONLY while a token
    exists; a token-free composer is a plain textarea. */
-input-box .paste-mirror {
+composer-box .paste-mirror {
     position: absolute;
     margin: 0;
     border: 0;
@@ -3530,7 +3530,7 @@ input-box .paste-mirror {
 
 /* While mirrored: the textarea's glyphs go transparent so the pills behind show
    through, but the caret and native selection highlight stay visible. */
-input-box textarea.paste-mirrored {
+composer-box textarea.paste-mirrored {
     position: relative;
     z-index: 1;
     color: transparent;
@@ -3541,7 +3541,7 @@ input-box textarea.paste-mirrored {
 /* The pill itself — metric-safe properties ONLY (background/colour/radius/
    shadow), never padding/border/font-weight, so it can't shift layout away from
    the transparent textarea text underneath. */
-input-box .paste-mirror .paste-token {
+composer-box .paste-mirror .paste-token {
     border-radius: 0.375rem;
     color: var(--accent-color, #4a9eff);
     background: color-mix(in srgb, var(--accent-color, #4a9eff) 20%, transparent);
@@ -3557,7 +3557,7 @@ input-box .paste-mirror .paste-token {
    (synchronous) blob insert runs so the click is acknowledged rather than the
    UI appearing to freeze. A static style change, not an animation — the main
    thread is blocked by the insert, so an animation would stutter anyway. */
-input-box .paste-mirror .paste-token.expanding {
+composer-box .paste-mirror .paste-token.expanding {
     opacity: 0.5;
     background: color-mix(in srgb, var(--accent-color, #4a9eff) 38%, transparent);
     box-shadow: 0 0 0 0.0625rem color-mix(in srgb, var(--accent-color, #4a9eff) 65%, transparent);
@@ -3567,25 +3567,25 @@ input-box .paste-mirror .paste-token.expanding {
    slightly smaller label and the chevron affordance are unique. The min-width
    floor fits the common names so the label caps and ellipsises past it rather
    than resizing the button. */
-input-box .strategy-selector-button {
+composer-box .strategy-selector-button {
     font-size: 0.6875rem;
     min-width: var(--config-strategy-min);
 }
 
 /* Current strategy's colour is carried by the label text (not a border, which
    would make it the odd one out among the input controls). */
-input-box .strategy-selector-button[data-has-color="true"] .strategy-name {
+composer-box .strategy-selector-button[data-has-color="true"] .strategy-name {
     color: var(--strategy-color);
 }
 
 /* Leading icon next to the strategy label on the selector button */
-input-box .strategy-selector-button .strategy-icon {
+composer-box .strategy-selector-button .strategy-icon {
     width: 0.875rem;
     height: 0.875rem;
 }
 
 /* Icon shares the strategy colour with the label when one is defined */
-input-box .strategy-selector-button[data-has-color="true"] .strategy-icon {
+composer-box .strategy-selector-button[data-has-color="true"] .strategy-icon {
     color: var(--strategy-color);
 }
 
@@ -3599,7 +3599,7 @@ input-box .strategy-selector-button[data-has-color="true"] .strategy-icon {
    variable-width config control gets a min-width sized to its common label so
    cycling model/thinking/strategy doesn't jog the button under its own anchored
    popup; an outlier label ellipsises past the cap instead of growing the row. */
-input-box input-controls {
+composer-box input-controls {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
@@ -3628,9 +3628,9 @@ input-box input-controls {
    buttons can't shrink and instead spill out of the shrunk box and OVERLAP the
    next cluster. Pinning shrink to 0 makes an over-wide cluster wrap to the next
    line instead (the narrow-column fold below then handles config itself). */
-input-box input-controls-config,
-input-box input-controls-actions,
-input-box input-controls-send {
+composer-box input-controls-config,
+composer-box input-controls-actions,
+composer-box input-controls-send {
     display: flex;
     align-items: center;
     flex-wrap: nowrap;
@@ -3641,14 +3641,14 @@ input-box input-controls-send {
 /* The send cluster hugs the right edge; the elastic gap sits to its left, so
    config/actions growth spills into that gap and never shifts the send cluster
    (or its New-Thread neighbour). */
-input-box input-controls-send {
+composer-box input-controls-send {
     margin-left: auto;
 }
 
 /* Permission pill: floor covers the toggled head ("✓ Edits on" / "🔒 Edits
    off"); the "· N cmds · M paths" detail extends past the floor and only
    changes on rule edits, never during a cycle. */
-input-box .permission-btn {
+composer-box .permission-btn {
     min-width: var(--config-perm-min);
     justify-content: flex-start;
 }
@@ -3656,7 +3656,7 @@ input-box .permission-btn {
 /* Strategy name: content-sized so the chevron sits flush against it (same
    rationale as .model-name — the button's min-width floor supplies the stable
    width, with the slack past the chevron). max-width bounds an outlier name. */
-input-box .strategy-selector-button .strategy-name {
+composer-box .strategy-selector-button .strategy-name {
     flex: 0 1 auto;
     max-width: var(--config-strategy-name-max);
     min-width: 0;
@@ -3686,7 +3686,7 @@ input-box .strategy-selector-button .strategy-name {
    floors, let the buttons shrink (a long model name ellipsises), and let the
    cluster wrap to as many lines as it needs rather than overflow. */
 @container (max-width: 46rem) {
-    input-box input-controls-config {
+    composer-box input-controls-config {
         flex-basis: 100%;
         flex-wrap: wrap;
     }
@@ -3697,9 +3697,9 @@ input-box .strategy-selector-button .strategy-name {
        overflows the column instead of wrapping — losing the control entirely.
        permission-controls / model-selector default to flex-shrink:1, but
        strategy-selector is pinned flex-shrink:0 upstream, so re-enable it. */
-    input-box input-controls-config > permission-controls,
-    input-box input-controls-config > strategy-selector,
-    input-box input-controls-config > model-selector {
+    composer-box input-controls-config > permission-controls,
+    composer-box input-controls-config > strategy-selector,
+    composer-box input-controls-config > model-selector {
         min-width: 0;
         flex-shrink: 1;
     }
@@ -3707,9 +3707,9 @@ input-box .strategy-selector-button .strategy-name {
     /* And the button inside each wrapper: drop its stability floor and let it
        clip so the ellipsised label (.model-name / .strategy-name) actually
        shrinks with the wrapper rather than forcing an overflow. */
-    input-box input-controls-config .permission-btn,
-    input-box input-controls-config .strategy-selector-button,
-    input-box input-controls-config .model-selector-button {
+    composer-box input-controls-config .permission-btn,
+    composer-box input-controls-config .strategy-selector-button,
+    composer-box input-controls-config .model-selector-button {
         min-width: 0;
         overflow: hidden;
         flex-shrink: 1;
@@ -3731,23 +3731,23 @@ input-box .strategy-selector-button .strategy-name {
 /* Schedule-send ("send after a delay") button — shares the .input-ctrl-btn
    ghost pill. Icon-only when idle; when a send is armed it turns accent and
    reveals a compact countdown badge to its right. */
-input-box .schedule-send-btn {
+composer-box .schedule-send-btn {
     justify-content: center;
 }
 
-input-box .schedule-send-btn .schedule-send-icon {
+composer-box .schedule-send-btn .schedule-send-icon {
     display: flex;
     align-items: center;
     width: 0.875rem;
     height: 0.875rem;
 }
 
-input-box .schedule-send-btn.armed {
+composer-box .schedule-send-btn.armed {
     color: var(--accent-blue);
     border-color: var(--accent-blue);
 }
 
-input-box .schedule-send-btn .schedule-send-countdown {
+composer-box .schedule-send-btn .schedule-send-countdown {
     font-size: 0.6875rem;
     font-variant-numeric: tabular-nums;
     line-height: 1;
@@ -3889,7 +3889,7 @@ input-box .schedule-send-btn .schedule-send-countdown {
    peer pair (a neutral "more" beside the accent "send"); the ellipsis glyph
    reads as "more options". Hidden on desktop; the coarse-pointer block below
    reveals it. */
-input-box .more-actions-btn {
+composer-box .more-actions-btn {
     display: none;
     justify-content: center;
     width: 2rem;
@@ -3901,7 +3901,7 @@ input-box .more-actions-btn {
     color: var(--text-primary);
 }
 
-input-box .more-actions-btn .more-actions-icon {
+composer-box .more-actions-btn .more-actions-icon {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3913,7 +3913,7 @@ input-box .more-actions-btn .more-actions-icon {
    also sends; on touch (where Enter inserts a newline) this is the send
    affordance. Send-only: cancelling a running turn is the footer Stop button's
    job. */
-input-box .send-btn {
+composer-box .send-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -3928,7 +3928,7 @@ input-box .send-btn {
     flex-shrink: 0;
 }
 
-input-box .send-btn .send-icon {
+composer-box .send-btn .send-icon {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3936,14 +3936,14 @@ input-box .send-btn .send-icon {
     height: 1rem;
 }
 
-input-box .send-btn .send-icon svg {
+composer-box .send-btn .send-icon svg {
     display: block;
     width: 100%;
     height: 100%;
 }
 
 /* No text to send yet — dim and inert (sendMessage() also no-ops on empty). */
-input-box .send-btn.is-empty {
+composer-box .send-btn.is-empty {
     opacity: 0.4;
     pointer-events: none;
 }
@@ -3954,7 +3954,7 @@ input-box .send-btn.is-empty {
    message). Text-free and sized to match the send button; the reason lives in
    its tooltip (hover, or click/tap). Hidden until the strategy selector flags a
    bust, and cleared once the transcript matches the last-sent baseline again. */
-input-box .context-cache-warning-btn {
+composer-box .context-cache-warning-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -3971,11 +3971,11 @@ input-box .context-cache-warning-btn {
 
 /* Override the UA `display` so the flex layout above applies when shown; when
    `hidden` the attribute wins and the button collapses out of the row. */
-input-box .context-cache-warning-btn[hidden] {
+composer-box .context-cache-warning-btn[hidden] {
     display: none;
 }
 
-input-box .context-cache-warning-btn .icon-warning {
+composer-box .context-cache-warning-btn .icon-warning {
     width: 1rem;
     height: 1rem;
 }
@@ -3984,7 +3984,7 @@ input-box .context-cache-warning-btn .icon-warning {
    on a light surface), which makes a poor alert fill. Swap in a brighter, more
    saturated amber with a dark glyph — bright enough to catch the eye, with the
    symbol still legible (black-on-yellow hazard contrast). */
-:root[data-theme="light"] input-box .context-cache-warning-btn {
+:root[data-theme="light"] composer-box .context-cache-warning-btn {
     background: #f5c518;
     color: #3d2c00;
 }
@@ -4027,12 +4027,12 @@ input-box .context-cache-warning-btn .icon-warning {
     color: var(--text-secondary);
 }
 
-/* Touch composer layout: Enter inserts a newline (see input-box._isTouchComposer,
+/* Touch composer layout: Enter inserts a newline (see composer-box._isTouchComposer,
    keyed off the same media features), so a Send button is the send affordance
    and the secondary actions collapse into the "⋮" sheet to keep the controls
    row single-line. Desktop keeps the full visible row. */
 @media (hover: none) and (pointer: coarse) {
-    input-box .more-actions-btn {
+    composer-box .more-actions-btn {
         display: inline-flex;
     }
 
@@ -4041,8 +4041,8 @@ input-box .context-cache-warning-btn .icon-warning {
        hairline border over the circular control. Pin hover/focus to the resting
        fill so it stays a clean solid circle; :active still dips via the shared
        .input-ctrl-btn press scale. */
-    input-box .more-actions-btn:hover:not(:disabled),
-    input-box .more-actions-btn:focus:not(:disabled) {
+    composer-box .more-actions-btn:hover:not(:disabled),
+    composer-box .more-actions-btn:focus:not(:disabled) {
         background: var(--overlay-light-30);
         border-color: transparent;
         color: var(--text-primary);
@@ -4051,7 +4051,7 @@ input-box .context-cache-warning-btn .icon-warning {
     /* The schedule-send ("timer") button is rarely used, so on touch it collapses
        into the "⋮" actions sheet — except while a send is armed, when it stays
        inline so the live countdown and cancel affordance remain visible. */
-    input-box .schedule-send-btn:not(.armed) {
+    composer-box .schedule-send-btn:not(.armed) {
         display: none;
     }
 
@@ -4062,23 +4062,23 @@ input-box .context-cache-warning-btn .icon-warning {
        reserve room below the textarea — enough for the controls row (margin-top
        1rem + button 1.5rem + wrapper padding-bottom 1rem) plus breathing room —
        so the whole composer, send button included, lands above the keyboard. */
-    input-box textarea {
+    composer-box textarea {
         scroll-margin-bottom: 4rem;
     }
 
     /* These live in the "⋮" actions sheet: the commands (`/`) and skill (`$`)
        buttons collapse into its Slash-commands and Skills sections, and attach
        image / new thread each become a row. */
-    input-box .commands-button,
-    input-box .skill-button,
-    input-box .attach-image-btn,
-    input-box .new-thread-btn {
+    composer-box .commands-button,
+    composer-box .skill-button,
+    composer-box .attach-image-btn,
+    composer-box .new-thread-btn {
         display: none;
     }
 
     /* The strategy selector is relocated into the "⋮" sheet (see
-       input-box._openActionsSheet); hide its inline slot. */
-    input-box input-controls-config > strategy-selector {
+       composer-box._openActionsSheet); hide its inline slot. */
+    composer-box input-controls-config > strategy-selector {
         display: none;
     }
 
@@ -4086,11 +4086,11 @@ input-box .context-cache-warning-btn .icon-warning {
        narrow-column fold (config never claims a full row here) and let the
        config cluster shrink (min-width:0) so a long model name ellipsises
        rather than pushing the row to a second line. */
-    input-box input-controls {
+    composer-box input-controls {
         flex-wrap: nowrap;
     }
 
-    input-box input-controls-config {
+    composer-box input-controls-config {
         flex-basis: auto;
         flex-wrap: nowrap;
         min-width: 0;
@@ -4101,17 +4101,17 @@ input-box .context-cache-warning-btn .icon-warning {
     /* Compact the permission pill to just "✓ Edits on" — the cmd/path counts
        are still one tap away in the permissions popup. The head floor would
        waste space on this tight row, so drop it too. */
-    input-box .permission-btn {
+    composer-box .permission-btn {
         min-width: 0;
     }
 
-    input-box .permission-btn .permission-detail {
+    composer-box .permission-btn .permission-detail {
         display: none;
     }
 
     /* Let the model selector absorb the remaining width and ellipsise. */
-    input-box model-selector,
-    input-box .model-selector-button {
+    composer-box model-selector,
+    composer-box .model-selector-button {
         min-width: 0;
         overflow: hidden;
     }
@@ -4191,7 +4191,7 @@ input-box .context-cache-warning-btn .icon-warning {
 }
 
 /* Shell lock icon in permission button */
-input-box .permission-btn .shell-lock-icon {
+composer-box .permission-btn .shell-lock-icon {
     width: 0.75rem;
     height: 0.75rem;
     fill: currentcolor;
@@ -4207,23 +4207,23 @@ permission-controls {
 
 /* Permission button states — only the colour cues are bespoke; the ghost
    chrome (incl. the borderless rest state for `.ask`) comes from .input-ctrl-btn. */
-input-box .permission-btn.allowed {
+composer-box .permission-btn.allowed {
     color: var(--accent-green);
 }
 
 /* While its popup is open the permission button holds the house hover chrome. */
-input-box .permission-btn.open {
+composer-box .permission-btn.open {
     background: var(--overlay-dark-70);
     border-color: var(--overlay-light-30);
 }
 
-:root[data-theme="light"] input-box .permission-btn.open {
+:root[data-theme="light"] composer-box .permission-btn.open {
     background: rgb(255 255 255 / 95%);
     border-color: var(--text-tertiary);
 }
 
 /* Light theme for permission buttons */
-:root[data-theme="light"] input-box .permission-btn.allowed {
+:root[data-theme="light"] composer-box .permission-btn.allowed {
     color: var(--accent-green);
 }
 
@@ -6951,7 +6951,7 @@ action-confirmation:focus {
     color: var(--accent-red, #dc2626);
 }
 
-/* Input box with confirmation pending */
+/* Composer with confirmation pending */
 textarea[data-confirmation-pending="true"] {
     opacity: 0.6;
     cursor: not-allowed;

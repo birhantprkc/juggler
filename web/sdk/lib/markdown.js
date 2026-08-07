@@ -145,7 +145,7 @@ function externalizeLinks(html) {
 /**
  * Tags marked (with gfm) legitimately emits, plus the handful of inline
  * formatting elements a summary/plan can carry. Everything else — most
- * importantly any hyphenated *custom element* like `<input-box>` — is neutralised
+ * importantly any hyphenated *custom element* like `<composer-box>` — is neutralised
  * by {@link sanitizeRenderedHtml}. `input` is here only for gfm task-list
  * checkboxes; its attributes are still filtered against ALLOWED_ATTRS.
  */
@@ -180,8 +180,8 @@ const ALLOWED_ATTRS = new Set([
  * escapeXmlTagsForMarkdown is only a best-effort *pre*-pass whose naive backtick
  * accounting desyncs from marked's real code-span parsing — so a raw tag can
  * still reach the output string. Since callers drop that string into
- * `innerHTML`, a surviving *custom element* (e.g. `<input-box>`) is upgraded by
- * the browser into a live component (the "mirror input box in a thread summary"
+ * `innerHTML`, a surviving *custom element* (e.g. `<composer-box>`) is upgraded by
+ * the browser into a live component (the "mirror composer in a thread summary"
  * bug). This pass is the real boundary: it parses the HTML into an inert
  * `<template>` (scripts don't run, images don't load, custom elements do NOT
  * upgrade), drops disallowed tags to visible escaped text, strips disallowed and
@@ -216,8 +216,8 @@ function sanitizeRenderedHtml(html) {
       const tag = el.tagName.toLowerCase();
       if (!ALLOWED_TAGS.has(tag)) {
         // Neutralise: replace the element (and its subtree) with its serialised
-        // markup as a text node. `<input-box></input-box>` becomes visible,
-        // inert text (`&lt;input-box&gt;…`) instead of a live component.
+        // markup as a text node. `<composer-box></composer-box>` becomes visible,
+        // inert text (`&lt;composer-box&gt;…`) instead of a live component.
         parent.replaceChild(document.createTextNode(el.outerHTML), el);
         continue;
       }

@@ -493,7 +493,7 @@ export const multiConvCancelIsolationTest = {
         toolUseResponse('call_1', 'bash', { command: 'env echo never_runs' }, 'Running B.')
       ]
     },
-    // Make B the session's visible conversation: the input box refuses to
+    // Make B the session's visible conversation: the composer refuses to
     // send while the visible conversation (still A, mid-tool) is processing.
     { type: 'switch-conversation', conversationId: '$CONV_1' },
     { type: 'send-message-no-wait', message: 'Run tool in B' },

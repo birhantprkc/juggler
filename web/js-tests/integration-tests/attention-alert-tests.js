@@ -66,7 +66,7 @@ async function runAwaitingTurn(conversation, { harness }, looking) {
     initAttention(session);
     const baseline = __attention.alertCount;
 
-    // Trigger a tool_use that requires approval, through the real input box.
+    // Trigger a tool_use that requires approval, through the real composer.
     await harness.driver.typeAndSend('Run the attention echo');
     harness.consumeResponse();
     await harness.awaitPendingSend();

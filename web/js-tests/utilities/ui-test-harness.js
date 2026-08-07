@@ -125,7 +125,7 @@ export class UITestHarness {
 
     // 4. Wire the conversation to the tab, then activate it. setActive()
     //    flips _isHidden=false and triggers _syncWithConversation() →
-    //    _rebuildColumns() which creates conversation-area, input-box,
+    //    _rebuildColumns() which creates conversation-area, composer-box,
     //    conversation-controls. Without setActive() the tab stays hidden
     //    and columns never get built.
     const conversation = this._innerHarness.conversation;

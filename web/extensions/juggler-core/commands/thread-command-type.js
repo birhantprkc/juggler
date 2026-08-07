@@ -53,7 +53,7 @@ class ThreadCommandType extends CommandType {
     // the tool (see filterToolsForThread in llm_request.go).
     const extra = /** @type {any} */ ({ strategyCreated: true, canSpawnThreads: true });
     // Seed the new thread's draft as a {text, attachments} record (the single
-    // draft object the input box reads), not a bare string.
+    // draft object the composer reads), not a bare string.
     if (draftMessage) extra.draft = { text: draftMessage, attachments: [] };
     const result = this.messageThread?.createSubThread({
       goal,

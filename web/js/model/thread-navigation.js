@@ -184,11 +184,11 @@ export function hasUnsettledToolInTree(items) {
  * "Thread was interrupted" sentinel the crash-repair stamps on every resultless
  * thread on reload, including ones that are in fact just waiting/working).
  * Deriving "closed" from live tool state, never from the persisted `result`
- * alone, keeps the input box from bouncing parent↔child as the tool cycles
+ * alone, keeps the composer from bouncing parent↔child as the tool cycles
  * pending→running.
  *
  * This is the single source of truth for "is this thread done" — every consumer
- * that treats `result` as "finished" (tile status, input-box placement, footer
+ * that treats `result` as "finished" (tile status, composer-box placement, footer
  * Reopen/Continue, …) goes through here so they agree. The "still has live work
  * inside" property is derived at point of use, never written into the model.
  * @param {any} threadYMap - The thread Y.Map.

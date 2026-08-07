@@ -834,10 +834,10 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 		BackgroundColour: themeColours[bgTheme],
 		// NB: deliberately NOT setting EnableFileDrop. With it off, WebKit's own
 		// HTML5 file drag-and-drop reaches the page — the WKWebView delivers real
-		// File objects to page JS exactly like a browser — and the input box's
+		// File objects to page JS exactly like a browser — and the composer's
 		// dragover/drop listeners handle image drops with no native bridge. (The
 		// Wails runtime would otherwise cancel the drop when the flag is off; the
-		// input box re-enables it — see installFileDropOverride in input-box.js.)
+		// composer re-enables it — see installFileDropOverride in composer.js.)
 		Mac: application.MacWindow{
 			TitleBar: application.MacTitleBar{
 				AppearsTransparent:   true,

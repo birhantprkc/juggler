@@ -7,8 +7,8 @@
  *
  * RED / CONTRACT TESTS for the "queue a message during a live turn" feature.
  *
- * Today the input box REFUSES a send while the conversation is processing
- * (`input-box.js` -> `conversation.isProcessing` guard, mirrored by the
+ * Today the composer REFUSES a send while the conversation is processing
+ * (`composer.js` -> `conversation.isProcessing` guard, mirrored by the
  * `conversation.sendMessage` guard). `UIDriver.typeAndSend` turns that refusal
  * into a thrown error, so every test here currently fails at the second
  * `send-message-no-wait` — that throw IS the red signal for the behaviour we
@@ -18,7 +18,7 @@
  *
  *   - A message sent while busy is ACCEPTED and parked in a per-thread
  *     `pendingItems` staging array (a child of the thread's Y.Map), rendered
- *     below the status footer. `inputBox.sendMessage()` returns falsy (not a
+ *     below the status footer. `composer.sendMessage()` returns falsy (not a
  *     block reason) when it enqueues.
  *   - `promote(pendingItems)` is the single worker-owned transition: it moves
  *     pending entries into `items` as real user messages (chronologically last)

@@ -141,7 +141,7 @@ type AutoCompactGateFunc func() bool
 // first message text, the primary provider/model/thinking it will run under, and
 // force); the server owns the enable gate, cheap-model resolution, the bounded
 // completion, and the rename + broadcast. force=true bypasses the server's
-// enable gate and its "still named Task N" guard, so a manual request always
+// enable gate and its "still named Untitled N" guard, so a manual request always
 // renames. Passing provider/model/thinking as plain strings keeps the worker
 // free of any dependency on the server's model-ref type. Fire-and-forget: the
 // callee must not block the worker goroutine (the server hands off to its own

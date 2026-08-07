@@ -3,9 +3,9 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Switching conversation tabs must keep each tab's live message box intact —
+ * Switching conversation tabs must keep each tab's live composer intact —
  * its exact text AND its native undo history. Each top-level tab has its own
- * persistent <input-box>/<textarea>, so the browser undo stack lives on that
+ * persistent <composer-box>/<textarea>, so the browser undo stack lives on that
  * element and should survive a switch untouched. Two failure modes broke that:
  *
  *  A. The draft is only persisted by a keystroke DEBOUNCE. Leaving a tab within
@@ -65,11 +65,11 @@ export async function runTests() {
     tab.setActive();
 
     await waitFor(
-      () => !!tab.querySelector('input-box textarea'),
-      { description: 'root input-box textarea to build' }
+      () => !!tab.querySelector('composer-box textarea'),
+      { description: 'root composer-box textarea to build' }
     );
 
-    const box = /** @type {any} */ (tab.querySelector('input-box'));
+    const box = /** @type {any} */ (tab.querySelector('composer-box'));
     if (!box._messageThread) box.setMessageThread(conversation.rootMessageThread);
     const textarea = /** @type {HTMLTextAreaElement} */ (box.querySelector('textarea'));
 

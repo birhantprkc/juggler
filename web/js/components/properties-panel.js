@@ -665,7 +665,7 @@ class PropertiesPanel extends HTMLElement {
                         <svg xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 -960 960 960" width="16" fill="currentColor">
                             <path d="M448-160v-305.33L226.67-686.67V-570H160v-230h230v66.67H274l240.67 240.66V-160H448Zm126.67-368-47.34-47.33 158.67-158H570V-800h230v230h-66.67v-116.67L574.67-528Z"/>
                         </svg>
-                        Fork a new tab from here
+                        Fork a new conversation from here
                     `;
           branchBtn.addEventListener('click', () => this._branchFromItem(messageItemId));
           controls.appendChild(branchBtn);

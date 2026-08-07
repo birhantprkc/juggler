@@ -88,7 +88,7 @@ interface HTMLElementTagNameMap {
 		hideRetryNotification(): void;
 		showRetryNotification(error: string, onRetry: () => void): void;
 		renderFromItems(items: unknown[], insertedMessageIds?: string[]): void;
-		inputBox?: HTMLElement;
+		composer?: HTMLElement;
 	};
 	'model-selector': HTMLElement & {
 		refresh(): void;
@@ -97,7 +97,7 @@ interface HTMLElementTagNameMap {
 	'plugin-catalog': HTMLElement & {
 		show(scope: 'global' | 'local'): void;
 	};
-	'input-box': HTMLElement & {
+	'composer-box': HTMLElement & {
 		setSession(session: unknown): void;
 		focus(): void;
 	};

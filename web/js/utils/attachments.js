@@ -60,7 +60,7 @@ export function normalizeAttachments(raw) {
 /**
  * @typedef {{text: string, attachments: AssetRef[], textFiles: TextFileSnapshot[], pasteBlobs: PasteBlob[], scheduledSendAt: number|null}} Draft
  * `scheduledSendAt` is an epoch-ms wall-clock target for a deferred "send after
- * a delay": the input box arms a timer to press Send at that moment. Persisting
+ * a delay": the composer arms a timer to press Send at that moment. Persisting
  * it on the draft (rather than a live-only timer) is what lets a pending send
  * survive a reload and stay bound to the thread it was composed in. `null` when
  * no send is scheduled.
@@ -109,7 +109,7 @@ export function normalizePasteBlobs(raw) {
 }
 
 /**
- * Normalize the `draft` field — the unsent input-box draft, stored as a single
+ * Normalize the `draft` field — the unsent composer-box draft, stored as a single
  * `{text, attachments, textFiles, pasteBlobs}` record (a Y.Map on a thread
  * container, or a plain object synced from conversation metadata) — into a
  * plain Draft. Always returns a well-formed record so callers can read every

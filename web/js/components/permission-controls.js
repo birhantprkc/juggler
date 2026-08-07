@@ -102,7 +102,7 @@ class PermissionControls extends HTMLElement {
    */
   setMessageThread(messageThread) {
     // No-op when the binding hasn't actually changed. The parent
-    // (input-box) re-calls this on every conversation-tab column rebuild,
+    // (composer-box) re-calls this on every conversation-tab column rebuild,
     // i.e. on every message arrival. Re-rendering here would nuke the
     // popup DOM (and any focused input inside it) for no reason.
     if (this.messageThread === messageThread) return;
@@ -289,7 +289,7 @@ class PermissionControls extends HTMLElement {
 
     // While open, the popup has been relocated out of this element to <body>
     // (see openPopup) and positioned against our button. A re-render here —
-    // e.g. a conversation-view column rebuild hands input-box a fresh
+    // e.g. a conversation-view column rebuild hands composer-box a fresh
     // MessageThread wrapper, which re-calls setMessageThread() — must NOT
     // clobber innerHTML: that recreates (detaches) the button the body-hosted
     // popup is anchored to, so the popup's reposition observer measures a
@@ -549,11 +549,11 @@ class PermissionControls extends HTMLElement {
     const p = d.path || '';
     if (d.mode === 'implicit') {
       // The implicit project root is shown but cannot be edited, re-scoped, or
-      // removed — it applies to every tab and never changes.
+      // removed — it applies to every conversation and never changes.
       row.className = 'pattern-row pattern-row-implicit';
       row.innerHTML = `
-        <span class="pattern-text" data-path="${escapeHtml(p)}" title="Project root — available in every tab">${escapeHtml(p)}</span>
-        <span class="permission-scope-label" title="Project root — available in every tab">All tabs</span>`;
+        <span class="pattern-text" data-path="${escapeHtml(p)}" title="Project root — available in every conversation">${escapeHtml(p)}</span>
+        <span class="permission-scope-label" title="Project root — available in every conversation">All conversations</span>`;
     } else if (d.mode === 'edit') {
       row.className = 'pattern-row editing';
       row.innerHTML = `
@@ -596,7 +596,7 @@ class PermissionControls extends HTMLElement {
     const scopeBtn = row.querySelector('.path-scope-btn');
     if (scopeBtn) {
       const scope = d.scope || 'conversation';
-      const label = scope === 'session' ? 'All tabs' : 'This tab';
+      const label = scope === 'session' ? 'All conversations' : 'This conversation';
       if (scopeBtn.getAttribute('data-scope') !== scope) scopeBtn.setAttribute('data-scope', scope);
       if (scopeBtn.textContent !== label) scopeBtn.textContent = label;
     }

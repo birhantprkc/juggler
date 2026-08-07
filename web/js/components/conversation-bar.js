@@ -25,6 +25,7 @@
  */
 
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from '../model/session.js';
+import { UNTITLED_BASE } from '../model/conversation-naming.js';
 import { MAX_CONVERSATION_NAME_LENGTH } from '../utils/constants.js';
 import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
@@ -350,7 +351,7 @@ class ConversationBar extends HTMLElement {
    * before page JS, so the round-trip through Wails is required; in a browser
    * the event never fires). Unlike arrow-key navigation within the tab list,
    * cycling commits like a click: it leaves tab-list-focus mode and gives the
-   * newly-shown tab's input box keyboard focus.
+   * newly-shown tab's composer keyboard focus.
    * @param {Event} e
    * @private
    */
@@ -402,7 +403,7 @@ class ConversationBar extends HTMLElement {
         this._handleConversationSwitched(event.data);
       } else if (event.type === 'conversation:rename-requested') {
         // A fresh unnamed tab was activated. With auto-naming on (the default),
-        // leave the "Task N" name for the LLM to replace after the first message
+        // leave the "Untitled N" name for the LLM to replace after the first message
         // and drop focus straight into the composer; with it off, open the inline
         // rename editor so the user names it now.
         if (isAutoNameEnabled()) {
@@ -737,7 +738,7 @@ class ConversationBar extends HTMLElement {
    * @private
    */
   _renderOrUpdateTab(conv, visibleId, tabsMenu) {
-    const name = conv.name || 'Untitled';
+    const name = conv.name || UNTITLED_BASE;
     const isActive = conv.id === visibleId;
 
     // Get existing tab element or create new one
@@ -827,7 +828,7 @@ class ConversationBar extends HTMLElement {
       binButton.setAttribute('aria-label', `Move ${name} to bin`);
     }
 
-    // Sync the running / awaiting-approval indicator classes for this tab.
+    // Sync the running / awaiting-approval indicator classes for this conversation.
     this._refreshTabStatus(conv.id);
   }
 
@@ -1067,7 +1068,7 @@ class ConversationBar extends HTMLElement {
 
   /**
    * Create a new conversation with smart numbering
-   * Finds the smallest unused number for "Task N"
+   * Finds the smallest unused number for "Untitled N"
    * @private
    */
   async _createConversation() {
@@ -1099,7 +1100,7 @@ class ConversationBar extends HTMLElement {
       return;
     }
 
-    // Empty name → the session assigns the canonical "Task N" and, because this
+    // Empty name → the session assigns the canonical "Untitled N" and, because this
     // is an activated unnamed create, asks the bar to open inline rename (see the
     // 'conversation:rename-requested' branch in setSession). The /new command
     // creates the same way, so both share one "name it now" behaviour.
@@ -1107,10 +1108,10 @@ class ConversationBar extends HTMLElement {
   }
 
   /**
-   * Move keyboard focus into a conversation's message box. Used on new-tab
+   * Move keyboard focus into a conversation's composer. Used on new-tab
    * creation when auto-naming is on: instead of prompting for a name, we drop
    * the user straight into the composer (the LLM names the tab from the first
-   * message). Deferred a frame so the freshly-activated tab's input-box exists
+   * message). Deferred a frame so the freshly-activated tab's composer-box exists
    * and is laid out, matching the tab-switch focus path.
    * @param {string} conversationId
    * @private
@@ -1204,14 +1205,14 @@ class ConversationBar extends HTMLElement {
       done = true;
       tab.classList.remove('is-renaming');
       if (block.parentNode) block.parentNode.removeChild(block);
-      // Hand off to the visible conversation's input-box so the user can type
+      // Hand off to the visible conversation's composer-box so the user can type
       // straight after naming. We look it up through the conversation-tab
       // element registered with the bar rather than a global query, so the
       // lookup stays correct even when multiple conversation-tabs are mounted
       // side-by-side.
       const tabEl = this._tabElements.get(conversationId);
       const textarea = /** @type {HTMLTextAreaElement|null} */ (
-        tabEl?.querySelector('input-box textarea') || null
+        tabEl?.querySelector('composer-box textarea') || null
       );
       textarea?.focus();
     };
@@ -1279,7 +1280,7 @@ class ConversationBar extends HTMLElement {
       autoNameBtn.type = 'button';
       autoNameBtn.className = 'conversation-tab-rename-auto';
       autoNameBtn.textContent = 'Auto-name';
-      autoNameBtn.title = 'Let the model name this tab from your first message';
+      autoNameBtn.title = 'Let the model name this conversation from your first message';
       autoNameBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); });
       autoNameBtn.addEventListener('click', (e) => {
         e.preventDefault();

@@ -356,14 +356,14 @@ class FindBar {
   }
 
   /**
-   * Return focus to the column's composer on close: the `input-box`'s textarea
+   * Return focus to the column's composer on close: the `composer-box`'s textarea
    * if present, else blur so focus doesn't linger on a removed node.
    * @param {HTMLElement|null} columnEl
    * @returns {void}
    * @private
    */
   _restoreComposerFocus(columnEl) {
-    const textarea = columnEl && columnEl.querySelector('input-box textarea');
+    const textarea = columnEl && columnEl.querySelector('composer-box textarea');
     if (textarea) {
       /** @type {HTMLElement} */ (textarea).focus();
     } else if (document.activeElement instanceof HTMLElement) {

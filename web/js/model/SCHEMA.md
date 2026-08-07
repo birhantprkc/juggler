@@ -33,7 +33,7 @@ types (see `ConversationDocument` constructor):
 |---|---|---|
 | `items` | `Y.Array<Y.Map>` | Ordered conversation flow. Each entry is an item Y.Map (see §2). Created lazily via `MessageThread.ensureYarray()`. |
 | `modelConfig` | `Y.Map` \| object | Active model selection: `{providerId, modelId, ...overrides}`. Optional `thinking` override (`'off'\|'low'\|'medium'\|'high'\|'max'`; absent ⇒ provider default) rides atomically with the pair. Mirrored on each thread container; the root copy is the conversation default. |
-| `draft` | `Y.Map` \| object | Unsent input-box draft as one record: `{text, attachments}` (staged image `AssetRef`s). Stored as a single object so text and attachments persist or clear together — never half. Root draft lives in `metadata.draft`; per-thread drafts live on the thread container. |
+| `draft` | `Y.Map` \| object | Unsent composer-box draft as one record: `{text, attachments}` (staged image `AssetRef`s). Stored as a single object so text and attachments persist or clear together — never half. Root draft lives in `metadata.draft`; per-thread drafts live on the thread container. |
 
 Note: the conversation **name** is **not** stored in the Y.Doc. It lives on
 the on-disk folder name and is mutated via the rename API (see comment in
@@ -50,7 +50,7 @@ the on-disk folder name and is mutated via the rename API (see comment in
 | `activatedStrategyId` | string | Worker | Last strategy whose `onActivate` hook the worker has run. Drives once-per-switch activation; survives reload/re-exec. |
 | `undoState` | object | Worker | `{canUndo, canRedo, ...}`. Pushed FROM worker; main thread only reads. |
 | `nextSteps` | string \| null | Strategy plugins | Hint text rendered in the column header until a new turn starts. |
-| `draft` | `Y.Map` \| object | Input box | Root conversation's unsent draft: `{text, attachments}`. Per-thread drafts live on the thread container instead. |
+| `draft` | `Y.Map` \| object | Composer | Root conversation's unsent draft: `{text, attachments}`. Per-thread drafts live on the thread container instead. |
 
 `undoLog` and `metadata.undoState` are split deliberately: the log is a CRDT
 that survives sync; the state is the worker's view of "what can be

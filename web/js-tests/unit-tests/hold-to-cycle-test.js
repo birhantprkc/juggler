@@ -285,18 +285,18 @@ export async function runTests(_ctx) {
   });
 
   await run('defaultShouldHandle gates on a composer textarea with no modal open', () => {
-    const box = document.createElement('input-box');
+    const box = document.createElement('composer-box');
     const textarea = document.createElement('textarea');
     box.appendChild(textarea);
     const bare = document.createElement('textarea');
     const div = document.createElement('div');
     box.appendChild(div);
     assert(defaultShouldHandle(/** @type {any} */ ({ target: textarea })) === true,
-      'textarea inside input-box should be handled');
+      'textarea inside composer-box should be handled');
     assert(defaultShouldHandle(/** @type {any} */ ({ target: bare })) === false,
-      'a textarea outside input-box should not be handled');
+      'a textarea outside composer-box should not be handled');
     assert(defaultShouldHandle(/** @type {any} */ ({ target: div })) === false,
-      'a non-textarea inside input-box should not be handled');
+      'a non-textarea inside composer-box should not be handled');
     assert(defaultShouldHandle(/** @type {any} */ ({ target: null })) === false,
       'a non-element target should not be handled');
   });

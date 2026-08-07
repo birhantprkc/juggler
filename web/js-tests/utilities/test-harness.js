@@ -1725,7 +1725,7 @@ export class IntegrationTestHarness {
   /**
    * Stop from the ROOT/parent vantage — Escape while focused on the root, or
    * the root footer Stop. Stops the in-flight worker turn AND closes every open
-   * sub-thread (stamping 'Cancelled'), so the input box returns to the root
+   * sub-thread (stamping 'Cancelled'), so the composer returns to the root
    * column. Mirrors the root-vantage branch of app.cancelLLMOperation(null).
    * @param {number} [timeoutMs=10000] - Timeout for quiescence
    * @returns {Promise<void>}

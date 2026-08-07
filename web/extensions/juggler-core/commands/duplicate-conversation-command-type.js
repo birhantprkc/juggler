@@ -8,7 +8,7 @@ import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
 
 /**
  * Duplicate Conversation command — clone the current conversation into a new
- * tab placed directly after the source, then switch to the clone. The source
+ * conversation placed directly after the source, then switch to the clone. The source
  * is left intact.
  *
  * Duplication is refused while a turn is active (see
@@ -27,7 +27,7 @@ class DuplicateConversationCommandType extends CommandType {
     id: 'duplicate',
     name: 'Duplicate Conversation',
     version: '1.0.0',
-    description: 'Clone this conversation into a new tab',
+    description: 'Clone this conversation into a new one',
     icon: 'icon-box'
   };
 

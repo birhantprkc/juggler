@@ -275,7 +275,7 @@ export const promoteThreadToNewTabTest = {
  */
 export const copyItemsToNewTabTest = {
   name: 'copy-items-to-new-tab',
-  description: 'Copy selection to a new tab using the cross-doc copy primitive',
+  description: 'Copy selection to a new conversation using the cross-doc copy primitive',
   fixture: 'unit-test-fixture',
   llmResponses: [textResponse('Reply A.')],
   operations: [
@@ -301,7 +301,7 @@ export const copyItemsToNewTabTest = {
  */
 export const moveItemsToNewTabTest = {
   name: 'move-items-to-new-tab',
-  description: 'Move selection to a new tab using the cross-doc move primitive',
+  description: 'Move selection to a new conversation using the cross-doc move primitive',
   fixture: 'unit-test-fixture',
   llmResponses: [textResponse('Reply A.')],
   operations: [

@@ -224,7 +224,7 @@ class ConversationTab extends HTMLElement {
   }
 
   /**
-   * Get the conversation for this tab
+   * Get the conversation for this conversation
    * @returns {Conversation|null} The conversation instance
    */
   getConversation() {
@@ -271,7 +271,7 @@ class ConversationTab extends HTMLElement {
   }
 
   /**
-   * Get the MessageThread from the column whose input-box is visible.
+   * Get the MessageThread from the column whose composer-box is visible.
    * @returns {import('../model/message-thread.js').MessageThread|null} The input column's MessageThread
    */
   getActiveMessageThread() {
@@ -280,16 +280,16 @@ class ConversationTab extends HTMLElement {
   }
 
   /**
-   * Get the visible input box.
-   * @returns {HTMLElement|null} The input box element
+   * Get the visible composer.
+   * @returns {HTMLElement|null} The composer element
    */
-  getInputBox() {
+  getComposer() {
     const col = this._inputColumn();
-    return col ? col.querySelector('input-box') || null : null;
+    return col ? col.querySelector('composer-box') || null : null;
   }
 
   /**
-   * Find the conversation-area column whose input-box is visible
+   * Find the conversation-area column whose composer-box is visible
    * (deepest open thread, or root if no open thread column exists).
    * @returns {HTMLElement|null} The column element, or null
    * @private
@@ -298,7 +298,7 @@ class ConversationTab extends HTMLElement {
     // Global text-ops (rollback / branch / edit-message-into-box / warnings)
     // target the FOCUSED column when it shows a box; otherwise fall back to the
     // deepest open column, then root. With a box on every open thread, "the
-    // input box" is whichever column the user is actually working in.
+    // composer" is whichever column the user is actually working in.
     const active = /** @type {HTMLElement} */ (this._columns[this._selection.activeColumnIndex]);
     if (active && active.tagName === 'CONVERSATION-AREA' && !active.hasAttribute('data-hide-input')) {
       return active;
@@ -327,7 +327,7 @@ class ConversationTab extends HTMLElement {
   /**
    * The conversation-area column that Find (⌘F) should search: the focused
    * column when it is a conversation-area, else the first conversation-area
-   * column. Unlike {@link _inputColumn}, a column whose input box is hidden
+   * column. Unlike {@link _inputColumn}, a column whose composer is hidden
    * still qualifies — Find searches a column's messages, it doesn't type into
    * its composer.
    * @returns {HTMLElement|null} The conversation-area element, or null.
@@ -383,7 +383,7 @@ class ConversationTab extends HTMLElement {
    */
   _focusInput() {
     const textarea = /** @type {HTMLTextAreaElement|null} */ (
-      this._inputColumn()?.querySelector('input-box textarea')
+      this._inputColumn()?.querySelector('composer-box textarea')
     );
     if (!textarea) return;
     // Force a synchronous layout flush before focusing. When this runs during a
@@ -602,7 +602,7 @@ class ConversationTab extends HTMLElement {
     // then paint stale/empty text over what was typed. Flushing here keeps the
     // stored draft exactly current, so a re-activation restore (or reload, or a
     // second viewer) always sees the real text.
-    this.querySelectorAll('input-box').forEach((box) => {
+    this.querySelectorAll('composer-box').forEach((box) => {
       if (typeof (/** @type {any} */ (box).flushDraft) === 'function') {
         /** @type {any} */ (box).flushDraft();
       }
@@ -610,7 +610,7 @@ class ConversationTab extends HTMLElement {
 
     // Relinquish focus while the tab is still rendered. WebKit keeps focus on
     // a textarea whose ancestor becomes display:none, so a hidden tab would
-    // keep swallowing keystrokes into its now-invisible input box.
+    // keep swallowing keystrokes into its now-invisible composer.
     if (
       document.activeElement instanceof HTMLElement &&
       this.contains(document.activeElement)
@@ -691,7 +691,7 @@ class ConversationTab extends HTMLElement {
       if (!activeCol) return;
 
       // Rule 15 suppression: flag that we're inside keyboard navigation
-      // so _rebuildColumns won't steal focus to a sub-thread message box.
+      // so _rebuildColumns won't steal focus to a sub-thread composer.
       this._isKeyboardNavigating = true;
       try {
         switch (e.key) {
@@ -795,16 +795,16 @@ class ConversationTab extends HTMLElement {
               // @ts-ignore
               window.jugglerApp.cancelLLMOperation(focusedThreadId, { polite: e.shiftKey });
             } else {
-              // Nothing to stop: Escape clears the visible message box. This
+              // Nothing to stop: Escape clears the visible composer. This
               // handler only runs when focus ISN'T in the textarea (the early
               // TEXTAREA/INPUT return above) — the focused case is cleared by
-              // input-box's own keydown handler. Routing through the box's
+              // composer-box's own keydown handler. Routing through the box's
               // undoable clear covers Escape from an empty conversation (where
               // the box never took focus) while keeping the clear recoverable
               // with Ctrl/Cmd+Z.
-              const inputBox = /** @type {any} */ (this.getInputBox());
-              if (inputBox && typeof inputBox.clearTextUndoable === 'function') {
-                inputBox.clearTextUndoable();
+              const composer = /** @type {any} */ (this.getComposer());
+              if (composer && typeof composer.clearTextUndoable === 'function') {
+                composer.clearTextUndoable();
               }
             }
             // Rule 17: escape while navigating the conversation-area → typing mode.
@@ -1061,7 +1061,7 @@ class ConversationTab extends HTMLElement {
 
   /**
    * Handle promote request from a thread's Result block. Cross-doc promote is a
-   * copy into a new tab; the original thread stays in place because undo cannot
+   * copy into a new conversation; the original thread stays in place because undo cannot
    * span two Yjs documents.
    * @param {CustomEvent} e
    * @private
@@ -1333,17 +1333,17 @@ class ConversationTab extends HTMLElement {
       col.restoreScrollPosition?.();
     });
 
-    // Set session/conversation on input-box
-    const inputBox = col.querySelector('input-box');
-    if (inputBox) {
+    // Set session/conversation on composer-box
+    const composer = col.querySelector('composer-box');
+    if (composer) {
       if (session) {
         // @ts-ignore
-        inputBox.setSession(session);
+        composer.setSession(session);
       }
       // @ts-ignore
-      inputBox.setConversation(conversation);
+      composer.setConversation(conversation);
       // @ts-ignore
-      inputBox.setMessageThread(messageThread);
+      composer.setMessageThread(messageThread);
     }
 
     return col;
@@ -1429,13 +1429,13 @@ class ConversationTab extends HTMLElement {
   }
 
   /**
-   * Set data-hide-input on the columns that shouldn't show an input-box.
+   * Set data-hide-input on the columns that shouldn't show an composer-box.
    * @param {any[]} chain
    * @param {HTMLElement[]} newColumns
    * @private
    */
   _applyInputVisibility(chain, newColumns) {
-    // Hide the input-box ONLY on closed sub-thread columns; every open thread
+    // Hide the composer-box ONLY on closed sub-thread columns; every open thread
     // (root included) keeps its own box. A closed column shows a "reopen closed
     // thread" affordance in the box's slot instead — driven off this same
     // attribute (see the conversation-area[data-hide-input] reopen-box rule),
@@ -1444,8 +1444,8 @@ class ConversationTab extends HTMLElement {
     // "Closed" is isThreadClosed (result set AND nothing awaiting approval),
     // NOT just "has a result" — a sub-thread parked on your approval is still
     // active even when a stale "interrupted" result sits on it from a reload,
-    // so its column must keep the input box. Same rule the tile-status colour
-    // uses; both go through the one predicate so the input box and the orange
+    // so its column must keep the composer. Same rule the tile-status colour
+    // uses; both go through the one predicate so the composer and the orange
     // highlight never disagree.
     for (let i = chain.length - 1; i >= 0; i--) {
       const col = newColumns[i];
@@ -1462,9 +1462,9 @@ class ConversationTab extends HTMLElement {
         const wasHidden = col.hasAttribute('data-hide-input');
         col.removeAttribute('data-hide-input');
         if (wasHidden) {
-          const inputBox = col.querySelector('input-box');
-          const textarea = inputBox?.querySelector('textarea');
-          if (textarea) /** @type {any} */ (inputBox).autoResize(textarea);
+          const composer = col.querySelector('composer-box');
+          const textarea = composer?.querySelector('textarea');
+          if (textarea) /** @type {any} */ (composer).autoResize(textarea);
         }
       }
     }

@@ -298,7 +298,7 @@ const SHORTCUT_DEFS = [
       + ' uses or in-flight LLM responses.',
     category: 'Conversations',
     // Dispatched externally: the Escape keydown handlers in conversation-tab.js and
-    // input-box.js route Shift+Escape through cancelLLMOperation({polite:true}). The
+    // composer.js route Shift+Escape through cancelLLMOperation({polite:true}). The
     // manager lists it (Settings, tooltips, onboarding tip) but never dispatches it.
     defaultBinding: { shift: true, key: 'Escape' },
     allowInInput: true,

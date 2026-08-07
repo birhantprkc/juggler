@@ -126,7 +126,7 @@ export function renderExecutePermissionSection(messageThread) {
     const scopeBtn = row.querySelector('.rule-scope-btn');
     if (scopeBtn) {
       const scope = d.scope || 'conversation';
-      const label = scope === 'session' ? 'All tabs' : 'This tab';
+      const label = scope === 'session' ? 'All conversations' : 'This conversation';
       if (scopeBtn.getAttribute('data-scope') !== scope) scopeBtn.setAttribute('data-scope', scope);
       if (scopeBtn.textContent !== label) scopeBtn.textContent = label;
     }

@@ -416,8 +416,8 @@ export function ensureThreadResult(area, messageList, footer) {
   const promoteBtn = document.createElement('button');
   promoteBtn.type = 'button';
   promoteBtn.className = 'thread-result-promote-btn';
-  promoteBtn.title = 'Promote this thread to a new tab';
-  promoteBtn.setAttribute('aria-label', 'Promote this thread to a new tab');
+  promoteBtn.title = 'Promote this thread to a new conversation';
+  promoteBtn.setAttribute('aria-label', 'Promote this thread to a new conversation');
   promoteBtn.textContent = 'Promote';
   promoteBtn.addEventListener('click', (e) => {
     e.stopPropagation();

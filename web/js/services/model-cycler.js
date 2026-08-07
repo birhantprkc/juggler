@@ -45,7 +45,7 @@ function getModelSelector() {
   // Prefer the focused composer's own column.
   const focused = /** @type {HTMLElement|null} */ (document.activeElement);
   const box = focused && typeof focused.closest === 'function'
-    ? focused.closest('input-box')
+    ? focused.closest('composer-box')
     : null;
   if (box) {
     const owned = box.querySelector('model-selector');

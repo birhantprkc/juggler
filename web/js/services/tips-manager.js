@@ -72,19 +72,19 @@ const FEATURE_TIPS = [
     id: 'mention-files',
     kind: 'feature',
     title: 'Reference a file',
-    body: 'Type @ in the message box to search your project and add a file into the conversation.',
+    body: 'Type @ in the composer to search your project and add a file into the conversation.',
   },
   {
     id: 'slash-commands',
     kind: 'feature',
     title: 'Slash commands',
-    body: 'Type / at the start of the message box — or press the / button — for quick actions.',
+    body: 'Type / at the start of the composer — or press the / button — for quick actions.',
   },
   {
     id: 'paste-images',
     kind: 'feature',
     title: 'Paste a screenshot',
-    body: 'Drag-and-drop or copy-paste an image file into the message box to attach it to your prompt.',
+    body: 'Drag-and-drop or copy-paste an image file into the composer to attach it to your prompt.',
   },
 ];
 

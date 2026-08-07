@@ -6,6 +6,7 @@ import { formatRelativeDateTime, formatBytes } from '../utils/format.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { showAlert, showConfirm } from './modal-dialog.js';
 import JugglerElement from './juggler-element.js';
+import { UNTITLED_BASE } from '../model/conversation-naming.js';
 
 /**
  * @typedef {object} BinnedConvRow
@@ -147,7 +148,7 @@ class BinModal extends JugglerElement {
       `;
       const nameEl = li.querySelector('.bin-row-name');
       const dateEl = /** @type {HTMLElement|null} */ (li.querySelector('.bin-row-date'));
-      if (nameEl) nameEl.textContent = row.name || 'Untitled';
+      if (nameEl) nameEl.textContent = row.name || UNTITLED_BASE;
       if (dateEl) {
         dateEl.textContent = dateShort;
         dateEl.title = dateFull;
@@ -185,7 +186,7 @@ class BinModal extends JugglerElement {
   async _onDelete(row) {
     if (!this._session) return;
     const confirmed = await showConfirm(
-      `Permanently delete "${row.name || 'Untitled'}"?\n\nThis cannot be undone.`,
+      `Permanently delete "${row.name || UNTITLED_BASE}"?\n\nThis cannot be undone.`,
       'Delete Conversation',
       { confirmText: 'Delete', cancelText: 'Cancel', danger: true }
     );

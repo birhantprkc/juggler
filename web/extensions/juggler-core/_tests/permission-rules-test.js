@@ -131,7 +131,7 @@ export async function runTests() {
     const valuesAfter = Array.from(section.element.querySelectorAll('.pattern-text')).map(el => el.textContent);
     assert(valuesAfter.join('|') === valuesBefore.join('|'), `order changed after scope toggle: before=${valuesBefore.join('|')} after=${valuesAfter.join('|')}`);
     const scopeLabel = section.element.querySelector('.rule-scope-btn')?.textContent;
-    assert(scopeLabel === 'This tab', `scope label not updated: ${scopeLabel}`);
+    assert(scopeLabel === 'This conversation', `scope label not updated: ${scopeLabel}`);
     section.dispose();
     section.element.remove();
   });
@@ -157,7 +157,7 @@ export async function runTests() {
     mt.setRuleScope(a.id, 'conversation');
     assert(rowFor(b.id) === bRowBefore, 'untouched row B kept its DOM node (no full re-render)');
     assert(rowFor(a.id) === aRowBefore, 'changed row A updated in place (same node)');
-    assert(rowFor(a.id)?.querySelector('.rule-scope-btn')?.textContent === 'This tab', 'A scope label updated in place');
+    assert(rowFor(a.id)?.querySelector('.rule-scope-btn')?.textContent === 'This conversation', 'A scope label updated in place');
     // Deleting A removes only A's row; B's node survives.
     mt.removeRule(a.id);
     assert(rowFor(a.id) === null, 'deleted row removed');

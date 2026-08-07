@@ -251,7 +251,7 @@ function defaultPathId(path) { return `path:${path}`; }
 /**
  * The project root is an implicit, always-present, session-wide allowed path
  * derived from `session.projectPath`. It is never persisted and cannot be
- * toggled or removed — every tab in the project shares it.
+ * toggled or removed — every conversation in the project shares it.
  * @param {any} mt @returns {AllowedPathEntry|null}
  */
 function getProjectRootEntry(mt) {

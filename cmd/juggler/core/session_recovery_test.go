@@ -7,7 +7,6 @@ package core
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 )
 
@@ -21,11 +20,9 @@ import (
 //     an empty ConversationOrder: the window showed one seeded tab while the
 //     namer silently dodged the hidden real tabs.
 //
-//  2. New-tab naming — a brand-new blank tab always requests "Task N" and must
-//     resolve to a clean, unused "Task K". It must never inherit the generic
+//  2. New-tab naming — a brand-new blank tab always requests "Untitled N" and must
+//     resolve to a clean, unused "Untitled K". It must never inherit the generic
 //     "(copy)" collision suffix, which is reserved for genuine duplicates.
-
-var bareTaskName = regexp.MustCompile(`^Task \d+$`)
 
 // assertOrderMatchesDisk asserts the recovered ConversationOrder lists exactly
 // the conversation folders present on disk (per ConvNames). Divergence is the
@@ -51,7 +48,7 @@ func assertOrderMatchesDisk(t *testing.T, store *FileSessionStore, sess *Session
 func TestLoad_MissingGlobalsRebuildsOrderFromDisk(t *testing.T) {
 	store, dir := newStoreForTest(t)
 
-	for _, name := range []string{"Task 1", "Task 2", "Task 3"} {
+	for _, name := range []string{"Untitled 1", "Untitled 2", "Untitled 3"} {
 		if _, _, _, err := store.CreateConversationFolder(name, ""); err != nil {
 			t.Fatalf("CreateConversationFolder(%s): %v", name, err)
 		}
@@ -83,7 +80,7 @@ func TestLoad_MissingGlobalsRebuildsOrderFromDisk(t *testing.T) {
 func TestLoad_CorruptGlobalsRebuildsOrderFromDisk(t *testing.T) {
 	store, dir := newStoreForTest(t)
 
-	for _, name := range []string{"Task 1", "Task 2"} {
+	for _, name := range []string{"Untitled 1", "Untitled 2"} {
 		if _, _, _, err := store.CreateConversationFolder(name, ""); err != nil {
 			t.Fatalf("CreateConversationFolder(%s): %v", name, err)
 		}
@@ -123,7 +120,7 @@ func TestManager_MissingGlobalsNoSplitBrain(t *testing.T) {
 	if err := store.Save(NewSession()); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
-	for _, name := range []string{"Task 1", "Task 2", "Task 3"} {
+	for _, name := range []string{"Untitled 1", "Untitled 2", "Untitled 3"} {
 		if _, _, _, err := store.CreateConversationFolder(name, ""); err != nil {
 			t.Fatalf("CreateConversationFolder(%s): %v", name, err)
 		}
@@ -190,33 +187,33 @@ func TestLoad_LegacyStringMessageHistory(t *testing.T) {
 	}
 }
 
-// A brand-new "Task N" create must resolve to the lowest unused "Task K" and
-// never a "(copy)" suffix — even when "Task 1 (copy)" already sits on disk.
-// Mirrors the reported state: "Task 1" and "Task 1 (copy)" exist, with a gap
-// at "Task 2".
+// A brand-new "Untitled N" create must resolve to the lowest unused "Untitled K" and
+// never a "(copy)" suffix — even when "Untitled 1 (copy)" already sits on disk.
+// Mirrors the reported state: "Untitled 1" and "Untitled 1 (copy)" exist, with a gap
+// at "Untitled 2".
 func TestCreateConversation_TaskNameNeverGetsCopySuffix(t *testing.T) {
 	store, _ := newStoreForTest(t)
 
-	for _, name := range []string{"Task 1", "Task 1 (copy)", "Task 3"} {
+	for _, name := range []string{"Untitled 1", "Untitled 1 (copy)", "Untitled 3"} {
 		if _, _, _, err := store.CreateConversationFolder(name, ""); err != nil {
 			t.Fatalf("seed %q: %v", name, err)
 		}
 	}
 
-	// A new blank tab always requests "Task N".
-	_, name, _, err := store.CreateConversationFolder("Task 1", "")
+	// A new blank tab always requests "Untitled N".
+	_, name, _, err := store.CreateConversationFolder("Untitled 1", "")
 	if err != nil {
 		t.Fatalf("CreateConversationFolder: %v", err)
 	}
-	if !bareTaskName.MatchString(name) {
-		t.Fatalf("new tab name = %q, want a bare \"Task N\" (never a (copy) suffix)", name)
+	if !IsUntitledName(name) {
+		t.Fatalf("new tab name = %q, want a bare \"Untitled N\" (never a (copy) suffix)", name)
 	}
-	if name != "Task 2" {
-		t.Fatalf("new tab name = %q, want lowest unused \"Task 2\"", name)
+	if name != "Untitled 2" {
+		t.Fatalf("new tab name = %q, want lowest unused \"Untitled 2\"", name)
 	}
 }
 
-// Guard: a genuine duplicate of a non-"Task N" name still gets the "(copy)"
+// Guard: a genuine duplicate of a non-"Untitled N" name still gets the "(copy)"
 // suffix. The Task-number reallocation must not change duplicate behaviour.
 func TestCreateConversation_NonTaskNameStillGetsCopySuffix(t *testing.T) {
 	store, _ := newStoreForTest(t)

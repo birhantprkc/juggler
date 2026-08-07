@@ -82,7 +82,7 @@ export function getThreadStatus(threadYMap, live) {
   }
 
   // Genuinely finished (result set, nothing awaiting) — same canonical
-  // predicate the input-box placement uses, so colour and input never disagree.
+  // predicate the composer-box placement uses, so colour and input never disagree.
   if (isThreadClosed(threadYMap)) {
     return { kind: 'closed', goal, message: '', spinner: false };
   }

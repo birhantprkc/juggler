@@ -15,7 +15,7 @@
  *   2. fetch() prefix-filters the injected snapshot; insert()/tab splice `$name`;
  *   3. extractSkillMentions() extracts ONLY exact snapshot names, strips the
  *      token (no doubled space), dedupes, and leaves an unknown `$foo` as prose;
- *   4. the input box wires the skill provider into its menu and the picker
+ *   4. the composer wires the skill provider into its menu and the picker
  *      button inserts `$` and opens it;
  *   5. sending `$tdd do it` loads the `tdd` skill via executeContextItem and
  *      dispatches the trigger-stripped prose "do it"; a bare `$tdd` is a preload
@@ -28,7 +28,7 @@ import {
   createSkillMentionProvider,
   extractSkillMentions,
 } from '../../js/components/skill-mention-provider.js';
-import '../../js/components/input-box.js';
+import '../../js/components/composer.js';
 
 /** @type {import('../../js/services/skills.js').SkillMeta[]} */
 const FIXTURE = /** @type {any} */ ([
@@ -38,20 +38,20 @@ const FIXTURE = /** @type {any} */ ([
 ]);
 
 /**
- * Mount an <input-box> and bind its listeners synchronously (render() defers
+ * Mount an <composer-box> and bind its listeners synchronously (render() defers
  * setupListeners() to rAF, which never pumps in the hidden test window).
- * @returns {{box: any, textarea: HTMLTextAreaElement, container: HTMLElement}} The mounted input-box, its textarea and container.
+ * @returns {{box: any, textarea: HTMLTextAreaElement, container: HTMLElement}} The mounted composer-box, its textarea and container.
  */
-function mountInputBox() {
+function mountComposer() {
   const container = document.createElement('div');
   container.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:480px;height:600px;';
-  const box = document.createElement('input-box');
+  const box = document.createElement('composer-box');
   container.appendChild(box);
   document.body.appendChild(container);
   /** @type {any} */ (box).setupListeners();
   /** @type {any} */ (box).setupListeners = () => {};
   const textarea = /** @type {HTMLTextAreaElement} */ (box.querySelector('textarea'));
-  assert(!!textarea, 'input-box must render a textarea');
+  assert(!!textarea, 'composer-box must render a textarea');
   return { box, textarea, container };
 }
 
@@ -185,10 +185,10 @@ export async function runTests() {
 
   // ── Test 4: skill provider wired; picker menu inserts only on selection ───
   {
-    const { box, textarea, container } = mountInputBox();
+    const { box, textarea, container } = mountComposer();
     try {
       const menu = box._completions;
-      assert(!!menu, 'input-box must construct a CompletionMenu');
+      assert(!!menu, 'composer-box must construct a CompletionMenu');
       assert(menu._providers.some((/** @type {any} */ p) => p.id === 'skill-mention'),
         'the menu must include the skill-mention provider');
 
@@ -223,7 +223,7 @@ export async function runTests() {
       passed++;
     } catch (e) {
       failed++;
-      errors.push('input-box-skill-picker-menu: ' + (e instanceof Error ? e.message : String(e)));
+      errors.push('composer-box-skill-picker-menu: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       box._completions?.close();
       container.remove();
@@ -235,7 +235,7 @@ export async function runTests() {
   // only forwards the names in the send-message detail — it must NOT run a
   // context-item load itself (which would merely re-seed the standing list).
   {
-    const { box, textarea, container } = mountInputBox();
+    const { box, textarea, container } = mountComposer();
     try {
       const { thread, calls } = makeStubThread();
       box._messageThread = thread;

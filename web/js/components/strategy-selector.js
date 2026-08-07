@@ -392,7 +392,7 @@ class StrategySelector extends HTMLElement {
   /**
    * Record the current cache-impact classification and, when it flips, announce
    * it so the composer can show or hide its warning. The warning affordance — a
-   * round alert beside the send button — lives in input-box, not here; a
+   * round alert beside the send button — lives in composer-box, not here; a
    * bubbling event is the only coupling. Fired only on change, so an unrelated
    * edit that leaves the classification untouched is silent. Deliberately
    * carries no token figure: only whether the loss is large enough to mention.

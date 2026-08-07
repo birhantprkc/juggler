@@ -109,7 +109,7 @@ func SanitizeName(raw string) string {
 	s = strings.TrimRight(s, ". ")
 
 	if s == "" || s == "." || s == ".." {
-		return "Untitled"
+		return UntitledBase
 	}
 
 	if reservedWindowsNameRe.MatchString(s) {
@@ -121,7 +121,7 @@ func SanitizeName(raw string) string {
 	if rs := []rune(s); len(rs) > SanitizedNameMaxRunes {
 		s = strings.TrimRight(string(rs[:SanitizedNameMaxRunes]), ". ")
 		if s == "" {
-			return "Untitled"
+			return UntitledBase
 		}
 	}
 

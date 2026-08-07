@@ -2119,7 +2119,7 @@ func TestCreateThreadInjectsToolUseInParentMessages(t *testing.T) {
 //
 // When the parent conversation is parked at activity=awaiting_llm (the marker a
 // pending tool / in-flight turn leaves on the ROOT thread) and the user presses
-// the input-box "New Thread" button, an empty thread is inserted at root as a
+// the composer "New Thread" button, an empty thread is inserted at root as a
 // pure Yjs mutation with no user message. The reducer's walk-down then descends
 // into that empty child and — because "empty nested thread under awaiting_llm"
 // is the continuation dispatch trigger — borrows the PARENT's awaiting_llm

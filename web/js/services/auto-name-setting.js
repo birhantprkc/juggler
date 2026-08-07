@@ -10,7 +10,7 @@
  * The server owns the setting (it gates the LLM auto-namer); this cache exists
  * so the conversation bar can decide, without an await, whether a freshly
  * created tab should open its inline rename editor (auto-naming OFF) or leave
- * the "Task N" name alone and focus the composer so the LLM names it after the
+ * the "Untitled N" name alone and focus the composer so the LLM names it after the
  * first message (auto-naming ON — the default).
  *
  * The cache defaults to enabled until seeded, so a startup race just yields the

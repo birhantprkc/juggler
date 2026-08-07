@@ -24,7 +24,7 @@ const lastGoodMemory = new Map();
  *  - Persisted to `.juggler/MEMORY.md` (private, gitignored, hand-editable).
  *  - The item stores only a path pointer in Yjs; entries are read live at send
  *    time (`createContextText`) and in the panel — never round-tripped through
- *    the conversation document (which would bust the prompt cache across tabs).
+ *    the conversation document (which would bust the prompt cache across conversations).
  *  - Injected at the `system` position, so it rides the cached system prefix and
  *    is cache-stable by construction: the file changes only when the model (or
  *    user) remembers/forgets something — a rare, config-frequency event — never

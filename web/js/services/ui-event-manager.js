@@ -50,7 +50,7 @@ class UIEventManager {
    * @param {object} options - Configuration options
    * @param {function(string, string|null, *, Array<*>=, string[]=): void} options.onSendMessage - Callback when user sends message (message, threadItemId, messageThread, attachments, skills)
    * @param {function(object): Promise<void>} options.onContextItemAction - Callback for context item actions
-   * UI elements (conversationControls, contextPanel, conversationArea, inputBox) are per-tab.
+   * UI elements (conversationControls, contextPanel, conversationArea, composer) are per-tab.
    */
   constructor(options) {
     this._onSendMessage = options.onSendMessage;
@@ -89,11 +89,11 @@ class UIEventManager {
 
   /**
    * Setup input handler for sending messages.
-   * Listen at document level since input-box is per-tab.
+   * Listen at document level since composer-box is per-tab.
    * @private
    */
   _setupInputHandler() {
-    // Listen for send-message event from input-box (bubbles up)
+    // Listen for send-message event from composer-box (bubbles up)
     /** @param {Event} event */
     const handler = (event) => {
       const detail = /** @type {any} */ (event).detail;

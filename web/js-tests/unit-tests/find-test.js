@@ -62,7 +62,7 @@ function attach(html) {
 /**
  * Build the column skeleton `findBar.open()` expects — a positioned
  * `conversation-message-list-wrapper` around a `#message-list`, plus the
- * `input-box textarea` composer focus is restored to on close — attach it, and
+ * `composer-box textarea` composer focus is restored to on close — attach it, and
  * return the column element.
  * @param {string} messagesHtml - Inner HTML for the `#message-list`.
  * @returns {HTMLElement} The attached column element.
@@ -73,7 +73,7 @@ function attachColumn(messagesHtml) {
     <conversation-message-list-wrapper style="position:relative;display:block">
       <section id="message-list">${messagesHtml}</section>
     </conversation-message-list-wrapper>
-    <input-box><textarea></textarea></input-box>`;
+    <composer-box><textarea></textarea></composer-box>`;
   document.body.appendChild(col);
   return col;
 }
@@ -337,7 +337,7 @@ export async function runTests(_ctx) {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       assert(findBar.isOpen() === false, 'bar reports closed');
       assert(col.querySelector('.find-bar') === null, 'bar element is removed from the DOM');
-      assert(document.activeElement === col.querySelector('input-box textarea'),
+      assert(document.activeElement === col.querySelector('composer-box textarea'),
         'focus returns to the composer textarea');
     } finally {
       findBar.close();

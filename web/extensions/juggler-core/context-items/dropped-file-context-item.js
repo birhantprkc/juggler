@@ -32,7 +32,7 @@ injectFileContentStyles();
  *    `content` IS the source of truth and is persisted in Yjs verbatim.
  *  - The snapshot is FROZEN — it never re-reads and has no refresh affordance,
  *    matching what the user dropped at that moment.
- *  - Created only via the input box's drop handler
+ *  - Created only via the composer's drop handler
  *    (`executeContextItem('dropped-file', {filename, content})`); it is not
  *    user-addable through the picker and exposes no tool for the LLM.
  * @class

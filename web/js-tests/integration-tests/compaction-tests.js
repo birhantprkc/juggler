@@ -628,7 +628,7 @@ export const newConversationTest = {
 };
 
 /**
- * /duplicate clones the current conversation into a new tab placed directly
+ * /duplicate clones the current conversation into a new conversation placed directly
  * after the source, then switches to the clone. The source is left intact.
  * This is the building block /compact-new used to be (duplicate + compact).
  * Asserts:
@@ -665,7 +665,7 @@ function duplicateCopyMatches(conv) {
 
 export const duplicateConversationTest = {
   name: 'duplicate-conversation-command',
-  description: '/duplicate clones the conversation into a new tab after the source and switches to it',
+  description: '/duplicate clones the conversation into a new conversation after the source and switches to it',
   fixture: 'unit-test-fixture',
 
   llmResponses: [

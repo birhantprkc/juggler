@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Slash-command completions on the input box.
+ * Slash-command completions on the composer.
  *
  * Typing `/` at the START of a message activates the shared caret-anchored
  * completion menu (the same one `@` file-mentions use), populated from the
@@ -15,7 +15,7 @@
  *      runs it on that same keystroke (submitAfterAccept → menu.onSubmit) so the
  *      popup never asks for a second Enter; a command taking arguments splices
  *      the text and waits for the user to type them,
- *   4. the input box wires slash + file-mention providers into one menu, with
+ *   4. the composer wires slash + file-mention providers into one menu, with
  *      slash taking precedence at the message start.
  *
  * Assertions read SYNCHRONOUS, deterministic state: `handleInput()` selects the
@@ -32,17 +32,17 @@ import { initializeRegistries, assert } from '../utilities/test-helpers.js';
 import slashCommandHandler from '../../js/services/slash-command-handler.js';
 import { slashCommandProvider } from '../../js/components/slash-command-provider.js';
 import { fileMentionProvider } from '../../js/components/file-mention-provider.js';
-import '../../js/components/input-box.js';
+import '../../js/components/composer.js';
 
 /**
- * Mount an <input-box> and bind its listeners synchronously (render() defers
+ * Mount an <composer-box> and bind its listeners synchronously (render() defers
  * setupListeners() to rAF, which never pumps in the hidden test window).
- * @returns {{box: any, textarea: HTMLTextAreaElement, container: HTMLElement}} The mounted input-box, its textarea and container.
+ * @returns {{box: any, textarea: HTMLTextAreaElement, container: HTMLElement}} The mounted composer-box, its textarea and container.
  */
-function mountInputBox() {
+function mountComposer() {
   const container = document.createElement('div');
   container.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:480px;height:600px;';
-  const box = document.createElement('input-box');
+  const box = document.createElement('composer-box');
   container.appendChild(box); // connectedCallback → render() writes the DOM now
   document.body.appendChild(container);
 
@@ -50,7 +50,7 @@ function mountInputBox() {
   /** @type {any} */ (box).setupListeners = () => {};
 
   const textarea = /** @type {HTMLTextAreaElement} */ (box.querySelector('textarea'));
-  assert(!!textarea, 'input-box must render a textarea');
+  assert(!!textarea, 'composer-box must render a textarea');
   return { box, textarea, container };
 }
 
@@ -131,12 +131,12 @@ export async function runTests() {
     }
   }
 
-  // ── Test 2: the input box wires both providers; slash wins at msg start ────
+  // ── Test 2: the composer wires both providers; slash wins at msg start ────
   {
-    const { box, textarea, container } = mountInputBox();
+    const { box, textarea, container } = mountComposer();
     try {
       const menu = box._completions;
-      assert(!!menu, 'input-box must construct a CompletionMenu');
+      assert(!!menu, 'composer-box must construct a CompletionMenu');
       assert(menu._providers.some((/** @type {any} */ p) => p === slashCommandProvider),
         'the menu must include the slash-command provider');
       assert(menu._providers.some((/** @type {any} */ p) => p === fileMentionProvider),
@@ -160,7 +160,7 @@ export async function runTests() {
       passed++;
     } catch (e) {
       failed++;
-      errors.push('input-box-wires-providers: ' + (e instanceof Error ? e.message : String(e)));
+      errors.push('composer-box-wires-providers: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       box._completions.close();
       container.remove();
@@ -174,7 +174,7 @@ export async function runTests() {
   // so the popup never demands a second Enter; a command taking arguments splices
   // the text and waits, leaving the caret after "/name " for the user to type.
   {
-    const { box, textarea, container } = mountInputBox();
+    const { box, textarea, container } = mountComposer();
     try {
       const menu = box._completions;
 

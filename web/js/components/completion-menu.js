@@ -389,7 +389,7 @@ export class CompletionMenu {
   /**
    * A zero-width anchor pinned horizontally to the trigger char the user is
    * typing over, while spanning the wrapper vertically so the menu still opens
-   * above/below the whole input box. Without this the dropdown anchors to the
+   * above/below the whole composer. Without this the dropdown anchors to the
    * wrapper's left edge and always sits in the top-left corner, far from the
    * caret.
    *

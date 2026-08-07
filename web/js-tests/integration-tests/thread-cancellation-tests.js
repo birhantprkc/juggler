@@ -24,7 +24,7 @@ import { textResponse, toolUseResponse } from '../utilities/integration-test-run
  * Root creates thread → thread runs bash → user hits Escape while focused IN the
  * sub-thread → the worker turn is interrupted but the thread stays OPEN (no
  * result). Interrupting from the thread's own vantage never closes it, so the
- * input box stays in the child column and the user can keep interacting with it.
+ * composer stays in the child column and the user can keep interacting with it.
  * No further LLM responses are consumed (the worker is idle; nothing re-drives).
  *
  * Mock responses:
@@ -91,12 +91,12 @@ export const cancelDuringThreadTest = {
       );
     }
     // Because the sub-thread is still open, the root remains "busy" — so the
-    // input box stays in the child column (the user keeps interacting with it),
+    // composer stays in the child column (the user keeps interacting with it),
     // which is the whole point of interrupt-not-close.
     if (!conversation.rootMessageThread.hasBusyItems()) {
       throw new Error(
         'interrupt-during-thread-keeps-open: root is not busy — the open sub-thread ' +
-				'should keep the input box in the child column'
+				'should keep the composer in the child column'
       );
     }
   }
@@ -281,7 +281,7 @@ export const threadAutoResumeParentTest = {
  * vantage (Escape while focused on the root, or the root footer Stop). From the
  * parent's vantage the running sub-thread is "below" and is CLOSED: the worker
  * turn is preempted, the tool is cancelled, and the sub-thread settles with
- * result='Cancelled' so the input box returns to the root column.
+ * result='Cancelled' so the composer returns to the root column.
  *
  * Mock responses:
  *   1. Root: create_thread
@@ -324,7 +324,7 @@ export const cancelFromRootClosesThreadTest = {
   },
 
   customAssertions: (conversation) => {
-    // Closed thread → root no longer busy → input box returns to root column.
+    // Closed thread → root no longer busy → composer returns to root column.
     if (conversation.rootMessageThread.hasBusyItems()) {
       throw new Error(
         'root-vantage-stop-closes-subthread: root still busy after root-vantage stop — ' +

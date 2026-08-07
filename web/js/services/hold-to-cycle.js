@@ -35,7 +35,7 @@ import { isForeignPopupOpen } from '../utils/popup-manager.js';
  *   themselves ('Meta' on macOS, 'Control' elsewhere — see `isMac()`).
  * @property {(e: KeyboardEvent) => boolean} [shouldHandle] - Focus/context gate
  *   for starting a gesture. Defaults to the composer rule the strategy switcher
- *   always used: focus in a textarea inside `input-box`, no modal dialog open.
+ *   always used: focus in a textarea inside `composer-box`, no modal dialog open.
  * @property {() => boolean} [canCycle] - Whole-gesture applicability. When it
  *   returns false the trigger press falls through untouched (no preventDefault),
  *   so an inapplicable shortcut is a transparent no-op. Defaults to always-on.
@@ -211,19 +211,19 @@ class HoldToCycleController {
 /**
  * The default gesture gate, extracted verbatim from the original
  * StrategySwitcher: only handle when focus is in the main composer textarea
- * (inside `input-box`) and no modal dialog is open.
+ * (inside `composer-box`) and no modal dialog is open.
  * @param {KeyboardEvent} e
  * @returns {boolean} True if the gesture may start.
  */
 export function defaultShouldHandle(e) {
-  // Only handle when focus is in the main input textarea (inside input-box)
+  // Only handle when focus is in the main input textarea (inside composer-box)
   const target = e.target;
   if (!(target instanceof HTMLElement)) {
     return false;
   }
 
-  // Must be a textarea inside input-box
-  if (target.tagName !== 'TEXTAREA' || !target.closest('input-box')) {
+  // Must be a textarea inside composer-box
+  if (target.tagName !== 'TEXTAREA' || !target.closest('composer-box')) {
     return false;
   }
 

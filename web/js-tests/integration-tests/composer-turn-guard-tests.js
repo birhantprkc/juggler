@@ -3,9 +3,9 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Integration Tests: Input-box controls during an active turn
+ * Integration Tests: Composer controls during an active turn
  *
- * The input box exposes controls (New Thread button, slash-commands menu,
+ * The composer exposes controls (New Thread button, slash-commands menu,
  * Close-thread button) that remain clickable while an LLM turn is in flight.
  * These tests pin the worker mid-turn with a paused mock and exercise each
  * control, asserting the active-turn behaviour:
@@ -16,7 +16,7 @@
  *     `if (isProcessing) return` guard in conversation.sendMessage and was
  *     silently DROPPED mid-turn. Now MessageThread.close() preempts the live
  *     turn (worker-truth cancel) and delivers the summary prompt.
- * @module integration-tests/input-box-turn-guard-tests
+ * @module integration-tests/composer-turn-guard-tests
  */
 
 import { textResponse, toolUseResponse } from '../utilities/integration-test-runner.js';
@@ -210,7 +210,7 @@ export const closeThreadMidTurnPreemptsTest = {
 // ============================================================================
 
 /**
- * Repro for "the new thread immediately starts running": the input-box
+ * Repro for "the new thread immediately starts running": the composer-box
  * "New Thread" button dispatches `/thread --draft-message <text>` when the box
  * has text. That must create an OPEN, EMPTY thread with the text seeded only as
  * an unsent DRAFT — it must NOT start an LLM turn. The thread should wait for
@@ -246,7 +246,7 @@ export const newThreadWithDraftDoesNotRunTest = {
   customAssertions: (conversation) => {
     const thread = soleThread(conversation, 'new-thread-with-draft-does-not-run');
     assertThreadOpenAndEmpty(thread, 'new-thread-with-draft-does-not-run');
-    // The draft must be carried on the thread Y.Map for the input box to restore.
+    // The draft must be carried on the thread Y.Map for the composer to restore.
     const draft = thread.get?.('draft');
     const draftText = draft && typeof draft.get === 'function' ? draft.get('text') : draft?.text;
     if (!draftText || !String(draftText).includes('Draft for the new thread')) {

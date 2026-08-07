@@ -47,7 +47,7 @@ export const POPUP_CLOSE_ALL_EVENT = 'popup-close-all';
 /**
  * The currently-open popups/modals, each token → its optional close handler. A
  * popup is open from the moment it acquires a token until it releases it. Lets
- * unrelated components (e.g. the input box) tell whether an Escape keypress is
+ * unrelated components (e.g. the composer) tell whether an Escape keypress is
  * meant to dismiss a popup rather than act on the input behind it. A Map (not a
  * Set) so `closeAllPopups()` can drive each surface's own dismissal — and in
  * LIFO order, since insertion order is preserved.

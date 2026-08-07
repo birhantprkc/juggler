@@ -508,8 +508,8 @@ class ConversationArea extends HTMLElement {
     this._pendingSkip.clear();
   }
 
-  get inputBox() {
-    return this.querySelector('input-box');
+  get composer() {
+    return this.querySelector('composer-box');
   }
 
   render() {
@@ -521,9 +521,9 @@ class ConversationArea extends HTMLElement {
             <h3 class="properties-panel-title thread-column-goal"></h3>
           </header>
           <thread-column-actions>
-            <button class="properties-panel-btn thread-copy-tab-btn" title="Copy this thread (with inherited context) to a new tab">
+            <button class="properties-panel-btn thread-copy-tab-btn" title="Copy this thread (with inherited context) to a new conversation">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-160v-326L336-382l-56-58 200-200 200 200-56 58-104-104v326h-80ZM160-600v-120q0-33 23.5-56.5T240-800h480q33 0 56.5 23.5T800-720v120h-80v-120H240v120h-80Z"/></svg>
-              Copy thread to new tab
+              Copy thread to new conversation
             </button>
           </thread-column-actions>
         </properties-panel-section>
@@ -539,7 +539,7 @@ class ConversationArea extends HTMLElement {
           <button type="button" class="scroll-control-btn hidden" data-scroll="bottom" title="Scroll to bottom" aria-label="Scroll to bottom">${SCROLL_BOTTOM_SVG}</button>
         </div>
       </conversation-message-list-wrapper>
-      <input-box id="input-box"></input-box>
+      <composer-box id="composer-box"></composer-box>
       <reopen-box id="reopen-box" role="button" tabindex="0" aria-label="Reopen closed thread">
         <reopen-box-bubble>
           <span class="reopen-box-icon">${REOPEN_THREAD_SVG}</span>
@@ -581,7 +581,7 @@ class ConversationArea extends HTMLElement {
     // Update status badge
     this._updateThreadHeaderStatus(threadYMap);
 
-    // Wire up Copy to new tab — reuses the same promote-thread-requested event
+    // Wire up Copy to new conversation — reuses the same promote-thread-requested event
     // as the thread-result tile's Promote button (conversation-tab handles it
     // via promoteThreadToNewTab). Clone to clear listeners from a prior show.
     const copyTabBtn = header.querySelector('.thread-copy-tab-btn');
@@ -630,17 +630,17 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Update the thread header input-box visibility based on whether the thread is
+   * Update the thread header composer-box visibility based on whether the thread is
    * finished (derived state).
    *
    * "Finished" is isThreadClosed (result set AND nothing in the subtree awaiting
    * approval), NOT raw `result` — the same canonical predicate the tile colour
-   * and the tab's input-box placement use. A sub-thread parked on your approval
+   * and the tab's composer-box placement use. A sub-thread parked on your approval
    * is still active even when a stale "Thread was interrupted" result sits on it
-   * from a reload, so it must keep its input box.
+   * from a reload, so it must keep its composer.
    *
-   * For the input box we set display to '' (not a forced value) when active, so
-   * we DEFER to the CSS `conversation-area[data-hide-input] input-box` rule that
+   * For the composer we set display to '' (not a forced value) when active, so
+   * we DEFER to the CSS `conversation-area[data-hide-input] composer-box` rule that
    * the tab toggles per-column — the tab is the single authority on which
    * column shows the box (it alone knows the full column chain / open child to
    * the right). Forcing 'none' here on a non-empty raw result is precisely what
@@ -656,8 +656,8 @@ class ConversationArea extends HTMLElement {
 
     // Hide when finished; otherwise defer to CSS (data-hide-input) by clearing
     // the inline style rather than forcing visibility.
-    const inputBox = this.inputBox;
-    if (inputBox) /** @type {HTMLElement} */ (inputBox).style.display = isFinished ? 'none' : '';
+    const composer = this.composer;
+    if (composer) /** @type {HTMLElement} */ (composer).style.display = isFinished ? 'none' : '';
     this.updateFooter();
   }
 
@@ -671,9 +671,9 @@ class ConversationArea extends HTMLElement {
 
   setupEventListeners() {
     const wrapper = this.querySelector('conversation-message-list-wrapper');
-    const inputBox = this.querySelector('#input-box');
+    const composer = this.querySelector('#composer-box');
 
-    if (wrapper && inputBox) {
+    if (wrapper && composer) {
       // Capture-phase pre-check: detect clicks that originate inside an
       // action-confirmation widget. The bubble-phase handler below can't do
       // this with closest() because the approve/deny resolve callback mutates
@@ -773,7 +773,7 @@ class ConversationArea extends HTMLElement {
         // Clicked on the background — deselect any current item in this column,
         // then focus the input so the next keystroke starts composing.
         this._clearSelection();
-        const textarea = inputBox.querySelector('textarea');
+        const textarea = composer.querySelector('textarea');
         if (textarea) {
           textarea.focus();
         }
@@ -781,8 +781,8 @@ class ConversationArea extends HTMLElement {
 
       // Rule B: focusing the prompt textarea re-arms auto-follow. The user is
       // composing the next turn, not inspecting a pinned item. Use delegated
-      // focusin so we survive any re-creation of the textarea inside input-box.
-      inputBox.addEventListener('focusin', (e) => {
+      // focusin so we survive any re-creation of the textarea inside composer-box.
+      composer.addEventListener('focusin', (e) => {
         const t = /** @type {HTMLElement} */ (e.target);
         if (t && t.tagName === 'TEXTAREA') {
           this._selectionOrigin = null;
@@ -797,9 +797,9 @@ class ConversationArea extends HTMLElement {
     });
 
     // Reopen affordance — shown (via the data-hide-input CSS rule) in the
-    // input-box's slot on a closed thread column. The whole box is clickable
+    // composer-box's slot on a closed thread column. The whole box is clickable
     // (and Enter/Space-activatable, since it's role="button"); activating it
-    // reopens the thread, after which the column shows its real input box again.
+    // reopens the thread, after which the column shows its real composer again.
     const reopenBox = this.querySelector('#reopen-box');
     if (reopenBox) {
       const reopen = () => this._messageThread?.reopen();
@@ -1122,7 +1122,7 @@ class ConversationArea extends HTMLElement {
   //   Element.scrollIntoView: scrollTop is container-scoped and auto-clamped to
   //   [0, scrollHeight - clientHeight], so it can neither overshoot nor scroll a
   //   parent (e.g. the horizontal column container) as a side effect. The list
-  //   wrapper never overlaps the input box, so the one correct "end of
+  //   wrapper never overlaps the composer, so the one correct "end of
   //   conversation" position is simply scrollTop = scrollHeight, which clamps to
   //   "end of content at the bottom edge, above the box". Selecting the tail
   //   item and every follow-target update share that path.
@@ -1131,7 +1131,7 @@ class ConversationArea extends HTMLElement {
   //   selection triggers a column rebuild whose own rAF callbacks would
   //   otherwise perturb scrollTop right after our scroll. Chrome's scroll
   //   anchoring hid that; Safari (which has none) showed it as a just-selected
-  //   tail item jumping down behind the input box. The re-assert makes our
+  //   tail item jumping down behind the composer. The re-assert makes our
   //   scroll the final word.
   //   6/7. Selection (user or auto) of an item → bring the item fully into
   //      view with minimal, clamped movement (_scrollElementIntoView). The
@@ -1384,9 +1384,9 @@ class ConversationArea extends HTMLElement {
     this._dispatchItemSelected(itemId, origin);
 
     // Tail-only safety net: re-pin the end on the next frame. The hidden→visible
-    // input-box transition re-measures the textarea, which can clamp a
+    // composer-box transition re-measures the textarea, which can clamp a
     // bottom-pinned scroll; for the tail we re-assert the end so it can never end
-    // up behind the input box (Safari has no scroll-anchoring to recover the
+    // up behind the composer (Safari has no scroll-anchoring to recover the
     // clamp). We must NOT re-assert for non-tail items: there the initial
     // _scrollItemIntoView already no-opped (the item was fully visible), and
     // re-pinning would needlessly scroll an on-screen item.
@@ -1651,11 +1651,11 @@ class ConversationArea extends HTMLElement {
    *
    * Selecting the TAIL item means "show me the end of the conversation", so it
    * routes through the one layout-guaranteed scroll (_scrollEndIntoView) — the
-   * footer, and the input box just below it, pinned to the bottom of the
+   * footer, and the composer just below it, pinned to the bottom of the
    * viewport. Any other item gets a minimal, clamped scroll. Neither path uses
    * scrollIntoView, whose ancestor-walking + nearest/end alignment guesswork is
    * exactly what parked the footer past the scroll clamp and shoved the clicked
-   * item behind the (tall) input box.
+   * item behind the (tall) composer.
    * `smooth` only applies to the tail/end path (the auto-follow case); a non-tail
    * item gets the same minimal, instant nudge regardless — it's inspection, not
    * an end-follow.
@@ -1806,7 +1806,7 @@ class ConversationArea extends HTMLElement {
     }
 
     // One consistent, layout-safe code-path: pin the very end of the content
-    // (footer + queued items) above the input box, no matter how tall the
+    // (footer + queued items) above the composer, no matter how tall the
     // growable box currently is. Direct clamped scrollTop, never scrollIntoView.
     // Smooth-scroll: this is the deliberate auto-follow of the growing end of the
     // conversation, where a glide reads well. (Selection-driven and correction

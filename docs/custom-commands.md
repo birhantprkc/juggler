@@ -63,7 +63,7 @@ model can ask for what it needs.
 `run:` decides what invoking the command does:
 
 - **`send`** (default) — expands the template and sends it as your next message.
-- **`draft`** — expands the template into the input box so you can edit it before
+- **`draft`** — expands the template into the composer so you can edit it before
   sending.
 - **`subthread`** — runs the expanded prompt in an isolated sub-thread and lands
   the result back in the conversation, keeping the main context clean. Only this

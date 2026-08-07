@@ -8,7 +8,7 @@ import { longestCommonPrefix } from './completion-menu.js';
 /**
  * The `@` file-mention completion source for {@link CompletionMenu}, plus the
  * send-time path-extraction helpers ({@link extractFileMentions},
- * {@link extractFileMentionsAsync}) the input box uses to turn typed mentions
+ * {@link extractFileMentionsAsync}) the composer uses to turn typed mentions
  * into file-content context items.
  * @module components/file-mention-provider
  */

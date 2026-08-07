@@ -264,12 +264,12 @@ export async function runTests() {
   }
 
   // --- 7: isThreadClosed — the one canonical "is this thread finished" seam ---
-  // Shared by the tile colour, input-box placement, AND the footer's
+  // Shared by the tile colour, composer-box placement, AND the footer's
   // Reopen/Continue, so they can never disagree. "Closed" = non-empty result
   // AND no live (non-terminal) tool anywhere inside. Crucially this covers
   // RUNNING, not just pending: a stale 'interrupted' result on a thread whose
   // tool is mid-execution must still read open — that is the bounce fix (the
-  // input box was hopping parent↔child as the tool cycled pending→running
+  // composer was hopping parent↔child as the tool cycled pending→running
   // because the running phase fell through to the stale result).
   try {
     for (const liveState of ['pending', 'approved', 'running']) {
@@ -308,7 +308,7 @@ export async function runTests() {
 
   // --- 8: conversation-area._updateThreadHeaderStatus — the third reader ---
   // The column's own header observer must ALSO treat a pending-approval thread
-  // as not-finished, so it doesn't force the input box hidden via inline style.
+  // as not-finished, so it doesn't force the composer hidden via inline style.
   // Regression: it read raw `result` and set inline display:none on a waiting
   // sub-thread that still carried a stale "interrupted" result from a reload —
   // while the tab's data-hide-input walk wanted to SHOW it — so NEITHER the
@@ -317,12 +317,12 @@ export async function runTests() {
   // force-show, so the tab stays the single authority on which column wins.
   try {
     const el = /** @type {any} */ (document.createElement('conversation-area'));
-    document.body.appendChild(el); // connectedCallback → render() builds input-box + header
+    document.body.appendChild(el); // connectedCallback → render() builds composer-box + header
     // Footer needs a _messageThread we don't have here; stub it — this case
     // tests header-status visibility logic, not the footer.
     el.updateFooter = () => {};
-    const inputBox = el.querySelector('input-box');
-    assert(!!inputBox, 'conversation-area must render input-box');
+    const composer = el.querySelector('composer-box');
+    assert(!!composer, 'conversation-area must render composer-box');
 
     try {
       // Waiting sub-thread carrying a stale interrupted result: NOT finished
@@ -330,17 +330,17 @@ export async function runTests() {
       const waiting = buildRoot([thread('H1', [toolAction('pending')])]).get(0);
       waiting.set('result', 'Thread was interrupted');
       el._updateThreadHeaderStatus(waiting);
-      assert(inputBox.style.display !== 'none',
-        `waiting thread with stale result must NOT force input-box hidden; ` +
-				`inline display was "${inputBox.style.display}"`);
+      assert(composer.style.display !== 'none',
+        `waiting thread with stale result must NOT force composer-box hidden; ` +
+				`inline display was "${composer.style.display}"`);
 
       // Genuinely finished thread (result, nothing pending): force hidden.
       const done = buildRoot([thread('H2', [toolAction('completed')])]).get(0);
       done.set('result', 'All done');
       el._updateThreadHeaderStatus(done);
-      assert(inputBox.style.display === 'none',
-        `a genuinely finished thread must hide its input box; ` +
-				`inline display was "${inputBox.style.display}"`);
+      assert(composer.style.display === 'none',
+        `a genuinely finished thread must hide its composer; ` +
+				`inline display was "${composer.style.display}"`);
 
       passed++;
     } finally {

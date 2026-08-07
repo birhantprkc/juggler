@@ -42,7 +42,7 @@ import { tests as undoStateMachineTests } from '../integration-tests/undo-state-
 import { tests as multiViewerTests } from '../integration-tests/multi-viewer-tests.js';
 import { tests as clearTests } from '../integration-tests/clear-tests.js';
 import { tests as recentsOrderTests } from '../integration-tests/recents-order-tests.js';
-import { tests as inputBoxTurnGuardTests } from '../integration-tests/input-box-turn-guard-tests.js';
+import { tests as composerTurnGuardTests } from '../integration-tests/composer-turn-guard-tests.js';
 import { tests as queuedMessageTests } from '../integration-tests/queued-message-tests.js';
 import { tests as monitorDeliveryTests } from '../integration-tests/monitor-delivery-tests.js';
 import { tests as monitorKillTests } from '../integration-tests/monitor-kill-tests.js';
@@ -214,7 +214,7 @@ const ALL_TESTS = [
   ...multiViewerTests,
   ...clearTests,
   ...recentsOrderTests,
-  ...inputBoxTurnGuardTests,
+  ...composerTurnGuardTests,
   ...queuedMessageTests,
   ...monitorDeliveryTests,
   ...monitorKillTests,

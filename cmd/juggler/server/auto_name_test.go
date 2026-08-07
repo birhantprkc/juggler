@@ -93,18 +93,3 @@ func TestAcceptableAutoName(t *testing.T) {
 		}
 	}
 }
-
-func TestTaskNameRegex(t *testing.T) {
-	matches := []string{"Task 1", "Task 42", "Task 100"}
-	nonMatches := []string{"Task", "Task ", "task 1", "My Task 1", "Task 1 ", "Task 1x", "Fix bug"}
-	for _, m := range matches {
-		if !taskNameRe.MatchString(m) {
-			t.Errorf("expected %q to match taskNameRe", m)
-		}
-	}
-	for _, m := range nonMatches {
-		if taskNameRe.MatchString(m) {
-			t.Errorf("expected %q NOT to match taskNameRe", m)
-		}
-	}
-}

@@ -43,7 +43,7 @@ const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
  * ScheduledSendService — the single owner of scheduled-send *firing*.
  *
  * A scheduled send is persisted as `scheduledSendAt` (epoch ms) on a thread's
- * draft record. The input box only arms/cancels/displays it; it never fires it
+ * draft record. The composer only arms/cancels/displays it; it never fires it
  * on a private timer, because such a timer runs only while that thread is the
  * one bound to the column — so a send would silently fail whenever the user was
  * looking at a different thread or tab.
@@ -51,7 +51,7 @@ const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
  * Instead this session-wide poller sweeps EVERY conversation's threads on a
  * fixed interval and fires any whose target has passed, whether or not that
  * thread is currently visible anywhere. When the due thread *is* on screen it
- * delegates to that input box (so the send goes out with the live textarea's
+ * delegates to that composer (so the send goes out with the live textarea's
  * exact contents); otherwise it sends straight from the persisted draft.
  *
  * Multi-window: the draft lives in the shared (Yjs-replicated) doc, so every
@@ -180,7 +180,7 @@ class ScheduledSendService {
   }
 
   /**
-   * Fire one thread's scheduled send. Delegates to the bound input box when the
+   * Fire one thread's scheduled send. Delegates to the bound composer when the
    * thread is on screen (so the live textarea is what goes out); otherwise
    * sends from the persisted draft. Re-fire is guarded on three levels: an
    * in-process Set (same-window concurrent sweeps), a cross-window claim
@@ -204,9 +204,9 @@ class ScheduledSendService {
     try {
       if (!(await this._claimFire(claimKey))) return;
 
-      const box = this._findBoundInputBox(thread);
+      const box = this._findBoundComposer(thread);
       if (box && typeof box._fireScheduledSend === 'function') {
-        // On screen: the input box presses Send on its live contents and clears
+        // On screen: the composer presses Send on its live contents and clears
         // its own scheduled state + draft (synchronously, before its send
         // dispatch), so a later sweep sees no target.
         box._fireScheduledSend();
@@ -229,7 +229,7 @@ class ScheduledSendService {
       }
 
       // Mentions and dropped text files become context items BEFORE the user
-      // message, mirroring the input box's own send path — including its
+      // message, mirroring the composer's own send path — including its
       // busy-time behaviour: when a turn is in flight the send is queued, so the
       // reads must ride the same pendingItems queue (via executeContextItemIntoPending)
       // to stay grouped with the message on promotion rather than landing in the
@@ -251,7 +251,7 @@ class ScheduledSendService {
       const reason = await thread.conversation.sendMessage(text, thread.threadItemId, thread, { attachments });
       if (reason === null) {
         // Sent (or queued while a turn is live) — clear the leftover draft.
-        // conversation.sendMessage only clears an input box bound to THIS
+        // conversation.sendMessage only clears an composer bound to THIS
         // thread, and this one isn't on screen.
         thread.draft = { text: '', attachments: [], textFiles: [], scheduledSendAt: null };
       } else if (/worker not ready|still connecting|is processing/i.test(reason)) {
@@ -281,16 +281,16 @@ class ScheduledSendService {
   }
 
   /**
-   * Find the live `<input-box>` currently bound to `thread`, if any column is
+   * Find the live `<composer-box>` currently bound to `thread`, if any column is
    * showing it. Matched on logical identity (conversation + thread item), since
    * a fresh MessageThread wrapper is built for the same underlying thread on
    * every doc update.
    * @param {import('../model/message-thread.js').MessageThread} thread
-   * @returns {any|null} The bound input-box element, or null if none is showing it.
+   * @returns {any|null} The bound composer-box element, or null if none is showing it.
    * @private
    */
-  _findBoundInputBox(thread) {
-    const boxes = Array.from(document.querySelectorAll('input-box'));
+  _findBoundComposer(thread) {
+    const boxes = Array.from(document.querySelectorAll('composer-box'));
     for (const box of boxes) {
       const mt = /** @type {any} */ (box)._messageThread;
       if (mt && mt.conversationId === thread.conversation.id

@@ -21,7 +21,7 @@
 
 import Session, { normalizeHistoryEntry } from '../../js/model/session.js';
 import { initializeRegistries, assert } from '../utilities/test-helpers.js';
-import '../../js/components/input-box.js';
+import '../../js/components/composer.js';
 
 /**
  * A sample uploaded image attachment ref.
@@ -33,14 +33,14 @@ function ref(id) {
 }
 
 /**
- * Mount an <input-box> offscreen with listeners bound synchronously (render
+ * Mount an <composer-box> offscreen with listeners bound synchronously (render
  * defers setupListeners to rAF, which never pumps in the hidden test window).
  * @returns {{box: any, container: HTMLElement}} The mounted box and its container.
  */
-function mountInputBox() {
+function mountComposer() {
   const container = document.createElement('div');
   container.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:360px;height:600px;';
-  const box = /** @type {any} */ (document.createElement('input-box'));
+  const box = /** @type {any} */ (document.createElement('composer-box'));
   container.appendChild(box);
   document.body.appendChild(container);
   /** @type {any} */ (box).setupListeners?.();
@@ -138,7 +138,7 @@ export async function runTests() {
   // ── 3. Recall ─────────────────────────────────────────────────────────────
 
   await test('ArrowUp restores both the text and the staged image chip', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       box.session = { messageHistory: [{ content: 'recall me', attachments: [ref('img-sha')] }] };
       const textarea = box.querySelector('textarea');
@@ -154,7 +154,7 @@ export async function runTests() {
   });
 
   await test('ArrowUp then ArrowDown restores the original draft and its attachments', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       box.session = { messageHistory: [{ content: 'old prompt', attachments: [] }] };
       const textarea = box.querySelector('textarea');
@@ -175,7 +175,7 @@ export async function runTests() {
   // ── 4. Broken asset ───────────────────────────────────────────────────────
 
   await test('an entry whose asset no longer resolves recalls without throwing', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       box.session = { messageHistory: [{ content: 'gone', attachments: [ref('missing-sha')] }] };
       const textarea = box.querySelector('textarea');

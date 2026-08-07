@@ -16,7 +16,7 @@ export const SAVE_DEBOUNCE_MS = 300;
 /** Maximum number of messages to keep in history */
 export const MAX_MESSAGE_HISTORY = 100;
 
-/** Debounce delay for saving draft message in input box (milliseconds) */
+/** Debounce delay for saving draft message in composer (milliseconds) */
 export const DRAFT_SAVE_DEBOUNCE_MS = 2000;
 
 // ===== Yjs Sync Constants =====

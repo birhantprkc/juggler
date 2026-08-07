@@ -36,20 +36,20 @@ class UIDriver {
   // =========================================================================
 
   /**
-   * Type a message into the input-box and send it.
-   * Sets the textarea value then calls inputBox.sendMessage(),
+   * Type a message into the composer-box and send it.
+   * Sets the textarea value then calls composer.sendMessage(),
    * which dispatches the real 'send-message' CustomEvent.
    * @param {string} message - Message text to send
    */
   async typeAndSend(message) {
-    const inputBox = this.getInputBox();
-    if (!inputBox) {
-      throw new Error('UIDriver: input-box not found in container');
+    const composer = this.getComposer();
+    if (!composer) {
+      throw new Error('UIDriver: composer-box not found in container');
     }
 
-    const textarea = inputBox.querySelector('textarea');
+    const textarea = composer.querySelector('textarea');
     if (!textarea) {
-      throw new Error('UIDriver: textarea not found inside input-box');
+      throw new Error('UIDriver: textarea not found inside composer-box');
     }
 
     // Set value and dispatch input event (mirrors real typing)
@@ -62,14 +62,14 @@ class UIDriver {
     // the document already has the file-content items and the user message has
     // been kicked off via the harness's listener.
     //
-    // A blocked send must FAIL the test here, not later: the input box's
+    // A blocked send must FAIL the test here, not later: the composer's
     // guards (visible conversation processing, busy thread items) decline
     // silently by design for humans, but a test that proceeds after an
     // unsent message rides its turn fence to the per-test timeout with a
     // misleading "turn complete" error.
-    const blocked = await /** @type {any} */ (inputBox).sendMessage();
+    const blocked = await /** @type {any} */ (composer).sendMessage();
     if (blocked) {
-      throw new Error(`UIDriver: input-box refused to send "${message}" (${blocked})`);
+      throw new Error(`UIDriver: composer-box refused to send "${message}" (${blocked})`);
     }
   }
 
@@ -271,11 +271,11 @@ class UIDriver {
   }
 
   /**
-   * Get the input-box element.
-   * @returns {HTMLElement|null} The input-box element or null
+   * Get the composer-box element.
+   * @returns {HTMLElement|null} The composer-box element or null
    */
-  getInputBox() {
-    return this._container.querySelector('input-box');
+  getComposer() {
+    return this._container.querySelector('composer-box');
   }
 
   /**

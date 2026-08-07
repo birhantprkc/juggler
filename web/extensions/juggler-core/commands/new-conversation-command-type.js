@@ -7,13 +7,13 @@ import CommandType from 'juggler/command-type';
 import { extractErrorMessage } from 'juggler/ui';
 
 /**
- * New Conversation command — open a fresh, empty conversation in a new tab and
+ * New Conversation command — open a fresh, empty conversation and
  * switch to it.
  *
- * This is a tab-level operation: it creates an independent conversation rather
+ * This is a session-level operation: it creates an independent conversation rather
  * than mutating the current one, so it deliberately does NOT set
- * `mutatesConversation` — opening a new tab must never cancel a turn running in
- * the current tab. Tab management is a Session concern, so the command reaches
+ * `mutatesConversation` — opening a new conversation must never cancel a turn running in
+ * the current conversation. Conversation management is a Session concern, so the command reaches
  * the session through `messageThread.conversation.session` (the same surface
  * the duplicate/compact-new commands use).
  */
@@ -22,7 +22,7 @@ class NewConversationCommandType extends CommandType {
     id: 'new',
     name: 'New Conversation',
     version: '1.0.0',
-    description: 'Open a new, empty conversation in a new tab',
+    description: 'Open a new, empty conversation',
     icon: 'icon-document'
   };
 
@@ -38,8 +38,8 @@ class NewConversationCommandType extends CommandType {
     }
 
     try {
-      // Empty name → session assigns the canonical "Task N". activate switches
-      // the new tab into view immediately.
+      // Empty name → session assigns the canonical "Untitled N". activate switches
+      // the new conversation into view immediately.
       await session.createConversation('', { activate: true, origin: 'slash-command' });
       return { handled: true };
     } catch (error) {

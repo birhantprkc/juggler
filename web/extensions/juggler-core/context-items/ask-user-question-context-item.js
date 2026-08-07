@@ -559,7 +559,7 @@ class AskUserQuestionContextItem extends ContextItem {
       });
 
       // Enter submits (when every question is answered); Shift+Enter inserts a
-      // newline — mirroring the main user-message input box.
+      // newline — mirroring the main user-message composer.
       customField.addEventListener('keydown', e => {
         if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.metaKey) {
           e.preventDefault();

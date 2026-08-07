@@ -111,7 +111,7 @@ export function makeUserCommandClass(def) {
 
       switch (runMode) {
         case 'draft':
-          // Splice the expanded template into the input box for editing before
+          // Splice the expanded template into the composer for editing before
           // send — declared as a side effect so the command never touches DOM.
           return { handled: true, sideEffects: [{ type: 'setDraft', data: { text } }] };
 

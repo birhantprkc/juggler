@@ -18,7 +18,7 @@ import { getDefaultStrategyId, setDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID
 
 /**
  * "Defaults" tab (id `defaults`): the default-model and cheap-model pickers, the
- * global stream-idle-timeout field, and the new-task defaults. Seeded from the
+ * global stream-idle-timeout field, and the new-conversation defaults. Seeded from the
  * shared loadConfig() fetch; the picker persists immediately via PUT
  * /api/default-model and the timeout via PUT /api/config.
  */
@@ -59,13 +59,13 @@ export class DefaultsTab {
       this.renderDefaultModelField();
       this.renderCheapModelField();
       this.renderAutoNameSettings();
-      this.renderNewTaskDefaults();
+      this.renderNewConversationDefaults();
     }
   }
 
   /**
    * Resolve the currently attached UI session (for reading/writing per-project
-   * new-task defaults). Null when no session is attached (e.g. settings opened
+   * new-conversation defaults). Null when no session is attached (e.g. settings opened
    * before a project loads).
    * @returns {import('../../model/session.js').default|null} The active session, or null.
    * @private
@@ -75,23 +75,23 @@ export class DefaultsTab {
   }
 
   /**
-   * Render the "New task defaults" section: per-project defaults applied to each
-   * newly created task — the strategy a task starts on, and whether it starts
+   * Render the "New conversation defaults" section: per-project defaults applied to each
+   * newly created conversation — the strategy a conversation starts on, and whether it starts
    * with edits allowed instead of asking. Persisted to session metadata, so they
    * survive restarts and are shared across windows on the same project.
    * @private
    */
-  renderNewTaskDefaults() {
-    const container = this.host.querySelector('#new-task-defaults-form');
+  renderNewConversationDefaults() {
+    const container = this.host.querySelector('#new-conversation-defaults-form');
     if (!container) return;
     container.innerHTML = '';
 
     container.appendChild(this._buildDefaultStrategyRow());
 
     const { row } = buildToggleRow(
-      'Allow file edits in new tasks',
-      'Start each new task with file editing already allowed, so the agent can edit ' +
-      'without asking first — handy when your project is in version control. Each task ' +
+      'Allow file edits in new conversations',
+      'Start each new conversation with file editing already allowed, so the agent can edit ' +
+      'without asking first — handy when your project is in version control. Each conversation ' +
       'can still be toggled individually, and edits outside the project and allowed ' +
       'paths always prompt.',
       isDefaultFileEditingOn(this._getSession()),
@@ -101,13 +101,13 @@ export class DefaultsTab {
   }
 
   /**
-   * Render the "Tab auto-naming" section as a single card: the global on/off
+   * Render the "Conversation auto-naming" section as a single card: the global on/off
    * switch with an optional custom instruction stacked beneath it, shown only
    * while auto-naming is on. Both persist to credentials.json via PUT
    * /api/config; the server reads them live for the next naming attempt. When
-   * on (the default), a new tab keeps its "Task N" name and the composer takes
+   * on (the default), a new conversation keeps its "Untitled N" name and the composer takes
    * focus, and the cheap model derives a title after the first message; when
-   * off, the new tab opens its inline rename editor instead and no title is
+   * off, the new conversation opens its inline rename editor instead and no title is
    * auto-derived.
    * @private
    */
@@ -126,9 +126,9 @@ export class DefaultsTab {
     // On/off switch. Checked = enabled; we persist the *disabled* bool so the
     // stored key is absent by default (default-on).
     const { row, input: toggleInput } = buildToggleRow(
-      'Auto-name new tabs',
-      'Uses the cheap model to name each new tab, based on your first message. ' +
-      'Turn this off to name new tabs yourself.',
+      'Auto-name new conversations',
+      'Uses the cheap model to name each new conversation, based on your first message. ' +
+      'Turn this off to name new conversations yourself.',
       !(/** @type {any} */ (this.config).autoNameDisabled),
       async (on) => {
         const previous = toggleInput.checked;
@@ -237,12 +237,12 @@ export class DefaultsTab {
   }
 
   /**
-   * Build the "Default strategy for new tasks" picker row: a dropdown of every
+   * Build the "Default strategy for new conversations" picker row: a dropdown of every
    * registered strategy (in the registry's display order), preselecting the
    * configured default, or the built-in Default strategy when none is pinned.
    * Changing it persists immediately to session metadata; the pin is cleared
-   * when the built-in Default is chosen. Each task can still switch strategy
-   * afterwards — this only sets what a fresh task starts on.
+   * when the built-in Default is chosen. Each conversation can still switch strategy
+   * afterwards — this only sets what a fresh conversation starts on.
    * @returns {HTMLElement} The settings row element.
    * @private
    */
@@ -254,12 +254,12 @@ export class DefaultsTab {
     infoColumn.className = 'provider-info';
     const name = document.createElement('div');
     name.className = 'provider-name';
-    name.textContent = 'Default strategy for new tasks';
+    name.textContent = 'Default strategy for new conversations';
     const desc = document.createElement('div');
     desc.className = 'provider-description';
     desc.textContent =
-      'The strategy each new task starts on. You can still switch strategy per ' +
-      'task afterwards.';
+      'The strategy each new conversation starts on. You can still switch strategy per ' +
+      'conversation afterwards.';
     infoColumn.appendChild(name);
     infoColumn.appendChild(desc);
 
@@ -473,7 +473,7 @@ export class DefaultsTab {
 
   /**
    * Render the "Cheap model" picker: the small/fast model used for out-of-band
-   * micro-tasks (auto-naming a tab, plugin generateText). Offers an "Auto"
+   * micro-tasks (auto-naming a conversation, plugin generateText). Offers an "Auto"
    * option plus every model grouped by provider. Changing it persists
    * immediately via PUT /api/cheap-model; "Auto" clears the stored value and
    * the auto-derived choice is shown as a hint under the combo box.
@@ -486,7 +486,7 @@ export class DefaultsTab {
       nameLabel: 'Cheap model for background tasks',
       description:
         'A small, fast model used out-of-band for micro-tasks like auto-naming a ' +
-        'tab. "Auto" derives one from the model in use.',
+        'conversation. "Auto" derives one from the model in use.',
       autoLabel: 'Auto',
       current: this.cheapModel || { explicit: false },
       statusText: (ref) => this._cheapModelStatusText(ref),

@@ -83,7 +83,7 @@ export async function runTests(_ctx) {
       const buttonBefore = selector.querySelector('.strategy-selector-button');
       assert(!!buttonBefore, 'selector has an anchor button while open');
 
-      // Conversation change: input-box re-binds the selector to a new thread,
+      // Conversation change: composer-box re-binds the selector to a new thread,
       // which re-renders WHILE the dropdown is open. This must NOT destroy the
       // anchor button — recreating it detaches the menu's positioning target,
       // sending the next reposition to the top-left corner (the "jumps to the

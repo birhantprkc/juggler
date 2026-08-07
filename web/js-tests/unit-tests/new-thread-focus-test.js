@@ -6,7 +6,7 @@
  * Pressing "New Thread" with drafted text must move that text into the new
  * thread's box AND leave keyboard focus on the new box.
  *
- * The new column is built during a synchronous rebuild, but its input-box
+ * The new column is built during a synchronous rebuild, but its composer-box
  * textarea isn't focusable in that same tick and a late re-render can bounce
  * focus to <body> — so the rebuild's focus has to be re-asserted across a short
  * window (conversation-tab._reassertInputFocus). Regression guard for that.
@@ -50,8 +50,8 @@ export async function runTests() {
     tab.setActive();
 
     await waitFor(
-      () => !!tab.querySelector('input-box textarea'),
-      { description: 'root input-box textarea to build' }
+      () => !!tab.querySelector('composer-box textarea'),
+      { description: 'root composer-box textarea to build' }
     );
 
     // Wire send-message → conversation.sendMessage, mirroring UIEventManager,
@@ -70,11 +70,11 @@ export async function runTests() {
     };
     document.addEventListener('send-message', sendHandler);
 
-    const rootInputBox = /** @type {any} */ (tab.querySelector('input-box'));
-    assert(!!rootInputBox, 'root input-box should exist');
-    if (!rootInputBox._messageThread) rootInputBox.setMessageThread(conversation.rootMessageThread);
+    const rootComposer = /** @type {any} */ (tab.querySelector('composer-box'));
+    assert(!!rootComposer, 'root composer-box should exist');
+    if (!rootComposer._messageThread) rootComposer.setMessageThread(conversation.rootMessageThread);
 
-    const rootTextarea = /** @type {HTMLTextAreaElement} */ (rootInputBox.querySelector('textarea'));
+    const rootTextarea = /** @type {HTMLTextAreaElement} */ (rootComposer.querySelector('textarea'));
     assert(!!rootTextarea, 'root textarea should exist');
 
     // Simulate the user having typed a prompt with the box focused.
@@ -84,18 +84,18 @@ export async function runTests() {
     assert(document.activeElement === rootTextarea, 'precondition: root textarea focused after typing');
 
     // Press "New Thread".
-    rootInputBox._createThread();
+    rootComposer._createThread();
 
     await waitFor(() => !!pendingSend, { description: 'send-message to fire' });
     await pendingSend;
 
-    // The new thread column's input-box textarea must appear...
+    // The new thread column's composer-box textarea must appear...
     await waitFor(
-      () => tab.querySelectorAll('input-box textarea').length >= 2,
-      { description: 'new thread column input-box textarea to build' }
+      () => tab.querySelectorAll('composer-box textarea').length >= 2,
+      { description: 'new thread column composer-box textarea to build' }
     );
     const textareas = /** @type {HTMLTextAreaElement[]} */ (
-      Array.from(tab.querySelectorAll('input-box textarea'))
+      Array.from(tab.querySelectorAll('composer-box textarea'))
     );
     const newTextarea = textareas[textareas.length - 1];
 

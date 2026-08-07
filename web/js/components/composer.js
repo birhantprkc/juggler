@@ -38,7 +38,7 @@ import {
 } from '../utils/paste-tokens.js';
 
 /**
- * Input box component for sending messages
+ * Composer component for sending messages
  */
 
 /** Maximum height (px) the prompt textarea grows to before it starts scrolling. */
@@ -138,14 +138,14 @@ function looksBinary(str) {
  * `enableFileDrop` flag is off — which Juggler deliberately leaves off so WebKit
  * delivers real `File` objects to the page rather than routing drops through the
  * native bridge (see `cmd/juggler-app/app_state.go`). Because `<html>` is above
- * the message box in the bubble path, that handler runs *after* the input box's
+ * the composer in the bubble path, that handler runs *after* the composer's
  * own `dragover` and cancels the drop after the fact: the `drop` event never
  * fires and the image is silently rejected.
  *
  * This override listens one level higher (on `document`, which bubbles after
  * `<html>`) so it runs last and re-asserts `dropEffect = 'copy'` for file drags
- * aimed at an `input-box`, letting the drop land in the box's own `drop` handler.
- * Installed once for the whole document, regardless of how many input boxes mount.
+ * aimed at an `composer-box`, letting the drop land in the box's own `drop` handler.
+ * Installed once for the whole document, regardless of how many composers mount.
  */
 let fileDropOverrideInstalled = false;
 /** Install the document-level `dragover` override (see block comment above). */
@@ -155,7 +155,7 @@ function installFileDropOverride() {
   document.addEventListener('dragover', (e) => {
     const dt = /** @type {DragEvent} */ (e).dataTransfer;
     if (!dt || !Array.from(dt.types || []).includes('Files')) return;
-    if (!(e.target instanceof HTMLElement) || !e.target.closest('input-box')) return;
+    if (!(e.target instanceof HTMLElement) || !e.target.closest('composer-box')) return;
     e.preventDefault();
     dt.dropEffect = 'copy';
   });
@@ -211,7 +211,7 @@ function formatClockTime(epochMs) {
   return `${hh}:${mm}`;
 }
 
-class InputBox extends HTMLElement {
+class Composer extends HTMLElement {
   constructor() {
     super();
     /** @type {boolean} @private */
@@ -403,7 +403,7 @@ class InputBox extends HTMLElement {
     // CompletionMenu, which activates the first provider whose trigger matches.
     this._completions = new CompletionMenu({
       textarea,
-      getWrapper: () => this.querySelector('input-box-wrapper'),
+      getWrapper: () => this.querySelector('composer-box-wrapper'),
       onResize: () => this.autoResize(textarea),
       // An argument-less slash command runs on the Enter/click that accepts it,
       // so accepting it submits the composer directly instead of leaving the
@@ -446,8 +446,8 @@ class InputBox extends HTMLElement {
     // programmatically focus the textarea, because on mobile that pops the
     // onscreen keyboard just from opening a popup. On desktop the caret already
     // stays in the textarea via the mousedown preventDefault below, so skipping
-    // here changes nothing there — focus still "remains" on the message box.
-    const wrapper = this.querySelector('input-box-wrapper');
+    // here changes nothing there — focus still "remains" on the composer.
+    const wrapper = this.querySelector('composer-box-wrapper');
     if (wrapper) {
       wrapper.addEventListener('click', (e) => {
         const target = /** @type {Element|null} */ (e.target);
@@ -564,7 +564,7 @@ class InputBox extends HTMLElement {
       if (!hasText) void this._pasteImagesFromAsyncClipboard();
     });
 
-    // Drag-and-drop image files anywhere onto the message box. The listeners
+    // Drag-and-drop image files anywhere onto the composer. The listeners
     // live on the host element (`this`) so the whole component is a drop zone —
     // including the padding around the bubble — not just the inner bubble. The
     // drag-over highlight stays on the bubble (`wrapper`) for visual feedback.
@@ -1263,7 +1263,7 @@ class InputBox extends HTMLElement {
 
     // The Conversation calls clearInput() after successful validation, so the
     // message survives in the textarea if the send fails.
-    // Forward any attachments staged on this input box (populated by the
+    // Forward any attachments staged on this composer (populated by the
     // paste/drag/picker UI in a later step). Pass a copy and clear after
     // dispatch so the next message starts empty.
     // Only forward fully-uploaded attachments (a resolved AssetRef has an id);
@@ -1438,7 +1438,7 @@ class InputBox extends HTMLElement {
   }
 
   /**
-   * Bind the strategy selector to this input box's thread. Strategy is
+   * Bind the strategy selector to this composer's thread. Strategy is
    * per-thread with walk-up inheritance: a sub-thread shows its effective
    * strategy (inherited from the conversation unless it sets its own override),
    * and selecting one writes to the bound thread (MessageThread.setStrategy).
@@ -1452,7 +1452,7 @@ class InputBox extends HTMLElement {
   }
 
   /**
-   * Set the message thread for this input box
+   * Set the message thread for this composer
    * @param {import('../model/message-thread.js').MessageThread} messageThread
    */
   setMessageThread(messageThread) {
@@ -1524,7 +1524,7 @@ class InputBox extends HTMLElement {
         };
         // Settle synchronously when the textarea is already laid out (the
         // tab-switch case) so the column's scroll-to-bottom runs against a
-        // stable input-box height instead of a still-growing one — otherwise
+        // stable composer-box height instead of a still-growing one — otherwise
         // the textarea inflates a few frames later and shoves the footer
         // below the fold. Re-assert after layout for the not-yet-sized case
         // (and to correct any width-dependent wrap measurement).
@@ -1635,7 +1635,7 @@ class InputBox extends HTMLElement {
 
   /**
    * Show a prominent, transient warning notice to the user. Delegates to the
-   * app-level `showNotice` (a centered modal-dialog): the input box owns no
+   * app-level `showNotice` (a centered modal-dialog): the composer owns no
    * warning state of its own.
    * @param {string} message - Warning message to display
    * @param {number} [duration=5000] - Duration to show warning in milliseconds (0 = manual dismissal only)
@@ -1663,7 +1663,7 @@ class InputBox extends HTMLElement {
   // ========================================================================
 
   /**
-   * The per-image byte ceiling for the model this input box will send to.
+   * The per-image byte ceiling for the model this composer will send to.
    * Resolves the effective provider (thread override → conversation default)
    * and returns its documented per-image limit ({@link PROVIDER_MAX_IMAGE_BYTES}),
    * falling back to {@link MAX_ATTACHMENT_BYTES} when the provider has no
@@ -2546,7 +2546,7 @@ class InputBox extends HTMLElement {
     // send button depends on attachments too — refresh it on every attachment
     // mutation (this method is the single choke point for add/remove/stage).
     this._updateSendButtonState();
-    const container = this.querySelector('input-box-attachments');
+    const container = this.querySelector('composer-box-attachments');
     if (!container) return;
     container.innerHTML = '';
     if (this._pendingAttachments.length === 0 && this._pendingTextFiles.length === 0) {
@@ -3475,8 +3475,8 @@ class InputBox extends HTMLElement {
 
   render() {
     this.innerHTML = `
-            <input-box-wrapper>
-                <input-box-attachments></input-box-attachments>
+            <composer-box-wrapper>
+                <composer-box-attachments></composer-box-attachments>
                 <textarea
                     placeholder="Enter your command..."
                     aria-label="Message input"
@@ -3537,7 +3537,7 @@ class InputBox extends HTMLElement {
                         </button>
                     </input-controls-send>
                 </input-controls>
-            </input-box-wrapper>
+            </composer-box-wrapper>
         `;
     // Defer listener setup a frame so the just-written DOM is laid out.
     requestAnimationFrame(() => {
@@ -3550,4 +3550,4 @@ class InputBox extends HTMLElement {
   }
 }
 
-customElements.define('input-box', InputBox);
+customElements.define('composer-box', Composer);

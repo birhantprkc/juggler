@@ -151,7 +151,7 @@ export async function executeUIOperation(harness, op) {
         throw new Error('send-message operation requires message');
       }
 
-      // Type into the real input-box and submit via the UI path.
+      // Type into the real composer-box and submit via the UI path.
       await driver.typeAndSend(op.message);
 
       // Track response consumption
@@ -170,7 +170,7 @@ export async function executeUIOperation(harness, op) {
         throw new Error('send-message-no-wait operation requires message');
       }
 
-      // Type into the real input-box and submit via the UI path.
+      // Type into the real composer-box and submit via the UI path.
       await driver.typeAndSend(op.message);
 
       // Track response consumption
@@ -346,7 +346,7 @@ export async function executeUIOperation(harness, op) {
     }
 
     case 'close-thread': {
-      // Mirror the input-box "Close thread" button: resolve the open thread's
+      // Mirror the composer-box "Close thread" button: resolve the open thread's
       // MessageThread and call close(summaryText). close() preempts any live
       // turn (worker-truth cancel) and delivers the summary prompt.
       const conversation = harness.conversation;
@@ -387,7 +387,7 @@ export async function executeUIOperation(harness, op) {
 
     case 'assert-input-warning': {
       // Assert a visible centered warning notice. Searched document-wide so it
-      // is robust to which column owns the active input box.
+      // is robust to which column owns the active composer.
       await driver.waitForDOMStable();
       const needle = op.textContains || '';
       /** @returns {{ warnings: Element[], match: Element | undefined }} All visible notices, and the first whose text contains the needle (if any). */
@@ -406,7 +406,7 @@ export async function executeUIOperation(harness, op) {
 
       // Presence: the notice is surfaced asynchronously by the cancel/command
       // flow (conversation.showWarning → app-level showNotice) and can land a
-      // beat AFTER the triggering op's promise resolves — the input box may
+      // beat AFTER the triggering op's promise resolves — the composer may
       // still be (re)mounting, or the doc-stable point may precede the notice
       // under multi-lane load. A single check races that gap, so poll up to a
       // bounded deadline (mirroring the waitForDocumentMatch fence the runner
@@ -1266,14 +1266,14 @@ export async function executeUIOperation(harness, op) {
     case 'at-mention-file': {
       if (!op.path) throw new Error('at-mention-file operation requires path');
       const atPath = op.path;
-      const atInputBox = driver.getInputBox();
-      if (!atInputBox) throw new Error('at-mention-file: input-box not found');
-      const atTextarea = /** @type {HTMLTextAreaElement|null} */ (atInputBox.querySelector('textarea'));
+      const atComposer = driver.getComposer();
+      if (!atComposer) throw new Error('at-mention-file: composer-box not found');
+      const atTextarea = /** @type {HTMLTextAreaElement|null} */ (atComposer.querySelector('textarea'));
       if (!atTextarea) throw new Error('at-mention-file: textarea not found');
 
-      const atIb = /** @type {any} */ (atInputBox);
+      const atIb = /** @type {any} */ (atComposer);
 
-      // input-box.render() defers setupListeners() into requestAnimationFrame
+      // composer-box.render() defers setupListeners() into requestAnimationFrame
       // to give child custom elements a chance to finish their own connected
       // callbacks. In tests, the rAF may not have fired by the time the test
       // reaches this op; force-init in that window. (Production also benefits
@@ -1282,7 +1282,7 @@ export async function executeUIOperation(harness, op) {
         atIb.setupListeners();
       }
       if (!atIb._completions) {
-        throw new Error('at-mention-file: input-box._completions not initialised');
+        throw new Error('at-mention-file: composer-box._completions not initialised');
       }
 
       // Set up the textarea with "@path" text and position the cursor at the end,

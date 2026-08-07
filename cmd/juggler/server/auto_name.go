@@ -15,11 +15,11 @@ import (
 	"juggler/internal/jlog"
 )
 
-// taskNameRe matches the client-assigned default tab name ("Task 1", "Task 42").
-// Automatic auto-naming only ever touches a conversation still carrying this
-// exact shape, so a user-renamed / promoted / duplicated conversation is never
-// overwritten. A manual "auto-name now" (force) bypasses this guard.
-var taskNameRe = regexp.MustCompile(`^Task \d+$`)
+// Automatic auto-naming only ever touches a conversation still carrying its
+// default numbered placeholder name (core.IsUntitledName — the single source of
+// truth shared with the client's generator), so a user-renamed / promoted /
+// duplicated conversation is never overwritten. A manual "auto-name now" (force)
+// bypasses this guard.
 
 // Raw credential keys mirror handlers/config.go (autoNameDisabledKey,
 // autoNameInstructionKey). Read live so a settings change takes effect on the
@@ -40,7 +40,7 @@ const (
 	// instead of naming it.
 	autoNameMaxWords = 8
 	// autoNameMaxAttempts bounds how many times we ask the model for a usable
-	// title (one retry with a firmer prompt; a second failure keeps "Task N").
+	// title (one retry with a firmer prompt; a second failure keeps "Untitled N").
 	autoNameMaxAttempts = 2
 	// autoNameTimeout bounds the whole naming attempt (resolve + up to
 	// autoNameMaxAttempts completions).
@@ -95,7 +95,7 @@ func autoNamePrompt(firstMessage string) string {
 // acceptableAutoName reports whether a sanitized title is usable as a tab name.
 // It rejects empties, over-long word counts (a sentence, not a title), and
 // conversational preambles (the model answered the message instead of naming
-// it). A rejected candidate triggers a retry, then falls back to "Task N".
+// it). A rejected candidate triggers a retry, then falls back to "Untitled N".
 func acceptableAutoName(title string) bool {
 	if title == "" {
 		return false
@@ -141,11 +141,11 @@ func (s *Server) autoNamer() worker.AutoNameFunc {
 }
 
 // autoNameConversation derives and applies a short tab title for a freshly-used
-// conversation, out-of-band. Every failure mode leaves the "Task N" name
+// conversation, out-of-band. Every failure mode leaves the "Untitled N" name
 // untouched: the ones the user would want explained — no resolvable cheap model,
 // a completion error/timeout, a rejected candidate, no acceptable title, a rename
 // error — log at info so they surface on the console; the benign guard skips (the
-// current name is no longer "Task N", or a rename race) return silently. There is
+// current name is no longer "Untitled N", or a rename race) return silently. There is
 // deliberately no heuristic fallback: a dumb text-derived name is worse than none.
 func (s *Server) autoNameConversation(convID, firstMessage, customSystem string, force bool, primary core.ModelRef) {
 	sm := s.SessionManager()
@@ -154,9 +154,9 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 	}
 
 	// Fire guard: the automatic namer only ever renames a conversation still
-	// carrying its default "Task N" name. A manual force request renames
+	// carrying its default "Untitled N" name. A manual force request renames
 	// regardless (the user explicitly asked for a fresh name).
-	if !force && !taskNameRe.MatchString(sm.ConvNames()[convID]) {
+	if !force && !core.IsUntitledName(sm.ConvNames()[convID]) {
 		return
 	}
 
@@ -223,9 +223,9 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 	}
 
 	// Race guard: the user may have renamed during the completion. Re-check the
-	// name still matches "Task N" before applying. A manual force request skips
+	// name still matches "Untitled N" before applying. A manual force request skips
 	// this, applying the freshly-derived name regardless.
-	if !force && !taskNameRe.MatchString(sm.ConvNames()[convID]) {
+	if !force && !core.IsUntitledName(sm.ConvNames()[convID]) {
 		return
 	}
 

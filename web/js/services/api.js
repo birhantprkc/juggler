@@ -231,7 +231,7 @@ class APIService {
         // Session.duplicateConversation.
         ...(options.duplicateFrom ? { duplicateFrom: options.duplicateFrom } : {}),
         // origin labels the gesture that triggered this create so the server
-        // log can attribute it (phantom "Task N" tabs otherwise name no source).
+        // log can attribute it (phantom "Untitled N" tabs otherwise name no source).
         ...(options.origin ? { origin: options.origin } : {})
       })
     });

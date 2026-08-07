@@ -1010,7 +1010,7 @@ class WorkerManager {
         break;
 
       case 'validation-error': {
-        // Show validation error in input box warning
+        // Show validation error in composer warning
         if (!data.message) {
           break;
         }

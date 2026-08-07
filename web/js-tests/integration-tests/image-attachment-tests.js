@@ -16,7 +16,7 @@
  * sweep are inspectable directly.
  *  2. Rewind restores attachments — sending a user message that carries an
  *     image attachment, then rewinding to it, must restore the attachment into
- *     the input box (pending list + rendered chip) alongside the text, and a
+ *     the composer (pending list + rendered chip) alongside the text, and a
  *     re-send must carry the attachment through again. Attachments are restored
  *     regardless of the current model's capability (image capability is never
  *     gated client-side; an incapable model rejects the image at send time).
@@ -119,7 +119,7 @@ export const compactionAttachmentStandinTest = {
  */
 export const rewindRestoresAttachmentsTest = {
   name: 'rewind-restores-attachments',
-  description: 'Rewinding to a user message that carried an image attachment restores the attachment into the input box (pending + chip) and re-sending carries it through, regardless of the current model (capability is never gated client-side).',
+  description: 'Rewinding to a user message that carried an image attachment restores the attachment into the composer (pending + chip) and re-sending carries it through, regardless of the current model (capability is never gated client-side).',
   fixture: 'unit-test-fixture',
   llmResponses: [
     textResponse('first.'),
@@ -138,27 +138,27 @@ export const rewindRestoresAttachmentsTest = {
       await conversation.setModelConfig({ provider: 'vision-co', model: 'vis-1' });
 
       const tab = /** @type {any} */ (conversation.getTabElement());
-      const inputBox = tab?.getInputBox?.();
-      if (!inputBox) return; // headless — no UI to drive
+      const composer = tab?.getComposer?.();
+      if (!composer) return; // headless — no UI to drive
 
       // The image attachment to attach + send.
       const ref = { id: 'sha-rewind-1', mime: 'image/png', filename: 'pixel.png', bytes: 123, width: 1, height: 1 };
 
       /**
-       * Send `text` through the real input-box UI path. When `attachments` is
+       * Send `text` through the real composer-box UI path. When `attachments` is
        * given it is staged on the box first (mirrors a user attaching images);
        * otherwise whatever is already staged is sent.
        * @param {string} text
        * @param {Array<any>} [attachments]
        */
       const sendVia = async (text, attachments) => {
-        if (attachments) inputBox._pendingAttachments = attachments.map((a) => ({ ...a }));
-        const textarea = inputBox.querySelector('textarea');
+        if (attachments) composer._pendingAttachments = attachments.map((a) => ({ ...a }));
+        const textarea = composer.querySelector('textarea');
         textarea.value = text;
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
         const since = conversation.completedTurns;
         harness.consumeResponse();
-        const blocked = await inputBox.sendMessage();
+        const blocked = await composer.sendMessage();
         if (blocked) throw new Error(`send blocked: ${blocked}`);
         await harness.awaitPendingSend();
         await harness.waitForTurnComplete(6000, since);
@@ -184,23 +184,23 @@ export const rewindRestoresAttachmentsTest = {
       const restoredText = conversation.rootMessageThread.items[first.idx].get('content');
       const restoredAtts = normalizeAttachments(conversation.rootMessageThread.items[first.idx].get('attachments'));
       conversation.deleteRangeWithCleanup(conversation.rootMessageThread, first.idx);
-      inputBox.setText(restoredText);
-      const staged = inputBox.setPendingAttachments(restoredAtts);
+      composer.setText(restoredText);
+      const staged = composer.setPendingAttachments(restoredAtts);
 
-      // 3. The input box now holds the attachment again (pending + chip).
+      // 3. The composer now holds the attachment again (pending + chip).
       if (staged !== 1) {
         throw new Error(`Expected setPendingAttachments to stage 1 attachment; got ${staged}`);
       }
-      if (inputBox._pendingAttachments.length !== 1 || inputBox._pendingAttachments[0].id !== ref.id) {
-        throw new Error(`Pending attachments not restored; got ${JSON.stringify(inputBox._pendingAttachments)}`);
+      if (composer._pendingAttachments.length !== 1 || composer._pendingAttachments[0].id !== ref.id) {
+        throw new Error(`Pending attachments not restored; got ${JSON.stringify(composer._pendingAttachments)}`);
       }
       // UI-only fields must NOT leak onto the restored ref.
-      if ('_previewURL' in inputBox._pendingAttachments[0] || '_uploading' in inputBox._pendingAttachments[0]) {
+      if ('_previewURL' in composer._pendingAttachments[0] || '_uploading' in composer._pendingAttachments[0]) {
         throw new Error('Restored attachment carried UI-only fields (_previewURL/_uploading)');
       }
       await waitFor(
         () => {
-          const c = inputBox.querySelector('input-box-attachments');
+          const c = composer.querySelector('composer-box-attachments');
           const chip = c && c.querySelector('.attachment-chip');
           const name = chip && chip.querySelector('.attachment-name');
           return !!name && name.textContent === 'pixel.png';
@@ -221,9 +221,9 @@ export const rewindRestoresAttachmentsTest = {
       //    still stages the attachment. An incapable model rejects the image at
       //    send time (provider error), rather than the UI silently dropping it.
       await conversation.setModelConfig({ provider: 'text-co', model: 'txt-1' });
-      const staged2 = inputBox.setPendingAttachments([{ ...ref }]);
-      if (staged2 !== 1 || inputBox._pendingAttachments.length !== 1 || inputBox._pendingAttachments[0].id !== ref.id) {
-        throw new Error(`Text-only model must still stage restored attachments; staged=${staged2}, pending=${inputBox._pendingAttachments.length}`);
+      const staged2 = composer.setPendingAttachments([{ ...ref }]);
+      if (staged2 !== 1 || composer._pendingAttachments.length !== 1 || composer._pendingAttachments[0].id !== ref.id) {
+        throw new Error(`Text-only model must still stage restored attachments; staged=${staged2}, pending=${composer._pendingAttachments.length}`);
       }
     } finally {
       wsService._emit('providers-update', prior);
@@ -248,19 +248,19 @@ export const propertiesPanelShowsAttachmentsTest = {
     const apiService = (await import('../../js/services/api.js')).default;
 
     const tab = /** @type {any} */ (conversation.getTabElement());
-    const inputBox = tab?.getInputBox?.();
-    if (!inputBox) return; // headless — no UI to drive
+    const composer = tab?.getComposer?.();
+    if (!composer) return; // headless — no UI to drive
 
     const ref = { id: 'sha-props-1', mime: 'image/png', filename: 'diagram.png', bytes: 5000, width: 640, height: 480 };
 
-    // Send a user message carrying the attachment via the real input-box path.
-    inputBox._pendingAttachments = [{ ...ref }];
-    const textarea = inputBox.querySelector('textarea');
+    // Send a user message carrying the attachment via the real composer-box path.
+    composer._pendingAttachments = [{ ...ref }];
+    const textarea = composer.querySelector('textarea');
     textarea.value = 'look at this diagram';
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
     const since = conversation.completedTurns;
     harness.consumeResponse();
-    const blocked = await inputBox.sendMessage();
+    const blocked = await composer.sendMessage();
     if (blocked) throw new Error(`send blocked: ${blocked}`);
     await harness.awaitPendingSend();
     await harness.waitForTurnComplete(6000, since);
@@ -328,16 +328,16 @@ export const imageOnlySendTest = {
       await conversation.setModelConfig({ provider: 'vision-co', model: 'vis-1' });
 
       const tab = /** @type {any} */ (conversation.getTabElement());
-      const inputBox = tab?.getInputBox?.();
-      if (!inputBox) return; // headless — no UI to drive
+      const composer = tab?.getComposer?.();
+      if (!composer) return; // headless — no UI to drive
 
       const ref = { id: 'sha-imageonly-1', mime: 'image/png', filename: 'pixel.png', bytes: 123, width: 1, height: 1 };
-      const sendBtn = inputBox.querySelector('#send-button');
-      const textarea = inputBox.querySelector('textarea');
+      const sendBtn = composer.querySelector('#send-button');
+      const textarea = composer.querySelector('textarea');
       const historyLenBefore = conversation._session.messageHistory.length;
 
       // Stage the image via the real staging path; leave the textarea empty.
-      const staged = inputBox.setPendingAttachments([{ ...ref }]);
+      const staged = composer.setPendingAttachments([{ ...ref }]);
       if (staged !== 1) {
         throw new Error(`Expected setPendingAttachments to stage 1 attachment; got ${staged}`);
       }
@@ -353,7 +353,7 @@ export const imageOnlySendTest = {
       // Send with NO text — must not be blocked.
       const since = conversation.completedTurns;
       harness.consumeResponse();
-      const blocked = await inputBox.sendMessage();
+      const blocked = await composer.sendMessage();
       if (blocked) throw new Error(`image-only send blocked: ${blocked}`);
       await harness.awaitPendingSend();
       await harness.waitForTurnComplete(6000, since);
@@ -393,8 +393,8 @@ export const pasteAsyncClipboardFallbackTest = {
 
   async customAssertions(conversation) {
     const tab = /** @type {any} */ (conversation.getTabElement());
-    const inputBox = tab?.getInputBox?.();
-    if (!inputBox) return; // headless — no UI to drive
+    const composer = tab?.getComposer?.();
+    if (!composer) return; // headless — no UI to drive
 
     // Stub the async Clipboard API to return exactly one PNG image, as an own
     // property that shadows the prototype getter; skip if the env forbids it.
@@ -414,14 +414,14 @@ export const pasteAsyncClipboardFallbackTest = {
       return; // Can't stub the clipboard here — nothing to assert.
     }
 
-    const originalHandleFiles = inputBox._handleFiles;
+    const originalHandleFiles = composer._handleFiles;
     try {
       /** @type {any[]} */
       const captured = [];
-      inputBox._handleFiles = (/** @type {FileList|File[]} */ files) => {
+      composer._handleFiles = (/** @type {FileList|File[]} */ files) => {
         for (const f of Array.from(files)) captured.push(f);
       };
-      await inputBox._pasteImagesFromAsyncClipboard();
+      await composer._pasteImagesFromAsyncClipboard();
       if (captured.length === 0) {
         throw new Error('async fallback did not deliver any file to _handleFiles');
       }
@@ -433,7 +433,7 @@ export const pasteAsyncClipboardFallbackTest = {
         throw new Error(`pasted image File has no bytes; size=${file && file.size}`);
       }
     } finally {
-      inputBox._handleFiles = originalHandleFiles;
+      composer._handleFiles = originalHandleFiles;
       if (originalDescriptor) {
         Object.defineProperty(navigator, 'clipboard', originalDescriptor);
       } else {

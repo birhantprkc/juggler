@@ -29,7 +29,7 @@
 
 /**
  * Bubbling event the strategy selector fires when its cache-impact
- * classification flips. The composer (input-box) owns the warning affordance —
+ * classification flips. The composer (composer-box) owns the warning affordance —
  * a round alert beside the send button — so this signal is the only coupling
  * between the two: `detail.busts` is true when the next send would re-read a
  * large slice of cached context, false when it clears.

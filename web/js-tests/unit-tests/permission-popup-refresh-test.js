@@ -13,7 +13,7 @@
  * node (rect = 0) and slam the popup to the top-left corner.
  *
  * This is exactly what happens in a thread column: every conversation-view
- * rebuild hands the input-box a FRESH MessageThread wrapper
+ * rebuild hands the composer-box a FRESH MessageThread wrapper
  * (conversation-tab.js → createMessageThread), which re-binds the controls via
  * setMessageThread() and re-renders them. Entering a new permission pattern
  * triggers such a rebuild, which is what made the open popup jump to the corner.
@@ -67,7 +67,7 @@ export async function runTests(_ctx) {
     const conversation = await createTestConversation(session);
     const mtA = conversation.rootMessageThread;
     // A fresh wrapper over the SAME conversation — exactly what a thread-column
-    // rebuild hands the input-box via createMessageThread(), which then re-binds
+    // rebuild hands the composer-box via createMessageThread(), which then re-binds
     // permission-controls through setMessageThread().
     const mtB = new MessageThread(conversation, conversation._doc.root, null);
 
@@ -95,7 +95,7 @@ export async function runTests(_ctx) {
       const buttonBefore = el.querySelector('.permission-btn');
       assert(!!buttonBefore, 'controls have an anchor button while open');
 
-      // Conversation-view update: input-box re-binds us to a fresh MessageThread
+      // Conversation-view update: composer-box re-binds us to a fresh MessageThread
       // wrapper, re-rendering WHILE the popup is open. This must NOT destroy the
       // anchor button — recreating it detaches the body-hosted popup's
       // positioning target, sending the next reposition to the top-left corner
@@ -165,7 +165,7 @@ export async function runTests(_ctx) {
 
       assert(rowFor(bId) === bRowBefore, 'untouched path row kept its DOM node (no full re-render)');
       assert(rowFor(aId) === aRowBefore, 'changed path row updated in place (same node)');
-      assert(rowFor(aId)?.querySelector('.path-scope-btn')?.textContent === 'This tab', 'scope label updated in place');
+      assert(rowFor(aId)?.querySelector('.path-scope-btn')?.textContent === 'This conversation', 'scope label updated in place');
     } finally {
       // Session-scoped paths persist in the SHARED backend session metadata and
       // are broadcast to every lane in the pool. Remove the ones we created so

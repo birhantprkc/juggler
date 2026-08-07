@@ -87,10 +87,10 @@ export async function runTests(_ctx) {
   });
 
   run('neutralises a literal custom-element tag to inert visible text', () => {
-    const el = make('paste <input-box></input-box> here');
-    assert(!el.querySelector('input-box'), 'a literal <input-box> must not become a live element');
+    const el = make('paste <composer-box></composer-box> here');
+    assert(!el.querySelector('composer-box'), 'a literal <composer-box> must not become a live element');
     const txt = el.querySelector('.user-message-text').textContent || '';
-    assert(txt.includes('<input-box>'), `the literal tag should survive as visible text; got: ${txt}`);
+    assert(txt.includes('<composer-box>'), `the literal tag should survive as visible text; got: ${txt}`);
     el.remove();
   });
 

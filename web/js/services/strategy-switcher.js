@@ -94,7 +94,7 @@ class StrategySwitcher {
   /**
    * Resolve the strategy selector this gesture should drive, preferring the
    * column the user is actually focused in. When focus IS in a composer textarea,
-   * its enclosing `input-box` identifies the intended thread — the root OR any
+   * its enclosing `composer-box` identifies the intended thread — the root OR any
    * open sub-thread column, each of which has its own selector bound to its own
    * thread. The gesture fires window-wide, though, so focus may be outside any
    * composer (a selected context item, a conversation column); falling back to
@@ -111,7 +111,7 @@ class StrategySwitcher {
     // Prefer the focused composer's own column.
     const focused = /** @type {HTMLElement|null} */ (document.activeElement);
     const box = focused && typeof focused.closest === 'function'
-      ? focused.closest('input-box')
+      ? focused.closest('composer-box')
       : null;
     if (box) {
       const owned = box.querySelector('strategy-selector');

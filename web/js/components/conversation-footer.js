@@ -292,7 +292,7 @@ class ConversationFooter extends HTMLElement {
                     <div class="footer-idle-right">
                         <button class="message-action-btn duplicate-to-tab-btn hidden">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M448-160v-305.33L226.67-686.67V-570H160v-230h230v66.67H274l240.67 240.66V-160H448Zm126.67-368-47.34-47.33 158.67-158H570V-800h230v230h-66.67v-116.67L574.67-528Z"/></svg>
-                            Duplicate as new tab
+                            Duplicate as new conversation
                         </button>
                         <button class="message-action-btn continue-btn">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M240-240v-480h66.67v480H240Zm169.33 0 390-240-390-240v480ZM476-363.67v-232.66L665-480 476-363.67ZM476-480Z"/></svg>
@@ -324,7 +324,7 @@ class ConversationFooter extends HTMLElement {
     if (duplicateTabBtn) {
       duplicateTabBtn.addEventListener('click', () => {
         // Same entry point as the (removed) header button: app.js listens for
-        // this on document and duplicates the visible conversation into a new tab.
+        // this on document and duplicates the visible conversation into a new conversation.
         this.dispatchEvent(new CustomEvent('duplicate-conversation', {
           bubbles: true,
           composed: true

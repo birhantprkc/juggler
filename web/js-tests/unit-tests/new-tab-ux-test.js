@@ -9,9 +9,9 @@
  *      `<li>` after the `.conversation-add-item` add button.
  *   2. With auto-naming OFF, the new tab MUST be in inline-rename mode — the
  *      `<li>` carries the `.is-renaming` class and the seeded input value
- *      matches the canonical "Task N" name so the user can type the real name
+ *      matches the canonical "Untitled N" name so the user can type the real name
  *      straight away. (With auto-naming ON — the default — the tab instead
- *      keeps its "Task N" name for the LLM to replace and focuses the composer;
+ *      keeps its "Untitled N" name for the LLM to replace and focuses the composer;
  *      this test pins the rename-on-create branch, so it disables auto-naming.)
  *
  * Both must hold synchronously after the user-facing handler resolves: any
@@ -50,7 +50,7 @@ export async function runTests() {
   const origShowAlert = /** @type {any} */ (window).showAlert;
 
   // Pin the auto-naming-OFF branch. With auto-naming ON (the default) a fresh
-  // "+" tab keeps its "Task N" name for the LLM and focuses the composer; only
+  // "+" tab keeps its "Untitled N" name for the LLM and focuses the composer; only
   // with it OFF does the bar open the inline rename editor this test asserts.
   // The bar decides via a synchronous module cache (auto-name-setting.js) that
   // setSession seeds fire-and-forget from GET /api/config. Just setting the
@@ -206,19 +206,19 @@ export async function runTests() {
     assert(!!renameInput,
       `document must contain a .conversation-tab-rename-input after the + click`);
     // The input is seeded with the conversation's canonical name — the name
-    // the server actually assigned, not the blank "Task N" the client
+    // the server actually assigned, not the blank "Untitled N" the client
     // requested. In the SHARED pool session a sibling lane may already hold
-    // "Task N", so the server's uniqueName legitimately resolves the collision
-    // to "Task N (copy)" / "(copy 2)" — the same suffix behaviour the
+    // "Untitled N", so the server's uniqueName legitimately resolves the collision
+    // to "Untitled N (copy)" / "(copy 2)" — the same suffix behaviour the
     // duplicate-conversation test accepts. Assert the real UX property (the
     // input matches whatever canonical name the server gave the tab) and that
-    // the name derives from the canonical "Task N" scheme. A bare /^Task \d+$/
+    // the name derives from the canonical "Untitled N" scheme. A bare /^Untitled \d+$/
     // regex flakes here under load when the base name is already taken.
     const canonicalName = /** @type {any} */ (session.conversations.get(newId)).name;
     assert(renameInput.value === canonicalName,
       `rename input must be seeded with the conversation's canonical name "${canonicalName}", got "${renameInput.value}"`);
-    assert(/^Task \d+( \(copy( \d+)?\))?$/.test(canonicalName),
-      `new conversation name must derive from the canonical "Task N" scheme, got "${canonicalName}"`);
+    assert(/^Untitled \d+( \(copy( \d+)?\))?$/.test(canonicalName),
+      `new conversation name must derive from the canonical "Untitled N" scheme, got "${canonicalName}"`);
 
     // --- Assert 3: a `conversations-changed` op="created" broadcast echo
     //     that arrives after the local create has resolved (the only

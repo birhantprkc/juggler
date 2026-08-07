@@ -74,7 +74,7 @@ class JugglerApp {
 
   /** @private */
   flushComposerDrafts() {
-    document.querySelectorAll('input-box').forEach((box) => {
+    document.querySelectorAll('composer-box').forEach((box) => {
       if (typeof (/** @type {any} */ (box).flushDraft) === 'function') {
         /** @type {any} */ (box).flushDraft();
       }
@@ -260,7 +260,7 @@ class JugglerApp {
     this._responseHandler = null;
 
     // Initialize connection manager (will call onServerMessage callback).
-    // contextPanel, conversationArea, conversationControls, and inputBox are per-tab.
+    // contextPanel, conversationArea, conversationControls, and composer are per-tab.
     if (!this.conversationBar) {
       throw new Error('All UI components are required');
     }
@@ -448,7 +448,7 @@ class JugglerApp {
     }
 
     // Targeted session metadata patch. Apply locally without a full
-    // session refresh so permission changes sync instantly across tabs.
+    // session refresh so permission changes sync instantly across conversations.
     if (data.type === 'session-metadata-changed') {
       session.applySessionMetadataPatch(data.metadata || {}, { remote: true });
       return;
@@ -776,11 +776,11 @@ class JugglerApp {
    * @private
    */
   _loadMessageIntoInput(conversation, message) {
-    // Access input box through the tab element
+    // Access composer through the tab element
     const tabElement = conversation.getTabElement();
     if (!tabElement) return;
-    const inputBox = tabElement.getInputBox();
-    if (!inputBox) return;
+    const composer = tabElement.getComposer();
+    if (!composer) return;
 
     // Pull the message's fields whether it's a Y.Map item or a plain record.
     const read = (/** @type {string} */ key) =>
@@ -788,7 +788,7 @@ class JugglerApp {
     const text = read('content') || '';
     const attachments = normalizeAttachments(read('attachments'));
 
-    const textarea = inputBox.querySelector('textarea');
+    const textarea = composer.querySelector('textarea');
     if (textarea) {
       // Save any existing draft to history before overwriting
       const existingText = textarea.value.trim();
@@ -800,14 +800,14 @@ class JugglerApp {
       }
 
       textarea.value = text;
-      // @ts-ignore - autoResize exists on InputBox custom element
-      inputBox.autoResize(textarea);
+      // @ts-ignore - autoResize exists on Composer custom element
+      composer.autoResize(textarea);
       textarea.focus();
     }
     // Restore staged image attachments. Always call so restoring a message
     // with no attachments also clears any previously-staged attachments.
-    if (typeof (/** @type {any} */ (inputBox).setPendingAttachments) === 'function') {
-      /** @type {any} */ (inputBox).setPendingAttachments(attachments);
+    if (typeof (/** @type {any} */ (composer).setPendingAttachments) === 'function') {
+      /** @type {any} */ (composer).setPendingAttachments(attachments);
     }
   }
 
@@ -842,7 +842,7 @@ class JugglerApp {
    * projection (`_statusMessages.size > 0`), true whenever ANY conversation has
    * a status entry — and a client-side value that can linger after a turn ends.
    * Using it here let a background turn (or a stale entry) swallow a mis-pressed
-   * Escape meant to clear an idle input box.
+   * Escape meant to clear an idle composer.
    * @returns {boolean} True when Escape should invoke `cancelLLMOperation`
    */
   shouldHandleEscape() {
@@ -860,9 +860,9 @@ class JugglerApp {
    *
    * Vantage-aware. Stopping from a sub-thread's OWN vantage (Escape while
    * focused in it, or its footer Stop) INTERRUPTS it: the worker
-   * turn is preempted but the thread stays open, so its input box stays put and
+   * turn is preempted but the thread stays open, so its composer stays put and
    * the user can keep interacting with it. Stopping from the root/parent vantage
-   * stops everything AND closes the open sub-threads (so the input box returns
+   * stops everything AND closes the open sub-threads (so the composer returns
    * to the root column).
    * @param {string|null} [focusedThreadId] - Thread id of the column the stop
    *   came from (null = root). When omitted/undefined the vantage is unknown and
@@ -966,7 +966,7 @@ class JugglerApp {
       conversation.stopProcessing();
     }
 
-    // Root/parent vantage: close any open sub-threads so the input box returns
+    // Root/parent vantage: close any open sub-threads so the composer returns
     // to the root column (their worker turn was just preempted above).
     conversation.closeOpenSubThreads();
 

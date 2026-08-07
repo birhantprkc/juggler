@@ -4,6 +4,7 @@
 
 import contextItemRegistry from '../registries/context-item-registry.js';
 import Conversation from './conversation.js';
+import { UNTITLED_BASE, UNTITLED_NAME_RE, untitledName } from './conversation-naming.js';
 import {
   SAVE_DEBOUNCE_MS,
   MAX_MESSAGE_HISTORY,
@@ -675,7 +676,7 @@ class Session {
     } catch (_e) {
       return [];
     }
-    return ids.map((/** @type {string} */ id) => this.getConversationName(id) || 'Untitled');
+    return ids.map((/** @type {string} */ id) => this.getConversationName(id) || UNTITLED_BASE);
   }
 
   /**
@@ -1059,7 +1060,7 @@ class Session {
           for (const convId of data.conversationOrder) {
             const stub = new Conversation(
               convId,
-              names[convId] || 'Untitled',
+              names[convId] || UNTITLED_BASE,
               this,
               services,
               { skipBuiltInContextItems: true, loadState: 'unloaded' }
@@ -1089,7 +1090,7 @@ class Session {
 
           // Background-load the remaining conversations at low priority so
           // tab-level state (running/awaiting-approval indicators) is visible
-          // for every tab on reload, not just the active one. The visible
+          // for every conversation on reload, not just the active one. The visible
           // conversation was prioritised above so it still loads first;
           // others trickle in at the queue's concurrency limit.
           const backgroundIds = data.conversationOrder.filter(
@@ -1145,7 +1146,7 @@ class Session {
 
   /**
    * Create the initial conversation for an empty session. Delegates to
-   * createConversation() so naming ("Task N"), default-model seeding, on-disk
+   * createConversation() so naming ("Untitled N"), default-model seeding, on-disk
    * rename and order persistence all go through the single code path —
    * no parallel bootstrap that drifts out of sync.
    * @private
@@ -1334,14 +1335,14 @@ class Session {
    * @returns {Promise<string>} New conversation ID
    */
   async createConversation(name, { activate = false, origin = 'unspecified' } = {}) {
-    // A create with no caller-supplied name is a blank "Task N" the user will
+    // A create with no caller-supplied name is a blank "Untitled N" the user will
     // want to name (the + button and the /new command both create this way).
     // When it's also the tab we activate, that's the signal to open inline
     // rename — decided here, once, so every unnamed-create path gets the
     // "name it now" UX without each caller wiring it up. Named creates
     // (copy/move/promote-to-tab) already have a meaningful name and are skipped.
     const wantsRename = activate && !(name && String(name).trim());
-    const requestedName = name || this._nextTaskName();
+    const requestedName = name || this._nextUntitledName();
 
     // Preallocate the id locally so we can mark this create as pending before
     // the POST. The server's `conversations-changed` echo can outrun the HTTP
@@ -1487,28 +1488,28 @@ class Session {
 
 
   /**
-   * Pick the default "Task N" name for a fresh, unnamed conversation: the
-   * smallest positive N whose "Task N" isn't already in use by an open
+   * Pick the default "Untitled N" name for a fresh, unnamed conversation: the
+   * smallest positive N whose "Untitled N" isn't already in use by an open
    * conversation. Numbering from the existing names (not `conversations.size`)
    * keeps the guess collision-free after any tab is closed or archived — a
    * count-based `size + 1` re-suggests a still-live number the moment the tab
-   * count drifts below the highest Task number (e.g. closing "Task 3" of 1..6
-   * would make `size + 1` land on the still-open "Task 6"), forcing the server
-   * to hand back "Task 6 (copy)". The server's uniqueName still resolves any
+   * count drifts below the highest Untitled number (e.g. closing "Untitled 3" of 1..6
+   * would make `size + 1` land on the still-open "Untitled 6"), forcing the server
+   * to hand back "Untitled 6 (copy)". The server's uniqueName still resolves any
    * genuine cross-lane race, but for the common single-viewer case this returns
    * a name it accepts verbatim.
-   * @returns {string} An unused "Task N" name
+   * @returns {string} An unused "Untitled N" name
    * @private
    */
-  _nextTaskName() {
+  _nextUntitledName() {
     const used = new Set();
     this.conversations.forEach((conv) => {
-      const m = /^Task (\d+)$/.exec(conv.name || '');
+      const m = UNTITLED_NAME_RE.exec(conv.name || '');
       if (m) used.add(Number(m[1]));
     });
     let n = 1;
     while (used.has(n)) n++;
-    return `Task ${n}`;
+    return untitledName(n);
   }
 
   /**
@@ -1727,7 +1728,7 @@ class Session {
 
   /**
    * Restore a binned conversation — moves it back to the active set on disk.
-   * The new tab will appear via the `conversations-changed` op="restored" broadcast.
+   * The new conversation will appear via the `conversations-changed` op="restored" broadcast.
    * @param {string} conversationId
    * @returns {Promise<void>}
    */

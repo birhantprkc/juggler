@@ -13,11 +13,11 @@
  *  2. normalizeDraft round-trips the new `textFiles` field, so a dropped file
  *     staged in the composer survives the draft save/reload cycle alongside the
  *     text and image attachments (they are one persisted record).
- *  3. input-box._handleTextFiles guards: a per-file SIZE gate that fires on
+ *  3. composer-box._handleTextFiles guards: a per-file SIZE gate that fires on
  *     `file.size` BEFORE any read (so a gigabyte drop is rejected without being
  *     allocated), and a binary-content gate. Both reject-with-warning and do
  *     NOT stage the file; a valid small text file IS staged.
- *  4. input-box._handleFiles image-size gate: a dropped image is rejected when
+ *  4. composer-box._handleFiles image-size gate: a dropped image is rejected when
  *     it exceeds the send target's per-provider limit (model-aware), so an
  *     image the provider would reject never enters the conversation.
  * @module unit-tests/dropped-file-test
@@ -26,18 +26,18 @@
 import DroppedFileContextItem from '../context-items/dropped-file-context-item.js';
 import { normalizeDraft } from '../../../js/utils/attachments.js';
 import { initializeRegistries, assert } from '../../../js-tests/utilities/test-helpers.js';
-import '../../../js/components/input-box.js';
+import '../../../js/components/composer.js';
 
 /**
- * Mount an <input-box> offscreen and bind its listeners synchronously (render()
+ * Mount an <composer-box> offscreen and bind its listeners synchronously (render()
  * defers setupListeners to rAF, which never pumps in the hidden test window —
  * mirrors mobile-composer-test's mount). Stubs showWarning to capture messages.
  * @returns {{box: any, container: HTMLElement, warnings: string[]}} Mounted box, its container, and captured warnings.
  */
-function mountInputBox() {
+function mountComposer() {
   const container = document.createElement('div');
   container.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:360px;height:600px;';
-  const box = /** @type {any} */ (document.createElement('input-box'));
+  const box = /** @type {any} */ (document.createElement('composer-box'));
   container.appendChild(box);
   document.body.appendChild(container);
 
@@ -82,7 +82,7 @@ function imageWithSize(name, size) {
 }
 
 /**
- * Stub the model this input box will send to, so {@link _maxImageBytes}
+ * Stub the model this composer will send to, so {@link _maxImageBytes}
  * resolves a specific provider without a live conversation.
  * @param {any} box
  * @param {string} provider
@@ -198,7 +198,7 @@ export async function runTests() {
   // ── 3. _handleTextFiles guards ────────────────────────────────────────────
 
   await test('a valid small text file is staged', async () => {
-    const { box, container, warnings } = mountInputBox();
+    const { box, container, warnings } = mountComposer();
     try {
       box._handleTextFiles([new window.File(['hello world\n'], 'notes.txt', { type: 'text/plain' })]);
       const staged = await waitFor(() => box._pendingTextFiles.length === 1);
@@ -212,7 +212,7 @@ export async function runTests() {
   });
 
   await test('an oversized file is rejected before any read', async () => {
-    const { box, container, warnings } = mountInputBox();
+    const { box, container, warnings } = mountComposer();
     try {
       // 2 GB reported size on a one-byte payload: the size gate must reject it
       // from file.size alone, never calling readAsText.
@@ -227,7 +227,7 @@ export async function runTests() {
   });
 
   await test('a binary-looking file is rejected with a warning', async () => {
-    const { box, container, warnings } = mountInputBox();
+    const { box, container, warnings } = mountComposer();
     try {
       // A NUL byte is decisive for looksBinary().
       box._handleTextFiles([new window.File(['abc\u0000def'], 'blob.bin', { type: '' })]);
@@ -243,7 +243,7 @@ export async function runTests() {
   // ── 4. _handleFiles image-size guard (model-aware) ────────────────────────
 
   await test('an image over the current model\'s per-image limit is rejected', async () => {
-    const { box, container, warnings } = mountInputBox();
+    const { box, container, warnings } = mountComposer();
     try {
       stubModel(box, 'anthropic'); // 5 MB per-image limit
       let uploads = 0;
@@ -260,7 +260,7 @@ export async function runTests() {
   });
 
   await test('an image under the current model\'s limit is accepted', async () => {
-    const { box, container, warnings } = mountInputBox();
+    const { box, container, warnings } = mountComposer();
     try {
       stubModel(box, 'anthropic');
       let uploads = 0;
@@ -274,7 +274,7 @@ export async function runTests() {
   });
 
   await test('the limit is model-aware: 6 MB is fine on a provider without a specific cap', async () => {
-    const { box, container, warnings } = mountInputBox();
+    const { box, container, warnings } = mountComposer();
     try {
       // The SAME 6 MB image that anthropic rejects is accepted here, because an
       // unmapped provider falls back to the generous upload ceiling (25 MB).

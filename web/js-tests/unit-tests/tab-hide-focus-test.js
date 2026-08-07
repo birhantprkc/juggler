@@ -8,7 +8,7 @@
  * Tabs are layered absolutely and toggled via display:none (the `hidden`
  * class). WebKit (WKWebView, what the desktop app runs in) keeps focus on a
  * textarea whose ancestor becomes display:none, so without an explicit blur a
- * hidden tab keeps swallowing keystrokes into its now-invisible input box —
+ * hidden tab keeps swallowing keystrokes into its now-invisible composer —
  * exactly what a user sees after Ctrl+Tab cycling away from a tab whose message
  * box had focus. setHidden() must move focus out of the tab.
  * @module unit-tests/tab-hide-focus-test
@@ -47,18 +47,18 @@ export async function runTests() {
     tab.setConversation(conversation);
     tab.setActive();
 
-    // Wait for setActive's column build to produce the input-box textarea,
+    // Wait for setActive's column build to produce the composer-box textarea,
     // polling the DOM instead of a fixed 50ms settle that was too short on slow
     // CI runners (the custom-element column can take longer to upgrade there).
     await waitFor(
-      () => !!tab.querySelector('input-box textarea'),
-      { description: "active tab's input-box textarea to build" }
+      () => !!tab.querySelector('composer-box textarea'),
+      { description: "active tab's composer-box textarea to build" }
     );
 
     const textarea = /** @type {HTMLTextAreaElement|null} */ (
-      tab.querySelector('input-box textarea')
+      tab.querySelector('composer-box textarea')
     );
-    assert(!!textarea, 'active tab should have an input-box textarea');
+    assert(!!textarea, 'active tab should have an composer-box textarea');
 
     /** @type {HTMLTextAreaElement} */ (textarea).focus();
     assert(
@@ -72,7 +72,7 @@ export async function runTests() {
 
     assert(
       !tab.contains(document.activeElement),
-      'hiding a tab must relinquish focus so the now-invisible input box ' +
+      'hiding a tab must relinquish focus so the now-invisible composer ' +
 			'stops receiving keystrokes'
     );
 

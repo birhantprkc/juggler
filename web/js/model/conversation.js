@@ -353,7 +353,7 @@ class Conversation {
 
   /**
    * Whether this conversation has a first root user message the auto-namer can
-   * derive a tab title from. Mirrors the worker's `firstRootUserMessageText`:
+   * derive a conversation title from. Mirrors the worker's `firstRootUserMessageText`:
    * the first root-level user item, non-empty once its text is trimmed. False
    * for a freshly created tab with no messages yet (or an image-only first
    * message), so callers can hide the "auto-name now" control when it would be
@@ -617,25 +617,25 @@ class Conversation {
   }
 
   /**
-   * Get the input box element for this conversation
-   * @returns {HTMLElement|null} Input box element or null
+   * Get the composer element for this conversation
+   * @returns {HTMLElement|null} Composer element or null
    *     */
-  _getInputBox() {
+  _getComposer() {
     if (!this._tabElement) {
       return null;
     }
-    return this._tabElement.getInputBox();
+    return this._tabElement.getComposer();
   }
 
   /**
-   * The thread-item id an input box is currently bound to (null for root),
+   * The thread-item id an composer is currently bound to (null for root),
    * or null when there is no box.
-   * @param {any} inputBox
+   * @param {any} composer
    * @returns {string|null} The bound thread-item id, or null.
    * @private
    */
-  _inputBoxThreadId(inputBox) {
-    return (inputBox && 'threadItemId' in inputBox) ? (inputBox.threadItemId ?? null) : null;
+  _composerThreadId(composer) {
+    return (composer && 'threadItemId' in composer) ? (composer.threadItemId ?? null) : null;
   }
 
   /**
@@ -885,7 +885,7 @@ class Conversation {
    * Only then do we stamp result='Cancelled' — and only if the thread is still
    * resultless, so an existing real summary is never clobbered. The result makes
    * the thread isThreadClosed (result set AND nothing live), returning the
-   * parent's input box.
+   * parent's composer.
    * @param {*} threadYMap - The Yjs Y.Map for the thread item
    * @returns {Promise<void>}
    */
@@ -903,7 +903,7 @@ class Conversation {
    * Interrupt a thread's in-flight work WITHOUT closing it: cancel any pending
    * approvals in its subtree and preempt the worker turn it owns, but leave the
    * thread resultless (open). Because an open sub-thread keeps `hasBusyItems`
-   * true, its column keeps the input box — so the user can keep interacting with
+   * true, its column keeps the composer — so the user can keep interacting with
    * the thread after stopping it.
    *
    * This is the "stop from the thread's own vantage" action: Escape while
@@ -927,7 +927,7 @@ class Conversation {
    * summary. This is the thread-closing half of a root/parent-vantage stop
    * (Escape while focused on the root, the root footer Stop): the caller has
    * already preempted the worker turn; this settles the sub-threads so they go
-   * `isThreadClosed` and the input box returns to the root column. An
+   * `isThreadClosed` and the composer returns to the root column. An
    * already-closed thread (non-empty result) is left untouched. Threads at
    * every nesting depth are walked.
    * @returns {void}
@@ -977,7 +977,7 @@ class Conversation {
    * The active column is identified the same way the parent tile is — via the
    * live status' threadId (`llmState.getStatusThreadId`). When that points at a
    * sub-thread, it is INTERRUPTED (`interruptThread`): the worker turn is
-   * preempted but the thread stays open, so its column keeps the input box and
+   * preempted but the thread stays open, so its column keeps the composer and
    * the user can keep interacting with it. This is the fallback used when the
    * caller doesn't know the focused vantage — a bare Escape interrupts the
    * running child rather than closing it.
@@ -1214,7 +1214,7 @@ class Conversation {
 
   /**
    * Copy arbitrary items into a new top-level conversation tab. Cross-doc copies
-   * are necessarily two-document operations; the new tab gets fresh itemIds and
+   * are necessarily two-document operations; the new conversation gets fresh itemIds and
    * root-owned context, and the source document is unchanged.
    * @param {import('./message-thread.js').default} source - Source message thread.
    * @param {number[]} indices - Source indices to copy.
@@ -1265,14 +1265,14 @@ class Conversation {
    * Promote a sub-thread into a new top-level conversation tab.
    *
    * Cross-document undo cannot be atomic, so this is intentionally a COPY-style
-   * promote: the original thread remains in place and the new tab receives fresh
+   * promote: the original thread remains in place and the new conversation receives fresh
    * itemIds. UX can offer a separate "remove original" action later, but this
    * primitive never pretends that a cross-doc move is undoable.
    *
    * State carry-over policy:
    *   - Items: copied into the new root, fresh itemIds recursively. Every thread
    *     is isolated and carries everything it needs in its own items.
-   *   - SYSTEM_1: new tab owns its root context; promoted SYSTEM_1
+   *   - SYSTEM_1: new conversation owns its root context; promoted SYSTEM_1
    *     placeholders (and `return_result` tool-actions, meaningless at a root)
    *     are dropped — the new root seeds its own system prompt.
    *   - modelConfig: source thread's effective modelConfig becomes new root config.
@@ -1366,9 +1366,9 @@ class Conversation {
   async sendMessage(userMessage, threadItemId = null, messageThread, options = {}) {
     // Check for slash commands first (these work even when processing)
     if (userMessage.startsWith('/')) {
-      // Capture input box before command runs — commands may change the active column
-      const inputBox = this._getInputBox();
-      const boundBefore = this._inputBoxThreadId(inputBox);
+      // Capture composer before command runs — commands may change the active column
+      const composer = this._getComposer();
+      const boundBefore = this._composerThreadId(composer);
       // Clear the box BEFORE running the command, not after. A command like
       // /handoff clones the conversation part-way through execute(), and the
       // clone is taken from the source's persisted draft — so if the command
@@ -1388,14 +1388,14 @@ class Conversation {
       // slash/commands menu, a scheduled or programmatic send) the box instead
       // holds an unrelated in-progress draft; clearInput() would destroy it
       // non-undoably (setText('') wipes the native undo stack), so leave it be.
-      const boxText = (inputBox && typeof (/** @type {any} */ (inputBox).getText) === 'function')
-        ? /** @type {any} */ (inputBox).getText().trim()
+      const boxText = (composer && typeof (/** @type {any} */ (composer).getText) === 'function')
+        ? /** @type {any} */ (composer).getText().trim()
         : '';
       if (/^\/[a-zA-Z]/.test(userMessage)
           && boxText === userMessage.trim()
-          && inputBox && typeof (/** @type {any} */ (inputBox).clearInput) === 'function'
+          && composer && typeof (/** @type {any} */ (composer).clearInput) === 'function'
           && boundBefore === this._targetThreadId(messageThread, threadItemId)) {
-        /** @type {any} */ (inputBox).clearInput();
+        /** @type {any} */ (composer).clearInput();
       }
       const result = await slashCommandHandler.execute(userMessage, messageThread);
       if (result.handled) {
@@ -1466,10 +1466,10 @@ class Conversation {
     // Validation passed locally - now clear the input. Only clear the box when
     // it is showing the thread we sent to: a scheduled send fired from the
     // model on a hidden thread must not wipe the visible column's draft.
-    const inputBox = this._getInputBox();
-    if (inputBox && typeof (/** @type {any} */ (inputBox).clearInput) === 'function'
-        && this._inputBoxThreadId(inputBox) === this._targetThreadId(messageThread, threadItemId)) {
-      /** @type {any} */ (inputBox).clearInput();
+    const composer = this._getComposer();
+    if (composer && typeof (/** @type {any} */ (composer).clearInput) === 'function'
+        && this._composerThreadId(composer) === this._targetThreadId(messageThread, threadItemId)) {
+      /** @type {any} */ (composer).clearInput();
     }
 
     // Cancel any pending approval dialogs for this conversation — but NOT
@@ -2149,9 +2149,9 @@ class Conversation {
    * @param {number} [duration] - Duration to show warning in milliseconds (default: 3000)
    */
   showWarning(message, duration = 3000) {
-    const inputBox = this._getInputBox();
-    if (inputBox && 'showWarning' in inputBox && typeof inputBox.showWarning === 'function') {
-      /** @type {any} */ (inputBox).showWarning(message, duration);
+    const composer = this._getComposer();
+    if (composer && 'showWarning' in composer && typeof composer.showWarning === 'function') {
+      /** @type {any} */ (composer).showWarning(message, duration);
     }
   }
 
@@ -2175,13 +2175,13 @@ class Conversation {
         }
         case 'setDraft': {
           // A user command in 'draft' run mode expanded its template into the
-          // input box for editing before send. Commands never touch the DOM;
+          // composer for editing before send. Commands never touch the DOM;
           // they declare intent and the host splices it in, caret at the end.
-          const inputBox = /** @type {any} */ (this._getInputBox());
-          if (inputBox && typeof inputBox.setDraft === 'function') {
-            inputBox.setDraft(String(data.text ?? ''));
-          } else if (inputBox && typeof inputBox.setText === 'function') {
-            inputBox.setText(String(data.text ?? ''));
+          const composer = /** @type {any} */ (this._getComposer());
+          if (composer && typeof composer.setDraft === 'function') {
+            composer.setDraft(String(data.text ?? ''));
+          } else if (composer && typeof composer.setText === 'function') {
+            composer.setText(String(data.text ?? ''));
           }
           break;
         }
@@ -2197,15 +2197,15 @@ class Conversation {
   }
 
   /**
-   * Restore the pending user message to the input box after a send failure
+   * Restore the pending user message to the composer after a send failure
    */
   restorePendingMessage() {
     const message = this._pendingUserMessage;
     this._pendingUserMessage = null;
     if (!message) return;
-    const inputBox = this._getInputBox();
-    if (inputBox && 'setText' in inputBox) {
-      /** @type {any} */ (inputBox).setText(message);
+    const composer = this._getComposer();
+    if (composer && 'setText' in composer) {
+      /** @type {any} */ (composer).setText(message);
     }
   }
 

@@ -120,8 +120,8 @@ hold to open the strategy menu).
 Type "/" in the composer to run a command against the current conversation. The
 built-in commands are:
 
-- **/new** — open a new, empty conversation in a new tab.
-- **/duplicate** — clone the current conversation into a new tab.
+- **/new** — open a new, empty conversation.
+- **/duplicate** — clone the current conversation into a new one.
 - **/clear** — clear the conversation's messages.
 - **/compact** — compact the whole conversation into a summary thread.
 - **/thread** — create a new sub-conversation thread.

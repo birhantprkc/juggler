@@ -97,7 +97,7 @@ export default class MessageThread {
    * Whether this thread is closed (genuinely finished). Derived via the shared
    * isThreadClosed predicate — a non-empty `result` AND no live (non-terminal)
    * tool anywhere in the subtree — so the footer's Reopen/Continue agrees with
-   * the tile colour and input-box placement. Root is never closed.
+   * the tile colour and composer-box placement. Root is never closed.
    * @returns {boolean} Whether this thread is closed
    */
   get isClosed() {
@@ -207,7 +207,7 @@ export default class MessageThread {
   }
 
   /**
-   * The unsent input-box draft for this thread — its text, its staged image
+   * The unsent composer-box draft for this thread — its text, its staged image
    * attachments, any dropped text files, AND the paste-blob side table backing
    * inline paste placeholders, as a single
    * `{text, attachments, textFiles, pasteBlobs}` record. Stored on the thread container
@@ -1153,7 +1153,7 @@ export default class MessageThread {
   /**
    * Close this thread immediately by promoting its trailing assistant message
    * as the result — the cheap, no-LLM-turn close. The worker stamps that text
-   * as the thread result, making isClosed true so the input box returns to the
+   * as the thread result, making isClosed true so the composer returns to the
    * parent. No-op if there is no clean trailing assistant reply to promote.
    * @returns {Promise<boolean>} True if the thread was closed
    */

@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * UX invariants for the touch (mobile) composer on the input box:
+ * UX invariants for the touch (mobile) composer on the composer:
  *
  *   1. On a touch composer a plain Enter inserts a NEWLINE (the onscreen
  *      keyboard's return key) and MUST NOT dispatch a send-message — the user
@@ -23,10 +23,10 @@
  */
 
 import { initializeRegistries, assert } from '../utilities/test-helpers.js';
-import '../../js/components/input-box.js';
+import '../../js/components/composer.js';
 
 /**
- * Mount an <input-box>, force touch mode, and bind its listeners synchronously.
+ * Mount an <composer-box>, force touch mode, and bind its listeners synchronously.
  *
  * render() runs synchronously in connectedCallback (it writes innerHTML) but
  * DEFERS setupListeners() to requestAnimationFrame. The test-pool window is kept
@@ -34,12 +34,12 @@ import '../../js/components/input-box.js';
  * setupListeners() directly (the same fallback sendMessage() uses when the frame
  * hasn't fired yet) and neutralise the still-pending rAF call so the listeners
  * aren't bound twice.
- * @returns {{box: any, textarea: HTMLTextAreaElement, container: HTMLElement, sent: Array<any>}} The mounted input-box, its textarea, the container, and captured send-message details.
+ * @returns {{box: any, textarea: HTMLTextAreaElement, container: HTMLElement, sent: Array<any>}} The mounted composer-box, its textarea, the container, and captured send-message details.
  */
 function mountTouchComposer() {
   const container = document.createElement('div');
   container.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:360px;height:600px;';
-  const box = document.createElement('input-box');
+  const box = document.createElement('composer-box');
   // Force the touch-composer code path (matchMedia is undrivable headless).
   /** @type {any} */ (box)._touchComposerOverride = true;
   container.appendChild(box); // connectedCallback → render() writes the DOM now
@@ -50,7 +50,7 @@ function mountTouchComposer() {
   /** @type {any} */ (box).setupListeners = () => {};
 
   const textarea = /** @type {HTMLTextAreaElement} */ (box.querySelector('textarea'));
-  assert(!!textarea, 'input-box must render a textarea');
+  assert(!!textarea, 'composer-box must render a textarea');
 
   // Capture every send-message the box dispatches.
   /** @type {Array<any>} */

@@ -5,7 +5,7 @@
 /**
  * Pasted-text placeholder token tests — the inline-sentinel composer feature.
  *
- * Backend-free, split across the pure grammar and the input-box behaviour:
+ * Backend-free, split across the pure grammar and the composer-box behaviour:
  *  1. grammar — makeToken/parseTokens/expandPasteTokens round-trip (Map and
  *     array blob tables), nextId monotonicity, stray-delimiter stripping;
  *  2. persistence — normalizePasteBlobs round-trip + defaults, draft round-trip;
@@ -34,18 +34,18 @@ import {
 } from '../../js/utils/paste-tokens.js';
 import { normalizePasteBlobs, normalizeDraft } from '../../js/utils/attachments.js';
 import { initializeRegistries, assert } from '../utilities/test-helpers.js';
-import '../../js/components/input-box.js';
+import '../../js/components/composer.js';
 
 /**
- * Mount an <input-box> offscreen with its listeners bound synchronously (render
+ * Mount an <composer-box> offscreen with its listeners bound synchronously (render
  * defers setupListeners to rAF, which never pumps in the hidden test window).
  * Stubs showWarning to capture messages.
  * @returns {{box: any, container: HTMLElement, warnings: string[]}} The box, its container, captured warnings.
  */
-function mountInputBox() {
+function mountComposer() {
   const container = document.createElement('div');
   container.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:360px;height:600px;';
-  const box = /** @type {any} */ (document.createElement('input-box'));
+  const box = /** @type {any} */ (document.createElement('composer-box'));
   container.appendChild(box);
   document.body.appendChild(container);
   /** @type {any} */ (box).setupListeners?.();
@@ -186,7 +186,7 @@ export async function runTests() {
   // ── 3. Capture ────────────────────────────────────────────────────────────
 
   await test('_shouldCapturePaste trips on either threshold (and on binary)', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       assert(box._shouldCapturePaste('short') === false, 'small text pastes normally');
       assert(box._shouldCapturePaste('a'.repeat(2500)) === true, 'char threshold');
@@ -198,7 +198,7 @@ export async function runTests() {
   });
 
   await test('_capturePaste inserts a token and stores the blob', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       setValue(box, '');
       const body = 'L'.repeat(3000);
@@ -214,7 +214,7 @@ export async function runTests() {
   });
 
   await test('identical content is deduped to one blob shared by two tokens', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       setValue(box, '');
       const body = 'D'.repeat(3000);
@@ -231,7 +231,7 @@ export async function runTests() {
   });
 
   await test('the id counter stays monotonic after delete-then-paste', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       setValue(box, '');
       box._capturePaste('A'.repeat(3000)); // id 1
@@ -251,7 +251,7 @@ export async function runTests() {
   // ── 4. Atomicity ──────────────────────────────────────────────────────────
 
   await test('Backspace at a token\'s trailing edge deletes the whole token', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'body', bytes: 10 });
@@ -267,7 +267,7 @@ export async function runTests() {
   });
 
   await test('Delete at a token\'s leading edge deletes the whole token', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'body', bytes: 10 });
@@ -282,7 +282,7 @@ export async function runTests() {
   });
 
   await test('ArrowLeft/ArrowRight skip a token as a single unit', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'body', bytes: 10 });
@@ -306,7 +306,7 @@ export async function runTests() {
   });
 
   await test('a keystroke with no adjacent token is not intercepted', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'body', bytes: 10 });
@@ -322,7 +322,7 @@ export async function runTests() {
   // ── 5. Clipboard ──────────────────────────────────────────────────────────
 
   await test('copy of a token-bearing selection writes expanded text', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'HUGE', bytes: 10 });
@@ -344,7 +344,7 @@ export async function runTests() {
   });
 
   await test('cut of a token-bearing selection expands to the clipboard and removes it', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'HUGE', bytes: 10 });
@@ -367,7 +367,7 @@ export async function runTests() {
   // ── 6. Send ───────────────────────────────────────────────────────────────
 
   await test('sendMessage dispatches the EXPANDED text', async () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       box._messageThread = null; // skip the mention/context-item branch
       const tok = makeToken(1, 10);
@@ -385,7 +385,7 @@ export async function runTests() {
   });
 
   await test('MAX_MESSAGE_CHARS is enforced on the EXPANDED size', async () => {
-    const { box, container, warnings } = mountInputBox();
+    const { box, container, warnings } = mountComposer();
     try {
       box._messageThread = null;
       const tok = makeToken(1, 200000);
@@ -405,7 +405,7 @@ export async function runTests() {
   // ── 7. Mirror ─────────────────────────────────────────────────────────────
 
   await test('the mirror renders the same characters with a .paste-token span', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       setValue(box, '');
       box._capturePaste('M'.repeat(3000));
@@ -423,7 +423,7 @@ export async function runTests() {
   // ── 8. Immutability (caret can't enter, edits can't corrupt) ───────────────
 
   await test('a collapsed caret is snapped OUT of a token, in the travel direction', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'body', bytes: 10 });
@@ -454,7 +454,7 @@ export async function runTests() {
   });
 
   await test('an edit into a token interior is REVERTED (contents are immutable)', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'body', bytes: 10 });
@@ -476,7 +476,7 @@ export async function runTests() {
   });
 
   await test('edits OUTSIDE a token, and deleting one whole, are accepted (not reverted)', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'body', bytes: 10 });
@@ -498,7 +498,7 @@ export async function runTests() {
   });
 
   await test('a word/line delete abutting a token removes the whole token', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       const tok = makeToken(1, 10);
       box._pasteBlobs.set(1, { content: 'body', bytes: 10 });
@@ -516,7 +516,7 @@ export async function runTests() {
   });
 
   await test('the mirror tears down when the last token is removed', () => {
-    const { box, container } = mountInputBox();
+    const { box, container } = mountComposer();
     try {
       setValue(box, '');
       box._capturePaste('N'.repeat(3000));

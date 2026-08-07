@@ -130,14 +130,14 @@ export async function runTests(_ctx) {
   });
 
   run('neutralizes a custom element that slips past the backtick pre-escaper', () => {
-    // Real bug (thread-summary "mirror input box"): an unbalanced backtick
+    // Real bug (thread-summary "mirror composer"): an unbalanced backtick
     // earlier in the text desyncs the naive escapeXmlTagsForMarkdown pass from
     // marked's own code-span parsing. The escaper believes it is inside a code
-    // span (so it passes `<input-box>` through verbatim) while marked treats the
+    // span (so it passes `<composer-box>` through verbatim) while marked treats the
     // lone backtick as a literal and emits the tag as raw HTML — which the
     // browser then upgrades into a live, in-sync copy of the composer.
-    const html = renderMarkdown('use the `-x flag, then <input-box></input-box> shows up');
-    assert(!/<input-box\b/i.test(html), `raw <input-box> must not survive into the DOM: ${html}`);
+    const html = renderMarkdown('use the `-x flag, then <composer-box></composer-box> shows up');
+    assert(!/<composer-box\b/i.test(html), `raw <composer-box> must not survive into the DOM: ${html}`);
     assert(!/<[a-z][a-z0-9]*-[a-z0-9-]*/i.test(html), `no raw custom-element (hyphenated) tag may survive: ${html}`);
   });
 
@@ -145,8 +145,8 @@ export async function runTests(_ctx) {
     // The plan renderer calls renderMarkdown(..., { escapeXml: false }), so no
     // pre-escaping runs at all. The post-parse output sanitizer is the
     // authoritative boundary and must still strip custom elements.
-    const html = renderMarkdown('<input-box></input-box> and <my-widget>x</my-widget>', { escapeXml: false });
-    assert(!/<input-box\b/i.test(html), `raw <input-box> must not survive: ${html}`);
+    const html = renderMarkdown('<composer-box></composer-box> and <my-widget>x</my-widget>', { escapeXml: false });
+    assert(!/<composer-box\b/i.test(html), `raw <composer-box> must not survive: ${html}`);
     assert(!/<my-widget\b/i.test(html), `raw custom element must not survive: ${html}`);
   });
 

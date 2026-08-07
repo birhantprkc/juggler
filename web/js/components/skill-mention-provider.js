@@ -5,7 +5,7 @@
 /**
  * The `$` skill-mention completion source for {@link CompletionMenu}, plus the
  * send-time extraction helper ({@link extractSkillMentions}) and the per-thread
- * snapshot resolver ({@link getThreadSkillSnapshot}) the input box uses to turn
+ * snapshot resolver ({@link getThreadSkillSnapshot}) the composer uses to turn
  * a typed `$name` into an explicit `skill` tool-call before the next model turn.
  *
  * This is the user-directed counterpart to the model's automatic `skill`
@@ -75,7 +75,7 @@ export async function getThreadSkillSnapshot(messageThread) {
 }
 
 /**
- * Build a `$` skill-mention completion provider bound to one input box's live
+ * Build a `$` skill-mention completion provider bound to one composer's live
  * thread. A factory (not a shared singleton) because the candidate list is
  * per-conversation: each column resolves its own frozen snapshot via `getSkills`,
  * evaluated lazily on every fetch so a thread swap is picked up without rewiring.
@@ -143,7 +143,7 @@ function oneLineDescription(text) {
  * Build one skill menu row — mono `$name` then a one-line (length-bounded)
  * description — shared by BOTH skill surfaces: the `$` completion menu (this
  * provider's `renderItem`) and the composer's button-anchored skill picker
- * (input-box's `_createSkillMenu`). The row carries the SAME `menu-item-command`
+ * (composer-box's `_createSkillMenu`). The row carries the SAME `menu-item-command`
  * / `menu-item-desc` classes as a slash-command row, so both skill surfaces
  * inherit the slash popup's colour scheme and (in the picker's grid) its
  * justified two-column layout with no bespoke styling. Scope/source is
