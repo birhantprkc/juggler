@@ -90,6 +90,19 @@ export default function systemPromptContribution({ enabledPluginIds }) {
     );
   }
 
+  if (has('new-conversation')) {
+    toolUsage.push(
+      '### Spinning off a separate line of work — use new_conversation\n' +
+				'When the user asks for a **new conversation, a new tab, or a new chat** (all the same thing), or you ' +
+				'want to start a fresh, independent line of work that does not belong in this conversation, call ' +
+				'`new_conversation` with the initial `message`. It opens a separate top-level conversation in its own ' +
+				'tab and switches the user to it. This is NOT create_thread: it is a peer conversation, not a sub-task ' +
+				'— it works on its own and never reports back to you, so the message must be self-contained. Leave ' +
+				'`autostart` at its default to have it begin immediately; set it false to hand the user a ready-to-send ' +
+				'message they can review first.'
+    );
+  }
+
   // Planning vs tracking — steer the model between the two checklist tools:
   // `todo` for its own live progress tracking, `plan` for an approval-gated
   // proposal. Gated so it only mentions the tools actually enabled.

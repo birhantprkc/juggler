@@ -5,7 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Added an optional Exa extension for authenticated, ranked web search
+- Added a create-new-conversation tool that LLMs can use to create new tabs with prompts. You might use this to get the agent to fan out tasks, or to hand over to a fresh tab
+- Added an optional Exa.ai extension (an agent-oriented web search tool)
 - Extensions can make authenticated server-side HTTP requests through the host operations API
 - Headless Linux servers can run the Node engine without an X or Wayland session
 

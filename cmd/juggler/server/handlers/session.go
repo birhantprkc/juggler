@@ -345,6 +345,13 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 		// user-reachable gesture, but the bare "created conv=…" line names no
 		// source, so a "phantom" tab is otherwise untraceable. Purely diagnostic.
 		Origin string `json:"origin"`
+		// Focus, when set, makes the server broadcast an extra "focus" op after
+		// "created" so every viewer switches to the new conversation. The creating
+		// client is the engine (headless, no tab of its own) — e.g. the
+		// new_conversation tool — which cannot move viewer focus locally because
+		// visibleConversationId is per-client state. A plain viewer gesture
+		// (plus-button, /new) omits this and activates its own tab locally.
+		Focus bool `json:"focus"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid request body")
@@ -418,6 +425,13 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 
 	if api.broadcaster != nil {
 		api.broadcaster.BroadcastConversationsChanged("created", id, finalName)
+		// A headless creator (the engine, via the new_conversation tool) asked
+		// every viewer to switch to this conversation. Sent right after "created"
+		// so viewers that just built the tab focus it; the engine ignores
+		// conversations-changed, so it never self-focuses.
+		if req.Focus {
+			api.broadcaster.BroadcastConversationsChanged("focus", id, "")
+		}
 	}
 }
 

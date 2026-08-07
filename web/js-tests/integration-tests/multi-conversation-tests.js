@@ -537,6 +537,64 @@ export const multiConvCancelIsolationTest = {
   }
 };
 
+/**
+ * The `new_conversation` tool (executed in the engine) must create a NEW,
+ * independent conversation and seed it with the model-supplied initial message.
+ * Exercised with `autostart:false` so the seed lands as a parked user message and
+ * no second LLM turn is needed.
+ *
+ * The exercised-and-observable core is the engine-side path: `execute()` calls
+ * `session.createConversation(...)`, re-fetches the new conversation, and seeds
+ * the message via `insertItem` — every one of those steps throws on failure, so
+ * the caller's tool-action reaching `state==='completed'` with a success result
+ * proves the whole engine path (create + seed) ran. The peer conversation itself
+ * is born in the engine realm and loads into real viewers via the standard
+ * `conversations-changed` broadcast; the integration harness's asserted session
+ * is not that engine realm, so this test verifies the caller-visible outcome
+ * rather than reaching across realms.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const newConversationToolTest = {
+  name: 'new-conversation-tool-seeds-message',
+  description: 'new_conversation tool executes in the engine and creates + seeds a new conversation',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'new_conversation',
+      { message: 'NEWCONV_SEED_MSG investigate the widget', name: 'NEWCONV_TOOL_TAB', autostart: false },
+      'Opening a new conversation.'),
+    textResponse('Opened a new conversation for the widget work.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'start a separate chat about the widget' }
+  ],
+
+  // Fence on the tool-action having completed before asserting its result.
+  settleUntil: (conversation) => {
+    const items = conversation.rootMessageThread?.items || [];
+    const call = items.find((it) => it.get?.('toolName') === 'new_conversation');
+    return !!call && call.get('state') === 'completed';
+  },
+
+  customAssertions: (conversation) => {
+    const items = conversation.rootMessageThread?.items || [];
+    const call = items.find((it) => it.get?.('toolName') === 'new_conversation');
+    if (!call) {
+      throw new Error('new_conversation: no new_conversation tool-action found in the caller conversation');
+    }
+    const state = call.get('state');
+    if (state !== 'completed') {
+      throw new Error(`new_conversation: tool-action state is "${state}", expected "completed" — the engine execute() (createConversation + seed) failed`);
+    }
+    const result = call.get('result');
+    const content = String((result?.get ? result.get('content') : result?.content) || '');
+    if (!content.includes('NEWCONV_TOOL_TAB')) {
+      throw new Error(`new_conversation: tool result did not confirm the created conversation; got: ${content.slice(0, 160)}`);
+    }
+  }
+};
+
 // Export all tests
 export const tests = [
   multiConvUndoIsolationTest,
@@ -549,5 +607,6 @@ export const tests = [
   duplicateConversationNameTest,
   duplicateConversationTwiceNameTest,
   deleteActiveTabMruTest,
-  multiConvCancelIsolationTest
+  multiConvCancelIsolationTest,
+  newConversationToolTest
 ];

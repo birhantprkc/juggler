@@ -436,6 +436,7 @@ class JugglerApp {
       const { op, id, name, order } = data;
       switch (op) {
         case 'created':          session.applyConversationCreated(id, name); break;
+        case 'focus':            session.applyConversationFocus(id); break;
         case 'deleted':          session.applyConversationDeleted(id); break;
         case 'renamed':          session.applyConversationRenamed(id, name); break;
         case 'binned':           session.applyConversationBinned(id); break;

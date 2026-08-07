@@ -206,14 +206,16 @@ class APIService {
    * returned name.
    * @param {string} name - Requested display name (server may append " (copy N)" on collision)
    * @param {string} [id] - Optional preallocated conversation id
-   * @param {{lane?: string, reason?: string, duplicateFrom?: string, origin?: string}} [options] - lane
+   * @param {{lane?: string, reason?: string, duplicateFrom?: string, origin?: string, focus?: boolean}} [options] - lane
    *   identifies the creating test lane for the test-mode ownership ledger;
    *   reason tags the create with the current test's name so a suite-end leak
    *   dump names the culprit test; duplicateFrom makes the server clone that
    *   conversation's files into the new folder before announcing it; origin is
    *   a gesture label (e.g. plus-button, slash-command, initial-bootstrap) the
    *   server logs for create attribution — the only way to name the gesture
-   *   behind a "phantom" create after the fact.
+   *   behind a "phantom" create after the fact; focus makes the server broadcast
+   *   a "focus" op after "created" so every viewer switches to the new
+   *   conversation (used by the headless engine, which can't move viewer focus).
    * @returns {Promise<{id: string, name: string, created: string}>} Conversation id, canonical name actually written to disk, and ISO 8601 creation timestamp.
    */
   async createConversation(name, id, options = {}) {
@@ -232,7 +234,12 @@ class APIService {
         ...(options.duplicateFrom ? { duplicateFrom: options.duplicateFrom } : {}),
         // origin labels the gesture that triggered this create so the server
         // log can attribute it (phantom "Untitled N" tabs otherwise name no source).
-        ...(options.origin ? { origin: options.origin } : {})
+        ...(options.origin ? { origin: options.origin } : {}),
+        // focus makes the server broadcast a "focus" op after "created" so every
+        // viewer switches to the new conversation. Used by a headless creator
+        // (the engine's new_conversation tool) that can't move viewer focus
+        // locally; a plain viewer create omits it and activates its own tab.
+        ...(options.focus ? { focus: true } : {})
       })
     });
   }

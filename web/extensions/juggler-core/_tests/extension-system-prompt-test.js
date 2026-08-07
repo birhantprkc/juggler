@@ -36,6 +36,7 @@ import {
 
 const EXPLORE_MARKER = 'prefer explore_code';
 const THREAD_MARKER = 'use create_thread';
+const NEW_CONV_MARKER = 'use new_conversation';
 
 /**
  * Run extension system-prompt tests.
@@ -90,6 +91,15 @@ export async function runTests(_ctx) {
     assert(!out.includes('## Code Quality'), 'code quality must not be extension-generated');
     assert(!out.includes('## Code References'), 'code references must not be extension-generated');
     assert(!out.includes('## Agentic Loop'), 'agentic loop must not be extension-generated');
+  });
+
+  await test('new_conversation section gates on the new-conversation plugin', () => {
+    assert(!systemPromptContribution({ enabledPluginIds: ['thread'] }).includes(NEW_CONV_MARKER),
+      'new_conversation section absent without the new-conversation plugin');
+    const out = systemPromptContribution({ enabledPluginIds: ['new-conversation'] });
+    assert(out.includes(NEW_CONV_MARKER), 'new_conversation section present with the plugin');
+    assert(out.includes('new tab') && out.includes('new chat'),
+      'new_conversation guidance equates new conversation / new tab / new chat');
   });
 
   await test('memory section is gated on the memory plugin', () => {

@@ -32,7 +32,7 @@ import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
  * @property {function(): Promise<{active: boolean, conversationIds: string[]}>} getActiveConversations - Conversations actively running a turn (excludes approval-parked)
  * @property {function(object[], string | null, HistoryMessage[]|undefined, Record<string, any>|undefined): Promise<{success: boolean}>} updateSession - Update session state
  * @property {function(Record<string, any>): Promise<{metadata: Record<string, any>}>} patchSessionMetadata - Patch session metadata keys
- * @property {function(string, string=, {lane?: string, duplicateFrom?: string, origin?: string}=): Promise<{id: string, name: string, created: string}>} createConversation - Atomically create a new conversation (POST /api/conversations); duplicateFrom clones that conversation's files server-side before announcing; origin is a gesture label logged for create attribution
+ * @property {function(string, string=, {lane?: string, duplicateFrom?: string, origin?: string, focus?: boolean}=): Promise<{id: string, name: string, created: string}>} createConversation - Atomically create a new conversation (POST /api/conversations); duplicateFrom clones that conversation's files server-side before announcing; origin is a gesture label logged for create attribution; focus broadcasts a "focus" op so every viewer switches to the new conversation
  * @property {function(string, string): Promise<{name: string}>} renameConversation - Rename a conversation's on-disk folder
  * @property {function(string, object): Promise<{success: boolean}>} updateConversation - Update single conversation
  * @property {function(string, {permanent?: boolean, reason?: string}=): Promise<void>} deleteConversation - Delete single conversation
@@ -200,6 +200,17 @@ class Session {
      * @private
      */
     this._pendingCreates = new Set();
+
+    /**
+     * A conversation id a server "focus" broadcast asked this viewer to switch
+     * to, stashed when the id isn't in the local map yet. The "focus" op can
+     * outrun the async "created" load that precedes it, so applyConversationFocus
+     * parks the id here and applyConversationCreated redeems it once the
+     * conversation is inserted. Null when there is no pending focus.
+     * @type {string|null}
+     * @private
+     */
+    this._pendingFocusId = null;
 
     /**
      * Services object passed to Conversation instances
@@ -372,6 +383,7 @@ class Session {
     if (this.conversations.has(id)) {
       // Originator (or a prior broadcast) already added this conversation.
       this.notifyConversationChange('conversation:changed', { conversationId: id });
+      this._redeemPendingFocus(id);
       return;
     }
     if (this._pendingCreates.has(id)) {
@@ -381,7 +393,43 @@ class Session {
       return;
     }
     const conv = await this._loadAndInsertConversation(id, { prepend: true });
-    if (conv) this._notify('conversation:created', conv);
+    if (conv) {
+      this._notify('conversation:created', conv);
+      this._redeemPendingFocus(id);
+    }
+  }
+
+  /**
+   * Apply a `conversations-changed` op="focus" event: switch this viewer to the
+   * given conversation. Emitted by the server right after "created" when a
+   * headless creator (the engine's new_conversation tool) asked every viewer to
+   * follow. Because that "focus" op can arrive before this client has finished
+   * the async "created" load, park the id when the conversation isn't present
+   * yet and let {@link applyConversationCreated} redeem it on insert.
+   * @param {string} id - Conversation to switch to.
+   * @returns {void}
+   */
+  applyConversationFocus(id) {
+    if (!id) return;
+    if (this.conversations.has(id)) {
+      this.switchConversation(id);
+    } else {
+      this._pendingFocusId = id;
+    }
+  }
+
+  /**
+   * Redeem a parked focus request once its conversation exists locally: if the
+   * inserted id matches the pending focus, clear it and switch. No-op otherwise.
+   * @param {string} id - The conversation just inserted.
+   * @returns {void}
+   * @private
+   */
+  _redeemPendingFocus(id) {
+    if (this._pendingFocusId && this._pendingFocusId === id) {
+      this._pendingFocusId = null;
+      this.switchConversation(id);
+    }
   }
 
   /**
@@ -1332,9 +1380,13 @@ class Session {
    * @param {boolean} [options.activate] - Switch to the new conversation immediately
    * @param {string} [options.origin] - Gesture label logged server-side for create
    *   attribution (plus-button, slash-command, initial-bootstrap, duplicate, …)
+   * @param {boolean} [options.focus] - Ask the server to broadcast a "focus" op
+   *   after "created" so every viewer switches to the new conversation. For a
+   *   headless creator (the engine's new_conversation tool) that cannot move
+   *   viewer focus locally; distinct from `activate`, which switches THIS client.
    * @returns {Promise<string>} New conversation ID
    */
-  async createConversation(name, { activate = false, origin = 'unspecified' } = {}) {
+  async createConversation(name, { activate = false, origin = 'unspecified', focus = false } = {}) {
     // A create with no caller-supplied name is a blank "Untitled N" the user will
     // want to name (the + button and the /new command both create this way).
     // When it's also the tab we activate, that's the signal to open inline
@@ -1359,7 +1411,7 @@ class Session {
       // session-changed, and returns the canonical name. By the time this
       // resolves, the name question is permanently answered — no "Untitled"
       // stage, no follow-up rename.
-      response = await this._apiService.createConversation(requestedName, requestedId, { origin });
+      response = await this._apiService.createConversation(requestedName, requestedId, { origin, focus });
       const { id, name: canonicalName } = response;
 
       // WorkerManager returns conversation ONLY when fully ready (worker spawned, Yjs active).
