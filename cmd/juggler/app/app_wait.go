@@ -56,15 +56,17 @@ func (a *App) waitForExit() {
 		readyCh <- windowRefs{app: app, win: win}
 	}
 
-	// quit closes done and then calls app.Quit() once the application has
-	// started. Safe to call from multiple goroutines.
+	// quit closes done and asks the native application to stop when this startup
+	// path owns one. Node-hosted production servers have no native application.
 	quit := func() {
 		if a.server != nil {
 			a.server.StopTunnel()
 		}
 		signalDone()
 		<-ready
-		refs.app.Quit()
+		if refs.app != nil {
+			refs.app.Quit()
+		}
 	}
 
 	// 'w' opens a desktop window: the server is windowless, so it launches the
@@ -281,7 +283,16 @@ func (a *App) waitForExit() {
 	}
 
 	devMode := a.devModeEnabled()
-	runWindowApp(a.server, devMode, !a.flags.window, a.flags.testMode, a.flags.testIframes, done, signalDone, onWindowReady)
+	selected := selectedEngineHost{}
+	if !a.flags.testMode {
+		var ok bool
+		selected, ok = selectEngineHost()
+		if !ok {
+			signalDone()
+			return
+		}
+	}
+	runWindowApp(a.server, devMode, !a.flags.window, a.flags.testMode, a.flags.testIframes, selected, done, signalDone, onWindowReady)
 }
 
 func (a *App) stdinIsTTY() bool {

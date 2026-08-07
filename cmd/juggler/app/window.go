@@ -24,45 +24,42 @@ const (
 	quitGraceTimeout = 5 * time.Second
 )
 
-// runWindowApp runs the Wails event loop on the calling (main) goroutine and
-// blocks until it exits. It is the single entry point app_wait.go calls; it
-// dispatches by mode:
+// runWindowApp blocks on the calling goroutine and dispatches by mode:
 //
-//   - Production: the server is windowless. runHeadlessServerApp creates ONLY
-//     the hidden engine WebView and runs as a background accessory process; the
-//     visible UI lives in the separate juggler-app desktop process.
-//   - Test: the integration harness needs the server to host a visible window
-//     (the tiled test-pool or a single debug lane). That path is isolated in
-//     window_testpool.go and gated entirely on testMode.
+//   - Production with Node: starts the engine process without initializing Wails.
+//   - Production with WebView: runs the hidden engine WebView in a background
+//     native application; the visible UI lives in juggler-app.
+//   - Test: runs the integration harness's visible tiled pool or debug lane.
 //
 // done is closed when an external signal (SIGTERM, server error, etc.) wants to
 // quit; requestQuit triggers the single serialized shutdown path; onWindowReady
 // hands the caller the *App (and main window, when there is one) once launched.
-func runWindowApp(srv *server.Server, devMode bool, headless bool, testMode bool, testIframes int, done <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
+func runWindowApp(srv *server.Server, devMode bool, headless bool, testMode bool, testIframes int, selected selectedEngineHost, done <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
 	if testMode {
 		runTestPoolWindowApp(srv, devMode, headless, testIframes, done, requestQuit, onWindowReady)
 		return
 	}
-	runHeadlessServerApp(srv, done, requestQuit, onWindowReady)
+	runHeadlessServerApp(srv, selected, done, requestQuit, onWindowReady)
 }
 
-// runHeadlessServerApp runs the Wails event loop for a windowless production
-// server. It creates ONLY the hidden engine WebviewWindow — the backend-JS
-// runtime — and runs as a macOS *accessory* application: no Dock icon, no menu
-// bar, and crucially no main window, so Cocoa never activates or shows a window.
-// (The accessory policy must be set at construction: with a single window and
-// the default Regular policy, app activation makes that window key and visible,
-// and flipping the policy at runtime is too late to prevent that flash.) The
-// visible UI lives in the separate
+// runHeadlessServerApp runs a windowless production server. Node mode starts
+// without a native application or display connection. WebView mode runs Wails
+// as a macOS accessory application with only the hidden engine window: no Dock
+// icon, menu bar, or main window. The visible UI lives in the separate
 // juggler-app process, which connects over HTTP/WebSocket like any viewer.
 // Blocks on the calling goroutine until done is closed.
 //
-// requestQuit is the same shutdown trigger the signal handlers use (it closes
-// done, which this function's goroutine turns into app.Quit + a force-exit
-// backstop). startEngine calls it if the hidden engine WebView never comes up,
-// so a headless server whose WebView failed can never linger as a useless
-// zombie — the whole reason this binary exists is to run that WebView.
-func runHeadlessServerApp(srv *server.Server, done <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
+// requestQuit is the same shutdown trigger the signal handlers use. Engine-host
+// startup failures route through it so the server cannot linger without a
+// functioning engine.
+func runHeadlessServerApp(srv *server.Server, selected selectedEngineHost, done <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
+	if !engineHostRequiresNativeApp(selected.mode) {
+		onWindowReady(nil, nil)
+		startEngineHost(buildEngineHost(selected, nil, srv, requestQuit), srv, requestQuit)
+		<-done
+		return
+	}
+
 	// The headless server MUST NOT share a GtkApplication identity with the
 	// desktop viewer (juggler-app) or with sibling per-project servers. On Linux,
 	// Wails derives the GApplication ID from Name ("org.wails."+sanitized) and
@@ -115,7 +112,7 @@ func runHeadlessServerApp(srv *server.Server, done <-chan struct{}, requestQuit 
 		// CVDisplayLink path that deadlocks on display reconfiguration (see
 		// engine_lifecycle.go).
 		onWindowReady(app, nil)
-		startEngine(app, srv, requestQuit)
+		startEngineHost(buildEngineHost(selected, app, srv, requestQuit), srv, requestQuit)
 	})
 
 	go func() {

@@ -74,7 +74,7 @@ func newEngineWindow(app *application.App, addr string) *application.WebviewWind
 // connecting its WebSocket back to the server, after which readiness flows
 // through that socket + /api/client/report — a path that is already
 // host-agnostic. Selection is made by internal/enginehost.Choose (see
-// selectEngineHost); today's only production host is the webview.
+// selectEngineHost).
 type engineHost interface {
 	// Start launches the host so the engine connects to addr. It returns once
 	// the host has been launched — NOT once the engine has connected, which is
@@ -95,17 +95,15 @@ type webviewHost struct{ app *application.App }
 func (h *webviewHost) Describe() string { return "webview" }
 
 // Start builds and runs the hidden engine WebView. win.Run() must be called on
-// the main (Wails) thread, which startEngine's ApplicationStarted callback
-// guarantees.
+// the main (Wails) thread inside the ApplicationStarted callback.
 func (h *webviewHost) Start(addr string) error {
 	win := newEngineWindow(h.app, addr)
 	win.Run()
 	return nil
 }
 
-// startEngine selects an engine host, brings it up at startup, and installs the
-// server's engine-readiness gate. Call from ApplicationStarted (main thread),
-// after onWindowReady.
+// startEngineHost brings up a selected engine host and installs the server's
+// engine-readiness gate.
 //
 // The gate makes a turn (or a worker-driven strategy hook) wait until the engine
 // is connected before it can emit tool requests. In steady state the engine is
@@ -121,13 +119,7 @@ func (h *webviewHost) Start(addr string) error {
 // alive forever (holding its port and instance lock) as an invisible zombie. So
 // when the engine doesn't connect within the timeout we call requestQuit to tear
 // the process down: a headless server whose host failed must die, not linger.
-func startEngine(app *application.App, srv *server.Server, requestQuit func()) {
-	host, ok := selectEngineHost(app, srv, requestQuit)
-	if !ok {
-		// selectEngineHost already logged the specific diagnostic.
-		requestQuit()
-		return
-	}
+func startEngineHost(host engineHost, srv *server.Server, requestQuit func()) {
 	start := time.Now()
 	jlog.Info("[engine] START — bringing up %s host", host.Describe())
 	if err := host.Start(srv.GetAddr()); err != nil {
@@ -153,15 +145,20 @@ func startEngine(app *application.App, srv *server.Server, requestQuit func()) {
 	srv.SetEngineReadyGate(func() bool { return srv.WaitForEngineConnected(engineConnectTimeout) })
 }
 
-// selectEngineHost chooses the engine host per the mode ladder
-// (internal/enginehost.Choose), performs the chosen host's own preflight, logs
-// the always-on boot one-liner, and constructs it. It returns ok=false — after
-// logging the exact diagnostic itself — when the process should quit (an
-// unavailable webview, an unusable forced host, or an unknown mode).
-func selectEngineHost(app *application.App, srv *server.Server, requestQuit func()) (engineHost, bool) {
-	// Memoise the node probe: Choose consults it to validate a forced-node
-	// request, and the ModeNode branch reuses the result to build the host — one
-	// `node --version` exec, not two.
+type selectedEngineHost struct {
+	mode   enginehost.Mode
+	reason string
+	node   enginehost.NodeInfo
+}
+
+func engineHostRequiresNativeApp(mode enginehost.Mode) bool {
+	return mode != enginehost.ModeNode
+}
+
+// selectEngineHost resolves and preflights the engine runtime without creating
+// any native application objects. Linux Node mode can therefore be selected
+// before GTK is initialized.
+func selectEngineHost() (selectedEngineHost, bool) {
 	var cached *enginehost.NodeInfo
 	probe := func() enginehost.NodeInfo {
 		if cached == nil {
@@ -174,40 +171,35 @@ func selectEngineHost(app *application.App, srv *server.Server, requestQuit func
 	mode, reason, err := enginehost.Choose(runtime.GOOS, os.Getenv, probe, displayPresent(runtime.GOOS))
 	if err != nil {
 		jlog.Error("[engine] %s", err)
-		return nil, false
+		return selectedEngineHost{}, false
 	}
-	switch mode {
-	case enginehost.ModeNode:
-		info := probe()
-		if !info.OK {
-			// Choose only returns ModeNode when the probe passed, so reaching
-			// here means node vanished between probe and now — belt and braces.
-			jlog.Error("[engine] node host unavailable: %s", info.Problem)
-			return nil, false
+	selected := selectedEngineHost{mode: mode, reason: reason}
+	if mode == enginehost.ModeNode {
+		selected.node = probe()
+		if !selected.node.OK {
+			jlog.Error("[engine] node host unavailable: %s", selected.node.Problem)
+			return selectedEngineHost{}, false
 		}
-		jlog.Info("[engine] host: %s (%s)", mode.String(), reason)
-		return newNodeHost(srv, requestQuit, info), true
-	default: // enginehost.ModeWebview
-		// Fail fast on a host that provably can't host a webview (e.g. a headless
-		// Linux box with no display), rather than creating a window that will
-		// never come up and making the user wait out engineConnectTimeout for a
-		// terse log line. Preflight is conservative — a "" result is not a
-		// guarantee — so the connect timeout still backstops every other cause on
-		// every OS. On a Linux host that blocks the unprivileged user namespaces
-		// WebKitGTK's bwrap sandbox needs, disable that sandbox before the WebView
-		// is created so the engine comes up instead of aborting the process with a
-		// cgo SIGTRAP. No-op off Linux, on an unrestricted host, or when the user
-		// set the var.
+	} else {
 		if note := webviewenv.PrepareLinuxWebKit(); note != "" {
 			jlog.Info("[engine] %s", note)
 		}
 		if problem := webviewenv.Preflight(); problem != "" {
 			jlog.Error("[engine] %s", engineUnavailableMessage(problem))
-			return nil, false
+			return selectedEngineHost{}, false
 		}
-		jlog.Info("[engine] host: %s (%s)", mode.String(), reason)
-		return &webviewHost{app: app}, true
 	}
+	jlog.Info("[engine] host: %s (%s)", mode.String(), reason)
+	return selected, true
+}
+
+// buildEngineHost binds a selected runtime to the resources it needs. app is
+// required only by the WebView host; the Node host remains display-free.
+func buildEngineHost(selected selectedEngineHost, app *application.App, srv *server.Server, requestQuit func()) engineHost {
+	if selected.mode == enginehost.ModeNode {
+		return newNodeHost(srv, requestQuit, selected.node)
+	}
+	return &webviewHost{app: app}
 }
 
 // displayPresent reports whether a usable graphical display is available. On

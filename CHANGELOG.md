@@ -7,6 +7,7 @@ of changes; this project follows semantic versioning.
 
 - Added an optional Exa extension for authenticated, ranked web search
 - Extensions can make authenticated server-side HTTP requests through the host operations API
+- Headless Linux servers can run the Node engine without an X or Wayland session
 
 ## [0.5.3] - 2026-08-06
 
