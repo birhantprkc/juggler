@@ -7203,6 +7203,57 @@ textarea[data-confirmation-pending="true"] {
     white-space: normal;
 }
 
+/* Edit-family result summary: a badge-shaped `+A -B` diffstat, then the
+   filename. The name truncates with an ellipsis; the badge stays fixed. */
+.action-edit-summary {
+    display: inline-flex;
+    align-items: baseline;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.action-edit-summary-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+/* Diffstat rendered as a lozenge matching `.context-item-type-badge` (same
+   padding, radius and mono weight), sitting just after the type badge. Neutral
+   raised fill so the green `+added` / red `-removed` accents carry the meaning
+   in both light and dark themes. */
+.action-edit-stat {
+    flex: none;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.375rem;
+
+    /* Even 1rem steps across the row: the space to the type badge on the left is
+       supplied by the `.message-with-icon` content-box gap (the type badge lives
+       in the icon group, the stat is the first thing in the content box), so only
+       the right margin to the filename is set here — matching that 1rem gap. */
+    margin: 0 1rem 0 0;
+
+    /* Box matches `.context-item-type-badge` exactly (padding, radius, weight,
+       baseline placement) so the two lozenges line up as a matched pair. */
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1;
+    padding: 0.25rem 0.5rem 0.125rem;
+    border-radius: 0.25rem;
+    background: var(--bg-raised);
+}
+
+.action-edit-stat-add {
+    color: var(--accent-green);
+}
+
+.action-edit-stat-del {
+    color: var(--accent-red);
+}
+
 /* Action summary row: main content + right-aligned annotation */
 .action-summary-row {
     display: flex;

@@ -268,9 +268,11 @@ class ReplaceTextContextItem extends EditBase {
     // changed between the approved preview and this write (the approval modal
     // can be open for arbitrarily long).
     const anyParams = /** @type {any} */ (normalizedParams);
-    const dryRunResult = /** @type {{contentHash?: string}|undefined} */ (anyParams._dryRunResult);
+    const dryRunResult = /** @type {{contentHash?: string, oldContent?: string, newContent?: string}|undefined} */ (anyParams._dryRunResult);
     delete anyParams._dryRunResult;
     const frozenHash = dryRunResult?.contentHash;
+    const oldFull = dryRunResult?.oldContent;
+    const newFull = dryRunResult?.newContent;
 
     // Serialize edits to the SAME file: a single turn can dispatch several to
     // one path concurrently, each having frozen its expectedHash baseline at
@@ -315,6 +317,20 @@ class ReplaceTextContextItem extends EditBase {
       if (result && /** @type {any} */ (result).success !== false &&
           typeof (/** @type {any} */ (result).contentHash) === 'string') {
         recordWrittenHash(this.conversation, this.session, anyParams.path, /** @type {any} */ (result).contentHash);
+      }
+
+      // Attach a line diffstat so the status tile can show `+A -B` beside the
+      // filename. The dryRun captured the full before/after file content, which
+      // counts every occurrence for a replace_all; fall back to the single
+      // old_str/new_str region when it isn't available.
+      if (result && /** @type {any} */ (result).success !== false) {
+        const stats = (typeof oldFull === 'string' && typeof newFull === 'string')
+          ? EditBase._lineStats(oldFull, newFull)
+          : EditBase._lineStats(anyParams.old_str, anyParams.new_str);
+        if (stats) {
+          /** @type {any} */ (result).linesAdded = stats.added;
+          /** @type {any} */ (result).linesRemoved = stats.removed;
+        }
       }
 
       return result;
@@ -431,7 +447,7 @@ class ReplaceTextContextItem extends EditBase {
       summary = displayData?.title || filename;
       status = 'running';
     } else if (actionStatus.success) {
-      summary = filename;
+      summary = EditBase._editStatSummary(filename, EditBase._editStats(displayData, result));
       status = 'success';
     } else if (actionStatus.cancelled) {
       summary = `cancelled: ${filename}`;

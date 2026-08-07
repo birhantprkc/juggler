@@ -243,6 +243,7 @@ class WriteFileContextItem extends EditBase {
     // the existing file's hash as expectedHash so the backend refuses if the
     // file changed between the approved diff and this write.
     const existingHash = writeParams._existingHash;
+    const existingContent = writeParams._existingContent;
     delete writeParams._existingContent;
     delete writeParams._existingHash;
     const anyWrite = /** @type {any} */ (writeParams);
@@ -291,6 +292,17 @@ class WriteFileContextItem extends EditBase {
       if (result && /** @type {any} */ (result).success !== false &&
           typeof (/** @type {any} */ (result).contentHash) === 'string') {
         recordWrittenHash(this.conversation, this.session, anyWrite.path, /** @type {any} */ (result).contentHash);
+      }
+
+      // Attach a line diffstat (added/removed vs the prior on-disk content) so
+      // the status tile can show a `+A -B` indicator beside the filename. A new
+      // file has no prior content, so every line counts as added.
+      if (result && /** @type {any} */ (result).success !== false) {
+        const stats = EditBase._lineStats(existingContent ?? '', /** @type {string} */ (anyWrite.content));
+        if (stats) {
+          /** @type {any} */ (result).linesAdded = stats.added;
+          /** @type {any} */ (result).linesRemoved = stats.removed;
+        }
       }
 
       return result;
@@ -397,7 +409,7 @@ class WriteFileContextItem extends EditBase {
       status = 'running';
     } else if (actionStatus.success) {
       const action = result.created ? 'Created' : 'Updated';
-      summary = `${action} ${filename}`;
+      summary = EditBase._editStatSummary(`${action} ${filename}`, EditBase._editStats(displayData, result));
       status = 'success';
     } else {
       ({ summary, status } = this.resolveTerminalStatus(actionStatus, filename, `cancelled: ${filename}`));

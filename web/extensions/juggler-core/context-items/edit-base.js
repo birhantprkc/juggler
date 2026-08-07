@@ -317,6 +317,139 @@ class EditBase extends ContextItem {
     };
   }
 
+  /**
+   * Count the lines added and removed between two versions of a file, using the
+   * same LCS-of-lines notion as the diff viewer (equal lines are the longest
+   * common subsequence; everything else is an add or a remove). Cheap to render
+   * as a `+A / -B` diffstat beside the filename.
+   *
+   * The common leading/trailing lines are trimmed before the LCS pass, so the
+   * cost scales with the size of the *changed region*, not the whole file — a
+   * two-line edit in an 8,000-line file diffs two lines, not eight thousand.
+   * Returns null only if the differing region itself is pathologically large,
+   * in which case the caller omits the indicator rather than stalling.
+   * @protected
+   * @param {string|undefined|null} oldText - Previous file content ('' / nullish = new file)
+   * @param {string|undefined|null} newText - Written file content
+   * @returns {{added: number, removed: number}|null} Line diffstat, or null if too large
+   */
+  static _lineStats(oldText, newText) {
+    // Strip a single trailing newline before splitting so a file's terminating
+    // newline doesn't count as an extra empty line — otherwise a brand-new
+    // 3-line file (ending in `\n`) would report `+4`. Doing it to both sides
+    // keeps unchanged trailing content cancelling out in the LCS.
+    const norm = (/** @type {string|undefined|null} */ t) => (t ? String(t).replace(/\n$/, '') : '');
+    const o = norm(oldText);
+    const nw = norm(newText);
+    const oldLines = o === '' ? [] : o.split('\n');
+    const newLines = nw === '' ? [] : nw.split('\n');
+
+    // Trim the common prefix and suffix: identical leading/trailing lines are
+    // part of the LCS and contribute nothing to added/removed, so dropping them
+    // is lossless and shrinks the LCS table to just the changed span. This is
+    // what lets a small edit inside a huge file stay cheap enough to show.
+    let lo = 0;
+    let oHi = oldLines.length;
+    let nHi = newLines.length;
+    while (lo < oHi && lo < nHi && oldLines[lo] === newLines[lo]) lo++;
+    while (oHi > lo && nHi > lo && oldLines[oHi - 1] === newLines[nHi - 1]) { oHi--; nHi--; }
+
+    const m = oHi - lo;
+    const n = nHi - lo;
+    if (m === 0) return { added: n, removed: 0 };
+    if (n === 0) return { added: 0, removed: m };
+    // Guard against a genuinely huge changed region (e.g. a full rewrite of a
+    // large file): the LCS table is O(m·n). Past this budget skip the stat
+    // rather than block the UI.
+    if (m * n > 6_000_000) return null;
+
+    // LCS length via a rolling row (we only need the count, not the alignment).
+    let prev = new Array(n + 1).fill(0);
+    for (let i = 1; i <= m; i++) {
+      const cur = new Array(n + 1).fill(0);
+      const oi = oldLines[lo + i - 1];
+      for (let j = 1; j <= n; j++) {
+        cur[j] = oi === newLines[lo + j - 1]
+          ? /** @type {number} */ (prev[j - 1]) + 1
+          : Math.max(/** @type {number} */ (prev[j]), /** @type {number} */ (cur[j - 1]));
+      }
+      prev = cur;
+    }
+    const lcs = /** @type {number} */ (prev[n]);
+    return { added: n - lcs, removed: m - lcs };
+  }
+
+  /**
+   * Derive a `{added, removed}` line diffstat for a completed edit's status
+   * tile. Prefers the diff/content preview persisted in `displayData` (present
+   * on every edit tile — the history diff viewer renders from it too, so this
+   * works for items written before counts were stored) and falls back to the
+   * `linesAdded`/`linesRemoved` the action recorded at execute time.
+   * @protected
+   * @param {any} displayData - The tool-action displayData (diffData / contentData)
+   * @param {any} result - The action result (may carry linesAdded/linesRemoved)
+   * @returns {{added: number, removed: number}|null} Line diffstat, or null
+   */
+  static _editStats(displayData, result) {
+    const diff = displayData?.diffData;
+    if (diff && typeof diff.oldContent === 'string' && typeof diff.newContent === 'string') {
+      return EditBase._lineStats(diff.oldContent, diff.newContent);
+    }
+    const contentData = displayData?.contentData;
+    if (contentData && typeof contentData.content === 'string') {
+      return EditBase._lineStats('', contentData.content);
+    }
+    if (result && (typeof result.linesAdded === 'number' || typeof result.linesRemoved === 'number')) {
+      return { added: result.linesAdded || 0, removed: result.linesRemoved || 0 };
+    }
+    return null;
+  }
+
+  /**
+   * Build a rich status-summary element: a badge-shaped `+A -B` diffstat
+   * (coloured green/red) followed by the filename label. Used by the
+   * edit-family `getStatusUI` success branch so a completed write/edit shows
+   * at a glance how much changed. The stat badge sits right after the type
+   * badge the status renderer prepends, mirroring its lozenge shape.
+   *
+   * DOM-only; called solely from the browser status renderer. Falls back to the
+   * bare label when there is no net line change (or stats are unavailable), so a
+   * whitespace-only or metadata edit doesn't render an empty `+0 -0`.
+   * @protected
+   * @param {string} label - Primary text (e.g. `Updated foo.js`)
+   * @param {{added: number, removed: number}|null} [stats] - Line diffstat
+   * @returns {HTMLElement|string} Rich summary element, or the plain label
+   */
+  static _editStatSummary(label, stats) {
+    if (!stats || (!stats.added && !stats.removed)) return label;
+
+    const wrap = document.createElement('span');
+    wrap.className = 'action-edit-summary';
+
+    const stat = document.createElement('span');
+    stat.className = 'action-edit-stat';
+    if (stats.added) {
+      const add = document.createElement('span');
+      add.className = 'action-edit-stat-add';
+      add.textContent = `+${stats.added}`;
+      stat.appendChild(add);
+    }
+    if (stats.removed) {
+      const del = document.createElement('span');
+      del.className = 'action-edit-stat-del';
+      del.textContent = `-${stats.removed}`;
+      stat.appendChild(del);
+    }
+    wrap.appendChild(stat);
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'action-edit-summary-name';
+    nameEl.textContent = label;
+    wrap.appendChild(nameEl);
+
+    return wrap;
+  }
+
 }
 
 export default EditBase;
