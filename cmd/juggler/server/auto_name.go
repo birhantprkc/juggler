@@ -15,11 +15,13 @@ import (
 	"juggler/internal/jlog"
 )
 
-// Automatic auto-naming only ever touches a conversation still carrying its
-// default numbered placeholder name (core.IsUntitledName — the single source of
-// truth shared with the client's generator), so a user-renamed / promoted /
-// duplicated conversation is never overwritten. A manual "auto-name now" (force)
-// bypasses this guard.
+// Automatic auto-naming only ever touches a conversation whose name is still
+// provisional — the `isProvisionalName` doc-metadata marker the worker owns (see
+// worker.metaProvisionalName) — so a conversation the user has named by hand is
+// never overwritten. Naming a tab clears the marker; the "Auto-name" button and
+// /handoff set it, which is how a "(continued)" tab (a name no placeholder test
+// would match) is still eligible. A manual "auto-name now" (force) bypasses this
+// guard, and the enable setting with it.
 
 // Raw credential keys mirror handlers/config.go (autoNameDisabledKey,
 // autoNameInstructionKey). Read live so a settings change takes effect on the
@@ -140,12 +142,25 @@ func (s *Server) autoNamer() worker.AutoNameFunc {
 	}
 }
 
+// isProvisionalName reports whether convID's name may still be replaced. The
+// marker lives in the conversation's doc, so the answer comes from its loaded
+// worker; an unloaded conversation (evicted mid-derivation) answers false —
+// with nothing to read, the safe reading is to leave the name alone. See
+// worker.metaProvisionalName.
+func (s *Server) isProvisionalName(convID string) bool {
+	if s.workerManager == nil {
+		return false
+	}
+	provisional, known := s.workerManager.NameIsProvisional(convID)
+	return known && provisional
+}
+
 // autoNameConversation derives and applies a short tab title for a freshly-used
-// conversation, out-of-band. Every failure mode leaves the "Untitled N" name
+// conversation, out-of-band. Every failure mode leaves the existing name
 // untouched: the ones the user would want explained — no resolvable cheap model,
 // a completion error/timeout, a rejected candidate, no acceptable title, a rename
 // error — log at info so they surface on the console; the benign guard skips (the
-// current name is no longer "Untitled N", or a rename race) return silently. There is
+// name is no longer machine-derived, or a rename race) return silently. There is
 // deliberately no heuristic fallback: a dumb text-derived name is worse than none.
 func (s *Server) autoNameConversation(convID, firstMessage, customSystem string, force bool, primary core.ModelRef) {
 	sm := s.SessionManager()
@@ -153,10 +168,10 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 		return
 	}
 
-	// Fire guard: the automatic namer only ever renames a conversation still
-	// carrying its default "Untitled N" name. A manual force request renames
-	// regardless (the user explicitly asked for a fresh name).
-	if !force && !core.IsUntitledName(sm.ConvNames()[convID]) {
+	// Fire guard: the automatic namer only ever renames a conversation whose name
+	// is still provisional. A manual force request renames regardless (the user
+	// explicitly asked for a fresh name).
+	if !force && !s.isProvisionalName(convID) {
 		return
 	}
 
@@ -222,10 +237,10 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 		return
 	}
 
-	// Race guard: the user may have renamed during the completion. Re-check the
-	// name still matches "Untitled N" before applying. A manual force request skips
-	// this, applying the freshly-derived name regardless.
-	if !force && !core.IsUntitledName(sm.ConvNames()[convID]) {
+	// Race guard: the user may have renamed during the completion — which clears
+	// the marker — so re-check before applying. A manual force request skips this,
+	// applying the freshly-derived name regardless.
+	if !force && !s.isProvisionalName(convID) {
 		return
 	}
 

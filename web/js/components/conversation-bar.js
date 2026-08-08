@@ -1286,7 +1286,12 @@ class ConversationBar extends HTMLElement {
         e.preventDefault();
         e.stopPropagation();
         if (done) return;
-        /** @type {NonNullable<typeof this._session>} */ (this._session).requestAutoName(conv.id);
+        const session = /** @type {NonNullable<typeof this._session>} */ (this._session);
+        // The user handed naming back to the model, so the tab's name is
+        // provisional again — mark it before requesting, so a later /handoff of
+        // this conversation stays eligible for a derived title.
+        session.setNameIsProvisional(conv.id, true);
+        session.requestAutoName(conv.id);
         teardown();
       });
       actions.appendChild(autoNameBtn);

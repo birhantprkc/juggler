@@ -5,8 +5,10 @@
 package core
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -227,5 +229,63 @@ func TestCreateConversation_NonTaskNameStillGetsCopySuffix(t *testing.T) {
 	}
 	if name != "Charlie (copy)" {
 		t.Fatalf("duplicate name = %q, want \"Charlie (copy)\"", name)
+	}
+}
+
+// A duplicate of a name already at the length cap must keep its "(copy)" suffix
+// whole: the suffix is the only thing telling the two conversations apart, and
+// SanitizeName truncates from the END when the folder is written, so an
+// unclipped base would land on disk as "… (cop" while the index held the full
+// name. The base gives way instead.
+func TestCreateConversation_LongNameKeepsCopySuffix(t *testing.T) {
+	store, _ := newStoreForTest(t)
+
+	long := strings.Repeat("A", SanitizedNameMaxRunes)
+	if _, _, _, err := store.CreateConversationFolder(long, ""); err != nil {
+		t.Fatalf("seed long name: %v", err)
+	}
+	_, name, dir, err := store.CreateConversationFolder(long, "")
+	if err != nil {
+		t.Fatalf("CreateConversationFolder: %v", err)
+	}
+	if !strings.HasSuffix(name, " (copy)") {
+		t.Fatalf("duplicate name = %q, want an intact \" (copy)\" suffix", name)
+	}
+	if got := len([]rune(name)); got > SanitizedNameMaxRunes {
+		t.Fatalf("duplicate name = %q (%d runes), want <= %d", name, got, SanitizedNameMaxRunes)
+	}
+	// The returned name must be the one actually on disk — the divergence this
+	// guards is the index reporting a name the folder never carried.
+	onDisk, _, ok := ParseDirName(filepath.Base(dir))
+	if !ok {
+		t.Fatalf("ParseDirName(%q) failed", filepath.Base(dir))
+	}
+	if onDisk != name {
+		t.Fatalf("folder name %q != returned name %q", onDisk, name)
+	}
+}
+
+// The counter series stays within the cap too: " (copy 10)" is three runes
+// longer than " (copy)", so each candidate must be fitted for its own suffix
+// rather than for the first one.
+func TestDisambiguateName_CounterVariantsStayWithinCap(t *testing.T) {
+	long := strings.Repeat("B", SanitizedNameMaxRunes)
+	names := map[string]string{"conv_a": long}
+	for i := 2; i <= 12; i++ {
+		got := disambiguateName(long, "", names, copySuffix)
+		if n := len([]rune(got)); n > SanitizedNameMaxRunes {
+			t.Fatalf("candidate %q (%d runes), want <= %d", got, n, SanitizedNameMaxRunes)
+		}
+		if got != SanitizeName(got) {
+			t.Fatalf("candidate %q would be rewritten to %q on disk", got, SanitizeName(got))
+		}
+		want := " (copy)"
+		if i > 2 {
+			want = fmt.Sprintf(" (copy %d)", i)
+		}
+		if !strings.HasSuffix(got, want) {
+			t.Fatalf("candidate %q, want a %q suffix", got, want)
+		}
+		names[fmt.Sprintf("conv_%d", i)] = got
 	}
 }

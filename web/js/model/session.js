@@ -4,7 +4,13 @@
 
 import contextItemRegistry from '../registries/context-item-registry.js';
 import Conversation from './conversation.js';
-import { UNTITLED_BASE, UNTITLED_NAME_RE, untitledName } from './conversation-naming.js';
+import {
+  UNTITLED_BASE,
+  UNTITLED_NAME_RE,
+  untitledName,
+  uniqueSuffixedName,
+  PROVISIONAL_NAME_KEY
+} from './conversation-naming.js';
 import {
   SAVE_DEBOUNCE_MS,
   MAX_MESSAGE_HISTORY,
@@ -1566,9 +1572,9 @@ class Session {
 
   /**
    * Generate a unique "<base> (<word>)" name for a derived conversation (a clone
-   * via /duplicate, a continuation via /handoff, …). Strips an existing
-   * " (<word>)" / " (<word> N)" suffix first so re-deriving doesn't stack
-   * "X (copy) (copy)", then appends the suffix and bumps a counter until unique.
+   * via /duplicate, a continuation via /handoff, …), collision-checked against
+   * the names this session currently holds. Suffix stacking, the name-length
+   * cap, and the counter series all live in uniqueSuffixedName.
    * @param {string} sourceName - Original conversation name
    * @param {string} [word] - Suffix word (default 'copy')
    * @returns {string} Unique suffixed name
@@ -1579,15 +1585,7 @@ class Session {
     this.conversations.forEach((conv) => {
       existingNames.add(conv.name);
     });
-
-    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const base = sourceName.replace(new RegExp(`\\s*\\(${escaped}(?:\\s+\\d+)?\\)$`), '');
-
-    const candidate = `${base} (${word})`;
-    if (!existingNames.has(candidate)) return candidate;
-    let n = 2;
-    while (existingNames.has(`${base} (${word} ${n})`)) n++;
-    return `${base} (${word} ${n})`;
+    return uniqueSuffixedName(sourceName, word, (name) => existingNames.has(name));
   }
 
   /**
@@ -1859,17 +1857,38 @@ class Session {
   }
 
   /**
-   * Request an on-demand ("auto-name now") tab-title derivation for a
-   * conversation. Fire-and-forget: the worker re-derives a title from the
-   * conversation's first user message and the server renames + broadcasts the
-   * change, which arrives via the normal conversations-changed path. A no-op
-   * before the conversation has a first user message.
+   * Request an on-demand tab-title derivation for a conversation.
+   * Fire-and-forget: the worker re-derives a title from the conversation's first
+   * user message and the server renames + broadcasts the change, which arrives
+   * via the normal conversations-changed path. A no-op before the conversation
+   * has a first user message.
    * @param {string} conversationId - Conversation to auto-name.
+   * @param {object} [opts]
+   * @param {boolean} [opts.force] - True (default) for a user-requested
+   *   "auto-name now". False for a background request (/handoff), which the
+   *   server applies only while the name is machine-derived and auto-naming is
+   *   enabled.
    * @returns {void}
    */
-  requestAutoName(conversationId) {
+  requestAutoName(conversationId, { force = true } = {}) {
     if (!this.conversations.has(conversationId)) return;
-    workerManager.requestAutoName(conversationId);
+    workerManager.requestAutoName(conversationId, { force });
+  }
+
+  /**
+   * Record whether a conversation's name is still provisional — the single write
+   * seam for the `isProvisionalName` doc-metadata marker the server's auto-namer
+   * reads. Set it true when a name is generated on the user's behalf (the
+   * "Auto-name" button, /handoff's "(continued)" tab) to keep the conversation
+   * eligible for a derived title; clear it when the user types a name of their
+   * own. The value rides in the doc, so it persists, syncs to every view, and is
+   * inherited by a duplicate through the server-side doc copy.
+   * @param {string} conversationId - Conversation to mark.
+   * @param {boolean} isProvisional - True while the name may still be replaced.
+   * @returns {void}
+   */
+  setNameIsProvisional(conversationId, isProvisional) {
+    this.conversations.get(conversationId)?.setMetadata(PROVISIONAL_NAME_KEY, !!isProvisional);
   }
 
   /**
@@ -1919,6 +1938,10 @@ class Session {
     }
 
     const canonical = (result && /** @type {any} */ (result).name) || newName.trim();
+    // The name is now the user's, so the auto-namer must never replace it. This
+    // is the only client entry point for a rename, so it is the only place a
+    // hand-typed name enters the system. See PROVISIONAL_NAME_KEY.
+    this.setNameIsProvisional(conversationId, false);
     // Update _conversationNames, the single in-memory cache of the on-disk
     // folder name, so `conv.name` (a getter) reflects the rename immediately.
     this.setConversationName(conversationId, canonical);

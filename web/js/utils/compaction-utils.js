@@ -216,6 +216,23 @@ export function maybePromoteHandoffThread(mt) {
       } finally {
         promotingHandoffs.delete(key);
       }
+
+      // The summary is now the continued tab's first user message, so the
+      // auto-namer has something to title it from — ask for a derivation to
+      // replace the derived "<source> (continued)" name. Non-forced: the server
+      // applies it only while the name is still provisional (/handoff marked
+      // it so) and auto-naming is enabled, so a user who turned naming off, or
+      // who renames the tab first, keeps the name they have. Fires exactly once
+      // per handoff — the promotion replaces the thread, so no later tick or
+      // reload can reach here again. Dynamic import mirrors compactConversation:
+      // this module is loaded by the engine realm too, where worker-manager is
+      // not a static dependency.
+      void import('../services/worker-manager.js')
+        .then(({ default: workerManager }) => {
+          workerManager.requestAutoName(mt.conversationId, { force: false });
+        })
+        .catch(err => console.warn('[handoff] auto-name request skipped:', err));
+
       return true;
     }
   } catch (err) {

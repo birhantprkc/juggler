@@ -24,7 +24,8 @@
 //     begin-undo-coalesce, end-undo-coalesce, request-full-state, resync-request,
 //     resync-to-origin, clear-undo-stacks, get-transaction
 //   - diagnostics: engine-trace, rename-log
-//   - naming: request-auto-name (manual "auto-name now")
+//   - naming: request-auto-name (/handoff's promoted summary, or the tab bar's
+//     manual "auto-name now")
 //   - test-only: get-yjs-state, ping, flush-persistence, set-mock-responses, release-mock
 //
 // NOTE: State mutations (item add/delete/update) flow through Yjs CRDT sync,
@@ -136,16 +137,17 @@ type AutoCompactGateFunc func() bool
 
 // AutoNameFunc is an injected server callback the worker fires so the server can
 // derive a short tab title out-of-band. It fires automatically on the FIRST user
-// message of the root conversation (force=false), and on demand for a manual
-// "auto-name now" request (force=true). The worker only signals (convID, the
-// first message text, the primary provider/model/thinking it will run under, and
-// force); the server owns the enable gate, cheap-model resolution, the bounded
-// completion, and the rename + broadcast. force=true bypasses the server's
-// enable gate and its "still named Untitled N" guard, so a manual request always
-// renames. Passing provider/model/thinking as plain strings keeps the worker
-// free of any dependency on the server's model-ref type. Fire-and-forget: the
-// callee must not block the worker goroutine (the server hands off to its own
-// goroutine).
+// message of the root conversation, and on demand for a request-auto-name
+// message — /handoff's, once its summary has landed as the continued tab's first
+// message (force=false), or the tab bar's "auto-name now" button (force=true).
+// The worker only signals (convID, the first message text, the primary
+// provider/model/thinking it will run under, and force); the server owns the
+// enable gate, cheap-model resolution, the bounded completion, and the rename +
+// broadcast. force=true bypasses the server's enable gate and its name-provenance
+// guard, so a manual request always renames. Passing provider/model/thinking as
+// plain strings keeps the worker free of any dependency on the server's model-ref
+// type. Fire-and-forget: the callee must not block the worker goroutine (the
+// server hands off to its own goroutine).
 type AutoNameFunc func(convID, firstMessage, provider, model, thinking string, force bool)
 
 // =============================================================================
@@ -600,6 +602,17 @@ type CompactMessage struct {
 	Type           string `json:"type"` // "compact"
 	AckID          string `json:"ackId"`
 	HandoffPromote bool   `json:"handoffPromote,omitempty"`
+}
+
+// RequestAutoNameMessage asks for an out-of-band tab-title derivation from the
+// conversation's first user message. Force distinguishes the two callers: the
+// tab bar's "auto-name now" button sends true (the user asked for this name, so
+// it overrides both the enable setting and the name-provenance guard), while
+// /handoff sends false — a background rename that must respect a user who turned
+// auto-naming off, or who named the source tab by hand.
+type RequestAutoNameMessage struct {
+	Type  string `json:"type"` // "request-auto-name"
+	Force bool   `json:"force,omitempty"`
 }
 
 // SetMockResponsesMessage injects mock LLM responses for testing.

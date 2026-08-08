@@ -11,6 +11,7 @@ of changes; this project follows semantic versioning.
 - Headless Linux servers can run the Node engine without an X or Wayland session
 - Claude Code usage stats load in projects awaiting workspace trust
 - Claude Code flashes a warning when a large conversation misses its context cache
+- Handing off a conversation auto-names the continued tab from its summary, leaving tabs you named alone
 
 ## [0.5.3] - 2026-08-06
 

@@ -51,10 +51,16 @@ the on-disk folder name and is mutated via the rename API (see comment in
 | `undoState` | object | Worker | `{canUndo, canRedo, ...}`. Pushed FROM worker; main thread only reads. |
 | `nextSteps` | string \| null | Strategy plugins | Hint text rendered in the column header until a new turn starts. |
 | `draft` | `Y.Map` \| object | Composer | Root conversation's unsent draft: `{text, attachments}`. Per-thread drafts live on the thread container instead. |
+| `isProvisionalName` | boolean | Worker (seed) / `Session.setNameIsProvisional` | Whether the name is still provisional (machine-derived) and so may be replaced by the auto-namer. Seeded on first init from the `Untitled N` shape; cleared by a rename, set by the "Auto-name" button and `/handoff`. |
 
 `undoLog` and `metadata.undoState` are split deliberately: the log is a CRDT
 that survives sync; the state is the worker's view of "what can be
 undone/redone right now" and is replaced wholesale on each worker tick.
+
+The conversation **name** is not in the doc, but `isProvisionalName` — its
+*provenance* — is. That is deliberate: the marker then rides the doc copy into a
+duplicate (so a `/handoff` clone stays eligible for a derived title), and the
+worker holding the doc is what the server asks before renaming a tab.
 
 ---
 

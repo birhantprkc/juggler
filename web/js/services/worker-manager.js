@@ -538,15 +538,21 @@ class WorkerManager {
   }
 
   /**
-   * Request an on-demand ("auto-name now") tab-title derivation. The worker
-   * re-derives a title from the conversation's first user message and hands off
-   * to the server, which renames and broadcasts the change (a no-op before the
-   * first user message). Fire-and-forget: the rename arrives via the normal
+   * Request an on-demand tab-title derivation. The worker re-derives a title
+   * from the conversation's first user message and hands off to the server,
+   * which renames and broadcasts the change (a no-op before the first user
+   * message). Fire-and-forget: the rename arrives via the normal
    * conversations-changed broadcast.
    * @param {string} conversationId - Conversation ID
+   * @param {object} [opts]
+   * @param {boolean} [opts.force] - True (default) for a user-requested
+   *   "auto-name now": renames whatever the tab is called and regardless of the
+   *   auto-naming setting. False for a background request (/handoff), which
+   *   applies only while the name is still machine-derived (`nameIsAuto`) and
+   *   auto-naming is enabled.
    */
-  requestAutoName(conversationId) {
-    this.sendToWorker(conversationId, { type: 'request-auto-name' });
+  requestAutoName(conversationId, { force = true } = {}) {
+    this.sendToWorker(conversationId, { type: 'request-auto-name', force });
   }
 
   /**

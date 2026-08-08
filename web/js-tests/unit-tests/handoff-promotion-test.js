@@ -152,5 +152,52 @@ export async function runTests(_ctx) {
     errors.push(`ignores an unmarked thread with a result: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // =========================================================================
+  // Test 4: promoting the summary asks the server to auto-name the continued
+  //         tab — non-forced, so the marker and the user's auto-naming setting
+  //         still decide. A thread with no result asks for nothing.
+  // =========================================================================
+  {
+    const { default: workerManager } = await import('../../js/services/worker-manager.js');
+    const original = workerManager.requestAutoName;
+    /** @type {Array<{id: string, force: boolean|undefined}>} */
+    const requests = [];
+    /** @type {any} */ (workerManager).requestAutoName = (
+      /** @type {string} */ id,
+      /** @type {{force?: boolean}} */ opts
+    ) => {
+      requests.push({ id, force: opts?.force });
+    };
+    try {
+      const pending = await createTestConversation(session);
+      const pendingMt = pending.rootMessageThread;
+      insertThreadTile(pendingMt, { handoffPromote: true });
+      maybePromoteHandoffThread(pendingMt);
+      await waitForObservers();
+
+      assert(requests.length === 0,
+        'a handoff thread with no summary yet must not request an auto-name');
+
+      const conversation = await createTestConversation(session);
+      const mt = conversation.rootMessageThread;
+      insertThreadTile(mt, { handoffPromote: true, result: SUMMARY });
+      maybePromoteHandoffThread(mt);
+      await waitForObservers();
+
+      const forConv = requests.filter(r => r.id === conversation.id);
+      assert(forConv.length === 1,
+        `expected exactly 1 auto-name request after promotion, got ${forConv.length}`);
+      assert(forConv[0].force === false,
+        'the promotion must request a NON-forced auto-name, or it would bypass the enable setting');
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`requests a non-forced auto-name on promotion: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      /** @type {any} */ (workerManager).requestAutoName = original;
+    }
+  }
+
   return { passed, failed, errors };
 }

@@ -1119,7 +1119,7 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 		w.handleRenameLog()
 
 	case "request-auto-name":
-		w.handleRequestAutoName()
+		w.handleRequestAutoName(msg.Payload)
 
 	case "clear-undo-stacks":
 		w.handleClearUndoStacks(msg.Payload)

@@ -26,6 +26,12 @@ import { compactConversation, isCompactionPending } from 'juggler/model';
  *     Parked = the message is posted but no turn starts (only sendMessage /
  *     needsStrategyRun start turns), so the conversation waits for Continue or a
  *     follow-up.
+ *  5. That promotion also asks for an auto-name: the summary is the continued
+ *     tab's first user message, so the model can title it from where the work
+ *     actually got to rather than leaving "<source> (continued)". Step 2 marks
+ *     the clone's name provisional (setNameIsProvisional) to make it eligible;
+ *     the server still applies the user's auto-naming setting, and the derived
+ *     name stands if naming is off or fails.
  *
  * Like /new and /duplicate this is a session-level operation, so it
  * does NOT set `mutatesConversation` — a handoff must never cancel a turn in the
@@ -73,6 +79,13 @@ class HandoffCommandType extends CommandType {
       // source): it already surfaced its own notice, so stay quiet.
       return { handled: true };
     }
+
+    // The "(continued)" name is derived, not chosen: mark it so the auto-namer
+    // may replace it with a title drawn from the handoff summary once that
+    // summary lands (maybePromoteHandoffThread requests the derivation). Marked
+    // unconditionally — the server owns the "is auto-naming enabled" decision, and
+    // when it is off the derived "(continued)" name simply stays.
+    session.setNameIsProvisional(newId, true);
 
     // Bring the parked "(continued)" conversation into view so the user watches the
     // summary generate and lands on it ready to continue.

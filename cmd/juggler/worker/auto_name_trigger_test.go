@@ -37,6 +37,16 @@ func sendMsg(t *testing.T, w *ConversationWorker, msg SendMessageMessage) {
 	w.handleSendMessage(payload)
 }
 
+// requestAutoName delivers a request-auto-name message with the given force.
+func requestAutoName(t *testing.T, w *ConversationWorker, force bool) {
+	t.Helper()
+	payload, err := json.Marshal(RequestAutoNameMessage{Type: "request-auto-name", Force: force})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	w.handleRequestAutoName(payload)
+}
+
 // TestAutoNameFiresOnFirstRootMessage pins the fire guard: the first user
 // message on the root thread signals the auto-namer exactly once, with the
 // message text and the resolved primary model.
@@ -66,7 +76,7 @@ func TestRequestAutoNameFiresForceFromFirstMessage(t *testing.T) {
 
 	w.addUserMessage(UserMessageInput{Text: "Refactor the auth layer"})
 
-	w.handleRequestAutoName()
+	requestAutoName(t, w, true)
 
 	if len(calls) != 1 {
 		t.Fatalf("expected exactly 1 auto-name call, got %d", len(calls))
@@ -84,7 +94,7 @@ func TestRequestAutoNameNoOpWithoutUserMessage(t *testing.T) {
 	var calls []autoNameCall
 	w := newAutoNameWorker(t, "conv-force-empty", &calls)
 
-	w.handleRequestAutoName()
+	requestAutoName(t, w, true)
 
 	if len(calls) != 0 {
 		t.Fatalf("expected no auto-name call without a user message, got %+v", calls)

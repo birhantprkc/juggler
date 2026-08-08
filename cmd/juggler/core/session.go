@@ -347,8 +347,37 @@ func (fs *FileSessionStore) CreateConversationFolder(name, requestedID string) (
 	return id, finalName, dir, nil
 }
 
+// fitSuffixed returns suffixFn(base, i), clipping the BASE — never the suffix —
+// so the whole name stays within SanitizedNameMaxRunes. The suffix is what
+// tells the disambiguated conversation apart from the one it collided with, and
+// SanitizeName truncates from the END when the folder is written: without this,
+// a name already near the cap yields " (copy)" chopped to " (cop" on disk while
+// the in-memory index keeps the full name, so the two disagree until the next
+// scan and the copy looks identical to its source.
+func fitSuffixed(base string, i int, suffixFn func(string, int) string) string {
+	candidate := suffixFn(base, i)
+	over := len([]rune(candidate)) - SanitizedNameMaxRunes
+	if over <= 0 {
+		return candidate
+	}
+	rs := []rune(base)
+	keep := len(rs) - over
+	if keep < 0 {
+		keep = 0
+	}
+	clipped := strings.TrimRight(string(rs[:keep]), " ")
+	if clipped == "" {
+		// The suffix fills the cap on its own: keep it alone rather than emit a
+		// leading space SanitizeName would trim into a different name.
+		return strings.TrimSpace(suffixFn("", i))
+	}
+	return suffixFn(clipped, i)
+}
+
 // disambiguateName resolves a name collision by calling suffixFn(base, i) for
-// i=2, 3, … until the name is unique (case-folded, excluding excludeID).
+// i=2, 3, … until the name is unique (case-folded, excluding excludeID). Each
+// candidate is fitted to the name cap for its own suffix, so a longer counter
+// tail eats further into the base instead of overflowing.
 func disambiguateName(base, excludeID string, names map[string]string, suffixFn func(string, int) string) string {
 	taken := func(candidate string) bool {
 		folded := strings.ToLower(candidate)
@@ -366,7 +395,7 @@ func disambiguateName(base, excludeID string, names map[string]string, suffixFn 
 		return base
 	}
 	for i := 2; ; i++ {
-		if c := suffixFn(base, i); !taken(c) {
+		if c := fitSuffixed(base, i, suffixFn); !taken(c) {
 			return c
 		}
 	}

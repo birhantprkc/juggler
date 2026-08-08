@@ -7,6 +7,8 @@ package server
 import (
 	"strings"
 	"testing"
+
+	"juggler/cmd/juggler/worker"
 )
 
 func TestSanitizeAutoName(t *testing.T) {
@@ -91,5 +93,21 @@ func TestAcceptableAutoName(t *testing.T) {
 		if acceptableAutoName(b) {
 			t.Errorf("expected %q to be rejected", b)
 		}
+	}
+}
+
+// TestNameIsProvisionalWithoutLoadedWorker pins the "can't tell ⇒ don't rename" reading
+// of the auto-namer's guard. The marker lives in the conversation's doc, so only
+// a loaded worker can answer; with no worker manager at all, or no worker for the
+// id, the guard must refuse rather than rename a name it cannot inspect.
+func TestNameIsProvisionalWithoutLoadedWorker(t *testing.T) {
+	if (&Server{}).isProvisionalName("conv_missing1") {
+		t.Error("isProvisionalName = true with no worker manager, want false")
+	}
+
+	wm := worker.NewManager()
+	t.Cleanup(wm.Shutdown)
+	if (&Server{workerManager: wm}).isProvisionalName("conv_missing2") {
+		t.Error("isProvisionalName = true for a conversation with no loaded worker, want false")
 	}
 }

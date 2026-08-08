@@ -175,6 +175,14 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 		w.doc.SetMetadata("created", msg.Conversation.Created)
 	}
 
+	// The name itself stays on the folder, but its PROVENANCE is doc state: seed
+	// the marker that decides whether the auto-namer may replace this tab's name.
+	// (Provisional = machine-derived and free to be replaced; cleared once a human
+	// types a name.)
+	// Absent-only, so a doc that already carries the marker keeps it. See
+	// metaProvisionalName.
+	w.seedNameIsProvisional()
+
 	// Seed the strategy-activation marker so onActivate fires only on a genuine,
 	// non-baseline activation (matching the old "fires on a live switch, never on
 	// initial load" rule):
@@ -325,12 +333,14 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		// Auto-name trigger: fire the injected server callback exactly once, on the
 		// FIRST user message of the ROOT thread. Detected from the doc (no prior
 		// user item) rather than a cached flag, so a reconnect to an already-
-		// populated conversation never re-fires. The server owns the guard, cheap-
-		// model resolution, the bounded completion, and the rename; the worker only
-		// signals and hands off. Skipped for subthreads and text-less (image-only)
-		// first messages.
+		// populated conversation never re-fires. The server owns cheap-model
+		// resolution, the bounded completion, and the rename; the worker only
+		// signals and hands off. Skipped for subthreads, text-less (image-only)
+		// first messages, and any conversation whose name a human has committed to
+		// (NameIsProvisional — the server re-checks it before applying the title).
 		if msg.ThreadItemID == "" && w.autoNameFunc != nil &&
-			strings.TrimSpace(input.Text) != "" && !w.hasExistingUserMessage() {
+			strings.TrimSpace(input.Text) != "" && !w.hasExistingUserMessage() &&
+			w.NameIsProvisional() {
 			w.autoNameFunc(w.conversationID, input.Text, modelConfig.Provider, modelConfig.Model, modelConfig.Thinking, false)
 		}
 
@@ -416,14 +426,27 @@ func (w *ConversationWorker) firstRootUserMessageText() string {
 	return ""
 }
 
-// handleRequestAutoName services a manual "auto-name now" request: it re-derives
-// a tab title from the conversation's first user message, out-of-band, via the
-// injected server callback with force=true (which bypasses the server's enable
-// gate and its "still named Untitled N" guard, so the rename always applies). A
-// no-op when auto-naming isn't wired or there is no user message to summarise
-// yet — there is nothing to name before the first turn.
-func (w *ConversationWorker) handleRequestAutoName() {
+// handleRequestAutoName services a request-auto-name message: it re-derives a tab
+// title from the conversation's first user message, out-of-band, via the injected
+// server callback. Force is passed straight through — true (the tab bar's
+// "auto-name now") bypasses the server's enable gate and its name-provenance
+// guard so the rename always applies, while false (/handoff, once its summary has
+// landed as the continued tab's first message) is subject to both, and is
+// additionally gated here on the name still being machine-derived. A no-op when
+// auto-naming isn't wired or there is no user message to summarise yet — there is
+// nothing to name before the first turn.
+func (w *ConversationWorker) handleRequestAutoName(payload json.RawMessage) {
 	if w.autoNameFunc == nil {
+		return
+	}
+	var msg RequestAutoNameMessage
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			w.log.Error("Failed to parse request-auto-name message: %v", err)
+			return
+		}
+	}
+	if !msg.Force && !w.NameIsProvisional() {
 		return
 	}
 	first := w.firstRootUserMessageText()
@@ -435,7 +458,7 @@ func (w *ConversationWorker) handleRequestAutoName() {
 	if mc != nil {
 		provider, model, thinking = mc.Provider, mc.Model, mc.Thinking
 	}
-	w.autoNameFunc(w.conversationID, first, provider, model, thinking, true)
+	w.autoNameFunc(w.conversationID, first, provider, model, thinking, msg.Force)
 }
 
 // handleProviderTurn lands a turn the provider surfaced out-of-band — an

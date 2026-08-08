@@ -56,6 +56,7 @@ import { runTests as runCacheMissWarningTests } from '../unit-tests/cache-miss-w
 import { runTests as runContextItemPersistenceTests } from '../unit-tests/context-item-persistence-test.js';
 import { runTests as runContextItemSeedExecuteTests } from '../unit-tests/context-item-seed-execute-test.js';
 import { runTests as runConversationNameTests } from '../unit-tests/conversation-name-persistence-test.js';
+import { runTests as runConversationNamingTests } from '../unit-tests/conversation-naming-test.js';
 import { runTests as runDraftPersistenceTests } from '../unit-tests/draft-persistence-test.js';
 import { runTests as runMessageHistoryTests } from '../unit-tests/message-history-test.js';
 import { runTests as runPasteTokenTests } from '../unit-tests/paste-token-test.js';
@@ -245,6 +246,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:context-item-persistence', run: runContextItemPersistenceTests },
   { name: 'unit:context-item-seed-execute', run: runContextItemSeedExecuteTests },
   { name: 'unit:conversation-name-persistence', run: runConversationNameTests },
+  { name: 'unit:conversation-naming', run: runConversationNamingTests },
   { name: 'unit:draft-persistence', run: runDraftPersistenceTests },
   { name: 'unit:message-history', run: runMessageHistoryTests },
   { name: 'unit:paste-token', run: runPasteTokenTests },

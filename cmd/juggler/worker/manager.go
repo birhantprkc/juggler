@@ -555,6 +555,20 @@ func (m *Manager) RemoveAndPurgeLogs(conversationID string) {
 	m.Remove(conversationID)
 }
 
+// NameIsProvisional reports whether a conversation's name may still be replaced
+// by the auto-namer. known=false when no worker is loaded: the marker lives in
+// the conversation's doc, which only a loaded worker holds, and the auto-namer
+// treats "can't tell" as "don't rename". Every auto-naming path starts from a
+// loaded worker, so an unknown answer means the conversation was evicted
+// mid-derivation. See metaProvisionalName.
+func (m *Manager) NameIsProvisional(conversationID string) (provisional bool, known bool) {
+	w := m.Get(conversationID)
+	if w == nil {
+		return false, false
+	}
+	return w.NameIsProvisional(), true
+}
+
 // RenameLog tells the loaded worker for conversationID (if any) to move its
 // per-conversation log file to match the conversation's new name. Called by the
 // rename API after the on-disk folder has been renamed; the worker re-derives
