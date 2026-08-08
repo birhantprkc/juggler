@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-08-08
+
 - Added a create-new-conversation tool that LLMs can use to create new tabs with prompts. You might use this to get the agent to fan out tasks, or to hand over to a fresh tab
 - Added an optional Exa.ai extension (an agent-oriented web search tool)
 - Extensions can make authenticated server-side HTTP requests through the host operations API
