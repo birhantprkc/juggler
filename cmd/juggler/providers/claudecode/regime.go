@@ -9,6 +9,7 @@ package claudecode
 
 import (
 	"fmt"
+	"strings"
 
 	provider "juggler/cmd/juggler/providers/registry"
 )
@@ -247,6 +248,38 @@ func pairedResultResumeSplit(messages []provider.Message, deltaStart, deltaEnd i
 	return i, true
 }
 
+// isVolatileContextMessage reports whether a message is one of the standing
+// context items (todo list, pinned/@-mentioned file contents, plan, …) that the
+// worker re-renders live and appends at the tail of every turn (see
+// worker.appendContextItemMessages). Their content is volatile turn-to-turn, so
+// they must not anchor the resume prefix — the exact analogue of the
+// FromContextItem marking the Anthropic client uses to keep its rolling cache
+// breakpoint before the same trailing run.
+func isVolatileContextMessage(msgType string) bool {
+	return msgType == "context-item" || msgType == "context-item-updated"
+}
+
+// stablePrefixCount returns the length of the stable, cache-committed message
+// prefix: everything except the trailing run of volatile standing-context
+// messages the worker appends AFTER all conversation history each turn.
+//
+// Anchoring the resume prefix on len(messages) — as we did before — forces a
+// "diverged" cold start on EVERY turn: the context items re-render live (so
+// their bytes change turn-to-turn) AND the conversation grows beneath them (so
+// the positions they occupied last turn now hold real history), either of which
+// flips hashRequestPrefix over the anchored range. Excluding the trailing
+// context run keeps the real history's prefix hash stable, so the CLI resumes
+// warm; the current context items fall into the per-turn delta and ride to the
+// model on stdin instead — mirroring how the Anthropic path re-reads only the
+// short context tail while the cached prefix rolls forward.
+func stablePrefixCount(messages []provider.Message) int {
+	n := len(messages)
+	for n > 0 && isVolatileContextMessage(messages[n-1].Type) {
+		n--
+	}
+	return n
+}
+
 // canResumeWithDelta reports whether a stored sessionUUID can be reused for
 // the new request: the new (systemPrompt, messages[:sentCount]) prefix must
 // match the prefix the CLI was last fed. This is what enables prompt cache
@@ -255,6 +288,11 @@ func pairedResultResumeSplit(messages []provider.Message, deltaStart, deltaEnd i
 // string for cold-start telemetry: "no-uuid", "shrunk", "diverged",
 // "no-new-msgs". The system prompt participates in "diverged" — it's not
 // a privileged input, it's just one more thing in the request body.
+//
+// sentCount is the STABLE prefix length captured last turn (see
+// captureSentPrefix / stablePrefixCount): it deliberately excludes the trailing
+// standing-context run, so the returned delta re-sends the current context items
+// to the model every turn while the committed history stays cache-warm.
 func canResumeWithDelta(sess *activeSession, systemPrompt string, messages []provider.Message) (int, int, bool, string) {
 	if sess == nil || sess.sessionUUID == "" {
 		return 0, 0, false, "no-uuid"
@@ -297,8 +335,54 @@ func diagnoseDivergence(sess *activeSession, systemPrompt string, messages []pro
 	}
 	for i := 0; i < limit; i++ {
 		if hashMessage(&messages[i]) != sess.sentMsgHashes[i] {
-			return fmt.Sprintf("message[%d] (type=%s) changed", i, messages[i].Type)
+			return describeFirstDivergence(sess, messages, i)
 		}
 	}
 	return ""
+}
+
+// describeFirstDivergence localises the first mismatching prefix element and,
+// crucially, says WHY it mismatches: a genuine in-place content edit, or a
+// structural SHIFT where a wire message was inserted/removed earlier and slid
+// everything after it. The shift case is the signature of a history item whose
+// rendering changes LENGTH across turns — e.g. a thread / delegated-tool item
+// that emits only its tool_use while its sub-thread is pending, then a
+// tool_use+tool_result pair once the result lands (buildThreadToolResultMap
+// returns nil until then). Such an item mutating in committed history is what
+// busts the resume anchor and cold-starts a conversation that "seemingly keeps
+// prefix". The preview names the concrete culprit so the fix targets the right
+// item, not the innocent message that happens to sit at the shifted index.
+func describeFirstDivergence(sess *activeSession, messages []provider.Message, i int) string {
+	for d := 1; d <= 4; d++ {
+		// INSERTED: the anchor element that used to sit at i now appears d slots
+		// later in the current build — d wire message(s) were inserted before here.
+		if i+d < len(messages) && sess.sentMsgHashes[i] == hashMessage(&messages[i+d]) {
+			return fmt.Sprintf("message[%d] (type=%s) — prefix shifted: %d wire message(s) INSERTED before here; new=%s",
+				i, messages[i].Type, d, previewMessage(&messages[i]))
+		}
+		// REMOVED: the current element at i matches an anchor element d slots
+		// later — d wire message(s) were removed before here.
+		if i+d < len(sess.sentMsgHashes) && hashMessage(&messages[i]) == sess.sentMsgHashes[i+d] {
+			return fmt.Sprintf("message[%d] (type=%s) — prefix shifted: %d wire message(s) REMOVED before here; still-here=%s",
+				i, messages[i].Type, d, previewMessage(&messages[i]))
+		}
+	}
+	return fmt.Sprintf("message[%d] (type=%s) content changed in place; now=%s",
+		i, messages[i].Type, previewMessage(&messages[i]))
+}
+
+// previewMessage renders a short, whitespace-collapsed snippet of a wire message
+// for the cache-miss diagnostic — enough to recognise which conversation item
+// destabilised the prefix without dumping full bodies into the log.
+func previewMessage(m *provider.Message) string {
+	body := m.Content
+	if m.ToolName != "" {
+		body = m.ToolName + " " + body
+	}
+	body = strings.Join(strings.Fields(body), " ")
+	const max = 80
+	if len(body) > max {
+		body = body[:max] + "…"
+	}
+	return fmt.Sprintf("%s:%q", m.Type, body)
 }

@@ -351,15 +351,25 @@ func (c *Client) extractToolResults(messages []provider.Message) []*provider.Too
 	return results
 }
 
-// captureSentPrefix records the fingerprints of the (systemPrompt, messages)
-// the CLI now holds. sentCount/sentHash drive the next turn's
+// captureSentPrefix records the fingerprints of the STABLE (systemPrompt,
+// messages) prefix the CLI now holds. sentCount/sentHash drive the next turn's
 // canResumeWithDelta delta detection; sentSystemHash/sentMsgHashes are the
 // per-element fingerprints diagnoseDivergence uses to localise a cache miss.
+//
+// The anchor deliberately covers only stablePrefixCount(messages) — it excludes
+// the trailing run of volatile standing-context messages the worker appends
+// each turn. Those re-render live and get displaced as the conversation grows,
+// so anchoring on len(messages) would flag every turn as "diverged" and
+// cold-start the whole history (the cache-busting regression this repairs). The
+// CLI still physically holds the context tail we fed it; we simply don't let it
+// participate in the resume decision, so the current context rides in each
+// turn's delta while the committed history resumes warm.
 func (s *activeSession) captureSentPrefix(systemPrompt string, messages []provider.Message) {
-	s.sentCount = len(messages)
-	s.sentHash = hashRequestPrefix(systemPrompt, messages, len(messages))
+	stable := stablePrefixCount(messages)
+	s.sentCount = stable
+	s.sentHash = hashRequestPrefix(systemPrompt, messages, stable)
 	s.sentSystemHash = hashSystemPrompt(systemPrompt)
-	s.sentMsgHashes = hashMessages(messages, len(messages))
+	s.sentMsgHashes = hashMessages(messages, stable)
 }
 
 // finalizeTurn handles bookkeeping common to fresh and resume turns: error
@@ -433,12 +443,22 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 	c.activeSession.lastUsedAt = time.Now()
 
 	if turn.StopReason == "tool_use" {
-		// Mid-LLM-turn pause. The Anthropic API call hasn't completed; its
-		// usage stats so far are a snapshot, not a billable count. Reporting
-		// them here would make juggler's per-blob token totals double-count
-		// the API call (the same input tokens would appear again at end_turn).
-		// So we report ZERO on tool_use and let the final end_turn blob carry
-		// the full cumulative count for the whole call.
+		// Mid-LLM-turn pause. We must NOT report the fresh input or cache-READ
+		// here: the same warm prefix is re-read by every chained API call in the
+		// turn and shows up again at end_turn, so counting it per pause would
+		// inflate the turn's totals 10-40× (the 8754k-vs-200k-window blow-up).
+		//
+		// Cache-CREATION is the exception, and reporting it is what keeps a
+		// cache regression visible. The API bills each prompt segment's cache
+		// write exactly once across the whole turn — a later call reads it
+		// (cache_read), never re-writes it — so summing cache_creation across
+		// every tool_use pause and the final end_turn reconstructs the real
+		// ingested size with no double-count. Surfacing it means a cold-start
+		// re-ingest (huge cache_creation) lands in the per-conversation
+		// [turn tokens] line as input>0 / 0% hit instead of a benign all-zero
+		// row that hides the burn; a genuinely warm pause writes ~nothing and
+		// stays quiet. Fresh input and cache-read stay zero for the reasons
+		// above; the representative prompt size is still emitted at end_turn.
 		var pending []pendingToolMeta
 		for _, block := range turn.Blocks {
 			if block.Type != provider.ContentBlockTypeToolUse {
@@ -489,9 +509,16 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		// the CLI patiently waits for as long as the user takes to
 		// approve. No watchdog needed. Per-conv state lives on
 		// c.activeSession (set in-place above) — no broadcast needed.
-		jlog.Debug("Session paused: %d pending tool IDs (uuid=%s, partial in=%d out=%d)",
-			len(pending), c.activeSession.sessionUUID, turn.InputTokens, turn.OutputTokens)
-		return &provider.StreamResult{StopReason: turn.StopReason}, nil
+		jlog.Debug("Session paused: %d pending tool IDs (uuid=%s, partial in=%d out=%d cacheWrite=%d)",
+			len(pending), c.activeSession.sessionUUID, turn.InputTokens, turn.OutputTokens, turn.CacheWriteTokens)
+		// Report only the fresh cache-creation of this parked call (see the long
+		// note above): non-double-counted, and it keeps a cold-start re-ingest
+		// visible in the [turn tokens] line instead of an all-zero row.
+		return &provider.StreamResult{
+			StopReason:       turn.StopReason,
+			InputTokens:      turn.CacheWriteTokens,
+			CacheWriteTokens: turn.CacheWriteTokens,
+		}, nil
 	}
 
 	// End of LLM turn. The CLI's stream events report CUMULATIVE usage for

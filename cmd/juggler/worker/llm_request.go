@@ -386,14 +386,27 @@ func buildThreadResultMap(item ConversationItem) map[string]any {
 	}
 }
 
-// buildThreadToolResultMap returns the user-side tool_result for an
-// LLM-spawned thread. Used when the thread item carries the toolUseID of the
-// create_thread call that produced it — the paired tool_use block is emitted
-// separately via buildToolUseMap.
+// buildThreadToolResultMap returns the user-side tool_result for an LLM-spawned
+// thread, pairing the tool_use block buildToolUseMap emits from the same item.
+//
+// It ALWAYS returns a result — the pending placeholder while the sub-thread is
+// still running, the real summary once it lands — mirroring toolResultWire for
+// ordinary tool-actions. A nil (pending) result used to make appendThreadMessages
+// emit the tool_use alone, so the message count jumped 1→2 when the result
+// arrived; that slid every later message and cold-started stateful-provider
+// prompt caches (claudecode --resume) every turn a thread completed. A constant
+// tool_use+tool_result pair keeps the committed prefix byte-stable: only this
+// block's content flips pending→real, the surrounding sequence never shifts. A
+// dangling tool_use is wire-invalid anyway, so pairing it is also more correct.
 func buildThreadToolResultMap(item ConversationItem) map[string]any {
 	result := threadResultString(item)
 	if result == "" {
-		return nil
+		return map[string]any{
+			"type":      "tool-result",
+			"toolUseId": item.ToolUseID,
+			"content":   pendingToolResultPlaceholder,
+			"isError":   true,
+		}
 	}
 	return map[string]any{
 		"type":      "tool-result",
@@ -405,17 +418,18 @@ func buildThreadToolResultMap(item ConversationItem) map[string]any {
 
 // appendThreadMessages emits messages for a thread item. For LLM-spawned
 // threads with a fully-recorded tool call (ToolUseID + ToolName + ToolInput)
-// it emits the assistant tool_use + user tool_result pair so the parent
-// LLM sees its own create_thread call. For user/strategy-created threads, or
-// thread items lacking ToolInput on the Y.Map, it emits an assistant summary
-// instead — an Anthropic tool_use with null input is silently dropped by the
-// provider, so the summary is the safer wire shape when input wasn't recorded.
+// it emits the assistant tool_use + user tool_result pair so the parent LLM
+// sees its own create_thread call — ALWAYS both blocks, a placeholder result
+// while the sub-thread runs (see buildThreadToolResultMap), so the wire shape
+// never changes length when the result lands and the prompt cache stays warm.
+// For user/strategy-created threads, or thread items lacking ToolInput on the
+// Y.Map, it emits an assistant summary instead — an Anthropic tool_use with
+// null input is silently dropped by the provider, so the summary is the safer
+// wire shape when input wasn't recorded.
 func appendThreadMessages(messages []map[string]any, item ConversationItem) []map[string]any {
 	if item.ToolUseID != "" && item.ToolName != "" && len(item.ToolInput) > 0 {
 		messages = append(messages, buildToolUseMap(item))
-		if rm := buildThreadToolResultMap(item); rm != nil {
-			messages = append(messages, rm)
-		}
+		messages = append(messages, buildThreadToolResultMap(item))
 		return messages
 	}
 	if m := buildThreadResultMap(item); m != nil {
