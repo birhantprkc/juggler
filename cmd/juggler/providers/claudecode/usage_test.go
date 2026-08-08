@@ -5,6 +5,7 @@
 package claudecode
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -14,6 +15,22 @@ func derefPct(p *float64) float64 {
 		return -1
 	}
 	return *p
+}
+
+func TestUsageStatsIgnoresWorkspaceTrustWarningOnStderr(t *testing.T) {
+	resetLoginState(t, false, false)
+	installFakeClaude(t, fakeModeUsage, "usage-session")
+
+	stats, err := (&Client{workingDir: t.TempDir()}).UsageStats(context.Background())
+	if err != nil {
+		t.Fatalf("UsageStats: %v", err)
+	}
+	if len(stats.Stats) != 1 {
+		t.Fatalf("got %d stats, want 1: %+v", len(stats.Stats), stats.Stats)
+	}
+	if got := derefPct(stats.Stats[0].UsedPercent); got != 42 {
+		t.Fatalf("used percent = %v, want 42", got)
+	}
 }
 
 func TestParseUsageText(t *testing.T) {

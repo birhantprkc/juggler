@@ -5,6 +5,7 @@
 package claudecode
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -76,13 +77,15 @@ func (c *Client) UsageStats(ctx context.Context) (provider.UsageStats, error) {
 	cmd := claudeCommand(ctx, bin, args)
 	cmd.Dir = c.workingDir
 	cmd.Env = spawnEnv(bin, testExtraSpawnEnv)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return provider.UsageStats{}, fmt.Errorf("claude /usage failed: %w: %s", err, strings.TrimSpace(string(out)))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return provider.UsageStats{}, fmt.Errorf("claude /usage failed: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var parsed usageCommandResult
-	if err := json.Unmarshal(out, &parsed); err != nil {
-		return provider.UsageStats{}, fmt.Errorf("decode claude /usage output: %w", err)
+	if err := json.Unmarshal(stdout.Bytes(), &parsed); err != nil {
+		return provider.UsageStats{}, fmt.Errorf("decode claude /usage output: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	if parsed.Type != "result" || parsed.Subtype != "success" {
 		return provider.UsageStats{}, fmt.Errorf("claude /usage returned %s/%s", parsed.Type, parsed.Subtype)

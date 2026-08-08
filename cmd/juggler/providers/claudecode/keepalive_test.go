@@ -40,6 +40,7 @@ const (
 	fakeModeFailFirst  = "fail_first"  // emit error result on the first turn (for error-recovery shape)
 	fakeModeUntilClose = "until_close" // text turn per stdin line, persistent
 	fakeModeAutonomous = "autonomous"  // like until_close, but emits one UNSOLICITED turn after the first reply
+	fakeModeUsage      = "usage"       // emit a workspace-trust warning on stderr and /usage JSON on stdout
 
 	// Retry-path modes. These exit WITHOUT a terminal stop reason (no
 	// end_turn / result), which is the shape that drives the
@@ -132,6 +133,16 @@ func runFakeClaude() {
 	}
 
 	switch mode {
+	case fakeModeUsage:
+		fmt.Fprintln(os.Stderr, "Ignoring project permissions: this workspace has not been trusted.")
+		if err := json.NewEncoder(out).Encode(map[string]any{
+			"type":    "result",
+			"subtype": "success",
+			"result":  "Current session: 42% used · resets Jun 14 at 5:50pm (Europe/London)",
+		}); err != nil {
+			os.Exit(1)
+		}
+		return
 	case fakeModeNoResult:
 		emitInit()
 		// Stay alive and silent. Block on a real stdin read (a syscall, so

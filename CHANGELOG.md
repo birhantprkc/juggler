@@ -9,6 +9,7 @@ of changes; this project follows semantic versioning.
 - Added an optional Exa.ai extension (an agent-oriented web search tool)
 - Extensions can make authenticated server-side HTTP requests through the host operations API
 - Headless Linux servers can run the Node engine without an X or Wayland session
+- Claude Code usage stats load in projects awaiting workspace trust
 
 ## [0.5.3] - 2026-08-06
 
