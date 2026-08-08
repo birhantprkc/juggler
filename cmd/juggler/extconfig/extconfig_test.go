@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"juggler/cmd/juggler/core"
@@ -93,13 +94,8 @@ func TestGetSetResolve(t *testing.T) {
 	if string(data) == "" || contains(string(data), "top-secret") {
 		t.Fatalf("non-secret config leaked secret: %s", data)
 	}
-	if mode := mustMode(t, configPath); mode.Perm() != 0o600 {
-		t.Fatalf("config mode = %o, want 600", mode.Perm())
-	}
-	credentialsPath := filepath.Join(os.Getenv("JUGGLER_CONFIG_DIR"), "credentials.json")
-	if mode := mustMode(t, credentialsPath); mode.Perm() != 0o600 {
-		t.Fatalf("credentials mode = %o, want 600", mode.Perm())
-	}
+	assertOwnerOnly(t, configPath)
+	assertOwnerOnly(t, filepath.Join(os.Getenv("JUGGLER_CONFIG_DIR"), "credentials.json"))
 }
 
 func TestSecretPreserveAndClear(t *testing.T) {
@@ -158,11 +154,19 @@ func contains(value, needle string) bool {
 	return false
 }
 
-func mustMode(t *testing.T, filename string) os.FileMode {
+// assertOwnerOnly checks that a file holding secrets is readable by its owner
+// only. Unix-only: Windows has no permission bits to carry that meaning, and
+// os.Stat reports 0666 for every writable file there.
+func assertOwnerOnly(t *testing.T, filename string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
 	info, err := os.Stat(filename)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return info.Mode()
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("%s mode = %o, want 600", filepath.Base(filename), mode)
+	}
 }
