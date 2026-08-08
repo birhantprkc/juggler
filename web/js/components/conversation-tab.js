@@ -213,6 +213,7 @@ class ConversationTab extends HTMLElement {
       this.addEventListener('promote-thread-requested', /** @type {EventListener} */ (this._onPromoteThreadRequested.bind(this)));
       this.addEventListener('request-item-selection', /** @type {EventListener} */ (this._onRequestItemSelection.bind(this)));
       this.addEventListener('properties-panel:open-transaction', /** @type {EventListener} */ (this._onOpenTransaction.bind(this)));
+      this.addEventListener('restore-input-focus', /** @type {EventListener} */ (this._onRestoreInputFocus.bind(this)));
       this._itemSelectedListenerAttached = true;
     }
 
@@ -373,6 +374,13 @@ class ConversationTab extends HTMLElement {
   //      element is placed immediately for layout; content waits for
   //      the selection to settle.  Safe because the panel is
   //      display-only and doesn't participate in focus management.
+  //  20. Inline prompt answered     → focus textarea (enter typing mode).
+  //      An approval widget or question form holds the keyboard while
+  //      it is up, then deletes itself on the answer — which would
+  //      strand focus on <body>, and no rule above fires at the end of
+  //      a turn to reclaim it.  The dismissing widget requests the
+  //      hand-back with a bubbling `restore-input-focus`, keeping the
+  //      decision here rather than in the widget.
   //
   // All focus changes go through _focusInput() or _blurInput() below,
   // except action-confirmation which manages its own button focus.
@@ -440,6 +448,43 @@ class ConversationTab extends HTMLElement {
     if (document.activeElement?.tagName === 'TEXTAREA') {
       /** @type {HTMLElement} */ (document.activeElement).blur();
     }
+  }
+
+  /**
+   * Rule 20: an answered inline prompt is handing the keyboard back.
+   *
+   * An approval widget or question form holds focus on one of its own buttons
+   * while it is up, then deletes itself the moment it is answered — which drops
+   * focus to <body>, where it stays: no other rule fires at the end of a turn to
+   * reclaim it. The dismissing widget dispatches `restore-input-focus` instead
+   * of reaching into the composer itself, so the decision stays here.
+   *
+   * Deferred one macrotask because the answer typically rebuilds the column
+   * around the now-resolved item — focusing synchronously would be undone by
+   * that re-render. setTimeout, not requestAnimationFrame: rAF is throttled to
+   * near-zero in a backgrounded WKWebView and never fires in a hidden frame, so
+   * the hand-back would silently never happen (the same reason
+   * {@link _reassertInputFocus} avoids it).
+   *
+   * Declined while the tab is hidden, during keyboard navigation (the user is
+   * driving the item list, not composing), or while an overlay owns the
+   * keyboard. All conditions are judged on the deferred tick, which is the only
+   * moment that decides anything.
+   * @private
+   */
+  _onRestoreInputFocus() {
+    setTimeout(() => {
+      if (this._isHidden || this._isKeyboardNavigating) return;
+      if (keyShortcutManager.suppressedByOverlay()) return;
+      // Reclaim STRANDED focus only. If anything took the keyboard during the
+      // wait, it has a better claim than we do and we leave it alone — chiefly
+      // the next pending approval, which Rule 16 auto-engages when answering
+      // this one hands selection on. Focus on <body> is the signature of the
+      // removed widget having dropped it, and nothing else wanting it.
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      this._focusInput();
+    }, 0);
   }
 
   /** Mark this tab as active (visible). */

@@ -374,9 +374,18 @@ class AskUserQuestionContextItem extends ContextItem {
     const selections = (toolUseId && DRAFT_SELECTIONS.get(toolUseId)) || {};
     if (toolUseId) DRAFT_SELECTIONS.set(toolUseId, selections);
 
+    // Answering re-renders this item into its answered state, removing the
+    // form — and with it whichever option button or field holds the keyboard.
+    // Ask the owning tab to take focus back (conversation-tab Rule 20) while
+    // the form is still connected, so focus doesn't strand on <body>.
+    const handBackFocus = () => {
+      form.dispatchEvent(new CustomEvent('restore-input-focus', { bubbles: true, composed: true }));
+    };
+
     const submit = () => {
       if (messageThread && toolUseId) {
         DRAFT_SELECTIONS.delete(toolUseId);
+        handBackFocus();
         messageThread.resolveApproval(toolUseId, JSON.stringify(selections));
       }
     };
@@ -590,6 +599,7 @@ class AskUserQuestionContextItem extends ContextItem {
     cancelBtn.addEventListener('click', () => {
       if (messageThread && toolUseId) {
         DRAFT_SELECTIONS.delete(toolUseId);
+        handBackFocus();
         messageThread.resolveApproval(toolUseId, 'cancel');
       }
     });

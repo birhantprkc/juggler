@@ -111,6 +111,7 @@ import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclai
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
 import { runTests as runNewThreadFocusTests } from '../unit-tests/new-thread-focus-test.js';
+import { runTests as runApprovalFocusReturnTests } from '../unit-tests/approval-focus-return-test.js';
 import { runTests as runNestedApprovalStatusTests } from '../unit-tests/nested-approval-status-test.js';
 import { runTests as runChimeRecoveryTests } from '../unit-tests/chime-recovery-test.js';
 import { runTests as runKeyShortcutManagerTests } from '../unit-tests/key-shortcut-manager-test.js';
@@ -301,6 +302,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
   { name: 'unit:new-thread-focus', run: runNewThreadFocusTests },
+  { name: 'unit:approval-focus-return', run: runApprovalFocusReturnTests },
   { name: 'unit:nested-approval-status', run: runNestedApprovalStatusTests },
   { name: 'unit:chime-recovery', run: runChimeRecoveryTests },
   { name: 'unit:context-menu', run: runContextMenuTests },

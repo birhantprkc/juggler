@@ -659,6 +659,11 @@ class ActionConfirmation extends HTMLElement {
       this._resolveCallback = null;
     }
     this._removeEventListeners();
+    // Hand the keyboard back before removing ourselves: one of these buttons
+    // holds focus, and taking it out of the DOM would strand focus on <body>.
+    // The owning tab decides where it lands (conversation-tab Rule 20), so
+    // dispatch while still connected — after removal this would reach nobody.
+    this.dispatchEvent(new CustomEvent('restore-input-focus', { bubbles: true, composed: true }));
     this.remove();
   }
 }

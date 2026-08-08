@@ -75,6 +75,14 @@ class ModalDialog extends HTMLElement {
     // can't accumulate across opens.
     /** @type {Array<() => void>} @private */
     this._showCleanups = [];
+    /**
+     * Element that held the keyboard when this dialog was shown, refocused on
+     * close. Unlike the inline approval widgets, this element is a reused
+     * singleton whose buttons stay in the DOM (merely unshown), so focus would
+     * otherwise park on an invisible control with nothing to notice it.
+     * @type {HTMLElement|null} @private
+     */
+    this._returnFocusEl = null;
   }
 
   /**
@@ -104,6 +112,8 @@ class ModalDialog extends HTMLElement {
       clearTimeout(this._noticeTimer);
       this._noticeTimer = null;
     }
+
+    this._returnFocusEl = null;
 
     // Resolve any pending promises with null
     if (this.resolvePromise) {
@@ -172,6 +182,16 @@ class ModalDialog extends HTMLElement {
       clearTimeout(this._noticeTimer);
       this._noticeTimer = null;
     }
+
+    // Snapshot the pre-show focus so close() can hand the keyboard back. Guard
+    // against our own elements: a second show() over an open dialog would
+    // otherwise record one of its buttons and refocus a hidden control.
+    const previouslyFocused = document.activeElement;
+    this._returnFocusEl = (previouslyFocused instanceof HTMLElement
+      && previouslyFocused !== document.body
+      && !this.contains(previouslyFocused))
+      ? previouslyFocused
+      : this._returnFocusEl;
 
     const isNotice = type === 'notice';
     this.classList.toggle('is-notice', isNotice);
@@ -407,6 +427,14 @@ class ModalDialog extends HTMLElement {
       clearTimeout(this._noticeTimer);
       this._noticeTimer = null;
     }
+
+    // Return the keyboard to whoever had it before the dialog opened, provided
+    // that element is still in the document. Done before resolving so a caller
+    // that focuses something of its own still wins (the promise continuation
+    // runs after this method returns).
+    const returnTo = this._returnFocusEl;
+    this._returnFocusEl = null;
+    if (returnTo && returnTo.isConnected) returnTo.focus();
 
     if (this.resolvePromise) {
       this.resolvePromise(result);
