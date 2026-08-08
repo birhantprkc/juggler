@@ -424,27 +424,48 @@ transaction use **`mutate(fn)`** (it also runs `assertInvariants()` in dev mode)
 > `@plugin-api` methods. Bypassing them breaks undo, redo, and peer sync. This is
 > a hard rule, not a style preference.
 
-## Pinned file content: live-at-send-time
+## Pinned file content: frozen at add-time
 
 Juggler ships two file-content context items with deliberately different
 contracts — worth understanding if you build anything that pins or snapshots
 files:
 
-| Item | Role | Content read | Cached in Yjs? |
-|------|------|--------------|----------------|
-| `ReadFileContextItem` | Immutable record of a `read_file` tool call | Once, at call time | Yes (part of history) |
-| `FileContentContextItem` | User-pinned ambient reference (`@file`, paperclip) | Every send, via `getContextText()` | No — only the `path` is stored |
+| Item | Role | Content read | Position |
+|------|------|--------------|----------|
+| `ReadFileContextItem` | Immutable record of a `read_file` tool call | Once, at call time | history (part of the transcript) |
+| `FileContentContextItem` | User-pinned reference (`@file`, paperclip) | Once, at add-time (`onToolCall`) | `contextPosition: 'prefix'` |
 
-A pin means "this file, kept current." Resolving at send time means there is **no
-file watcher** (nothing is in flight between sends to invalidate, so mid-edit
-saves never touch the Yjs doc, propagate to peers, or bust unrelated prompt
-caches), **no on-disk content cache** (the `.yjs` stores only the path, so pinning
-a 5 MB file doesn't bloat the document), and the properties panel always shows
-live disk bytes (nothing to be stale against). Cross-turn history therefore shows
-the file's *current* bytes; if you need bytes-as-of-an-earlier-turn, the
-`read_file` tool call in that turn captured an immutable snapshot. Per-turn
-snapshots, if ever needed, belong in the outgoing-prompt builder
-(`cmd/juggler/providers/anthropic/conversation.go`), not the context item.
+A pin snapshots the file's rendered content **once**, when it is added, and
+persists that snapshot in Yjs (`data.content`). `createContextText()` then returns
+the frozen snapshot every turn — the live file is **not** re-read for LLM context.
+This is what lets a pin ride the cached leading prefix (`contextPosition: 'prefix'`,
+see below) and be paid for **once**. The earlier "resolve live every send" design
+placed the file at the uncached trailing tail, so its full bytes were re-billed on
+*every* turn — auto-added `CLAUDE.md`/`AGENTS.md` were the worst offenders.
+
+Tradeoff: a pin no longer tracks the file's *current* bytes on later turns. If the
+file changed and it matters, the agent re-reads it (the `read` tool captures a live
+immutable snapshot), or the user re-pins it (one fresh snapshot → one cache
+cold-start). The properties panel still fetches live for display only.
+
+### `contextPosition`: where an item's content is injected
+
+A context item's `MANIFEST.contextPosition` decides where its rendered content
+lands in the request, which governs whether it is cached:
+
+| Value | Placement | Cached? | Built-in users |
+|-------|-----------|---------|----------------|
+| `system` | folded into the system prompt | yes; busts when it changes | memory, skills, system-prompt |
+| `prefix` | leading messages, **before** history | yes; busts once on add/remove | file-content, dropped-file |
+| `user` (default) | trailing messages, **after** history | no — re-read every turn | (live third-party items) |
+| `none` | not injected at all | n/a — state lives in tool_use history | todo, plan |
+
+Choose `prefix` only for content that is effectively immutable once captured (a
+frozen snapshot): a leading item sits before the growing history, so a byte-stable
+snapshot is a stable cache prefix. Choose `user` for genuinely live per-turn
+content that must reflect current state every turn. Choose `none` when the item's
+full state already lives durably in the model's own tool_use/tool_result history
+(so re-injecting it would only re-bill the same state).
 
 ## Enabling and disabling
 

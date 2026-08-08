@@ -482,9 +482,16 @@ func (w *ConversationWorker) appendToolActionResult(messages []map[string]any, i
 
 // buildMessages converts conversation items to LLM message format.
 // Uses provider.Message format with discriminated union via Type field.
+//
+// Standing context items are split by Position: "prefix" items lead (rendered
+// BEFORE the conversation history, so a frozen item sits inside the cached
+// prefix), and "user" items trail (rendered AFTER history, re-read every turn).
+// See ItemContext.Position and prependContextItemMessages/appendContextItemMessages.
 func (w *ConversationWorker) buildMessages(contexts []ItemContext) []map[string]any {
-	messages := w.buildMessagesFromItems(w.getTargetItems(), true)
-	return appendContextItemMessages(messages, contexts)
+	prefix, tail := splitContextsByPosition(contexts)
+	messages := prependContextItemMessages(nil, prefix)
+	messages = append(messages, w.buildMessagesFromItems(w.getTargetItems(), true)...)
+	return appendContextItemMessages(messages, tail)
 }
 
 // buildMessagesFromItems converts an explicit item snapshot to the same semantic
@@ -558,18 +565,60 @@ func contextItemMessageContent(ctx ItemContext) string {
 	return fmt.Sprintf("=== Context: %s ===\n%s", ctx.ItemID, ctx.Content)
 }
 
-// appendContextItemMessages renders the thread's non-system-position context
-// items (todo list, @-mentioned/pinned file contents, plan, …) as trailing
+// splitContextsByPosition partitions rendered context items into the leading
+// "prefix" run and the trailing "user" run, preserving order within each. A
+// context whose Position is "prefix" leads (cached, before history); anything
+// else — "user" or the empty default — trails (re-read every turn). 'none'-items
+// never reach the worker (the frontend drops them before send).
+func splitContextsByPosition(contexts []ItemContext) (prefix, tail []ItemContext) {
+	for _, ctx := range contexts {
+		if ctx.Position == "prefix" {
+			prefix = append(prefix, ctx)
+		} else {
+			tail = append(tail, ctx)
+		}
+	}
+	return prefix, tail
+}
+
+// prependContextItemMessages renders "prefix"-position context items (frozen
+// pinned/dropped file contents) as LEADING user-role context-item messages,
+// BEFORE all conversation history.
+//
+// A prefix item's content is byte-stable turn-to-turn (it was snapshotted at
+// add-time), and history only ever grows AFTER it, so a leading prefix item sits
+// inside the cached tools+system+history prefix and is paid for exactly once —
+// unlike the trailing tail (see appendContextItemMessages), which is re-read at
+// full price every turn. Adding or removing a prefix item shifts the history
+// beneath it and cold-starts the cache once; that is rare (auto-added files are
+// added at conversation creation, before any history, so they never shift).
+func prependContextItemMessages(messages []map[string]any, contexts []ItemContext) []map[string]any {
+	for _, ctx := range contexts {
+		if ctx.Content == "" {
+			continue
+		}
+		messages = append(messages, map[string]any{
+			"type":    messageTypeContextItem,
+			"content": contextItemMessageContent(ctx),
+		})
+	}
+	return messages
+}
+
+// appendContextItemMessages renders "user"-position context items as TRAILING
 // user-role context-item messages, AFTER all conversation history.
 //
-// These items re-render their LIVE state every turn, so their content is
-// volatile: a todo status update or a pinned-file edit changes it turn-to-turn.
-// Placing them at the tail — rather than appending them into the system prompt —
-// keeps the tools+system prefix (and the whole stable history) byte-identical
-// across such a change, so the provider prompt cache rolls forward instead of
-// cold-starting the entire conversation every turn. The provider layer maps
-// context-item to the user role; the Anthropic client keeps its rolling cache
-// breakpoint BEFORE this trailing run so only the small context tail is re-read.
+// These are genuinely live per-turn items: their content may change turn-to-turn
+// and history grows beneath them, so they can never be a stable prefix — they are
+// re-read (uncached) every turn by design. Placing them at the tail keeps the
+// tools+system+history prefix byte-identical across such a change, so the cache
+// rolls forward instead of cold-starting. The provider layer maps context-item to
+// the user role; the Anthropic client keeps its rolling cache breakpoint BEFORE
+// this trailing run so only the small context tail is re-read.
+//
+// After the freeze-at-add change the built-in items no longer use this position
+// (files are "prefix"; todo/plan are "none"); it remains for genuinely live
+// third-party context items.
 func appendContextItemMessages(messages []map[string]any, contexts []ItemContext) []map[string]any {
 	for _, ctx := range contexts {
 		if ctx.Content == "" {

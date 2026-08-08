@@ -148,7 +148,7 @@ export async function handleRenderContextItemsRequest(wm, conversationId, data) 
  * @param {any} wm
  * @param {string} conversationId
  * @param {string} requestId
- * @param {Array<{itemId: string, content: string, tokens: number}>} contexts
+ * @param {Array<{itemId: string, content: string, tokens: number, position?: string}>} contexts
  * @param {string} [systemPrompt]
  */
 export function sendRenderContextItemsResponse(wm, conversationId, requestId, contexts, systemPrompt = '') {

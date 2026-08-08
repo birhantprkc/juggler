@@ -10,6 +10,7 @@ import CycleBuffer from '../services/cycle-buffer.js';
 import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
 import { generateToolDefinitions } from '../services/tool-generator.js';
 import { buildPrefixFingerprint, classifyContextCacheImpact, CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
+import { contextPositionOf } from '../services/system-prompt-builder.js';
 
 /**
  * Strategy Selector - Dropdown component for selecting conversation strategy
@@ -369,7 +370,12 @@ class StrategySelector extends HTMLElement {
     if (!thread || !this._toolsAll) return null;
     const strategy = strategyRegistry.createStrategy(thread.currentStrategyId || 'default', thread);
     const toolsetSig = this._toolSignature(strategy, this._toolsAll);
-    return buildPrefixFingerprint({ toolsetSig, items: thread.items });
+    // Leading `prefix` context items (frozen pinned/dropped files) are part of the
+    // cached prefix now, so a change to them busts from their position.
+    const prefixItems = (thread.contextItems || []).filter(
+      (/** @type {any} */ ci) => contextPositionOf(ci) === 'prefix'
+    );
+    return buildPrefixFingerprint({ toolsetSig, prefixItems, items: thread.items });
   }
 
   /**

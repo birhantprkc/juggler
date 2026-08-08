@@ -81,7 +81,12 @@ class PlanContextItem extends ContextItem {
     description: 'Implementation plan with step tracking and sub-thread orchestration',
     author: 'Juggler Team',
     requiresApproval: true,
-    contextPosition: 'user',
+    // 'none': the plan is not re-injected into the trailing tail every turn.
+    // Its full state is already durable in the model's own tool_use history — the
+    // `submit` call carries the whole plan, and each step action's tool_result
+    // echoes the complete rendered plan with statuses (see _renderPlanEcho), so
+    // the latest full state always sits in the most recent, cached tool_result.
+    contextPosition: 'none',
     syntheticToolName: 'plan',
     exampleData: {
       title: 'Implement User Authentication',
@@ -941,8 +946,58 @@ class PlanContextItem extends ContextItem {
       summary: `Step ${result.index + 1}: ${result.oldStatus} \u2192 ${result.newStatus} (${result.completed}/${result.total} completed)`,
       details: result.result || '',
       success: true,
-      icon: '\u2713'
+      icon: '\u2713',
+      // The plan is contextPosition:'none' \u2014 it is NOT re-rendered into the
+      // request tail each turn. A step action only mutates one step, so echo the
+      // FULL current plan with statuses into this tool_result. That keeps the
+      // latest complete plan state in the most recent (cached, recency-preserving)
+      // tool_result, so the model never has to reconstruct it from a spread of
+      // earlier submit + step-update calls.
+      feedbackForLLM: PlanContextItem._renderPlanEcho(result.planSnapshot)
     };
+  }
+
+  /**
+   * Render a plan snapshot as the full current plan with per-step statuses, for
+   * echoing into a step action's tool_result. Mirrors the format
+   * {@link createContextText} produces, so the model reads a step update's echo
+   * identically to how it used to read the standing plan block.
+   * @param {{title?: string, status?: string, steps?: any[]}} snapshot - Plan snapshot from the step action result
+   * @returns {string} The rendered plan text, or '' when there is nothing to echo
+   * @private
+   */
+  static _renderPlanEcho(snapshot) {
+    /** @type {any[]} */
+    const steps = snapshot?.steps || [];
+    if (steps.length === 0) return '';
+
+    const total = steps.length;
+    const completed = steps.filter((/** @type {any} */ s) => s.status === 'completed').length;
+    const planStatus = snapshot.status || 'planning';
+
+    let content = `# Plan${snapshot.title ? ': ' + snapshot.title : ''}\n`;
+    content += `Status: ${planStatus} | Progress: ${completed}/${total} completed\n\n`;
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const status = step.status || 'pending';
+      let statusIcon = '\u25cb'; // pending
+      if (status === 'completed') {
+        statusIcon = '\u2713';
+      } else if (status === 'in_progress') {
+        statusIcon = '\u25b6';
+      } else if (status === 'failed') {
+        statusIcon = '\u2717';
+      } else if (status === 'skipped') {
+        statusIcon = '\u2014';
+      }
+      content += `${i + 1}. [${statusIcon}] ${step.content}\n`;
+      if (step.result) {
+        content += `   Result: ${step.result}\n`;
+      }
+    }
+
+    return `Current plan state:\n${content}`;
   }
 
   /**

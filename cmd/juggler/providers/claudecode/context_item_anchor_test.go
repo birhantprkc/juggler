@@ -36,6 +36,21 @@ func TestStablePrefixCount_StripsTrailingContextRun(t *testing.T) {
 			[]provider.Message{userMsg("a"), contextItemMsg("stale"), userMsg("b"), contextItemMsg("todo")},
 			3,
 		},
+		{
+			// A LEADING "prefix" context item (frozen pinned/dropped file placed
+			// before history) is part of the committed stable prefix — only the
+			// trailing run is stripped, and there is none here.
+			"leading prefix context item, no trailing run",
+			[]provider.Message{contextItemMsg("pinned file"), userMsg("a"), assistantMsg("b")},
+			3,
+		},
+		{
+			// Leading prefix item AND a trailing live one: strip only the trailing
+			// one; the leading prefix + history stay in the stable prefix.
+			"leading prefix stays, trailing live stripped",
+			[]provider.Message{contextItemMsg("pinned file"), userMsg("a"), contextItemMsg("todo")},
+			2,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

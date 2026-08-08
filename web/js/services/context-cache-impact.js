@@ -91,15 +91,40 @@ function itemSignature(item) {
 }
 
 /**
- * Build the ordered prefix fingerprint: the tool-set signature followed by one
- * signature per history item.
+ * A signature for a leading `prefix` context item (a pinned/dropped file frozen
+ * at add-time): its id, type, and content length. Adding, removing, or re-pinning
+ * one changes the id sequence; a re-snapshot with different bytes changes the
+ * length. Same `~<len>` tail encoding as {@link itemSignature}, so
+ * {@link signatureWeight} sizes its re-read slice too.
+ * @param {{id?: string, type?: string, data?: {content?: unknown}}} ci - A context item instance
+ * @returns {string} The context-item signature
+ */
+function contextItemSignature(ci) {
+  const id = String(ci?.id || '');
+  const type = String(ci?.type || '');
+  const content = ci?.data?.content;
+  const len = typeof content === 'string' ? content.length : 0;
+  return `ctx:${id}~${type}~${len}`;
+}
+
+/**
+ * Build the ordered prefix fingerprint: the tool-set signature, then one
+ * signature per leading `prefix` context item, then one per history item.
+ *
+ * Prefix context items (frozen pinned/dropped files) sit between tools+system and
+ * the growing history, so they ARE part of the cached prefix now: adding, removing,
+ * or re-pinning one busts the cache from its position, exactly like editing a
+ * history item. They precede the history entries here so a divergence in them is
+ * measured against everything cached after them.
  * @param {object} args
  * @param {string} args.toolsetSig - Sorted tool-name signature under the effective strategy
+ * @param {Array<{id?: string, type?: string, data?: {content?: unknown}}>} [args.prefixItems] - The thread's leading `prefix`-position context items
  * @param {Array<{get?: (key: string) => any}>} args.items - The thread's history items
  * @returns {string[]} The prefix fingerprint
  */
-export function buildPrefixFingerprint({ toolsetSig, items }) {
+export function buildPrefixFingerprint({ toolsetSig, prefixItems = [], items }) {
   const fp = ['tools:' + (toolsetSig || '')];
+  for (const ci of prefixItems || []) fp.push(contextItemSignature(ci));
   for (const item of items || []) fp.push(itemSignature(item));
   return fp;
 }

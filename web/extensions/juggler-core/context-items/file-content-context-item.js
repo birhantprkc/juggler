@@ -18,10 +18,10 @@ import { gitignoreDisabled } from './path-approval.js';
  * than the per-`read`-call budget — it never touches a normal pinned file — but
  * a provider rejects any single content field past a hard byte limit (OpenAI:
  * 10 MiB) regardless of the token budget, and that rejection is not a
- * context-overflow the compaction/recovery ladder can resolve. The context item
- * renders live every turn, so an oversized or minified file (one enormous line
- * slips the per-line cap) would otherwise trip that limit on every turn until
- * the pin is removed. The ceiling stays under the byte limit even for worst-case
+ * context-overflow the compaction/recovery ladder can resolve. The snapshot is
+ * frozen at add-time, so an oversized or minified file (one enormous line slips
+ * the per-line cap) would otherwise trip that limit every turn the pin is sent
+ * until it is removed. The ceiling stays under the byte limit even for worst-case
  * 4-byte UTF-8, and the truncation is applied to the rendered text itself so the
  * transaction view shows exactly what the model received.
  */
@@ -34,12 +34,15 @@ const MAX_PINNED_FILE_CHARS = 2_000_000;
 /**
  * Persisted Yjs shape for a pinned file/directory.
  *
- * Deliberately minimal: only the path and a directory marker. The actual
- * bytes are resolved live at send time (see {@link FetchResult}) and never
- * round-tripped through Yjs.
+ * Holds the path, a directory marker, and the rendered LLM snapshot frozen at
+ * add-time. Persisting `content` is deliberate (like {@link DroppedFileContextItem}):
+ * the pin rides `contextPosition:'prefix'`, so a byte-stable snapshot is what lets
+ * the prompt cache pay for it once instead of re-reading it every turn. Bounded by
+ * `MAX_PINNED_FILE_CHARS`.
  * @typedef {object} FileContentData
  * @property {string} path - File or directory path (trailing "/" for dirs)
  * @property {boolean} [isDirectory] - True when path refers to a directory
+ * @property {string} [content] - Rendered LLM content, snapshotted at add-time
  */
 
 injectFileContentStyles();
@@ -49,26 +52,27 @@ injectFileContentStyles();
 // ============================================================================
 
 /**
- * FileContentContextItem - User-pinned ambient file reference.
+ * FileContentContextItem - User-pinned file reference, frozen at add-time.
  *
  * SEMANTICS (see docs/extension_guide.md §"Pinned file content"):
- *  - The pin persists only a `path` in Yjs; file bytes are NOT persisted.
- *  - Content is resolved at SEND TIME (`getContextText`) from the live file.
- *  - There is no file watcher: between sends nothing is in flight, so there
- *    is nothing to invalidate. The properties panel also reads live.
- *  - When the LLM looks back at prior turns, pinned-file blocks always
- *    reflect the file's CURRENT bytes. Older bytes, if needed, are recorded
- *    by any explicit `read_file` tool calls in that turn's history (those
- *    are immutable snapshots; see `ReadFileContextItem`).
- *
- * The previous design used a watcher that wrote fetched bytes back into the
- * Yjs `data` map. That was wrong on three counts:
- *  1. it mutated the conversation document across peers on every save;
- *  2. it busted the Anthropic prompt cache on every keystroke-save, even
- *     across conversations the user wasn't looking at;
- *  3. it conflated the pin (ambient pointer) with `ReadFileContextItem`
- *     (immutable tool-call record), making "what did the model see?"
- *     unanswerable.
+ *  - The rendered file content is SNAPSHOTTED once, when the pin is created
+ *    (`onToolCall`), and persisted in Yjs (`data.content`). Later turns re-use
+ *    that frozen snapshot — `createContextText` never re-reads the live file for
+ *    LLM context.
+ *  - Why freeze: the pin is injected at `contextPosition:'prefix'` (leading
+ *    messages, inside the cached prefix). A byte-stable snapshot rides the prompt
+ *    cache and is paid for once; the old "resolve live every turn" behavior put
+ *    the file at the uncached tail and re-billed its full bytes every single turn
+ *    (auto-added CLAUDE.md/AGENTS.md were the worst offenders).
+ *  - ACCEPTED TRADEOFF: a pin no longer tracks the file's CURRENT bytes on later
+ *    turns. If the file changed and it matters, the agent re-reads it (that is
+ *    what the `read` tool is for — those ARE live immutable snapshots; see
+ *    `ReadFileContextItem`), or the user re-pins it (one fresh snapshot →
+ *    one cache cold-start).
+ *  - The properties panel still fetches LIVE for display only (a pin's panel
+ *    shows the file's current disk state); only the LLM context is frozen.
+ *  - Legacy pins persisted before this change carry no snapshot; `createContextText`
+ *    falls back to a live fetch for them (no worse than the old behavior).
  * @class
  * @augments ContextItem
  */
@@ -83,7 +87,7 @@ class FileContentContextItem extends ContextItem {
     idPrefix: 'FILE',
     userAddable: true,
     watchesFileChanges: false,
-    contextPosition: /** @type {const} */ ('user'),
+    contextPosition: /** @type {const} */ ('prefix'),
     exampleData: {
       path: 'src/main.go',
       isDirectory: false
@@ -194,13 +198,10 @@ class FileContentContextItem extends ContextItem {
   }
 
   /**
-   * Restore item from JSON. Strips any legacy snapshot fields that older
-   * conversations may have persisted (content, size, totalLines, …) so a
-   * pin's Yjs footprint stays bounded regardless of file size.
-   *
-   * MIGRATION: pre-live-pin conversations stored fetched bytes here. Once
-   * we're confident no such conversations remain in the wild, this strip
-   * (and the matching one in the constructor) can be deleted as a unit.
+   * Restore item from JSON. Strips legacy per-fetch METADATA fields (size,
+   * totalLines, …) that the old live-pin design briefly wrote back into `data`;
+   * `content` is NOT stripped — it is now the frozen add-time snapshot we persist
+   * on purpose (see {@link FileContentData}).
    * @param {import('juggler/context-item').ItemJSON} json
    */
   fromJSON(json) {
@@ -209,12 +210,14 @@ class FileContentContextItem extends ContextItem {
   }
 
   /**
-   * Remove legacy snapshot fields from a data object in place.
+   * Remove legacy per-fetch metadata fields from a data object in place. These
+   * were transient render details the old design shouldn't have persisted; the
+   * frozen `content` snapshot is deliberately kept.
    * @param {Record<string, unknown>} data - The data object to clean
    * @private
    */
   static _stripLegacyFields(data) {
-    const dead = ['content', 'language', 'size', 'totalLines', 'lineOffset',
+    const dead = ['language', 'size', 'totalLines', 'lineOffset',
       'lineCount', 'exists', 'warning', 'readMode'];
     for (const k of dead) {
       if (k in data) delete data[k];
@@ -222,11 +225,13 @@ class FileContentContextItem extends ContextItem {
   }
 
   /**
-   * Execute tool call - record the pinned path.
+   * Execute tool call - record the pinned path and FREEZE its rendered content.
    *
-   * No content fetch here: pinned content is resolved at send time
-   * via {@link _fetchLive}. The properties panel and any UI badge
-   * that needs a line count will fetch on demand.
+   * The file/dir is read once, here, and the rendered LLM snapshot is stored in
+   * `this.data.content`. Later turns re-use that frozen snapshot (see
+   * {@link createContextText}) so a `contextPosition:'prefix'` pin is cached and
+   * paid for once, instead of being re-read live and re-billed every turn. The
+   * properties panel still fetches live for display.
    * @param {string} _toolName - Tool name (unused, only one tool)
    * @param {Record<string, any>} params - Tool parameters
    * @returns {Promise<void>}
@@ -236,6 +241,9 @@ class FileContentContextItem extends ContextItem {
       throw new Error('Missing required parameter: path');
     }
     this.data.path = params.path;
+    const r = await this._fetchLive();
+    this.data.isDirectory = r.isDirectory === true;
+    this.data.content = this._renderSnapshot(r);
   }
 
   /**
@@ -494,8 +502,11 @@ class FileContentContextItem extends ContextItem {
   /**
    * Create context text for the LLM.
    *
-   * Resolves the pinned file's contents LIVE from disk every time the
-   * prompt is built. Disk bytes are never persisted to Yjs.
+   * Returns the snapshot frozen at add-time ({@link onToolCall}) — the pinned
+   * file is NOT re-read live for LLM context, so a `prefix`-positioned pin stays
+   * byte-stable across turns and rides the prompt cache. A legacy pin persisted
+   * before freezing carries no snapshot, so it falls back to a one-off live
+   * render (no worse than the old always-live behavior).
    * @param {import('juggler/context-item').ContextParams} _contextParams - Context parameters
    * @returns {Promise<string>} Formatted file content for LLM context
    */
@@ -503,9 +514,26 @@ class FileContentContextItem extends ContextItem {
     if (!this.data.path) {
       return '';
     }
+    if (typeof this.data.content === 'string' && this.data.content !== '') {
+      return this.data.content;
+    }
+    // Migration backstop: an older pin has no frozen snapshot. Render live once.
+    // This does not persist (createContextText is a pure render), so such a pin
+    // stays live-rendered until it is re-added; new pins freeze in onToolCall.
+    return this._renderSnapshot(await this._fetchLive());
+  }
 
-    const r = await this._fetchLive();
-
+  /**
+   * Render a fetched file/directory result into the final LLM context text —
+   * the exact bytes stored as the frozen snapshot and sent to the model. Applies
+   * the same directory/warning framing and MAX_PINNED_FILE_CHARS truncation the
+   * live path used, so freezing changes only WHEN the render happens, not what it
+   * produces.
+   * @param {FetchResult} r - A fetched file/directory result
+   * @returns {string} Formatted file content for LLM context
+   * @private
+   */
+  _renderSnapshot(r) {
     if (!r.exists) {
       return `File does not exist: ${r.path || this.data.path}`;
     }

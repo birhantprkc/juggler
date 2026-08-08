@@ -172,6 +172,72 @@ func TestRollingBreakpointSitsBeforeContextItemTail(t *testing.T) {
 	}
 }
 
+// TestRollingBreakpointWithLeadingPrefixContext: a "prefix" context item (frozen
+// pinned/dropped file) rides as a LEADING context-item message, before history.
+// The rolling breakpoint must still land on the last stable HISTORY block, so the
+// leading context item sits inside the cached prefix (paid once) rather than
+// anchoring the breakpoint itself. Also covers the combined shape: a leading
+// prefix item AND a trailing live (user-position) one — only the trailing one is
+// left uncached.
+func TestRollingBreakpointWithLeadingPrefixContext(t *testing.T) {
+	c := &Client{model: "claude-test"}
+
+	// Leading prefix context, then ordinary history ending on a user turn.
+	params := c.buildMessageParams(provider.MessageRequest{
+		SystemPrompt: "SYS",
+		Messages: []provider.Message{
+			{Type: "context-item", Content: "=== Context: FILE_1 ===\npackage main"},
+			{Type: "user", Content: "first"},
+			{Type: "assistant", Content: "reply"},
+			{Type: "user", Content: "second"},
+		},
+	})
+	if got := countEphemeralBreakpoints(params.Messages); got != 1 {
+		t.Fatalf("expected exactly one rolling breakpoint, got %d", got)
+	}
+	// The leading context-item message (first) must NOT carry the breakpoint.
+	if cc := params.Messages[0].Content[0].GetCacheControl(); cc != nil && string(cc.Type) == "ephemeral" {
+		t.Errorf("the leading prefix context block must not anchor the rolling breakpoint")
+	}
+	// The breakpoint is on the final history message ("second"), so everything
+	// before it — including the leading prefix context — is cached.
+	last := params.Messages[len(params.Messages)-1]
+	if cc := last.Content[len(last.Content)-1].GetCacheControl(); cc == nil || string(cc.Type) != "ephemeral" {
+		t.Errorf("the last stable history block must carry the rolling breakpoint")
+	}
+
+	// Combined: leading prefix context + trailing live (user-position) context.
+	// Breakpoint lands on the last stable history block ("second"); the leading
+	// prefix is cached before it, the trailing live block is uncached after it.
+	combined := c.buildMessageParams(provider.MessageRequest{
+		SystemPrompt: "SYS",
+		Messages: []provider.Message{
+			{Type: "context-item", Content: "=== Context: FILE_1 ===\npackage main"},
+			{Type: "user", Content: "first"},
+			{Type: "assistant", Content: "reply"},
+			{Type: "user", Content: "second"},
+			{Type: "context-item", Content: "=== Context: LIVE_1 ===\nlive state"},
+		},
+	})
+	if got := countEphemeralBreakpoints(combined.Messages); got != 1 {
+		t.Fatalf("combined: expected exactly one rolling breakpoint, got %d", got)
+	}
+	// The final "second" user turn and the trailing live context are both user
+	// role, so they merge into one message carrying [history, context] blocks
+	// (same shape as the existing tail test). The trailing context block must NOT
+	// carry the breakpoint; the stable block just before it must.
+	cLast := combined.Messages[len(combined.Messages)-1]
+	if len(cLast.Content) < 2 {
+		t.Fatalf("combined: expected the final user message to carry [history, context] blocks, got %d", len(cLast.Content))
+	}
+	if cc := cLast.Content[len(cLast.Content)-1].GetCacheControl(); cc != nil && string(cc.Type) == "ephemeral" {
+		t.Errorf("combined: the trailing live context block must not carry the breakpoint")
+	}
+	if cc := cLast.Content[len(cLast.Content)-2].GetCacheControl(); cc == nil || string(cc.Type) != "ephemeral" {
+		t.Errorf("combined: the last stable history block must carry the rolling breakpoint")
+	}
+}
+
 // TestNoBreakpointWhenNoSystemPrompt: an empty system prompt yields no system
 // block (and so no system breakpoint); the rolling message breakpoint still
 // applies.

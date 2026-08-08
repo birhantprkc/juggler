@@ -36,7 +36,7 @@ import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import { generateToolDefinitions, resolveToolName } from '../services/tool-generator.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { buildApprovalButtons } from '../services/approval-options.js';
-import { assembleSystemPrompt, systemPositionItems as systemPositionItemsOf } from '../services/system-prompt-builder.js';
+import { assembleSystemPrompt, systemPositionItems as systemPositionItemsOf, contextPositionOf } from '../services/system-prompt-builder.js';
 import { buildExtensionSystemPromptContributions } from '../services/extensions.js';
 
 /**
@@ -281,9 +281,13 @@ export function setupWorkerCallbacks(session) {
         extensionContributions
       });
 
-      // Get context from each context item via the conversation
-      // Only include non-system-position context items (system-position ones are in systemPrompt)
-      /** @type {Array<{itemId: string, content: string, tokens: number}>} */
+      // Get context from each non-system context item via the conversation.
+      // Each entry is tagged with its injection position so the worker can place
+      // it in the request: 'prefix' items lead (before history, inside the cached
+      // prefix), 'user' items trail (after history, re-read every turn).
+      // System-position items are already in systemPrompt; 'none' items are not
+      // injected at all (their state lives in the model's own tool_use history).
+      /** @type {Array<{itemId: string, content: string, tokens: number, position: string}>} */
       const contexts = [];
       const itemIds = req.itemIds || [];
 
@@ -298,11 +302,15 @@ export function setupWorkerCallbacks(session) {
         // ids include items that live on the sub-thread, not root.
         const item = allContextItems.find((/** @type {any} */ f) => f.id === itemId);
         if (item && typeof item.getContextText === 'function') {
+          const position = contextPositionOf(item);
+          // 'none' items carry no request content — their state is already durable
+          // in the model's tool_use/tool_result history (todo, plan).
+          if (position === 'none') continue;
           // getContextText is async
           const text = await item.getContextText(contextParams);
           // Estimate tokens (rough: 4 chars per token)
           const tokens = Math.ceil((text || '').length / 4);
-          contexts.push({ itemId, content: text || '', tokens });
+          contexts.push({ itemId, content: text || '', tokens, position });
         }
       }
 

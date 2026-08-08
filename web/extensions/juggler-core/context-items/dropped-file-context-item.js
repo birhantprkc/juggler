@@ -49,7 +49,10 @@ class DroppedFileContextItem extends ContextItem {
     idPrefix: 'DROP',
     userAddable: false,
     watchesFileChanges: false,
-    contextPosition: /** @type {const} */ ('user'),
+    // 'prefix': the drop is a frozen byte snapshot (never re-read), so place it
+    // in the leading, cached prefix instead of re-billing it at the tail every
+    // turn — same rationale as the pinned FileContentContextItem.
+    contextPosition: /** @type {const} */ ('prefix'),
     exampleData: {
       filename: 'notes.txt',
       content: 'hello world\n'

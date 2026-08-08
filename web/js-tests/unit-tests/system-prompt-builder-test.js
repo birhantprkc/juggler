@@ -17,7 +17,8 @@
 import {
   assembleSystemPrompt,
   systemPositionItems,
-  isSystemPositionItem
+  isSystemPositionItem,
+  contextPositionOf
 } from '../../js/services/system-prompt-builder.js';
 import { assert } from '../utilities/test-helpers.js';
 
@@ -80,6 +81,15 @@ export async function runTests(_ctx) {
     assert(isSystemPositionItem(fakeItem({ id: 'A', type: 'memory', contextPosition: 'system' })), 'system item is system-position');
     assert(!isSystemPositionItem(fakeItem({ id: 'B', type: 'file-content', contextPosition: 'conversation' })), 'conversation item is not');
     assert(!isSystemPositionItem(fakeItem({ id: 'C', type: 'x' })), 'undefined position is not system');
+  });
+
+  await test('contextPositionOf returns the manifest position, defaulting to user', () => {
+    assert(contextPositionOf(fakeItem({ id: 'A', type: 'memory', contextPosition: 'system' })) === 'system', 'system passes through');
+    assert(contextPositionOf(fakeItem({ id: 'B', type: 'file-content', contextPosition: 'prefix' })) === 'prefix', 'prefix passes through');
+    assert(contextPositionOf(fakeItem({ id: 'C', type: 'todo', contextPosition: 'none' })) === 'none', 'none passes through');
+    assert(contextPositionOf(fakeItem({ id: 'D', type: 'x', contextPosition: 'user' })) === 'user', 'explicit user');
+    assert(contextPositionOf(fakeItem({ id: 'E', type: 'y' })) === 'user', 'undefined defaults to user');
+    assert(contextPositionOf(fakeItem({ id: 'F', type: 'z', contextPosition: 'bogus' })) === 'user', 'unknown defaults to user');
   });
 
   await test('systemPositionItems filters and preserves order', () => {

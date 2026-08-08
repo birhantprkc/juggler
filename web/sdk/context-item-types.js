@@ -232,7 +232,19 @@
  * @property {boolean} [requiresApproval] - Whether user approval is needed before execution (default: false)
  * @property {'gate'|'elicitation'} [interaction] - How this tool's approval suspends: `'gate'` (default) awaits a delegable go/no-go decision; `'elicitation'` awaits non-delegable user input (the resolution IS the answer, so approval automation never resolves it — e.g. AskUserQuestion). See `INTERACTION_KIND`.
  * @property {boolean} [refreshable] - Can update content after creation (default: false)
- * @property {'system'|'user'} [contextPosition] - Where content appears: 'system' = system prompt, 'user' = conversation (default: 'user')
+ * @property {'system'|'prefix'|'user'|'none'} [contextPosition] - Where this
+ *   item's rendered content is injected into the request (default: 'user'):
+ *   - `'system'`: folded into the system prompt (cached; busts when it changes).
+ *     Memory, skills, the system-prompt identity item.
+ *   - `'prefix'`: leading user-role messages placed BEFORE the conversation
+ *     history, so a frozen item rides inside the cached prefix instead of being
+ *     re-billed at the tail every turn. Adding/removing one cold-starts the cache
+ *     once. For effectively-immutable content snapshotted at add-time (pinned
+ *     file contents, dropped files).
+ *   - `'user'`: trailing user-role messages placed AFTER the history — re-read
+ *     (uncached) every turn. Correct only for genuinely live per-turn content.
+ *   - `'none'`: not injected into the request at all; the item's state already
+ *     lives durably in the model's own tool_use/tool_result history (todo, plan).
  * @property {boolean} [watchesFileChanges] - React to file modifications (default: false)
  * @property {string} [idPrefix] - **@internal** (outside the engineApi compat promise; used by core, third-party support not guaranteed). Prefix for generated IDs (e.g., 'ITEM', 'RULE'). Defaults to 'ITEM'
  * @property {string} [author] - Author name (e.g., 'Juggler Team')

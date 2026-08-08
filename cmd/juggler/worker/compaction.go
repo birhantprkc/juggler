@@ -137,14 +137,23 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 	// Preserve the real turn's cacheable prefix: the folded history renders through
 	// the same wire path as a live turn, and the summarization instruction is
 	// appended as a final user message rather than swapping the system prompt.
-	messages, err := providerMessages(w.buildMessagesFromItems(itemsWithoutItemID(items, promptID), false))
+	history, err := providerMessages(w.buildMessagesFromItems(itemsWithoutItemID(items, promptID), false))
 	if err != nil {
 		return true, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "bounded compaction could not encode semantic history: " + err.Error(), Cause: err}
 	}
-	// Standing context items ride as trailing messages (kept out of the system
-	// prompt for cache stability, same as a live turn), before the summarization
-	// instruction that must stay the final user message.
-	for _, ctx := range ctxResult.Contexts {
+	// Mirror the live turn's placement (buildMessages): "prefix" context items
+	// lead, before history (cached); "user" context items trail, after history;
+	// the summarization instruction stays the final user message.
+	prefixCtx, tailCtx := splitContextsByPosition(ctxResult.Contexts)
+	var messages []provider.Message
+	for _, ctx := range prefixCtx {
+		if ctx.Content == "" {
+			continue
+		}
+		messages = append(messages, provider.Message{Type: messageTypeContextItem, Content: contextItemMessageContent(ctx)})
+	}
+	messages = append(messages, history...)
+	for _, ctx := range tailCtx {
 		if ctx.Content == "" {
 			continue
 		}

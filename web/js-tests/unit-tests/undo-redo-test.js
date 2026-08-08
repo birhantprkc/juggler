@@ -2125,10 +2125,11 @@ async function testInvalidIndexDeletion(session) {
 // =============================================================================
 
 /**
- * After delete + undo, a pinned file's persisted Yjs data must be exactly
- * `{path, isDirectory}` — the same minimal shape it had on creation. Pins
- * never persist file bytes (those are resolved live at send time), so
- * "data integrity" here means structural integrity, not byte preservation.
+ * After delete + undo, a pinned file's persisted Yjs data must round-trip
+ * intact to `{path, isDirectory, content}` — the freeze-at-add shape it had on
+ * creation. The frozen content snapshot IS persisted (it is what lets a pin ride
+ * the cached prefix), so "data integrity" means the snapshot survives undo, not
+ * that the pin stays byte-free.
  * @param {import('../../model/session.js').default} session - Session instance
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Test result
  */
@@ -2175,14 +2176,18 @@ async function testFileContentDataIntegrityAfterUndo(session) {
     throw new Error(`Restored data.path mismatch: got ${JSON.stringify(restoredItem.data.path)}`);
   }
 
-  // Hard invariant: the pin must still carry only path + isDirectory after
-  // undo. Any other key means a snapshot field leaked into Yjs.
-  const allowed = new Set(['path', 'isDirectory']);
-  const leaked = Object.keys(restoredItem.data).filter(k => !allowed.has(k));
-  if (leaked.length > 0) {
+  // Invariant: the pin round-trips its freeze-at-add shape through undo —
+  // persisted keys bounded to {path, isDirectory, content}, and the frozen
+  // content snapshot preserved (not dropped by the delete/undo cycle).
+  const allowed = new Set(['path', 'isDirectory', 'content']);
+  const extra = Object.keys(restoredItem.data).filter(k => !allowed.has(k));
+  if (extra.length > 0) {
     throw new Error(
-      `Pin must persist only {path, isDirectory} after undo but Yjs data also carried: ${leaked.join(', ')}`
+      `Pin persisted unexpected fields after undo beyond {path, isDirectory, content}: ${extra.join(', ')}`
     );
+  }
+  if (typeof restoredItem.data.content !== 'string' || restoredItem.data.content.length === 0) {
+    throw new Error('Pin must preserve its frozen content snapshot across delete + undo');
   }
 
   // Properties panel renders a sync placeholder + async live content.

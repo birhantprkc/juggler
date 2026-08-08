@@ -332,11 +332,22 @@ type RenderContextItemsResponse struct {
 	SystemPrompt string        `json:"systemPrompt,omitempty"` // Full system prompt built by frontend
 }
 
-// ItemContext represents context text from a context item
+// ItemContext represents context text from a context item.
+//
+// Position is where this item's content is injected into the request:
+//   - "prefix": leading messages BEFORE the conversation history, so a frozen
+//     item (pinned/dropped file) rides inside the cached prefix and is paid for
+//     once instead of re-billed at the tail every turn.
+//   - "user" (or ""): trailing messages AFTER the history — re-read (uncached)
+//     every turn; correct only for genuinely live per-turn content.
+//
+// System-position items never reach here (their content is in the system
+// prompt), and 'none'-position items are dropped by the frontend before send.
 type ItemContext struct {
-	ItemID  string `json:"itemId"`
-	Content string `json:"content"`
-	Tokens  int    `json:"tokens,omitempty"`
+	ItemID   string `json:"itemId"`
+	Content  string `json:"content"`
+	Tokens   int    `json:"tokens,omitempty"`
+	Position string `json:"position,omitempty"`
 }
 
 // ToolsResultMessage contains tool definitions from browser

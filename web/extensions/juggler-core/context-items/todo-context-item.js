@@ -34,8 +34,13 @@ import { createChecklistView } from './lib/checklist-view.js';
  * Unlike `plan` (an approval-gated proposal the user signs off on), a todo list
  * is the model's own execution scratchpad: each `todo` tool call replaces the
  * entire list, so there are no index-based step actions and nothing to approve.
- * The item is a singleton per thread and injected at the `user` position so the
- * model sees the current list every turn.
+ * The item is a singleton per thread. It is NOT re-injected into the request
+ * (`contextPosition: 'none'`): each `todo` call replaces the whole list, so the
+ * current list is already present verbatim in the arguments of the model's most
+ * recent `todo` tool_use — which rides the cached, append-only history. Rendering
+ * a duplicate copy into the trailing tail every turn only re-billed that same
+ * state at full price. `createContextText` still renders the list for the
+ * tool-result content and the pinboard.
  * @class
  * @augments ContextItem
  */
@@ -52,7 +57,7 @@ class TodoContextItem extends ContextItem {
     author: 'Juggler Team',
     idPrefix: 'TODO',
     requiresApproval: false,
-    contextPosition: 'user',
+    contextPosition: 'none',
     syntheticToolName: 'todo',
     exampleData: {
       todos: [

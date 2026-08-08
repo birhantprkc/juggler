@@ -131,13 +131,18 @@ export const sendMessageCreatesFileItemsForAllMentions = {
       throw new Error(`Expected file-content paths ${want} but got ${actual}`);
     }
 
-    // Pin items persist only path (+ isDirectory). Content is resolved
-    // live at send time and must NOT be written into Yjs data.
-    const allowed = new Set(['path', 'isDirectory']);
+    // Freeze-at-add: each pin snapshots its rendered content into Yjs (data.content)
+    // when the mention is created, so a 'prefix'-positioned pin rides the cached
+    // prefix instead of being re-read live every turn. Persisted keys are bounded
+    // to {path, isDirectory, content}; content must be a non-empty snapshot.
+    const allowed = new Set(['path', 'isDirectory', 'content']);
     for (const f of /** @type {any[]} */ (fileItems)) {
-      const leaked = Object.keys(f.data).filter(k => !allowed.has(k));
-      if (leaked.length > 0) {
-        throw new Error(`file-content item for "${f.data.path}" leaked snapshot fields into Yjs: ${leaked.join(', ')}`);
+      const extra = Object.keys(f.data).filter(k => !allowed.has(k));
+      if (extra.length > 0) {
+        throw new Error(`file-content item for "${f.data.path}" persisted unexpected fields: ${extra.join(', ')}`);
+      }
+      if (typeof f.data.content !== 'string' || f.data.content.length === 0) {
+        throw new Error(`file-content item for "${f.data.path}" is missing its frozen content snapshot`);
       }
     }
   }
@@ -176,15 +181,16 @@ export const sendMessageHandlesPunctuationAndBareAt = {
 };
 
 // A pinned file must:
-//   (a) reach the LLM with its current on-disk bytes (live-at-send-time), and
-//   (b) leave no copy of those bytes in the Yjs document.
-// Together these are the load-bearing invariants of the live-pin model;
-// regressions in either one would re-introduce the cache-bust / Yjs-mutation
-// pathology that the watcher-based design suffered from.
+//   (a) reach the LLM with the bytes captured when it was pinned, and
+//   (b) persist that frozen snapshot in Yjs (data.content) so later turns re-use
+//       it instead of re-reading the live file.
+// Together these are the load-bearing invariants of the freeze-at-add pin model:
+// the snapshot is what lets a 'prefix'-positioned pin ride the cached prefix and
+// be paid for once, rather than being re-billed at the uncached tail every turn.
 /** @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition} */
-export const pinResolvesLiveAndPersistsNoBytes = {
-  name: 'pin-resolves-live-and-persists-no-bytes',
-  description: 'Pinned file content is read live at send time and only `path` (+isDirectory) is persisted in Yjs',
+export const pinFreezesSnapshotAtAdd = {
+  name: 'pin-freezes-snapshot-at-add',
+  description: 'A pinned file is snapshotted at add-time; the frozen content reaches the LLM and is persisted in Yjs',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -194,7 +200,7 @@ export const pinResolvesLiveAndPersistsNoBytes = {
   operations: [
     { type: 'at-mention-file', path: 'src/main.go' },
     { type: 'send-message', message: '@src/main.go look at this' },
-    // Live read: the actual file bytes must appear in the outgoing context.
+    // The frozen snapshot's bytes must appear in the outgoing context.
     { type: 'validate-context-snapshot', expectedContent: ['Hello, World!'] }
   ],
 
@@ -211,21 +217,19 @@ export const pinResolvesLiveAndPersistsNoBytes = {
       throw new Error(`Expected path "src/main.go", got "${data.path}"`);
     }
 
-    // Hard invariant: no snapshot bytes leak into Yjs.
-    const allowedKeys = new Set(['path', 'isDirectory']);
-    const persistedKeys = Object.keys(data);
-    const leaked = persistedKeys.filter(k => !allowedKeys.has(k));
-    if (leaked.length > 0) {
+    // Persisted keys are bounded to {path, isDirectory, content}.
+    const allowedKeys = new Set(['path', 'isDirectory', 'content']);
+    const extra = Object.keys(data).filter(k => !allowedKeys.has(k));
+    if (extra.length > 0) {
       throw new Error(
-        `Pin must persist only {path, isDirectory} but Yjs data also carried: ${leaked.join(', ')}`
+        `Pin persisted unexpected fields beyond {path, isDirectory, content}: ${extra.join(', ')}`
       );
     }
 
-    // Specifically: the snapshot bytes ('Hello, World!' from the fixture
-    // file) must not appear anywhere in the serialised pin data.
-    const serialised = JSON.stringify(data);
-    if (serialised.includes('Hello, World!')) {
-      throw new Error('File content bytes leaked into the pin\'s Yjs data');
+    // The frozen snapshot IS persisted — its bytes ('Hello, World!' from the
+    // fixture) must be present in data.content.
+    if (typeof data.content !== 'string' || !data.content.includes('Hello, World!')) {
+      throw new Error('Pin must persist the frozen content snapshot in Yjs data.content');
     }
   }
 };
@@ -258,6 +262,6 @@ export const tests = [
   atMentionDeduplicates,
   sendMessageCreatesFileItemsForAllMentions,
   sendMessageHandlesPunctuationAndBareAt,
-  pinResolvesLiveAndPersistsNoBytes,
+  pinFreezesSnapshotAtAdd,
   sendMessageTreatsDirectoryMentionWithoutTrailingSlashAsFolder
 ];
