@@ -89,7 +89,6 @@ import { runTests as runToolActionRenderTests } from '../unit-tests/tool-action-
 import { runTests as runSubmitPlanActionTests } from '../unit-tests/submit-plan-action-test.js';
 import { runTests as runPlanApprovalTests } from '../unit-tests/plan-approval-test.js';
 import { runTests as runTodoActionTests } from '../unit-tests/todo-action-test.js';
-import { runTests as runFileContentFreezeTests } from '../unit-tests/file-content-freeze-test.js';
 import { runTests as runTodoNoApprovalTests } from '../unit-tests/todo-no-approval-test.js';
 import { runTests as runThreadNestedArrayTests } from '../unit-tests/thread-nested-array-test.js';
 import { runTests as runUndoRedoTests } from '../unit-tests/undo-redo-test.js';
@@ -244,7 +243,6 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:model-selector-hud', run: runModelSelectorHudTests },
   { name: 'unit:find', run: runFindTests },
   { name: 'unit:context-item-persistence', run: runContextItemPersistenceTests },
-  { name: 'unit:file-content-freeze', run: runFileContentFreezeTests },
   { name: 'unit:context-item-seed-execute', run: runContextItemSeedExecuteTests },
   { name: 'unit:conversation-name-persistence', run: runConversationNameTests },
   { name: 'unit:draft-persistence', run: runDraftPersistenceTests },

@@ -281,13 +281,14 @@ export function setupWorkerCallbacks(session) {
         extensionContributions
       });
 
-      // Get context from each non-system context item via the conversation.
-      // Each entry is tagged with its injection position so the worker can place
-      // it in the request: 'prefix' items lead (before history, inside the cached
-      // prefix), 'user' items trail (after history, re-read every turn).
-      // System-position items are already in systemPrompt; 'none' items are not
-      // injected at all (their state lives in the model's own tool_use history).
-      /** @type {Array<{itemId: string, content: string, tokens: number, position: string}>} */
+      // Get context from each standing context item that contributes request
+      // content. These are all injected as leading messages BEFORE the history
+      // (contextPosition 'prefix'), inside the cached prefix. System-position
+      // items are excluded (their content is already in systemPrompt); 'none'
+      // items are excluded (their state lives in the model's own tool_use
+      // history, e.g. todo/plan). One-shot file content (@-mentions, reads) is
+      // not here — it lives in the append-only history as a read.
+      /** @type {Array<{itemId: string, content: string, tokens: number}>} */
       const contexts = [];
       const itemIds = req.itemIds || [];
 
@@ -302,15 +303,13 @@ export function setupWorkerCallbacks(session) {
         // ids include items that live on the sub-thread, not root.
         const item = allContextItems.find((/** @type {any} */ f) => f.id === itemId);
         if (item && typeof item.getContextText === 'function') {
-          const position = contextPositionOf(item);
-          // 'none' items carry no request content — their state is already durable
-          // in the model's tool_use/tool_result history (todo, plan).
-          if (position === 'none') continue;
+          // 'none' items carry no request content.
+          if (contextPositionOf(item) === 'none') continue;
           // getContextText is async
           const text = await item.getContextText(contextParams);
           // Estimate tokens (rough: 4 chars per token)
           const tokens = Math.ceil((text || '').length / 4);
-          contexts.push({ itemId, content: text || '', tokens, position });
+          contexts.push({ itemId, content: text || '', tokens });
         }
       }
 

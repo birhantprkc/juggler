@@ -424,31 +424,28 @@ transaction use **`mutate(fn)`** (it also runs `assertInvariants()` in dev mode)
 > `@plugin-api` methods. Bypassing them breaks undo, redo, and peer sync. This is
 > a hard rule, not a style preference.
 
-## Pinned file content: frozen at add-time
+## Pinned file content vs. reads
 
-Juggler ships two file-content context items with deliberately different
-contracts — worth understanding if you build anything that pins or snapshots
-files:
+Juggler distinguishes two ways a file's contents reach the model:
 
-| Item | Role | Content read | Position |
-|------|------|--------------|----------|
-| `ReadFileContextItem` | Immutable record of a `read_file` tool call | Once, at call time | history (part of the transcript) |
-| `FileContentContextItem` | User-pinned reference (`@file`, paperclip) | Once, at add-time (`onToolCall`) | `contextPosition: 'prefix'` |
+| Item | Role | Content read | Placement |
+|------|------|--------------|-----------|
+| `ReadFileContextItem` | Immutable record of a `read` tool call | Once, at call time | conversation history (part of the transcript) |
+| `FileContentContextItem` | A deliberate "keep this file current" pin | Live, every turn | `contextPosition: 'prefix'` (before history) |
 
-A pin snapshots the file's rendered content **once**, when it is added, and
-persists that snapshot in Yjs (`data.content`). `createContextText()` then returns
-the frozen snapshot every turn — the live file is **not** re-read for LLM context.
-This is what lets a pin ride the cached leading prefix (`contextPosition: 'prefix'`,
-see below) and be paid for **once**. The earlier "resolve live every send" design
-placed the file at the uncached trailing tail, so its full bytes were re-billed on
-*every* turn — auto-added `CLAUDE.md`/`AGENTS.md` were the worst offenders.
+A **read** lands in the append-only history as a `tool_use`/`tool_result` pair
+and never moves — so it is inside the byte-stable cached prefix and is paid for
+**once**. A one-shot reference to a file (a casual `@`-mention) is a read.
 
-Tradeoff: a pin no longer tracks the file's *current* bytes on later turns. If the
-file changed and it matters, the agent re-reads it (the `read` tool captures a live
-immutable snapshot), or the user re-pins it (one fresh snapshot → one cache
-cold-start). The properties panel still fetches live for display only.
+A **pin** means "this file, kept current." It persists only a `path` in Yjs (no
+bytes), and `createContextText()` resolves the live file every turn. Because a pin
+rides the leading, cached prefix (`contextPosition: 'prefix'`), an *unchanged* file
+renders byte-identically each turn → the prompt cache hits and the pin is paid for
+once; only a *genuine change* to the file busts the cache from that point — which
+is exactly the point of a pin. There is no watcher (nothing is in flight between
+sends) and no bytes in the document (pinning a 5 MB file doesn't bloat Yjs).
 
-### `contextPosition`: where an item's content is injected
+### `contextPosition`: where a standing item's content is injected
 
 A context item's `MANIFEST.contextPosition` decides where its rendered content
 lands in the request, which governs whether it is cached:
@@ -456,16 +453,15 @@ lands in the request, which governs whether it is cached:
 | Value | Placement | Cached? | Built-in users |
 |-------|-----------|---------|----------------|
 | `system` | folded into the system prompt | yes; busts when it changes | memory, skills, system-prompt |
-| `prefix` | leading messages, **before** history | yes; busts once on add/remove | file-content, dropped-file |
-| `user` (default) | trailing messages, **after** history | no — re-read every turn | (live third-party items) |
+| `prefix` (default) | leading messages, **before** history | yes; unchanged render caches, a real change busts once | file-content, dropped-file |
 | `none` | not injected at all | n/a — state lives in tool_use history | todo, plan |
 
-Choose `prefix` only for content that is effectively immutable once captured (a
-frozen snapshot): a leading item sits before the growing history, so a byte-stable
-snapshot is a stable cache prefix. Choose `user` for genuinely live per-turn
-content that must reflect current state every turn. Choose `none` when the item's
-full state already lives durably in the model's own tool_use/tool_result history
-(so re-injecting it would only re-bill the same state).
+There is deliberately **no trailing/tail position**. Standing content is either
+cacheable (`system`/`prefix`) or lives in the model's own tool history (`none`);
+content that genuinely changes every turn is an anti-pattern (it would bust the
+cache each turn) — put that state in a tool result instead. One-shot file content
+(an `@`-mention, a read) belongs in the append-only history as a read, not as a
+standing context item.
 
 ## Enabling and disabling
 

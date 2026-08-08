@@ -332,22 +332,16 @@ type RenderContextItemsResponse struct {
 	SystemPrompt string        `json:"systemPrompt,omitempty"` // Full system prompt built by frontend
 }
 
-// ItemContext represents context text from a context item.
-//
-// Position is where this item's content is injected into the request:
-//   - "prefix": leading messages BEFORE the conversation history, so a frozen
-//     item (pinned/dropped file) rides inside the cached prefix and is paid for
-//     once instead of re-billed at the tail every turn.
-//   - "user" (or ""): trailing messages AFTER the history — re-read (uncached)
-//     every turn; correct only for genuinely live per-turn content.
-//
-// System-position items never reach here (their content is in the system
-// prompt), and 'none'-position items are dropped by the frontend before send.
+// ItemContext represents context text from a standing context item. Every such
+// item is injected as a leading message BEFORE the conversation history (inside
+// the cached prefix); there is no trailing position. System-position items never
+// reach here (their content is in the system prompt), and 'none'-position items
+// (todo/plan, whose state lives in the model's own tool_use history) are dropped
+// by the frontend before send.
 type ItemContext struct {
-	ItemID   string `json:"itemId"`
-	Content  string `json:"content"`
-	Tokens   int    `json:"tokens,omitempty"`
-	Position string `json:"position,omitempty"`
+	ItemID  string `json:"itemId"`
+	Content string `json:"content"`
+	Tokens  int    `json:"tokens,omitempty"`
 }
 
 // ToolsResultMessage contains tool definitions from browser

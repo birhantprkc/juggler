@@ -428,7 +428,7 @@ class WorkerManager {
    * Send rendered context items response to worker
    * @param {string} conversationId - Conversation ID
    * @param {string} requestId - Request ID
-   * @param {Array<{itemId: string, content: string, tokens: number, position?: string}>} contexts - Rendered context item contexts
+   * @param {Array<{itemId: string, content: string, tokens: number}>} contexts - Rendered context item contexts
    * @param {string} [systemPrompt] - Full system prompt built by frontend
    */
   sendRenderContextItemsResponse(conversationId, requestId, contexts, systemPrompt = '') {

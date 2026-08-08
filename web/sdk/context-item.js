@@ -1041,7 +1041,7 @@ class ContextItem {
       permissions: manifest?.permissions || [],
       exampleData: manifest?.exampleData || {},
       refreshable: manifest?.refreshable || false,
-      contextPosition: manifest?.contextPosition || 'user',
+      contextPosition: manifest?.contextPosition || 'prefix',
       watchesFileChanges: manifest?.watchesFileChanges || false,
       autoInstantiate: manifest?.autoInstantiate || false
     };

@@ -83,13 +83,12 @@ export async function runTests(_ctx) {
     assert(!isSystemPositionItem(fakeItem({ id: 'C', type: 'x' })), 'undefined position is not system');
   });
 
-  await test('contextPositionOf returns the manifest position, defaulting to user', () => {
+  await test('contextPositionOf returns the manifest position, defaulting to prefix', () => {
     assert(contextPositionOf(fakeItem({ id: 'A', type: 'memory', contextPosition: 'system' })) === 'system', 'system passes through');
     assert(contextPositionOf(fakeItem({ id: 'B', type: 'file-content', contextPosition: 'prefix' })) === 'prefix', 'prefix passes through');
     assert(contextPositionOf(fakeItem({ id: 'C', type: 'todo', contextPosition: 'none' })) === 'none', 'none passes through');
-    assert(contextPositionOf(fakeItem({ id: 'D', type: 'x', contextPosition: 'user' })) === 'user', 'explicit user');
-    assert(contextPositionOf(fakeItem({ id: 'E', type: 'y' })) === 'user', 'undefined defaults to user');
-    assert(contextPositionOf(fakeItem({ id: 'F', type: 'z', contextPosition: 'bogus' })) === 'user', 'unknown defaults to user');
+    assert(contextPositionOf(fakeItem({ id: 'E', type: 'y' })) === 'prefix', 'undefined defaults to prefix');
+    assert(contextPositionOf(fakeItem({ id: 'F', type: 'z', contextPosition: 'bogus' })) === 'prefix', 'unknown defaults to prefix');
   });
 
   await test('systemPositionItems filters and preserves order', () => {

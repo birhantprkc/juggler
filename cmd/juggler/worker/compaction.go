@@ -141,24 +141,17 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 	if err != nil {
 		return true, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "bounded compaction could not encode semantic history: " + err.Error(), Cause: err}
 	}
-	// Mirror the live turn's placement (buildMessages): "prefix" context items
-	// lead, before history (cached); "user" context items trail, after history;
-	// the summarization instruction stays the final user message.
-	prefixCtx, tailCtx := splitContextsByPosition(ctxResult.Contexts)
+	// Mirror the live turn's placement (buildMessages): standing context items
+	// lead, before history (cached); the summarization instruction stays the
+	// final user message.
 	var messages []provider.Message
-	for _, ctx := range prefixCtx {
+	for _, ctx := range ctxResult.Contexts {
 		if ctx.Content == "" {
 			continue
 		}
 		messages = append(messages, provider.Message{Type: messageTypeContextItem, Content: contextItemMessageContent(ctx)})
 	}
 	messages = append(messages, history...)
-	for _, ctx := range tailCtx {
-		if ctx.Content == "" {
-			continue
-		}
-		messages = append(messages, provider.Message{Type: messageTypeContextItem, Content: contextItemMessageContent(ctx)})
-	}
 	messages = append(messages, provider.Message{Type: ItemTypeUser, Content: plainTextSummarizationPrompt()})
 	probeReq := hiddenLLMRequest{
 		Type: "message", SystemPrompt: ctxResult.SystemPrompt,

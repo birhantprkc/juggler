@@ -232,19 +232,24 @@
  * @property {boolean} [requiresApproval] - Whether user approval is needed before execution (default: false)
  * @property {'gate'|'elicitation'} [interaction] - How this tool's approval suspends: `'gate'` (default) awaits a delegable go/no-go decision; `'elicitation'` awaits non-delegable user input (the resolution IS the answer, so approval automation never resolves it — e.g. AskUserQuestion). See `INTERACTION_KIND`.
  * @property {boolean} [refreshable] - Can update content after creation (default: false)
- * @property {'system'|'prefix'|'user'|'none'} [contextPosition] - Where this
- *   item's rendered content is injected into the request (default: 'user'):
+ * @property {'system'|'prefix'|'none'} [contextPosition] - Where this item's
+ *   rendered content is injected into the request (default: 'prefix'):
  *   - `'system'`: folded into the system prompt (cached; busts when it changes).
  *     Memory, skills, the system-prompt identity item.
- *   - `'prefix'`: leading user-role messages placed BEFORE the conversation
- *     history, so a frozen item rides inside the cached prefix instead of being
- *     re-billed at the tail every turn. Adding/removing one cold-starts the cache
- *     once. For effectively-immutable content snapshotted at add-time (pinned
- *     file contents, dropped files).
- *   - `'user'`: trailing user-role messages placed AFTER the history — re-read
- *     (uncached) every turn. Correct only for genuinely live per-turn content.
+ *   - `'prefix'` (default): leading user-role messages placed BEFORE the
+ *     conversation history, so the content rides inside the cached prefix. An
+ *     unchanged render is byte-identical each turn → the cache hits; a genuine
+ *     change busts from that point (adding/removing one cold-starts once). For a
+ *     deliberately-current file pin (dropped/pinned file contents).
  *   - `'none'`: not injected into the request at all; the item's state already
  *     lives durably in the model's own tool_use/tool_result history (todo, plan).
+ *
+ *   There is deliberately no trailing/tail position: standing content is either
+ *   cacheable (system/prefix) or lives in tool history (none). Genuinely-volatile
+ *   per-turn content that changes every turn is an anti-pattern — it would bust
+ *   the cache each turn; put such state in a tool result instead. One-shot file
+ *   content (an `@`-mention, a read) belongs in the append-only history as a read,
+ *   not as a standing context item.
  * @property {boolean} [watchesFileChanges] - React to file modifications (default: false)
  * @property {string} [idPrefix] - **@internal** (outside the engineApi compat promise; used by core, third-party support not guaranteed). Prefix for generated IDs (e.g., 'ITEM', 'RULE'). Defaults to 'ITEM'
  * @property {string} [author] - Author name (e.g., 'Juggler Team')

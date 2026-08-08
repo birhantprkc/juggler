@@ -27,17 +27,17 @@ export function isSystemPositionItem(item) {
 /**
  * The declared injection position for a context item — where its rendered
  * content lands in the LLM request. Reads the class manifest's
- * `contextPosition`, defaulting to `'user'` (a trailing, re-read-every-turn
- * message) when unset. One of `'system' | 'prefix' | 'user' | 'none'`; see the
- * ContextItemManifest typedef for what each means. Single source of truth so the
- * worker-callbacks bucketing and the system-prompt filter can't drift.
+ * `contextPosition`, defaulting to `'prefix'` (leading, cached, before history)
+ * when unset. One of `'system' | 'prefix' | 'none'`; see the ContextItemManifest
+ * typedef for what each means. Single source of truth so the worker-callbacks
+ * bucketing and the system-prompt filter can't drift.
  * @param {any} item - Context item instance
- * @returns {'system'|'prefix'|'user'|'none'} The item's context position
+ * @returns {'system'|'prefix'|'none'} The item's context position
  */
 export function contextPositionOf(item) {
   const ctor = /** @type {{MANIFEST?: {contextPosition?: string}}} */ (item.constructor);
   const pos = ctor.MANIFEST?.contextPosition;
-  return (pos === 'system' || pos === 'prefix' || pos === 'none') ? pos : 'user';
+  return (pos === 'system' || pos === 'none') ? pos : 'prefix';
 }
 
 /**
