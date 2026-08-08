@@ -3980,6 +3980,24 @@ composer-box .context-cache-warning-btn .icon-warning {
     height: 1rem;
 }
 
+composer-box .context-cache-warning-btn.cache-miss-flash {
+    animation: context-cache-miss-flash 700ms ease-in-out 3;
+}
+
+@keyframes context-cache-miss-flash {
+    50% {
+        transform: scale(1.18);
+        box-shadow: 0 0 0 0.3rem color-mix(in srgb, var(--accent-yellow) 35%, transparent);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    composer-box .context-cache-warning-btn.cache-miss-flash {
+        animation: none;
+        box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--accent-yellow) 35%, transparent);
+    }
+}
+
 /* Light theme: --accent-yellow is a dark, murky mustard (tuned to read as text
    on a light surface), which makes a poor alert fill. Swap in a brighter, more
    saturated amber with a dark glyph — bright enough to catch the eye, with the

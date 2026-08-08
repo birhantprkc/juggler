@@ -15,6 +15,8 @@ import (
 	"juggler/internal/jlog"
 )
 
+const cacheMissWarningTokens int64 = 25_000
+
 // Client implements the provider.Provider interface using Claude Code CLI.
 // Tool execution flows back through the stdio control protocol, not a
 // per-client HTTP MCP server. See control_protocol.go for the
@@ -492,14 +494,48 @@ func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, 
 			}
 			jlog.Info("⚠ claudecode cache-miss: cold start (reason=%s) conv=%s msgs=%d",
 				reason, shortID(req.ConversationID), len(req.Messages))
+			emitCacheMissWarning(callback, req, c.activeSession, reason)
 			c.dispatchFreshStart()
 		} else {
 			jlog.Info("⚠ claudecode cache-miss: cold start (no prior session) conv=%s msgs=%d",
 				shortID(req.ConversationID), len(req.Messages))
+			emitCacheMissWarning(callback, req, nil, "no prior Claude Code session")
 		}
 		return c.startFreshSession(ctx, req, callback)
 	}
 	return nil, fmt.Errorf("claudecode: unknown regime %d", dec.Regime)
+}
+
+func hasAssistantHistory(messages []provider.Message) bool {
+	for _, msg := range messages {
+		if provider.MessageTypeToRole(msg.Type) == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+// emitCacheMissWarning surfaces consequential cold starts through the provider's
+// transient status path. A transcript without assistant history has no prior
+// conversation cache to lose, and short requests are cheap to re-ingest. Those
+// cases stay in the diagnostic log only.
+func emitCacheMissWarning(callback provider.StructuredStreamCallback, req provider.MessageRequest, sess *activeSession, reason string) {
+	if callback == nil || !hasAssistantHistory(req.Messages) {
+		return
+	}
+	if sess != nil && sess.sentCount == 0 {
+		return
+	}
+	if provider.EstimateMessageRequestTokens(req) < cacheMissWarningTokens {
+		return
+	}
+	_, _ = callback(provider.StreamChunk{
+		Type:    provider.ContentBlockTypeStatus,
+		Content: "Rebuilding Claude Code context",
+		Metadata: map[string]any{
+			"cacheMissReason": reason,
+		},
+	})
 }
 
 // dispatchFreshStart prepares for a replacement fresh session after a routine

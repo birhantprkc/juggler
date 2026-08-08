@@ -123,7 +123,7 @@ func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 		// shows what's happening instead of a static "Receiving..." that
 		// looks jammed. Transient: cleared by the next sendStatus, hidden by
 		// the frontend once output tokens begin to flow.
-		w.mergeProcessingPhase(chunk.Content)
+		w.mergeProcessingPhase(chunk.Content, chunk.CacheMissReason)
 	default:
 		// Other chunk types (tool_use, etc.) - finalize any active streaming
 		w.finalizeStreaming()
@@ -259,9 +259,9 @@ func (w *ConversationWorker) mergeProcessingTokens(outputTokens, inputTokens, ca
 // processingState so every observing client renders the same spinner text off
 // the doc. Mirrors mergeProcessingTokens' liveness guard: a no-op unless the
 // status is a running one, so a status chunk that races past sendStatus("idle")
-// can't revive a stale spinner. The next sendStatus rebuilds processingState
-// without `phase`, so it never leaks past the phase it describes.
-func (w *ConversationWorker) mergeProcessingPhase(phase string) {
+// can't revive a stale spinner. A consequential cache miss is retained across
+// subsequent phase labels until the next sendStatus rebuilds processingState.
+func (w *ConversationWorker) mergeProcessingPhase(phase, cacheMissReason string) {
 	if phase == "" {
 		return
 	}
@@ -278,6 +278,9 @@ func (w *ConversationWorker) mergeProcessingPhase(phase string) {
 		return
 	}
 	state["phase"] = phase
+	if cacheMissReason != "" {
+		state["cacheMissReason"] = cacheMissReason
+	}
 	w.doc.SetMetadata("processingState", state)
 }
 

@@ -268,10 +268,11 @@ type ProviderTurnMessage struct {
 
 // StreamChunk represents a streamed LLM content chunk
 type StreamChunk struct {
-	Type         provider.ContentBlockType `json:"type"`                   // Chunk type (text, thinking, tool_use, progress, usage, …)
-	ItemID       string                    `json:"itemId,omitempty"`       // Item ID for UI tracking
-	Content      string                    `json:"content,omitempty"`      // Content text
-	OutputTokens int                       `json:"outputTokens,omitempty"` // Running output-token estimate, only set for type=="progress"
+	Type            provider.ContentBlockType `json:"type"`                      // Chunk type (text, thinking, tool_use, progress, usage, …)
+	ItemID          string                    `json:"itemId,omitempty"`          // Item ID for UI tracking
+	Content         string                    `json:"content,omitempty"`         // Content text
+	OutputTokens    int                       `json:"outputTokens,omitempty"`    // Running output-token estimate, only set for type=="progress"
+	CacheMissReason string                    `json:"cacheMissReason,omitempty"` // Consequential provider cache miss, only set for type=="status"
 
 	// Set only for type=="usage" — a mid-stream anchor written as soon as
 	// the provider emits its first usage event (e.g. Anthropic message_start

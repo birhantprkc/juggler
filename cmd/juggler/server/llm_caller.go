@@ -204,7 +204,12 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			// Status chunks are transient (rate-limit retries, parking
 			// notes). Surface to worker as a chunk; don't accumulate.
 			if chunk.Type == provider.ContentBlockTypeStatus {
-				chunkHandler(worker.StreamChunk{Type: chunk.Type, Content: chunk.Content})
+				reason, _ := chunk.Metadata["cacheMissReason"].(string)
+				chunkHandler(worker.StreamChunk{
+					Type:            chunk.Type,
+					Content:         chunk.Content,
+					CacheMissReason: reason,
+				})
 				return nil, nil
 			}
 			// Progress chunks carry a running output-token estimate for the

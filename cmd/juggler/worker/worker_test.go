@@ -3647,7 +3647,11 @@ func TestStatusChunkSurfacesPhase(t *testing.T) {
 
 	w.llmCallFunc = func(ctx context.Context, request json.RawMessage, chunkHandler func(StreamChunk)) (*LLMResponse, error) {
 		// A phase label arrives before any content, then the first token.
-		chunkHandler(StreamChunk{Type: "status", Content: "Starting Claude Code"})
+		chunkHandler(StreamChunk{
+			Type:            "status",
+			Content:         "Rebuilding Claude Code context",
+			CacheMissReason: "diverged: system prompt changed",
+		})
 		chunkHandler(StreamChunk{Type: "text", Content: "hi"})
 		return &LLMResponse{
 			Blocks:     []LLMResponseBlock{{Type: "text", Content: "hi"}},
@@ -3663,8 +3667,11 @@ func TestStatusChunkSurfacesPhase(t *testing.T) {
 	if state == nil {
 		t.Fatal("processingState is nil after streaming a status chunk")
 	}
-	if got, _ := state["phase"].(string); got != "Starting Claude Code" {
-		t.Errorf("processingState.phase = %q, want %q", got, "Starting Claude Code")
+	if got, _ := state["phase"].(string); got != "Rebuilding Claude Code context" {
+		t.Errorf("processingState.phase = %q, want %q", got, "Rebuilding Claude Code context")
+	}
+	if got, _ := state["cacheMissReason"].(string); got != "diverged: system prompt changed" {
+		t.Errorf("processingState.cacheMissReason = %q", got)
 	}
 }
 

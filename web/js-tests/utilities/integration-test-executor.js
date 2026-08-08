@@ -52,6 +52,7 @@ import { tests as attentionAlertTests } from '../integration-tests/attention-ale
 import { tests as binGuardTests } from '../integration-tests/bin-guard-tests.js';
 import { tests as modelAvailabilityTests } from '../integration-tests/model-availability-tests.js';
 import { runTests as runContextCacheImpactTests } from '../unit-tests/context-cache-impact-test.js';
+import { runTests as runCacheMissWarningTests } from '../unit-tests/cache-miss-warning-test.js';
 import { runTests as runContextItemPersistenceTests } from '../unit-tests/context-item-persistence-test.js';
 import { runTests as runContextItemSeedExecuteTests } from '../unit-tests/context-item-seed-execute-test.js';
 import { runTests as runConversationNameTests } from '../unit-tests/conversation-name-persistence-test.js';
@@ -232,6 +233,7 @@ const ALL_TESTS = [
  */
 const UNIT_TEST_SUITES = [
   { name: 'unit:context-cache-impact', run: runContextCacheImpactTests },
+  { name: 'unit:cache-miss-warning', run: runCacheMissWarningTests },
   { name: 'unit:key-shortcut-manager', run: runKeyShortcutManagerTests },
   { name: 'unit:hold-to-cycle', run: runHoldToCycleTests },
   { name: 'unit:recent-models', run: runRecentModelsTests },

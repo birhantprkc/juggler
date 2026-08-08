@@ -352,6 +352,14 @@ class Composer extends HTMLElement {
     // not stack). See setupListeners.
     /** @type {boolean} @private */
     this._impactListenerBound = false;
+    /** @type {boolean} @private */
+    this._cacheImpactWarning = false;
+    /** @type {number|null} @private */
+    this._cacheMissFlashTimeoutId = null;
+    /** @type {string|null} @private */
+    this._activeCacheMissSignature = null;
+    /** @type {string|null} @private */
+    this._cacheMissReason = null;
   }
 
   connectedCallback() {
@@ -380,6 +388,10 @@ class Composer extends HTMLElement {
     if (this._conversationMetadataObserver && this._conversation) {
       this._conversation.unobserveMetadata(this._conversationMetadataObserver);
       this._conversationMetadataObserver = null;
+    }
+    if (this._cacheMissFlashTimeoutId !== null) {
+      clearTimeout(this._cacheMissFlashTimeoutId);
+      this._cacheMissFlashTimeoutId = null;
     }
     // Drop the countdown-refresh interval. The target stays persisted on the
     // thread's draft, so reconnecting (or rebinding) restores the countdown —
@@ -809,9 +821,8 @@ class Composer extends HTMLElement {
     if (!this._impactListenerBound) {
       this._impactListenerBound = true;
       this.addEventListener(CONTEXT_CACHE_IMPACT_CHANGED, (e) => {
-        const btn = this.querySelector('#context-cache-warning');
-        const busts = !!(/** @type {CustomEvent} */ (e).detail?.busts);
-        if (btn) btn.toggleAttribute('hidden', !busts);
+        this._cacheImpactWarning = !!(/** @type {CustomEvent} */ (e).detail?.busts);
+        this._updateCacheWarningButton();
       });
     }
     // Clicking (or tapping) the warning surfaces its explanation — touch has no
@@ -891,7 +902,46 @@ class Composer extends HTMLElement {
   }
 
   /**
-   * Whether this composer should behave as a touch composer: Enter inserts a
+   * Flash the cache warning when the provider reports a consequential cold
+   * start for this composer's thread. The worker includes the turn's shared
+   * start time, making the signature stable across repeated Yjs observations
+   * while still allowing a later miss with the same reason to flash again.
+   * @private
+   */
+  _updateProviderCacheMiss() {
+    const state = this._conversation?.processingState;
+    const reason = typeof state?.cacheMissReason === 'string' ? state.cacheMissReason : '';
+    const stateThread = state?.threadItemId || null;
+    if (!reason || stateThread !== (this.threadItemId || null)) return;
+    const signature = `${state?.startedAt || ''}:${stateThread || 'root'}:${reason}`;
+    if (signature === this._activeCacheMissSignature) return;
+    this._activeCacheMissSignature = signature;
+    this._cacheMissReason = reason;
+    if (this._cacheMissFlashTimeoutId !== null) clearTimeout(this._cacheMissFlashTimeoutId);
+    this._cacheMissFlashTimeoutId = window.setTimeout(() => {
+      this._cacheMissFlashTimeoutId = null;
+      this._cacheMissReason = null;
+      this._updateCacheWarningButton();
+    }, 8000);
+    this._updateCacheWarningButton();
+  }
+
+  /** @private */
+  _updateCacheWarningButton() {
+    const btn = this.querySelector('#context-cache-warning');
+    if (!btn) return;
+    const providerMiss = this._cacheMissReason !== null;
+    const title = providerMiss
+      ? `Claude Code rebuilt the context instead of using its cache. Reason: ${this._cacheMissReason}`
+      : 'Items in the conversation have changed, so the next message will cause a cache-miss';
+    btn.toggleAttribute('hidden', !providerMiss && !this._cacheImpactWarning);
+    btn.classList.toggle('cache-miss-flash', providerMiss);
+    btn.setAttribute('title', title);
+    btn.setAttribute('aria-label', title);
+  }
+
+  /**
+   
    * newline (the onscreen keyboard's return key) and the touch-only Send / "⋮"
    * affordances are active. Gated on a coarse pointer with no hover — the same
    * signal the CSS `@media (hover: none) and (pointer: coarse)` block keys off,
@@ -1412,19 +1462,30 @@ class Composer extends HTMLElement {
    * @param {import('../model/conversation.js').default|null} conversation - Conversation instance
    */
   setConversation(conversation) {
+    const conversationChanged = this._conversation !== conversation;
     if (this._conversationMetadataObserver && this._conversation) {
       this._conversation.unobserveMetadata(this._conversationMetadataObserver);
+    }
+    if (conversationChanged) {
+      if (this._cacheMissFlashTimeoutId !== null) clearTimeout(this._cacheMissFlashTimeoutId);
+      this._cacheMissFlashTimeoutId = null;
+      this._activeCacheMissSignature = null;
+      this._cacheMissReason = null;
     }
     this._conversation = conversation;
     this._conversationMetadataObserver = null;
     if (conversation) {
       this._conversationMetadataObserver = (event) => {
-        if (event.keysChanged?.has?.('processingState')) this._updateNewThreadControls();
+        if (event.keysChanged?.has?.('processingState')) {
+          this._updateNewThreadControls();
+          this._updateProviderCacheMiss();
+        }
       };
       conversation.observeMetadata(this._conversationMetadataObserver);
     }
     this._updateNewThreadControls();
-    this._syncStrategySelector();
+    this._updateProviderCacheMiss();
+
     const permissionControls = this.querySelector('permission-controls');
     if (permissionControls && 'setMessageThread' in permissionControls) {
       /** @type {HTMLElement & {setMessageThread: function(import('../model/message-thread.js').default|null): void}} */
@@ -1480,9 +1541,10 @@ class Composer extends HTMLElement {
 
     this._messageThread = messageThread;
     this.threadItemId = messageThread.threadItemId;
+    this._updateProviderCacheMiss();
 
     this._syncStrategySelector();
-    // The skill picker button is shown only when this thread advertises skills.
+
     this._refreshSkillButtonVisibility();
 
     const modelSelector = this.querySelector('model-selector');
