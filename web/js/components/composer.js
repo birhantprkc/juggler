@@ -941,7 +941,7 @@ class Composer extends HTMLElement {
   }
 
   /**
-   
+   * Whether this composer should behave as a touch composer: Enter inserts a
    * newline (the onscreen keyboard's return key) and the touch-only Send / "⋮"
    * affordances are active. Gated on a coarse pointer with no hover — the same
    * signal the CSS `@media (hover: none) and (pointer: coarse)` block keys off,
