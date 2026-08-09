@@ -51,6 +51,13 @@ import { isAnyPopupOpen } from '../utils/popup-manager.js';
  * @property {string} description - One-line explanation for the settings page.
  * @property {string} category - Grouping label for the settings page.
  * @property {KeyBinding} defaultBinding - The shipped binding (future: overridable).
+ * @property {KeyBinding[]} [aliasBindings] - Additional shipped keys that trigger
+ *   the same command. For a command whose primary chord is unreachable on some
+ *   surfaces — a browser reserves ⌘N/Ctrl+N for its own New window and never
+ *   delivers it to the page — an alias keeps the command operable there without
+ *   giving up the chord that is right everywhere else. The primary binding is
+ *   what tooltips advertise; {@link KeyShortcutManager#getBindings} returns the
+ *   whole set for matching, and the settings page lists all of them.
  * @property {boolean|'empty'} [allowInInput] - Whether the command may fire while
  *   focus is in a text field. `false` (default): never — don't steal keys while
  *   the user is typing. `true`: always. `'empty'`: only when the field is empty,
@@ -220,6 +227,13 @@ const SHORTCUT_DEFS = [
     // window chord. Pinning shift off keeps this to bare ⌘N so New window opens a
     // window instead of a tab.
     defaultBinding: { mod: true, shift: false, key: 'n' },
+    // ⌥N/Alt+N is the alias that works on every surface. Browsers reserve
+    // ⌘N/Ctrl+N for their own New window and never deliver it to the page, so in
+    // a browser tab the binding above cannot fire at all — only the desktop app
+    // reaches this command by that chord, via its native File ▸ New Tab
+    // accelerator. No browser claims ⌥N, and it is free of native text-editing
+    // meaning, so it is safe to bind app-wide rather than per-surface.
+    aliasBindings: [{ alt: true, key: 'n' }],
     allowInInput: true,
   },
   {
@@ -516,6 +530,22 @@ class KeyShortcutManager {
   }
 
   /**
+   * Every key that triggers a command: its effective binding followed by any
+   * shipped aliases. This is what the dispatcher matches against — {@link
+   * getBinding} stays the single binding a command is *advertised* by. A user
+   * override replaces the command's keys outright, so an overridden command has
+   * no aliases: the keys the user chose are the keys the command answers to.
+   * @param {string} id
+   * @returns {KeyBinding[]} All triggering bindings, or [] if the id is unknown.
+   */
+  getBindings(id) {
+    if (this._overrides.has(id)) return [/** @type {KeyBinding} */ (this._overrides.get(id))];
+    const def = this._defs.get(id);
+    if (!def) return [];
+    return [def.defaultBinding, ...(def.aliasBindings ?? [])];
+  }
+
+  /**
    * Set a user override for a command's binding. Not yet wired to any UI or
    * persistence — present so the customisation seam exists in exactly one place.
    * @param {string} id
@@ -543,6 +573,17 @@ class KeyShortcutManager {
   formatBinding(id) {
     const binding = this.getBinding(id);
     return binding ? this.formatKeyBinding(binding) : '';
+  }
+
+  /**
+   * Render every key that triggers a command (primary first, then aliases) for
+   * the running platform. For listings that show a command's full key set, where
+   * {@link formatBinding}'s single advertised combo would hide an alias.
+   * @param {string} id
+   * @returns {string[]} One platform-correct label per binding; [] if unknown.
+   */
+  formatBindings(id) {
+    return this.getBindings(id).map((binding) => this.formatKeyBinding(binding));
   }
 
   /**
@@ -607,8 +648,9 @@ class KeyShortcutManager {
         if (!def.allowInInput) continue;
         if (def.allowInInput === 'empty' && !isEditableEmpty(e.target)) continue;
       }
-      const binding = this.getBinding(def.id);
-      if (!binding || !eventMatchesBinding(binding, e)) continue;
+      // Any of the command's keys fires it — the advertised binding or a shipped
+      // alias for surfaces where that binding never arrives.
+      if (!this.getBindings(def.id).some((binding) => eventMatchesBinding(binding, e))) continue;
       const acted = handler(e);
       if (acted) {
         e.preventDefault();

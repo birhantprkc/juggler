@@ -5368,10 +5368,14 @@ settings-panel .shortcut-row {
     gap: 1rem;
 }
 
-/* .provider-control is a column flex; align to the end so the keycap shrinks to
-   its own text (right-aligned) instead of stretching across the column. */
+/* .provider-control is a column flex; lay the keycaps out in a right-aligned row
+   instead, so each shrinks to its own text rather than stretching across the
+   column, and a command with an alias shows its keys side by side. */
 settings-panel .shortcut-control {
-    align-items: flex-end;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.375rem;
 }
 
 settings-panel .shortcut-keycap {

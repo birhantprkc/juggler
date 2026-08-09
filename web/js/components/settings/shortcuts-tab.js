@@ -57,8 +57,10 @@ export class ShortcutsTab {
   }
 
   /**
-   * Build one shortcut row: label + description on the left, the current key on
-   * the right as a `<kbd>`.
+   * Build one shortcut row: label + description on the left, the current key(s)
+   * on the right as `<kbd>`s — a command with an alias (⌘N and ⌥N for a new
+   * conversation) shows every key that triggers it, since the alias exists
+   * precisely because the primary chord is unreachable on some surfaces.
    * @param {import('../../services/key-shortcut-manager.js').ShortcutDef} def - The shortcut definition.
    * @returns {HTMLElement} The row element.
    * @private
@@ -80,10 +82,12 @@ export class ShortcutsTab {
 
     const ctrl = document.createElement('div');
     ctrl.className = 'provider-control shortcut-control';
-    const key = document.createElement('kbd');
-    key.className = 'shortcut-keycap';
-    key.textContent = keyShortcutManager.formatBinding(def.id);
-    ctrl.appendChild(key);
+    for (const combo of keyShortcutManager.formatBindings(def.id)) {
+      const key = document.createElement('kbd');
+      key.className = 'shortcut-keycap';
+      key.textContent = combo;
+      ctrl.appendChild(key);
+    }
 
     row.appendChild(info);
     row.appendChild(ctrl);

@@ -231,6 +231,46 @@ export async function runTests(_ctx) {
       'bare Mod+N must NOT match new-window');
   });
 
+  // A browser keeps ⌘N/Ctrl+N for its own New window and never delivers it to
+  // the page, so in a browser tab the primary binding cannot fire at all. The
+  // ⌥N/Alt+N alias is the key that reaches the command on every surface.
+  await run('new-conversation answers to its Alt+N alias as well as Mod+N', () => {
+    const bindings = keyShortcutManager.getBindings('new-conversation');
+    assert(bindings.length === 2, `expected primary + alias, got ${bindings.length}`);
+    const matches = (e) => bindings.some((b) => eventMatchesBinding(b, e));
+    assert(matches(evt({ ...modProp, key: 'n' })), 'Mod+N should still create a conversation');
+    assert(matches(evt({ altKey: true, key: 'n' })), 'Alt+N should create a conversation');
+    // macOS reports the Option-modified glyph (⌥N is the '˜' dead key), so the
+    // physical `code` carries the match there.
+    assert(matches(evt({ altKey: true, key: '˜', code: 'KeyN' })),
+      'macOS ⌥N glyph should match the alias via code');
+    // The alias is Alt ALONE: with the command modifier down neither binding
+    // matches, so ⌥⌘N/Ctrl+Alt+N stays free for a future command.
+    assert(!matches(evt({ ...modProp, altKey: true, key: 'n', code: 'KeyN' })),
+      'Mod+Alt+N must match neither the binding nor its alias');
+    // getBinding stays the single advertised combo (tooltips show one key).
+    const advertised = keyShortcutManager.getBinding('new-conversation');
+    assert(advertised.mod && !advertised.alt && advertised.key === 'n',
+      'the advertised binding is still Mod+N');
+    // A command without aliases reports exactly its one binding.
+    assert(keyShortcutManager.getBindings('undo').length === 1, 'unaliased command has one binding');
+    assert(keyShortcutManager.getBindings('does-not-exist').length === 0, 'unknown id has no bindings');
+  });
+
+  await run('a user override replaces a command\u2019s keys, aliases included', () => {
+    keyShortcutManager.setBinding('new-conversation', { mod: true, key: 'k' });
+    try {
+      const bindings = keyShortcutManager.getBindings('new-conversation');
+      assert(bindings.length === 1, 'an overridden command answers only to the chosen key');
+      assert(eventMatchesBinding(bindings[0], evt({ ...modProp, key: 'k' })), 'the override matches');
+      assert(!bindings.some((b) => eventMatchesBinding(b, evt({ altKey: true, key: 'n' }))),
+        'the shipped alias is gone once the user picks their own key');
+    } finally {
+      keyShortcutManager.setBinding('new-conversation', null);
+    }
+    assert(keyShortcutManager.getBindings('new-conversation').length === 2, 'clearing restores the defaults');
+  });
+
   // ── Display formatting (platform-correct) ───────────────────────────
   await run('formatBinding renders platform-correct labels', () => {
     assert(keyShortcutManager.formatBinding('undo') === (mac ? '⌘Z' : 'Ctrl+Z'),
@@ -242,6 +282,13 @@ export async function runTests(_ctx) {
     assert(keyShortcutManager.formatBinding('zoom-in') === (mac ? '⌘+' : 'Ctrl++'),
       `zoom-in label wrong: ${keyShortcutManager.formatBinding('zoom-in')}`);
     assert(keyShortcutManager.formatBinding('does-not-exist') === '', 'unknown id formats to empty string');
+    // formatBindings renders the whole key set (primary first), so a listing can
+    // show an alias that formatBinding's single advertised combo would hide.
+    const combos = keyShortcutManager.formatBindings('new-conversation');
+    assert(combos.length === 2, `expected two labels, got: ${combos.join(', ')}`);
+    assert(combos[0] === keyShortcutManager.formatBinding('new-conversation'), 'the advertised combo leads');
+    assert(combos[1] === (mac ? '⌥N' : 'Alt+N'), `alias label wrong: ${combos[1]}`);
+    assert(keyShortcutManager.formatBindings('does-not-exist').length === 0, 'unknown id formats to no labels');
   });
 
   // formatBindingForPlatform renders for an EXPLICIT platform, independent of

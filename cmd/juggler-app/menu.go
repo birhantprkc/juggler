@@ -41,9 +41,11 @@ func installAppMenu(a *appState, devMode bool) {
 		})
 	// New Tab owns Cmd+N (the browser new-tab key most people reach for) and
 	// creates a conversation in the focused window by dispatching the same event
-	// the in-app Cmd+N shortcut fires. In the desktop app the native menu
-	// accelerator preempts the webview keydown, so the frontend's own Cmd+N
-	// binding only fires in menu-less browser tabs — no double trigger.
+	// the in-app Cmd+N shortcut fires. The native menu accelerator preempts the
+	// webview keydown, so this is the only path Cmd+N takes here — no double
+	// trigger. It is also the only path Cmd+N has anywhere: a browser reserves
+	// that chord for its own New window and never delivers it to the page, which
+	// is why the frontend binds Alt+N as an alias (see key-shortcut-manager.js).
 	fileMenu.Add("New Tab").
 		SetAccelerator("CmdOrCtrl+n").
 		OnClick(func(_ *application.Context) {
