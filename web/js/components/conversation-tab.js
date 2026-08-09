@@ -362,7 +362,13 @@ class ConversationTab extends HTMLElement {
   //      Detected in _rebuildColumns by comparing _inputColumn()
   //      before and after the rebuild.
   //  16. Approval auto-selected   → engage approval widget (focus its
-  //      buttons for up/down keyboard selection).
+  //      buttons for up/down keyboard selection), UNLESS the message
+  //      box holds a draft — an arriving approval must not take the
+  //      keyboard off a prompt being written.  Same doctrine as rule
+  //      20: take focus only where nothing has a better claim to it.
+  //      The item is still selected either way, so Escape/arrows/Enter
+  //      still reach it, as does the jump-to-attention shortcut, which
+  //      engages on demand because the user asked for it.
   //  17. Escape while navigating  → focus textarea (enter typing mode).
   //      Escape always moves "up" one level:
   //      approval buttons → item list → textarea.
@@ -448,6 +454,32 @@ class ConversationTab extends HTMLElement {
     if (document.activeElement?.tagName === 'TEXTAREA') {
       /** @type {HTMLElement} */ (document.activeElement).blur();
     }
+  }
+
+  /**
+   * Whether a message box currently holds a prompt the user is writing, and so
+   * has a better claim on the keyboard than an arriving approval (Rule 16).
+   *
+   * Both halves are load-bearing. Focus must be IN a message box: a draft the
+   * user has clicked away from is not being typed, and nothing is interrupted
+   * by taking a keyboard they already released. And the box must be NON-EMPTY:
+   * sending with Enter leaves focus in the box, so the ordinary keyboard flow
+   * (send a prompt, approval arrives) sits on an empty box whose focus is idle
+   * and free to take — gating on focus alone would cost every keyboard user the
+   * auto-engage they rely on.
+   *
+   * Deliberately a state test rather than a "seconds since the last keystroke"
+   * one: a pause mid-sentence is exactly when the draft is most alive, and
+   * Enter in an engaged widget answers an approval — so an idle timer would
+   * turn a predictable annoyance into an intermittent, unread approval.
+   * @returns {boolean} True when focus is inside a non-empty message box.
+   * @private
+   */
+  _composerHoldsDraft() {
+    const active = /** @type {HTMLElement|null} */ (document.activeElement);
+    if (!active || active.tagName !== 'TEXTAREA') return false;
+    if (!active.closest('composer-box')) return false;
+    return /** @type {HTMLTextAreaElement} */ (active).value.trim().length > 0;
   }
 
   /**
@@ -1032,9 +1064,13 @@ class ConversationTab extends HTMLElement {
       this._revealDetailsColumn(columnIndex);
     }
 
-    // Rule 16: auto-engage approval widget when LLM auto-selects an approval item
+    // Rule 16: auto-engage approval widget when LLM auto-selects an approval item —
+    // unless the message box is holding a draft (see _composerHoldsDraft). Judged
+    // on the deferred tick, the only moment that decides anything, so a draft
+    // typed while the frame was pending still counts.
     if (origin === 'auto' && itemId && column) {
       requestAnimationFrame(() => {
+        if (this._composerHoldsDraft()) return;
         const el = column.querySelector(`[message-id="${itemId}"] action-confirmation`);
         if (el) /** @type {any} */ (el).engage();
       });
