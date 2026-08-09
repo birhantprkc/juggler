@@ -82,18 +82,28 @@ func hostAllowed(r *http.Request) bool {
 	return err == nil
 }
 
-// isAssetGetRequest reports whether r is a GET for a content-addressed asset
-// (GET /api/session/conversations/<id>/assets/<sha>). These are loaded by the
-// browser as <img src>, which — unlike fetch() — cannot carry the custom
-// X-Juggler-Token header, so the token rides as a ?token= query param instead
-// (mirroring the WebSocket upgrade in websocket_loop.go). The relaxation is
-// scoped to exactly this read-only, non-tool route; the sensitive surface
-// (/api/ops/call, …) still demands the header and its forced CORS preflight.
+// isAssetGetRequest reports whether r is a GET for content the browser loads
+// through an element rather than fetch():
+//
+//   - a content-addressed asset (GET /api/session/conversations/<id>/assets/<sha>);
+//   - a project file streamed for a file viewer (GET /api/session/files/content).
+//
+// Both are loaded as <img src> / <canvas> / <iframe>, which — unlike fetch() —
+// cannot carry the custom X-Juggler-Token header, so the token rides as a
+// ?token= query param instead (mirroring the WebSocket upgrade in
+// websocket_loop.go). The relaxation is scoped to exactly these read-only,
+// non-tool routes; the sensitive surface (/api/ops/call, …) still demands the
+// header and its forced CORS preflight. The file route additionally contains
+// itself to the project root precisely because its token is this exposed — see
+// handlers.FilesAPI.
 func isAssetGetRequest(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
 	}
 	p := r.URL.Path
+	if p == "/api/session/files/content" {
+		return true
+	}
 	return strings.HasPrefix(p, "/api/session/conversations/") && strings.Contains(p, "/assets/")
 }
 

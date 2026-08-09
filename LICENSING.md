@@ -62,6 +62,15 @@ follows:
 The reverse direction — the AGPL app importing from the Apache SDK — is
 unrestricted and common (the app uses its own SDK).
 
+## Vendored third-party code
+
+`web/js/vendor/` holds third-party libraries copied into the repository verbatim
+(PDF.js, marked, Yjs, Prism). They keep their own upstream licences — all
+permissive (Apache-2.0 or MIT) — and each is recorded with its version, source
+and licence in [`web/js/vendor/README.md`](web/js/vendor/README.md). Apache-2.0
+code sitting inside the AGPL tree is compatible in that direction; it is stated
+here rather than left implied.
+
 ## Official binaries and the pro tier
 
 Official Juggler binaries are built and distributed from a separate private

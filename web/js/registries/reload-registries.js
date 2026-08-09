@@ -6,6 +6,7 @@ import contextItemRegistry from './context-item-registry.js';
 import strategyRegistry from './strategy-registry.js';
 import commandRegistry from './command-registry.js';
 import infoCardRegistry from './info-card-registry.js';
+import fileViewerRegistry from './file-viewer-registry.js';
 import { resetExtensionsCache } from '../services/extensions.js';
 import { resetUserCommandsCache } from '../services/user-commands.js';
 import { resetSkillsCache } from '../services/skills.js';
@@ -66,7 +67,7 @@ async function waitForLocalQuiescence() {
 }
 
 /**
- * Initialize the three capability registries in dependency order (strategies
+ * Initialize the capability registries in dependency order (strategies
  * first — they gate the whole flow), then flip the registries-ready gate.
  *
  * The single shared boot/rebuild sequence: first-boot (app.js / engine-app.js)
@@ -81,6 +82,10 @@ export async function initAllRegistries() {
     await strategyRegistry.init();
     await contextItemRegistry.init();
     await commandRegistry.init();
+    // File viewers run in BOTH realms — render() in the viewer, extract() in the
+    // engine worker — so unlike info cards this registry is initialised
+    // unconditionally.
+    await fileViewerRegistry.init();
     // Info cards touch the DOM and only render in the sidebar — never init the
     // registry (which would import DOM-touching card modules) in the engine
     // worker, which has no document.
@@ -100,6 +105,7 @@ async function rebuildRegistriesNow() {
   strategyRegistry.reset();
   contextItemRegistry.reset();
   commandRegistry.reset();
+  fileViewerRegistry.reset();
   // Viewer-only registry; the engine worker never inits it, so only reset it
   // where a document exists (initAllRegistries applies the same realm gate).
   if (typeof document !== 'undefined') {

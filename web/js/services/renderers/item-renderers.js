@@ -32,7 +32,7 @@ import { applyAnsi } from '../../../sdk/lib/ansi.js';
 import { copyToClipboard } from '../../../sdk/lib/clipboard.js';
 import { TOOL_STATES } from '../../../sdk/lib/message.js';
 import { normalizeAttachments, formatAttachmentBytes } from '../../utils/attachments.js';
-import { openImageLightbox } from '../../utils/image-lightbox.js';
+import { createImageThumb } from '../../utils/image-lightbox.js';
 import { renderTaskDeliveryControl } from '../../../sdk/lib/task-delivery-control.js';
 import apiService from '../../services/api.js';
 
@@ -335,15 +335,13 @@ function renderMessageAttachments(host, wrapper, message) {
     figure.className = 'properties-panel-attachment';
 
     if (isImage && src) {
-      const img = document.createElement('img');
-      img.className = 'properties-panel-attachment-thumb';
-      img.src = src;
-      img.alt = ref.filename || 'attachment';
-      img.loading = 'lazy';
-      if (ref.width) img.width = ref.width;
-      if (ref.height) img.height = ref.height;
-      img.addEventListener('click', () => openImageLightbox(src, img.alt));
-      figure.appendChild(img);
+      figure.appendChild(createImageThumb({
+        src,
+        alt: ref.filename || 'attachment',
+        className: 'properties-panel-attachment-thumb',
+        width: ref.width,
+        height: ref.height,
+      }));
     }
 
     const caption = document.createElement('figcaption');

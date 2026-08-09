@@ -145,7 +145,7 @@ func validateExtensionDir(dir string) (extmanifest.Manifest, []string, error) {
 		return m, nil, err
 	}
 	fsys := os.DirFS(dir)
-	for _, globs := range [][]string{m.Provides.ContextItems, m.Provides.Strategies, m.Provides.Commands} {
+	for _, globs := range [][]string{m.Provides.ContextItems, m.Provides.Strategies, m.Provides.Commands, m.Provides.InfoCards, m.Provides.FileViewers} {
 		expanded, err := extmanifest.ExpandGlobs(fsys, globs)
 		if err != nil {
 			return m, nil, err
@@ -193,7 +193,8 @@ func extValidate(args []string) int {
 		return 1
 	}
 
-	caps := len(m.Provides.ContextItems) + len(m.Provides.Strategies) + len(m.Provides.Commands)
+	caps := len(m.Provides.ContextItems) + len(m.Provides.Strategies) + len(m.Provides.Commands) +
+		len(m.Provides.InfoCards) + len(m.Provides.FileViewers)
 	fmt.Printf("✓ %s (%s) — %s, %d capability glob(s), compatible with host engineApi %s\n",
 		m.Name, m.Version, m.ID, caps, hostEngineAPIVersion())
 	for _, w := range warnings {

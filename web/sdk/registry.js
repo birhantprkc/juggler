@@ -12,6 +12,8 @@
  */
 
 import contextItemRegistry from '../js/registries/context-item-registry.js';
+import fileViewerRegistry from '../js/registries/file-viewer-registry.js';
+import { toDescriptor } from './file-source.js';
 
 /**
  * Instantiate a registered context-item type from plain JSON. This is the
@@ -25,4 +27,41 @@ import contextItemRegistry from '../js/registries/context-item-registry.js';
  */
 export function createItem(json, session, conversation, messageThread) {
   return contextItemRegistry.createItem(json, session, conversation, messageThread);
+}
+
+/**
+ * Produce the model-facing representation of a file by resolving its viewer and
+ * running that viewer's `extract()`.
+ *
+ * This is the single place "what does the model see of this file?" is answered,
+ * so every file-shaped context item (a tool read, a pin, a drop) gets the same
+ * answer — including the fallback when no viewer claims the file, which is where
+ * the old hardcoded binary-file warning now lives.
+ *
+ * Runs in the engine realm (extract's context); a viewer's heavy dependencies
+ * load lazily inside its own `extract()`, so resolving costs nothing here.
+ * @param {import('./file-source.js').FileSource} source - The file to extract
+ * @param {import('./file-viewer.js').ExtractContext} [ctx] - Budget and abort signal
+ * @returns {Promise<import('./file-viewer.js').ExtractResult>} What the model should see
+ */
+export async function extractFileSource(source, ctx = {}) {
+  await fileViewerRegistry.ensureInitialized();
+  const ViewerClass = fileViewerRegistry.resolve(toDescriptor(source));
+  if (!ViewerClass) {
+    const kind = source.mime || (source.isBinary ? 'binary' : 'this');
+    return { warning: `No viewer is available for ${kind} content, so it cannot be read as text.` };
+  }
+  const viewer = new (/** @type {any} */ (ViewerClass))();
+  return viewer.extract(source, ctx);
+}
+
+/**
+ * Resolve which viewer would handle a file, without running it. Exposed for
+ * callers that need to branch on viewer availability (or identity) before
+ * committing to a render or an extraction.
+ * @param {import('./file-viewer.js').FileDescriptor} descriptor - File metadata
+ * @returns {typeof import('juggler/file-viewer').default|undefined} The winning viewer class, if any
+ */
+export function resolveFileViewer(descriptor) {
+  return fileViewerRegistry.resolve(descriptor);
 }

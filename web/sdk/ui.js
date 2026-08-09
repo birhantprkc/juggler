@@ -62,5 +62,8 @@ export {
 // Misc formatting helpers
 export { FormattingHelpers } from './lib/formatting-helpers.js';
 
+// Full-screen image overlay (shared by the image viewer and attachment thumbs)
+export { openImageLightbox, createImageThumb } from '../js/utils/image-lightbox.js';
+
 // Project-picker panel (used by file/path-selecting items)
 export { buildPickerPanel } from '../js/components/project-picker.js';

@@ -4,10 +4,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { readFile, uploadAssetBase64 } from 'juggler/ops';
-import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createFileContentBlock, normalizeFilePath, injectFileContentStyles, basename } from 'juggler/item-utils';
-import { createElement } from 'juggler/ui';
-import { addFilePath } from 'juggler/ui';
+import { readFile } from 'juggler/ops';
+import { formatDisplayPath, formatFileSize, formatFileContentForLLM, normalizeFilePath, injectFileContentStyles, basename } from 'juggler/item-utils';
+import { fileSourceFromReadResult } from 'juggler/file-source';
+import { extractFileSource } from 'juggler/registry';
 import { smartTruncate } from 'juggler/ui';
 import { toolInputPath, dirname, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags, absolutePathKey } from './path-approval.js';
 
@@ -35,9 +35,11 @@ injectFileContentStyles();
  * @property {string} readMode - Read mode description
  * @property {number} lineOffset - Starting line number (1-indexed)
  * @property {number} lineCount - Number of lines in content
- * @property {string|null} [warning] - Warning message (e.g., for binary files)
+ * @property {string|null} [warning] - Warning carried by results persisted before viewers owned the explanation
  * @property {boolean} [isImage] - True when the file is a supported image within the inline size cap
- * @property {string} [mime] - Image mime type (when isImage)
+ * @property {string} [mime] - Mime type reported by the read op ('' when unknown)
+ * @property {boolean} [isBinary] - Byte-sniff observation; advisory, not a verdict on displayability
+ * @property {import('juggler/file-viewer').ExtractResult} [extracted] - What the file's viewer produced for the model (see execute)
  * @property {import('../../../js/services/ops-api.js').AssetRef} [attachment] - Stored asset ref for the image (set after snapshot)
  */
 
@@ -216,34 +218,50 @@ class ReadFileContextItem extends ContextItem {
     if (readParams.path && !isPathAllowed(this, readParams.path)) {
       readParams.outOfRootApproved = true;
     }
-    const result = /** @type {ReadFileResult & {isImage?: boolean, imageBase64?: string, attachment?: any}} */ (
+    const result = /** @type {ReadFileResult & {imageBase64?: string}} */ (
       await readFile(readParams, this.signal, this.getToolAllowedRoots())
     );
 
-    // A supported image within the size cap: upload its bytes to the
-    // conversation's asset store (the same endpoint the composer uses for pasted
-    // images) so a multimodal model receives the actual pixels alongside the
-    // tool_result. The AssetRef rides in getSummary's `attachments`, which the
-    // framework persists at the item level. The base64 bytes are pulled off the
-    // result immediately so they never bloat the doc. If the upload fails (or
-    // there's no conversation context), degrade to a text note — the read itself
-    // still succeeded.
-    if (result && result.isImage && result.imageBase64) {
-      const base64 = result.imageBase64;
-      delete result.imageBase64;
-      const convId = this.conversation?.id;
-      if (convId) {
-        try {
-          result.attachment = await uploadAssetBase64(convId, base64, result.mime, this.signal);
-        } catch (e) {
-          result.isImage = false;
-          result.warning = `Image could not be attached for viewing: ${/** @type {any} */ (e)?.message || e}`;
-        }
-      } else {
-        result.isImage = false;
-        result.warning = 'Image could not be attached for viewing (no conversation context).';
+    // Extraction runs HERE rather than in getSummary because getSummary is
+    // synchronous (action-executor calls it directly) while extract() is async —
+    // and because this is already where the image asset upload happened, so the
+    // timing relative to result persistence is unchanged.
+    if (result && result.exists !== false) {
+      const conversationId = this.conversation?.id;
+      const source = fileSourceFromReadResult(
+        result,
+        this.getAbsolutePath(result.path || readParams.path || ''),
+        // An out-of-root read reached here only past the approval gate, so the
+        // viewer's byte transport may resolve it on the same footing the read
+        // itself did — otherwise a viewer could never see the file it is being
+        // asked to extract.
+        { conversationId, access: { outOfRootApproved: !!readParams.outOfRootApproved } }
+      );
+      const outcome = await extractFileSource(source, {
+        maxChars: /** @type {any} */ (this.conversation)?._truncationBudget || 30000,
+        signal: this.signal,
+        conversationId,
+      });
+
+      // An attachment (image pixels) is promoted onto the result so it persists
+      // at the item level and rides getSummary's `attachments`.
+      if (outcome.attachments?.length) {
+        result.attachment = outcome.attachments[0];
       }
+      // Stash the outcome for getSummary. `text` is deliberately dropped when
+      // the body is already on the result: it is derivable from `content`, and
+      // persisting both would double every read's footprint in the document.
+      // A viewer that produces text from bytes (a PDF) has no `content`, so its
+      // text IS stored — it is the only copy.
+      const stashed = { ...outcome };
+      delete stashed.attachments;
+      if (stashed.text && result.content) delete stashed.text;
+      if (Object.keys(stashed).length > 0) result.extracted = stashed;
     }
+
+    // The inline pixels have served their purpose (extraction uploaded them to
+    // the asset store); drop them so they never reach the document.
+    delete result.imageBase64;
     return result;
   }
 
@@ -281,7 +299,7 @@ class ReadFileContextItem extends ContextItem {
     // Handle image result: the actual pixels are attached to the tool_result as
     // an image part (the AssetRef in `attachments`), so the LLM-facing text is a
     // short description rather than file content.
-    if (result && result.isImage && result.attachment) {
+    if (result && result.attachment) {
       const ref = result.attachment;
       const dims = (ref.width && ref.height) ? `${ref.width}\u00d7${ref.height}` : 'image';
       const size = ref.bytes ? `, ${formatFileSize(ref.bytes)}` : '';
@@ -294,19 +312,24 @@ class ReadFileContextItem extends ContextItem {
       };
     }
 
-    // Handle warning (e.g., binary file)
-    if (result && result.warning) {
+    // Nothing could be extracted (a binary format no viewer claims). The
+    // explanation comes from the viewer layer now, not a string baked into the
+    // backend's read op.
+    const warning = result?.extracted?.warning || result?.warning;
+    if (warning) {
       return {
-        summary: `${formatDisplayPath(path)} (${result.warning})`,
-        details: `**WARNING**: ${result.warning}`,
+        summary: `${formatDisplayPath(path)} (${warning})`,
+        details: `**WARNING**: ${warning}`,
         success: true,
         icon: '⚠'
       };
     }
 
-    // Format the file content for LLM - this goes in summary for tool_result
+    // The viewer's extracted text when it produced any (a PDF's body), else the
+    // standard formatting of the content the read carried.
     // At this point result must exist since outcome.success is true
-    const formattedContent = this._formatFileContent(/** @type {ReadFileResult} */ (result));
+    const formattedContent = result?.extracted?.text
+      || this._formatFileContent(/** @type {ReadFileResult} */ (result));
 
     // Apply smart truncation
     const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
@@ -360,42 +383,16 @@ class ReadFileContextItem extends ContextItem {
    */
   createPropertiesPanelElement() {
     const data = /** @type {ReadFileResult} */ (this.data);
-    const container = createElement('div', 'file-content-expanded');
-
-    const absPath = this.getAbsolutePath(data.path);
-    const info = (data.exists && data.size)
-      ? `${formatFileSize(data.size)} | ${data.totalLines} lines`
-      : undefined;
-    addFilePath(container, absPath || 'No file', info);
-
-    // Handle file not found
-    if (data.exists === false) {
-      const notFound = createElement('div', 'file-content-not-found',
-        `File not found: ${data.path}`);
-      container.appendChild(notFound);
-      return container;
-    }
-
-    // Image result: the pixels are attached to the model, not shown in the panel.
-    if (data.isImage && data.attachment) {
-      container.appendChild(createElement('div', 'file-content-info', 'Image attached to the model.'));
-      return container;
-    }
-
-    // Handle warning (e.g., binary file)
-    if (data.warning) {
-      const warning = createElement('div', 'file-content-warning', data.warning);
-      container.appendChild(warning);
-      return container;
-    }
-
-    container.appendChild(createFileContentBlock({
-      content: data.content || '',
-      language: data.language || 'text',
-      lineNumberStart: data.lineOffset || 1,
+    const view = /** @type {any} */ (document.createElement('file-view'));
+    // A persisted result does not record how its read was authorised, but a
+    // recorded read of an out-of-root path is by construction one the user
+    // approved — so the panel may re-read it on the same footing.
+    const outOfRootApproved = !!this.messageThread && !isPathAllowed(this, data.path || '');
+    view.setSource(fileSourceFromReadResult(data, this.getAbsolutePath(data.path), {
+      conversationId: this.conversation?.id,
+      access: { outOfRootApproved },
     }));
-
-    return container;
+    return view;
   }
 
   /**
@@ -428,12 +425,12 @@ class ReadFileContextItem extends ContextItem {
       } else if (result.exists === false) {
         summary = `File not found: ${filename}`;
         status = 'error';
-      } else if (result.isImage && result.attachment) {
+      } else if (result.attachment) {
         const ref = result.attachment;
         summary = (ref.width && ref.height) ? `${filename} (${ref.width}×${ref.height})` : `${filename} (image)`;
         status = 'success';
-      } else if (result.warning) {
-        summary = `${filename} (${result.warning})`;
+      } else if (result.extracted?.warning || result.warning) {
+        summary = `${filename} (${result.extracted?.warning || result.warning})`;
         status = 'success';
       } else {
         status = 'success';

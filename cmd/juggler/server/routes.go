@@ -192,6 +192,16 @@ func (s *Server) setupSessionRoutes(sessionAPI *handlers.SessionAPI) {
 	api.HandleFunc("/session/binned-conversations/{convId}/restore", sessionAPI.HandleRestoreConversation).Methods("POST")
 	api.HandleFunc("/session/binned-conversations/{convId}", sessionAPI.HandleDeleteBinnedConversation).Methods("DELETE")
 	api.HandleFunc("/session/reorder", sessionAPI.HandleReorderConversations).Methods("PUT")
+	// Raw file bytes for the file viewers. Unlike the immutable asset store
+	// above, these serve a live file that can change on disk. The GET route is
+	// the streaming one (its token may ride in the query string, so it is
+	// contained to the project root); the POST route is header-authenticated and
+	// carries the read op's escape hatches in its body, which is what lets a
+	// viewer render a user-initiated file outside the project. See
+	// handlers.FilesAPI for the full rationale.
+	filesAPI := handlers.NewFilesAPI(s.ProjectPath)
+	api.HandleFunc("/session/files/content", filesAPI.HandleGetFileContent).Methods("GET")
+	api.HandleFunc("/session/files/bytes", filesAPI.HandlePostFileBytes).Methods("POST")
 }
 
 // setupProjectRoutes registers /api/project and /api/recents endpoints.

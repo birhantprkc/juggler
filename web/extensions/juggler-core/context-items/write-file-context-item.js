@@ -5,7 +5,8 @@
 
 import EditBase from './edit-base.js';
 import { readFile, writeFile } from 'juggler/ops';
-import { formatDisplayPath, normalizeFilePath, createFileContentBlock, basename } from 'juggler/item-utils';
+import { formatDisplayPath, normalizeFilePath, basename } from 'juggler/item-utils';
+import { fileSourceFromText } from 'juggler/file-source';
 import { checkFileFreshness, recordWrittenHash, restageBaseline, acquirePathLock } from './read-history.js';
 
 /** @type {Record<string, string>} */
@@ -457,14 +458,15 @@ class WriteFileContextItem extends EditBase {
     }
 
     if (!helpers.addDiffViewer(wrapper, toolAction, filePath) && input.content) {
-      const ext = filePath.split('.').pop()?.toLowerCase() || '';
+      // The content the model intended to write, not a file on disk — so the
+      // source carries the text directly and resolves to the text viewer. The
+      // path is already at the top of the wrapper, so the view omits its own.
       const section = document.createElement('div');
       section.className = 'context-item-expanded-content';
-      section.appendChild(createFileContentBlock({
-        content: input.content,
-        language: LANG_MAP[ext] || 'text',
-        lineNumberStart: 1,
-      }));
+      const view = /** @type {any} */ (document.createElement('file-view'));
+      view.showPath = false;
+      view.setSource(fileSourceFromText({ path: filePath, text: input.content }));
+      section.appendChild(view);
       wrapper.appendChild(section);
     }
 

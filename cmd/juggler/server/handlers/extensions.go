@@ -32,6 +32,7 @@ type ExtensionCapabilities struct {
 	Strategies   []string `json:"strategies"`
 	Commands     []string `json:"commands"`
 	InfoCards    []string `json:"infoCards"`
+	FileViewers  []string `json:"fileViewers"`
 	// SystemPrompt is the single served URL of the extension's system-prompt
 	// contribution module (empty when the manifest declares none).
 	SystemPrompt string `json:"systemPrompt,omitempty"`
@@ -292,6 +293,10 @@ func expandCapabilities(root extensionRoot, p ExtensionProvides) (ExtensionCapab
 	if err != nil {
 		return ExtensionCapabilities{}, nil, err
 	}
+	fileViewers, err := expandGlobs(root, p.FileViewers, files)
+	if err != nil {
+		return ExtensionCapabilities{}, nil, err
+	}
 	// systemPrompt is a single module path, not a glob list. Resolve it through
 	// the same expander (traversal guard + disk-path mapping) and take the one
 	// match, if any.
@@ -310,6 +315,7 @@ func expandCapabilities(root extensionRoot, p ExtensionProvides) (ExtensionCapab
 		Strategies:   strategies,
 		Commands:     commands,
 		InfoCards:    infoCards,
+		FileViewers:  fileViewers,
 		SystemPrompt: systemPrompt,
 	}, files, nil
 }

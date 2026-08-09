@@ -186,7 +186,7 @@ class UpdateButton extends HTMLElement {
     if (vm.present) {
       if (vm.updaterState === 'downloading') return 'Downloading update…';
       if (vm.updaterState === 'verifying' || vm.updaterState === 'installing') return 'Preparing update…';
-      if (vm.updaterState === 'ready') return 'Install & restart...';
+      if (vm.updaterState === 'ready') return 'Update & restart...';
     }
     return 'Update';
   }

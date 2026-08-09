@@ -4,7 +4,7 @@
 
 import BaseMessage from './base-message.js';
 import apiService from '../services/api.js';
-import { openImageLightbox } from '../utils/image-lightbox.js';
+import { createImageThumb } from '../utils/image-lightbox.js';
 import { applyCollapsible } from '../utils/collapsible.js';
 import { renderMarkdownWrapped, decorateCodeBlocks, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
 
@@ -118,18 +118,13 @@ class UserMessage extends BaseMessage {
     const conversationId = this._getConversation()?.id || '';
 
     for (const ref of attachments) {
-      const src = apiService.assetURL(conversationId, ref.id);
-      const img = document.createElement('img');
-      img.className = 'user-message-attachment';
-      img.src = src;
-      img.alt = ref.filename || 'attachment';
-      img.loading = 'lazy';
-      // Intrinsic dimensions let the browser reserve the right box and derive
-      // the aspect ratio before the bytes load (CSS caps the display size).
-      if (ref.width) img.width = ref.width;
-      if (ref.height) img.height = ref.height;
-      img.addEventListener('click', () => openImageLightbox(src, img.alt));
-      grid.appendChild(img);
+      grid.appendChild(createImageThumb({
+        src: apiService.assetURL(conversationId, ref.id),
+        alt: ref.filename || 'attachment',
+        className: 'user-message-attachment',
+        width: ref.width,
+        height: ref.height,
+      }));
     }
 
     return grid;

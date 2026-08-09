@@ -52,6 +52,44 @@ func ImageMimeForPath(path string) string {
 	return imageMimeByExt[strings.ToLower(filepath.Ext(path))]
 }
 
+// mimeByExt maps a lower-cased file extension (with leading dot) to the mime
+// type reported for a file. It is deliberately a small, explicit table rather
+// than the stdlib's platform mime database: the value is reported to the browser
+// so a file viewer can claim the file, and a viewer's claim must not vary with
+// whatever mime mappings happen to be installed on the user's machine.
+var mimeByExt = map[string]string{
+	".pdf":      "application/pdf",
+	".json":     "application/json",
+	".md":       "text/markdown",
+	".markdown": "text/markdown",
+	".txt":      "text/plain",
+	".log":      "text/plain",
+	".csv":      "text/csv",
+	".html":     "text/html",
+	".htm":      "text/html",
+	".css":      "text/css",
+	".js":       "text/javascript",
+	".mjs":      "text/javascript",
+	".ts":       "text/typescript",
+	".xml":      "text/xml",
+	".svg":      "image/svg+xml",
+	".yaml":     "text/yaml",
+	".yml":      "text/yaml",
+	".toml":     "text/toml",
+}
+
+// MimeForPath returns the mime type reported for a path — images first (so the
+// image table stays the single source of truth for what the asset store
+// accepts), then the general table. Returns "" when the extension is unknown,
+// which callers render as an explicit "unknown" rather than guessing.
+func MimeForPath(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	if mime, ok := imageMimeByExt[ext]; ok {
+		return mime
+	}
+	return mimeByExt[ext]
+}
+
 // FileOperations handles file I/O operations
 type FileOperations struct {
 	scope PathScope
@@ -137,6 +175,8 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 				"language":   detectLanguage(path),
 				"exists":     false,
 				"size":       0,
+				"mime":       MimeForPath(path),
+				"isBinary":   false,
 				"totalLines": 0,
 			}, nil
 		}
@@ -176,17 +216,26 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 				"imageBase64": base64.StdEncoding.EncodeToString(imgData),
 			}, nil
 		}
+		// Too large to inline. Report it as what it is — an image of this size —
+		// and let the browser decide: the image viewer's own maxBytes declines it
+		// and the host renders its no-viewer fallback. The size limit is a
+		// property of the viewer, not a verdict the read op should be issuing.
 		return map[string]any{
 			"content":  "",
 			"path":     path,
 			"language": detectLanguage(path),
 			"exists":   true,
 			"size":     fileInfo.Size(),
-			"warning":  fmt.Sprintf("Image is %d bytes, larger than the %d-byte limit for inline viewing.", fileInfo.Size(), MaxImageReadBytes),
+			"mime":     mime,
+			"isBinary": true,
 		}, nil
 	}
 
-	// SECURITY: Check if file is binary
+	// Binary content is REPORTED, not judged: the op returns the observation
+	// (isBinary, mime, size) and no content, and the browser's file-viewer
+	// registry decides whether anything can display it. Baking a verdict into an
+	// English warning here is what forced every new displayable format to be
+	// carved out as another escape hatch above this check.
 	isBinary, err := IsBinaryFile(absPath)
 	if err == nil && isBinary {
 		return map[string]any{
@@ -195,7 +244,8 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 			"language": detectLanguage(path),
 			"exists":   true,
 			"size":     fileInfo.Size(),
-			"warning":  "This appears to be a binary file. Binary content cannot be displayed as text.",
+			"mime":     MimeForPath(absPath),
+			"isBinary": true,
 		}, nil
 	}
 
@@ -372,6 +422,8 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 		"language":    detectLanguage(path),
 		"exists":      true,
 		"size":        fileInfo.Size(),
+		"mime":        MimeForPath(absPath),
+		"isBinary":    false,
 		"totalLines":  totalLines,
 		"readMode":    readMode,
 		"lineOffset":  lineOffset,  // 1-indexed start line

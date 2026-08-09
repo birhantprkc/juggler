@@ -5,7 +5,9 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile, getTree, stat } from 'juggler/ops';
-import { formatDisplayPath, formatFileSize, formatFileContentForLLM, createFileContentBlock, injectFileContentStyles, basename } from 'juggler/item-utils';
+import { formatDisplayPath, formatFileSize, formatFileContentForLLM, injectFileContentStyles, basename } from 'juggler/item-utils';
+import { fileSourceFromReadResult } from 'juggler/file-source';
+import { extractFileSource } from 'juggler/registry';
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { buildPickerPanel } from 'juggler/ui';
@@ -53,10 +55,12 @@ injectFileContentStyles();
  * FileContentContextItem - a deliberate "keep this file current" pin.
  *
  * SEMANTICS (see docs/extension_guide.md §"Pinned file content"):
- *  - This is the DELIBERATE pin only (the file picker / paperclip). A casual
- *    `@file` mention or an auto-added CLAUDE.md is NOT this — those are one-shot
- *    file READS injected into the conversation history (immutable, cached forever;
- *    see the read tool). A pin is the rarer "kept current" case.
+ *  - Every USER-driven file reference is this item: the file picker / paperclip,
+ *    an `@file` mention (composer.js and scheduled-send-service.js both create
+ *    one per mention), and the CLAUDE.md / AGENTS.md a session seeds itself with.
+ *    What is NOT this is a `read` TOOL CALL — that is ReadFileContextItem, an
+ *    immutable record of bytes the model saw at one turn, living in the
+ *    append-only history. The split is who asked, not how casually.
  *  - The pin persists only a `path` in Yjs; file bytes are NEVER persisted.
  *  - Content is resolved LIVE (`getContextText`) from the current file each turn.
  *    Because a pin rides `contextPosition:'prefix'` (leading messages, before the
@@ -248,6 +252,8 @@ class FileContentContextItem extends ContextItem {
    * @property {number} [lineCount] - Number of lines actually included in `content`
    * @property {string|null} [warning] - Backend warning (e.g. binary file)
    * @property {string} [readMode] - Human-readable read-mode description
+   * @property {string} [mime] - Mime type reported by the read op ('' when unknown)
+   * @property {boolean} [isBinary] - True when the bytes are not text; the file's viewer decides what to do with them
    */
 
   /**
@@ -355,11 +361,35 @@ class FileContentContextItem extends ContextItem {
         lineOffset: r.lineOffset || 1,
         lineCount: r.lineCount || 0,
         warning: r.warning || null,
+        // Carried, not interpreted: a binary file has no `content`, and both the
+        // properties panel and createContextText need these to hand the file to
+        // the right viewer rather than treating it as an empty text file.
+        mime: r.mime || '',
+        isBinary: r.isBinary === true,
       };
     } catch (err) {
       console.error(`[FileContentContextItem] Failed to load ${path}:`, err);
       return { path, isDirectory: false, exists: false, content: '' };
     }
+  }
+
+  /**
+   * Build the FileSource for a live fetch result, for either realm's use of it
+   * (the panel renders it, createContextText extracts from it).
+   *
+   * A pin is user-initiated by construction, so the source says so: that is what
+   * lets a viewer read the bytes of a path outside the project root — the same
+   * escape hatch {@link _doFetch} passes to the read op, and without it the
+   * viewer's byte transport refuses a file the user pinned from the Desktop.
+   * @param {FetchResult} r - A live fetch result
+   * @returns {import('juggler/file-source').FileSource} The file, ready to render or extract
+   * @private
+   */
+  _liveFileSource(r) {
+    return fileSourceFromReadResult(r, this.getAbsolutePath() || r.path || '', {
+      conversationId: this.conversation?.id,
+      access: { userInitiated: true },
+    });
   }
 
   /**
@@ -465,16 +495,13 @@ class FileContentContextItem extends ContextItem {
         return;
       }
 
-      if (r.warning) {
-        body.appendChild(createElement('div', 'file-content-warning', r.warning));
-        return;
-      }
-
-      body.appendChild(createFileContentBlock({
-        content: r.content || '',
-        language: r.language || 'text',
-        lineNumberStart: r.lineOffset || 1,
-      }));
+      // The pin renders live, so the header above already carries the current
+      // stats — hence showPath:false, or the path would appear twice.
+      // <file-view> resolves the viewer for whatever is on disk now.
+      const view = /** @type {any} */ (document.createElement('file-view'));
+      view.showPath = false;
+      view.setSource(this._liveFileSource(r));
+      body.appendChild(view);
     }).catch(err => {
       console.error('[FileContentContextItem] properties panel fetch failed:', err);
       body.replaceChildren(createElement('div', 'file-content-not-found',
@@ -512,6 +539,22 @@ class FileContentContextItem extends ContextItem {
 
     if (r.warning) {
       return `File ${r.path}: ${r.warning}`;
+    }
+
+    // A file whose bytes are not text carries no `content` of its own — its
+    // viewer is what turns it into something the model can read (a PDF's pages).
+    // Without this the pin would render as formatFileContentForLLM's "exists but
+    // is empty" warning, telling the model the opposite of the truth about a
+    // file the user deliberately pinned. Mirrors ReadFileContextItem.execute,
+    // except that a pin is live: there is nothing persisted to extract once, so
+    // the extraction runs with the read, every turn.
+    if (r.isBinary && !r.content) {
+      const extracted = await extractFileSource(this._liveFileSource(r), {
+        maxChars: MAX_PINNED_FILE_CHARS,
+        conversationId: this.conversation?.id,
+      });
+      if (extracted.text) return extracted.text;
+      if (extracted.warning) return `File ${r.path}: ${extracted.warning}`;
     }
 
     const formatted = formatFileContentForLLM({

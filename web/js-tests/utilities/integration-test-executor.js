@@ -124,6 +124,9 @@ import { runTests as runModelSelectorHudTests } from '../unit-tests/model-select
 import { runTests as runFindTests } from '../unit-tests/find-test.js';
 import { runTests as runContextMenuTests } from '../unit-tests/context-menu-test.js';
 import { runTests as runExtensionRegistryTests } from '../unit-tests/extension-registry-test.js';
+import { runTests as runFileViewerRegistryTests } from '../unit-tests/file-viewer-registry-test.js';
+import { runTests as runPdfViewerTests } from '../unit-tests/pdf-viewer-test.js';
+import { runTests as runFileViewTests } from '../unit-tests/file-view-test.js';
 import { runTests as runSdkFacadeParityTests } from '../unit-tests/sdk-facade-parity-test.js';
 import { runTests as runExtensionCollisionTests } from '../unit-tests/extension-collision-test.js';
 import { runTests as runExtensionCatalogTests } from '../unit-tests/extension-catalog-test.js';
@@ -307,6 +310,9 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:chime-recovery', run: runChimeRecoveryTests },
   { name: 'unit:context-menu', run: runContextMenuTests },
   { name: 'unit:extension-registry', run: runExtensionRegistryTests },
+  { name: 'unit:file-viewer-registry', run: runFileViewerRegistryTests },
+  { name: 'unit:pdf-viewer', run: runPdfViewerTests },
+  { name: 'unit:file-view', run: runFileViewTests },
   { name: 'unit:sdk-facade-parity', run: runSdkFacadeParityTests },
   { name: 'unit:extension-collision', run: runExtensionCollisionTests },
   { name: 'unit:extension-catalog', run: runExtensionCatalogTests },

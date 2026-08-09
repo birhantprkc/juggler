@@ -94,6 +94,8 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  * @property {number} lineCount - Number of lines in returned content
  * @property {string} [contentHash] - SHA-256 hash of file to detect external changes
  * @property {string} [warning] - Warning message (e.g., binary file detected)
+ * @property {string} [mime] - Mime type of the file ('' when unknown)
+ * @property {boolean} [isBinary] - True when the bytes are not text; reported, not judged — the file's viewer decides what can be shown
  */
 
 /**

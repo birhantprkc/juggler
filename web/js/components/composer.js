@@ -23,7 +23,7 @@ import { showNotice } from './modal-dialog.js';
 import tooltipManager from '../services/tooltip-manager.js';
 import { CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
 import apiService from '../services/api.js';
-import { openImageLightbox } from '../utils/image-lightbox.js';
+import { createImageThumb } from '../utils/image-lightbox.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isDesktopWindow } from '../../sdk/lib/window-control.js';
 import {
@@ -2622,17 +2622,14 @@ class Composer extends HTMLElement {
       const chip = document.createElement('div');
       chip.className = 'attachment-chip' + (ref._uploading ? ' uploading' : '');
 
-      const thumb = document.createElement('img');
-      thumb.className = 'attachment-thumb';
-      thumb.alt = ref.filename || '';
+      // Click the thumbnail to preview the staged image full-size — the same
+      // lightbox used for attachments inside a sent user-message item.
       const src = ref._previewURL || (ref.id && convId ? apiService.assetURL(convId, ref.id) : '');
-      if (src) {
-        thumb.src = src;
-        // Click the thumbnail to preview the staged image full-size — the same
-        // lightbox used for attachments inside a sent user-message item.
-        thumb.classList.add('clickable');
-        thumb.addEventListener('click', () => openImageLightbox(src, thumb.alt));
-      }
+      const thumb = createImageThumb({
+        src,
+        alt: ref.filename || '',
+        className: src ? 'attachment-thumb clickable' : 'attachment-thumb',
+      });
       chip.appendChild(thumb);
 
       const name = document.createElement('span');

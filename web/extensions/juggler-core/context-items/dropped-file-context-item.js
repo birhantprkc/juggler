@@ -4,7 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { formatFileContentForLLM, createFileContentBlock, injectFileContentStyles } from 'juggler/item-utils';
+import { formatFileContentForLLM, injectFileContentStyles } from 'juggler/item-utils';
+import { fileSourceFromText } from 'juggler/file-source';
 import { createElement, addFilePath } from 'juggler/ui';
 
 injectFileContentStyles();
@@ -145,45 +146,22 @@ class DroppedFileContextItem extends ContextItem {
     }
 
     const content = this.data.content || '';
-    const lineCount = content ? content.split('\n').length : 0;
-    const info = lineCount ? `${lineCount} lines` : undefined;
-    addFilePath(container, this.data.filename || 'Dropped file', info);
-
     if (!content) {
+      addFilePath(container, this.data.filename || 'Dropped file');
       container.appendChild(createElement('div', 'file-content-loading', '(empty)'));
       return container;
     }
 
-    container.appendChild(createFileContentBlock({
-      content,
-      language: this._languageFromFilename(this.data.filename || ''),
-      lineNumberStart: 1
+    // A dropped file is never server-backed — there is no path on disk and no
+    // server-detected language — so the source carries the text the drop
+    // captured and only ever resolves to the text viewer.
+    const view = /** @type {any} */ (document.createElement('file-view'));
+    view.setSource(fileSourceFromText({
+      path: this.data.filename || 'Dropped file',
+      text: content,
     }));
+    container.appendChild(view);
     return container;
-  }
-
-  /**
-   * Best-effort language identifier from a filename extension (used only for
-   * properties-panel syntax highlighting; the LLM form is plain).
-   * @param {string} filename
-   * @returns {string} Language identifier, or 'text'
-   * @private
-   */
-  _languageFromFilename(filename) {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    /** @type {Record<string, string>} */
-    const langMap = {
-      js: 'javascript', mjs: 'javascript', cjs: 'javascript',
-      ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
-      py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java',
-      c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', hpp: 'cpp',
-      cs: 'csharp', php: 'php', swift: 'swift', kt: 'kotlin',
-      sh: 'bash', bash: 'bash', zsh: 'bash',
-      json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml',
-      xml: 'xml', html: 'html', css: 'css', scss: 'scss',
-      md: 'markdown', sql: 'sql'
-    };
-    return langMap[ext] || 'text';
   }
 }
 

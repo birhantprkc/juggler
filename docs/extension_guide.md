@@ -431,11 +431,16 @@ Juggler distinguishes two ways a file's contents reach the model:
 | Item | Role | Content read | Placement |
 |------|------|--------------|-----------|
 | `ReadFileContextItem` | Immutable record of a `read` tool call | Once, at call time | conversation history (part of the transcript) |
-| `FileContentContextItem` | A deliberate "keep this file current" pin | Live, every turn | `contextPosition: 'prefix'` (before history) |
+| `FileContentContextItem` | A user's "keep this file current" pin | Live, every turn | `contextPosition: 'prefix'` (before history) |
 
-A **read** lands in the append-only history as a `tool_use`/`tool_result` pair
-and never moves — so it is inside the byte-stable cached prefix and is paid for
-**once**. A one-shot reference to a file (a casual `@`-mention) is a read.
+The split is **who asked**. A **read** is the model's: it lands in the
+append-only history as a `tool_use`/`tool_result` pair and never moves, so it is
+inside the byte-stable cached prefix and is paid for **once**.
+
+Everything the **user** points at is a pin — the file picker, an `@`-mention
+(the composer creates one pin per mentioned path), and the `CLAUDE.md` /
+`AGENTS.md` a session seeds itself with. An `@`-mention is not a read, and is
+not a one-shot: a mentioned file is as live as any other pin.
 
 A **pin** means "this file, kept current." It persists only a `path` in Yjs (no
 bytes), and `createContextText()` resolves the live file every turn. Because a pin
@@ -459,8 +464,8 @@ lands in the request, which governs whether it is cached:
 There is deliberately **no trailing/tail position**. Standing content is either
 cacheable (`system`/`prefix`) or lives in the model's own tool history (`none`);
 content that genuinely changes every turn is an anti-pattern (it would bust the
-cache each turn) — put that state in a tool result instead. One-shot file content
-(an `@`-mention, a read) belongs in the append-only history as a read, not as a
+cache each turn) — put that state in a tool result instead. Content the model
+fetched for itself (a `read`) belongs in the append-only history, not in a
 standing context item.
 
 ## Enabling and disabling

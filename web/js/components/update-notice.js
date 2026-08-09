@@ -476,7 +476,7 @@ class UpdateNotice extends HTMLElement {
 
     switch (vm.updaterState) {
       case 'ready':
-        footer.appendChild(this._button('Install & restart', 'primary', () => this._doRestart()));
+        footer.appendChild(this._button('Update & restart', 'primary', () => this._doRestart()));
         break;
       case 'downloading':
       case 'verifying':

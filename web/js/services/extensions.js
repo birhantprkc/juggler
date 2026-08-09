@@ -47,6 +47,7 @@ import { whenRegistriesReady } from '../registries/registry-ready.js';
  * @property {string[]} strategies - Served URLs of strategy modules
  * @property {string[]} commands - Served URLs of command modules
  * @property {string[]} infoCards - Served URLs of info-card modules
+ * @property {string[]} fileViewers - Served URLs of file-viewer modules
  * @property {string} [systemPrompt] - Served URL of the extension's system-prompt contribution module (omitted when none declared)
  */
 
@@ -88,6 +89,7 @@ const TYPE_TO_KEY = /** @type {const} */ ({
   strategy: 'strategies',
   command: 'commands',
   'info-card': 'infoCards',
+  'file-viewer': 'fileViewers',
 });
 
 /**
@@ -121,7 +123,7 @@ export async function fetchExtensions() {
  * can attribute the loaded class to its extension. Extensions whose manifest
  * failed to validate (`error` set) are skipped — their capabilities are not
  * served.
- * @param {'context-item'|'strategy'|'command'|'info-card'} type - Plugin type
+ * @param {'context-item'|'strategy'|'command'|'info-card'|'file-viewer'} type - Plugin type
  * @returns {Promise<CapabilityRef[]>} Capability references in extension order
  */
 export async function getExtensionCapabilities(type) {
@@ -182,14 +184,15 @@ export async function fetchDisabledPluginIds() {
  * @returns {Promise<string[]>} Enabled capability ids
  */
 async function collectEnabledPluginIds() {
-  const [ci, st, cm] = await Promise.all([
+  const [ci, st, cm, fv] = await Promise.all([
     import('../registries/context-item-registry.js'),
     import('../registries/strategy-registry.js'),
     import('../registries/command-registry.js'),
+    import('../registries/file-viewer-registry.js'),
   ]);
   /** @type {Set<string>} */
   const ids = new Set();
-  for (const reg of [ci.default, st.default, cm.default]) {
+  for (const reg of [ci.default, st.default, cm.default, fv.default]) {
     if (reg && typeof reg.getIds === 'function') {
       for (const id of reg.getIds()) ids.add(id);
     }

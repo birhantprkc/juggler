@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
+import { conversationAssetURL } from '../../sdk/file-source.js';
 import { getPaintedTheme, getMode } from '../utils/theme-manager.js';
 import { getCurrentZoom } from '../utils/zoom-manager.js';
 
@@ -608,9 +609,7 @@ class APIService {
    * @returns {string} The asset GET URL (token-bearing when a token is present).
    */
   assetURL(conversationId, sha) {
-    const url = `${this.baseURL}/session/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(sha)}`;
-    const token = /** @type {{__jugglerToken?: string}} */ (globalThis).__jugglerToken;
-    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+    return conversationAssetURL(conversationId, sha);
   }
 
 }

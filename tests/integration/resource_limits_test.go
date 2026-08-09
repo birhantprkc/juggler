@@ -327,14 +327,19 @@ func TestBinaryFileDetection(t *testing.T) {
 			result, err := readOps.Execute(context.Background(), "loadFile", params)
 
 			if tt.shouldWarn {
-				// Either error or warning in result
+				// Either an error, or a result flagged isBinary carrying no text.
+				// The read op reports the observation; the browser's viewer
+				// registry decides whether the bytes can be displayed.
 				if err == nil {
 					if resultMap, ok := result.(map[string]any); ok {
-						if warning, ok := resultMap["warning"]; !ok || warning == "" {
-							t.Errorf("%s: expected warning about binary file but got none", tt.description)
+						if resultMap["isBinary"] != true {
+							t.Errorf("%s: expected isBinary=true but got %#v", tt.description, resultMap)
+						}
+						if content, ok := resultMap["content"].(string); ok && content != "" {
+							t.Errorf("%s: binary content must not be returned as text", tt.description)
 						}
 					} else {
-						t.Errorf("%s: expected error or warning but got neither", tt.description)
+						t.Errorf("%s: expected an error or a binary-flagged result but got neither", tt.description)
 					}
 				}
 			} else {

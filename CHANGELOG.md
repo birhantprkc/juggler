@@ -5,6 +5,11 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- PDF files render page-by-page in the properties panel, and their text is read by the model
+- Extensions can add file viewers, teaching Juggler to display and read new file formats
+- Images stream from disk instead of round-tripping through the conversation, keeping documents smaller
+- Binary files no viewer can display now explain themselves instead of a fixed warning
+
 ## [0.5.4] - 2026-08-08
 
 - Added a create-new-conversation tool that LLMs can use to create new tabs with prompts. You might use this to get the agent to fan out tasks, or to hand over to a fresh tab

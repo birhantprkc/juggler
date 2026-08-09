@@ -6,6 +6,7 @@ import contextItemRegistry from '../registries/context-item-registry.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import commandRegistry from '../registries/command-registry.js';
 import infoCardRegistry from '../registries/info-card-registry.js';
+import fileViewerRegistry from '../registries/file-viewer-registry.js';
 import { reloadRegistries } from '../registries/reload-registries.js';
 import { fetchExtensions, fetchExtensionLocations } from '../services/extensions.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
@@ -15,7 +16,7 @@ import { ExtensionSettingsEditor } from './settings/extensions-settings.js';
 /**
  * @typedef {object} CapCard
  * @property {string} url - Served URL of the capability module
- * @property {'context-item'|'strategy'|'command'|'info-card'} itemType - Capability type
+ * @property {'context-item'|'strategy'|'command'|'info-card'|'file-viewer'} itemType - Capability type
  * @property {string|null} id - Capability id (null if it failed to register)
  * @property {string} name - Display name
  * @property {string} description - Short description
@@ -44,6 +45,7 @@ const CAP_TYPES = /** @type {const} */ ([
   ['strategies', 'strategy'],
   ['commands', 'command'],
   ['infoCards', 'info-card'],
+  ['fileViewers', 'file-viewer'],
 ]);
 
 /** Human labels for an extension's provenance. */
@@ -73,6 +75,7 @@ const CAP_SECTIONS = /** @type {ReadonlyArray<readonly [string, string]>} */ ([
   ['context-item', 'Context Items'],
   ['command', 'Commands'],
   ['info-card', 'Info Cards'],
+  ['file-viewer', 'File Viewers'],
 ]);
 
 /** Human label for a capability itemType (singular, title-cased). */
@@ -81,6 +84,7 @@ const TYPE_LABELS = /** @type {Record<string, string>} */ ({
   strategy: 'Strategy',
   command: 'Command',
   'info-card': 'Info Card',
+  'file-viewer': 'File Viewer',
 });
 
 /**
@@ -125,7 +129,7 @@ export function buildExtensionCards(extensions, entriesByPath, failedByPath, dis
         const selfDisabled = !!capId && disabledIds.has(capId);
         caps.push({
           url,
-          itemType: /** @type {'context-item'|'strategy'|'command'|'info-card'} */ (itemType),
+          itemType: /** @type {'context-item'|'strategy'|'command'|'info-card'|'file-viewer'} */ (itemType),
           id: capId,
           name: reg?.manifest?.name || url.split('/').pop() || url,
           description: reg?.manifest?.description || '',
@@ -267,6 +271,7 @@ class PluginCatalog extends HTMLElement {
       [strategyRegistry, 'strategy'],
       [commandRegistry, 'command'],
       [infoCardRegistry, 'info-card'],
+      [fileViewerRegistry, 'file-viewer'],
     ]);
     for (const [reg, itemType] of regs) {
       for (const m of reg.getCatalogManifests()) {
@@ -1048,6 +1053,7 @@ class PluginCatalog extends HTMLElement {
     if (cap.itemType === 'strategy') return strategyRegistry.getIncludingDisabled(cap.id);
     if (cap.itemType === 'command') return commandRegistry.getIncludingDisabled(cap.id);
     if (cap.itemType === 'info-card') return infoCardRegistry.getIncludingDisabled(cap.id);
+    if (cap.itemType === 'file-viewer') return fileViewerRegistry.getIncludingDisabled(cap.id);
     return contextItemRegistry.getIncludingDisabled(cap.id);
   }
 

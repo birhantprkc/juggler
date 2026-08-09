@@ -69,9 +69,11 @@ func TestLoadFileDetectsImage(t *testing.T) {
 	}
 }
 
-// TestLoadFileOversizedImageWarns: an image larger than the inline cap falls
-// back to the binary-file warning path (no isImage), so it is never snapshotted.
-func TestLoadFileOversizedImageWarns(t *testing.T) {
+// TestLoadFileOversizedImageReports: an image larger than the inline cap is not
+// snapshotted (no isImage), and the op REPORTS it as a binary image of that size
+// rather than issuing a verdict. The size limit belongs to the image viewer,
+// whose own maxBytes declines the file and lands it on the no-viewer fallback.
+func TestLoadFileOversizedImageReports(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "big.png")
 	// Above the image cap but below MaxFileSize so ValidateFileSize still passes.
@@ -91,8 +93,70 @@ func TestLoadFileOversizedImageWarns(t *testing.T) {
 	if m["isImage"] == true {
 		t.Errorf("oversized image must not be inlined: %#v", m)
 	}
-	if m["warning"] == nil {
-		t.Errorf("oversized image must carry a warning")
+	if m["warning"] != nil {
+		t.Errorf("the read op must not bake in a displayability verdict, got warning %v", m["warning"])
+	}
+	if m["isBinary"] != true {
+		t.Errorf("expected isBinary=true, got %#v", m)
+	}
+	if m["mime"] != "image/png" {
+		t.Errorf("expected mime image/png, got %v", m["mime"])
+	}
+	if m["size"] != int64(MaxImageReadBytes+1) {
+		t.Errorf("expected the on-disk size to be reported, got %v", m["size"])
+	}
+}
+
+// TestLoadFileBinaryReports: a binary file returns the observation (isBinary,
+// mime, size) and no content — the browser's viewer registry decides whether
+// anything can display it.
+func TestLoadFileBinaryReports(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blob.bin")
+	if err := os.WriteFile(path, []byte{0x00, 0x01, 0x02, 0x00, 0xff}, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	ops := NewFileOperations(NewPathScope(dir, nil))
+	res, err := ops.Execute(context.Background(), "loadFile", map[string]any{"path": path})
+	if err != nil {
+		t.Fatalf("loadFile: %v", err)
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected result type %T", res)
+	}
+	if m["isBinary"] != true {
+		t.Errorf("expected isBinary=true, got %#v", m)
+	}
+	if m["warning"] != nil {
+		t.Errorf("binary content must be reported, not judged, got warning %v", m["warning"])
+	}
+	if m["content"] != "" {
+		t.Errorf("binary content must not be returned as text, got %v", m["content"])
+	}
+	if m["exists"] != true {
+		t.Errorf("expected exists=true, got %v", m["exists"])
+	}
+}
+
+// TestMimeForPath covers the general mime table used by the content route and
+// reported on every read.
+func TestMimeForPath(t *testing.T) {
+	cases := map[string]string{
+		"a.png":      "image/png",
+		"doc.pdf":    "application/pdf",
+		"notes.md":   "text/markdown",
+		"app.js":     "text/javascript",
+		"data.json":  "application/json",
+		"styles.css": "text/css",
+		"unknown.qq": "",
+		"noext":      "",
+	}
+	for path, want := range cases {
+		if got := MimeForPath(path); got != want {
+			t.Errorf("MimeForPath(%q) = %q, want %q", path, got, want)
+		}
 	}
 }
 

@@ -34,6 +34,8 @@ func newAuthTestServer(t *testing.T) (*Server, *bool) {
 	s.router.HandleFunc("/api/health", hit).Methods("GET")
 	s.router.HandleFunc("/api/session/window-state", hit).Methods("GET", "PUT")
 	s.router.HandleFunc("/api/session/conversations/{convId}/assets/{sha}", hit).Methods("GET")
+	s.router.HandleFunc("/api/session/files/content", hit).Methods("GET")
+	s.router.HandleFunc("/api/session/files/bytes", hit).Methods("POST")
 	s.router.HandleFunc("/", hit).Methods("GET")
 	return s, &reached
 }
@@ -144,6 +146,54 @@ func TestAPIAuthQueryTokenIgnoredOffAssetRoute(t *testing.T) {
 	}
 	if *reached {
 		t.Fatal("handler must not run for a query-token-only ops/call")
+	}
+}
+
+// TestAPIAuthFileBytesRequiresHeaderToken is what lets the raw-bytes POST honour
+// the read op's out-of-root escape hatches: unlike the streaming GET beside it,
+// its token is accepted ONLY as a header (so the request also carries a CORS
+// preflight no cross-origin caller survives). A ?token= URL that leaks — the
+// exact exposure the GET route is contained against — buys nothing here.
+func TestAPIAuthFileBytesRequiresHeaderToken(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/session/files/bytes?token="+testAPIToken, nil)
+	req.Host = "localhost"
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("query-token files/bytes: got %d, want 401", rec.Code)
+	}
+	if *reached {
+		t.Fatal("handler must not run for a query-token-only files/bytes POST")
+	}
+
+	*reached = false
+	req = httptest.NewRequest(http.MethodPost, "/api/session/files/bytes", nil)
+	req.Host = "localhost"
+	req.Header.Set("X-Juggler-Token", testAPIToken)
+	rec = httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !*reached {
+		t.Fatalf("header-token files/bytes: got %d reached=%v, want 200 reached=true", rec.Code, *reached)
+	}
+}
+
+// TestAPIAuthFileContentAcceptsQueryToken is the counterpart: the streaming GET
+// is loaded by <canvas>/<iframe>, which cannot set a header, so it keeps the
+// ?token= relaxation — and pays for it with containment to the project root.
+func TestAPIAuthFileContentAcceptsQueryToken(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/session/files/content?path=a.txt&token="+testAPIToken, nil)
+	req.Host = "localhost"
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !*reached {
+		t.Fatalf("query-token files/content GET: got %d reached=%v, want 200 reached=true", rec.Code, *reached)
 	}
 }
 

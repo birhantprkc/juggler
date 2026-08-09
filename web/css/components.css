@@ -1886,6 +1886,52 @@ properties-panel-subsection {
     border-radius: 0.375rem;
 }
 
+/* <file-view> — the host element every file viewer renders into. It is a plain
+   block so a viewer controls its own layout; only the shared image case needs a
+   size cap here, since an image renders at its intrinsic size otherwise. */
+file-view {
+    display: block;
+    min-width: 0;
+}
+
+.file-view-content {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.file-view-image {
+    max-width: 100%;
+    height: auto;
+    align-self: flex-start;
+    border-radius: 0.25rem;
+    background: var(--bg-secondary);
+    cursor: zoom-in;
+}
+
+/* PDF viewer: one canvas per page, drawn lazily as it scrolls into view. The
+   aspect-ratio is set per page from its viewport so the box is reserved before
+   the page is drawn and the column does not jump as pages fill in. */
+.pdf-view-pages {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.pdf-view-page {
+    width: 100%;
+    height: auto;
+    background: var(--bg-secondary);
+    border-radius: 0.25rem;
+}
+
+.pdf-view-pagecount {
+    font-size: 0.625rem;
+    font-family: var(--font-mono, 'Courier New', monospace);
+    opacity: 0.7;
+}
+
 .properties-panel-attachment-thumb {
     flex: none;
     width: 3rem;

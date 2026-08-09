@@ -223,15 +223,18 @@ func TestLoadFile_BinaryDetection(t *testing.T) {
 
 	resultMap := result.(map[string]any)
 
-	// Should have a warning about binary file
-	if warning, ok := resultMap["warning"]; ok {
-		if warningStr, ok := warning.(string); ok {
-			if !strings.Contains(warningStr, "binary") && !strings.Contains(warningStr, "Binary") {
-				t.Error("Expected warning to mention binary file")
-			}
-		}
-	} else {
-		t.Error("Expected warning about binary file but got none")
+	// The op REPORTS binary content rather than judging it: it flags isBinary and
+	// returns no text, and the browser's file-viewer registry decides whether
+	// anything can display it. Baking an English verdict in here is what forced
+	// each new displayable format to be carved out as another special case.
+	if resultMap["isBinary"] != true {
+		t.Errorf("expected isBinary=true for a binary file, got %#v", resultMap)
+	}
+	if warning, ok := resultMap["warning"]; ok && warning != nil {
+		t.Errorf("binary content must be reported, not judged; got warning %v", warning)
+	}
+	if content, ok := resultMap["content"].(string); ok && content != "" {
+		t.Error("binary content must not be returned as text")
 	}
 }
 

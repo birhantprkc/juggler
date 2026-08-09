@@ -44,6 +44,7 @@ export default [
         PopStateEvent: 'readonly',
         getComputedStyle: 'readonly',
         atob: 'readonly',
+        btoa: 'readonly',
         Event: 'readonly',
         KeyboardEvent: 'readonly',
         MouseEvent: 'readonly',
@@ -71,6 +72,8 @@ export default [
         clearInterval: 'readonly',
         AbortController: 'readonly',
         SVGElement: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
 
         // Third-party libraries loaded via script tags
         hljs: 'readonly',       // highlight.js
