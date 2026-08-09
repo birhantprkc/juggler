@@ -11,6 +11,10 @@
  * hand-back the user has to click the box before they can type again. The
  * widget signals with a bubbling `restore-input-focus` and conversation-tab
  * decides where focus lands (Rule 20). Regression guard for that.
+ *
+ * Covers both halves of the rule: that focus comes back at all, and that it is
+ * reclaimed when the answer's re-render bounces it to <body> a beat later — a
+ * hand-back that fires once has already spent itself by then.
  * @module unit-tests/approval-focus-return-test
  */
 
@@ -116,7 +120,43 @@ export async function runTests() {
       `message box must hold focus after answering an approval, but focus was on: ${where}`
     );
 
-    passed = 1;
+    // The hand-back has to survive the answer's re-render, not just fire once.
+    // A rebuild around the resolved item can bounce focus back to <body> a beat
+    // after it is placed, and a single attempt has already spent itself by then
+    // — leaving the keyboard stranded for the rest of the turn. Rule 20 retries
+    // across a short window, so a bounce inside that window is reclaimed.
+    // Simulated here by dropping focus shortly after the hand-back is requested.
+    // The bounce is driven by the hand-back's OWN action rather than a timer:
+    // the first time it places focus in the box, blur synchronously from the
+    // focus handler, exactly as a re-render landing a beat later would. Tying
+    // the bounce to the placement is what makes this deterministic — a
+    // wall-clock delay would race the retry ticks and flake under load.
+    let bounced = false;
+    textarea.blur();
+    textarea.addEventListener(
+      'focus',
+      () => { bounced = true; textarea.blur(); },
+      { once: true }
+    );
+
+    host.dispatchEvent(new CustomEvent('restore-input-focus', { bubbles: true, composed: true }));
+
+    // Fenced on `bounced` so this cannot pass on focus that was never bounced:
+    // the assertion is about focus coming BACK after being knocked off.
+    await waitFor(
+      () => bounced && document.activeElement === textarea,
+      { timeoutMs: 2000, description: 'focus to be reclaimed after a bounce to <body>' }
+    ).catch(() => {});
+
+    const afterBounce = /** @type {HTMLElement|null} */ (document.activeElement);
+    assert(
+      afterBounce === textarea,
+      'message box must reclaim focus when a late re-render bounces it to <body>, '
+      + `but focus was on: ${(afterBounce?.tagName || 'none')}`
+      + `${afterBounce === document.body ? '(body)' : ''}`
+    );
+
+    passed = 2;
   } catch (e) {
     failed = 1;
     errors.push(e instanceof Error ? e.message : String(e));

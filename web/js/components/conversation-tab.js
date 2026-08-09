@@ -498,25 +498,54 @@ class ConversationTab extends HTMLElement {
    * the hand-back would silently never happen (the same reason
    * {@link _reassertInputFocus} avoids it).
    *
-   * Declined while the tab is hidden, during keyboard navigation (the user is
-   * driving the item list, not composing), or while an overlay owns the
-   * keyboard. All conditions are judged on the deferred tick, which is the only
-   * moment that decides anything.
+   * One tick is not enough to land it, for the same reason a rebuild needs
+   * {@link _reassertInputFocus}: the answer's re-render can bounce focus back to
+   * <body> a beat after we place it, and while that rebuild is in flight the
+   * column may have no composer-box at all — so a lone attempt either gets
+   * undone or silently no-ops against a textarea that does not exist yet. Both
+   * strand the keyboard for the rest of the turn, so the hand-back is retried
+   * across a short window instead.
    * @private
    */
   _onRestoreInputFocus() {
-    setTimeout(() => {
-      if (this._isHidden || this._isKeyboardNavigating) return;
-      if (keyShortcutManager.suppressedByOverlay()) return;
-      // Reclaim STRANDED focus only. If anything took the keyboard during the
-      // wait, it has a better claim than we do and we leave it alone — chiefly
-      // the next pending approval, which Rule 16 auto-engages when answering
-      // this one hands selection on. Focus on <body> is the signature of the
-      // removed widget having dropped it, and nothing else wanting it.
-      const active = document.activeElement;
-      if (active && active !== document.body) return;
+    // ~240ms of ticks: long enough to outlast the answer's re-render even on a
+    // loaded machine, short enough that it cannot fight a later deliberate
+    // focus change (and it stops the moment anything else claims the keyboard).
+    setTimeout(() => this._reclaimStrandedInputFocus(8), 0);
+  }
+
+  /**
+   * Rule 20's retry window: reclaim focus for the message box while it is
+   * stranded, until something with a better claim takes it.
+   *
+   * Reclaims STRANDED focus only. Focus on <body> is the signature of the
+   * removed widget having dropped it with nothing else wanting it; anything
+   * else holding the keyboard outranks us — chiefly the next pending approval,
+   * which Rule 16 auto-engages when answering this one hands selection on — so
+   * seeing focus somewhere real ends the window rather than skipping one tick.
+   *
+   * Keeps watching while focus sits in the input column, because placing it
+   * there is not the end of the story: a later re-render can still bounce it to
+   * <body> inside this window, which is the case a single attempt misses.
+   *
+   * Declined while the tab is hidden, during keyboard navigation (the user is
+   * driving the item list, not composing), or while an overlay owns the
+   * keyboard. Every condition is judged per tick, so a state change mid-window
+   * ends it.
+   * @param {number} attempts - Remaining retry ticks.
+   * @private
+   */
+  _reclaimStrandedInputFocus(attempts) {
+    if (attempts <= 0) return;
+    if (this._isHidden || this._isKeyboardNavigating) return;
+    if (keyShortcutManager.suppressedByOverlay()) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) {
       this._focusInput();
-    }, 0);
+    } else if (!this._inputColumn()?.contains(active)) {
+      return;
+    }
+    setTimeout(() => this._reclaimStrandedInputFocus(attempts - 1), 30);
   }
 
   /** Mark this tab as active (visible). */

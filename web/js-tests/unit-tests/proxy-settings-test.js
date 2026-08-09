@@ -63,9 +63,33 @@ function installFetch(opts = {}) {
   return { restore: () => { window.fetch = orig; }, calls, state };
 }
 
-/** Let non-awaitable async chains (fetch → json) settle. */
+/**
+ * Let non-awaitable async chains (fetch → json) settle.
+ *
+ * Yields via MessageChannel rather than `setTimeout(0)`. Measured in the test
+ * pool's offscreen WebView, once a settings-panel is mounted each
+ * `setTimeout(0)` here took ~1000ms while a MessageChannel message took ~1ms —
+ * the difference between this suite running in 0.2s and 38s, long enough to
+ * hold a pool lane and starve its siblings. A MessageChannel message is still a
+ * macrotask, so promise chains and rendering proceed between yields, which is
+ * the point of yielding at all.
+ *
+ * The ~1000ms is specific to this state, not a blanket property of timers here:
+ * probed in an idle lane in the same window, `setTimeout` is accurate
+ * (0ms→1ms, 10ms→10ms, 100ms→100ms). What pins timer callbacks behind a full
+ * second once the panel is up has not been identified; `requestAnimationFrame`
+ * never fires in these lanes at all, so anything similar would be invisible to
+ * a timer-based yield but not to this one. Prefer this helper over a bare
+ * `setTimeout` yield in panel-mounting suites until that is understood.
+ */
 const settle = async () => {
-  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 4; i++) {
+    await new Promise((resolve) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => { channel.port1.close(); resolve(undefined); };
+      channel.port2.postMessage(undefined);
+    });
+  }
 };
 
 /**
