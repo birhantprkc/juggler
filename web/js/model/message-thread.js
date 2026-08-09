@@ -901,10 +901,16 @@ export default class MessageThread {
    *   approved it — a force-approve strategy or an out-of-band reviewer), or
    *   `rule` (a saved permission rule). Stamped on the tool-action only for an
    *   approval, never a cancel.
+   * @returns {boolean} True when the resolution was written. False when the
+   *   tool-action is missing or has already left PENDING — another path (a rule
+   *   sync, a strategy reviewer, a peer) resolved it first, so NOTHING is
+   *   written here: no `approvalResponse`, and hence no permission grant. A
+   *   caller that offered the user a "don't ask again" button must treat false
+   *   as "the grant did not persist" rather than assume success.
    */
   resolveApproval(toolUseId, response, extra = {}) {
     const message = this.getToolAction(toolUseId);
-    if (!message || message.get('state') !== TOOL_STATES.PENDING) return;
+    if (!message || message.get('state') !== TOOL_STATES.PENDING) return false;
 
     recordTape('approval', this.conversationId, { toolUseId, response });
 
@@ -917,11 +923,12 @@ export default class MessageThread {
     const messageToolUseId = message.get('toolUseId');
     const yarray = this.ensureYarray();
     const index = this.items.findIndex(item => item.get('toolUseId') === messageToolUseId);
-    if (index < 0 || index >= yarray.length) return;
+    if (index < 0 || index >= yarray.length) return false;
 
     // Write state + result in a single transaction so the Go worker never sees
     // state=cancelled without a result (races checkToolsComplete otherwise).
     const doc = this.conversation._doc.doc;
+    let written = false;
     doc.transact(() => {
       const ymap = yarray.get(index);
       if (!(ymap instanceof Y.Map)) return;
@@ -953,7 +960,9 @@ export default class MessageThread {
           fullResult: { state: ACTION_STATES.CANCELLED }
         }));
       }
+      written = true;
     }, this.conversation._doc.authorId);
+    return written;
   }
 
   /**

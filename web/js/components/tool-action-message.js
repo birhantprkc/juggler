@@ -802,15 +802,38 @@ class ToolActionMessage extends HTMLElement {
       if (isCancel) {
         // UI policy: cancelling any tool cancels all pending tools
         messageThread.cancelPendingApprovals();
-      } else if (chosen && (chosen.rules || chosen.allowedPaths)) {
-        messageThread.resolveApproval(item.get('toolUseId'), 'yes-always', {
+        return;
+      }
+      const toolUseId = item.get('toolUseId');
+      let resolved;
+      if (chosen && (chosen.rules || chosen.allowedPaths)) {
+        resolved = messageThread.resolveApproval(toolUseId, 'yes-always', {
           approvalRules: chosen.rules,
           approvalAllowedPaths: chosen.allowedPaths,
           approvalItemType: chosen.itemType,
           source: 'user'
         });
       } else {
-        messageThread.resolveApproval(item.get('toolUseId'), response, { source: 'user' });
+        // A suggestion button that carries no rules/paths of its own still means
+        // "don't ask again": normalise the indexed value to canonical
+        // 'yes-always' so persistence recognises it and derives the grant from
+        // the plugin's own suggestion pipeline. Passing 'yes-always:N' through
+        // verbatim would approve the tool but never save the permission.
+        const canonical = typeof response === 'string' && /^yes-always:\d+$/.test(response)
+          ? 'yes-always'
+          : response;
+        resolved = messageThread.resolveApproval(toolUseId, canonical, { source: 'user' });
+      }
+      // A false return means the tool-action had already left PENDING, so the
+      // click wrote nothing at all — including any "don't ask again" grant it
+      // promised. Surface it rather than letting the permission silently not
+      // stick.
+      if (!resolved) {
+        console.warn(
+          '[ToolActionMessage] approval ignored — tool-action was no longer pending; ' +
+          'any permission grant on this click was NOT saved',
+          { toolUseId, response }
+        );
       }
     }, onRevise ? { onRevise } : undefined);
 

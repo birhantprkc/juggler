@@ -31,13 +31,18 @@ export const DEFAULT_FILE_EDITING_META_KEY = 'defaultFileEditingOn';
 
 /**
  * Whether file edits are currently allowed for a conversation.
+ *
+ * The session-scope exclusion mirrors `EditBase.isPermitted` exactly: file-write
+ * permission is a conversation-scoped grant, so a session-scoped rule does not
+ * authorise a write. Both readers must agree, otherwise the pill and popup
+ * report "editing allowed" while every edit still prompts.
  * @param {MessageThread|null|undefined} messageThread - The conversation's thread.
- * @returns {boolean} True when a boolean=true write-file rule is present.
+ * @returns {boolean} True when a conversation-scoped boolean=true write-file rule is present.
  */
 export function isFileEditingAllowed(messageThread) {
   if (!messageThread) return false;
   return messageThread.getRulesFor(WRITE_FILE_ITEM_TYPE)
-    .some((/** @type {any} */ r) => r.kind === 'boolean' && r.value === true);
+    .some((/** @type {any} */ r) => r.kind === 'boolean' && r.value === true && r.scope !== 'session');
 }
 
 /**

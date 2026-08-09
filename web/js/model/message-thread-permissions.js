@@ -75,10 +75,24 @@ function sessionMetadata(mt) {
   return mt.conversation?.session?.metadata || {};
 }
 
-/** @param {any} mt @returns {PermissionRule[]} */
+/**
+ * Session-scoped rules, restricted to itemTypes whose owning plugin actually
+ * permits session scope. A stored rule under a conversation-only itemType (e.g.
+ * `write-file`) is inert — the plugin's `isPermitted` ignores it — yet it would
+ * still match {@link addRule}'s dedupe and silently swallow the
+ * conversation-scoped grant a "don't ask again" button is trying to write,
+ * leaving the permission permanently unflippable for that project. Dropping it
+ * on read keeps the stored shape and the enforced shape in agreement. An
+ * itemType with no loaded plugin keeps both scopes, so rules belonging to an
+ * extension that hasn't registered yet are never discarded.
+ * @param {any} mt @returns {PermissionRule[]}
+ */
 function getSessionRules(mt) {
   const stored = sessionMetadata(mt)[SESSION_RULES_KEY];
-  return Array.isArray(stored) ? stored.map(r => normalizeRule(r, SCOPE_SESSION)) : [];
+  if (!Array.isArray(stored)) return [];
+  return stored
+    .map(r => normalizeRule(r, SCOPE_SESSION))
+    .filter(r => scopeAllowedFor(mt, r.itemType, SCOPE_SESSION));
 }
 
 /** @param {any} mt @returns {PermissionRule[]} */
@@ -154,7 +168,11 @@ function saveRulesByScope(mt, scope, rules) {
 export function addRule(mt, itemType, rule) {
   const scope = defaultScopeFor(mt, itemType, rule.scope);
   const desired = normalizeRule({ ...rule, id: rule.id || newRuleId(), itemType, scope }, scope);
-  const existing = getAllRules(mt).find(r => sameRuleIdentity(r, desired));
+  // Prefer a match in the requested scope, so a rule present in both scopes
+  // returns the one the caller asked for rather than whichever is read first.
+  const all = getAllRules(mt);
+  const existing = all.find(r => sameRuleIdentity(r, desired) && r.scope === scope)
+    || all.find(r => sameRuleIdentity(r, desired));
   if (existing) return existing;
   const rules = readRulesByScope(mt, scope);
   rules.push(desired);
