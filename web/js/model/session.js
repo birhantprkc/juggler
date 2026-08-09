@@ -142,6 +142,25 @@ export function normalizeHistoryEntry(entry) {
 }
 
 /**
+ * Forward-slash a project root for the explore_code sandbox.
+ *
+ * `session.projectPath` is the OS-native path (backslash-separated on Windows),
+ * because the rest of the client compares it against other native paths. The
+ * sandbox's `projectRoot` binding is contracted to be POSIX-style — the `path`
+ * built-in beside it is POSIX, and `glob({cwd})` relativizes its results (which
+ * the backend always returns forward-slashed) by stripping that `cwd` as a
+ * prefix. A native Windows root would never match, so the model would get
+ * absolute paths back from a `{cwd: projectRoot}` glob. The Go seams that seed
+ * the boot-time root (the sandbox HTML template and JUGGLER_PROJECT_ROOT) apply
+ * the same normalization.
+ * @param {string} [projectPath] - Project root in OS-native form
+ * @returns {string} The root with forward slashes ("" for no project)
+ */
+function toSandboxProjectRoot(projectPath) {
+  return (projectPath || '').replace(/\\/g, '/');
+}
+
+/**
  * User-facing message shown when a creation path is blocked by the cap.
  * Lives next to the constant so the number stays in sync; UI entry points
  * render it via window.showAlert (keeping modal UI out of the model layer).
@@ -689,7 +708,8 @@ class Session {
    */
   _applyEngineProjectRoot(newPath) {
     this.projectPath = newPath || '';
-    /** @type {any} */ (globalThis).__jugglerProjectRoot = this.projectPath;
+    /** @type {any} */ (globalThis).__jugglerProjectRoot =
+      toSandboxProjectRoot(this.projectPath);
   }
 
   /**
@@ -1042,7 +1062,8 @@ class Session {
         // project switch (_applyEngineProjectRoot) is the only thing that moves
         // it, and the sandbox never lags the loaded project.
         if (isEngine()) {
-          /** @type {any} */ (globalThis).__jugglerProjectRoot = data.projectPath;
+          /** @type {any} */ (globalThis).__jugglerProjectRoot =
+            toSandboxProjectRoot(data.projectPath);
         }
       }
       if (data.platform) {

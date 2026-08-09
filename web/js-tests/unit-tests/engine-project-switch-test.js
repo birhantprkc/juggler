@@ -81,5 +81,32 @@ export async function runTests() {
     }
   });
 
+  await t('sandbox project root is forward-slashed for a native Windows path', async () => {
+    const g = /** @type {any} */ (globalThis);
+    const hadRoot = Object.prototype.hasOwnProperty.call(g, '__jugglerProjectRoot');
+    const savedRoot = g.__jugglerProjectRoot;
+    const savedPath = session.projectPath;
+    try {
+      // The sandbox binds this global as `projectRoot`, and glob({cwd}) strips
+      // it as a prefix from backend results that are always forward-slashed. A
+      // native Windows root ("C:\...") would match nothing, so the model would
+      // get absolute paths back from a `{cwd: projectRoot}` glob.
+      session._applyEngineProjectRoot('C:\\Users\\crem\\dev\\lc0-eval');
+      assert(
+        g.__jugglerProjectRoot === 'C:/Users/crem/dev/lc0-eval',
+        'live sandbox projectRoot is POSIX-style'
+      );
+      // session.projectPath itself stays native — it is compared against other
+      // native paths elsewhere in the client.
+      assert(
+        session.projectPath === 'C:\\Users\\crem\\dev\\lc0-eval',
+        'session.projectPath keeps the OS-native spelling'
+      );
+    } finally {
+      session.projectPath = savedPath;
+      if (hadRoot) g.__jugglerProjectRoot = savedRoot; else delete g.__jugglerProjectRoot;
+    }
+  });
+
   return { passed, failed, errors };
 }

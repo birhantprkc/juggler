@@ -175,7 +175,10 @@ class ExploreCodeContextItem extends ContextItem {
         const files = result.files || [];
         if (!options?.cwd) return files;
 
-        const cwd = String(options.cwd).replace(/\/+$|^\.\/$/g, '');
+        // Backend results are always forward-slashed, so the cwd being stripped
+        // must be too — a native Windows cwd ("C:\proj") would otherwise match
+        // no prefix and the caller would get absolute paths back.
+        const cwd = String(options.cwd).replace(/\\/g, '/').replace(/\/+$|^\.\/$/g, '');
         if (!cwd || cwd === '.') return files;
         const prefix = cwd + '/';
         return files.map((file) => {
