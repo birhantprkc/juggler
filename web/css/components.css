@@ -467,7 +467,6 @@ conversation-bar .tab-drag-handle {
     align-items: center;
     justify-content: center;
     font-size: 0.75rem;
-    user-select: none;
 }
 
 @media (hover: hover) {
@@ -487,11 +486,6 @@ conversation-bar .tab-drag-handle {
         width: 2.75rem;
         font-size: 1.25rem;
     }
-}
-
-conversation-bar .conversation-tabs.is-dragging {
-    -webkit-user-select: none;
-    user-select: none;
 }
 
 conversation-bar .conversation-tabs.is-dragging .conversation-tab:not(.drag-source) {
@@ -900,12 +894,10 @@ conversation-bar .info-card__content {
     gap: 0.25rem;
 }
 
-/* Cards whose content advances on click (Tips): pointer cursor, and keep the
-   repeated clicks from selecting text. */
+/* Cards whose content advances on click (Tips) take a pointer cursor. Selection
+   is already off for the whole sidebar; see the selection policy in styles.css. */
 conversation-bar .info-card__content--interactive {
     cursor: pointer;
-    -webkit-user-select: none;
-    user-select: none;
 }
 
 conversation-bar .info-card__header {
@@ -4215,8 +4207,6 @@ composer-box .context-cache-warning-btn.cache-miss-flash {
     text-transform: uppercase;
     letter-spacing: 0.04em;
     cursor: pointer;
-    -webkit-user-select: none;
-    user-select: none;
 }
 
 .actions-sheet .actions-sheet-section-header::-webkit-details-marker {
@@ -5051,16 +5041,6 @@ settings-panel.show {
     display: block;
 }
 
-/* Keep editable fields and copyable connectivity/install text selectable. */
-settings-panel input,
-settings-panel textarea,
-settings-panel select,
-settings-panel .connectivity-url,
-settings-panel #connectivity-form .provider-description {
-    -webkit-user-select: text;
-    user-select: text;
-}
-
 settings-panel .settings-container {
     /* Centre with inset+auto margins rather than translate(-50%, -50%): the
        percentage translate offsets by half the element's own (fractional) size,
@@ -5169,6 +5149,11 @@ settings-panel .settings-tab.active {
     border-bottom-color: var(--accent-blue);
 }
 
+/* The panel frame and its tab strip are chrome, but everything inside the tab
+   bodies is a document the user reads and copies from: file paths, server
+   command lines, skill descriptions, version strings, and above all the log
+   viewer. This element wraps every tab section, so re-enabling selection here
+   covers them all. See the selection policy in styles.css. */
 settings-panel .settings-content {
     flex: 1;
     overflow-y: auto;
@@ -5177,6 +5162,8 @@ settings-panel .settings-content {
     min-height: 0;
     opacity: 0;
     transition: opacity 200ms ease;
+    -webkit-user-select: text;
+    user-select: text;
 }
 
 settings-panel.loaded .settings-content {
@@ -7778,8 +7765,6 @@ textarea[data-confirmation-pending="true"] {
     font-size: 0.9375rem;
     font-weight: 600;
     color: var(--text-primary);
-    -webkit-user-select: none;
-    user-select: none;
 }
 
 .pp-subtitle {
@@ -7789,8 +7774,6 @@ textarea[data-confirmation-pending="true"] {
     line-height: 1.4;
     font-weight: 400;
     color: var(--text-secondary);
-    -webkit-user-select: none;
-    user-select: none;
 }
 
 .pp-body {
@@ -7980,7 +7963,6 @@ path-input .path-input-field:focus {
     border-radius: 0.375rem;
     box-shadow: 0 0.5rem 1.5rem var(--overlay-dark-50);
     z-index: var(--z-toast);
-    user-select: none;
     font-size: 0.8125rem;
 }
 
