@@ -90,3 +90,55 @@ func TestFormatMessagesNoUserMessagesReturnsEmpty(t *testing.T) {
 		t.Fatalf("got %d line(s); want 0 for an all-assistant delta", len(lines))
 	}
 }
+
+// TestDisallowedNativeToolsCoversCollidingNames guards the deny list that
+// keeps the CLI's own built-ins switched off. A built-in whose name collides
+// with a juggler tool is the dangerous case: canonicalToolName strips the
+// absent mcp__juggler__ prefix, the parser dispatches the block as juggler's
+// own, and the CLI answers its native call itself — so juggler's result finds
+// no parked tools/call, stashes forever, and the conversation hangs until
+// teardown. Monitor is the name that actually did this in the wild.
+func TestDisallowedNativeToolsCoversCollidingNames(t *testing.T) {
+	denied := map[string]bool{}
+	for _, name := range disallowedNativeTools {
+		if denied[name] {
+			t.Errorf("duplicate entry %q in disallowedNativeTools", name)
+		}
+		denied[name] = true
+	}
+	// Names juggler serves itself that are ALSO Claude-native built-ins.
+	for _, name := range []string{"Monitor", "Read", "Write", "Edit", "Bash", "Grep", "Glob", "WebFetch", "WebSearch", "AskUserQuestion", "Skill", "TaskOutput", "TaskStop", "KillShell"} {
+		if !denied[name] {
+			t.Errorf("%q is both a CLI built-in and a juggler tool but is not in disallowedNativeTools — a call to it deadlocks the conversation", name)
+		}
+	}
+}
+
+// TestCommonArgsDisallowsNativeTools confirms the deny list actually reaches
+// the CLI: --disallowedTools must carry every entry, comma-joined.
+func TestCommonArgsDisallowsNativeTools(t *testing.T) {
+	c := &Client{}
+	args := c.commonArgs("sys")
+	idx := -1
+	for i, a := range args {
+		if a == "--disallowedTools" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Skip("no MCP config in this environment, so no --disallowedTools flag")
+	}
+	if idx+1 >= len(args) {
+		t.Fatal("--disallowedTools passed with no value")
+	}
+	got := strings.Split(args[idx+1], ",")
+	if len(got) != len(disallowedNativeTools) {
+		t.Fatalf("--disallowedTools carries %d entries, want %d", len(got), len(disallowedNativeTools))
+	}
+	for i, want := range disallowedNativeTools {
+		if got[i] != want {
+			t.Errorf("--disallowedTools[%d] = %q, want %q", i, got[i], want)
+		}
+	}
+}

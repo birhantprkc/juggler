@@ -17,6 +17,46 @@ import (
 // We strip this when receiving tool calls, and add it back when sending history.
 const mcpToolPrefix = "mcp__juggler__"
 
+// disallowedNativeTools is the explicit deny list passed to the CLI as
+// --disallowedTools. Juggler serves every tool itself over the in-process MCP
+// server (--allowedTools mcp__juggler__*), so any Claude-native tool left
+// enabled is a hazard, in two distinct ways:
+//
+//   - A native name juggler does NOT serve produces a tool_use juggler never
+//     answers. The dangling tool_use poisons synthetic resume (the CLI emits
+//     end_turn with zero tokens on the next turn).
+//   - A native name juggler DOES serve (Monitor is both a CLI built-in and a
+//     juggler tool) is worse: canonicalToolName strips the absent
+//     mcp__juggler__ prefix, so the parser cannot tell the two apart and
+//     dispatches the block as juggler's own. The CLI meanwhile answers its
+//     native call itself and never sends a tools/call, so juggler's result
+//     finds no parked call and is stashed forever while the CLI blocks on its
+//     next, genuinely-MCP call. Both sides wait: the conversation hangs until
+//     teardown.
+//
+// The list is therefore deliberately over-broad — an entry the CLI doesn't
+// know costs only a launch warning, which cli_lifecycle.go already filters,
+// whereas a missing entry costs a wedged conversation. Re-check it against the
+// CLI's built-in set whenever the pinned CLI version moves.
+var disallowedNativeTools = []string{
+	// File and shell built-ins.
+	"Edit", "Write", "Read", "Bash", "BashOutput", "Glob", "Grep", "LS",
+	"MultiEdit", "NotebookEdit", "KillShell",
+	// Planning and todo built-ins.
+	"TodoRead", "TodoWrite", "ExitPlanMode", "EnterPlanMode",
+	// Web built-ins.
+	"WebFetch", "WebSearch",
+	// Task/agent orchestration built-ins.
+	"Task", "TaskCreate", "TaskUpdate", "TaskList", "TaskOutput", "TaskGet",
+	"TaskStop", "Agent", "Workflow", "ListAgents", "SendMessage",
+	// Scheduling, notification and remote-control built-ins.
+	"CronCreate", "CronDelete", "CronList", "RemoteTrigger", "ScheduleWakeup",
+	"PushNotification", "Monitor",
+	// Editor/session built-ins.
+	"AskUserQuestion", "Skill", "SlashCommand", "LSP", "ToolSearch",
+	"ReportFindings", "DesignSync", "EnterWorktree", "ExitWorktree",
+}
+
 // canonicalToolName is the single chokepoint that turns a tool name we
 // received from the CLI (over either a stream_event tool_use block or an
 // SDK tools/call control_request) into the Juggler tool key the worker
@@ -153,13 +193,7 @@ func (c *Client) commonArgs(systemPrompt string) []string {
 		args = append(args, "--mcp-config", mcpConfig)
 		args = append(args, "--strict-mcp-config")
 		args = append(args, "--allowedTools", "mcp__juggler__*")
-		// The Task* family (Task, TaskCreate, TaskUpdate, TaskList,
-		// TaskOutput, TaskGet, TaskStop) and similar Claude-native control
-		// tools are all listed explicitly — if a new Anthropic tool slips
-		// through, juggler won't produce a tool_result for it and the
-		// dangling tool_use poisons synthetic resume (the CLI silently
-		// emits end_turn with zero tokens on the next turn).
-		args = append(args, "--disallowedTools", "Edit,Write,Read,Bash,Glob,Grep,LS,MultiEdit,NotebookEdit,TodoRead,TodoWrite,WebFetch,WebSearch,Task,TaskCreate,TaskUpdate,TaskList,TaskOutput,TaskGet,TaskStop,ExitPlanMode,EnterPlanMode,KillShell,AskUserQuestion,Skill,LSP,ToolSearch,Agent,CronCreate,CronDelete,CronList,RemoteTrigger,EnterWorktree,ExitWorktree")
+		args = append(args, "--disallowedTools", strings.Join(disallowedNativeTools, ","))
 	}
 	return args
 }

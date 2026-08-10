@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"sync"
 
 	ycrdt "github.com/skyterra/y-crdt"
 )
@@ -39,7 +38,11 @@ const docInternalOrigin = "doc-internal"
 //
 // Note: the lock is intentionally not exposed publicly — leaking a process-wide
 // mutex on the API would invite callers to compose locks and deadlock.
-var ycrdtMu sync.Mutex //nolint:forbidigo // Required for y-crdt library thread safety
+//
+// It is a watchedMutex rather than a bare sync.Mutex so a hold that never ends
+// is reported with a goroutine dump instead of silently freezing every
+// conversation — see ycrdt_watchdog.go.
+var ycrdtMu watchedMutex
 
 // ConversationDocument wraps a Yjs document for conversation state management.
 // Thread-safe: a mutex serialises all y-crdt access so test goroutines
