@@ -56,6 +56,7 @@ func TestRegisterTestRoutesStructuralMatches(t *testing.T) {
 		HandlePostNames(w http.ResponseWriter, r *http.Request)
 		HandleGetNames(w http.ResponseWriter, r *http.Request)
 		HandleJSTrace(w http.ResponseWriter, r *http.Request)
+		HandleAudit(w http.ResponseWriter, r *http.Request)
 	}); !ok {
 		t.Error("TestService no longer satisfies the run-API structural interface")
 	}

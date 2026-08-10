@@ -347,6 +347,7 @@ func (s *Server) RegisterTestRoutes(testAPI any) {
 		HandlePostNames(w http.ResponseWriter, r *http.Request)
 		HandleGetNames(w http.ResponseWriter, r *http.Request)
 		HandleJSTrace(w http.ResponseWriter, r *http.Request)
+		HandleAudit(w http.ResponseWriter, r *http.Request)
 	}
 	rapi, ok := testAPI.(runAPI)
 	mustMatch(ok, "run-API")
@@ -357,6 +358,11 @@ func (s *Server) RegisterTestRoutes(testAPI any) {
 	api.HandleFunc("/names", rapi.HandlePostNames).Methods("POST")
 	api.HandleFunc("/names", rapi.HandleGetNames).Methods("GET")
 	api.HandleFunc("/jstrace", rapi.HandleJSTrace).Methods("POST")
+	// Queue audit: the server's own count of each test's queue/result
+	// transitions, read by the harness on timeout to pin where a lost test was
+	// lost. Both the queue and the result buffer are destructive reads, so this
+	// is the only record that outlives the loss.
+	api.HandleFunc("/audit", rapi.HandleAudit).Methods("GET")
 
 	// Engine connection status — used by the JS test executor to wait for engine.
 	s.router.HandleFunc("/api/engine/status", s.handleEngineStatus).Methods("GET")

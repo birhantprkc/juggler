@@ -332,7 +332,7 @@ func runOneBrowserTest(t *testing.T, srv testServerEntry) {
 		Errors  []string `json:"errors"`
 	}
 	if err := pollServer(srv.addr, "/api/test/result?name="+name, testTimeout, &result); err != nil {
-		t.Fatalf("waiting for test result: %v", err)
+		t.Fatalf("waiting for test result: %v\n%s", err, queueAudit(srv.addr, name))
 	}
 
 	if !result.Passed {
@@ -405,6 +405,84 @@ func pollServer(addr, path string, timeout time.Duration, out any) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout polling %s after %s", path, timeout)
+}
+
+// testAudit is the server's account of one test's queue/result transitions.
+// An age is negative when that transition never happened.
+type testAudit struct {
+	Name              string   `json:"name"`
+	Queued            int      `json:"queued"`
+	Dispatched        int      `json:"dispatched"`
+	ResultPosted      int      `json:"resultPosted"`
+	ResultServed      int      `json:"resultServed"`
+	QueuedAgeMs       int64    `json:"queuedAgeMs"`
+	DispatchedAgeMs   int64    `json:"dispatchedAgeMs"`
+	ResultPostedAgeMs int64    `json:"resultPostedAgeMs"`
+	ResultServedAgeMs int64    `json:"resultServedAgeMs"`
+	PendingDepth      int      `json:"pendingDepth"`
+	PendingNames      []string `json:"pendingNames"`
+	BufferedResults   int      `json:"bufferedResults"`
+}
+
+// agoString renders a millisecond age as a short duration.
+func agoString(ms int64) string {
+	if ms < 0 {
+		ms = 0
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
+}
+
+// queueAudit renders the server's own record of what happened to a timed-out
+// test, and names the hop that lost it.
+//
+// A bare "timeout polling /api/test/result" cannot distinguish a test that no
+// consumer ever picked up, one picked up and dropped, and one that ran and
+// answered into a reply the harness failed to read — and those want different
+// fixes. Only the server saw every transition, and it is the only participant
+// that can: both the pending queue and the result buffer are destructive reads,
+// so each hop's evidence is consumed by the read that takes it.
+func queueAudit(addr, testName string) string {
+	client := &http.Client{Timeout: harnessHTTPTimeout}
+	resp, err := client.Get("http://" + addr + "/api/test/audit?name=" + neturlEscape(testName))
+	if err != nil {
+		return fmt.Sprintf("QUEUE AUDIT: unavailable (%v)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("QUEUE AUDIT: endpoint returned %d (unwired?)", resp.StatusCode)
+	}
+	var a testAudit
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
+		return fmt.Sprintf("QUEUE AUDIT: undecodable (%v)", err)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "QUEUE AUDIT for %s: queued=%d dispatched=%d resultPosted=%d resultServed=%d "+
+		"(pending depth %d, buffered results %d)\n",
+		a.Name, a.Queued, a.Dispatched, a.ResultPosted, a.ResultServed, a.PendingDepth, a.BufferedResults)
+
+	switch {
+	case a.Queued == 0:
+		b.WriteString("LOST AT: the run request never reached the server's queue at all.\n")
+	case a.Dispatched == 0:
+		fmt.Fprintf(&b, "LOST AT: the entry was queued %s ago and no consumer ever took it. The "+
+			"pending queue still holds %d entr(y/ies): %s\n",
+			agoString(a.QueuedAgeMs), a.PendingDepth, strings.Join(a.PendingNames, ", "))
+	case a.ResultPosted == 0:
+		fmt.Fprintf(&b, "LOST AT: a consumer took the entry %s ago and never posted a result. The "+
+			"dispatch is a destructive read, so a reply that failed to arrive intact destroyed the "+
+			"run: the consumer cannot re-queue work it never managed to read.\n",
+			agoString(a.DispatchedAgeMs))
+	case a.ResultServed > 0:
+		fmt.Fprintf(&b, "LOST AT: the browser posted a result %s ago and the server served it %s "+
+			"ago — the harness's own read consumed it and then discarded it, so the test ran fine "+
+			"and only the answer was lost.\n",
+			agoString(a.ResultPostedAgeMs), agoString(a.ResultServedAgeMs))
+	default:
+		fmt.Fprintf(&b, "LOST AT: a result was posted %s ago and is still buffered unserved — the "+
+			"harness was polling a key the result was not filed under.\n", agoString(a.ResultPostedAgeMs))
+	}
+	return b.String()
 }
 
 func copyDir(src, dst string) error {

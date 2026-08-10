@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"juggler/cmd/juggler/server/handlers"
 )
@@ -73,6 +74,7 @@ type testNames struct {
 type actorState struct {
 	pending    []testEntry             // FIFO of queued tests
 	resultBufs map[string][]testResult // delivered results not yet picked up
+	audit      map[string]*auditRec    // per-test queue/result transition counts
 }
 
 // NewTestRunAPI creates a ready-to-use TestRunAPI.
@@ -114,12 +116,21 @@ func (api *TestRunAPI) HandleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	api.withState(func(s *actorState) {
 		s.pending = append(s.pending, entry)
+		rec := s.auditFor(entry.Name)
+		rec.queued++
+		rec.queuedAt = time.Now()
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // HandlePending returns the next queued test, or 204 if none is waiting.
 // GET /api/test/pending
+//
+// The read is destructive: this response is the only copy of the work item, so
+// a consumer that fails to receive it intact destroys the test run rather than
+// deferring it, and cannot re-queue what it never managed to read. The queue
+// audit (HandleAudit) records the dispatch so that loss is at least visible
+// afterwards.
 func (api *TestRunAPI) HandlePending(w http.ResponseWriter, r *http.Request) {
 	var (
 		entry testEntry
@@ -130,6 +141,9 @@ func (api *TestRunAPI) HandlePending(w http.ResponseWriter, r *http.Request) {
 			entry = s.pending[0]
 			s.pending = s.pending[1:]
 			ok = true
+			rec := s.auditFor(entry.Name)
+			rec.dispatched++
+			rec.dispatchedAt = time.Now()
 		}
 	})
 	if !ok {
@@ -150,6 +164,9 @@ func (api *TestRunAPI) HandlePostResult(w http.ResponseWriter, r *http.Request) 
 	}
 	api.withState(func(s *actorState) {
 		s.resultBufs[result.Name] = append(s.resultBufs[result.Name], result)
+		rec := s.auditFor(result.Name)
+		rec.resultPosted++
+		rec.resultPostedAt = time.Now()
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -170,6 +187,9 @@ func (api *TestRunAPI) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 				result = bufs[0]
 				s.resultBufs[name] = bufs[1:]
 				ok = true
+				rec := s.auditFor(name)
+				rec.resultServed++
+				rec.resultServedAt = time.Now()
 			}
 			return
 		}
@@ -178,6 +198,9 @@ func (api *TestRunAPI) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 				result = bufs[0]
 				s.resultBufs[n] = bufs[1:]
 				ok = true
+				rec := s.auditFor(n)
+				rec.resultServed++
+				rec.resultServedAt = time.Now()
 				return
 			}
 		}
