@@ -69,6 +69,7 @@ type pendingEntrySnapshot struct {
 	continueThreadID string
 	deliverTaskID    string // deliverTaskOutput: background task whose output to stream
 	deliverLabel     string // deliverTaskOutput: display label shown with each batch
+	deliverConvID    string // deliverTaskOutput: conversation that submitted the binding (see deliveryIsForeign)
 	strategyID       string // createThread: optional strategy override for the new thread
 	modelConfigJSON  string // createThread: optional model-config override (JSON), applied to the new thread
 }
@@ -155,6 +156,7 @@ func (w *ConversationWorker) snapshotPendingEntries() []pendingEntrySnapshot {
 				snap.continueThreadID, _ = req.Get("threadItemId").(string)
 				snap.deliverTaskID, _ = req.Get("taskId").(string)
 				snap.deliverLabel, _ = req.Get("label").(string)
+				snap.deliverConvID, _ = req.Get("convId").(string)
 			}
 			out = append(out, snap)
 		}
@@ -258,6 +260,10 @@ func (w *ConversationWorker) claimAndDispatchPendingEntry(e pendingEntrySnapshot
 	case "continue":
 		w.dispatchPendingContinue(e)
 	case "deliverTaskOutput":
+		if w.deliveryIsForeign(e) {
+			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
+			return
+		}
 		// Long-lived: the entry stays "claimed" while the pump streams the
 		// task's output; the pump completes the entry when the task exits.
 		w.startTaskDeliveryPump(e.id, e.ownerThreadID, e.deliverTaskID, e.deliverLabel)
@@ -324,6 +330,12 @@ func (w *ConversationWorker) advanceClaimedPendingEntry(e pendingEntrySnapshot) 
 		if _, running := w.deliveryPumps[e.id]; running {
 			return // the pump owns this entry's lifecycle
 		}
+		if w.deliveryIsForeign(e) {
+			// A binding copied in from another conversation: the task belongs to
+			// the submitter, so retire the inherited entry instead of adopting it.
+			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
+			return
+		}
 		// Claimed but no pump — e.g. the worker was recreated mid-delivery.
 		// Restart the pump if the task is still alive; otherwise the task is
 		// gone (a server restart drops in-process tasks), so complete the entry.
@@ -333,6 +345,25 @@ func (w *ConversationWorker) advanceClaimedPendingEntry(e pendingEntrySnapshot) 
 			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
 		}
 	}
+}
+
+// deliveryIsForeign reports whether a deliverTaskOutput entry was submitted by a
+// conversation other than this worker's, meaning it reached this doc as state
+// copied by a clone (/duplicate, /handoff) rather than being requested here.
+//
+// The distinction matters because background tasks live in a process-global
+// registry keyed by task id alone, while the binding is doc state that a clone
+// inherits verbatim. Re-adopting an inherited binding would attach a SECOND pump
+// to the source's still-running task: both conversations would receive every
+// line, the clone would replay the whole accumulated backlog as one injected
+// batch (waking a fork that is meant to load resting), and a Stop in either
+// would kill the task for both. Only the submitting conversation re-adopts, so
+// a worker restart still recovers its own live task.
+//
+// An unstamped entry (no convId) is treated as native, since a producer is free
+// to omit the field; refusing those would strand a genuine restart's binding.
+func (w *ConversationWorker) deliveryIsForeign(e pendingEntrySnapshot) bool {
+	return e.deliverConvID != "" && e.deliverConvID != w.conversationID
 }
 
 // cancelPendingEntry transitions a requested/claimed entry to cancelled

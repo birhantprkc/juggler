@@ -481,3 +481,56 @@ func TestPendingRequests_SubmitToTerminalRoundtrip(t *testing.T) {
 		t.Errorf("result.result = %q, want 'Sub-thread done.'", result)
 	}
 }
+
+// TestPendingRequests_DeliveryBindingOwnership pins who may adopt a
+// deliverTaskOutput binding. Background tasks live in a process-global registry
+// keyed by task id, while the binding is doc state a clone (/duplicate,
+// /handoff) inherits verbatim, so an inherited binding must be retired, not
+// re-adopted, or two conversations would pump the same task (double delivery,
+// backlog replay into a fork that should load resting, and a Stop in either
+// killing it for both). A binding this conversation submitted, or one carrying
+// no owner stamp, is still adopted so a worker restart recovers its own task.
+//
+// The adopting cases stop their pump before its first tick: this package runs no
+// shell-registry goroutine, so any ops call would block. The refusing case
+// returns before it reaches ops at all, which is precisely the property under
+// test.
+func TestPendingRequests_DeliveryBindingOwnership(t *testing.T) {
+	cases := []struct {
+		name     string
+		convID   string // convId stamped on the request ("" = unstamped)
+		adopted  bool
+		wantStat string
+	}{
+		{"inherited from another conversation", "conv-source", false, "completed"},
+		{"submitted by this conversation", "conv-own", true, "claimed"},
+		{"unstamped binding", "", true, "claimed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := NewConversationWorker("conv-own", "user:test")
+			defer w.doc.Destroy()
+
+			pushRequestedEntry(t, w, "deliverTaskOutput", "d-1", func(req *ycrdt.YMap) {
+				req.Set("taskId", "bg-task-1")
+				req.Set("label", "monitor: build")
+				if tc.convID != "" {
+					req.Set("convId", tc.convID)
+				}
+			})
+
+			w.scanPendingRequests()
+
+			if s := findEntryStatus(w, "d-1"); s != tc.wantStat {
+				t.Errorf("status = %q, want %q", s, tc.wantStat)
+			}
+			p, running := w.deliveryPumps["d-1"]
+			if running != tc.adopted {
+				t.Fatalf("pump running = %v, want %v", running, tc.adopted)
+			}
+			if running {
+				close(p.stop) // unwind without ops.KillTask (no registry here)
+			}
+		})
+	}
+}

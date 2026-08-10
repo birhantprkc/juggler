@@ -1041,12 +1041,20 @@ export default class MessageThread {
    * consumer. Fire-and-forget — returns immediately and the binding outlives
    * this call; the underlying pendingRequest resolves only when the task ends,
    * which the caller does not await.
+   *
+   * The owning conversation id is stamped onto the request. The background-task
+   * registry is process-global and keyed by task id alone, while this entry is
+   * doc state that a clone (/duplicate, /handoff) inherits verbatim, so the
+   * worker needs the stamp to tell "my own binding, re-adopt it after a
+   * restart" from "a clone's inherited binding, leave the task to its owner"
+   * (see deliveryIsForeign in cmd/juggler/worker/pending_requests.go).
    * @param {{taskId: string, label?: string}} opts - Task id and a display label shown with each batch.
    */
   requestTaskOutputDelivery({ taskId, label = '' }) {
     submitPendingRequest(this, 'deliverTaskOutput', (reqMap) => {
       reqMap.set('taskId', taskId);
       reqMap.set('label', label);
+      reqMap.set('convId', this.conversation.id);
     }).catch(() => { /* fire-and-forget: cancellation/teardown is not an error here */ });
   }
 
