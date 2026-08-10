@@ -70,7 +70,7 @@ func TestBrowser(t *testing.T) {
 
 	// Use any pool slot to fetch the test list (read-only, no fixture writes needed).
 	srv := <-testServerPool
-	names, polluters, err := listBrowserTests(srv)
+	names, exclusive, err := listBrowserTests(srv)
 	testServerPool <- srv
 	if err != nil {
 		t.Fatalf("cannot list browser tests: %v", err)
@@ -94,22 +94,33 @@ func TestBrowser(t *testing.T) {
 	// bulldoze flakes — so they fail the run loudly, named by creator lane.
 	t.Cleanup(func() { reportLeakedConversations(t) })
 
-	polluterSet := make(map[string]bool, len(polluters))
-	for _, p := range polluters {
-		polluterSet[p] = true
+	exclusiveSet := make(map[string]bool, len(exclusive))
+	for _, p := range exclusive {
+		exclusiveSet[p] = true
 	}
 
-	// Phase 1: fixture-root polluters, one at a time with no other test in
-	// flight. Each writes a fixed-name file (e.g. CLAUDE.md) that production
-	// auto-detection scans on every createConversation; a fixed filename
-	// can't hide behind a per-test prefix, so a sibling lane's createConversation
-	// would pick it up. These run FIRST and synchronously (no t.Parallel): the
-	// parallel subtests registered in phase 2 don't start until this parent
-	// function returns, so no sibling is ever in flight here. Reset every
-	// fixture before each so the previous polluter's file can't linger. Subtest
-	// names stay flat (TestBrowser/<name>), preserving `-run` filters.
+	// Phase 1: tests that need the whole pool to themselves, one at a time with
+	// no other test in flight. Two kinds qualify, both because they contend on
+	// something the lanes share and cannot namespace per-test:
+	//
+	//   - Fixture-root polluters write a fixed-name file (e.g. CLAUDE.md) that
+	//     production auto-detection scans on every createConversation. A fixed
+	//     filename can't hide behind a per-test prefix, so a sibling lane's
+	//     createConversation would pick it up.
+	//   - Focus-sensitive tests assert on document.activeElement. Every lane is
+	//     an iframe in ONE window, and a window has exactly one focused frame:
+	//     any sibling calling element.focus() takes frame focus away, which
+	//     blurs the asserting lane's element to <body>. That is a property of
+	//     the pool topology, not of the code under test, so these tests are
+	//     only meaningful with no sibling running.
+	//
+	// These run FIRST and synchronously (no t.Parallel): the parallel subtests
+	// registered in phase 2 don't start until this parent function returns, so
+	// no sibling is ever in flight here. Reset every fixture before each so a
+	// previous polluter's file can't linger. Subtest names stay flat
+	// (TestBrowser/<name>), preserving `-run` filters.
 	for _, name := range names {
-		if !polluterSet[name] {
+		if !exclusiveSet[name] {
 			continue
 		}
 		name := name
@@ -128,13 +139,13 @@ func TestBrowser(t *testing.T) {
 	// Reset once more before the parallel phase: a polluter that failed before
 	// its own cleanup op could otherwise leave its fixed-name file behind for
 	// every parallel lane to auto-detect.
-	if len(polluterSet) > 0 {
+	if len(exclusiveSet) > 0 {
 		resetAllFixtures(t)
 	}
 
-	// Phase 2: every non-polluting test, fanned across the pool in parallel.
+	// Phase 2: every test that tolerates siblings, fanned across the pool in parallel.
 	for _, name := range names {
-		if polluterSet[name] {
+		if exclusiveSet[name] {
 			continue
 		}
 		name := name
@@ -270,9 +281,9 @@ func neturlEscape(s string) string {
 
 // listBrowserTests triggers list mode on the Wails subprocess and waits for the
 // names to be POSTed back to /api/test/names. It returns every test name plus
-// the subset that pollutes the shared fixture root (run isolated; see the
+// the subset that must run with no sibling in flight (run isolated; see the
 // sequential phase in TestBrowser).
-func listBrowserTests(srv testServerEntry) (names, polluters []string, err error) {
+func listBrowserTests(srv testServerEntry) (names, exclusive []string, err error) {
 	if err := postToServer(srv.addr, "/api/test/run", map[string]any{
 		"name": "__list__",
 	}); err != nil {
@@ -281,12 +292,12 @@ func listBrowserTests(srv testServerEntry) (names, polluters []string, err error
 
 	var payload struct {
 		Names     []string `json:"names"`
-		Polluters []string `json:"polluters"`
+		Exclusive []string `json:"exclusive"`
 	}
 	if err := pollServer(srv.addr, "/api/test/names", listDiscoveryTimeout, &payload); err != nil {
 		return nil, nil, fmt.Errorf("waiting for test names: %w", err)
 	}
-	return payload.Names, payload.Polluters, nil
+	return payload.Names, payload.Exclusive, nil
 }
 
 // runOneBrowserTest triggers one named test via the HTTP API and polls for its result.

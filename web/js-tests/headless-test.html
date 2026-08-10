@@ -129,7 +129,7 @@
     <!-- Test entry point -->
     <script type="module" nonce="{{.CSPNonce}}">
         import TestOrchestrator from '/v{{.StaticVersion}}/js-tests/utilities/test-orchestrator.js';
-        import { listTests, listPolluters, runTestByName, ensureExtensionSuitesLoaded } from '/v{{.StaticVersion}}/js-tests/utilities/integration-test-executor.js';
+        import { listTests, listExclusiveTests, runTestByName, ensureExtensionSuitesLoaded } from '/v{{.StaticVersion}}/js-tests/utilities/integration-test-executor.js';
 
         // Register extension-owned suites (discovered from each extension's
         // manifest) before anything calls the synchronous listTests(), so the
@@ -202,7 +202,7 @@
             // entry and drops straight into the polling loop — multiple lanes
             // race for entries on the shared /api/test/pending queue.
             if (urlParams.has('list')) {
-                await postJSON('/api/test/names', { names: listTests(), polluters: listPolluters() });
+                await postJSON('/api/test/names', { names: listTests(), exclusive: listExclusiveTests() });
             } else if (urlParams.has('test')) {
                 await runOneTest(urlParams.get('test'), urlParams.get('projectPath'));
             }
@@ -210,7 +210,7 @@
             while (true) {
                 const entry = await waitForNextEntry();
                 if (entry.name === '__list__') {
-                    await postJSON('/api/test/names', { names: listTests(), polluters: listPolluters() });
+                    await postJSON('/api/test/names', { names: listTests(), exclusive: listExclusiveTests() });
                     continue;
                 }
                 if (entry.taskId) {

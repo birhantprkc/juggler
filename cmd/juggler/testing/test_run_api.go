@@ -61,11 +61,11 @@ type TestRunAPI struct {
 }
 
 // testNames is the discovered test inventory: every test name plus the subset
-// that pollutes the shared fixture root (and so must run isolated — see
-// pollutesFixtureRoot in the JS test definitions).
+// that must run with no sibling lane in flight (see listExclusiveTests in the
+// JS test executor for the two reasons a test qualifies).
 type testNames struct {
 	Names     []string `json:"names"`
-	Polluters []string `json:"polluters"`
+	Exclusive []string `json:"exclusive"`
 }
 
 // actorState lives entirely inside the actor goroutine. Closures from opsCh
@@ -190,7 +190,7 @@ func (api *TestRunAPI) HandleGetResult(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandlePostNames receives the discovered test names from the browser.
-// POST /api/test/names  body: {"names":["integration:foo",...],"polluters":[...]}
+// POST /api/test/names  body: {"names":["integration:foo",...],"exclusive":[...]}
 func (api *TestRunAPI) HandlePostNames(w http.ResponseWriter, r *http.Request) {
 	var payload testNames
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

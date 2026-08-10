@@ -235,6 +235,13 @@ const ALL_TESTS = [
  * All unit test suites — each runs in its own isolated browser tab.
  * Each entry is a { name, run } pair where run(ctx) returns { passed, failed, errors }.
  * Names appear as individual test entries in listTests() and are addressable via -run.
+ *
+ * An entry may also set `needsExclusiveRun: true`, which makes the Go runner
+ * schedule it alone with no sibling lane in flight. Set it when a suite asserts
+ * on `document.activeElement`: every lane is an iframe inside ONE window, and a
+ * window has exactly one focused frame, so any sibling calling element.focus()
+ * takes frame focus away and blurs this lane's element to <body> — the suite
+ * then fails on the pool's topology rather than on the code under test.
  */
 const UNIT_TEST_SUITES = [
   { name: 'unit:context-cache-impact', run: runContextCacheImpactTests },
@@ -304,8 +311,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
-  { name: 'unit:new-thread-focus', run: runNewThreadFocusTests },
-  { name: 'unit:approval-focus-return', run: runApprovalFocusReturnTests },
+  { name: 'unit:new-thread-focus', run: runNewThreadFocusTests, needsExclusiveRun: true },
+  { name: 'unit:approval-focus-return', run: runApprovalFocusReturnTests, needsExclusiveRun: true },
   { name: 'unit:nested-approval-status', run: runNestedApprovalStatusTests },
   { name: 'unit:chime-recovery', run: runChimeRecoveryTests },
   { name: 'unit:context-menu', run: runContextMenuTests },
@@ -616,12 +623,21 @@ export function listTests() {
 }
 
 /**
- * List tests that write a fixed-name file to the shared fixture root which
- * production auto-detection scans (see `pollutesFixtureRoot` in the test
- * definition). The Go runner schedules these sequentially, isolated from all
- * other tests, so their transient files can't contaminate sibling lanes.
- * @returns {string[]} Names of fixture-root-polluting tests
+ * List tests the Go runner must schedule sequentially, with no sibling lane in
+ * flight. Two independent reasons qualify, both about state the lanes share and
+ * cannot namespace per-test:
+ *
+ *   - `pollutesFixtureRoot` (integration tests): writes a fixed-name file to
+ *     the shared fixture root that production auto-detection scans, which a
+ *     sibling lane's createConversation would pick up.
+ *   - `needsExclusiveRun` (unit suites): asserts on `document.activeElement`,
+ *     which a sibling lane can invalidate by calling focus() — all lanes are
+ *     iframes in one window, and only one frame holds focus at a time.
+ * @returns {string[]} Names of tests that must run in isolation
  */
-export function listPolluters() {
-  return ALL_TESTS.filter(t => t.pollutesFixtureRoot).map(t => t.name);
+export function listExclusiveTests() {
+  return [
+    ...ALL_TESTS.filter(t => t.pollutesFixtureRoot).map(t => t.name),
+    ...UNIT_TEST_SUITES.filter(s => s.needsExclusiveRun).map(s => s.name),
+  ];
 }
