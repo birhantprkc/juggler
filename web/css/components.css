@@ -1799,6 +1799,26 @@ properties-panel-section {
     --message-icon-row-height: calc(var(--message-icon-size) + 2 * var(--message-icon-pad));
 }
 
+/* For a plugin-backed item the header badge doubles as a link into
+   Settings → Extensions, selecting the capability that owns the item. The hand
+   cursor and the hover lift are what tell the user it is clickable at all. Only
+   the panel adds .badge-catalog-link — the conversation list paints the same
+   badge and stays inert. */
+.properties-panel-header .message-icon-badge.badge-catalog-link {
+    cursor: pointer;
+    border-radius: 0.25rem;
+    transition: filter 150ms ease;
+}
+
+.properties-panel-header .message-icon-badge.badge-catalog-link:hover {
+    filter: brightness(1.15);
+}
+
+.properties-panel-header .message-icon-badge.badge-catalog-link:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 0.1875rem color-mix(in srgb, var(--accent-blue) 25%, transparent);
+}
+
 /* Title/status text following the badge: centre within a band as tall as the
    icon circle — the same trick .message-content-box > .action-result-status
    uses in the conversation list — so the text sits on the lozenge label. */

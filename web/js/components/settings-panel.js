@@ -374,8 +374,9 @@ class SettingsPanel extends HTMLElement {
   /**
    * Open the settings panel
    * @param {string} [tab] - Optional tab to switch to on open
+   * @param {{capability?: {itemType: string, id: string}}} [options] - Optional target to reveal inside the tab
    */
-  async open(tab) {
+  async open(tab, options = {}) {
     const isFirstLoad = !this._hasLoadedOnce;
 
     // Show panel - only show loading state on first load
@@ -394,12 +395,29 @@ class SettingsPanel extends HTMLElement {
       this.switchTab(tab);
     }
 
+    if (options.capability) {
+      this._revealCapability(options.capability);
+    }
+
     // Load config (only fetches from API on first load)
     if (isFirstLoad) {
       await this.loadConfig();
       this._hasLoadedOnce = true;
       this.classList.add('loaded');
     }
+  }
+
+  /**
+   * Deep-link into the Extensions tab's catalog: select one capability's entry.
+   * The catalog fetches its own data, so the target is handed over and applied
+   * by the component once it is ready — this open() must not wait on it.
+   * @param {{itemType: string, id: string}} capability - Capability type + registry id
+   * @private
+   */
+  _revealCapability(capability) {
+    const catalog = /** @type {any} */ (this.querySelector('plugin-catalog'));
+    Promise.resolve(catalog?.revealCapability?.(capability.itemType, capability.id))
+      .catch((error) => console.error('Failed to reveal capability in the extensions catalog:', error));
   }
 
   /**
@@ -503,12 +521,12 @@ customElements.define('settings-panel', SettingsPanel);
 
 // Global helper to open settings panel
 // @ts-ignore - Adding custom property to window
-window.openSettings = function(tab) {
+window.openSettings = function(tab, options) {
   let panel = document.querySelector('settings-panel');
   if (!panel) {
     panel = document.createElement('settings-panel');
     document.body.appendChild(panel);
   }
   // @ts-ignore - open method exists on SettingsPanel custom element
-  panel.open(tab);
+  panel.open(tab, options);
 };

@@ -41,6 +41,26 @@ const USER_AVATAR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" vie
  */
 
 /**
+ * The registry id of a plugin CLASS — the id the extensions catalog lists its
+ * capability under.
+ * @param {any} PluginClass - Plugin class, or null/undefined
+ * @returns {string|null} The capability id, or null
+ */
+function classPluginId(PluginClass) {
+  return PluginClass?.MANIFEST?.id || null;
+}
+
+/**
+ * The registry id behind a context-item plugin instance. `type` is seeded from
+ * the class's MANIFEST id, so it stands in when the manifest isn't reachable.
+ * @param {any} instance - Context-item plugin instance
+ * @returns {string|null} The capability id, or null
+ */
+function instancePluginId(instance) {
+  return instance.getManifest?.()?.id || instance.type || null;
+}
+
+/**
  * Icon options for a context-item plugin instance, from its static badge.
  * @param {any} instance - Context-item plugin instance
  * @returns {IconOptions} Icon options
@@ -243,13 +263,49 @@ export function typeNameForItem(item, ctx = {}) {
 }
 
 /**
+ * Resolve the registry id of the context-item plugin an item comes from — the
+ * id its capability is listed under in the extensions catalog. Null for items
+ * no plugin owns (plain user/assistant messages, thinking, errors), which is
+ * what the properties panel keys its "open this in Extensions" link off.
+ * @param {any} item - Yjs message item or a context-item instance
+ * @param {BadgeContext} [ctx] - Resolution context
+ * @returns {string|null} The capability id, or null when no plugin owns the item
+ */
+export function pluginIdForItem(item, ctx = {}) {
+  if (isContextItemInstance(item)) return instancePluginId(item);
+
+  const type = item?.get?.('type') ?? ctx.fallbackType;
+  switch (type) {
+    case 'thread': {
+      // Same resolution order as the icon: a delegated thread belongs to its
+      // delegating tool's plugin, an undelegated one to the thread plugin.
+      return classPluginId(actionClassFor(item)) || classPluginId(contextItemRegistry.get('thread'));
+    }
+    case 'tool-action':
+      return classPluginId(actionClassFor(item));
+    case 'context-item': {
+      const inst = ctx.messageThread?.getContextItem?.(item.get('itemId'));
+      return inst ? instancePluginId(inst) : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
  * Resolve the full badge — icon options plus the lozenge label — for a
  * conversation item. The panel header builds its `.message-icon-badge` from
  * this; tiles that only need the icon use `iconOptionsForItem` directly.
+ * `pluginId` rides along so the panel can link the badge to the owning
+ * capability; tiles simply ignore it.
  * @param {any} item - Yjs message item or a context-item instance
  * @param {BadgeContext} [ctx] - Resolution context
- * @returns {IconOptions & {typeName: string}} Icon options plus lozenge label
+ * @returns {IconOptions & {typeName: string, pluginId: string|null}} Icon options, lozenge label, owning capability id
  */
 export function badgeForItem(item, ctx = {}) {
-  return { ...iconOptionsForItem(item, ctx), typeName: typeNameForItem(item, ctx) };
+  return {
+    ...iconOptionsForItem(item, ctx),
+    typeName: typeNameForItem(item, ctx),
+    pluginId: pluginIdForItem(item, ctx),
+  };
 }

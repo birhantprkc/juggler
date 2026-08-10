@@ -11,6 +11,7 @@ of changes; this project follows semantic versioning.
 - Images stream from disk instead of round-tripping through the conversation, keeping documents smaller
 - Binary files no viewer can display now explain themselves instead of a fixed warning
 - Duplicating a conversation no longer hijacks its running monitors, so output stays with the original
+- Clicking an item's badge in the properties panel opens the extension that provides it in Settings
 
 ## [0.5.4] - 2026-08-08
 

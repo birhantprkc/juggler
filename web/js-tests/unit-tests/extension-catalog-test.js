@@ -19,10 +19,15 @@
  *      as top-level nodes, capabilities nested under per-type sub-headings,
  *      expand/collapse) with a detail pane for the selected item (read-only:
  *      real catalog + config GET, no POST).
+ *   5. The deep-link into the catalog: a properties-panel header badge resolves
+ *      the capability that owns its item and revealCapability selects it.
  * @module unit-tests/extension-catalog-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
+import { badgeForItem } from '../../js/utils/item-badge.js';
+import '../../js/components/properties-panel.js';
+import '../../js/components/settings-panel.js';
 import BaseRegistry from '../../js/registries/base-registry.js';
 import {
   buildExtensionCards,
@@ -410,6 +415,98 @@ export async function runTests(_ctx) {
     } finally {
       el.remove();
     }
+  });
+
+  // 6 — the deep-link from a properties-panel badge: the badge resolver names
+  // the owning capability, the panel header turns that into a click target, and
+  // the catalog selects it. Synthetic cards keep this offline and deterministic.
+  await run('badgeForItem names the capability that owns an item', () => {
+    const instance = {
+      getTitle: () => 'README.md',
+      type: 'read-file',
+      getManifest: () => ({ id: 'read-file', name: 'Read File' }),
+      getBadgeOptions: () => ({ color: 'blue', icon: 'icon-read' }),
+    };
+    assert(badgeForItem(instance).pluginId === 'read-file',
+      'a context-item instance reports its registry id');
+
+    const assistant = { get: (/** @type {string} */ k) => (k === 'type' ? 'assistant' : undefined) };
+    assert(badgeForItem(assistant).pluginId === null,
+      'a plain assistant message has no owning capability');
+  });
+
+  await run('the panel header badge links to the owning capability', () => {
+    const panel = /** @type {any} */ (document.createElement('properties-panel'));
+    const header = panel._createHeader('Read', { color: 'blue', iconClass: 'icon-read', pluginId: 'read-file' });
+    const badge = header.querySelector('.message-icon-badge');
+    assert(badge && badge.classList.contains('badge-catalog-link'),
+      'the icon + lozenge group is marked as a link');
+    assert(badge.getAttribute('role') === 'button' && badge.tabIndex === 0,
+      'the link is reachable as a button');
+
+    /** @type {any[]} */
+    const calls = [];
+    const orig = /** @type {any} */ (window).openSettings;
+    /** @type {any} */ (window).openSettings = (/** @type {any[]} */ ...args) => calls.push(args);
+    try {
+      badge.click();
+    } finally {
+      /** @type {any} */ (window).openSettings = orig;
+    }
+    assert(calls.length === 1 && calls[0][0] === 'extensions',
+      'clicking opens the Extensions settings tab');
+    assert(calls[0][1]?.capability?.id === 'read-file' && calls[0][1]?.capability?.itemType === 'context-item',
+      'the capability to select is carried along');
+
+    // An item no plugin owns keeps an inert badge.
+    const plain = panel._createHeader('User Message', { color: 'green' });
+    assert(!plain.querySelector('.badge-catalog-link'),
+      'a badge with no owning capability is not a link');
+  });
+
+  await run('the settings panel routes a capability target to the catalog', async () => {
+    /** @type {any[]} */
+    const seen = [];
+    const panel = /** @type {any} */ (document.createElement('settings-panel'));
+    // Unmounted, so it has no DOM of its own — stand in for the catalog it
+    // would otherwise find in its Extensions tab.
+    panel.querySelector = () => ({
+      revealCapability: (/** @type {string} */ itemType, /** @type {string} */ id) => {
+        seen.push([itemType, id]);
+        return Promise.resolve(true);
+      },
+    });
+    panel._revealCapability({ itemType: 'context-item', id: 'read-file' });
+    assert(seen.length === 1 && seen[0][0] === 'context-item' && seen[0][1] === 'read-file',
+      'the capability target reaches the catalog unchanged');
+  });
+
+  await run('revealCapability selects a capability from outside the catalog', async () => {
+    const extensions = [{
+      manifest: { id: '@jules/pack', name: 'Pack', version: '1.0.0' },
+      source: 'user',
+      capabilities: { contextItems: ['/u/pack/a-context-item.js'], strategies: [], commands: [] },
+      error: '',
+    }];
+    const byPath = new Map([
+      ['/u/pack/a-context-item.js', { id: 'a', manifest: { name: 'Cap A' }, itemType: 'context-item', disabled: false }],
+    ]);
+
+    const el = /** @type {PluginCatalog} */ (document.createElement('plugin-catalog'));
+    el._cards = buildExtensionCards(extensions, byPath, new Map(), new Set());
+    el.render();
+    assert(el._selectedKey === 'ext:@jules/pack', 'the extension is selected by default');
+
+    const revealed = await el.revealCapability('context-item', 'a');
+    assert(revealed === true, 'revealCapability reports the capability was found');
+    assert(el._selectedKey === 'cap:context-item:a', 'the capability is now selected');
+    const selected = /** @type {HTMLElement} */ (el.querySelector('.plugin-tree-row.selected'));
+    assert(selected && selected.dataset.key === 'cap:context-item:a',
+      'its tree row carries the selection');
+
+    const missing = await el.revealCapability('context-item', 'nope');
+    assert(missing === false && el._selectedKey === 'cap:context-item:a',
+      'an unknown capability is reported and leaves the selection alone');
   });
 
   return { passed, failed, errors };

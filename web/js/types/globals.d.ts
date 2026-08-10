@@ -46,8 +46,9 @@ interface Window {
 	/**
 	 * Open settings panel
 	 * @param tab - Optional tab to switch to ('providers', 'shortcuts', 'facts')
+	 * @param options - Optional target to reveal inside that tab (a capability in the Extensions catalog)
 	 */
-	openSettings?(tab?: string): void;
+	openSettings?(tab?: string, options?: { capability?: { itemType: string; id: string } }): void;
 
 	/**
 	 * Test completion flag (for headless testing)

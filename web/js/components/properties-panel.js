@@ -512,6 +512,7 @@ class PropertiesPanel extends HTMLElement {
    * @param {string} iconOptions.color - Color preset
    * @param {string} [iconOptions.iconClass] - CSS class for icon
    * @param {string} [iconOptions.iconSvg] - SVG markup for icon
+   * @param {string|null} [iconOptions.pluginId] - Owning capability id; makes the badge a link into the Extensions catalog
    * @param {HTMLElement} [chipEl] - Token chip element (gets margin-left:auto via CSS)
    * @param {string|HTMLElement} [statusText] - Optional status text (string or element) shown beside the badge
    * @param {HTMLElement} [trailingEl] - Element to append after the chip (e.g. View Transaction icon)
@@ -523,7 +524,9 @@ class PropertiesPanel extends HTMLElement {
     const header = document.createElement('header');
     header.className = 'properties-panel-header';
 
-    header.appendChild(createIconBadge(iconOptions, createTypeBadge(title)));
+    const badgeGroup = createIconBadge(iconOptions, createTypeBadge(title));
+    if (iconOptions.pluginId) this._linkBadgeToCatalog(badgeGroup, iconOptions.pluginId, title);
+    header.appendChild(badgeGroup);
 
     if (statusText instanceof HTMLElement) {
       header.appendChild(statusText);
@@ -552,9 +555,47 @@ class PropertiesPanel extends HTMLElement {
   }
 
   /**
+   * Make the header's icon + lozenge badge open the item's entry in the
+   * Extensions catalog (Settings → Extensions, that capability selected), so
+   * "what is this thing, and can I turn it off?" is one click from the item
+   * itself. The badge is a link only here: the conversation list paints the
+   * same badge from the same resolver and stays inert, since a click there
+   * belongs to selecting the row.
+   * @param {HTMLElement} badgeGroup - The `.message-icon-badge` group
+   * @param {string} pluginId - Registry id of the capability that owns the item
+   * @param {string} title - Lozenge label, used in the tooltip
+   * @private
+   */
+  _linkBadgeToCatalog(badgeGroup, pluginId, title) {
+    badgeGroup.classList.add('badge-catalog-link');
+    badgeGroup.tabIndex = 0;
+    badgeGroup.setAttribute('role', 'button');
+    const label = `Show "${title}" in the Extensions settings`;
+    badgeGroup.title = label;
+    badgeGroup.setAttribute('aria-label', label);
+
+    const open = () => {
+      const openSettings = /** @type {any} */ (window).openSettings;
+      if (typeof openSettings !== 'function') return;
+      openSettings('extensions', { capability: { itemType: 'context-item', id: pluginId } });
+    };
+
+    badgeGroup.addEventListener('click', (e) => {
+      e.stopPropagation();
+      open();
+    });
+    badgeGroup.addEventListener('keydown', (e) => {
+      const key = /** @type {KeyboardEvent} */ (e).key;
+      if (key !== 'Enter' && key !== ' ') return;
+      e.preventDefault();
+      open();
+    });
+  }
+
+  /**
    * Create a section wrapper with header and controls in standard layout
    * @param {string} title - Type-name label shown in the header lozenge
-   * @param {{color: string, iconClass?: string, iconSvg?: string}} iconOptions - Options for createIconBadge
+   * @param {{color: string, iconClass?: string, iconSvg?: string, pluginId?: string|null}} iconOptions - Options for createIconBadge
    * @param {HTMLElement|null} [controls] - Controls element to place after header (null = no controls)
    * @param {string} [statusText] - Optional status text shown beside the badge
    * @param {string} [transactionId] - Round-trip id; renders a small icon button right of the chip

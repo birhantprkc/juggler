@@ -215,6 +215,13 @@ class PluginCatalog extends HTMLElement {
     this._detailPanel = null;
 
     /**
+     * The first load+render, retained so an outside caller (revealCapability)
+     * can wait for the catalog to be ready instead of racing it.
+     * @type {Promise<void>|null}
+     */
+    this._ready = null;
+
+    /**
      * Keys of extension tree nodes whose children are expanded. `null` means
      * "not yet initialised" — the first render expands every extension so the
      * tree opens fully revealed; thereafter the user's collapses are remembered.
@@ -226,7 +233,26 @@ class PluginCatalog extends HTMLElement {
   /** Called when the component is inserted into the DOM. */
   connectedCallback() {
     this.classList.add('plugin-catalog');
-    this._init();
+    this._ready = this._init();
+  }
+
+  /**
+   * Select one capability's entry from outside the catalog — the deep-link the
+   * properties-panel header badge follows. Waits for the first load so a click
+   * arriving while the catalog is still fetching still lands on the right row,
+   * and scrolls the row into view since the target is usually well down the tree.
+   * @param {string} itemType - Capability type, e.g. 'context-item'
+   * @param {string} capId - The capability's registry id
+   * @returns {Promise<boolean>} True when the capability was found and selected
+   */
+  async revealCapability(itemType, capId) {
+    if (this._ready) await this._ready;
+    const key = `cap:${itemType}:${capId}`;
+    if (!this._buildEntries().some((e) => e.key === key)) return false;
+    this._select(key);
+    const row = /** @type {HTMLElement|null} */ (this._sidebar?.querySelector('.plugin-tree-row.selected') ?? null);
+    row?.scrollIntoView?.({ block: 'nearest' });
+    return true;
   }
 
   /**
