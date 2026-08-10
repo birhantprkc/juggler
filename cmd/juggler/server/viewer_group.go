@@ -292,6 +292,18 @@ func (b serverBroadcaster) BroadcastConversationsChanged(op, id, name string) {
 	b.srv.broadcastToAll(msg)
 }
 
+// BroadcastConversationFocus asks viewers to switch to a conversation. Rides
+// the same `conversations-changed` event type with `op:"focus"`; `from` names
+// the conversation that requested the switch and is included on the wire only
+// when non-empty (an unattributed request every viewer follows).
+func (b serverBroadcaster) BroadcastConversationFocus(id, from string) {
+	msg := map[string]any{"type": "conversations-changed", "op": "focus", "id": id}
+	if from != "" {
+		msg["from"] = from
+	}
+	b.srv.broadcastToAll(msg)
+}
+
 // BroadcastConversationsReordered publishes a drag-reorder as the full new
 // id order. Rides the same `conversations-changed` event type with
 // `op:"reordered"` and an `order` array carrying the post-reorder ids in

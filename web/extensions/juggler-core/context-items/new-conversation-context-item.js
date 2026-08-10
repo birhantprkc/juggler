@@ -20,10 +20,15 @@ import { createUserMessage } from '../../../sdk/lib/message.js';
  * `execute()` runs in the engine, which owns conversation creation and turn
  * driving. It calls `session.createConversation(..., { focus: true })` — a POST
  * that makes the server create the folder, seed the default model, and broadcast
- * `created` (every viewer builds a tab) followed by `focus` (every viewer
- * switches to it). The engine can't move viewer focus locally because
+ * `created` (every viewer builds a tab) followed by `focus` (viewers switch to
+ * it). The engine can't move viewer focus locally because
  * `visibleConversationId` is per-client state, so the `focus` broadcast is the
  * only way a headless creator brings viewers along.
+ *
+ * The focus request is attributed with `focusFrom` — this conversation's id — so
+ * it never yanks the user out of unrelated work: a viewer follows only when it
+ * is showing the conversation that asked and its composer is empty (see
+ * `Session._shouldFollowFocus`). Anyone else just gains a new tab.
  *
  * The initial message is then seeded into the new conversation:
  *  - `autostart` (default): `sendMessage` posts the message AND starts the turn,
@@ -63,7 +68,7 @@ class NewConversationContextItem extends ContextItem {
       {
         name: 'new_conversation',
         category: 'write',
-        description: 'Open a new, independent conversation seeded with an initial message you provide, and switch the user to it. "New conversation", "new tab", and "new chat" all mean this same tool. Unlike create_thread, this is NOT a sub-task and does NOT report back: the new conversation is a peer of this one (its own tab), works on its own, and you receive only a confirmation that it was created — never its results. Use it to spin off a separate, self-contained line of work; because it cannot see this conversation, the message must carry every fact the new conversation needs. It always switches the user to the new tab.',
+        description: 'Open a new, independent conversation seeded with an initial message you provide. "New conversation", "new tab", and "new chat" all mean this same tool. Unlike create_thread, this is NOT a sub-task and does NOT report back: the new conversation is a peer of this one (its own tab), works on its own, and you receive only a confirmation that it was created — never its results. Use it to spin off a separate, self-contained line of work; because it cannot see this conversation, the message must carry every fact the new conversation needs. The new tab is opened and the user is taken to it if they are watching this conversation and have not started typing; if they have moved on, the tab still opens and waits for them.',
         input_schema: {
           type: 'object',
           properties: {
@@ -117,9 +122,15 @@ class NewConversationContextItem extends ContextItem {
       throw new Error('No session available to create a conversation');
     }
 
-    // focus:true → the server broadcasts a "focus" op after "created" so every
-    // viewer switches to the new tab (the engine can't move viewer focus itself).
-    const newId = await session.createConversation(name, { origin: 'new-conversation-tool', focus: true });
+    // focus:true → the server broadcasts a "focus" op after "created" asking
+    // viewers to switch to the new tab (the engine can't move viewer focus
+    // itself). focusFrom attributes the request to the conversation the tool ran
+    // in, so only a viewer actually watching it — and not mid-message — follows.
+    const newId = await session.createConversation(name, {
+      origin: 'new-conversation-tool',
+      focus: true,
+      focusFrom: this.conversation?.id || ''
+    });
 
     const conv = session.getConversation(newId);
     if (!conv) {

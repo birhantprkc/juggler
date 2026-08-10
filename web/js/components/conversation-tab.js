@@ -281,6 +281,22 @@ class ConversationTab extends HTMLElement {
   }
 
   /**
+   * Whether the user has anything sendable typed or staged anywhere in this
+   * tab. Every open column carries its own box, so a draft in a thread column
+   * counts just as much as one in the root — this asks "is the user part-way
+   * through a message here?", which gates whether another conversation may pull
+   * them to a different tab.
+   * @returns {boolean} True when any of this tab's composers is non-empty.
+   */
+  hasComposerText() {
+    let hasText = false;
+    this.querySelectorAll('composer-box').forEach((box) => {
+      if (typeof box.isEmpty === 'function' && !box.isEmpty()) hasText = true;
+    });
+    return hasText;
+  }
+
+  /**
    * Get the visible composer.
    * @returns {HTMLElement|null} The composer element
    */

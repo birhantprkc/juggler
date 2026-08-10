@@ -855,12 +855,12 @@ class Composer extends HTMLElement {
    * Whether the composer currently holds nothing sendable — no non-whitespace
    * text and no staged attachments or dropped text files. This is the single
    * definition of "empty" shared by the Send button (which can't send an empty
-   * message) and the schedule button (which mustn't arm a delayed send that
-   * would silently fire nothing).
+   * message), the schedule button (which mustn't arm a delayed send that would
+   * silently fire nothing), and the "is the user mid-message?" test that decides
+   * whether a conversation may pull the user to another tab.
    * @returns {boolean} True when there is nothing sendable.
-   * @private
    */
-  _isComposerEmpty() {
+  isEmpty() {
     const textarea = this.querySelector('textarea');
     const hasText = !!(textarea && textarea.value.trim());
     const hasAttachments = this._resolvedAttachments().length > 0 || this._pendingTextFiles.length > 0;
@@ -877,7 +877,7 @@ class Composer extends HTMLElement {
    * @private
    */
   _updateSendButtonState() {
-    const empty = this._isComposerEmpty();
+    const empty = this.isEmpty();
     const sendBtn = this.querySelector('#send-button');
     if (sendBtn) sendBtn.classList.toggle('is-empty', empty);
     this._updateNewThreadControls();
@@ -2829,7 +2829,7 @@ class Composer extends HTMLElement {
     const btn = this.querySelector('.schedule-send-btn');
     if (!btn) return;
     const label = btn.querySelector('.schedule-send-countdown');
-    const empty = this._isComposerEmpty();
+    const empty = this.isEmpty();
     /** @type {HTMLButtonElement} */ (btn).disabled = empty;
     if (this._scheduledSendAt === null || empty) {
       btn.classList.remove('armed');

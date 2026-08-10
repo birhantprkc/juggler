@@ -100,6 +100,7 @@ interface HTMLElementTagNameMap {
 	'composer-box': HTMLElement & {
 		setSession(session: unknown): void;
 		focus(): void;
+		isEmpty(): boolean;
 	};
 	'properties-panel': HTMLElement & {
 		setConversation(conversation: unknown): void;

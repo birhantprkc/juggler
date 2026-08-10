@@ -96,7 +96,8 @@ export default function systemPromptContribution({ enabledPluginIds }) {
 				'When the user asks for a **new conversation, a new tab, or a new chat** (all the same thing), or you ' +
 				'want to start a fresh, independent line of work that does not belong in this conversation, call ' +
 				'`new_conversation` with the initial `message`. It opens a separate top-level conversation in its own ' +
-				'tab and switches the user to it. This is NOT create_thread: it is a peer conversation, not a sub-task ' +
+				'tab, taking the user there if they are still watching this one and have not begun typing. This is NOT ' +
+				'create_thread: it is a peer conversation, not a sub-task ' +
 				'— it works on its own and never reports back to you, so the message must be self-contained. Leave ' +
 				'`autostart` at its default to have it begin immediately; set it false to hand the user a ready-to-send ' +
 				'message they can review first.'

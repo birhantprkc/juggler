@@ -526,7 +526,13 @@ class ConversationBar extends HTMLElement {
         (/** @type {string} */ convId) => this._refreshTabStatus(convId)
       );
     }
-    // Switch to the new conversation (will be handled by conversation:switched event)
+    // A switch normally arrives as its own `conversation:switched` event, which
+    // shows the tab. When the session was already pointed at this conversation
+    // before its element existed, that event has been and gone — reconcile now,
+    // or the panel stays blank on whatever _showTab hid last.
+    if (this._session?.visibleConversationId === conversation.id) {
+      this._showTab(conversation.id);
+    }
   }
 
   /**

@@ -107,11 +107,17 @@ type WorkerManager interface {
 // `BroadcastConversationsReordered` carries a drag-reorder as the full new
 // id order. It rides the same `conversations-changed` event type with
 // `op:"reordered"` and an `order:[id,...]` payload.
+//
+// `BroadcastConversationFocus` asks every viewer to switch to a conversation.
+// It rides the same event type with `op:"focus"` plus a `from` id naming the
+// conversation that requested the switch, so each viewer can decide whether to
+// follow (see Session.applyConversationFocus).
 type Broadcaster interface {
 	BroadcastSessionChanged()
 	BroadcastSessionMetadataChanged(metadata map[string]any)
 	BroadcastConversationsChanged(op, id, name string)
 	BroadcastConversationsReordered(order []string)
+	BroadcastConversationFocus(id, from string)
 }
 
 // NewSessionAPI creates a new session API handler. managerProvider must
@@ -346,12 +352,17 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 		// source, so a "phantom" tab is otherwise untraceable. Purely diagnostic.
 		Origin string `json:"origin"`
 		// Focus, when set, makes the server broadcast an extra "focus" op after
-		// "created" so every viewer switches to the new conversation. The creating
+		// "created" asking viewers to switch to the new conversation. The creating
 		// client is the engine (headless, no tab of its own) — e.g. the
 		// new_conversation tool — which cannot move viewer focus locally because
 		// visibleConversationId is per-client state. A plain viewer gesture
 		// (plus-button, /new) omits this and activates its own tab locally.
 		Focus bool `json:"focus"`
+		// FocusFrom names the conversation that asked for the switch. It rides
+		// the "focus" op so each viewer can decide whether to follow: a viewer
+		// watching a different tab, or mid-message in the requesting one, keeps
+		// its place. Empty means unattributed — viewers follow unconditionally.
+		FocusFrom string `json:"focusFrom"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid request body")
@@ -426,11 +437,12 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 	if api.broadcaster != nil {
 		api.broadcaster.BroadcastConversationsChanged("created", id, finalName)
 		// A headless creator (the engine, via the new_conversation tool) asked
-		// every viewer to switch to this conversation. Sent right after "created"
-		// so viewers that just built the tab focus it; the engine ignores
-		// conversations-changed, so it never self-focuses.
+		// viewers to switch to this conversation. Sent right after "created" so
+		// viewers that just built the tab can focus it; the engine ignores
+		// conversations-changed, so it never self-focuses. FocusFrom names the
+		// requesting conversation — each viewer applies its own follow policy.
 		if req.Focus {
-			api.broadcaster.BroadcastConversationsChanged("focus", id, "")
+			api.broadcaster.BroadcastConversationFocus(id, req.FocusFrom)
 		}
 	}
 }

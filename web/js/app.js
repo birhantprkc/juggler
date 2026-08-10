@@ -433,10 +433,10 @@ class JugglerApp {
     // minimum payload needed to apply locally; clients apply
     // idempotently so the originator's echo is a no-op.
     if (data.type === 'conversations-changed') {
-      const { op, id, name, order } = data;
+      const { op, id, name, order, from } = data;
       switch (op) {
         case 'created':          session.applyConversationCreated(id, name); break;
-        case 'focus':            session.applyConversationFocus(id); break;
+        case 'focus':            session.applyConversationFocus(id, from); break;
         case 'deleted':          session.applyConversationDeleted(id); break;
         case 'renamed':          session.applyConversationRenamed(id, name); break;
         case 'binned':           session.applyConversationBinned(id); break;
