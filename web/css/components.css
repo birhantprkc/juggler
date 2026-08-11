@@ -778,16 +778,20 @@ conversation-bar .conversation-bin-button:hover {
 
 /* ----------------------------------------------------------------------------
    Info-cards "i" menu (web/js/components/info-cards-button.js) — a small
-   affordance below the info rail that re-shows cards hidden via their ×.
-   Right-aligned in the sidebar. The menu itself is a standard `.dropdown-menu`
-   presented on <body> by popup-surface.js, so only the trigger button lives
-   here; the surface inherits the shared popup chrome and placement.
+   affordance heading the info rail that re-shows cards hidden via their ×. It is
+   the rail's first child, so it rides directly above the topmost card, left-
+   aligned. The menu itself is a standard `.dropdown-menu` presented on <body> by
+   popup-surface.js, so only the trigger button lives here; the surface inherits
+   the shared popup chrome and placement.
    ---------------------------------------------------------------------------- */
 conversation-bar info-cards-button {
     display: flex;
-    justify-content: flex-end;
+    justify-content: flex-start;
+
+    /* The glyph sits 0.25rem inside the 1.5rem button box, so nudging the box in
+       by 0.15rem lines the icon up with the 0.4rem-inset card text below it. */
+    margin-left: 0.15rem;
     flex-shrink: 0;
-    margin: 0 0.4rem;
 }
 
 conversation-bar info-cards-button[hidden] {
@@ -848,8 +852,8 @@ conversation-bar .info-cards-button[aria-expanded="true"] {
    while the tabs leave room for them. The rail is the flex child that grows into
    whatever the conversation list doesn't use (flex: 1 1 0), so its own height IS
    the available space — no measuring of siblings. When the list is tall it shrinks
-   to nothing first (basis 0) and the tabs scroll instead; cards bottom-align so
-   they rest just above the Bin. overflow:hidden is a safety net — the component
+   to its "i" row first (basis 0) and the tabs scroll instead; the button and the
+   cards bottom-align so they rest just above the Bin. overflow:hidden is a safety net — the component
    only ever appends cards that fully fit. Deliberately low-key: no per-card
    background or shadow — just muted text on the sidebar panel, with a hairline
    divider between adjacent cards for gentle zoning (see .info-card + .info-card).
@@ -862,12 +866,23 @@ conversation-bar info-rail {
     justify-content: flex-end;
     gap: 0.5rem;
     flex: 1 1 0;
-    min-height: 0;
     overflow: hidden;
     box-sizing: border-box;
     margin: 0 0.4rem;
     padding: 0.5rem 0 0.85rem;
     font-family: var(--font-ui);
+
+    /* Keep the "i" row even when the tabs take the column: as the flex:1 child the
+       rail would otherwise shrink to nothing and take the info-cards menu — the
+       only way back for cards hidden via their × — with it. 1.5rem button plus the
+       rail's own 1.35rem of padding (border-box). */
+    min-height: 2.85rem;
+}
+
+/* Nothing to reserve when the menu itself is gone (no cards installed, or test
+   mode): the rail collapses to nothing again and the tabs get the whole column. */
+conversation-bar info-rail:has(info-cards-button[hidden]) {
+    min-height: 0;
 }
 
 conversation-bar info-rail[hidden] {

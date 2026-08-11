@@ -3,8 +3,10 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * <info-cards-button> — the small "i" control in the tab column that manages the
- * per-window visibility of the ambient info cards (Tips, Usage, Git status, …).
+ * <info-cards-button> — the small "i" control heading the info rail in the tab
+ * column, managing the per-window visibility of the ambient info cards (Tips,
+ * Usage, Git status, …). It is mounted as the rail's first child (see
+ * {@link module:components/info-rail}), so it sits immediately above the cards.
  *
  * It is the un-hide surface for gate 2: the × on a card {@link module:services/info-cards-manager|hides}
  * it in this window, and this menu brings it back. It lists every gate-1 enabled
@@ -132,8 +134,8 @@ class InfoCardsButton extends HTMLElement {
       anchor: this._button,
       id: POPUP_ID,
       onClose: () => this._closeMenu(),
-      // Right-aligned trigger → pin the menu's right edge to the button's.
-      align: 'right',
+      // Left-aligned trigger → pin the menu's left edge to the button's.
+      align: 'left',
       gap: 6,
       insideSelectors: ['info-cards-button', '.info-cards-menu'],
     });

@@ -5,10 +5,17 @@
 /**
  * <info-rail> — the ambient stack of "info cards" parked in the empty sidebar
  * space just above the Bin (Tips, Git status, …). Each card gets the same chrome:
- * an eyebrow label, a × that hides it (bring it back from the info-cards menu on
- * the tab column), and a content region the card fills itself. The gate-1 enabled
- * card instances are supplied by {@link module:services/info-cards-manager}; the
- * cards themselves are plugins of the `@juggler/core` extension.
+ * an eyebrow label, a × that hides it (bring it back from the info-cards menu the
+ * rail heads the stack with), and a content region the card fills itself. The
+ * gate-1 enabled card instances are supplied by
+ * {@link module:services/info-cards-manager}; the cards themselves are plugins of
+ * the `@juggler/core` extension.
+ *
+ * The rail also hosts the {@link module:components/info-cards-button|"i" menu} as
+ * the first child of its stack, so the control rides immediately above the cards
+ * it manages. It is a rail child rather than a sibling because the rail is the
+ * flex:1 child: anything placed beside it would be stranded at the top of the free
+ * space instead of resting with the bottom-aligned cards.
  *
  * The conversation tabs always win the column. CSS makes this rail the flex child
  * that grows into whatever the list doesn't use (`flex: 1 1 0`), so the rail's own
@@ -26,6 +33,7 @@
 
 import { providers, isHidden, hideCard, INFO_CARDS_CHANGED_EVENT } from '../services/info-cards-manager.js';
 import { TIPS_CHANGED_EVENT } from '../services/tips-manager.js';
+import './info-cards-button.js';
 
 /**
  * The runtime shape of a mounted card — an {@link import('juggler/info-card-type').default}
@@ -51,9 +59,19 @@ class InfoRail extends HTMLElement {
     this._onChange = null;
     /** @type {import('../model/session.js').default|undefined} @private */
     this._session = undefined;
+    /** @type {HTMLElement|null} @private The "i" menu heading the stack. */
+    this._cardsButton = null;
   }
 
   connectedCallback() {
+    // The "i" menu leads the stack, so it sits immediately above the topmost card
+    // (and just above the Bin when no card is showing). Appended before any card,
+    // and cards only ever append after it, so it stays first.
+    if (!this._cardsButton) {
+      this._cardsButton = document.createElement('info-cards-button');
+      this.appendChild(this._cardsButton);
+    }
+
     this._onChange = () => this._reconcile();
     window.addEventListener(INFO_CARDS_CHANGED_EVENT, this._onChange);
     window.addEventListener(TIPS_CHANGED_EVENT, this._onChange);
@@ -124,7 +142,9 @@ class InfoRail extends HTMLElement {
    * fully fit the rail's content box — summing each card's own offsetHeight plus the
    * inter-card gap. offsetHeight is a card's true rendered height even while the
    * parent is clipping it, so this is engine-independent (unlike scrollHeight, which
-   * ignores the top-edge overflow our bottom-aligned stack produces).
+   * ignores the top-edge overflow our bottom-aligned stack produces). The "i" menu
+   * shares the stack, so its own height (and the gap below it) comes off the budget
+   * first — it is never the thing that gets dropped.
    * @returns {number} The count of leading cards that fit.
    * @private
    */
@@ -132,7 +152,8 @@ class InfoRail extends HTMLElement {
     const cs = getComputedStyle(this);
     const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
     const gap = parseFloat(cs.rowGap) || 0;
-    const available = this.clientHeight - padY;
+    const buttonHeight = this._cardsButton ? this._cardsButton.offsetHeight : 0;
+    const available = this.clientHeight - padY - (buttonHeight > 0 ? buttonHeight + gap : 0);
     let used = 0;
     let count = 0;
     for (const entry of this._mounted) {
