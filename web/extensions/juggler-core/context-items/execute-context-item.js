@@ -5,7 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { shell, shellStreaming, shellBackground, MAX_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS } from 'juggler/ops';
-import { smartTruncate, createHighlightedCode, createSummaryWithSubtitle } from 'juggler/ui';
+import { createHighlightedCode, createSummaryWithSubtitle } from 'juggler/ui';
 import { isCommandAutoApproved, isCatastrophicDeletion, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
 import { renderExecutePermissionSection } from './execute/permission-section.js';
 
@@ -872,7 +872,7 @@ class ExecuteContextItem extends ContextItem {
   /**
    * Format any action outcome for display
    * @param {import('juggler/context-item').Outcome} outcome - Action outcome
-   * @returns {{summary: string, details: string, success: boolean, icon: string, exitCode?: number, feedbackForLLM?: string}} Formatted result for display
+   * @returns {import('juggler/context-item').ItemSummary & {exitCode?: number}} Formatted result for display, carrying the command's exit code
    */
   getSummary(outcome) {
     // Extract command from prepared params for denied/cancelled messages
@@ -884,10 +884,10 @@ class ExecuteContextItem extends ContextItem {
     // Handle non-success cases
     if (outcome.cancelled) {
       const summary = truncatedCmd ? `Command cancelled: ${truncatedCmd}` : 'Command execution cancelled';
-      return { summary, details: prepCommand ? `$ ${prepCommand}` : '', success: false, icon: '✗' };
+      return this.failureSummary(summary, { details: prepCommand ? `$ ${prepCommand}` : '' });
     }
     if (!outcome.success) {
-      return { summary: `Command execution failed: ${outcome.error}`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Command execution failed: ${outcome.error}`);
     }
 
     // Success case - format command result
@@ -901,18 +901,12 @@ class ExecuteContextItem extends ContextItem {
     const icon = cmdSuccess ? '✓' : '✗';
 
     // Build summary for LLM (this is what goes in tool_result content)
-    // Note: stderr is now merged into stdout at execution time
+    // Note: stderr is merged into stdout at execution time
     let summary = stdout || '(no output)';
     if (!cmdSuccess) {
       summary += `\n\nexit code: ${exitCode}`;
     }
-
-    // Apply smart truncation to large command outputs
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: truncatedSummary, truncated } = smartTruncate(summary, { maxChars: budget });
-    if (truncated) {
-      summary = truncatedSummary + `\n\n(Output truncated from ${summary.length} to ${truncatedSummary.length} chars)`;
-    }
+    summary = this.truncateForLLM(summary);
 
     // Details for UI display
     let details = `$ ${command}\n\n`;

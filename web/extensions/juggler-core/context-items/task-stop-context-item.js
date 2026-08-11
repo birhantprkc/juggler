@@ -114,13 +114,13 @@ class TaskStopContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return { summary: outcome.error || 'Failed to stop task', details: '', success: false, icon: '✗' };
+      return this.failureSummary(outcome.error || 'Failed to stop task');
     }
     const result = /** @type {{shell_id?: string, killed?: boolean, error?: string}} */ (outcome.result);
     if (result.killed) {
-      return { summary: `Stopped task ${result.shell_id || ''}.`, details: '', success: true, icon: '✓' };
+      return this.successSummary(`Stopped task ${result.shell_id || ''}.`);
     }
-    return { summary: `Task ${result.shell_id || ''} was not stopped: ${result.error || 'not running'}.`, details: '', success: true, icon: '✓' };
+    return this.successSummary(`Task ${result.shell_id || ''} was not stopped: ${result.error || 'not running'}.`);
   }
 
   /**
@@ -130,21 +130,13 @@ class TaskStopContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) return null;
     const taskId = String(toolInput?.task_id || toolInput?.shell_id || '');
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `Stopping ${taskId}...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      summary = `Stopped ${taskId}`;
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, 'Failed to stop task'));
-    }
-    return { typeName: TaskStopContextItem.getTypeName(), summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: TaskStopContextItem.getTypeName(),
+      pending: `Stopping ${taskId}...`,
+      success: `Stopped ${taskId}`,
+      failurePrefix: 'Failed to stop task'
+    });
   }
 
   /**

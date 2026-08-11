@@ -5,7 +5,6 @@
 
 import ContextItem from 'juggler/context-item';
 import { webFetch } from 'juggler/ops';
-import { smartTruncate } from 'juggler/ui';
 
 /**
  * @typedef {object} WebFetchParams
@@ -220,24 +219,17 @@ class WebFetchContextItem extends ContextItem {
     const url = prepParams.url || 'unknown';
 
     if (!outcome.success) {
-      return {
-        summary: outcome.error || `Failed to fetch ${url}`,
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || `Failed to fetch ${url}`);
     }
 
     const result = /** @type {WebFetchResult} */ (outcome.result);
 
     // Handle redirect case
     if (result.redirect) {
-      return {
-        summary: `Redirect detected: ${result.redirect_url}\n${result.error || ''}`,
-        details: '',
-        success: true,
-        icon: '→'
-      };
+      return this.successSummary(
+        `Redirect detected: ${result.redirect_url}\n${result.error || ''}`,
+        { icon: '→' }
+      );
     }
 
     // Build summary for LLM
@@ -249,19 +241,7 @@ class WebFetchContextItem extends ContextItem {
       summary += '\n\n(From cache)';
     }
 
-    // Apply smart truncation
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: truncatedSummary, truncated: wasTruncated } = smartTruncate(summary, { maxChars: budget });
-    if (wasTruncated) {
-      summary = truncatedSummary + `\n\n(Output truncated from ${summary.length} to ${truncatedSummary.length} chars)`;
-    }
-
-    return {
-      summary,
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(this.truncateForLLM(summary));
   }
 
   /**
@@ -272,37 +252,22 @@ class WebFetchContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) {
-      return null;
-    }
-
     const url = String(toolInput?.url || 'unknown');
     // Truncate URL for display
     const displayUrl = url.length > 60 ? url.substring(0, 60) + '...' : url;
 
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `Fetching ${displayUrl}...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      const result = /** @type {WebFetchResult} */ (actionStatus.result);
-
-      if (result.redirect) {
-        summary = `Redirect to: ${result.redirect_url}`;
-        status = 'success';
-      } else {
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Web Fetch',
+      pending: `Fetching ${displayUrl}...`,
+      success: () => {
+        const result = /** @type {WebFetchResult} */ (actionStatus?.result);
+        if (result.redirect) return `Redirect to: ${result.redirect_url}`;
         const cacheStr = result.cached ? ' (cached)' : '';
         const truncStr = result.truncated ? ' (truncated)' : '';
-        summary = `${displayUrl}${cacheStr}${truncStr}`;
-        status = 'success';
-      }
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, 'Failed'));
-    }
-
-    return { typeName: 'Web Fetch', summary, status };
+        return `${displayUrl}${cacheStr}${truncStr}`;
+      },
+      failurePrefix: 'Failed'
+    });
   }
 
   /**

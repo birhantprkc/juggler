@@ -201,12 +201,12 @@ class ExaSearchContextItem extends ContextItem {
   getSummary(outcome) {
     const query = String(outcome.prepared?.params?.query || 'unknown');
     if (!outcome.success) {
-      return { summary: outcome.error || `Exa search failed for "${query}"`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(outcome.error || `Exa search failed for "${query}"`);
     }
 
     const result = /** @type {ExaSearchResult} */ (outcome.result);
     if (!result.results?.length) {
-      return { summary: `No Exa results found for "${query}"`, details: '', success: true, icon: '○' };
+      return this.successSummary(`No Exa results found for "${query}"`, { icon: '○' });
     }
 
     const lines = [`Exa search results for "${query}":\n`];
@@ -217,7 +217,7 @@ class ExaSearchContextItem extends ContextItem {
       if (item.text) lines.push(`  ${item.text}`);
       lines.push('');
     }
-    return { summary: lines.join('\n'), details: '', success: true, icon: '✓' };
+    return this.successSummary(lines.join('\n'));
   }
 
   /**
@@ -226,24 +226,18 @@ class ExaSearchContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) return null;
     const query = String(toolInput?.query || 'unknown');
     const displayQuery = query.length > 40 ? query.substring(0, 40) + '...' : query;
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `Searching Exa for "${displayQuery}"...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      const result = /** @type {ExaSearchResult} */ (actionStatus.result);
-      const count = result.count ?? result.results?.length ?? 0;
-      summary = `Found ${count} Exa result${count === 1 ? '' : 's'} for "${displayQuery}"`;
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus));
-    }
-    return { typeName: 'Exa Search', summary, status };
+
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Exa Search',
+      pending: `Searching Exa for "${displayQuery}"...`,
+      success: () => {
+        const result = /** @type {ExaSearchResult} */ (actionStatus?.result);
+        const count = result.count ?? result.results?.length ?? 0;
+        return `Found ${count} Exa result${count === 1 ? '' : 's'} for "${displayQuery}"`;
+      }
+    });
   }
 
   /** @returns {string} Result section label */

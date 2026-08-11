@@ -258,12 +258,7 @@ class AskUserQuestionContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: outcome.error || 'Failed to get user response',
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || 'Failed to get user response');
     }
 
     const result = /** @type {AskUserQuestionResult} */ (outcome.result);
@@ -279,12 +274,7 @@ class AskUserQuestionContextItem extends ContextItem {
       }
     }
 
-    return {
-      summary: lines.join('\n') || 'No answers provided',
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(lines.join('\n') || 'No answers provided');
   }
 
   /**
@@ -296,12 +286,8 @@ class AskUserQuestionContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput, context) {
-    if (!actionStatus) {
-      return null;
-    }
-
     const params = /** @type {AskUserQuestionParams} */ (toolInput);
-    const displayData = /** @type {{questions?: Question[]}|undefined} */ (actionStatus.displayData);
+    const displayData = /** @type {{questions?: Question[]}|undefined} */ (actionStatus?.displayData);
     // `toolInput.questions` is the immutable source of truth; displayData is a
     // derived cache that a re-run clears. Guard against the empty-array trap:
     // `[] || params.questions` returns `[]` (truthy), which would render "0
@@ -309,44 +295,29 @@ class AskUserQuestionContextItem extends ContextItem {
     // actually carries questions; otherwise fall back to the toolInput.
     const questions = (displayData?.questions?.length ? displayData.questions : params.questions) || [];
 
-    /** @type {string|HTMLElement} */
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    /** @type {HTMLElement|undefined} */
-    let customFormElement;
-
-    if (actionStatus.pending) {
-      // Title is the short `header` chip, not the full question — the question
-      // text is rendered in full inside the form below, so repeating it here
-      // would duplicate it.
-      summary = questions.length === 1
-        ? (questions[0]?.header || 'Waiting for user response...')
-        : `Answering ${questions.length} questions...`;
-      if (context) {
-        customFormElement = this._buildMultiQuestionForm(questions, context);
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Question',
+      pending: () => ({
+        // Title is the short `header` chip, not the full question — the question
+        // text is rendered in full inside the form below, so repeating it here
+        // would duplicate it.
+        summary: questions.length === 1
+          ? (questions[0]?.header || 'Waiting for user response...')
+          : `Answering ${questions.length} questions...`,
+        customFormElement: context ? this._buildMultiQuestionForm(questions, context) : undefined
+      }),
+      success: () => {
+        const result = /** @type {AskUserQuestionResult} */ (actionStatus?.result);
+        const answerEntries = Object.entries(result.answers || {});
+        if (answerEntries.length === 1) {
+          const [header, answer] = /** @type {[string, string | string[]]} */ (answerEntries[0]); // bounded: length===1
+          return `${header}: ${Array.isArray(answer) ? answer.join(', ') : answer}`;
+        }
+        return answerEntries.length > 1
+          ? `Answered ${answerEntries.length} questions`
+          : 'No answer provided';
       }
-      status = 'running';
-    } else if (actionStatus.success) {
-      const result = /** @type {AskUserQuestionResult} */ (actionStatus.result);
-      const answers = result.answers || {};
-
-      const answerEntries = Object.entries(answers);
-      if (answerEntries.length === 1) {
-        const [header, answer] = /** @type {[string, string | string[]]} */ (answerEntries[0]); // bounded: length===1
-        const answerText = Array.isArray(answer) ? answer.join(', ') : answer;
-        summary = `${header}: ${answerText}`;
-      } else if (answerEntries.length > 1) {
-        summary = `Answered ${answerEntries.length} questions`;
-      } else {
-        summary = 'No answer provided';
-      }
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus));
-    }
-
-    return { typeName: "Question", summary, status, customFormElement };
+    });
   }
 
   /**

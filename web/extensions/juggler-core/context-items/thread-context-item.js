@@ -73,20 +73,10 @@ class ThreadContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: outcome.error || 'Failed to create thread',
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || 'Failed to create thread');
     }
 
-    return {
-      summary: 'Thread completed',
-      details: '',
-      success: true,
-      icon: '▼'
-    };
+    return this.successSummary('Thread completed', { icon: '▼' });
   }
 }
 

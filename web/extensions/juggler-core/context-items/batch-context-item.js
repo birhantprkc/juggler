@@ -5,7 +5,6 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile, grep } from 'juggler/ops';
-import { smartTruncate } from 'juggler/ui';
 
 /**
  * @typedef {object} BatchReadFile
@@ -261,12 +260,7 @@ class BatchContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: outcome.error || 'Batch operation failed',
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || 'Batch operation failed');
     }
 
     const result = /** @type {Record<string, unknown>} */ (outcome.result);
@@ -278,18 +272,7 @@ class BatchContextItem extends ContextItem {
       content = this._formatBatchGrepResults(/** @type {any[]} */ (result.results));
     }
 
-    // Apply smart truncation
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: truncated, truncated: wasTruncated } = smartTruncate(content, { maxChars: budget });
-
-    return {
-      summary: wasTruncated
-        ? truncated + `\n\n(Output truncated from ${content.length} to ${truncated.length} chars)`
-        : content,
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(this.truncateForLLM(content));
   }
 
   /**
@@ -388,31 +371,20 @@ class BatchContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) return null;
-
     const files = BatchContextItem._coerceArray(toolInput?.files);
     const searches = BatchContextItem._coerceArray(toolInput?.searches);
     const isBatchRead = Array.isArray(files);
     const count = isBatchRead
       ? /** @type {any[]} */ (files).length
       : /** @type {any[]} */ (Array.isArray(searches) ? searches : []).length;
-    const typeName = isBatchRead ? 'BatchRead' : 'BatchGrep';
+    const noun = isBatchRead ? 'files' : 'searches';
 
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-
-    if (actionStatus.pending) {
-      summary = `${count} ${isBatchRead ? 'files' : 'searches'}...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      summary = `${count} ${isBatchRead ? 'files' : 'searches'} completed`;
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, 'failed'));
-    }
-
-    return { typeName, summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: isBatchRead ? 'BatchRead' : 'BatchGrep',
+      pending: `${count} ${noun}...`,
+      success: `${count} ${noun} completed`,
+      failurePrefix: 'failed'
+    });
   }
 
   /**

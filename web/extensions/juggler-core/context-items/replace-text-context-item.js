@@ -352,22 +352,16 @@ class ReplaceTextContextItem extends EditBase {
 
     // Handle non-success cases
     if (outcome.cancelled) {
-      return { summary: `Replace text cancelled: ${prepPath}`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Replace text cancelled: ${prepPath}`);
     }
     if (!outcome.success) {
       // Check if we have structured error info from backend
       const result = /** @type {{success: boolean, errorCode: string, path: string, hasEscaping?: boolean, hasNearMatch?: boolean, nearMatchLine?: number, contextLines?: string}|undefined} */ (outcome.result);
       if (result && result.path) {
         const { userMessage, llmMessage } = this.formatError(result, 'edit');
-        return {
-          summary: `Replace text failed: ${userMessage}`,
-          details: '',
-          success: false,
-          icon: '✗',
-          feedbackForLLM: llmMessage
-        };
+        return this.failureSummary(`Replace text failed: ${userMessage}`, { feedbackForLLM: llmMessage });
       }
-      return { summary: `Replace text failed: ${outcome.error}`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Replace text failed: ${outcome.error}`);
     }
 
     // Success case

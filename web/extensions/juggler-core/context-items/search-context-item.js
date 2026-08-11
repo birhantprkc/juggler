@@ -6,7 +6,6 @@
 import ContextItem from 'juggler/context-item';
 import { grep } from 'juggler/ops';
 import { formatPathForStatus } from 'juggler/item-utils';
-import { smartTruncate } from 'juggler/ui';
 import { toolInputPath, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags, gitignoreDisabled } from './path-approval.js';
 import { buildGitignoreSection } from './search-scope-section.js';
 
@@ -323,12 +322,7 @@ class SearchContextItem extends ContextItem {
     const pattern = /** @type {string} */ (prepParams.pattern) || 'unknown';
 
     if (!outcome.success) {
-      return {
-        summary: outcome.error || `Search failed for ${pattern}`,
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || `Search failed for ${pattern}`);
     }
 
     const result = /** @type {SearchResult} */ (outcome.result);
@@ -336,21 +330,10 @@ class SearchContextItem extends ContextItem {
     // Format the search results for LLM - this goes in summary for tool_result
     const formattedContent = this._formatSearchResults(result, prepParams);
 
-    // Apply smart truncation with keyword context
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: truncatedContent, truncated } = smartTruncate(formattedContent, {
-      maxChars: budget,
-      keywords: [pattern]
-    });
-
-    return {
-      summary: truncated
-        ? truncatedContent + `\n\n(Output truncated from ${formattedContent.length} to ${truncatedContent.length} chars)`
-        : formattedContent,
-      details: '',
-      success: true,
-      icon: result.matchCount > 0 ? '✓' : '○'
-    };
+    return this.successSummary(
+      this.truncateForLLM(formattedContent, { keywords: [pattern] }),
+      { icon: result.matchCount > 0 ? '✓' : '○' }
+    );
   }
 
   /**
@@ -486,31 +469,21 @@ class SearchContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) {
-      return null;
-    }
-
     const pattern = String(toolInput?.pattern || 'unknown');
     const path = toolInput?.path ? String(toolInput.path) : null;
     const pathSuffix = path ? ` in ${formatPathForStatus(path, this.session?.projectPath)}` : '';
 
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `${pattern}${pathSuffix}...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      const result = /** @type {SearchResult|undefined} */ (actionStatus.result);
-      summary = result
-        ? `${pattern}${pathSuffix} (${result.matchCount} matches in ${result.fileCount} files)`
-        : `${pattern}${pathSuffix}`;
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, `failed${pathSuffix}`));
-    }
-
-    return { typeName: 'Grep', summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Grep',
+      pending: `${pattern}${pathSuffix}...`,
+      success: () => {
+        const result = /** @type {SearchResult|undefined} */ (actionStatus?.result);
+        return result
+          ? `${pattern}${pathSuffix} (${result.matchCount} matches in ${result.fileCount} files)`
+          : `${pattern}${pathSuffix}`;
+      },
+      failurePrefix: `failed${pathSuffix}`
+    });
   }
 
   /**

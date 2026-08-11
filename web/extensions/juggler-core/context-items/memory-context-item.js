@@ -344,17 +344,17 @@ class MemoryContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return { summary: `Memory update failed: ${outcome.error}`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Memory update failed: ${outcome.error}`);
     }
     const r = /** @type {{action?: string, fact?: string, match?: string, removed?: string[]}} */ (outcome.result || {});
     if (r.action === 'forget') {
       if (!r.removed || r.removed.length === 0) {
-        return { summary: `No memory entry matched "${r.match}"`, details: '', success: true, icon: '✓' };
+        return this.successSummary(`No memory entry matched "${r.match}"`);
       }
       const noun = r.removed.length === 1 ? 'entry' : 'entries';
-      return { summary: `Forgot ${r.removed.length} memory ${noun}: ${r.removed.join('; ')}`, details: '', success: true, icon: '✓' };
+      return this.successSummary(`Forgot ${r.removed.length} memory ${noun}: ${r.removed.join('; ')}`);
     }
-    return { summary: `Remembered: ${r.fact}`, details: '', success: true, icon: '✓' };
+    return this.successSummary(`Remembered: ${r.fact}`);
   }
 
   /**

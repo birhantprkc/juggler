@@ -168,20 +168,10 @@ class JugglerSourceContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: outcome.error || 'Failed to read Juggler source',
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || 'Failed to read Juggler source');
     }
     const result = /** @type {JugglerSourceResult} */ (outcome.result);
-    return {
-      summary: result.content || '',
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(result.content || '');
   }
 
   /**
@@ -192,25 +182,14 @@ class JugglerSourceContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) {
-      return null;
-    }
     const path = toolInput && typeof toolInput.path === 'string' ? toolInput.path : '';
 
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    let summary;
-    if (actionStatus.pending) {
-      summary = 'Reading Juggler source\u2026';
-      status = 'running';
-    } else if (actionStatus.success) {
-      summary = path || 'Juggler source';
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, 'Failed'));
-    }
-
-    return { typeName: 'Juggler Source', summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Juggler Source',
+      pending: 'Reading Juggler source\u2026',
+      success: path || 'Juggler source',
+      failurePrefix: 'Failed'
+    });
   }
 
   /**

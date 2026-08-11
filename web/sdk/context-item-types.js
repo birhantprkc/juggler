@@ -134,6 +134,28 @@
  */
 
 /**
+ * One branch of a getStatusUI() ladder, as passed to `buildStatusUI()`. A bare
+ * string or element is the status line and takes the branch's default status
+ * ('running' while pending, 'success' when the action succeeded); return a
+ * full ResultStatusMessage to override the status or add fields such as
+ * `customFormElement`.
+ * @typedef {string|HTMLElement|ResultStatusMessage} StatusBranch
+ */
+
+/**
+ * Declarative description of a getStatusUI() ladder, consumed by
+ * `buildStatusUI()`. Branches may be values or thunks — a thunk is only called
+ * for the branch that applies, so a success branch can read `actionStatus.result`
+ * without guarding for the pending case.
+ * @typedef {object} StatusUIConfig
+ * @property {string} typeName - Type label rendered as the lozenge badge
+ * @property {StatusBranch|(() => StatusBranch)} [pending] - Shown while the action is running
+ * @property {StatusBranch|(() => StatusBranch)} [success] - Shown when the action succeeded
+ * @property {string} [failurePrefix] - Prefix for the error message on the failure branch
+ * @property {string} [cancelledMessage] - Custom message for the cancelled branch
+ */
+
+/**
  * Unified tool call result returned by handleToolCall()
  * @typedef {object} ToolCallResult
  * @property {boolean} success - Whether tool executed successfully

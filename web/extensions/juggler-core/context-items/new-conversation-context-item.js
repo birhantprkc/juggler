@@ -168,21 +168,14 @@ class NewConversationContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: outcome.error || 'Failed to create conversation',
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || 'Failed to create conversation');
     }
 
     const result = /** @type {{name?: string, autostart?: boolean}} */ (outcome.result) || {};
     const label = result.name ? `"${result.name}"` : 'a new conversation';
-    const summary = result.autostart
+    return this.successSummary(result.autostart
       ? `Created ${label} and started it working on your message. It runs independently in its own tab and does not report back here.`
-      : `Created ${label} with your message ready to send (not started). It opens in its own tab for the user to review.`;
-
-    return { summary, details: '', success: true, icon: '✓' };
+      : `Created ${label} with your message ready to send (not started). It opens in its own tab for the user to review.`);
   }
 
   /**

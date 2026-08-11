@@ -189,21 +189,11 @@ class AboutJugglerContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: outcome.error || 'Failed to load the Juggler manual',
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || 'Failed to load the Juggler manual');
     }
 
     const result = /** @type {AboutJugglerResult} */ (outcome.result);
-    return {
-      summary: result.corpus || buildCorpus(''),
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(result.corpus || buildCorpus(''));
   }
 
   /**
@@ -214,26 +204,14 @@ class AboutJugglerContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) {
-      return null;
-    }
-
     const question = toolInput && typeof toolInput.question === 'string' ? toolInput.question : '';
 
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    let summary;
-    if (actionStatus.pending) {
-      summary = 'Looking up Juggler\u2026';
-      status = 'running';
-    } else if (actionStatus.success) {
-      summary = question ? question : 'About Juggler';
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, 'Failed'));
-    }
-
-    return { typeName: 'About Juggler', summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'About Juggler',
+      pending: 'Looking up Juggler\u2026',
+      success: question || 'About Juggler',
+      failurePrefix: 'Failed'
+    });
   }
 
   /**

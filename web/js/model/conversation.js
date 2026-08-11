@@ -7,6 +7,7 @@ import wsService from '../services/websocket.js';
 import providersCache from '../services/providers-cache.js';
 import recentModels from '../services/recent-models.js';
 import { AbortError } from 'juggler/strategy-type';
+import { DEFAULT_TRUNCATION_BUDGET } from 'juggler/context-item';
 import ConversationDocument from './conversation-document.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
 import workerManager from '../services/worker-manager.js';
@@ -572,6 +573,17 @@ class Conversation {
    */
   get completedTurns() {
     return Number(this._doc?.metadata.get('completedTurns')) || 0;
+  }
+
+  /**
+   * Character budget for a single tool result's LLM-facing output. Items read
+   * it through `ContextItem#truncationBudget()` / `truncateForLLM()` rather
+   * than reaching in here, so the conversation stays the one place the budget
+   * can grow a policy (per-model window, per-turn call count).
+   * @returns {number} Maximum characters of tool output to hand the LLM
+   */
+  get truncationBudget() {
+    return DEFAULT_TRUNCATION_BUDGET;
   }
 
   /**

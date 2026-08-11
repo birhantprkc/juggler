@@ -6,7 +6,6 @@
 import ContextItem from 'juggler/context-item';
 import { glob } from 'juggler/ops';
 import { formatPathForStatus } from 'juggler/item-utils';
-import { smartTruncate } from 'juggler/ui';
 import { toolInputPath, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags, gitignoreDisabled } from './path-approval.js';
 import { buildGitignoreSection } from './search-scope-section.js';
 
@@ -181,35 +180,17 @@ class GlobContextItem extends ContextItem {
     const pattern = prepParams.pattern || 'unknown';
 
     if (!outcome.success) {
-      return {
-        summary: outcome.error || `Failed to glob ${pattern}`,
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || `Failed to glob ${pattern}`);
     }
 
     const result = /** @type {GlobResult} */ (outcome.result);
 
-    // Format the file list for LLM
+    // Format the file list for LLM, keeping windows around the pattern itself
     const formattedContent = this._formatGlobContent(result);
 
-    // Apply smart truncation with pattern keyword
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const keywords = pattern ? [pattern] : [];
-    const { content: truncatedContent, truncated } = smartTruncate(formattedContent, {
-      maxChars: budget,
-      keywords
-    });
-
-    return {
-      summary: truncated
-        ? truncatedContent + `\n\n(Output truncated from ${formattedContent.length} to ${truncatedContent.length} chars)`
-        : formattedContent,
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(
+      this.truncateForLLM(formattedContent, { keywords: pattern ? [pattern] : [] })
+    );
   }
 
   /**
@@ -244,33 +225,23 @@ class GlobContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput, context) {
-    if (!actionStatus) {
-      return null;
-    }
-
     const pattern = /** @type {string} */ (toolInput?.pattern) || 'unknown';
     const searchPath = /** @type {string|undefined} */ (toolInput?.path);
     const projectPath = /** @type {any} */ (context?.session)?.projectPath || this.session?.projectPath;
     const displayPattern = searchPath ? `${formatPathForStatus(searchPath, projectPath)}/${pattern}` : pattern;
 
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `${displayPattern}...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      const result = /** @type {GlobResult} */ (actionStatus.result);
-      const count = result
-        ? (result.count ?? /** @type {any} */ (result).filesCount ?? result.files?.length ?? 0)
-        : 0;
-      summary = `${count} file${count === 1 ? '' : 's'} matching ${displayPattern}`;
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, 'failed'));
-    }
-
-    return { typeName: 'Glob', summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Glob',
+      pending: `${displayPattern}...`,
+      success: () => {
+        const result = /** @type {GlobResult} */ (actionStatus?.result);
+        const count = result
+          ? (result.count ?? /** @type {any} */ (result).filesCount ?? result.files?.length ?? 0)
+          : 0;
+        return `${count} file${count === 1 ? '' : 's'} matching ${displayPattern}`;
+      },
+      failurePrefix: 'failed'
+    });
   }
 
   /**

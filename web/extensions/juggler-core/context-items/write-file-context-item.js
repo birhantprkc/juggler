@@ -326,9 +326,9 @@ class WriteFileContextItem extends EditBase {
     // Handle non-success cases (check !success first for type narrowing)
     if (!outcome.success) {
       if (outcome.cancelled) {
-        return { summary: `Write file cancelled: ${prepPath}`, details: '', success: false, icon: '✗' };
+        return this.failureSummary(`Write file cancelled: ${prepPath}`);
       }
-      return { summary: `Write file failed: ${outcome.error}`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Write file failed: ${outcome.error}`);
     }
 
     // Success case
@@ -340,13 +340,11 @@ class WriteFileContextItem extends EditBase {
     // Generate feedback for LLM
     const feedbackForLLM = this._generateFeedbackForLLM(path);
 
-    return {
-      summary: `${action} file: ${path}`,
+    return this.successSummary(`${action} file: ${path}`, {
       details: `${action} ${path} (${size} bytes)`,
-      success: true,
       icon: result.created ? '✓' : '↻',
       feedbackForLLM
-    };
+    });
   }
 
   /**
@@ -381,42 +379,31 @@ class WriteFileContextItem extends EditBase {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) {
-      return null;
-    }
-
     // Get display data from displayData (set during prepare)
     /** @type {any} */
-    const displayData = actionStatus.displayData;
+    const displayData = actionStatus?.displayData;
     /** @type {any} */
     const diffData = displayData?.diffData;
     /** @type {any} */
     const contentData = displayData?.contentData;
 
     /** @type {any} */
-    const result = actionStatus.result || {};
+    const result = actionStatus?.result || {};
     const path = result.path || toolInput?.file_path || toolInput?.path || contentData?.path || diffData?.path || 'unknown';
     // Get just the filename for display
     const filename = basename(path) || path;
 
-    // Build summary
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-
-    if (actionStatus.pending) {
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Write',
       // Pending/approval state - use title from display data
-      summary = displayData?.title || `${filename}`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      const action = result.created ? 'Created' : 'Updated';
-      summary = EditBase._editStatSummary(`${action} ${filename}`, EditBase._editStats(displayData, result));
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, filename, `cancelled: ${filename}`));
-    }
-
-    return { typeName: "Write", summary, status };
+      pending: displayData?.title || `${filename}`,
+      success: () => {
+        const action = result.created ? 'Created' : 'Updated';
+        return EditBase._editStatSummary(`${action} ${filename}`, EditBase._editStats(displayData, result));
+      },
+      failurePrefix: filename,
+      cancelledMessage: `cancelled: ${filename}`
+    });
   }
 
   /**

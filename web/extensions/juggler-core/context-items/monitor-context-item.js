@@ -233,10 +233,10 @@ class MonitorContextItem extends ContextItem {
     const command = prepParams.command || '';
 
     if (outcome.cancelled) {
-      return { summary: 'Monitor cancelled', details: command ? `$ ${command}` : '', success: false, icon: '✗' };
+      return this.failureSummary('Monitor cancelled', { details: command ? `$ ${command}` : '' });
     }
     if (!outcome.success) {
-      return { summary: `Failed to start monitor: ${outcome.error}`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Failed to start monitor: ${outcome.error}`);
     }
 
     const result = /** @type {{task_id?: string, persistent?: boolean}} */ (outcome.result);
@@ -246,7 +246,7 @@ class MonitorContextItem extends ContextItem {
       : '';
     const summary = `Monitor started (task ${taskId}). Matching output lines will be delivered into this conversation as they arrive — you keep working and they surface when you next yield, so don't wait for them.${persistentNote} Read full output with TaskOutput(${taskId}); stop it with TaskStop(${taskId}).`;
 
-    return { summary, details: `$ ${command}`, success: true, icon: '✓' };
+    return this.successSummary(summary, { details: `$ ${command}` });
   }
 
   /**

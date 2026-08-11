@@ -5,7 +5,6 @@
 
 import ContextItem from 'juggler/context-item';
 import { shellOutputDelta } from 'juggler/ops';
-import { smartTruncate } from 'juggler/ui';
 
 /**
  * TaskOutputContextItem — read the captured output of a background task started
@@ -83,12 +82,12 @@ class TaskOutputContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return { summary: outcome.error || 'Failed to read task output', details: '', success: false, icon: '✗' };
+      return this.failureSummary(outcome.error || 'Failed to read task output');
     }
     const result = /** @type {{task_id?: string, status?: string, output?: string, exitCode?: number, error?: string}} */ (outcome.result);
 
     if (result.status === 'not_found') {
-      return { summary: `Task ${result.task_id || ''} not found (it may have already finished and been reaped).`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Task ${result.task_id || ''} not found (it may have already finished and been reaped).`);
     }
 
     let summary = `Status: ${result.status || 'unknown'}`;
@@ -96,11 +95,7 @@ class TaskOutputContextItem extends ContextItem {
     summary += '\n\n' + (result.output || '(no new output since last read)');
     if (result.error) summary += `\n\n${result.error}`;
 
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: truncated, truncated: was } = smartTruncate(summary, { maxChars: budget });
-    if (was) summary = truncated + `\n\n(Output truncated from ${summary.length} to ${truncated.length} chars)`;
-
-    return { summary, details: '', success: true, icon: '✓' };
+    return this.successSummary(this.truncateForLLM(summary));
   }
 
   /**
@@ -110,21 +105,13 @@ class TaskOutputContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) return null;
     const taskId = String(toolInput?.task_id || '');
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `Reading output of ${taskId}...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      summary = `Read output of ${taskId}`;
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, 'Failed to read task output'));
-    }
-    return { typeName: TaskOutputContextItem.getTypeName(), summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: TaskOutputContextItem.getTypeName(),
+      pending: `Reading output of ${taskId}...`,
+      success: `Read output of ${taskId}`,
+      failurePrefix: 'Failed to read task output'
+    });
   }
 
   /**

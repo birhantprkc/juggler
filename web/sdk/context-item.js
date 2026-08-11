@@ -7,6 +7,16 @@ import { extractErrorMessage } from './lib/error-utils.js';
 import { FormattingHelpers } from './lib/formatting-helpers.js';
 import { isEngine, isViewer } from './lib/client-role.js';
 import { coerceToolInputToSchema } from './coerce-schema-types.js';
+import { smartTruncate } from './lib/smart-truncate.js';
+
+/**
+ * Fallback character budget for LLM-facing tool output (~7500 tokens). The live
+ * value belongs to the conversation (`Conversation#truncationBudget`); this is
+ * what `ContextItem#truncationBudget()` falls back to when an item is
+ * constructed against a conversation stub that has no budget of its own.
+ * @type {number}
+ */
+export const DEFAULT_TRUNCATION_BUDGET = 30000;
 
 /**
  * How a tool that parks for the human suspends — the two are resolved the same
@@ -50,6 +60,8 @@ export const INTERACTION_KIND = {
  * @typedef {import('./context-item-types.js').Outcome} Outcome
  * @typedef {import('./context-item-types.js').ResultStatus} ResultStatus
  * @typedef {import('./context-item-types.js').ResultStatusMessage} ResultStatusMessage
+ * @typedef {import('./context-item-types.js').StatusBranch} StatusBranch
+ * @typedef {import('./context-item-types.js').StatusUIConfig} StatusUIConfig
  * @typedef {import('./context-item-types.js').ToolCallResult} ToolCallResult
  * @typedef {import('./context-item-types.js').ToolCallContext} ToolCallContext
  * @typedef {import('./context-item-types.js').ContextParams} ContextParams
@@ -520,14 +532,70 @@ class ContextItem {
   getSummary(outcome) {
     if (!outcome.success) {
       if (outcome.denied) {
-        return { summary: 'Action denied by user', details: '', success: false, icon: '✗' };
+        return this.failureSummary('Action denied by user');
       }
       if (outcome.cancelled) {
-        return { summary: 'Action cancelled', details: '', success: false, icon: '✗' };
+        return this.failureSummary('Action cancelled');
       }
-      return { summary: `Action failed: ${outcome.error}`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Action failed: ${outcome.error}`);
     }
-    return { summary: 'Action completed', details: '', success: true, icon: '✓' };
+    return this.successSummary('Action completed');
+  }
+
+  /**
+   * Build a failed ItemSummary in the standard shape (no details, ✗ icon).
+   * Pass `extra` to add or override fields — e.g. `{ details }` for a command
+   * echo, or `{ feedbackForLLM }` to steer the model's next move.
+   * @param {string} message - Result message for the LLM and simple UI display
+   * @param {Partial<ItemSummary>} [extra] - Fields merged over the defaults
+   * @returns {ItemSummary} Failed summary
+   */
+  failureSummary(message, extra) {
+    return { summary: message, details: '', success: false, icon: '✗', ...extra };
+  }
+
+  /**
+   * Build a successful ItemSummary in the standard shape (no details, ✓ icon).
+   * Pass `extra` to add or override fields — e.g. `{ icon: '○' }` for an empty
+   * result, or `{ attachments }` for a tool that produced an image.
+   * @param {string} summary - Result message for the LLM and simple UI display
+   * @param {Partial<ItemSummary>} [extra] - Fields merged over the defaults
+   * @returns {ItemSummary} Successful summary
+   */
+  successSummary(summary, extra) {
+    return { summary, details: '', success: true, icon: '✓', ...extra };
+  }
+
+  /**
+   * The character budget for this item's LLM-facing output. The conversation
+   * owns the live value (`Conversation#truncationBudget`); an item constructed
+   * against a stub conversation falls back to {@link DEFAULT_TRUNCATION_BUDGET}.
+   * Use it directly only when passing a budget to an op (e.g. file extraction);
+   * for output you already have in hand, call {@link ContextItem#truncateForLLM}.
+   * @returns {number} Maximum characters of output to hand the LLM
+   */
+  truncationBudget() {
+    const budget = Number(/** @type {any} */ (this.conversation)?.truncationBudget);
+    return Number.isFinite(budget) && budget > 0 ? budget : DEFAULT_TRUNCATION_BUDGET;
+  }
+
+  /**
+   * Truncate tool output to this item's budget, appending the standard
+   * "(Output truncated from X to Y chars)" note when truncation bit. Returns
+   * the content unchanged when it already fits.
+   * @param {string} content - Full output
+   * @param {{keywords?: string[], note?: boolean}} [options] - `keywords`: keep windows around lines matching these; `note`: false to omit the truncation note (for output embedded in a larger message)
+   * @returns {string} Output within budget
+   */
+  truncateForLLM(content, options = {}) {
+    const text = content || '';
+    const { content: truncated, truncated: wasTruncated } = smartTruncate(text, {
+      maxChars: this.truncationBudget(),
+      keywords: options.keywords
+    });
+    if (!wasTruncated) return text;
+    if (options.note === false) return truncated;
+    return `${truncated}\n\n(Output truncated from ${text.length} to ${truncated.length} chars)`;
   }
 
   /**
@@ -766,6 +834,9 @@ class ContextItem {
   /**
    * Get status UI configuration for rendering.
    * Action types receive execution status; context item types call with no args.
+   * An action type whose status follows the usual pending / success / failure
+   * ladder should build its result with {@link ContextItem#buildStatusUI}
+   * rather than open-coding the branches.
    * [Context: viewer]
    * @param {import('../js/services/action-executor.js').ActionStatus|null} [_actionStatus] - Full execution status
    * @param {Record<string, unknown>} [_toolInput] - Original tool input parameters
@@ -882,6 +953,54 @@ class ContextItem {
     const error = actionStatus.error || 'unknown error';
     const summary = failurePrefix ? `${failurePrefix}: ${error}` : error;
     return { summary, status: /** @type {ResultStatus} */ ('error') };
+  }
+
+  /**
+   * Build a getStatusUI() result from the standard pending / success / terminal
+   * ladder: 'running' while the action is pending, 'success' when it succeeded,
+   * and {@link ContextItem#resolveTerminalStatus} (cancelled or error) otherwise.
+   * Returns null when there is no action status, as getStatusUI must.
+   *
+   * Branches are strings, elements, or thunks returning one — a thunk runs only
+   * if its branch applies, so the success branch can read `actionStatus.result`
+   * freely. Return a ResultStatusMessage from a branch to override its status
+   * (e.g. a call that "succeeded" but reports a tool-side error).
+   * @param {import('../js/services/action-executor.js').ActionStatus|null|undefined} actionStatus - Action status
+   * @param {StatusUIConfig} config - Type label and per-branch content
+   * @returns {ResultStatusMessage|null} Status config, or null when there is no status
+   */
+  buildStatusUI(actionStatus, config) {
+    if (!actionStatus) return null;
+
+    let branch;
+    if (actionStatus.pending) {
+      branch = ContextItem._resolveStatusBranch(config.pending, 'running');
+    } else if (actionStatus.success) {
+      branch = ContextItem._resolveStatusBranch(config.success, 'success');
+    } else {
+      branch = this.resolveTerminalStatus(actionStatus, config.failurePrefix, config.cancelledMessage);
+    }
+
+    return { typeName: config.typeName, ...branch };
+  }
+
+  /**
+   * Normalize one {@link StatusBranch} into a ResultStatusMessage fragment.
+   * @param {StatusBranch|(() => StatusBranch)|undefined} branch - Branch value or thunk
+   * @param {ResultStatus} defaultStatus - Status to apply when the branch doesn't name one
+   * @returns {ResultStatusMessage} Summary + status fragment
+   * @private
+   */
+  static _resolveStatusBranch(branch, defaultStatus) {
+    const value = typeof branch === 'function' ? branch() : branch;
+    const isMessage = !!value
+      && typeof value === 'object'
+      && !(typeof Node !== 'undefined' && value instanceof Node);
+    if (isMessage) {
+      const message = /** @type {ResultStatusMessage} */ (value);
+      return { ...message, status: message.status || defaultStatus };
+    }
+    return { summary: /** @type {string|HTMLElement} */ (value ?? ''), status: defaultStatus };
   }
 
   /**

@@ -5,7 +5,6 @@
 
 import ContextItem from 'juggler/context-item';
 import { mcpSnapshot, mcpCallTool } from 'juggler/ops';
-import { smartTruncate } from 'juggler/ui';
 // First-party builtin reaching a core singleton, the same way @juggler/core
 // reaches ../../../js/services/*. This is the websocket the engine already uses;
 // importing the module by its stable URL yields that same singleton instance.
@@ -355,7 +354,7 @@ class McpToolContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return { summary: outcome.error || 'MCP tool call failed', details: '', success: false, icon: '✗' };
+      return this.failureSummary(outcome.error || 'MCP tool call failed');
     }
     const result = /** @type {{content: any[], isError: boolean, text: string}} */ (outcome.result || {});
     let text = result.text || '';
@@ -363,17 +362,11 @@ class McpToolContextItem extends ContextItem {
       const blocks = Array.isArray(result.content) ? result.content : [];
       text = blocks.map((b) => McpToolContextItem._describeBlock(b)).join('\n') || '(no content)';
     }
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: truncated, truncated: wasTruncated } = smartTruncate(text, { maxChars: budget });
-    if (wasTruncated) {
-      text = truncated + `\n\n(Output truncated from ${text.length} to ${truncated.length} chars)`;
-    }
-    return {
-      summary: text,
-      details: '',
-      success: !result.isError,
-      icon: result.isError ? '✗' : '✓'
-    };
+    // The call itself succeeded; `isError` is the server marking its own result
+    // as a failure, which the item carries through as a failed summary.
+    return result.isError
+      ? this.failureSummary(this.truncateForLLM(text))
+      : this.successSummary(this.truncateForLLM(text));
   }
 
   /**
@@ -384,30 +377,22 @@ class McpToolContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config, or null
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) return null;
+    void toolInput;
     const info = this._target().info;
     const label = info ? `${info.server}: ${info.title || info.name}` : (this.toolName || 'MCP tool');
 
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `Calling ${label}…`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      const result = /** @type {{isError?: boolean}} */ (actionStatus.result || {});
-      if (result.isError) {
-        summary = `${label} — tool reported an error`;
-        status = 'error';
-      } else {
-        summary = label;
-        status = 'success';
-      }
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, `${label} failed`));
-    }
-    void toolInput;
-    return { typeName: 'MCP', summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'MCP',
+      pending: `Calling ${label}…`,
+      success: () => {
+        const result = /** @type {{isError?: boolean}} */ (actionStatus?.result || {});
+        // A completed call whose result the server flagged as an error.
+        return result.isError
+          ? { summary: `${label} — tool reported an error`, status: /** @type {const} */ ('error') }
+          : label;
+      },
+      failurePrefix: `${label} failed`
+    });
   }
 
   /**

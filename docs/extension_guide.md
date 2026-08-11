@@ -256,6 +256,13 @@ class WordCountContextItem extends ContextItem {
 export default WordCountContextItem;
 ```
 
+The base class carries the boilerplate for all three: `this.successSummary(text,
+extra)` / `this.failureSummary(message, extra)` build the standard summary shape,
+`this.truncateForLLM(output)` caps large output at the conversation's budget
+(appending the "output truncated" note), and `this.buildStatusUI(actionStatus,
+{ typeName, pending, success, failurePrefix })` renders the usual
+pending / success / failure status ladder.
+
 For destructive tools set `requiresApproval: true` and implement
 `getApprovalConfig()`; for rich viewer rendering implement `getStatusUI()`. The
 full method table, the engine-vs-viewer execution-context rules, and every typedef

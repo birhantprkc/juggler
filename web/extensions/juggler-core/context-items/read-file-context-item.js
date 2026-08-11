@@ -8,7 +8,6 @@ import { readFile } from 'juggler/ops';
 import { formatDisplayPath, formatFileSize, formatFileContentForLLM, normalizeFilePath, injectFileContentStyles, basename } from 'juggler/item-utils';
 import { fileSourceFromReadResult } from 'juggler/file-source';
 import { extractFileSource } from 'juggler/registry';
-import { smartTruncate } from 'juggler/ui';
 import { toolInputPath, dirname, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags, absolutePathKey } from './path-approval.js';
 
 injectFileContentStyles();
@@ -238,7 +237,7 @@ class ReadFileContextItem extends ContextItem {
         { conversationId, access: { outOfRootApproved: !!readParams.outOfRootApproved } }
       );
       const outcome = await extractFileSource(source, {
-        maxChars: /** @type {any} */ (this.conversation)?._truncationBudget || 30000,
+        maxChars: this.truncationBudget(),
         signal: this.signal,
         conversationId,
       });
@@ -278,22 +277,15 @@ class ReadFileContextItem extends ContextItem {
     const path = result?.path || prepParams.path || 'unknown';
 
     if (!outcome.success) {
-      return {
-        summary: outcome.error || `Failed to read ${path}`,
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || `Failed to read ${path}`);
     }
 
     // Handle file doesn't exist - put full message in summary for tool_result
     if (result && result.exists === false) {
-      return {
-        summary: `File does not exist: ${path}. Do not attempt to read it again.`,
-        details: '',
-        success: true,
-        icon: '✗'
-      };
+      return this.successSummary(
+        `File does not exist: ${path}. Do not attempt to read it again.`,
+        { icon: '✗' }
+      );
     }
 
     // Handle image result: the actual pixels are attached to the tool_result as
@@ -303,13 +295,10 @@ class ReadFileContextItem extends ContextItem {
       const ref = result.attachment;
       const dims = (ref.width && ref.height) ? `${ref.width}\u00d7${ref.height}` : 'image';
       const size = ref.bytes ? `, ${formatFileSize(ref.bytes)}` : '';
-      return {
-        summary: `Read image ${formatDisplayPath(path)} (${dims}${size}). The image is attached below.`,
-        details: '',
-        success: true,
-        icon: '✓',
-        attachments: [ref]
-      };
+      return this.successSummary(
+        `Read image ${formatDisplayPath(path)} (${dims}${size}). The image is attached below.`,
+        { attachments: [ref] }
+      );
     }
 
     // Nothing could be extracted (a binary format no viewer claims). The
@@ -317,12 +306,10 @@ class ReadFileContextItem extends ContextItem {
     // backend's read op.
     const warning = result?.extracted?.warning || result?.warning;
     if (warning) {
-      return {
-        summary: `${formatDisplayPath(path)} (${warning})`,
+      return this.successSummary(`${formatDisplayPath(path)} (${warning})`, {
         details: `**WARNING**: ${warning}`,
-        success: true,
         icon: '⚠'
-      };
+      });
     }
 
     // The viewer's extracted text when it produced any (a PDF's body), else the
@@ -331,20 +318,7 @@ class ReadFileContextItem extends ContextItem {
     const formattedContent = result?.extracted?.text
       || this._formatFileContent(/** @type {ReadFileResult} */ (result));
 
-    // Apply smart truncation
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: truncatedContent, truncated } = smartTruncate(formattedContent, {
-      maxChars: budget
-    });
-
-    return {
-      summary: truncated
-        ? truncatedContent + `\n\n(Output truncated from ${formattedContent.length} to ${truncatedContent.length} chars)`
-        : formattedContent,
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(this.truncateForLLM(formattedContent));
   }
 
   /**
@@ -403,52 +377,37 @@ class ReadFileContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) {
-      return null;
-    }
-
     const path = /** @type {string} */ (toolInput?.file_path || toolInput?.path) || 'unknown';
     // Get just the filename for display
     const filename = basename(path) || path;
 
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `${filename}...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      const result = /** @type {ReadFileResult} */ (actionStatus.result);
-      if (!result) {
-        summary = filename;
-        status = 'success';
-      } else if (result.exists === false) {
-        summary = `File not found: ${filename}`;
-        status = 'error';
-      } else if (result.attachment) {
-        const ref = result.attachment;
-        summary = (ref.width && ref.height) ? `${filename} (${ref.width}×${ref.height})` : `${filename} (image)`;
-        status = 'success';
-      } else if (result.extracted?.warning || result.warning) {
-        summary = `${filename} (${result.extracted?.warning || result.warning})`;
-        status = 'success';
-      } else {
-        status = 'success';
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Read',
+      pending: `${filename}...`,
+      success: () => {
+        const result = /** @type {ReadFileResult} */ (actionStatus?.result);
+        if (!result) return filename;
+        // A missing file is a successful call with a failed read — the only
+        // success branch that styles itself as an error.
+        if (result.exists === false) {
+          return { summary: `File not found: ${filename}`, status: /** @type {const} */ ('error') };
+        }
+        if (result.attachment) {
+          const ref = result.attachment;
+          return (ref.width && ref.height) ? `${filename} (${ref.width}×${ref.height})` : `${filename} (image)`;
+        }
+        const warning = result.extracted?.warning || result.warning;
+        if (warning) return `${filename} (${warning})`;
+
         const lineOffset = result.lineOffset || 1;
         const endLine = lineOffset + (result.lineCount || 0) - 1;
         const isFullFile = lineOffset === 1 && endLine === result.totalLines;
-
-        if (isFullFile) {
-          summary = `${filename} (${result.totalLines} lines)`;
-        } else {
-          summary = `${filename} (lines ${lineOffset}-${endLine} of ${result.totalLines})`;
-        }
-      }
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, `'${path}'`));
-    }
-
-    return { typeName: "Read", summary, status };
+        return isFullFile
+          ? `${filename} (${result.totalLines} lines)`
+          : `${filename} (lines ${lineOffset}-${endLine} of ${result.totalLines})`;
+      },
+      failurePrefix: `'${path}'`
+    });
   }
 
   /**

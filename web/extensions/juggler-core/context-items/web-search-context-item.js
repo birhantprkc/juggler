@@ -430,24 +430,14 @@ class WebSearchContextItem extends ContextItem {
     const query = prepParams.query || 'unknown';
 
     if (!outcome.success) {
-      return {
-        summary: outcome.error || `Search failed for "${query}"`,
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || `Search failed for "${query}"`);
     }
 
     const result = /** @type {WebSearchResult} */ (outcome.result);
     const results = result.results || [];
 
     if (results.length === 0) {
-      return {
-        summary: `No results found for "${query}"`,
-        details: '',
-        success: true,
-        icon: '○'
-      };
+      return this.successSummary(`No results found for "${query}"`, { icon: '○' });
     }
 
     // Format results for LLM - include markdown links
@@ -460,12 +450,7 @@ class WebSearchContextItem extends ContextItem {
       lines.push('');
     }
 
-    return {
-      summary: lines.join('\n'),
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(lines.join('\n'));
   }
 
   /**
@@ -476,30 +461,19 @@ class WebSearchContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) {
-      return null;
-    }
-
     const query = String(toolInput?.query || 'unknown');
     const displayQuery = query.length > 40 ? query.substring(0, 40) + '...' : query;
 
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = `Searching for "${displayQuery}"...`;
-      status = 'running';
-    } else if (actionStatus.success) {
-      const result = /** @type {WebSearchResult} */ (actionStatus.result);
-      const count = result.count || result.results?.length || 0;
-      const provider = result.provider || 'search';
-      summary = `Found ${count} result${count === 1 ? '' : 's'} for "${displayQuery}" (${provider})`;
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus));
-    }
-
-    return { typeName: 'Web Search', summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Web Search',
+      pending: `Searching for "${displayQuery}"...`,
+      success: () => {
+        const result = /** @type {WebSearchResult} */ (actionStatus?.result);
+        const count = result.count || result.results?.length || 0;
+        const provider = result.provider || 'search';
+        return `Found ${count} result${count === 1 ? '' : 's'} for "${displayQuery}" (${provider})`;
+      }
+    });
   }
 
   /**

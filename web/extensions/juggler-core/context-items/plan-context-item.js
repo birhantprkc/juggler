@@ -896,33 +896,22 @@ class PlanContextItem extends ContextItem {
     const prepTitle = prepParams.title || 'Plan';
 
     if (outcome.cancelled) {
-      return {
-        summary: `Plan cancelled: ${prepTitle}`,
+      return this.failureSummary(`Plan cancelled: ${prepTitle}`, {
         details: 'You can revise the plan and resubmit.',
-        success: false,
-        icon: '\u2717',
         feedbackForLLM: 'The user wants to discuss the plan further. Ask them what changes they would like, then revise and resubmit.'
-      };
+      });
     }
 
     if (!outcome.success) {
-      return {
-        summary: `Plan submission failed: ${outcome.error}`,
-        details: '',
-        success: false,
-        icon: '\u2717'
-      };
+      return this.failureSummary(`Plan submission failed: ${outcome.error}`);
     }
 
     const result = /** @type {SubmitPlanResult} */ (outcome.result);
 
-    return {
-      summary: `Plan approved: ${result.title}`,
+    return this.successSummary(`Plan approved: ${result.title}`, {
       details: `${result.stepCount} steps - Execution will begin automatically`,
-      success: true,
-      icon: '\u2713',
       feedbackForLLM: `Plan "${result.title}" was approved with ${result.stepCount} steps. Execution will begin automatically. Use plan(action: 'start_step', index: N) before working on each step, then plan(action: 'complete_step', index: N, result: '...') when done. Use create_thread for complex steps, or work inline for simple ones.`
-    };
+    });
   }
 
   /**
@@ -933,28 +922,23 @@ class PlanContextItem extends ContextItem {
    */
   _getStepActionSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: `Step update failed: ${outcome.error}`,
-        details: '',
-        success: false,
-        icon: '\u2717'
-      };
+      return this.failureSummary(`Step update failed: ${outcome.error}`);
     }
 
     const result = /** @type {StepActionResult} */ (outcome.result);
-    return {
-      summary: `Step ${result.index + 1}: ${result.oldStatus} \u2192 ${result.newStatus} (${result.completed}/${result.total} completed)`,
-      details: result.result || '',
-      success: true,
-      icon: '\u2713',
-      // The plan is contextPosition:'none' \u2014 it is NOT re-rendered into the
-      // request tail each turn. A step action only mutates one step, so echo the
-      // FULL current plan with statuses into this tool_result. That keeps the
-      // latest complete plan state in the most recent (cached, recency-preserving)
-      // tool_result, so the model never has to reconstruct it from a spread of
-      // earlier submit + step-update calls.
-      feedbackForLLM: PlanContextItem._renderPlanEcho(result.planSnapshot)
-    };
+    return this.successSummary(
+      `Step ${result.index + 1}: ${result.oldStatus} \u2192 ${result.newStatus} (${result.completed}/${result.total} completed)`,
+      {
+        details: result.result || '',
+        // The plan is contextPosition:'none' \u2014 it is NOT re-rendered into the
+        // request tail each turn. A step action only mutates one step, so echo the
+        // FULL current plan with statuses into this tool_result. That keeps the
+        // latest complete plan state in the most recent (cached, recency-preserving)
+        // tool_result, so the model never has to reconstruct it from a spread of
+        // earlier submit + step-update calls.
+        feedbackForLLM: PlanContextItem._renderPlanEcho(result.planSnapshot)
+      }
+    );
   }
 
   /**

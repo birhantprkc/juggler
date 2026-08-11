@@ -378,23 +378,15 @@ class TodoContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: `Todo update failed: ${outcome.error}`,
-        details: '',
-        success: false,
-        icon: '\u2717'
-      };
+      return this.failureSummary(`Todo update failed: ${outcome.error}`);
     }
 
     const result = /** @type {TodoResult} */ (outcome.result);
     const inProgressNote = result.inProgress ? `, ${result.inProgress} in progress` : '';
-    return {
-      summary: `Todos: ${result.completed}/${result.total} completed`,
+    return this.successSummary(`Todos: ${result.completed}/${result.total} completed`, {
       details: result.inProgress ? `${result.inProgress} in progress` : '',
-      success: true,
-      icon: '\u2713',
       feedbackForLLM: `Todo list updated: ${result.completed}/${result.total} completed${inProgressNote}.`
-    };
+    });
   }
 
   /**

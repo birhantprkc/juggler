@@ -186,11 +186,11 @@ class DefineCommandContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return { summary: `Could not create command: ${outcome.error}`, details: '', success: false, icon: '✗' };
+      return this.failureSummary(`Could not create command: ${outcome.error}`);
     }
     const r = /** @type {{name?: string, scope?: string}} */ (outcome.result || {});
     const where = r.scope === 'user' ? 'all projects' : 'this project';
-    return { summary: `Created /${r.name} (${where}). Invoke it with /${r.name}.`, details: '', success: true, icon: '✓' };
+    return this.successSummary(`Created /${r.name} (${where}). Invoke it with /${r.name}.`);
   }
 
   /**
@@ -201,16 +201,12 @@ class DefineCommandContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status message config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) return null;
     const name = String(toolInput?.name || 'command');
-    if (actionStatus.pending) {
-      return { typeName: 'Define Command', summary: `Creating /${name}…`, status: /** @type {const} */ ('running') };
-    }
-    if (actionStatus.success) {
-      return { typeName: 'Define Command', summary: `Created /${name}`, status: /** @type {const} */ ('success') };
-    }
-    const { summary, status } = this.resolveTerminalStatus(actionStatus);
-    return { typeName: 'Define Command', summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Define Command',
+      pending: `Creating /${name}…`,
+      success: `Created /${name}`
+    });
   }
 }
 

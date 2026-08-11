@@ -9,7 +9,7 @@ import { ReadOnlyFileSystem } from 'juggler/ops';
 // code (below), so the ops primitives are bound under distinct local names.
 import { grep as grepOp, glob as globOp } from 'juggler/ops';
 import { runInSandbox } from 'juggler/sandbox';
-import { smartTruncate, createLlmDescription } from 'juggler/ui';
+import { createLlmDescription } from 'juggler/ui';
 import { gitignoreDisabled } from './path-approval.js';
 
 /**
@@ -196,12 +196,7 @@ class ExploreCodeContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return {
-        summary: outcome.error || 'explore_code execution failed',
-        details: '',
-        success: false,
-        icon: '✗'
-      };
+      return this.failureSummary(outcome.error || 'explore_code execution failed');
     }
 
     const result = /** @type {Record<string, unknown>} */ (outcome.result);
@@ -215,18 +210,7 @@ class ExploreCodeContextItem extends ContextItem {
       content = '(no return value)';
     }
 
-    // Apply smart truncation
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: truncated, truncated: wasTruncated } = smartTruncate(content, { maxChars: budget });
-
-    return {
-      summary: wasTruncated
-        ? truncated + `\n\n(Output truncated from ${content.length} to ${truncated.length} chars)`
-        : content,
-      details: '',
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(this.truncateForLLM(content));
   }
 
   /**
@@ -237,27 +221,16 @@ class ExploreCodeContextItem extends ContextItem {
    * @returns {import('juggler/context-item').ResultStatusMessage|null} Status config
    */
   getStatusUI(actionStatus, toolInput) {
-    if (!actionStatus) return null;
-
     const desc = typeof toolInput?.description === 'string' && toolInput.description.trim()
       ? toolInput.description.trim()
       : '';
 
-    /** @type {string|HTMLElement} */
-    let summary;
-    /** @type {import('juggler/context-item').ResultStatus|undefined} */
-    let status;
-    if (actionStatus.pending) {
-      summary = desc ? createLlmDescription(desc) : 'Exploring...';
-      status = 'running';
-    } else if (actionStatus.success) {
-      summary = desc ? createLlmDescription(desc) : '';
-      status = 'success';
-    } else {
-      ({ summary, status } = this.resolveTerminalStatus(actionStatus, 'failed'));
-    }
-
-    return { typeName: 'Explore', summary, status };
+    return this.buildStatusUI(actionStatus, {
+      typeName: 'Explore',
+      pending: () => (desc ? createLlmDescription(desc) : 'Exploring...'),
+      success: () => (desc ? createLlmDescription(desc) : ''),
+      failurePrefix: 'failed'
+    });
   }
 
   /**

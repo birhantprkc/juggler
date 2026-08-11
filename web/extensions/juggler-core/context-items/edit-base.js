@@ -306,15 +306,10 @@ class EditBase extends ContextItem {
    * @protected
    * @param {string} path - File path that was edited
    * @param {string} details - Detailed description of what was edited
-   * @returns {{summary: string, details: string, success: boolean, icon: string}} Formatted result object for display
+   * @returns {import('juggler/context-item').ItemSummary} Formatted result object for display
    */
   _formatEditResult(path, details) {
-    return {
-      summary: `Edited file: ${path}`,
-      details: details,
-      success: true,
-      icon: '✓'
-    };
+    return this.successSummary(`Edited file: ${path}`, { details });
   }
 
   /**

@@ -322,22 +322,20 @@ class SkillContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return { summary: outcome.error || 'Failed to load skill', details: '', success: false, icon: '✗' };
+      return this.failureSummary(outcome.error || 'Failed to load skill');
     }
     const r = /** @type {{name: string, scope?: string, source?: string, alreadyLoaded?: boolean, body?: string, files?: any[]}} */ (
       outcome.result || {}
     );
     if (r.alreadyLoaded) {
-      return {
-        summary: `Skill "${r.name}" is already loaded in this conversation — its instructions are already in context.`,
-        details: '',
-        success: true,
-        icon: '✓'
-      };
+      return this.successSummary(
+        `Skill "${r.name}" is already loaded in this conversation — its instructions are already in context.`
+      );
     }
-    const budget = /** @type {any} */ (this.conversation)?._truncationBudget || 30000;
-    const { content: body } = smartTruncate(r.body || '', { maxChars: budget });
-    return { summary: SkillContextItem._formatLoaded({ ...r, body }), details: '', success: true, icon: '✓' };
+    // The body is embedded in a formatted block, so no truncation note: it
+    // would read as part of the skill's own instructions.
+    const body = this.truncateForLLM(r.body || '', { note: false });
+    return this.successSummary(SkillContextItem._formatLoaded({ ...r, body }));
   }
 
   /**
