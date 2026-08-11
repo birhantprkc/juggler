@@ -289,20 +289,53 @@ class JugglerApp {
   }
 
   /**
+   * The live session, or null before the app is wired up. Every entry point
+   * that acts on the session needs the same two guards; `action` names the
+   * caller's job in the diagnostic ("Cannot <action>: session not initialized").
+   * @param {string} action - What the caller was about to do
+   * @returns {import('./model/session.js').default|null} The session, or null when unavailable
+   * @private
+   */
+  _requireSession(action) {
+    if (!this._connectionManager) {
+      console.error(`[Juggler] Cannot ${action}: connection manager not initialized`);
+      return null;
+    }
+    const session = this._connectionManager.getSession();
+    if (!session) {
+      console.error(`[Juggler] Cannot ${action}: session not initialized`);
+      return null;
+    }
+    return session;
+  }
+
+  /**
+   * The session plus the conversation the user is looking at — what every
+   * visible-conversation command (rollback, branch, duplicate, cancel) needs
+   * before it can do anything.
+   * @param {string} action - What the caller was about to do
+   * @returns {{session: import('./model/session.js').default, conversation: import('./model/conversation.js').default}|null} Pair, or null when unavailable
+   * @private
+   */
+  _requireVisibleConversation(action) {
+    const session = this._requireSession(action);
+    if (!session) return null;
+    const conversation = session.getVisibleConversation();
+    if (!conversation) {
+      console.error(`[Juggler] Cannot ${action}: no visible conversation`);
+      return null;
+    }
+    return { session, conversation };
+  }
+
+  /**
    * Initialize session-dependent services
    * Called after session is created
    * @private
    */
   _initializeSessionServices() {
-    if (!this._connectionManager) {
-      console.error('[Juggler] Cannot initialize session services: connection manager is null');
-      return;
-    }
-    const session = this._connectionManager.getSession();
-    if (!session) {
-      console.error('[Juggler] Cannot initialize session services: session is null');
-      return;
-    }
+    const session = this._requireSession('initialize session services');
+    if (!session) return;
 
     // Services are set on the session by ConnectionManager before loading.
     // Each Conversation owns its own ResponseHandler, created with the
@@ -409,31 +442,22 @@ class JugglerApp {
   }
 
   /**
-   * Handle server message
-   * @param {any} data - Server message data
-   * @private
+   * Session-scoped server messages, keyed by `type`. These carry no
+   * `conversationId` — they are dispatched before the conversation lookup in
+   * {@link JugglerApp#_handleServerMessage}, which is why they live in their own
+   * table rather than the conversation one below.
+   * @type {Record<string, (app: JugglerApp, session: import('./model/session.js').default, data: any) => void>}
    */
-  async _handleServerMessage(data) {
-    if (!this._connectionManager) {
-      console.error('[Juggler] Cannot handle message: connection manager not initialized');
-      return;
-    }
-    const session = this._connectionManager.getSession();
-    if (!session) {
-      console.error('[Juggler] Cannot handle message: session not initialized');
-      return;
-    }
-
-    // Route worker messages to workerManager
-    if (data.type === 'worker-message') {
+  static SESSION_MESSAGE_HANDLERS = {
+    // Worker traffic is forwarded verbatim; workerManager owns its routing.
+    'worker-message': (_app, _session, data) => {
       workerManager.handleWorkerMessageFromWS(data);
-      return;
-    }
+    },
 
     // Op-tagged conversation-list diff from the server. Carries the
     // minimum payload needed to apply locally; clients apply
     // idempotently so the originator's echo is a no-op.
-    if (data.type === 'conversations-changed') {
+    'conversations-changed': (_app, session, data) => {
       const { op, id, name, order, from } = data;
       switch (op) {
         case 'created':          session.applyConversationCreated(id, name); break;
@@ -446,29 +470,66 @@ class JugglerApp {
         case 'reordered':        session.applyConversationsReordered(order); break;
         default: console.warn('[Juggler] unknown conversations-changed op:', op);
       }
-      return;
-    }
+    },
 
     // A server-side background task reporting something the user would
     // otherwise never see (an auto-name that gave up). Purely informational —
     // show it and move on.
-    if (data.type === 'notice') {
+    'notice': (_app, _session, data) => {
       if (data.message) showNotice(data.message);
-      return;
-    }
+    },
 
     // Targeted session metadata patch. Apply locally without a full
     // session refresh so permission changes sync instantly across conversations.
-    if (data.type === 'session-metadata-changed') {
+    'session-metadata-changed': (_app, session, data) => {
       session.applySessionMetadataPatch(data.metadata || {}, { remote: true });
-      return;
-    }
+    },
 
     // Session-level metadata (messageHistory, metadata flags) updated
     // by another viewer's PUT /session. Conversation-list changes
     // travel via conversations-changed above; this is a small refresh.
-    if (data.type === 'session-changed') {
-      this._handleSessionChanged(session);
+    'session-changed': (app, session) => {
+      app._handleSessionChanged(session);
+    }
+  };
+
+  /**
+   * Conversation-scoped server messages, keyed by `type` and dispatched once the
+   * target conversation has been resolved. Messages recognised by SHAPE rather
+   * than by type (an `error` field, response `blocks`) stay in the ladder in
+   * {@link JugglerApp#_handleServerMessage}.
+   * @type {Record<string, (conversation: any, data: any) => void|Promise<void>>}
+   */
+  static CONVERSATION_MESSAGE_HANDLERS = {
+    // Tool execution request from claudecode provider (executes tools via MCP)
+    tool_use_request: (conversation, data) => conversation.handleToolUseRequest(data),
+
+    // Backend timed out waiting for tool approval - dismiss dialog silently.
+    // Route to the worker if it's handling this conversation.
+    tool_use_timeout: (conversation, data) => {
+      if (workerManager.isWorkerReady(data.conversationId)) {
+        workerManager.sendApprovalResponse(data.conversationId, data.toolUseId, 'cancel');
+        return;
+      }
+      conversation.resolveMessageThread(data.threadItemId).resolveApproval(data.toolUseId, 'cancel');
+    },
+
+    // Iteration control callback from provider
+    should_continue_request: (conversation, data) => conversation.handleShouldContinueRequest(data)
+  };
+
+  /**
+   * Handle server message
+   * @param {any} data - Server message data
+   * @private
+   */
+  async _handleServerMessage(data) {
+    const session = this._requireSession('handle message');
+    if (!session) return;
+
+    const sessionHandler = JugglerApp.SESSION_MESSAGE_HANDLERS[data.type];
+    if (sessionHandler) {
+      sessionHandler(this, session, data);
       return;
     }
 
@@ -497,22 +558,14 @@ class JugglerApp {
     }
 
     // Route message to the appropriate conversation
-    if (data.type === 'tool_use_request') {
-      // Tool execution request from claudecode provider (executes tools via MCP)
-      await conversation.handleToolUseRequest(data);
-    } else if (data.type === 'tool_use_timeout') {
-      // Backend timed out waiting for tool approval - dismiss dialog silently
-      // Route to worker if it's handling this conversation
-      if (workerManager.isWorkerReady(conversationId)) {
-        workerManager.sendApprovalResponse(conversationId, data.toolUseId, 'cancel');
-      } else {
-        const messageThread = conversation.resolveMessageThread(data.threadItemId);
-        messageThread.resolveApproval(data.toolUseId, 'cancel');
-      }
-    } else if (data.type === 'should_continue_request') {
-      // Iteration control callback from provider
-      await conversation.handleShouldContinueRequest(data);
-    } else if (data.error) {
+    const conversationHandler = JugglerApp.CONVERSATION_MESSAGE_HANDLERS[data.type];
+    if (conversationHandler) {
+      await conversationHandler(conversation, data);
+      return;
+    }
+
+    // The rest are recognised by shape, not by type.
+    if (data.error) {
       // Error - backend may send {error: true, message: "..."} or {error: "message"}
       let errorMsg;
       if (typeof data.error === 'string') {
@@ -564,36 +617,42 @@ class JugglerApp {
     const actionDetail = detail;
     const { action, itemId, threadItemId } = actionDetail;
 
-    if (!this._connectionManager) {
-      console.error('[Juggler] Cannot handle context item action: connection manager not initialized');
-      return;
-    }
-    const session = this._connectionManager.getSession();
-    if (!session) {
-      console.error('[Juggler] Cannot handle context item action: session not initialized');
-      return;
-    }
+    const session = this._requireSession('handle context item action');
+    if (!session) return;
 
-    // Update session (auto-saves!)
+    const conversation = session.getVisibleConversation();
+    if (!conversation) return;
+
+    // Update session (auto-saves!). `resolveMessageThread` returns the root
+    // thread for a null/absent threadItemId, so one call covers both the root
+    // and thread columns.
     switch (action) {
       case 'remove':
-      case 'delete': {
-        const conv = session.getVisibleConversation();
-        if (conv) {
-          const messageThread = threadItemId ? conv.resolveMessageThread(threadItemId) : conv.rootMessageThread;
-          try { messageThread?.removeContextItem(itemId); } catch { /* not deletable */ }
-        }
+      case 'delete':
+        try { conversation.resolveMessageThread(threadItemId).removeContextItem(itemId); } catch { /* not deletable */ }
         break;
-      }
-      case 'refresh': {
-        const conversation = session.getVisibleConversation();
-        if (conversation) {
-          const messageThread = threadItemId ? conversation.resolveMessageThread(threadItemId) : conversation.rootMessageThread;
-          await messageThread?.refreshContextItem(itemId);
-        }
+      case 'refresh':
+        await conversation.resolveMessageThread(threadItemId).refreshContextItem(itemId);
         break;
-      }
     }
+  }
+
+  /**
+   * Locate a message item in the conversation's ACTIVE column — the focused
+   * thread column when there is one, the root thread otherwise — which is the
+   * vantage every item-level command (rollback, branch) acts from.
+   * @param {import('./model/conversation.js').default} conversation - Conversation owning the item
+   * @param {string} itemId - Item ID to locate
+   * @returns {{messageThread: any, itemIndex: number, item: import('../sdk/lib/message.js').Message}|null} Location, or null when the item is not in the active column
+   * @private
+   */
+  _resolveActiveThreadItem(conversation, itemId) {
+    const tab = /** @type {any} */ (conversation.getTabElement());
+    const messageThread = tab?.getActiveMessageThread?.() || conversation.rootMessageThread;
+    const itemIndex = messageThread.findIndexByItemId(itemId);
+    const item = /** @type {import('../sdk/lib/message.js').Message|undefined} */ (messageThread.items[itemIndex]);
+    if (itemIndex < 0 || !item) return null;
+    return { messageThread, itemIndex, item };
   }
 
   /**
@@ -602,33 +661,17 @@ class JugglerApp {
    * @private
    */
   _handleRollbackFromItem(itemId) {
-    if (!this._connectionManager) {
-      console.error('[Juggler] Cannot rollback: connection manager not initialized');
+    const target = this._requireVisibleConversation('rollback');
+    if (!target) return;
+    const { conversation } = target;
+
+    const located = this._resolveActiveThreadItem(conversation, itemId);
+    if (!located) {
+      console.error('[Juggler] Item not found for id', itemId);
       return;
     }
-
-    const session = this._connectionManager.getSession();
-    if (!session) {
-      console.error('[Juggler] Cannot rollback: session not initialized');
-      return;
-    }
-
-    const conversation = session.getVisibleConversation();
-    if (!conversation) {
-      console.error('[Juggler] No active conversation to rollback');
-      return;
-    }
-
-    // Get messageThread from active column (supports thread columns)
-    const tab = /** @type {any} */ (conversation.getTabElement());
-    const messageThread = tab?.getActiveMessageThread?.() || conversation.rootMessageThread;
-
-    // Read items directly from conversation
-    const items = messageThread.items;
-    const itemIndex = messageThread.findIndexByItemId(itemId);
-
-    const item = /** @type {import('../sdk/lib/message.js').Message|undefined} */ (items[itemIndex]);
-    if (itemIndex < 0 || !item || item.get('type') !== 'user') {
+    const { messageThread, itemIndex, item } = located;
+    if (item.get('type') !== 'user') {
       console.error('[Juggler] Item is not a user message');
       return;
     }
@@ -658,36 +701,16 @@ class JugglerApp {
    * @private
    */
   async _handleBranchFromItem(itemId) {
-    if (!this._connectionManager) {
-      console.error('[Juggler] Cannot branch: connection manager not initialized');
-      return;
-    }
+    const target = this._requireVisibleConversation('branch');
+    if (!target) return;
+    const { session, conversation } = target;
 
-    const session = this._connectionManager.getSession();
-    if (!session) {
-      console.error('[Juggler] Cannot branch: session not initialized');
-      return;
-    }
-
-    const conversation = session.getVisibleConversation();
-    if (!conversation) {
-      console.error('[Juggler] No active conversation to branch from');
-      return;
-    }
-
-    // Get messageThread from active column (supports thread columns)
-    const tab = /** @type {any} */ (conversation.getTabElement());
-    const messageThread = tab?.getActiveMessageThread?.() || conversation.rootMessageThread;
-
-    // Read items directly from conversation
-    const items = messageThread.items;
-    const itemIndex = messageThread.findIndexByItemId(itemId);
-
-    const item = /** @type {import('../sdk/lib/message.js').Message|undefined} */ (items[itemIndex]);
-    if (itemIndex < 0 || !item) {
+    const located = this._resolveActiveThreadItem(conversation, itemId);
+    if (!located) {
       console.error('[Juggler] Item not found for id', itemId);
       return;
     }
+    const { item } = located;
 
     // Duplicate the conversation (creates a clone with new ID)
     const newConvId = await this._duplicateConversationGuarded(session, conversation.id);
@@ -748,22 +771,9 @@ class JugglerApp {
    * @private
    */
   async _handleDuplicateConversation() {
-    if (!this._connectionManager) {
-      console.error('[Juggler] Cannot duplicate: connection manager not initialized');
-      return;
-    }
-
-    const session = this._connectionManager.getSession();
-    if (!session) {
-      console.error('[Juggler] Cannot duplicate: session not initialized');
-      return;
-    }
-
-    const conversation = session.getVisibleConversation();
-    if (!conversation) {
-      console.error('[Juggler] No active conversation to duplicate');
-      return;
-    }
+    const target = this._requireVisibleConversation('duplicate');
+    if (!target) return;
+    const { session, conversation } = target;
 
     const newId = await this._duplicateConversationGuarded(session, conversation.id);
     if (newId) {
@@ -888,22 +898,10 @@ class JugglerApp {
    *   Pause twice turns it back off.
    */
   async cancelLLMOperation(focusedThreadId = undefined, { polite = false, toggle = false } = {}) {
-    if (!this._connectionManager) {
-      console.error('[Juggler] Cannot cancel: connection manager not initialized');
-      return;
-    }
-    const session = this._connectionManager.getSession();
-    if (!session) {
-      console.error('[Juggler] Cannot cancel: session not initialized');
-      return;
-    }
-
-    // Get visible conversation (the one being cancelled)
-    const conversation = session.getVisibleConversation();
-    if (!conversation) {
-      console.error('[Juggler] Cannot cancel: no visible conversation');
-      return;
-    }
+    // The visible conversation is the one being cancelled.
+    const target = this._requireVisibleConversation('cancel');
+    if (!target) return;
+    const { conversation } = target;
 
     // Polite stop (Pause): non-destructive, vantage-uniform. Return BEFORE any
     // destructive branch — it must not cancel approvals, kill actions, stamp a

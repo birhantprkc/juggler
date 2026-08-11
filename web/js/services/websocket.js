@@ -334,6 +334,115 @@ class WebSocketService {
   }
 
   /**
+   * Inbound messages that are identified by their `type`, keyed by that type.
+   * Each route translates one wire message into the service events subscribers
+   * listen for, and is dispatched by {@link WebSocketService#_handleMessageData}
+   * before the shape-matched cases (retry, streaming-error) and the generic
+   * 'message' emit. Returning `false` declines the message so it falls through to
+   * those cases — only engine-bridge does that, for a malformed channel.
+   * @type {Record<string, (ws: WebSocketService, data: any) => boolean|void>}
+   */
+  static TYPED_MESSAGE_ROUTES = {
+    [WEBRTC_CHUNK_TYPE]: (ws, data) => {
+      ws._handleTransportChunk(data);
+    },
+
+    'file-change': (ws, data) => {
+      ws._emit('file-change', data.changes);
+    },
+
+    // Project switch (server-side change of the loaded project)
+    'project-changed': (ws, data) => {
+      ws._emit('project-changed', { projectPath: data.projectPath || '' });
+    },
+
+    // Plugin file changes (hot reload)
+    'plugin-changed': (ws, data) => {
+      ws._emit('plugin-changed', data.path);
+    },
+
+    'providers-update': (ws, data) => {
+      ws._emit('providers-update', data.providers);
+      // Whether this snapshot is the settled, post-compute list (true) or the
+      // pre-compute connect seed (false). Emitted second so any 'providers-update'
+      // listener has already applied the array before readiness is signalled.
+      ws._emit('providers-ready', data.ready === true);
+    },
+
+    // Version/update-status pushes (server re-evaluated the remote version
+    // manifest and the surfaced notice changed).
+    'update-status': (ws, data) => {
+      ws._emit('update-status', data);
+    },
+
+    // Connected-client changes (a viewer joined or left). `count` is the total
+    // number of viewer clients (this one included); `clients` describes each, so
+    // listeners can exclude self by id and show origin/connect-time.
+    'clients-changed': (ws, data) => {
+      ws._emit('clients-changed', { count: data.count, clients: data.clients || [] });
+    },
+
+    'shell-output': (ws, data) => {
+      ws._emit('shell-output', data);
+    },
+
+    // Cross-origin engine→viewer event bridge. Each viewer's WS
+    // sees this message exactly once, so emit it as a direct
+    // wsService event for subscribers that prefer per-WS delivery
+    // (e.g. the test harness's exec counter). The engine itself
+    // both originated the message and skips its own replay.
+    //
+    // Also replay onto a same-window BroadcastChannel so existing
+    // BC subscribers (action-progress, etc.) keep working. In the
+    // multi-iframe test pool the BC path inherently fans the
+    // event N-1 ways (sender doesn't get its own posts but every
+    // sibling iframe does), which is why new test instrumentation
+    // should subscribe to 'engine-bridge' on wsService instead.
+    'engine-bridge': (ws, data) => {
+      if (typeof data.channel !== 'string') return false;
+      if (isEngine()) return true;
+      // The engine has no tape of its own (separate window, no
+      // BroadcastChannel reach), so its bridged events are the
+      // only record of what it executed. Stamp them onto this
+      // viewer's tape so a failure block shows the engine's
+      // tool-exec timeline interleaved with local events.
+      // Record a COMPACT summary, never the raw payload: progress
+      // events carry the tool's accumulated output, and retaining
+      // those strings in a 2000-entry ring across every iframe
+      // turns a large-output tool run into a memory bomb.
+      const p = /** @type {any} */ (data.payload) || {};
+      recordTape('engine:' + data.channel.replace(/^juggler-/, ''),
+        p.conversationId ?? null, {
+          toolUseId: p.toolUseId,
+          toolName: p.toolName,
+          phase: p.phase,
+          ok: p.ok,
+          status: p.status,
+          aborted: p.aborted,
+          eventType: p.event?.type,
+          contentLen: typeof p.event?.content === 'string' ? p.event.content.length : undefined,
+          accumulatedLen: typeof p.accumulatedOutput === 'string' ? p.accumulatedOutput.length : undefined
+        });
+      ws._emit('engine-bridge', { channel: data.channel, payload: data.payload });
+      if (typeof BroadcastChannel !== 'undefined') {
+        try {
+          const bc = new BroadcastChannel(data.channel);
+          bc.postMessage(data.payload);
+          bc.close();
+        } catch (err) {
+          console.error('[WebSocket] engine-bridge replay failed:', err);
+        }
+      }
+      return true;
+    },
+
+    // Processing heartbeat from backend
+    processing_heartbeat: (ws, data) => {
+      ws._emit('processing-heartbeat', data);
+    }
+  };
+
+  /**
    * @param {any} rawData
    * @private
    */
@@ -346,114 +455,12 @@ class WebSocketService {
 
     try {
       const data = JSON.parse(String(rawData));
-      if (data.type === WEBRTC_CHUNK_TYPE) {
-        this._handleTransportChunk(data);
-        return;
-      }
-      if (data.type === 'file-change') {
-        this._emit('file-change', data.changes);
-        return;
-      }
 
-      // Handle project switch (server-side change of the loaded project)
-      if (data.type === 'project-changed') {
-        this._emit('project-changed', { projectPath: data.projectPath || '' });
-        return;
-      }
-
-      // Handle plugin file changes (hot reload)
-      if (data.type === 'plugin-changed') {
-        this._emit('plugin-changed', data.path);
-        return;
-      }
-
-      // Handle providers update notifications
-      if (data.type === 'providers-update') {
-        this._emit('providers-update', data.providers);
-        // Whether this snapshot is the settled, post-compute list (true) or the
-        // pre-compute connect seed (false). Emitted second so any 'providers-update'
-        // listener has already applied the array before readiness is signalled.
-        this._emit('providers-ready', data.ready === true);
-        return;
-      }
-
-      // Handle version/update-status pushes (server re-evaluated the remote
-      // version manifest and the surfaced notice changed).
-      if (data.type === 'update-status') {
-        this._emit('update-status', data);
-        return;
-      }
-
-      // Handle connected-client changes (a viewer joined or left). `count` is the
-      // total number of viewer clients (this one included); `clients` describes
-      // each, so listeners can exclude self by id and show origin/connect-time.
-      if (data.type === 'clients-changed') {
-        this._emit('clients-changed', { count: data.count, clients: data.clients || [] });
-        return;
-      }
-
-      // Handle shell output streaming
-      if (data.type === 'shell-output') {
-        this._emit('shell-output', data);
-        return;
-      }
-
-      // Cross-origin engine→viewer event bridge. Each viewer's WS
-      // sees this message exactly once, so emit it as a direct
-      // wsService event for subscribers that prefer per-WS delivery
-      // (e.g. the test harness's exec counter). The engine itself
-      // both originated the message and skips its own replay.
-      //
-      // Also replay onto a same-window BroadcastChannel so existing
-      // BC subscribers (action-progress, etc.) keep working. In the
-      // multi-iframe test pool the BC path inherently fans the
-      // event N-1 ways (sender doesn't get its own posts but every
-      // sibling iframe does), which is why new test instrumentation
-      // should subscribe to 'engine-bridge' on wsService instead.
-      if (data.type === 'engine-bridge' && typeof data.channel === 'string') {
-        if (isEngine()) return;
-        // The engine has no tape of its own (separate window, no
-        // BroadcastChannel reach), so its bridged events are the
-        // only record of what it executed. Stamp them onto this
-        // viewer's tape so a failure block shows the engine's
-        // tool-exec timeline interleaved with local events.
-        // Record a COMPACT summary, never the raw payload: progress
-        // events carry the tool's accumulated output, and retaining
-        // those strings in a 2000-entry ring across every iframe
-        // turns a large-output tool run into a memory bomb.
-        {
-          const p = /** @type {any} */ (data.payload) || {};
-          recordTape('engine:' + data.channel.replace(/^juggler-/, ''),
-            p.conversationId ?? null, {
-              toolUseId: p.toolUseId,
-              toolName: p.toolName,
-              phase: p.phase,
-              ok: p.ok,
-              status: p.status,
-              aborted: p.aborted,
-              eventType: p.event?.type,
-              contentLen: typeof p.event?.content === 'string' ? p.event.content.length : undefined,
-              accumulatedLen: typeof p.accumulatedOutput === 'string' ? p.accumulatedOutput.length : undefined
-            });
-        }
-        this._emit('engine-bridge', { channel: data.channel, payload: data.payload });
-        if (typeof BroadcastChannel !== 'undefined') {
-          try {
-            const bc = new BroadcastChannel(data.channel);
-            bc.postMessage(data.payload);
-            bc.close();
-          } catch (err) {
-            console.error('[WebSocket] engine-bridge replay failed:', err);
-          }
-        }
-        return;
-      }
-
-      // Handle processing heartbeat from backend
-      if (data.type === 'processing_heartbeat') {
-        this._emit('processing-heartbeat', data);
-        return;
-      }
+      // Messages identified by `type` route through the table above. A route
+      // returning false declined the message (see engine-bridge), so it falls
+      // through to the shape-matched cases below.
+      const route = WebSocketService.TYPED_MESSAGE_ROUTES[data.type];
+      if (route && route(this, data) !== false) return;
 
       // Handle retry notifications ONLY (has retry:true and attempt/maxRetries fields)
       if (data.retry === true && data.attempt !== undefined && data.maxRetries !== undefined) {
