@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-11
+
 - Added a togglable mode that collapses runs of consecutive tool uses into group items
 - Alt+N starts a new conversation, a key browsers leave alone unlike Ctrl+N
 - PDF files render page-by-page in the properties panel, and their text is read by the model
