@@ -1803,13 +1803,12 @@ class ConversationTab extends HTMLElement {
     for (let i = 0; i < this._columns.length; i++) {
       const col = /** @type {HTMLElement} */ (this._columns[i]); // bounded by i < this._columns.length
       col.classList.toggle('thread-column', i > 0 && col.tagName === 'CONVERSATION-AREA');
-      // Hide the resize handle on the rightmost column (it has nothing to its
-      // right to drag against) by marking it explicitly from the logical column
-      // order — `this._columns` is the single source of truth. The CSS used to
-      // key this off `:last-child`, which silently breaks if the DOM child order
-      // ever diverges from the logical order (the wrong column's handle vanishes).
-      // A lone column stays resizable, so the marker is only applied when there
-      // is more than one column.
+      // Mark the rightmost column from the logical column order — `this._columns`
+      // is the single source of truth. A structural `:last-child` in CSS silently
+      // breaks if the DOM child order ever diverges from the logical order (the
+      // wrong column is treated as rightmost). A lone column is never marked, so
+      // it keeps its resize handle. Which rightmost columns drop their handle is
+      // the CSS's call (only ones that flex-fill the space beside them).
       col.classList.toggle('column-rightmost', i === lastIndex && this._columns.length > 1);
     }
   }

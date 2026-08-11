@@ -894,6 +894,84 @@ export const selectionResizeHandleTracksLogicalOrder = {
   }
 };
 
+/**
+ * Regression: a conversation-area column is fixed-width (it never flex-fills),
+ * so when it ends up rightmost — the deepest thread column, or a folded-run
+ * column, with nothing selected in it — there is empty space beside it and the
+ * only way to change its width is its own resize handle. Hiding the handle on
+ * every rightmost column stranded that column at a width the user couldn't
+ * change: click a group, click an item (properties column appears, handle
+ * visible), click the column background to deselect (properties column goes,
+ * handle goes with it).
+ *
+ * The handle is dropped only on a rightmost column that grows to fill the space
+ * beside it (properties-panel). This test opens root → thread → properties,
+ * clears the thread column's selection so the thread column becomes rightmost,
+ * and asserts it keeps its handle.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const selectionRightmostConversationKeepsResizeHandle = {
+  name: 'selection-rightmost-conversation-keeps-resize-handle',
+  description: 'A rightmost conversation-area column stays resizable when its selection is cleared',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'create_thread', {
+      goal: 'Write a file',
+      prompt: 'Write rkh-file.txt'
+    }),
+    toolUseResponse('call_2', 'write', { file_path: 'rkh-file.txt', content: 'hello' }, 'Writing...'),
+    toolUseResponse('call_3', 'return_result', { result: 'File written successfully.' }),
+    textResponse('Thread finished.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Write a file in a thread' }
+  ],
+
+  customAssertions(conversation) {
+    const tab = conversation.getTabElement?.();
+    if (!tab) return; // Non-UI mode — skip.
+
+    const container = tab.querySelector('column-container');
+    if (!container) throw new Error('rightmost-handle: no column-container');
+    const columns = () => Array.from(container.children).filter(
+      (/** @type {Element} */ el) =>
+        el.tagName === 'CONVERSATION-AREA' || el.tagName === 'PROPERTIES-PANEL'
+    );
+
+    // Root → thread (selected thread-message) → properties (auto-selected
+    // tool-action inside the thread) gives three columns.
+    const cols = columns();
+    if (cols.length !== 3) {
+      throw new Error(`rightmost-handle: expected 3 columns, got ${cols.length}`);
+    }
+
+    // Deselect inside the thread column: the properties column drops, leaving
+    // the thread column rightmost.
+    /** @type {any} */ (cols[1]).clearSelection();
+    void /** @type {HTMLElement} */ (container).offsetHeight; // flush style recalc
+
+    const after = columns();
+    if (after.length !== 2 || after[1] !== cols[1]) {
+      throw new Error(
+        `rightmost-handle: expected the thread column to be rightmost of 2, got ${after.length} columns`
+      );
+    }
+
+    for (const col of after) {
+      const handle = col.querySelector('col-resize-handle');
+      if (!handle) throw new Error('rightmost-handle: a column is missing its col-resize-handle');
+      if (getComputedStyle(handle).display === 'none') {
+        throw new Error(
+          'rightmost-handle: a fixed-width conversation-area column lost its resize handle — ' +
+					'it can no longer be resized'
+        );
+      }
+    }
+  }
+};
+
 // Export all tests
 export const tests = [
   selectionAutoSelectToolAction,
@@ -908,5 +986,6 @@ export const tests = [
   selectionAutoSelectsNextPendingAfterApprove,
   selectionAutoSelectsNextPendingAfterUserClickAndApprove,
   selectionApprovalClickShiftKeepsSelection,
-  selectionResizeHandleTracksLogicalOrder
+  selectionResizeHandleTracksLogicalOrder,
+  selectionRightmostConversationKeepsResizeHandle
 ];

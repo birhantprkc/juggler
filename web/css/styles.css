@@ -1352,14 +1352,19 @@ col-resize-handle.dragging {
     background: var(--accent-blue);
 }
 
-/* Rightmost column has nothing to its right, so no handle. Applies to every
-   column type (conversation-area, properties-panel) uniformly. The
-   `column-rightmost` marker is set from the logical column order by
+/* A rightmost column that grows to fill the space beside it has nothing to drag
+   against, so it drops its handle — that's the properties panel (flex: 1
+   above). A rightmost conversation-area keeps its fixed width and leaves empty
+   space to its right, so it stays resizable: deselecting inside the deepest
+   column (a thread column, or a folded-run column) must not strand it at a
+   width the user can't change.
+
+   The `column-rightmost` marker is set from the logical column order by
    conversation-tab `_updateColumnLayout` — NOT a structural `:last-child`,
    which silently targets the wrong column if DOM order ever diverges from the
    logical order. Only set when there are multiple columns, so a single column
    stays resizable. */
-column-container > .column-rightmost col-resize-handle {
+column-container > properties-panel.column-rightmost col-resize-handle {
     display: none;
 }
 
