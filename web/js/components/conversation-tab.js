@@ -12,7 +12,8 @@ import { createMessageThread } from '../model/message-thread.js';
 import { isThreadClosed } from '../model/thread-navigation.js';
 import { ColumnSelectionState } from '../utils/column-selection.js';
 import { isToolGroupingEnabled, TOOL_GROUPING_EVENT } from '../utils/tool-grouping-pref.js';
-import { buildDisplayItems, isGroupId } from '../utils/item-grouping.js';
+import { buildDisplayItems, isGroupId, groupMemberIndices } from '../utils/item-grouping.js';
+import { isItemSelectable } from '../services/context-item-utilities.js';
 import { recordTape } from '../utils/event-tape.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 // Columns are created via createElement('conversation-area' | 'properties-panel')
@@ -889,6 +890,18 @@ class ConversationTab extends HTMLElement {
             // must not delete the selected item under it. When binning is refused
             // (a running turn), the chord should do nothing, not fall through here.
             if (e.metaKey || e.ctrlKey) break;
+            // A folded run owns no properties panel — the column it opens just
+            // lists its rows — so the delete-button hunt below would find
+            // nothing. Backspace on a group tile means what it looks like:
+            // delete the rows the tile stands for.
+            if (activeCol.tagName === 'CONVERSATION-AREA') {
+              const groupId = /** @type {any} */ (activeCol).getSelectedItemId?.();
+              if (isGroupId(groupId)) {
+                e.preventDefault();
+                this._deleteGroup(activeCol, groupId);
+                break;
+              }
+            }
             let propsPanel = null;
             if (activeCol.tagName === 'PROPERTIES-PANEL') {
               propsPanel = activeCol;
@@ -1282,6 +1295,66 @@ class ConversationTab extends HTMLElement {
     }
 
     this._rebuildColumns();  // Rule 15 handles focus
+  }
+
+  /**
+   * Delete every row a folded group stands for.
+   *
+   * The group is a display construct, so there is nothing to delete called "the
+   * group": the operation is a delete of its member items. They go in ONE Yjs
+   * transaction, which is what makes the tile behave like the single object it
+   * looks like — one update, so one undo step brings the whole run back, rather
+   * than N steps that would each restore one row into a tile that no longer
+   * matches what the user deleted.
+   * @param {HTMLElement} col - The column the group tile is selected in.
+   * @param {string} groupId - Display id of the group.
+   * @private
+   */
+  _deleteGroup(col, groupId) {
+    const messageThread = /** @type {any} */ (col).getMessageThread?.();
+    if (!messageThread) return;
+    const items = messageThread.items;
+    const indices = groupMemberIndices(items, groupId);
+    if (!indices.length) return;
+    const columnIndex = this._columns.indexOf(col);
+    if (columnIndex < 0) return;
+
+    // Rule 5b, widened to a run: the neighbour to land on must come from
+    // OUTSIDE it, so the next-then-previous search starts at the run's two
+    // edges rather than at a single deleted index.
+    const first = /** @type {number} */ (indices[0]);
+    const last = /** @type {number} */ (indices[indices.length - 1]);
+    let neighborId = null;
+    for (let i = last + 1; i < items.length && !neighborId; i++) {
+      if (isItemSelectable(items[i], messageThread)) neighborId = items[i].get('itemId');
+    }
+    for (let i = first - 1; i >= 0 && !neighborId; i--) {
+      if (isItemSelectable(items[i], messageThread)) neighborId = items[i].get('itemId');
+    }
+
+    // A row awaiting approval has a caller parked on its promise; deleting the
+    // item out from under it would strand that caller, so settle it first.
+    // Scoped to this run — approvals elsewhere in the thread are untouched.
+    const memberIds = new Set(indices.map((i) => items[i]?.get?.('itemId')));
+    for (const pending of messageThread.getPendingApprovalMessages()) {
+      if (memberIds.has(pending.get('itemId'))) {
+        messageThread.resolveApproval(pending.get('toolUseId'), 'cancel');
+      }
+    }
+
+    messageThread.transact(() => messageThread.removeItemsAt(indices));
+
+    // With the run gone the rows that flanked it are adjacent, and so may fold
+    // into a new group: resolve the neighbour against the POST-delete display,
+    // or the selection would name a row that isn't in the DOM.
+    if (neighborId) {
+      const { memberToGroup } = buildDisplayItems(messageThread.items, { enabled: isToolGroupingEnabled() });
+      this._selection.selectItem(columnIndex, memberToGroup.get(neighborId) || neighborId);
+    } else {
+      this._selection.clearSelection(columnIndex);
+    }
+    this._selection.markManualInteraction();
+    this._rebuildColumns();
   }
 
   /**

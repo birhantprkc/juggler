@@ -34,6 +34,7 @@ import {
   summarizeGroup,
   getGroupStatus,
   countGroupRows,
+  groupMemberIndices,
 } from '../../js/utils/item-grouping.js';
 import { ColumnSelectionState } from '../../js/utils/column-selection.js';
 import { positionElements, buildElementMap } from '../../js/components/conversation-area-rendering.js';
@@ -184,11 +185,18 @@ export async function runTests() {
       tool('bash'), tool('glob'), tool('grep'), tool('write'), tool('todo'),
     ]).items;
     const capped = summarizeGroup(fold(many)[0].members);
-    const total = [...capped.matchAll(/(\d+)(?:×| more)/g)].reduce((n, m) => n + Number(m[1]), 0);
+    const total = [...capped.matchAll(/(\d+)(?:×|\u00A0more)/g)].reduce((n, m) => n + Number(m[1]), 0);
     assert(total === many.length,
       `every number in "${capped}" counts rows, so they sum to ${many.length} (got ${total})`);
-    assert(/^4× .+, 3× .+, 1× .+, \+4 more$/.test(capped),
+    assert(/^4×\u00A0.+, 3×\u00A0.+, 1×\u00A0.+, \+4\u00A0more$/.test(capped),
       `the biggest kinds are named first and the rest are counted as rows: "${capped}"`);
+
+    // The space joining a count to its kind is non-breaking (asserted above), so
+    // the pair wraps as one word. Stated here as the negative too, because that
+    // is the regression: an ordinary space there lets a line end on a bare "3×"
+    // with the kind it counts wrapped onto the next line.
+    assert(!/\d+× /.test(capped) && !/\+\d+ more/.test(capped),
+      `no count may be separated from its label by a breaking space: "${capped}"`);
     assert(countGroupRows(fold(many)[0].members) === many.length,
       'the badge counts the same rows the summary describes');
     passed++;
@@ -267,6 +275,18 @@ export async function runTests() {
         'a group holding an approval is marked paused, so it gets the same highlight as a thread');
       assert(tile.querySelector('.context-item-type-badge')?.textContent === '2 tools',
         'the lozenge counts what is inside');
+
+      // The composition summary is the tile's TITLE, in the same slot and at
+      // the same depth as every other item's title — a bare `.message-text`
+      // directly inside `.message-content-box`. That is exactly what the shared
+      // title-row rule selects, so the summary sits on the icon/lozenge band
+      // instead of being styled ad-hoc.
+      const title = tile.querySelector('.message-content-box > .message-text');
+      assert(!!title, 'the summary is painted into the standard title slot');
+      assert(title.textContent === summarizeGroup(group.members),
+        `the title carries the composition summary, got "${title.textContent}"`);
+      assert(!block.querySelector('.thread-status-goal'),
+        'and it is NOT repeated inside the status block');
       assert(tile.getBusyState() === null, 'the tile owns its own status, so the footer stays quiet');
     } finally {
       tile.remove();
@@ -291,8 +311,8 @@ export async function runTests() {
       assert(!busy(), 'a settled run is finished — nothing to pulse');
       assert(!tile.querySelector('.thread-status-message'),
         'a settled run paints no status line — the badge already counts the rows');
-      assert(!!tile.querySelector('.thread-status-goal'),
-        'the composition summary is still shown');
+      assert(tile.querySelector('.message-content-box > .message-text')?.textContent,
+        'the composition summary is still shown, in the title slot');
       // The regression: a failed row is terminal, but classified 'errored'. It
       // must not leave the tile pulsing forever in an idle conversation.
       tile.updateFromItem(failedRun, null);
@@ -355,6 +375,22 @@ export async function runTests() {
     assert(off.length === 1, 'a group id names nothing when grouping is off');
     passed++;
   } catch (e) { failed++; errors.push(`column chain: ${msg(e)}`); }
+
+  // --- 7b: a group resolves to the exact rows a delete has to remove ---
+  try {
+    const { items } = build([
+      item({ type: 'user', content: 'go' }),
+      tool('read'), tool('bash'), tool('read'),
+      item({ type: 'assistant', content: 'done' }),
+      tool('read'), tool('read'),
+    ]);
+    const groupId = fold(items)[1].get('itemId');
+    assert(groupMemberIndices(items, groupId).join(',') === '1,2,3',
+      `deleting a group means deleting its own rows and nothing else, got [${groupMemberIndices(items, groupId)}]`);
+    assert(groupMemberIndices(items, 'group:gone').length === 0,
+      'a run that no longer exists resolves to no rows, so a stale delete removes nothing');
+    passed++;
+  } catch (e) { failed++; errors.push(`group member indices: ${msg(e)}`); }
 
   // --- 8: presentational only — the document is untouched by folding ---
   try {

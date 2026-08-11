@@ -137,7 +137,7 @@ class AboutModal extends HTMLElement {
                         Created in a moment of madness by <a href="https://github.com/julianstorer" target="_blank" rel="noopener noreferrer" style="white-space: nowrap">Julian Storer</a>
                     </p>
                     <p class="about-description">
-                      Juggler is still in beta, and I'd love to hear people's opinions about it -
+                      Juggler is still very new, and I'd love to hear people's opinions about it -
                       please visit the discord group to chat or hear more about the roadmap!
                     </p>
                     <p class="about-link">

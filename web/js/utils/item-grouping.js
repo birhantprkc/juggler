@@ -45,6 +45,9 @@ const MIN_RUN = 2;
 /** Distinct tool kinds named in a group's summary before it says "+N more". */
 const MAX_SUMMARY_KINDS = 3;
 
+/** U+00A0, spelled out so it can't be mistaken for an ordinary space in source. */
+const NBSP = '\u00A0';
+
 /**
  * The rows a group still has in the document.
  *
@@ -236,6 +239,30 @@ export function findGroup(items, groupId) {
 }
 
 /**
+ * Where a group's rows sit in the list it was folded from — the positions a
+ * caller must remove to delete the whole run.
+ *
+ * This stays display-side work: it reads the list it is handed and returns
+ * indices into it, exactly as {@link buildDisplayItems} reads that list and
+ * returns entries. Mutating the document is entirely the caller's business.
+ * @param {any[]} items - The column's items, in document order.
+ * @param {string} groupId - Display id of the group.
+ * @returns {number[]} Ascending indices of the group's rows; empty when the run
+ *   no longer exists.
+ */
+export function groupMemberIndices(items, groupId) {
+  const group = findGroup(items, groupId);
+  if (!group) return [];
+  const memberIds = new Set(presentRows(group.members).map((member) => member.get('itemId')));
+  /** @type {number[]} */
+  const indices = [];
+  items.forEach((item, index) => {
+    if (memberIds.has(item?.get?.('itemId'))) indices.push(index);
+  });
+  return indices;
+}
+
+/**
  * The user-facing label for one tool row — the owning plugin's manifest name
  * ("Read File", "Execute Command"), falling back to the raw tool name for a
  * tool no plugin claims.
@@ -258,6 +285,12 @@ function toolLabel(item) {
  * the number of kinds — every number in the line counts tool rows, so they sum
  * to the row count on the badge ("30 tools" → "4× …, 2× …, 2× …, +22 more").
  * Naming the biggest kinds first is what keeps that tail small.
+ *
+ * A count is joined to the kind it counts by a NON-BREAKING space, so the two
+ * always wrap as one word. The line's only ordinary spaces are the ", "
+ * separators between kinds, which makes them the only places it can break — the
+ * list wraps between entries, never leaving a bare "3×" stranded at the end of
+ * a line from the kind it belongs to.
  * @param {any[]} members - The group's tool-action items.
  * @returns {string} Composition summary.
  */
@@ -270,10 +303,10 @@ export function summarizeGroup(members) {
   }
   const kinds = [...counts].sort((a, b) => b[1] - a[1]);
   const shown = kinds.slice(0, MAX_SUMMARY_KINDS);
-  const parts = shown.map(([label, count]) => `${count}× ${label}`);
+  const parts = shown.map(([label, count]) => `${count}×${NBSP}${label}`);
   if (kinds.length <= MAX_SUMMARY_KINDS) return parts.join(', ');
   const hidden = kinds.slice(MAX_SUMMARY_KINDS).reduce((total, [, count]) => total + count, 0);
-  return `${parts.join(', ')}, +${hidden} more`;
+  return `${parts.join(', ')}, +${hidden}${NBSP}more`;
 }
 
 /**

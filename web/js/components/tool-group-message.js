@@ -16,10 +16,17 @@ const GROUP_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" view
  * ToolGroupMessage — the collapsed tile for a run of adjacent tool uses.
  *
  * Purely presentational: it stands in for items that still exist unchanged in
- * the document, and selecting it opens those items in the next column. The tile
- * face reuses the sub-thread status block (goal line + status line), so a group
- * holding a pending approval turns the same orange as a sub-thread would, and
- * the route from the tab to the action stays unbroken when a run is folded.
+ * the document, and selecting it opens those items in the next column.
+ *
+ * The face is built from the two shared pieces every comparable row already
+ * uses, so it needs no styling of its own:
+ *   - the composition summary ("3× Read File, 2× Grep") is the tile's TITLE,
+ *     painted into the standard `.message-text` slot — the same slot, band and
+ *     typography as every other item's title, which is what lines it up with
+ *     the icon and lozenge beside it;
+ *   - the status line below it is the sub-thread status block, so a group
+ *     holding a pending approval turns the same orange as a sub-thread would
+ *     and the route from the tab to the action stays unbroken when folded.
  */
 class ToolGroupMessage extends HTMLElement {
   constructor() {
@@ -44,8 +51,10 @@ class ToolGroupMessage extends HTMLElement {
     this._paintedKey = null;
     /** @type {HTMLElement|null} @private - The tile face, built once and kept. */
     this._article = null;
-    /** @type {HTMLElement|null} @private - Status block inside the tile face. */
-    this._summary = null;
+    /** @type {HTMLElement|null} @private - Title row: the composition summary. */
+    this._title = null;
+    /** @type {HTMLElement|null} @private - Status block beneath the title. */
+    this._status = null;
     /** @type {HTMLElement|null} @private - "N tools" lozenge beside the icon. */
     this._badge = null;
   }
@@ -85,9 +94,16 @@ class ToolGroupMessage extends HTMLElement {
   }
 
   /**
-   * Build the tile face: icon, lozenge and an empty status block. Done once —
-   * every later update repaints the status block in place, leaving the icon box
-   * (and so its pulse animation) untouched.
+   * Build the tile face: icon, lozenge, title row and an empty status block.
+   * Done once — every later update repaints the text in place, leaving the icon
+   * box (and so its pulse animation) untouched.
+   *
+   * The title is a bare `.message-text` directly inside `.message-content-box`,
+   * which is precisely what the shared title-row rule in styles.css selects:
+   * that rule gives it the icon-row band height and centres it, so the summary
+   * lands on the icon/lozenge baseline the same way every other item's title
+   * does. The status block is a sibling beneath it, so the two stack without
+   * either one owning the other's alignment.
    * @param {number} count - Number of members, for the lozenge.
    * @private
    */
@@ -95,17 +111,24 @@ class ToolGroupMessage extends HTMLElement {
     const article = document.createElement('article');
     article.className = 'tool-group-item';
 
-    const summary = document.createElement('div');
+    const title = document.createElement('span');
+    title.className = 'message-text';
+
     // The lozenge counts what's inside, so the row reads as one unit ("5
     // tools") rather than borrowing any single member's type name.
-    article.appendChild(wrapWithIcon(summary, {
+    const wrapper = wrapWithIcon(title, {
       color: 'slate',
       iconSvg: GROUP_ICON_SVG,
       badge: `${count} tools`,
-    }));
+    });
+
+    const status = document.createElement('div');
+    wrapper.querySelector('.message-content-box')?.appendChild(status);
+    article.appendChild(wrapper);
 
     this._article = article;
-    this._summary = summary;
+    this._title = title;
+    this._status = status;
     this._badge = /** @type {HTMLElement|null} */ (article.querySelector('.context-item-type-badge'));
     this._mode = null;
     this._paintedKey = null;
@@ -151,15 +174,52 @@ class ToolGroupMessage extends HTMLElement {
     if (this._mode !== mode) {
       this._mode = mode;
       this._paintedKey = key;
-      paintThreadSummary(/** @type {HTMLElement} */ (this._summary), '', status ? { status } : undefined);
+      this._paintTitle(status);
+      this._paintStatus(status);
       this._paintBadge(count);
       return;
     }
 
     if (this._paintedKey === key) return;
     this._paintedKey = key;
-    if (status) paintThreadStatusText(/** @type {HTMLElement} */ (this._summary), status);
+    this._paintTitle(status);
+    if (status?.message) paintThreadStatusText(/** @type {HTMLElement} */ (this._status), status);
     this._paintBadge(count);
+  }
+
+  /**
+   * Write the composition summary into the title row. Plain text: the summary
+   * is built from manifest names and counts, never from model output, so there
+   * is nothing to render as markdown.
+   * @param {import('../utils/thread-display.js').ThreadStatus|null} status - Current classification.
+   * @private
+   */
+  _paintTitle(status) {
+    const text = status?.goal || '';
+    if (this._title && this._title.textContent !== text) this._title.textContent = text;
+  }
+
+  /**
+   * Paint the status line beneath the title, through the shared thread-status
+   * painter so a paused group inherits the sub-thread tile's approval highlight.
+   * The goal is blanked because the title row above already carries it — this
+   * block is only ever the one status line.
+   *
+   * A run with nothing to report leaves the block empty AND classless, so it
+   * contributes no box, padding or column gap of its own.
+   * @param {import('../utils/thread-display.js').ThreadStatus|null} status - Current classification.
+   * @private
+   */
+  _paintStatus(status) {
+    const el = /** @type {HTMLElement} */ (this._status);
+    if (!el) return;
+    if (!status?.message) {
+      el.replaceChildren();
+      el.className = '';
+      delete el.dataset.kind;
+      return;
+    }
+    paintThreadSummary(el, '', { status: { ...status, goal: '' } });
   }
 
   /**

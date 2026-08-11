@@ -2837,9 +2837,12 @@ thread-message .thread-summary.not-summarised {
     font-style: italic;
 }
 
-/* Tool group — a folded run of consecutive tool rows. It's a container you open
-   (like a sub-thread tile), so it borrows the thread tile's status block wholesale:
-   only the pointer affordance and text sizing are restated here. */
+/* Tool group — a folded run of consecutive tool rows. Its composition summary is
+   a plain `.message-text` title, so it inherits the shared icon-row band and
+   typography from the rules above and needs nothing here; it's also a container
+   you open (like a sub-thread tile), so its status line borrows the thread
+   tile's status block wholesale. Only the pointer affordance and that block's
+   text sizing are restated here. */
 tool-group-message {
     cursor: pointer;
 }
