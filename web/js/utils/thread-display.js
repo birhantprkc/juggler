@@ -162,7 +162,11 @@ export function paintThreadSummary(el, text, opts) {
   const spinnerEl = status.spinner
     ? '<juggler-spinner class="thread-status-spinner" style="--size: 0.9em"></juggler-spinner>'
     : '';
-  const msgLine = `<div class="thread-status-message">${spinnerEl}<span>${escapeHtml(status.message || '')}</span></div>`;
+  // A status with nothing to say and no spinner renders no line at all, rather
+  // than an empty one the column gap would still space out.
+  const msgLine = (status.message || status.spinner)
+    ? `<div class="thread-status-message">${spinnerEl}<span>${escapeHtml(status.message || '')}</span></div>`
+    : '';
   el.innerHTML = `${goalLine}${msgLine}`;
   // Record the goal source we just rendered so the next in-place text update
   // (paintThreadStatusText) can skip re-parsing the markdown when it's unchanged.
@@ -199,7 +203,9 @@ function renderGoalInto(goalEl, goalSrc) {
  * message). Leaves the `<juggler-spinner>` element and the surrounding
  * structure untouched so CSS animations (spinner rotation, parent icon-box
  * pulse) don't restart. Caller must ensure the block was previously painted
- * by `paintThreadSummary` with a non-closed `status`.
+ * by `paintThreadSummary` with a non-closed `status` of the same shape — a
+ * status whose message or spinner appears or disappears changes which elements
+ * exist, so it needs a fresh `paintThreadSummary` instead.
  * @param {HTMLElement} el - The `.thread-summary.thread-status` element.
  * @param {ThreadStatus} status - Current status.
  */

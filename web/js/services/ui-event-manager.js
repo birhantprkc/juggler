@@ -35,6 +35,7 @@ const THEME_BUTTON_UI = {
   }
 };
 import { toggleSound, isSoundEnabled, ATTENTION_PREFS_EVENT } from '../utils/attention-manager.js';
+import { isToolGroupingEnabled, toggleToolGrouping, TOOL_GROUPING_EVENT } from '../utils/tool-grouping-pref.js';
 import { zoomIn, zoomOut } from '../utils/zoom-manager.js';
 import keyShortcutManager from './key-shortcut-manager.js';
 
@@ -81,6 +82,7 @@ class UIEventManager {
     this._setupZoomButtons();
     this._setupThemeButton();
     this._setupBellButton();
+    this._setupToolGroupingButton();
     this._setupNetworkButton();
     this._setupHelpButton();
     this._setupSettingsButton();
@@ -265,6 +267,47 @@ class UIEventManager {
     const prefsHandler = () => reflect();
     window.addEventListener(ATTENTION_PREFS_EVENT, prefsHandler);
     this._listeners.push({ element: window, event: ATTENTION_PREFS_EVENT, handler: prefsHandler });
+
+    reflect();
+  }
+
+  /**
+   * Setup the tool-grouping button — the header on/off for collapsing a run of
+   * adjacent tool-use rows into one group tile. Mirrors the bell button: a
+   * header toggle backed by a localStorage pref, re-reflected from the shared
+   * pref-changed event so any other control that flips it stays in sync. The
+   * open columns re-render themselves off the same event (conversation-tab).
+   * @private
+   */
+  _setupToolGroupingButton() {
+    const groupingButton = document.getElementById('tool-grouping-button');
+    if (!groupingButton) {
+      console.error('[UIEventManager] Tool grouping button not found');
+      return;
+    }
+
+    const reflect = () => {
+      const on = isToolGroupingEnabled();
+      // `is-active` also swaps which of the button's two glyphs is shown (see
+      // .tool-grouping-button in styles.css): each depicts the action a click
+      // would perform — fold the rows together, or unfold them again.
+      groupingButton.classList.toggle('is-active', on);
+      groupingButton.setAttribute('title', on
+        ? 'Consecutive tool uses are grouped — click to show them individually'
+        : 'Group consecutive tool uses');
+      groupingButton.setAttribute('aria-pressed', String(on));
+    };
+
+    const handler = () => {
+      toggleToolGrouping();
+      reflect();
+    };
+    groupingButton.addEventListener('click', handler);
+    this._listeners.push({ element: groupingButton, event: 'click', handler });
+
+    const prefsHandler = () => reflect();
+    window.addEventListener(TOOL_GROUPING_EVENT, prefsHandler);
+    this._listeners.push({ element: window, event: TOOL_GROUPING_EVENT, handler: prefsHandler });
 
     reflect();
   }

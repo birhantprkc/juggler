@@ -273,6 +273,23 @@
                      row. `display: contents` on wide viewports so grouping has no
                      layout effect there. -->
                 <div class="header-actions-controls">
+                <!-- Group Tool Runs Button — collapses a run of adjacent
+                     tool-use rows into a single group tile that opens in the
+                     next column. Display-only: the conversation is unchanged.
+                     Both glyphs ship in the markup and CSS shows the one for
+                     the current state; each depicts what a click WILL do —
+                     fold the rows together, or unfold them again. -->
+                <button class="u-btn-ghost u-btn-icon-header tool-grouping-button" id="tool-grouping-button"
+                        title="Group consecutive tool uses" aria-label="Group consecutive tool uses"
+                        aria-pressed="false">
+                    <svg class="tool-grouping-fold" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" aria-hidden="true">
+                        <path d="M356-160 300-216l180-180 180 180-56 56-124-124-124 124Zm124-404L300-744l56-56 124 124 124-124 56 56-180 180Z"/>
+                    </svg>
+                    <svg class="tool-grouping-unfold" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" aria-hidden="true">
+                        <path d="M480-80 300-260l56-56 124 124 124-124 56 56L480-80ZM356-644l-56-56 180-180 180 180-56 56-124-124-124 124Z"/>
+                    </svg>
+                </button>
+
                 <!-- Undo / Redo -->
                 <button class="u-btn-ghost u-btn-circular-control control-undo-button" id="control-undo-button"
                         aria-label="Undo last operation"

@@ -1,0 +1,178 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+import { wrapWithIcon } from '../utils/icon-message-renderer.js';
+import { paintThreadSummary, paintThreadStatusText } from '../utils/thread-display.js';
+import { countGroupRows, getGroupStatus } from '../utils/item-grouping.js';
+
+/**
+ * Stacked-layers glyph: several rows folded into one. Matches the header
+ * toggle's meaning ("these rows are collapsed").
+ */
+const GROUP_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M480-80 120-280v-80l360 200 360-200v80L480-80Zm0-160L120-440v-80l360 200 360-200v80L480-240Zm0-166L146-590l334-184 334 184-334 184Z"/></svg>';
+
+/**
+ * ToolGroupMessage — the collapsed tile for a run of adjacent tool uses.
+ *
+ * Purely presentational: it stands in for items that still exist unchanged in
+ * the document, and selecting it opens those items in the next column. The tile
+ * face reuses the sub-thread status block (goal line + status line), so a group
+ * holding a pending approval turns the same orange as a sub-thread would, and
+ * the route from the tab to the action stays unbroken when a run is folded.
+ */
+class ToolGroupMessage extends HTMLElement {
+  constructor() {
+    super();
+    /** @type {import('../utils/item-grouping.js').ItemGroup|null} @private */
+    this._group = null;
+    /** @type {import('../utils/thread-display.js').ThreadLiveStatus|null} @private */
+    this._live = null;
+    /**
+     * Structural-mode key: the status block is repainted only when this
+     * changes, so the spinner element survives in-place text updates and its
+     * CSS animation doesn't restart on every tick. Mirrors thread-message.
+     * @type {string|null} @private
+     */
+    this._mode = null;
+    /**
+     * Content signature of the last paint. The column rebroadcasts live status
+     * to every tile roughly once a second; this skips the repaint when nothing
+     * visible changed.
+     * @type {string|null} @private
+     */
+    this._paintedKey = null;
+    /** @type {HTMLElement|null} @private - The tile face, built once and kept. */
+    this._article = null;
+    /** @type {HTMLElement|null} @private - Status block inside the tile face. */
+    this._summary = null;
+    /** @type {HTMLElement|null} @private - "N tools" lozenge beside the icon. */
+    this._badge = null;
+  }
+
+  connectedCallback() {
+    this.render();
+  }
+
+  /**
+   * Update from the group entry (called by the render diff and by
+   * _notifyChangedElements when a member's state changes).
+   * @param {import('../utils/item-grouping.js').ItemGroup} group - The group entry.
+   * @param {import('../utils/thread-display.js').ThreadLiveStatus|null} [live] - Live LLM status.
+   */
+  updateFromItem(group, live) {
+    this._group = group;
+    if (live !== undefined) this._live = live;
+    this.render();
+  }
+
+  /**
+   * Refresh from a new live-status snapshot without changing the group.
+   * @param {import('../utils/thread-display.js').ThreadLiveStatus|null} live - Live LLM status.
+   */
+  setLiveStatus(live) {
+    this._live = live;
+    if (this._group) this.render();
+  }
+
+  /**
+   * The tile renders its own status block, so the column footer must not
+   * duplicate it — same contract as a sub-thread tile.
+   * @returns {null} Always null.
+   */
+  getBusyState() {
+    return null;
+  }
+
+  /**
+   * Build the tile face: icon, lozenge and an empty status block. Done once —
+   * every later update repaints the status block in place, leaving the icon box
+   * (and so its pulse animation) untouched.
+   * @param {number} count - Number of members, for the lozenge.
+   * @private
+   */
+  _build(count) {
+    const article = document.createElement('article');
+    article.className = 'tool-group-item';
+
+    const summary = document.createElement('div');
+    // The lozenge counts what's inside, so the row reads as one unit ("5
+    // tools") rather than borrowing any single member's type name.
+    article.appendChild(wrapWithIcon(summary, {
+      color: 'slate',
+      iconSvg: GROUP_ICON_SVG,
+      badge: `${count} tools`,
+    }));
+
+    this._article = article;
+    this._summary = summary;
+    this._badge = /** @type {HTMLElement|null} */ (article.querySelector('.context-item-type-badge'));
+    this._mode = null;
+    this._paintedKey = null;
+    this.replaceChildren(article);
+  }
+
+  render() {
+    const members = this._group?.members || [];
+    const status = members.length ? getGroupStatus(members, this._live) : null;
+    // Counted the same way the summary counts, so the lozenge and the kinds
+    // listed beneath it always describe the same set of rows.
+    const count = countGroupRows(members);
+
+    // Only LIVE work pulses the icon: a member is running, or one is parked on
+    // an approval. 'errored' and 'idle' are both terminal — the run is over,
+    // however it ended — so a finished run sits still. (A run that merely
+    // contains a failed tool is finished, and must not read as busy.)
+    const processing = !!status && (status.kind === 'running' || status.kind === 'paused');
+
+    // Structural key: which elements the status block is made of — just the
+    // status line, which a run with nothing to report omits entirely (a live run
+    // says nothing the footer below isn't already saying, and a settled one has
+    // its badge). Its appearing or disappearing needs a repaint of the block;
+    // anything else is a text update.
+    const mode = status ? `status:${status.message ? '1' : '0'}` : 'empty';
+
+    // Content signature of this tick — row count included, since the lozenge
+    // shows it and a run grows as the turn streams in.
+    const key = status
+      ? `${status.kind}:${status.goal}:${status.message}:${count}`
+      : 'empty';
+
+    if (!this._article || this._article.parentNode !== this) this._build(count);
+    const article = /** @type {HTMLElement} */ (this._article);
+
+    // Toggled as an attribute rather than by rebuilding the tile: re-setting an
+    // attribute to the value it already holds leaves the running animation
+    // alone, whereas replacing the icon box restarts the pulse from frame zero —
+    // which, across a run of quick tool calls, reads as no pulse at all.
+    if (processing) article.setAttribute('data-processing', 'true');
+    else article.removeAttribute('data-processing');
+
+    if (this._mode !== mode) {
+      this._mode = mode;
+      this._paintedKey = key;
+      paintThreadSummary(/** @type {HTMLElement} */ (this._summary), '', status ? { status } : undefined);
+      this._paintBadge(count);
+      return;
+    }
+
+    if (this._paintedKey === key) return;
+    this._paintedKey = key;
+    if (status) paintThreadStatusText(/** @type {HTMLElement} */ (this._summary), status);
+    this._paintBadge(count);
+  }
+
+  /**
+   * Keep the lozenge in step with the run's size.
+   * @param {number} count - Number of members.
+   * @private
+   */
+  _paintBadge(count) {
+    const text = `${count} tools`;
+    if (this._badge && this._badge.textContent !== text) this._badge.textContent = text;
+  }
+}
+
+customElements.define('tool-group-message', ToolGroupMessage);
+
+export default ToolGroupMessage;

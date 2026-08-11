@@ -1128,6 +1128,26 @@ header-actions .u-btn-icon-header::before {
     background-color: var(--text-primary);
 }
 
+/* Group Tool Runs Button — the header on/off for folding consecutive tool rows.
+   The button carries both glyphs and shows the one for the action a click would
+   perform: with grouping off it offers to fold the rows together, with grouping
+   on it offers to unfold them. The pressed state is also tinted, the way the
+   other header toggles show theirs. */
+.tool-grouping-button svg {
+    opacity: 0.75;
+}
+
+.tool-grouping-button .tool-grouping-unfold,
+.tool-grouping-button.is-active .tool-grouping-fold {
+    display: none;
+}
+
+.tool-grouping-button.is-active .tool-grouping-unfold {
+    display: block;
+    opacity: 1;
+    fill: var(--accent-blue, #58a6ff);
+}
+
 /* Settings Button - mask icon with rotation on hover */
 .settings-button::before {
     content: "";
@@ -1243,7 +1263,7 @@ conversation-area reopen-box {
     display: none;
 }
 
-conversation-area[data-hide-input] reopen-box {
+conversation-area[data-hide-input]:not([data-group-column]) reopen-box {
     display: block;
     flex-shrink: 0;
     padding: 0.3rem 1rem 0.75rem; /* match composer-box */
@@ -2334,6 +2354,7 @@ thinking-message,
 context-item-message,
 error-message,
 thread-message,
+tool-group-message,
 tool-action-message {
     display: block;
 }
@@ -2561,7 +2582,8 @@ tool-action-message {
 assistant-message[is-processing="true"] .message-icon-box,
 thinking-message[is-processing="true"] .message-icon-box,
 tool-action-message article[data-processing="true"] .message-icon-box,
-thread-message article[data-processing="true"] .message-icon-box {
+thread-message article[data-processing="true"] .message-icon-box,
+tool-group-message article[data-processing="true"] .message-icon-box {
     animation: icon-pulse 0.8s ease-in-out infinite;
 }
 
@@ -2813,6 +2835,19 @@ thread-message .thread-summary {
 thread-message .thread-summary.not-summarised {
     color: var(--text-secondary);
     font-style: italic;
+}
+
+/* Tool group — a folded run of consecutive tool rows. It's a container you open
+   (like a sub-thread tile), so it borrows the thread tile's status block wholesale:
+   only the pointer affordance and text sizing are restated here. */
+tool-group-message {
+    cursor: pointer;
+}
+
+tool-group-message .thread-summary {
+    overflow-wrap: break-word;
+    font-size: 0.8125rem;
+    color: var(--text-primary);
 }
 
 .thread-summary.thread-status {

@@ -10,6 +10,8 @@
  * and handles auto-following of LLM processing threads.
  */
 
+import { findGroup, isGroupId } from './item-grouping.js';
+
 /**
  * @typedef {object} ColumnChainEntry
  * @property {'conversation'|'properties'|'transaction'} type - What kind of column to render
@@ -18,6 +20,8 @@
  * @property {any} [threadYMap] - The thread Y.Map (for thread conversation columns)
  * @property {string} [selectedItemId] - Selected item ID (for properties columns)
  * @property {string} [transactionId] - Round-trip id (for transaction columns)
+ * @property {string} [groupId] - Display id of the folded tool run this column shows
+ * @property {any[]} [groupItems] - The run's items (for group conversation columns)
  */
 
 /** @typedef {(item: any) => boolean} ThreadPredicate */
@@ -177,9 +181,11 @@ class ColumnSelectionState {
    * Walks the Yjs tree to determine what type each column should be.
    * @param {{container: any, items: any[]}} rootThread - The root message thread
    * @param {ThreadPredicate} isThread - Predicate to check if an item is a thread
+   * @param {{groupingEnabled?: boolean}} [opts] - Display options; `groupingEnabled`
+   *   lets a selection name a folded tool run rather than a single item.
    * @returns {ColumnChainEntry[]} Column chain entries
    */
-  resolveColumnChain(rootThread, isThread) {
+  resolveColumnChain(rootThread, isThread, opts = {}) {
     /** @type {ColumnChainEntry[]} */
     const chain = [{ type: /** @type {const} */ ('conversation'), container: rootThread.container, threadItemId: undefined }];
 
@@ -187,6 +193,26 @@ class ColumnSelectionState {
     for (let i = 0; i < this.selections.length; i++) {
       const selectedId = this.selections[i];
       if (!selectedId) break;
+
+      // A folded tool run is a display construct, not an item: it opens a
+      // column showing the rows it stands for. That column belongs to the SAME
+      // thread as this one — the rows are still that thread's items — so it
+      // inherits the container/thread identity and only narrows what's listed.
+      if (isGroupId(selectedId)) {
+        const group = opts.groupingEnabled ? findGroup(currentItems, selectedId) : null;
+        if (!group) break;
+        const parent = chain[i];
+        chain.push({
+          type: /** @type {const} */ ('conversation'),
+          container: parent?.container,
+          threadItemId: parent?.threadItemId,
+          threadYMap: parent?.threadYMap,
+          groupId: selectedId,
+          groupItems: group.members
+        });
+        currentItems = group.members;
+        continue;
+      }
 
       let selectedItem = null;
       for (const item of currentItems) {

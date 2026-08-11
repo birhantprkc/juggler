@@ -36,6 +36,7 @@ import {
   isErrorMessage,
   isThreadMessage,
 } from '../../sdk/lib/message.js';
+import { isGroupEntry } from '../utils/item-grouping.js';
 import { wrapWithIcon } from '../utils/icon-message-renderer.js';
 import { normalizeAttachments } from '../utils/attachments.js';
 import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
@@ -92,7 +93,11 @@ function isManagedNonItem(child) {
  * @param {HTMLElement} messageList
  */
 export function ensurePendingMessages(area, messageList) {
-  const thread = area?._messageThread;
+  // A group column shares the parent column's thread, so its queue is the
+  // parent's queue — messages typed against a thread, with nothing to do with
+  // the run of tool rows this column shows. Treated as empty, which also clears
+  // the zone from a column reused as a group column.
+  const thread = area?._isGroupColumn ? null : area?._messageThread;
   const pending = (thread && 'pendingItems' in thread) ? thread.pendingItems : [];
 
   let zone = /** @type {HTMLElement|null} */ (messageList.querySelector(`.${PENDING_ZONE_CLASS}`));
@@ -177,7 +182,8 @@ export const MESSAGE_TAGS = new Set([
   'CONTEXT-ITEM-MESSAGE',
   'ERROR-MESSAGE',
   'COMPACT-SUMMARY-MESSAGE',
-  'TOOL-ACTION-MESSAGE'
+  'TOOL-ACTION-MESSAGE',
+  'TOOL-GROUP-MESSAGE'
 ]);
 
 // Element ID format helpers
@@ -592,7 +598,10 @@ function createBubblesForEvent(area, message, itemIndex) {
   /** @type {HTMLElement[]} */
   const elements = [];
 
-  if (isUserMessage(message)) {
+  if (isGroupEntry(message)) {
+    const live = area?._snapshotLiveStatus?.() || null;
+    elements.push(createToolGroupTile(/** @type {any} */ (message), itemIndex, live));
+  } else if (isUserMessage(message)) {
     const el = createUserBubble(message, itemIndex);
     if (el) elements.push(el);
   } else if (isAssistantMessage(message) || isThinkingMessage(message)) {
@@ -780,6 +789,25 @@ function createContextItemBubble(area, message, itemIndex) {
     itemIndex,
     attributes: attrs
   });
+}
+
+/**
+ * Create the collapsed tile for a folded run of tool rows. The tile stands in
+ * for items that are still in the document untouched; selecting it opens them
+ * in the next column.
+ * @param {import('../utils/item-grouping.js').ItemGroup} group - The group entry.
+ * @param {number} [itemIndex]
+ * @param {import('../utils/thread-display.js').ThreadLiveStatus|null} [live] - Conversation's live LLM status snapshot.
+ * @returns {HTMLElement} Created element.
+ */
+function createToolGroupTile(group, itemIndex, live) {
+  const el = createMessageElement('tool-group-message', {
+    itemId: group.get('itemId'),
+    itemIndex,
+    attributes: { 'child-count': String(group.members.length) }
+  });
+  /** @type {any} */ (el).updateFromItem?.(group, live);
+  return el;
 }
 
 /**

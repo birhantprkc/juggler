@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Added a togglable mode that collapses runs of consecutive tool uses into group items
 - Alt+N starts a new conversation, a key browsers leave alone unlike Ctrl+N
 - PDF files render page-by-page in the properties panel, and their text is read by the model
 - Extensions can add file viewers, teaching Juggler to display and read new file formats

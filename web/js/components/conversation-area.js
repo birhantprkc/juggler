@@ -20,11 +20,14 @@ import './thinking-message.js';
 import './context-item-message.js';
 import './error-message.js';
 import './thread-message.js';
+import './tool-group-message.js';
+import { buildDisplayItems, isGroupEntry } from '../utils/item-grouping.js';
+import { isToolGroupingEnabled } from '../utils/tool-grouping-pref.js';
 import { createIconBadge, createTypeBadge } from '../utils/icon-message-renderer.js';
 import { badgeForItem } from '../utils/item-badge.js';
 import { SCROLL_TOP_SVG, SCROLL_BOTTOM_SVG, REOPEN_THREAD_SVG } from '../utils/icons.js';
 import { setupColumnResize } from '../utils/column-resize.js';
-import { isThreadClosed } from '../model/thread-navigation.js';
+import { isThreadClosed, hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
 import { appendDeleteControls } from '../utils/panel-delete-controls.js';
 import { findNeighborItemId } from '../services/context-item-utilities.js';
 import {
@@ -79,6 +82,7 @@ const CV_ROW_TAGS = new Set([
   'THINKING-MESSAGE',
   'TOOL-ACTION-MESSAGE',
   'THREAD-MESSAGE',
+  'TOOL-GROUP-MESSAGE',
   'CONTEXT-ITEM-MESSAGE',
   'ERROR-MESSAGE',
 ]);
@@ -135,6 +139,12 @@ class ConversationArea extends HTMLElement {
     this._pendingSkip = new Set();
     /** @type {number|null} @private - Pending scroll-idle timer that flushes _pendingSkip */
     this._skipFlushTimer = null;
+    /** @type {boolean} @private - True when this column IS a group's contents, so its rows are never re-folded */
+    this._isGroupColumn = false;
+    /** @type {any[]|null} @private - The folded rows this column shows, when it is a group column (null otherwise) */
+    this._groupItems = null;
+    /** @type {Map<string, string>} @private - itemId of a folded tool row → display id of the group standing in for it */
+    this._memberToGroup = new Map();
   }
 
   /**
@@ -190,6 +200,9 @@ class ConversationArea extends HTMLElement {
   setMessageThread(messageThread) {
     const containerChanged = this._observedContainer !== messageThread?.container;
     this._messageThread = messageThread;
+    // Mode before thread: a group column's footer must know it shows no token
+    // meter before it is handed a thread to fetch one for.
+    /** @type {any} */ (this._getFooter()).setStatusOnly(this._isGroupColumn);
     /** @type {any} */ (this._getFooter()).setMessageThread(messageThread);
 
     // Re-target the streaming observer whenever the thread's container changes.
@@ -325,6 +338,40 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
+   * Apply the tool-grouping display transform to this column's items.
+   *
+   * Display-only: the returned entries are the same Y.Maps, with each run of
+   * adjacent tool rows standing behind one group entry. A column that IS a
+   * group's contents never re-folds (that would hide what the user just opened).
+   * The member → group lookup is cached because selection, visibility and
+   * scrolling all have to speak in the ids that are actually in the DOM.
+   * @param {any[]} items - The column's items, in document order.
+   * @returns {{entries: any[], memberToGroup: Map<string, string>}} Display entries + lookup.
+   * @private
+   */
+  _computeDisplay(items) {
+    const enabled = !this._isGroupColumn && isToolGroupingEnabled();
+    const display = buildDisplayItems(items, { enabled });
+    this._memberToGroup = display.memberToGroup;
+    return display;
+  }
+
+  /**
+   * The id this column actually renders for an item: a folded tool row is
+   * represented by its group, everything else by itself. Every selection,
+   * visibility and scroll path funnels through here, so the rest of the
+   * selection machinery keeps working in document itemIds and lands on the
+   * right row either way.
+   * @param {string|null|undefined} itemId - A document itemId (or a display id already).
+   * @returns {string} The id present in this column's DOM.
+   * @private
+   */
+  _displayIdFor(itemId) {
+    if (!itemId) return '';
+    return this._memberToGroup.get(itemId) || itemId;
+  }
+
+  /**
    * Notify message elements when their items change.
    * Builds a Map of items for O(1) lookup, then iterates streamable elements once.
    * Total complexity: O(N) where N = number of items.
@@ -367,6 +414,23 @@ class ConversationArea extends HTMLElement {
         } else {
           /** @type {any} */ (element).updateFromItem?.(item);
         }
+      }
+    }
+
+    // Group tiles read the aggregate state of the rows they hide (a member
+    // going pending must turn the tile orange), so they're refreshed from the
+    // re-derived groups rather than from itemMap.
+    const groupElements = Array.from(messageList.querySelectorAll('tool-group-message'));
+    if (groupElements.length > 0) {
+      const { entries } = this._computeDisplay(items);
+      /** @type {Map<string, any>} */
+      const groupMap = new Map();
+      for (const entry of entries) {
+        if (isGroupEntry(entry)) groupMap.set(entry.get('itemId'), entry);
+      }
+      for (const element of groupElements) {
+        const group = groupMap.get(element.getAttribute('message-id') || '');
+        if (group) /** @type {any} */ (element).updateFromItem?.(group, live);
       }
     }
 
@@ -451,16 +515,17 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Push a live LLM status snapshot to every thread-message tile in this
-   * column. Called from updateFooter so the tile face and the footer always
-   * derive from the same snapshot in the same code path.
+   * Push a live LLM status snapshot to every self-rendering status tile in this
+   * column (sub-threads and folded tool groups). Called from updateFooter so the
+   * tile face and the footer always derive from the same snapshot in the same
+   * code path.
    * @param {import('../utils/thread-display.js').ThreadLiveStatus|null} live
    * @private
    */
   _broadcastLiveStatusToTiles(live) {
     const messageList = this.querySelector('#message-list');
     if (!messageList) return;
-    for (const el of Array.from(messageList.querySelectorAll('thread-message'))) {
+    for (const el of Array.from(messageList.querySelectorAll('thread-message, tool-group-message'))) {
       /** @type {any} */ (el).setLiveStatus?.(live);
     }
   }
@@ -738,7 +803,7 @@ class ConversationArea extends HTMLElement {
         // Check if clicked on a selectable item (any message element)
         const selectableItem = target.closest(
           'user-message, assistant-message, thinking-message, context-item-message, ' +
-          'error-message, tool-action-message, thread-message'
+          'error-message, tool-action-message, thread-message, tool-group-message'
         );
         if (selectableItem) {
           const itemId = selectableItem.getAttribute('message-id');
@@ -1071,12 +1136,17 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Check if the currently selected item is a thread-message
-   * @returns {boolean} True if selected item is a thread
+   * Whether the selected row opens a column of its own: a sub-thread, or a
+   * folded group of tool rows. Both are containers the user drills into, so
+   * arrow-right treats them identically.
+   * @returns {boolean} True if the selected item can be navigated into
    */
-  isSelectedItemThread() {
+  isSelectedItemDrillable() {
     if (!this._localSelectedItemId) return false;
-    const el = this.querySelector(`thread-message[message-id="${this._localSelectedItemId}"]`);
+    const el = this.querySelector(
+      `thread-message[message-id="${this._localSelectedItemId}"], ` +
+      `tool-group-message[message-id="${this._localSelectedItemId}"]`
+    );
     return el !== null;
   }
 
@@ -1331,7 +1401,10 @@ class ConversationArea extends HTMLElement {
       }
     }
 
-    const nextId = pending[0]?.get?.('itemId');
+    // The caller applies this id as the column's selection, so hand back the id
+    // this column actually renders: a folded approval is reached by selecting
+    // its group, which opens the run (and the approval) in the next column.
+    const nextId = this._displayIdFor(pending[0]?.get?.('itemId'));
     if (!nextId || nextId === this._localSelectedItemId) { trace('no-change', nextId ?? null); return null; }
     if (!this._isItemVisible(nextId)) { trace('not-visible', nextId); return null; }
     trace('pick', nextId);
@@ -1346,6 +1419,9 @@ class ConversationArea extends HTMLElement {
    */
   _selectItem(itemId, origin = 'user') {
     if (!this._conversation) return;
+    // A folded tool row has no row of its own — selecting it means selecting the
+    // group standing in for it, which opens the run in the next column.
+    itemId = this._displayIdFor(itemId);
     // Rule 5: never select a hidden item
     if (!this._isItemVisible(itemId)) return;
 
@@ -1599,7 +1675,7 @@ class ConversationArea extends HTMLElement {
     const selectables = Array.from(messageList.querySelectorAll(
       'user-message[message-id], assistant-message[message-id], thinking-message[message-id], ' +
       'context-item-message[message-id], error-message[message-id], ' +
-      'tool-action-message[message-id], thread-message[message-id]'
+      'tool-action-message[message-id], thread-message[message-id], tool-group-message[message-id]'
     ));
     /** @type {string[]} */
     const ids = [];
@@ -1619,7 +1695,7 @@ class ConversationArea extends HTMLElement {
    * @private
    */
   _isItemVisible(itemId) {
-    const el = this.querySelector(`[message-id="${itemId}"]`);
+    const el = this.querySelector(`[message-id="${this._displayIdFor(itemId)}"]`);
     return el !== null;
   }
 
@@ -1632,6 +1708,7 @@ class ConversationArea extends HTMLElement {
   _applySelectedClass(selectedId) {
     const messageList = this.querySelector('#message-list');
     if (!messageList) return;
+    selectedId = selectedId ? this._displayIdFor(selectedId) : selectedId;
 
     const currentlySelected = messageList.querySelectorAll('.selected');
     if (selectedId && currentlySelected.length === 1 &&
@@ -1666,6 +1743,7 @@ class ConversationArea extends HTMLElement {
   _scrollItemIntoView(itemId, smooth = false) {
     const messageList = this.querySelector('#message-list');
     if (!messageList) return;
+    itemId = this._displayIdFor(itemId);
     const el = messageList.querySelector(`[message-id="${itemId}"]`);
     if (!el) return;
     // Detect the tail by SELECTABLE order, not DOM adjacency: a
@@ -2042,9 +2120,16 @@ class ConversationArea extends HTMLElement {
     ensureResultSpec(this, content);
 
     if (!items || items.length === 0) {
+      this._memberToGroup = new Map();
       removeAllElements(content);
       return;
     }
+
+    // Everything below works on DISPLAY entries: the same Y.Maps, except that a
+    // run of adjacent tool rows arrives as one group entry. Group entries carry
+    // an itemId and a type like any item, so the id-based diff below is unaware
+    // of the difference.
+    items = this._computeDisplay(items).entries;
 
     const currentElements = buildElementMap(content);
     const elementsToKeep = identifyElementsToKeep(items, currentElements);
@@ -2264,9 +2349,17 @@ class ConversationArea extends HTMLElement {
     // text; columns whose tiles represent the active thread leave that to
     // the tile face).
     const myThreadId = this._messageThread?.threadItemId || null;
+    // A group column is a SLICE of its parent thread: it shares the parent's
+    // message thread outright (conversation-tab._buildConversationColumn), so
+    // every thread-level signal below matches in EVERY group column of a busy
+    // thread — including runs that finished long ago. Scope those signals to the
+    // rows this column actually shows, so only the run holding the live work
+    // reports it.
+    const groupItems = this._isGroupColumn ? (this._groupItems || []) : null;
     /** @type {{message: string, spinner: boolean}|null} */
     let llmStatus = null;
-    if (live && live.threadId === myThreadId) {
+    if (live && live.threadId === myThreadId &&
+        (!groupItems || hasUnsettledToolInTree(groupItems))) {
       llmStatus = { message: live.message, spinner: true };
     }
 
@@ -2278,8 +2371,9 @@ class ConversationArea extends HTMLElement {
     // LLM status takes priority (most time-sensitive), then item states
     const busyState = llmStatus || itemBusy;
 
-    const hasPendingApprovals = (this._messageThread?.getPendingApprovalMessages().length ?? 0) > 0;
-    const canContinue = this._canContinue();
+    const hasPendingApprovals = groupItems
+      ? hasPendingApprovalInTree(groupItems)
+      : (this._messageThread?.getPendingApprovalMessages().length ?? 0) > 0;
     // While the loop is parked on an approval the worker keeps publishing
     // `processing_tools`, so any busyState here is the LLM loop's idea of
     // "still working" — but the actual blocker is user input. Override the
@@ -2289,6 +2383,21 @@ class ConversationArea extends HTMLElement {
       ? StatusMessageBuilder.withBusyMarker('Waiting for user approval')
       : (busyState?.message || '');
     const showSpinner = hasPendingApprovals ? false : (busyState?.spinner ?? true);
+
+    // A group column is a lens on a run of tool rows, not a thread. The rows are
+    // the parent thread's, and this column shares that thread outright, so every
+    // control below (Continue, Close, Duplicate, Add Context Item) would act on
+    // the parent from inside the lens, and the meter would count the parent's
+    // context. Everything but the status line — which the group-scoped signals
+    // above have already narrowed to this run — is left out.
+    if (this._isGroupColumn) {
+      footer.setStatusOnly(true);
+      footer.update({ isProcessing, canContinue: false, statusMessage, showSpinner });
+      return;
+    }
+    footer.setStatusOnly(false);
+
+    const canContinue = this._canContinue();
 
     // Close thread is viable only on a sub-thread (root can't be closed) that is
     // open and has content to summarise — same gate as Continue, plus "is a

@@ -11,6 +11,8 @@ import { isThreadMessage } from '../../sdk/lib/message.js';
 import { createMessageThread } from '../model/message-thread.js';
 import { isThreadClosed } from '../model/thread-navigation.js';
 import { ColumnSelectionState } from '../utils/column-selection.js';
+import { isToolGroupingEnabled, TOOL_GROUPING_EVENT } from '../utils/tool-grouping-pref.js';
+import { buildDisplayItems, isGroupId } from '../utils/item-grouping.js';
 import { recordTape } from '../utils/event-tape.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 // Columns are created via createElement('conversation-area' | 'properties-panel')
@@ -25,6 +27,8 @@ import './properties-panel.js';
  *
  * Supports Miller columns: selecting any item in column N opens column N+1.
  * - Selected thread → column N+1 is a conversation-area with the thread's nested items
+ * - Selected tool group → column N+1 is a conversation-area listing the folded
+ *   rows, bound to the SAME thread as column N (the rows never moved)
  * - Selected non-thread → column N+1 is a properties-panel showing item details
  * - No selection → no columns after N
  *
@@ -83,10 +87,17 @@ class ConversationTab extends HTMLElement {
 
     /** @type {((e: KeyboardEvent) => void)|null} @private - Bound keydown handler for cleanup */
     this._keydownHandler = null;
+
+    /** @type {(() => void)|null} @private - Bound tool-grouping pref handler for cleanup */
+    this._groupingPrefHandler = null;
   }
 
   connectedCallback() {
     this.render();
+    if (!this._groupingPrefHandler) {
+      this._groupingPrefHandler = () => this._onToolGroupingChanged();
+      window.addEventListener(TOOL_GROUPING_EVENT, this._groupingPrefHandler);
+    }
   }
 
   disconnectedCallback() {
@@ -98,6 +109,59 @@ class ConversationTab extends HTMLElement {
       document.removeEventListener('keydown', this._keydownHandler);
       this._keydownHandler = null;
     }
+    if (this._groupingPrefHandler) {
+      window.removeEventListener(TOOL_GROUPING_EVENT, this._groupingPrefHandler);
+      this._groupingPrefHandler = null;
+    }
+  }
+
+  /**
+   * The tool-grouping preference flipped: re-render every column under the new
+   * display rule, carrying each selection across the fold.
+   *
+   * Selections are ids, and folding changes which ids exist in a column: a
+   * member id becomes its group's id when folding, and a group id becomes its
+   * first row when unfolding. Translating them here means the user keeps
+   * looking at the same thing, one level in or out. Nothing about the document
+   * changes — only what each column lists.
+   * @private
+   */
+  _onToolGroupingChanged() {
+    if (!this._conversation) return;
+    const enabled = isToolGroupingEnabled();
+
+    for (let i = 0; i < this._columns.length; i++) {
+      const col = /** @type {any} */ (this._columns[i]);
+      if (col.tagName !== 'CONVERSATION-AREA') continue;
+
+      const selectedId = this._selection.selections[i];
+      if (selectedId) {
+        const items = col._isGroupColumn
+          ? (col._groupItems ?? [])
+          : (col._messageThread?.items ?? []);
+        let nextId = selectedId;
+        if (enabled) {
+          const { memberToGroup } = buildDisplayItems(items, { enabled: true });
+          nextId = memberToGroup.get(selectedId) || selectedId;
+        } else if (isGroupId(selectedId)) {
+          nextId = selectedId.slice(selectedId.indexOf(':') + 1);
+        }
+        if (nextId !== selectedId) {
+          this._selection.selections[i] = nextId;
+          // Selecting into a group opened a column that no longer exists (or
+          // now does); later selections belong to a chain that just changed
+          // shape, so drop them rather than resolve them against the wrong list.
+          this._selection.selections.length = i + 1;
+        }
+        col._localSelectedItemId = this._selection.selections[i] ?? null;
+      }
+
+      // The rendered-item key is a function of what was listed, which is exactly
+      // what changed — clear it so the column repaints.
+      col._renderedItemKey = null;
+    }
+
+    this._rebuildColumns(false);
   }
 
   /**
@@ -949,8 +1013,8 @@ class ConversationTab extends HTMLElement {
     const activeCol = this._columns[this._selection.activeColumnIndex];
     if (!activeCol || activeCol.tagName !== 'CONVERSATION-AREA') return;
 
-    // Only enter if the selected item is a thread
-    if (!/** @type {any} */ (activeCol).isSelectedItemThread()) return;
+    // Only enter if the selected item opens a column (sub-thread or tool group)
+    if (!/** @type {any} */ (activeCol).isSelectedItemDrillable()) return;
 
     // The next column should already exist (created by item-selected event)
     const nextIndex = this._selection.activeColumnIndex + 1;
@@ -1304,7 +1368,8 @@ class ConversationTab extends HTMLElement {
       const prevInputCol = this._deepestInputColumn();
 
       const conversation = this._conversation;
-      const chain = this._selection.resolveColumnChain(conversation.rootMessageThread, isThreadMessage);
+      const chain = this._selection.resolveColumnChain(conversation.rootMessageThread, isThreadMessage,
+        { groupingEnabled: isToolGroupingEnabled() });
       const session = conversation.session;
 
       // Build new columns array matching the chain
@@ -1402,9 +1467,21 @@ class ConversationTab extends HTMLElement {
       /** @type {any} */ (this._columnContainer).appendChild(col);
     }
 
-    const messageThread = (i === 0)
-      ? conversation.rootMessageThread
-      : createMessageThread(conversation, entry.container, entry.threadItemId);
+    // A group column shows a subset of the PARENT column's rows, so it shares
+    // the parent's message thread outright: approvals, deletes, permissions and
+    // context lookups inside it are the same operations they'd be one column to
+    // the left. Only the list of rows differs.
+    const messageThread = entry.groupId
+      ? /** @type {any} */ (newColumns[i - 1])?.getMessageThread?.()
+      : (i === 0)
+        ? conversation.rootMessageThread
+        : createMessageThread(conversation, entry.container, entry.threadItemId);
+
+    // Never re-fold inside a group column — the user opened it to see the rows.
+    // Set before the thread: setMessageThread configures the footer, which shows
+    // no thread-level controls or token meter in a group column.
+    /** @type {any} */ (col)._isGroupColumn = !!entry.groupId;
+    /** @type {any} */ (col)._groupItems = entry.groupId ? (entry.groupItems || []) : null;
 
     /** @type {any} */ (col).setMessageThread(messageThread);
     /** @type {any} */ (col).conversation = conversation;
@@ -1414,7 +1491,24 @@ class ConversationTab extends HTMLElement {
     // _clearSelection and a re-entrant _rebuildColumns call.
     /** @type {any} */ (col)._localSelectedItemId = this._selection.selections[i] || null;
 
-    if (i === 0) {
+    if (entry.groupId) {
+      // Group column: the folded rows, in order. No thread context (it isn't a
+      // thread) and no header — the rows carry their own identity.
+      /** @type {any} */ (col).setThreadContext?.(null);
+      /** @type {any} */ (col).hideThreadHeader?.();
+      const groupItems = entry.groupItems || [];
+      const groupItemKey = entry.groupId + '|' +
+        groupItems.map((/** @type {any} */ it) => {
+          // Members' states are part of the key: a row going pending→completed
+          // changes what this column must show, and unlike the parent column
+          // there's no Yjs observer bound to a group.
+          return `${it?.get?.('itemId') ?? ''}:${it?.get?.('state') ?? ''}`;
+        }).join(',');
+      if (/** @type {any} */ (col)._renderedItemKey !== groupItemKey) {
+        /** @type {any} */ (col)._renderedItemKey = groupItemKey;
+        /** @type {any} */ (col).renderFromItems([...groupItems]);
+      }
+    } else if (i === 0) {
       // Root column
       /** @type {any} */ (col).setThreadContext?.(null);
       /** @type {any} */ (col).hideThreadHeader?.();
@@ -1561,11 +1655,13 @@ class ConversationTab extends HTMLElement {
    * @private
    */
   _applyInputVisibility(chain, newColumns) {
-    // Hide the composer-box ONLY on closed sub-thread columns; every open thread
-    // (root included) keeps its own box. A closed column shows a "reopen closed
-    // thread" affordance in the box's slot instead — driven off this same
-    // attribute (see the conversation-area[data-hide-input] reopen-box rule),
-    // so data-hide-input now means exactly "this column's thread is closed".
+    // Hide the composer-box on closed sub-thread columns and on group columns;
+    // every open thread (root included) keeps its own box. A closed column shows
+    // a "reopen closed thread" affordance in the box's slot instead — driven off
+    // this same attribute (see the `conversation-area[data-hide-input]
+    // :not([data-group-column]) reopen-box` rule), so data-hide-input means
+    // "this column has no composer" and data-group-column distinguishes the two
+    // reasons.
     //
     // "Closed" is isThreadClosed (result set AND nothing awaiting approval),
     // NOT just "has a result" — a sub-thread parked on your approval is still
@@ -1576,6 +1672,16 @@ class ConversationTab extends HTMLElement {
     for (let i = chain.length - 1; i >= 0; i--) {
       const col = newColumns[i];
       if (!col || col.tagName !== 'CONVERSATION-AREA') continue;
+      // A group column is a lens on the column to its left, not a place to
+      // type: the parent keeps the one composer for that thread. It's marked
+      // separately from a closed thread so it gets no reopen affordance either
+      // (see the `[data-hide-input]:not([data-group-column])` CSS rule).
+      if (chain[i].groupId) {
+        col.setAttribute('data-group-column', '');
+        col.setAttribute('data-hide-input', '');
+        continue;
+      }
+      col.removeAttribute('data-group-column');
       const isClosed = i > 0 && isThreadClosed(chain[i].threadYMap);
       if (isClosed) {
         col.setAttribute('data-hide-input', '');
@@ -1734,7 +1840,11 @@ class ConversationTab extends HTMLElement {
       if (col.tagName === 'CONVERSATION-AREA' && col.classList.contains('thread-column')) {
         const threadCol = /** @type {any} */ (col);
         if (!threadCol._localSelectedItemId && threadCol._selectionOrigin !== 'user') {
-          const items = threadCol._messageThread?.items ?? [];
+          // A group column lists only its folded rows; deriving from the whole
+          // (shared) thread would nominate items it doesn't show.
+          const items = threadCol._isGroupColumn
+            ? (threadCol._groupItems ?? [])
+            : (threadCol._messageThread?.items ?? []);
           if (items.length > 0) {
             const itemIds = items.map(/** @type {(i: any) => string|undefined} */ (i) => i?.get?.('itemId')).filter(Boolean);
             threadCol.onItemsInserted(/** @type {string[]} */ (itemIds), items);

@@ -25,6 +25,15 @@
  * Nothing is persisted in Yjs: the blob on disk is the only record.
  * A small per-element cache keyed by transactionId avoids refetching
  * on every items-array event.
+ *
+ * ## Status-only mode
+ *
+ * A column that shows a folded tool run (see `setStatusOnly`) is a lens on part
+ * of a thread, not a thread: every idle-row control acts on the whole thread and
+ * the token meter counts the whole thread, so both would lie about what the
+ * column shows. In that mode the footer keeps only the status line — which its
+ * owner scopes to the run's own rows — and disappears entirely when the run is
+ * settled.
  */
 import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
 import providersCache from '../services/providers-cache.js';
@@ -72,6 +81,15 @@ class ConversationFooter extends HTMLElement {
    * @private
    */
   _tokenUpdateTimer = undefined;
+
+  /**
+   * Status-only mode: the footer is reduced to the status line (see the class
+   * comment). Set by the owning column, and applied structurally by
+   * `_applyStatusOnly` rather than on every `update()` tick.
+   * @type {boolean}
+   * @private
+   */
+  _statusOnly = false;
 
   disconnectedCallback() {
     if (this._unsubscribe) { this._unsubscribe(); this._unsubscribe = null; }
@@ -123,6 +141,49 @@ class ConversationFooter extends HTMLElement {
       }
     }
     this._updateTokenDisplay();
+  }
+
+  /**
+   * Reduce this footer to the status line, or restore the full footer.
+   *
+   * Set by a column that displays a folded tool run: the run's rows belong to
+   * the thread one column to the left, which this column shares, so Continue,
+   * Close, Duplicate and Add Context Item would all act on that thread from
+   * inside a lens on five of its rows, and the token meter would report the
+   * thread's context for a handful of tool calls. Only the status line survives,
+   * because the owner scopes it to the run (conversation-area.updateFooter).
+   * @param {boolean} on - True for status-only, false for the full footer.
+   */
+  setStatusOnly(on) {
+    on = !!on;
+    if (this._statusOnly === on) return;
+    this._statusOnly = on;
+    this._applyStatusOnly();
+    if (!on) this._updateTokenDisplay();
+  }
+
+  /**
+   * Show or hide the parts status-only mode removes. Called on every change of
+   * the mode and once on connection, since the markup is built there and a
+   * column can set the mode before this element is in the DOM.
+   * @private
+   */
+  _applyStatusOnly() {
+    const on = this._statusOnly;
+    this.toggleAttribute('status-only', on);
+    const tokenDisplay = this.querySelector('token-display');
+    for (const el of [tokenDisplay, this.querySelector('.footer-pause-btn'), this.querySelector('.footer-stop-btn')]) {
+      el?.classList.toggle('hidden', on);
+    }
+    if (on) {
+      // No meter to keep current, and no in-flight refresh worth landing.
+      this._cancelDeferredTokenDisplayUpdate();
+      /** @type {any} */ (tokenDisplay)?.clear?.();
+    } else {
+      // The status-only footer hides itself while its run is settled; a full
+      // footer is always present.
+      this.classList.remove('hidden');
+    }
   }
 
   /**
@@ -204,6 +265,8 @@ class ConversationFooter extends HTMLElement {
 
   /** @private */
   _updateTokenDisplay() {
+    // Status-only: no meter is shown, so don't fetch blobs to fill one.
+    if (this._statusOnly) return;
     const thread = this._messageThread;
     const tokenDisplay = this.querySelector('token-display');
     if (!thread || !tokenDisplay) return;
@@ -390,6 +453,8 @@ class ConversationFooter extends HTMLElement {
       });
     }
 
+    this._applyStatusOnly();
+
     if (this._messageThread) this._updateTokenDisplay();
   }
 
@@ -433,9 +498,18 @@ class ConversationFooter extends HTMLElement {
   /**
    * Update footer display based on conversation state.
    * This is the ONLY way to change what the footer shows.
+   *
+   * In status-only mode the thread-level fields of `state` are ignored: the
+   * footer shows the status line while `isProcessing`, and nothing at all
+   * otherwise.
    * @param {FooterState} state - Current conversation state
    */
   update(state) {
+    if (this._statusOnly) {
+      // A run that isn't doing anything has nothing to say, and an empty strip
+      // would leave dead space under the last row — so the whole footer goes.
+      this.classList.toggle('hidden', !state.isProcessing);
+    }
 
     const processing = /** @type {HTMLElement|null} */ (this.querySelector('footer-processing'));
     const idle = /** @type {HTMLElement|null} */ (this.querySelector('footer-idle'));
@@ -470,11 +544,15 @@ class ConversationFooter extends HTMLElement {
       const spinner = this.querySelector('juggler-spinner');
       if (spinner) toggle(spinner, state.showSpinner !== false);
       if (nextSteps) {
-        setText(nextSteps, state.nextSteps || '');
-        toggle(nextSteps, !!state.nextSteps);
+        // The plan belongs to the thread, not to a run of its tool calls.
+        const text = this._statusOnly ? '' : (state.nextSteps || '');
+        setText(nextSteps, text);
+        toggle(nextSteps, !!text);
       }
       if (processing) {
-        if (state.busyItemMessageId) {
+        // Status-only carries no click affordance: the busy row it would select
+        // is already on screen in this very column.
+        if (state.busyItemMessageId && !this._statusOnly) {
           /** @type {HTMLElement} */ (processing).dataset.messageId = state.busyItemMessageId;
         } else {
           delete /** @type {HTMLElement} */ (processing).dataset.messageId;
@@ -497,6 +575,9 @@ class ConversationFooter extends HTMLElement {
       hide(processing);
       if (processing) delete /** @type {HTMLElement} */ (processing).dataset.messageId;
       if (nextSteps) { nextSteps.textContent = ''; hide(nextSteps); }
+
+      // Status-only stops here: the idle row is entirely thread-level controls.
+      if (this._statusOnly) { hide(idle); return; }
 
       // A closed thread reopens via the box-shaped affordance in the column's
       // input slot (conversation-area's reopen-box), not a footer button — so
