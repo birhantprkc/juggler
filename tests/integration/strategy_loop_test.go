@@ -209,12 +209,18 @@ func TestStrategyLoopMultipleIterations(t *testing.T) {
 }
 
 // TestStrategyLoopLLMError tests that an LLM error inserts an error item and the worker returns to idle.
+//
+// The mock error must be a TERMINAL one. classifyLLMError inspects the message
+// text, and anything it reads as a rate limit or transient failure (an overload,
+// a stalled stream — see providerutils.TransientMessage) is retried by
+// callLLMWithRetry instead of surfacing, which is a different code path than the
+// one under test here.
 func TestStrategyLoopLLMError(t *testing.T) {
 	t.Parallel()
 	ts := strategyPreamble(t)
 
 	ts.Worker.SetLLMCaller(func(ctx context.Context, req json.RawMessage, streamCB func(worker.StreamChunk)) (*worker.LLMResponse, error) {
-		return nil, fmt.Errorf("mock LLM error: service unavailable")
+		return nil, fmt.Errorf("mock LLM error: invalid request")
 	})
 
 	triggerSendMessage(ts, "This will fail")

@@ -5,11 +5,66 @@
 package server
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"juggler/cmd/juggler/worker"
 )
+
+// TestAutoNameTransient pins which completion failures earn a re-attempt. The
+// case that matters most is the first: an upstream overload used to end the
+// whole naming attempt on the spot, so a tab silently kept "Untitled N" until
+// the user pressed Auto-name by hand.
+func TestAutoNameTransient(t *testing.T) {
+	overloaded := errors.New(`received error while streaming: {"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}`)
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"upstream overload", overloaded, true},
+		{"wrapped overload", fmt.Errorf("quick complete: %w", overloaded), true},
+		{"out-of-band channel busy", ErrQuickCompleteBusy, true},
+		{"per-call timeout", context.DeadlineExceeded, true},
+		{"bad credentials", errors.New(`quick complete: provider "anthropic" unavailable: no credential`), false},
+		{"model rejected the request", errors.New("400 invalid_request_error"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := autoNameTransient(context.Background(), tt.err); got != tt.want {
+				t.Fatalf("autoNameTransient(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+
+	// An expired naming budget makes every error terminal: the deadline that
+	// fired was the outer one, so re-attempting would fail instantly forever.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if autoNameTransient(ctx, overloaded) {
+		t.Fatal("autoNameTransient = true on a cancelled budget, want false")
+	}
+}
+
+// TestSleepCtx pins the backoff's abandon-on-expiry contract: a naming attempt
+// whose budget dies mid-backoff must stop, not wake up and call the provider.
+func TestSleepCtx(t *testing.T) {
+	if !sleepCtx(context.Background(), time.Millisecond) {
+		t.Fatal("sleepCtx = false for a completed wait, want true")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if sleepCtx(ctx, time.Hour) {
+		t.Fatal("sleepCtx = true on a cancelled context, want false")
+	}
+}
 
 func TestSanitizeAutoName(t *testing.T) {
 	tests := []struct {

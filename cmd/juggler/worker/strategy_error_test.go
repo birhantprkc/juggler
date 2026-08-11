@@ -106,6 +106,7 @@ func TestClassifyLLMErrorPreservesTypedCause(t *testing.T) {
 	}{
 		{name: "rate limit", msg: "HTTP 429 rate limited", want: (*RateLimitError)(nil)},
 		{name: "transient", msg: providerutils.StallMarker, want: (*TransientError)(nil)},
+		{name: "upstream overload", msg: `{"type":"service_unavailable_error","code":"server_is_overloaded"}`, want: (*TransientError)(nil)},
 	}
 
 	for _, tt := range tests {

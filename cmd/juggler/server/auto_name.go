@@ -6,11 +6,13 @@ package server
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"time"
 
 	"juggler/cmd/juggler/core"
+	providerutils "juggler/cmd/juggler/providers/utils"
 	"juggler/cmd/juggler/worker"
 	"juggler/internal/jlog"
 )
@@ -44,9 +46,22 @@ const (
 	// autoNameMaxAttempts bounds how many times we ask the model for a usable
 	// title (one retry with a firmer prompt; a second failure keeps "Untitled N").
 	autoNameMaxAttempts = 2
+	// autoNameMaxTransientRetries bounds the re-attempts spent on transient
+	// provider failures — an upstream overload, a dropped stream, a busy
+	// out-of-band channel. These ride their own budget rather than consuming an
+	// autoNameMaxAttempts title attempt: an overload burst says nothing about the
+	// title the model would have written, so it must not eat the retry a rejected
+	// candidate needs.
+	autoNameMaxTransientRetries = 2
+	// autoNameRetryBackoff is the base pause before re-attempting after a
+	// transient failure; the nth retry waits n*autoNameRetryBackoff. Naming is
+	// entirely in the background, so it can afford to wait out a short-lived
+	// capacity blip rather than racing back into it.
+	autoNameRetryBackoff = 2 * time.Second
 	// autoNameTimeout bounds the whole naming attempt (resolve + up to
-	// autoNameMaxAttempts completions).
-	autoNameTimeout = 35 * time.Second
+	// autoNameMaxAttempts + autoNameMaxTransientRetries completions, plus their
+	// backoffs).
+	autoNameTimeout = 90 * time.Second
 	// autoNameCompleteTimeout bounds just one QuickComplete call.
 	autoNameCompleteTimeout = 15 * time.Second
 )
@@ -157,11 +172,23 @@ func (s *Server) isProvisionalName(convID string) bool {
 
 // autoNameConversation derives and applies a short tab title for a freshly-used
 // conversation, out-of-band. Every failure mode leaves the existing name
-// untouched: the ones the user would want explained — no resolvable cheap model,
-// a completion error/timeout, a rejected candidate, no acceptable title, a rename
-// error — log at info so they surface on the console; the benign guard skips (the
-// name is no longer machine-derived, or a rename race) return silently. There is
-// deliberately no heuristic fallback: a dumb text-derived name is worse than none.
+// untouched, and each is reported at the volume its cause deserves:
+//
+//   - Terminal — the naming was attempted and gave up (a completion error that
+//     outlived its retries, no acceptable title, a failed rename): logged at
+//     error, and announced once to the user via noticeAutoNameFailed, since a
+//     tab that quietly stays "Untitled 4" is otherwise indistinguishable from
+//     one nobody tried to name.
+//   - Recoverable — a transient provider failure or a rejected candidate that
+//     still has budget left: logged at info as the attempt trail.
+//   - Configuration — no resolvable cheap model: logged at error (nothing will
+//     ever name a tab until it is fixed) but never announced, as it would fire
+//     on every new conversation.
+//   - Benign — a guard skip (the name is no longer machine-derived, or a rename
+//     race): silent, because nothing went wrong.
+//
+// There is deliberately no heuristic fallback: a dumb text-derived name is worse
+// than none.
 func (s *Server) autoNameConversation(convID, firstMessage, customSystem string, force bool, primary core.ModelRef) {
 	sm := s.SessionManager()
 	if sm == nil {
@@ -180,7 +207,7 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 
 	cheap, ok := s.resolveCheapModel(ctx, primary)
 	if !ok {
-		jlog.Info("auto-name %s: no cheap model resolvable; leaving default name", convID)
+		jlog.Error("auto-name %s: no cheap model resolvable; leaving default name", convID)
 		return
 	}
 
@@ -189,18 +216,25 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 	// Ask for a title, validating the reply against title-shaped heuristics.
 	// A rejected candidate (a full sentence, a conversational preamble, an empty
 	// result) earns one retry with a firmer prompt; a second failure leaves the
-	// default name rather than applying a garbage title.
+	// default name rather than applying a garbage title. A transient provider
+	// failure is not a failed attempt at all — it is re-attempted, after a
+	// backoff, on its own budget (see autoNameMaxTransientRetries), because
+	// giving up on the first one is a naming that silently never happens through
+	// no fault of the model or the prompt.
 	var title string
-	for attempt := 1; attempt <= autoNameMaxAttempts; attempt++ {
+	attempt, transientRetries, firmer := 1, 0, false
+	for attempt <= autoNameMaxAttempts {
 		// Attempt 1 uses the custom title instruction when set, else the built-in
-		// one. The retry always uses the firmer built-in instruction, which enforces
-		// the title shape a rejected candidate failed to produce. autoNameSystem
-		// appends the fixed data guard to whichever is chosen.
+		// one. A retry FOR A REJECTED CANDIDATE uses the firmer built-in
+		// instruction, which enforces the title shape that candidate failed to
+		// produce; a re-attempt after a transient failure re-sends the original
+		// instruction unchanged, since the prompt was never the problem.
+		// autoNameSystem appends the fixed data guard to whichever is chosen.
 		titleInstruction := autoNameTitleInstruction
 		if customSystem != "" {
 			titleInstruction = customSystem
 		}
-		if attempt > 1 {
+		if firmer {
 			titleInstruction = autoNameRetrySystemPrompt
 		}
 		system := autoNameSystem(titleInstruction)
@@ -213,7 +247,19 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 			Timeout: autoNameCompleteTimeout,
 		})
 		if err != nil {
-			jlog.Info("auto-name %s: completion failed (attempt %d/%d): %v", convID, attempt, autoNameMaxAttempts, err)
+			if autoNameTransient(ctx, err) && transientRetries < autoNameMaxTransientRetries {
+				transientRetries++
+				wait := time.Duration(transientRetries) * autoNameRetryBackoff
+				jlog.Info("auto-name %s: transient completion failure, retrying in %v (retry %d/%d): %v",
+					convID, wait, transientRetries, autoNameMaxTransientRetries, err)
+				if !sleepCtx(ctx, wait) {
+					return
+				}
+				continue
+			}
+			jlog.Error("auto-name %s: completion failed (attempt %d/%d, after %d transient retries); leaving default name: %v",
+				convID, attempt, autoNameMaxAttempts, transientRetries, err)
+			s.noticeAutoNameFailed(convID)
 			return
 		}
 		candidate := sanitizeAutoName(res.Text)
@@ -231,9 +277,13 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 		} else {
 			jlog.Info("auto-name %s: rejected candidate %q (attempt %d/%d)", convID, candidate, attempt, autoNameMaxAttempts)
 		}
+		// The candidate was unusable: spend a title attempt and ask again, firmly.
+		attempt++
+		firmer = true
 	}
 	if title == "" {
-		jlog.Info("auto-name %s: no acceptable title after %d attempts; leaving default name", convID, autoNameMaxAttempts)
+		jlog.Error("auto-name %s: no acceptable title after %d attempts; leaving default name", convID, autoNameMaxAttempts)
+		s.noticeAutoNameFailed(convID)
 		return
 	}
 
@@ -248,7 +298,8 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 	title = sm.ResolveAutoName(title, convID)
 	canonical, err := sm.RenameConversation(convID, title)
 	if err != nil {
-		jlog.Info("auto-name %s: rename failed: %v", convID, err)
+		jlog.Error("auto-name %s: rename failed: %v", convID, err)
+		s.noticeAutoNameFailed(convID)
 		return
 	}
 
@@ -257,6 +308,54 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 	s.workerManager.RenameLog(convID)
 	serverBroadcaster{srv: s}.BroadcastConversationsChanged("renamed", convID, canonical)
 	jlog.Debug("auto-name %s: renamed to %q", convID, canonical)
+}
+
+// autoNameTransient reports whether a failed naming completion is worth
+// re-attempting. Three shapes qualify:
+//
+//   - A transient provider failure (an upstream overload, a dropped stream) —
+//     classified by the same providerutils rule the worker's turn loop uses.
+//   - ErrQuickCompleteBusy — the out-of-band channel was momentarily saturated,
+//     which is a fast retryable rejection by construction, not a naming failure.
+//   - Our own per-call deadline (autoNameCompleteTimeout) elapsing, which says
+//     this call was slow, not that naming cannot succeed.
+//
+// A cancelled or expired parent ctx is never retryable: the whole naming budget
+// is gone, so the deadline that fired was the outer one and another attempt
+// would only fail instantly.
+func autoNameTransient(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, ErrQuickCompleteBusy) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return providerutils.TransientMessage(err.Error())
+}
+
+// sleepCtx waits for d, reporting false if ctx ended first (the caller should
+// abandon its work rather than proceed on an expired budget).
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// noticeAutoNameFailed tells every open client that a tab could not be named, so
+// a failure the user would otherwise only find in the log surfaces as a brief
+// toast. Fired once per abandoned naming attempt, and only for a naming that was
+// actually attempted and gave up — never for a configuration gap that would
+// re-fire on every new conversation. The message names no conversation: the
+// remedy (the tab's own "Auto-name" button) is the same either way, and the tab
+// still carrying an "Untitled N" name is the one that failed.
+func (s *Server) noticeAutoNameFailed(convID string) {
+	jlog.Debug("auto-name %s: announcing failure to clients", convID)
+	serverBroadcaster{srv: s}.BroadcastNotice("Couldn't auto-name a tab — the model was unavailable. Rename it, or press Auto-name to try again.")
 }
 
 // sanitizeAutoName turns a raw model reply into a clean, bounded, single-line

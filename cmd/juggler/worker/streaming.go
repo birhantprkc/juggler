@@ -425,16 +425,15 @@ func isRateLimitMsg(msg string) bool {
 		strings.Contains(lower, "too many requests")
 }
 
-// isTransientMsg returns true if an error string indicates a transport-level
-// failure that a fresh attempt usually clears: the claude CLI stream stalling
-// because the upstream connection dropped (machine slept mid-request, network
-// blip). These are worth retrying transparently a couple of times. Deliberately
-// narrow — it does NOT match the CLI's "exited unexpectedly" message, which can
-// signal genuine quota exhaustion that retrying would only paper over.
+// isTransientMsg returns true if an error string indicates a failure that a
+// fresh attempt usually clears: a stalled/dropped stream, or an upstream
+// overload. The judgement lives in providerutils.TransientMessage so the turn
+// loop and the out-of-band QuickComplete callers classify identically;
+// deliberately narrow there, and it does NOT match the CLI's "exited
+// unexpectedly" message, which can signal genuine quota exhaustion that
+// retrying would only paper over.
 func isTransientMsg(msg string) bool {
-	lower := strings.ToLower(msg)
-	return strings.Contains(lower, providerutils.StallMarker) ||
-		strings.Contains(lower, providerutils.StallDroppedMarker)
+	return providerutils.TransientMessage(msg)
 }
 
 // parseRetryWaitFromMsg extracts a suggested retry delay from an error string

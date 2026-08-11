@@ -30,6 +30,7 @@ import { osOpenPath } from './services/ops-api.js';
 import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-installs on import)
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
 import { normalizeAttachments } from './utils/attachments.js';
+import { showNotice } from './components/modal-dialog.js';
 
 
 
@@ -445,6 +446,14 @@ class JugglerApp {
         case 'reordered':        session.applyConversationsReordered(order); break;
         default: console.warn('[Juggler] unknown conversations-changed op:', op);
       }
+      return;
+    }
+
+    // A server-side background task reporting something the user would
+    // otherwise never see (an auto-name that gave up). Purely informational —
+    // show it and move on.
+    if (data.type === 'notice') {
+      if (data.message) showNotice(data.message);
       return;
     }
 

@@ -304,6 +304,15 @@ func (b serverBroadcaster) BroadcastConversationFocus(id, from string) {
 	b.srv.broadcastToAll(msg)
 }
 
+// BroadcastNotice publishes a short, human-readable message for every viewer to
+// show as a transient toast. It is for background work the user never asked for
+// and cannot see failing — an out-of-band auto-name giving up, say — so it
+// carries no id and demands no response; anything the user must act on belongs
+// in the conversation, not here.
+func (b serverBroadcaster) BroadcastNotice(message string) {
+	b.srv.broadcastToAll(map[string]any{"type": "notice", "message": message})
+}
+
 // BroadcastConversationsReordered publishes a drag-reorder as the full new
 // id order. Rides the same `conversations-changed` event type with
 // `op:"reordered"` and an `order` array carrying the post-reorder ids in
