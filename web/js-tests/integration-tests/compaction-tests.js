@@ -5,10 +5,10 @@
 /**
  * Integration tests: compaction
  *
- * /compact collapses the *entire* conversation into a single sub-thread.
- * The worker's strategy loop summarises the thread via `return_result`,
- * after which the parent conversation contains one thread tile whose
- * `result` is the summary. There is no retention window — undo restores
+ * /compact collapses the *entire* conversation into a single sub-thread, which
+ * the worker's folded-compaction summariser then summarises with one hidden,
+ * tool-free call, after which the parent conversation contains one thread tile
+ * whose `result` is the summary. There is no retention window — undo restores
  * the original.
  * @module integration-tests/compaction-tests
  */
@@ -19,6 +19,20 @@ const SUMMARY_TEXT = 'Summary: The conversation discussed reading and running co
 const COMPACT_UP_TO_SUMMARY = 'Summary: Messages 1-3 discussed initial setup.';
 
 /**
+ * Mock the summarisation call. It is tool-free — the folded summariser sends
+ * the transcript with the tools disabled and takes the reply TEXT as the
+ * summary — so a tool call here would produce no summary at all.
+ * @param {string} result
+ * @returns {import('../utilities/integration-test-runner.js').MockResponse} A text summary response.
+ */
+function summaryResponse(result) {
+  return textResponse(result);
+}
+
+/**
+ * Mock the summarisation call for `compactUpTo` — the context-menu partial
+ * compaction, whose fold is NOT a bounded-compaction thread and so is closed by
+ * an ordinary forced-`return_result` turn rather than the folded summariser.
  * @param {string} result
  * @returns {import('../utilities/integration-test-runner.js').MockResponse} A return_result tool response.
  */
@@ -40,7 +54,7 @@ export const compactionBasicTest = {
     textResponse('Response 1.'),
     textResponse('Response 2.'),
     textResponse('Response 3.'),
-    returnResultResponse(SUMMARY_TEXT)
+    summaryResponse(SUMMARY_TEXT)
   ],
 
   operations: [
@@ -143,7 +157,7 @@ export const compactionSweepsThinkingTest = {
     // Second assistant turn (no thinking).
     textResponse('Answer 2.'),
     // Summary turn for the compaction thread.
-    returnResultResponse('Summary covers thinking + answers.')
+    summaryResponse('Summary covers thinking + answers.')
   ],
 
   operations: [
@@ -184,7 +198,7 @@ export const compactionUndoRestoresConversationTest = {
   llmResponses: [
     textResponse('Response 1.'),
     textResponse('Response 2.'),
-    returnResultResponse('Summary.')
+    summaryResponse('Summary.')
   ],
 
   operations: [
@@ -234,7 +248,7 @@ export const compactionSweepsAllItemsTest = {
     textResponse('Response 3.'),
     textResponse('Response 4.'),
     textResponse('Response 5.'),
-    returnResultResponse('Summary of five turns.')
+    summaryResponse('Summary of five turns.')
   ],
 
   operations: [
@@ -297,7 +311,7 @@ export const compactionSweepsToolActionsTest = {
     textResponse('Found.'),
     toolUseResponse('call_2', 'glob', { pattern: '**/*.js' }, 'Searching JS.'),
     textResponse('Found JS.'),
-    returnResultResponse('Summary including tool calls.')
+    summaryResponse('Summary including tool calls.')
   ],
 
   operations: [
@@ -361,7 +375,7 @@ export const compactionPreservesLeadingAgentsFilesTest = {
   llmResponses: [
     textResponse('Response 1.'),
     textResponse('Response 2.'),
-    returnResultResponse('Summary of the work.')
+    summaryResponse('Summary of the work.')
   ],
 
   operations: [
@@ -438,7 +452,7 @@ export const compactionSweepsMidConversationFileTest = {
   llmResponses: [
     textResponse('Response 1.'),
     textResponse('Response 2.'),
-    returnResultResponse('Summary.')
+    summaryResponse('Summary.')
   ],
 
   operations: [
@@ -515,7 +529,7 @@ export const compactionPreservesMemoryTest = {
       llmResponses: [
         textResponse('Response 1.'),
         textResponse('Response 2.'),
-        returnResultResponse('Summary of the work.')
+        summaryResponse('Summary of the work.')
       ]
     },
     // Pin a file onto root BEFORE any message → leading run, AFTER memory:
@@ -758,7 +772,7 @@ export const compactionCancelsRunningTurnTest = {
     // live in-flight turn at the moment /compact is fired.
     textResponse('Partial response cut short by /compact.', { pauseBeforeReturn: true }),
     // Second mock: the compaction sub-thread's summarisation reply.
-    returnResultResponse('Summary after mid-flight compaction.')
+    summaryResponse('Summary after mid-flight compaction.')
   ],
 
   operations: [
@@ -829,7 +843,7 @@ export const compactionSummaryMessageSelectableTest = {
   llmResponses: [
     textResponse('Response 1.'),
     textResponse('Response 2.'),
-    returnResultResponse('Summary.')
+    summaryResponse('Summary.')
   ],
 
   operations: [
@@ -904,21 +918,23 @@ export const compactionViaPlainTextReplyTest = {
 };
 
 /**
- * The /compact plugin must declare the generic forced-tool directive on its
- * summary thread so the worker forces the model to call return_result rather
- * than persuading it via prompt. This asserts the plugin sets the `forceTool`
- * Yjs field (the framework mechanism) — it is not an app-level special case.
+ * A /compact fold must carry the `forceTool: 'return_result'` marker on its
+ * summary thread. The summariser does not honour it as a directive — it runs
+ * tool-free — but the marker, paired with `noAutoSelect`, is how the worker
+ * still recognises a fold made before the `boundedCompaction` flag existed
+ * (`isBoundedCompactionThread`). Drop it and those legacy folds stop being
+ * summarised at all.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
-export const compactionForcesReturnResultToolTest = {
-  name: 'compaction-forces-return-result-tool',
-  description: 'Compaction sets the generic forceTool=return_result directive on its summary thread',
+export const compactionMarksFoldIdentityTest = {
+  name: 'compaction-marks-fold-identity',
+  description: 'A compaction fold carries the forceTool=return_result identity marker legacy recognition needs',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
     textResponse('Response 1.'),
     textResponse('Response 2.'),
-    returnResultResponse('Summary of two turns.')
+    summaryResponse('Summary of two turns.')
   ],
 
   operations: [
@@ -939,13 +955,13 @@ export const compactionForcesReturnResultToolTest = {
     const root = conversation.rootMessageThread.items;
     const threadItem = root.find((/** @type {any} */ it) => it.get('type') === 'thread');
     if (!threadItem) {
-      throw new Error('compaction-forces-return-result-tool: no thread item at parent');
+      throw new Error('compaction-marks-fold-identity: no thread item at parent');
     }
     const forceTool = threadItem.get('forceTool');
     if (forceTool !== 'return_result') {
       throw new Error(
-        `compaction-forces-return-result-tool: thread.forceTool = ${JSON.stringify(forceTool)}, ` +
-				'want "return_result" — the /compact plugin must set the generic forced-tool directive'
+        `compaction-marks-fold-identity: thread.forceTool = ${JSON.stringify(forceTool)}, ` +
+				'want "return_result" — the fold must carry the marker legacy recognition depends on'
       );
     }
   }
@@ -954,7 +970,7 @@ export const compactionForcesReturnResultToolTest = {
 export const tests = [
   compactionBasicTest,
   compactionViaPlainTextReplyTest,
-  compactionForcesReturnResultToolTest,
+  compactionMarksFoldIdentityTest,
   compactionSummaryMessageSelectableTest,
   compactionUpToTest,
   compactionSweepsThinkingTest,

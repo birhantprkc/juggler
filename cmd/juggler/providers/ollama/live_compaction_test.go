@@ -16,13 +16,13 @@ import (
 	provider "juggler/cmd/juggler/providers/registry"
 )
 
-// TestLiveOllamaFinalCompactionShape is a manual, daemon-backed reproduction of
-// the bounded-compaction final-call failure against a real tool-incapable model.
+// TestLiveOllamaFinalCompactionShape is a manual, daemon-backed check of the
+// ForcedToolChoiceUnsupported capability against a real tool-incapable model.
 // It is skipped unless JUGGLER_OLLAMA_LIVE=1 and a reachable daemon serves the
 // model (default gemma3:1b, override with JUGGLER_OLLAMA_MODEL), so it never
-// runs in CI. It proves the two halves the reducer's tool-free fallback relies
-// on: the tool-bearing final request fails or returns nothing, while the
-// tool-free plain-text request returns a usable summary.
+// runs in CI. It proves the two halves that flag asserts: a forced tool call
+// fails or returns nothing, while the same request as plain text returns a
+// usable summary.
 //
 // Run it with the daemon up:
 //
@@ -48,7 +48,7 @@ func TestLiveOllamaFinalCompactionShape(t *testing.T) {
 	Register()
 	info, _ := provider.GetProviderInfo("ollama")
 	if !info.ForcedToolChoiceUnsupported {
-		t.Fatal("ollama not flagged ForcedToolChoiceUnsupported; the compaction gate would not select the plain-text final")
+		t.Fatal("ollama not flagged ForcedToolChoiceUnsupported; the worker would forward a forced tool choice to it")
 	}
 	prov, err := provider.InitializeProvider("ollama", provider.Config{
 		Model: model,
@@ -84,8 +84,8 @@ func TestLiveOllamaFinalCompactionShape(t *testing.T) {
 		return strings.TrimSpace(b.String()), err
 	}
 
-	// The tool-bearing final-call shape: the return_result tool plus a forced
-	// tool choice, exactly what the bounded reducer sends on its final pass.
+	// A forced single-tool request: the return_result tool plus a forced tool
+	// choice, the shape the worker withholds from this provider.
 	toolReq := provider.MessageRequest{
 		SystemPrompt: "Create the final handoff summary. Return the summary via return_result.",
 		Messages:     []provider.Message{{Type: "user", Content: transcript}},
@@ -99,17 +99,17 @@ func TestLiveOllamaFinalCompactionShape(t *testing.T) {
 	}
 	toolText, toolErr := submit(t, toolReq)
 	t.Logf("tool-bearing final: err=%v text=%q", toolErr, toolText)
-	// The tool-bearing final is unreliable on local models, and breaks three
+	// A forced tool call is unreliable on local models, and breaks three
 	// different ways: a hard rejection (gemma3 gguf 400s), empty output (the
 	// reporter's mlx builds), or the tool arguments leaking back as literal JSON
 	// text (qwen3 gguf). Any of those is "not a clean summary" — which is exactly
-	// why the gate routes this provider to the plain-text final below.
+	// why this provider is flagged and runs its turns unforced.
 	toolClean := toolErr == nil && toolText != "" && !strings.HasPrefix(strings.TrimSpace(toolText), "{")
 	if toolClean {
 		t.Fatalf("tool-bearing final produced a clean summary on %s; expected a local model that errors, empties, or leaks JSON on a forced tool call — pick such a model to reproduce the bug", model)
 	}
 
-	// The tool-free plain-text fallback the reducer retries with.
+	// The same request without tools — the shape this provider is given instead.
 	textReq := provider.MessageRequest{
 		SystemPrompt:       "Create the final handoff summary from this transcript. Return only the summary.",
 		Messages:           []provider.Message{{Type: "user", Content: transcript}},

@@ -16,7 +16,8 @@
 //   - turns/context: provider-turn, render-context-items-response, tools-result,
 //     strategy-hook-response, build-subthread-spec-response, subthread-error-response
 //   - threads: inject-thread-message, delivery-ended, create-thread,
-//     reopen-thread, close-thread-with-last-message
+//     reopen-thread, close-thread-with-last-message,
+//     resummarize-compaction-thread
 //   - tool retry: retry-tool-approval, retry-tool-action, update-tool-action-for-retry
 //   - context-item items: move-context-item-message-to-end,
 //     update-and-reposition-tool-actions, reposition-context-item-placeholder
@@ -213,6 +214,13 @@ type SendMessageMessage struct {
 	// in context first. A skills-only send (empty Text) is a preload: the skills
 	// load and the worker rests without starting an LLM turn.
 	Skills []string `json:"skills,omitempty"`
+	// CloseRequest marks this send as a request to close the target thread with
+	// a summary (/close, the footer's summarise action). The turn it starts is
+	// forced onto return_result, and its trailing text is promoted as the result
+	// if the provider could not honour that force — so a close is a mechanism,
+	// not a request the model may answer with prose. One-shot: it applies to
+	// this turn only and is never written to the thread.
+	CloseRequest bool `json:"closeRequest,omitempty"`
 }
 
 // UserInput returns the send's payload as the single inseparable submission
@@ -400,6 +408,19 @@ type ResyncRequestMessage struct {
 // authorID origin so it is tracked by the UndoManager and can be undone.
 type ReopenThreadMessage struct {
 	Type         string `json:"type"` // "reopen-thread"
+	ThreadItemID string `json:"threadItemId"`
+	AckID        string `json:"ackId,omitempty"`
+}
+
+// ResummarizeCompactionThreadMessage requests a fresh summary for a compaction
+// (/compact or /handoff) fold: clear its committed summary and re-arm the
+// one-shot needsStrategyRun trigger so the folded-compaction summarizer runs
+// again over the same source. It exists because that summarizer supplies its own
+// prompt and reads the thread's items as inert data — routing a re-summarise
+// through the ordinary close turn would append a "call return_result"
+// instruction into the very transcript being summarized.
+type ResummarizeCompactionThreadMessage struct {
+	Type         string `json:"type"` // "resummarize-compaction-thread"
 	ThreadItemID string `json:"threadItemId"`
 	AckID        string `json:"ackId,omitempty"`
 }

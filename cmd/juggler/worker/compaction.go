@@ -17,6 +17,17 @@ import (
 
 const defaultSummarizationPromptMarker = "You are creating a handoff summary of the conversation so far. Another instance of yourself will use ONLY this summary"
 
+// beginCompactionStatus publishes the busy frame a compaction run is shown by.
+// The summarizer works entirely through hidden calls, so nothing streams into
+// the transcript while it runs — this doc write is the only evidence the UI has:
+// it raises the spinner, labels it, and anchors the elapsed digit. Flushed
+// immediately so the label lands before the first hidden call rather than at the
+// batcher's next tick.
+func (w *ConversationWorker) beginCompactionStatus(message string) {
+	w.sendStatus("compacting", message)
+	w.batcher.Flush()
+}
+
 // tryBoundedCompaction handles only browser-folded summary threads. Legacy
 // folded documents are recognized by their noAutoSelect/forceTool markers. It
 // is the folded-thread orchestrator for the pure bounded reducer: snapshot the
@@ -65,6 +76,7 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 		calls: 1,
 	}
 
+	w.beginCompactionStatus("Summarizing conversation")
 	w.recordCompactionStart(compactionKindFolded, limitErr.ContextWindowTokens, limitErr.OutputReserveTokens, limitErr.Breakdown.ProviderOverheadTokens)
 	result, err := w.runReducer(compactionKindFolded, pinnedModel, budget, records)
 	if err != nil {
@@ -130,9 +142,9 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 		return true, &BoundedCompactionError{Reason: BoundedCompactionEmptySource, Message: "bounded compaction source is empty"}
 	}
 
+	w.beginCompactionStatus("Summarizing conversation")
 	w.recordCompactionStart(compactionKindFolded, 0, 0, 0)
 	probe := w.newBoundedReducer(compactionKindFolded, pinnedModel, boundedCompactionBudget{})
-	probe.finalUsesTool = false
 	parentThreadID := w.doc.findParentThreadID(threadID)
 	// Preserve the real turn's cacheable prefix: the folded history renders through
 	// the same wire path as a live turn, and the summarization instruction is
@@ -152,7 +164,7 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 		messages = append(messages, provider.Message{Type: messageTypeContextItem, Content: contextItemMessageContent(ctx)})
 	}
 	messages = append(messages, history...)
-	messages = append(messages, provider.Message{Type: ItemTypeUser, Content: plainTextSummarizationPrompt()})
+	messages = append(messages, provider.Message{Type: ItemTypeUser, Content: DefaultSummarizationPrompt})
 	probeReq := hiddenLLMRequest{
 		Type: "message", SystemPrompt: ctxResult.SystemPrompt,
 		Messages: messages, Tools: w.filterToolsForThreadID(tools, parentThreadID),
@@ -160,7 +172,7 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 		ToolChoice:    map[string]any{"mode": provider.ToolChoiceNone},
 		TransactionID: generateTransactionID(), BypassContextGuard: true,
 	}
-	result, overflow, probeErr := probe.probeRequest(probeReq, compactionSourceFingerprint(records), "")
+	result, overflow, probeErr := probe.probeRequest(probeReq, compactionSourceFingerprint(records))
 	if probeErr != nil {
 		if errors.Is(probeErr, errBoundedCompactionCancelled) {
 			w.recordCompactionOutcome(compactionKindFolded, "cancelled", result, nil)
@@ -266,9 +278,8 @@ func validateCompactionModel(modelConfig *ModelConfig, label string) (ModelConfi
 // between the folded, recovery, and shrink orchestrators.
 func (w *ConversationWorker) newBoundedReducer(kind string, pinnedModel ModelConfig, budget boundedCompactionBudget) *boundedReducer {
 	// The folded /compact orchestrator produces a user-facing handoff summary, so
-	// its final call uses the rich DefaultSummarizationPrompt (the same structured
-	// prompt the retired return_result strategy turn used). Recovery and shrink
-	// keep the terse final prompts.
+	// its final call uses the rich DefaultSummarizationPrompt. Recovery and shrink
+	// keep the terse final prompt.
 	finalPrompt := ""
 	if kind == compactionKindFolded {
 		finalPrompt = DefaultSummarizationPrompt
@@ -281,22 +292,8 @@ func (w *ConversationWorker) newBoundedReducer(kind string, pinnedModel ModelCon
 		dispatcher:     w,
 		cancelled:      w.compactionCancelled,
 		hooks:          w.compactionTapeHooks(kind),
-		finalUsesTool:  compactionFinalUsesTool(pinnedModel.Provider),
 		finalPrompt:    finalPrompt,
 	}
-}
-
-// compactionFinalUsesTool reports whether the final compaction call should force
-// the return_result tool for this provider. Providers that cannot reliably honor
-// a forced tool choice (local daemons and OpenAI-compatible gateways) instead get
-// a tool-free plain-text final call. An unregistered provider keeps the tool
-// path, preserving behavior for the mainstream providers.
-func compactionFinalUsesTool(providerName string) bool {
-	info, ok := provider.GetProviderInfo(providerName)
-	if !ok {
-		return true
-	}
-	return !info.ForcedToolChoiceUnsupported
 }
 
 // runReducer builds the reducer, runs it, and records the outcome. On error the
@@ -440,7 +437,12 @@ func (w *ConversationWorker) handleCompact(payload json.RawMessage) {
 		return
 	}
 	ack := AckMessage{Type: "ack", AckID: msg.AckID}
-	if w.loadState() != StateIdle {
+	// Busy means BOTH the run state and the doc-native LLM claim, matching every
+	// other intake (handleSendMessage, task delivery). State alone is not enough:
+	// a turn can leave state Idle while still holding the claim, and folding then
+	// commits a thread the pickup cannot claim — leaving a fold that never
+	// summarizes while the conversation reports idle. Refusing here says so.
+	if w.getActivity() != ActivityNone || w.loadState() != StateIdle {
 		ack.Result = map[string]any{"folded": false, "error": "conversation is busy"}
 		w.reply(ack)
 		return
@@ -592,10 +594,10 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 	fingerprint := compactionSourceFingerprint(records)
 
 	// Nested items: the folded run (prior summaries condensed to goal+result,
-	// everything else verbatim) + the summarization prompt item. The prompt
-	// content is the full DefaultSummarizationPrompt (matching the browser
-	// fold's visible thread); the Phase-3 reducer's finalPrompt override supplies
-	// the actual instruction, and CompactionPromptItemID excludes it from history.
+	// everything else verbatim) + the summarization prompt item. Its content is
+	// DefaultSummarizationPrompt, the same text the summarizer sends as the
+	// final user message, so the visible item states the instruction that
+	// actually ran; CompactionPromptItemID excludes it from the source history.
 	promptItem := ConversationItem{
 		Type:    ItemTypeUser,
 		ItemID:  promptID,

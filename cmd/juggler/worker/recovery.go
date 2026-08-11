@@ -268,7 +268,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		envelope = 0
 	}
 
-	w.sendStatus("compacting", "Summarizing earlier conversation to fit the context window")
+	w.beginCompactionStatus("Summarizing earlier conversation to fit the context window")
 	w.recordCompactionStart(compactionKindRecovery, window, reserve, envelope)
 
 	// A trailing tool-result payload too large for the suffix budget can never

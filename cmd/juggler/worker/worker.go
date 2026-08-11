@@ -196,6 +196,16 @@ type ConversationWorker struct {
 	// Thread execution context — set when running inside a child thread; zero value = root conversation.
 	thread threadContext
 
+	// closeRequestThreadID names the thread whose CURRENT turn was started by a
+	// close request (/close, the footer's summarise action). It forces
+	// return_result for that turn (resolveForcedToolChoice) and lets the
+	// turn-end salvage promote trailing text as the result
+	// (writeThreadResultLocked) when the provider ignored the force. Turn-scoped
+	// and never persisted: set when the send is accepted, cleared when the
+	// strategy loop ends. Compared against the running thread's id so it can
+	// never leak onto another thread's turn.
+	closeRequestThreadID string
+
 	// Per-conversation transaction blob store (input/output context for each
 	// LLM round-trip). Initialized in handleInit once projectPath is known.
 	txnStore *TransactionStore
@@ -1097,6 +1107,9 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 	case "reopen-thread":
 		w.handleReopenThread(msg.Payload)
 
+	case "resummarize-compaction-thread":
+		w.handleResummarizeCompactionThread(msg.Payload)
+
 	case "close-thread-with-last-message":
 		w.handleCloseThreadWithLastMessage(msg.Payload)
 
@@ -1505,9 +1518,12 @@ func (w *ConversationWorker) handleItemsChange() {
 // Only threads with needsStrategyRun=true are auto-processed. User-created threads
 // (via /thread command) and LLM-created threads (via create_thread tool) are
 // NOT auto-processed — they go through handleSendMessage or the strategy loop.
-func (w *ConversationWorker) checkForNewThreads() {
+//
+// Returns true when it dispatched a thread's run, so the reducer can re-evaluate
+// from a clean state rather than continuing a walk-down built on pre-run data.
+func (w *ConversationWorker) checkForNewThreads() bool {
 	if w.loadState() != StateIdle {
-		return
+		return false
 	}
 
 	items := w.doc.GetItems()
@@ -1551,8 +1567,14 @@ func (w *ConversationWorker) checkForNewThreads() {
 
 		// Claim before setting context — fail fast if activity is non-null
 		// (another operation is in flight or tools are awaiting completion).
+		// Re-tickle on failure, exactly as dispatchCallLLMOnThread does: this
+		// thread still needs its run, and needsStrategyRun is consumed only after
+		// a successful claim. Without the re-arm the thread is orphaned — the
+		// release that frees the claim writes processingState, not items, so the
+		// items observer never fires again and nothing revisits the pickup.
 		if !w.claimLLM(item.ItemID) {
-			return
+			w.needsReconcile = true
+			return false
 		}
 
 		w.log.Debug("Auto-processing thread %s (doc-driven)", item.ItemID)
@@ -1581,9 +1603,33 @@ func (w *ConversationWorker) checkForNewThreads() {
 			w.processingStartedAt = time.Now().UnixMilli()
 		}
 		w.storeState(StateProcessing)
+		// Publish the busy frame at dispatch, exactly as dispatchCallLLMOnThread
+		// does. The claim above is doc-native state the UI does not render, so
+		// without this the conversation reads as idle — no spinner, no status —
+		// for the whole window before the run writes a status of its own.
+		w.sendStatus("preparing", "")
+		w.batcher.Flush()
 		w.runStrategyLoop("", true)
-		return // Process one thread at a time
+		return true // Process one thread at a time
 	}
+	return false
+}
+
+// setThreadNeedsStrategyRun re-arms the one-shot doc-driven run trigger on a
+// thread, so checkForNewThreads picks it up and runs it again.
+func (w *ConversationWorker) setThreadNeedsStrategyRun(threadItemID string) {
+	threadYMap := w.doc.GetThreadYMap(threadItemID)
+	if threadYMap == nil {
+		return
+	}
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	if needsStrategyRun, _ := threadYMap.Get("needsStrategyRun").(bool); needsStrategyRun {
+		return
+	}
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		threadYMap.Set("needsStrategyRun", true)
+	}, w.doc.authorID)
 }
 
 func (w *ConversationWorker) clearThreadNeedsStrategyRun(threadItemID string) {

@@ -69,8 +69,8 @@ func newRecoveryStub(t *testing.T, pinned *ModelConfig) (*int, func(context.Cont
 		if estimate+300 > 4_000 {
 			t.Fatalf("hidden request %d does not fit: %d + 300 > 4000", *calls, estimate)
 		}
-		if len(req.Tools) > 0 {
-			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"recovered prefix summary"}`)}}}, nil
+		if isCompactionFinalRequest(req) {
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered prefix summary"}}}, nil
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
@@ -539,13 +539,13 @@ func TestContextRecoveryAbortsWhenSourceChanges(t *testing.T) {
 		if err := json.Unmarshal(raw, &req); err != nil {
 			t.Fatal(err)
 		}
-		if len(req.Tools) == 0 && !edited {
+		if !isCompactionFinalRequest(req) && !edited {
 			edited = true
 			// A concurrent edit lands mid-reduce: the fold must not commit.
 			w.doc.InsertMessage(w.doc.GetItemsLength(), ConversationItem{Type: ItemTypeUser, ItemID: "concurrent-edit", Content: "edited while summarizing"})
 		}
-		if len(req.Tools) > 0 {
-			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"stale summary"}`)}}}, nil
+		if isCompactionFinalRequest(req) {
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "stale summary"}}}, nil
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
@@ -777,8 +777,8 @@ func TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit(t *testing.T) {
 		}
 		if strings.Contains(req.ThreadID, ":bounded:") {
 			hiddenCalls++
-			if len(req.Tools) > 0 {
-				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"recovered prefix summary"}`)}}}, nil
+			if isCompactionFinalRequest(req) {
+				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered prefix summary"}}}, nil
 			}
 			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 		}
@@ -994,8 +994,8 @@ func TestToolResultPushingNextCallOverContextRecovers(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(req.ThreadID, ":bounded:") {
-			if len(req.Tools) > 0 {
-				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"recovered prefix summary"}`)}}}, nil
+			if isCompactionFinalRequest(req) {
+				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered prefix summary"}}}, nil
 			}
 			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 		}
@@ -1278,8 +1278,8 @@ func newLargeOverheadRecoveryStub(t *testing.T, window, overhead, reserve int64,
 		if estimate+reserve > window {
 			t.Fatalf("hidden request %d does not fit full window: %d + %d > %d", *calls, estimate, reserve, window)
 		}
-		if len(req.Tools) > 0 {
-			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"large-overhead summary"}`)}}}, nil
+		if isCompactionFinalRequest(req) {
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "large-overhead summary"}}}, nil
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
@@ -1458,13 +1458,13 @@ func TestContextRecoveryShrinkChargesMapOutputCap(t *testing.T) {
 		if estimate+effective > window {
 			t.Fatalf("hidden call %d does not fit under effective reserve: %d + %d > %d", *calls, estimate, effective, window)
 		}
-		if len(req.Tools) == 0 && estimate+reserve > window {
+		if !isCompactionFinalRequest(req) && estimate+reserve > window {
 			// A map chunk that only fit because the cap (not the full reserve)
 			// was charged — exactly the F1b benefit.
 			sawCapOnlyFit = true
 		}
-		if len(req.Tools) > 0 {
-			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"cap-path summary"}`)}}}, nil
+		if isCompactionFinalRequest(req) {
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "cap-path summary"}}}, nil
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}

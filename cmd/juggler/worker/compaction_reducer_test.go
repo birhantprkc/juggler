@@ -47,27 +47,20 @@ func newStubBoundedReducer(_ []string, window, reserve, initialSpend int64, stub
 			spend:   initialSpend,
 			calls:   1,
 		},
-		dispatcher:    stub,
-		finalUsesTool: true,
+		dispatcher: stub,
 	}
+}
+
+// isCompactionFinalRequest reports whether a hidden call is the final-summary
+// call rather than a map pass. Every compaction call is tool-free, so the
+// system prompt is what tells them apart.
+func isCompactionFinalRequest(req hiddenLLMRequest) bool {
+	return req.SystemPrompt != boundedCompactionMapPrompt
 }
 
 func compactionTextResponse(text string, inputTokens, outputTokens int) *LLMResponse {
 	return &LLMResponse{
 		Blocks:       []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: text}},
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-	}
-}
-
-func compactionToolResultResponse(t *testing.T, summary string, inputTokens, outputTokens int) *LLMResponse {
-	t.Helper()
-	input, err := json.Marshal(map[string]string{"result": summary})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &LLMResponse{
-		Blocks:       []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: input}},
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 	}
@@ -94,8 +87,8 @@ func TestHiddenCompactionRequestsBypassSilentTruncationGuard(t *testing.T) {
 		if !req.BypassContextGuard {
 			t.Fatal("hidden compaction request did not bypass context guard")
 		}
-		if len(req.Tools) > 0 {
-			return compactionToolResultResponse(t, "summary", 1, 1), nil
+		if isCompactionFinalRequest(req) {
+			return compactionTextResponse("summary", 1, 1), nil
 		}
 		return compactionTextResponse("short", 1, 1), nil
 	}
@@ -142,12 +135,12 @@ func TestBoundedReducerRealOverflowSplitsRuneSafeAndRecovers(t *testing.T) {
 		if !utf8.ValidString(content) {
 			t.Fatalf("overflow retry split invalid UTF-8: %q", content)
 		}
-		if len(req.Tools) > 0 {
+		if isCompactionFinalRequest(req) {
 			finalCalls++
 			if finalCalls == 1 {
 				return nil, &provider.ContextLimitExceededError{Cause: providerOverflow}
 			}
-			return compactionToolResultResponse(t, "recovered", 7, 3), nil
+			return compactionTextResponse("recovered", 7, 3), nil
 		}
 		if len([]rune(content)) > 60 {
 			return nil, &provider.ContextLimitExceededError{Cause: providerOverflow}
@@ -192,7 +185,9 @@ func TestBoundedReducerIrreducibleOverflowPreservesProviderCause(t *testing.T) {
 }
 
 func TestBoundedReducerObjectiveSerializedNoProgress(t *testing.T) {
-	records := []string{strings.Repeat("a", 200)}
+	// Large enough that the layer cannot finalize in one call, so a map pass
+	// runs — the echoing stub then proves the serialized-progress check fires.
+	records := []string{strings.Repeat("a", 2000)}
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
 		return compactionTextResponse(req.Messages[0].Content, 1, 1), nil
@@ -210,13 +205,13 @@ func TestBoundedReducerOneCallFinalization(t *testing.T) {
 	const initialSpend int64 = 500
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(call int, req hiddenLLMRequest) (*LLMResponse, error) {
-		if call != 1 || len(req.Tools) == 0 {
-			t.Fatalf("call %d = %+v tools, want exactly one final return_result call", call, req.Tools)
+		if call != 1 || !isCompactionFinalRequest(req) {
+			t.Fatalf("call %d prompt=%q, want exactly one final-summary call", call, req.SystemPrompt)
 		}
 		if !strings.HasPrefix(req.ThreadID, "thread:bounded:0:0:") || req.TransactionID == "" {
 			t.Fatalf("final request identity = %q / %q", req.ThreadID, req.TransactionID)
 		}
-		return compactionToolResultResponse(t, "final summary", 100, 40), nil
+		return compactionTextResponse("final summary", 100, 40), nil
 	}
 	reducer := newStubBoundedReducer(records, 4_000, 300, initialSpend, stub)
 	result, err := reducer.run(records)
@@ -250,9 +245,9 @@ func TestBoundedReducerMultiChunkMapAndMultiPassReduce(t *testing.T) {
 		if estimate+200 > 2000 {
 			t.Fatalf("hidden request does not fit: %d + 200 > 2000", estimate)
 		}
-		if len(req.Tools) > 0 {
+		if isCompactionFinalRequest(req) {
 			sawFinal++
-			return compactionToolResultResponse(t, "compact final", 50, 20), nil
+			return compactionTextResponse("compact final", 50, 20), nil
 		}
 		sawMap++
 		runes := []rune(req.Messages[0].Content)
@@ -287,11 +282,11 @@ func TestBoundedReducerMapCallsCarryOutputCap(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("abcdefghij", 20000))
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
-		if len(req.Tools) > 0 { // final call
+		if isCompactionFinalRequest(req) { // final call
 			if req.MaxOutputTokens != 0 {
 				t.Fatalf("final call MaxOutputTokens = %d, want 0 (uncapped)", req.MaxOutputTokens)
 			}
-			return compactionToolResultResponse(t, "compact final", 50, 20), nil
+			return compactionTextResponse("compact final", 50, 20), nil
 		}
 		if req.MaxOutputTokens != boundedCompactionMapOutputCap {
 			t.Fatalf("map call MaxOutputTokens = %d, want cap %d", req.MaxOutputTokens, boundedCompactionMapOutputCap)
@@ -345,7 +340,7 @@ func TestBoundedReducerPassBoundPreservesPartialAccounting(t *testing.T) {
 	providerOverflow := errors.New("provider context window exceeded")
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(call int, req hiddenLLMRequest) (*LLMResponse, error) {
-		if len(req.Tools) > 0 {
+		if isCompactionFinalRequest(req) {
 			return nil, &provider.ContextLimitExceededError{Cause: providerOverflow}
 		}
 		chunk := req.Messages[0].Content
@@ -494,7 +489,7 @@ func TestBoundedReducerTreatsTranscriptAsInertData(t *testing.T) {
 		if req.Messages[0].Type != "user" || !strings.Contains(req.Messages[0].Content, injection) {
 			t.Fatalf("transcript was not carried verbatim as inert user data: %+v", req.Messages[0])
 		}
-		return compactionToolResultResponse(t, "safe summary", 10, 5), nil
+		return compactionTextResponse("safe summary", 10, 5), nil
 	}
 	reducer := newStubBoundedReducer(records, 4_000, 300, 500, stub)
 	result, err := reducer.run(records)
@@ -510,8 +505,8 @@ func TestBoundedReducerHooksReportProgress(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("abcdefghij", 457))
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
-		if len(req.Tools) > 0 {
-			return compactionToolResultResponse(t, "done", 5, 1), nil
+		if isCompactionFinalRequest(req) {
+			return compactionTextResponse("done", 5, 1), nil
 		}
 		runes := []rune(req.Messages[0].Content)
 		return compactionTextResponse(string(runes[:len(runes)*9/20]), 5, 1), nil
@@ -524,7 +519,7 @@ func TestBoundedReducerHooksReportProgress(t *testing.T) {
 		},
 		callCompleted: func(pass int, req hiddenLLMRequest, _ *LLMResponse) {
 			final := ""
-			if len(req.Tools) > 0 {
+			if isCompactionFinalRequest(req) {
 				final = ":final"
 			}
 			events = append(events, fmt.Sprintf("call:%d%s", pass, final))
@@ -572,7 +567,7 @@ func TestCanonicalCompactionSplitsUnicodeThroughPackPath(t *testing.T) {
 		if !utf8.ValidString(chunk) {
 			t.Fatalf("chunk %d is invalid UTF-8", i)
 		}
-		if !reducer.budget.estimatedFits(reducer.hiddenCompactionRequest(0, i, chunk, false)) {
+		if !reducer.budget.estimatedFits(reducer.hiddenCompactionRequest(0, i, chunk)) {
 			t.Fatalf("chunk %d does not fit", i)
 		}
 	}
@@ -582,7 +577,7 @@ func TestCanonicalCompactionSplitsUnicodeThroughPackPath(t *testing.T) {
 }
 
 func TestBoundedCompactionBudgetAllowsExactly64TotalAttempts(t *testing.T) {
-	req := hiddenCompactionRequest("test-conv", "thread", &ModelConfig{Provider: "test", Model: "test"}, 0, 0, "x", false)
+	req := hiddenCompactionRequest("test-conv", "thread", &ModelConfig{Provider: "test", Model: "test"}, 0, 0, "x")
 	budget := boundedCompactionBudget{window: 10_000, reserve: 7, calls: 1, spend: 11}
 	for attempt := 2; attempt <= boundedCompactionMaxCalls; attempt++ {
 		if err := budget.plan(req, 1); err != nil {
@@ -600,7 +595,7 @@ func TestBoundedCompactionBudgetAllowsExactly64TotalAttempts(t *testing.T) {
 }
 
 func TestBoundedCompactionSpendIncludesReserveBeforeDispatch(t *testing.T) {
-	req := hiddenCompactionRequest("test-conv", "thread", &ModelConfig{Provider: "test", Model: "test"}, 0, 0, "payload", false)
+	req := hiddenCompactionRequest("test-conv", "thread", &ModelConfig{Provider: "test", Model: "test"}, 0, 0, "payload")
 	budget := boundedCompactionBudget{window: 10_000, reserve: 23, calls: 1, spend: 101}
 	want := provider.SaturatingAdd(budget.spend, provider.SaturatingAdd(budget.estimate(req), budget.reserve))
 	if err := budget.plan(req, 1); err != nil {
@@ -620,10 +615,10 @@ func TestBoundedReducerSeededSpendNeverGatesDispatch(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("history ", 300))
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(call int, req hiddenLLMRequest) (*LLMResponse, error) {
-		if call != 1 || len(req.Tools) == 0 {
-			t.Fatalf("call %d tools=%d, want one final finalization call", call, len(req.Tools))
+		if call != 1 || !isCompactionFinalRequest(req) {
+			t.Fatalf("call %d prompt=%q, want one final finalization call", call, req.SystemPrompt)
 		}
-		return compactionToolResultResponse(t, "recovered summary", 120, 60), nil
+		return compactionTextResponse("recovered summary", 120, 60), nil
 	}
 	const seededSpend int64 = 128_000 // dwarfs the 8k window below
 	reducer := newStubBoundedReducer(records, 8_000, 300, seededSpend, stub)
@@ -644,71 +639,39 @@ func TestBoundedReducerSeededSpendNeverGatesDispatch(t *testing.T) {
 	}
 }
 
-// TestBoundedReducerFinalToolEmptyOutputFallsBackToPlainText pins the fix for
-// the reported failure "bounded compaction final call returned empty output":
-// a tool-incapable model (e.g. a local Ollama build) accepts the return_result
-// tool but emits neither a tool call nor text. The reducer must retry the final
-// call tool-free and finalize from the plain-text summary instead of failing.
-func TestBoundedReducerFinalToolEmptyOutputFallsBackToPlainText(t *testing.T) {
+// TestBoundedReducerFinalIsToolFree pins the single final-call shape: no tools,
+// no tool choice, the plain-text final prompt, and exactly one call. A forced
+// return_result tool bought only "clean structured output" while costing a
+// second full-transcript retry whenever the model answered it with nothing —
+// the failure "bounded compaction final call returned empty output" on models
+// that accept a tool they cannot call. The response text is the deliverable.
+func TestBoundedReducerFinalIsToolFree(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("history ", 200))
 	stub := &stubCompactionDispatcher{}
-	toolFinals, plainFinals := 0, 0
+	finals := 0
 	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
-		if len(req.Tools) > 0 {
-			toolFinals++
-			return &LLMResponse{}, nil // accepted the tool, produced nothing usable
+		if len(req.Tools) != 0 || req.ToolChoice != nil {
+			t.Fatalf("final call carried tools=%d choice=%v, want a tool-free final", len(req.Tools), req.ToolChoice)
 		}
-		if req.SystemPrompt != boundedCompactionFinalTextPrompt {
-			t.Fatalf("tool-free retry prompt = %q, want the plain-text final prompt", req.SystemPrompt)
+		if req.SystemPrompt != boundedCompactionFinalPrompt {
+			t.Fatalf("final prompt = %q, want the final-summary prompt", req.SystemPrompt)
 		}
-		plainFinals++
-		return compactionTextResponse("plain summary", 12, 4), nil
+		finals++
+		return compactionTextResponse("plain summary", 10, 3), nil
 	}
 	result, err := newStubBoundedReducer(records, 10_000, 100, 0, stub).run(records)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Summary != "plain summary" {
-		t.Fatalf("summary = %q, want the tool-free fallback summary", result.Summary)
-	}
-	if toolFinals != 1 || plainFinals != 1 {
-		t.Fatalf("tool finals = %d, plain finals = %d, want one tool attempt then one plain-text retry", toolFinals, plainFinals)
-	}
-	if result.Usage != (CompactionUsage{InputTokens: 12, OutputTokens: 4}) {
-		t.Fatalf("usage = %+v, want only the completed plain-text call", result.Usage)
+	if result.Summary != "plain summary" || finals != 1 || stub.calls != 1 {
+		t.Fatalf("result = %+v (finals %d, calls %d), want a single tool-free final call", result, finals, stub.calls)
 	}
 }
 
-// TestBoundedReducerFinalToolErrorFallsBackToPlainText covers the other
-// manifestation of the same root cause: a model that hard-rejects the tools
-// array ("does not support tools"). The rejection is not a context overflow, so
-// the reducer retries the final call tool-free rather than surfacing the error.
-func TestBoundedReducerFinalToolErrorFallsBackToPlainText(t *testing.T) {
-	records := reducerTestRecords(t, strings.Repeat("history ", 200))
-	toolRejected := errors.New("model does not support tools")
-	stub := &stubCompactionDispatcher{}
-	toolFinals, plainFinals := 0, 0
-	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
-		if len(req.Tools) > 0 {
-			toolFinals++
-			return nil, toolRejected
-		}
-		plainFinals++
-		return compactionTextResponse("plain summary", 9, 3), nil
-	}
-	result, err := newStubBoundedReducer(records, 10_000, 100, 0, stub).run(records)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Summary != "plain summary" || toolFinals != 1 || plainFinals != 1 {
-		t.Fatalf("result = %+v (tool finals %d, plain finals %d), want a single tool-free retry", result, toolFinals, plainFinals)
-	}
-}
-
-// TestBoundedReducerFinalEmptyBothAttemptsErrors pins that the fallback is one
-// extra attempt, not an escape hatch: when the tool-free retry is also empty the
-// reducer still fails with the empty-output reason.
-func TestBoundedReducerFinalEmptyBothAttemptsErrors(t *testing.T) {
+// TestBoundedReducerFinalEmptyOutputErrors pins that an unusable final call
+// fails with the empty-output reason on the one attempt — there is no second
+// full-transcript retry to hide behind.
+func TestBoundedReducerFinalEmptyOutputErrors(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("history ", 200))
 	stub := &stubCompactionDispatcher{}
 	stub.handle = func(_ int, _ hiddenLLMRequest) (*LLMResponse, error) {
@@ -717,39 +680,9 @@ func TestBoundedReducerFinalEmptyBothAttemptsErrors(t *testing.T) {
 	_, err := newStubBoundedReducer(records, 10_000, 100, 0, stub).run(records)
 	var bounded *BoundedCompactionError
 	if !errors.As(err, &bounded) || bounded.Reason != BoundedCompactionEmptyOutput {
-		t.Fatalf("error = %#v, want empty-output failure after the tool-free retry", err)
+		t.Fatalf("error = %#v, want empty-output failure", err)
 	}
-	if stub.calls != 2 {
-		t.Fatalf("dispatches = %d, want the tool attempt plus one tool-free retry", stub.calls)
-	}
-}
-
-// TestBoundedReducerPlainTextFinalSkipsTool pins the provider gate: a reducer for
-// a provider that cannot force a tool choice (finalUsesTool=false, e.g. Ollama)
-// sends the final call tool-free from the start — no tools, the plain-text final
-// prompt, and no wasted tool attempt — rather than trying the tool and falling
-// back.
-func TestBoundedReducerPlainTextFinalSkipsTool(t *testing.T) {
-	records := reducerTestRecords(t, strings.Repeat("history ", 200))
-	stub := &stubCompactionDispatcher{}
-	finals := 0
-	stub.handle = func(_ int, req hiddenLLMRequest) (*LLMResponse, error) {
-		if len(req.Tools) != 0 || req.ToolChoice != nil {
-			t.Fatalf("final call carried tools=%d choice=%v, want a tool-free final", len(req.Tools), req.ToolChoice)
-		}
-		if req.SystemPrompt != boundedCompactionFinalTextPrompt {
-			t.Fatalf("final prompt = %q, want the plain-text final prompt", req.SystemPrompt)
-		}
-		finals++
-		return compactionTextResponse("plain summary", 10, 3), nil
-	}
-	reducer := newStubBoundedReducer(records, 10_000, 100, 0, stub)
-	reducer.finalUsesTool = false
-	result, err := reducer.run(records)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Summary != "plain summary" || finals != 1 || stub.calls != 1 {
-		t.Fatalf("result = %+v (finals %d, calls %d), want a single tool-free final call", result, finals, stub.calls)
+	if stub.calls != 1 {
+		t.Fatalf("dispatches = %d, want the single final attempt", stub.calls)
 	}
 }

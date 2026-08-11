@@ -7,6 +7,8 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+
+	provider "juggler/cmd/juggler/providers/registry"
 )
 
 // messageTypeContextItem is the wire message type for a standing (non-system)
@@ -175,8 +177,11 @@ func (w *ConversationWorker) filterToolsForThreadID(tools []ToolDefinition, thre
 // resolveForcedToolChoice reads the current thread's `forceTool` Yjs field (set
 // by a plugin) and, when present AND the named tool is among this turn's tools,
 // returns the provider-agnostic toolChoice the server forwards to the provider.
-// Returns nil for the normal case (no force, or the forced tool isn't offered),
-// leaving tool selection to the model.
+// A close request (/close, the footer's summarise action) forces return_result
+// for that one turn without touching the sticky field, so the close is a
+// mechanism rather than a request the model may decline. Returns nil for the
+// normal case (no force, or the forced tool isn't offered), leaving tool
+// selection to the model.
 func (w *ConversationWorker) resolveForcedToolChoice(tools []ToolDefinition) map[string]any {
 	if w.thread.itemID == "" {
 		return nil
@@ -188,6 +193,9 @@ func (w *ConversationWorker) resolveForcedToolChoice(tools []ToolDefinition) map
 	ycrdtMu.Lock()
 	forceTool, _ := threadYMap.Get("forceTool").(string)
 	ycrdtMu.Unlock()
+	if forceTool == "" && w.closeRequested(w.thread.itemID) {
+		forceTool = "return_result"
+	}
 	if forceTool == "" {
 		return nil
 	}
@@ -202,7 +210,29 @@ func (w *ConversationWorker) resolveForcedToolChoice(tools []ToolDefinition) map
 		w.log.Info("[worker] thread forces tool %q but it is not offered this turn — ignoring", forceTool)
 		return nil
 	}
+	// Sending a forced choice to a provider that cannot honour it buys nothing
+	// and costs a turn: the model answers with literal JSON text, or nothing at
+	// all. Let those providers run the turn unforced — the prompt still asks for
+	// the call, and a close's trailing text is promoted as the result anyway
+	// (writeThreadResultLocked).
+	if cfg := w.resolveModelConfig(); cfg != nil && !providerHonorsForcedTools(cfg.Provider) {
+		w.log.Info("[worker] provider %q cannot honour a forced tool choice — running the turn unforced", cfg.Provider)
+		return nil
+	}
 	return map[string]any{"mode": "tool", "name": forceTool}
+}
+
+// providerHonorsForcedTools reports whether a provider can be trusted with a
+// forced single-tool choice. Local daemons and OpenAI-compatible gateways
+// either reject the tools array, answer the forced call as literal JSON text,
+// or return nothing at all. An unregistered provider is assumed capable,
+// preserving behavior for the mainstream providers.
+func providerHonorsForcedTools(providerName string) bool {
+	info, ok := provider.GetProviderInfo(providerName)
+	if !ok {
+		return true
+	}
+	return !info.ForcedToolChoiceUnsupported
 }
 
 // imagePartsFromAttachments renders an item's attachment refs as the wire

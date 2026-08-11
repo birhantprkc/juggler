@@ -546,7 +546,8 @@ class LLMState {
     };
 
     // Map worker status to LLMState actions
-    // Status values: preparing, streaming, idle, error, validation-error
+    // Status values: preparing, streaming, processing_tools, retrying,
+    // compacting, idle, error, validation-error
     switch (status) {
       case 'preparing': {
         // A turn was accepted, so the model divergence (if any) is resolved —
@@ -572,6 +573,14 @@ class LLMState {
       case 'retrying':
         this.start(conversationId, state.startedAt);
         this.updateStatus(conversationId, 'custom', { ...tokenData, message: state.message || 'Retrying' });
+        break;
+
+      // A summarizer run (/compact, /handoff, or context recovery). Its LLM
+      // calls are hidden, so this frame — and the elapsed digit riding on it —
+      // is the only progress the user sees for the whole run.
+      case 'compacting':
+        this.start(conversationId, state.startedAt);
+        this.updateStatus(conversationId, 'custom', { ...tokenData, message: state.message || 'Summarizing conversation' });
         break;
 
       case 'idle':

@@ -1350,13 +1350,14 @@ class Conversation {
    * @param {string} userMessage - User's message content
    * @param {string|null} [threadItemId] - Thread item ID if sending from a thread column
    * @param {import('./message-thread.js').MessageThread} [messageThread] - Column-scoped message thread
-   * @param {{preemptProcessing?: boolean, attachments?: Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>, skills?: string[]}} [options] -
+   * @param {{preemptProcessing?: boolean, attachments?: Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>, skills?: string[], closeRequest?: boolean}} [options] -
    *   When `preemptProcessing` is set, an in-flight turn is cancelled-and-settled
    *   (worker truth) before this message is delivered, instead of the message
    *   being silently dropped by the "already processing" guard. A visible notice
    *   is shown if a live turn was actually cancelled. `attachments` carries
    *   content-addressed asset references (uploaded images) to store on the user
-   *   item.
+   *   item. `closeRequest` marks the send as a thread close, forcing
+   *   return_result for that turn (see MessageThread.close).
    * @returns {Promise<string|null>} null when the message was delivered (or a
    *   slash command was handled); otherwise a short reason describing which
    *   guard dropped it. The drop is silent for users (the UI guard normally
@@ -1506,7 +1507,7 @@ class Conversation {
     // Route to worker - the worker owns the strategy loop. Turns are driven
     // exclusively by the Go worker; there is no viewer-side fallback loop.
     if (workerManager.isWorkerReady(this.id)) {
-      workerManager.sendMessage(this.id, userMessage, messageThread?.threadItemId || threadItemId, options.attachments, options.skills);
+      workerManager.sendMessage(this.id, userMessage, messageThread?.threadItemId || threadItemId, options.attachments, options.skills, { closeRequest: options.closeRequest });
       const acceptedConfig = messageThread?.modelConfig || this.modelConfig;
       if (acceptedConfig?.provider && acceptedConfig?.model) {
         recentModels.record(acceptedConfig.provider, acceptedConfig.model, acceptedConfig.thinking);

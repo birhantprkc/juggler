@@ -668,10 +668,10 @@ type ProviderInfo struct {
 	// forced single-tool choice — local daemons and OpenAI-compatible gateways
 	// whose models either reject the tools array, answer a forced tool call as
 	// literal JSON text, or return nothing. The zero value (false) means forced
-	// tool choice is reliable, so natively-registered providers keep it. Bounded
-	// compaction reads this to pick its final-summary call: reliable providers
-	// force the return_result tool for clean structured output; the rest use a
-	// tool-free plain-text final that every model answers cleanly.
+	// tool choice is reliable, so natively-registered providers keep it. The
+	// worker reads this before emitting a tool_choice (resolveForcedToolChoice):
+	// such a provider runs the turn unforced instead of spending it on a call it
+	// cannot make.
 	ForcedToolChoiceUnsupported bool
 	// StreamsLiveUsage marks a provider that reports authoritative per-step input
 	// usage mid-turn that maps onto our context meter — i.e. its transient `usage`

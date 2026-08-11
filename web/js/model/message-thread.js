@@ -1180,8 +1180,14 @@ export default class MessageThread {
   }
 
   /**
-   * Close this thread by asking the LLM to generate a summary and call
-   * return_result.
+   * Close this thread by asking the LLM to summarise it via return_result.
+   *
+   * The prompt names ONE deliverable — the call — because a reply written
+   * alongside it is discarded (the parent only ever receives the `result`
+   * string), so prose costs tokens and buys nothing. The send is marked
+   * `closeRequest`, which forces return_result for that turn and, on providers
+   * that cannot honour a forced tool choice, promotes the reply text as the
+   * result instead: the close lands either way.
    *
    * Preempts any in-flight turn first (worker-truth cancel+settle) so the
    * summary prompt is never silently dropped by sendMessage's "already
@@ -1193,10 +1199,12 @@ export default class MessageThread {
   async close(summaryText) {
     if (!this.threadItemId) return;
     const userText = (summaryText || '').trim();
-    const message = userText
-      ? `${userText}\n\nAfter responding, call return_result with a concise summary of what was accomplished in its "result" argument.`
-      : 'Summarize what was accomplished in this thread concisely, then call return_result with that summary in its "result" argument.';
-    await this.conversation.sendMessage(message, this.threadItemId, this, { preemptProcessing: true });
+    const instruction = 'Close this thread: your entire response must be a single return_result call whose "result" argument is a concise summary of what was accomplished. Do not also reply in the chat — text written alongside the call is discarded and never reaches the parent.';
+    const message = userText ? `${userText}\n\n${instruction}` : instruction;
+    await this.conversation.sendMessage(message, this.threadItemId, this, {
+      preemptProcessing: true,
+      closeRequest: true
+    });
   }
 
   /**
@@ -1211,6 +1219,16 @@ export default class MessageThread {
    */
   async resummarize() {
     if (!this.threadItemId) return;
+    // A /compact (or /handoff) fold is summarised by the worker's folded
+    // compaction summariser, which supplies its own prompt and treats the
+    // thread's items as inert source. Re-run that directly: going through
+    // close() would append a "call return_result" instruction into the very
+    // transcript being summarised, and the summariser ignores it as a directive
+    // anyway.
+    if (this.container?.get?.('boundedCompaction') === true) {
+      await workerManager.resummarizeCompactionThread(this.conversation.id, this.threadItemId);
+      return;
+    }
     // Clear the result first (worker-authored so it stays undoable), then ask
     // the LLM to summarise afresh. close() preempts/settles before sending.
     await workerManager.reopenThread(this.conversation.id, this.threadItemId);

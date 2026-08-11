@@ -38,9 +38,9 @@ func observedRecoveryStub(t *testing.T, calls *int) func(context.Context, json.R
 		if err := json.Unmarshal(raw, &req); err != nil {
 			t.Fatal(err)
 		}
-		if len(req.Tools) > 0 {
+		if isCompactionFinalRequest(req) {
 			return &LLMResponse{
-				Blocks:           []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"recovered prefix summary"}`)}},
+				Blocks:           []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered prefix summary"}},
 				InputTokens:      150,
 				OutputTokens:     40,
 				CachedTokens:     10,
@@ -470,8 +470,8 @@ func TestContextGuardRecoveryProgressReevaluatesWithoutBypass(t *testing.T) {
 			if !req.BypassContextGuard {
 				t.Fatal("hidden recovery request did not bypass guard")
 			}
-			if len(req.Tools) > 0 {
-				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"guard recovery summary"}`)}}}, nil
+			if isCompactionFinalRequest(req) {
+				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "guard recovery summary"}}}, nil
 			}
 			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
 		}
@@ -708,8 +708,8 @@ func TestContextRecoveryBudgetResetsAfterSuccessfulDispatch(t *testing.T) {
 			return nil, err
 		}
 		if strings.Contains(req.ThreadID, ":bounded:") {
-			if len(req.Tools) > 0 {
-				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"staged history summary"}`)}}}, nil
+			if isCompactionFinalRequest(req) {
+				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "staged history summary"}}}, nil
 			}
 			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
 		}

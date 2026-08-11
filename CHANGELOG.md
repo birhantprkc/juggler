@@ -14,6 +14,7 @@ of changes; this project follows semantic versioning.
 - Duplicating a conversation no longer hijacks its running monitors, so output stays with the original
 - Clicking an item's badge in the properties panel opens the extension that provides it in Settings
 - Tab auto-naming retries an overloaded model instead of silently leaving "Untitled", and says so if it gives up
+- Various fixes and improvements to the compaction invocation and feedback while summarising
 
 ## [0.5.4] - 2026-08-08
 

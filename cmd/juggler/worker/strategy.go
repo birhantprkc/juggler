@@ -74,11 +74,11 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 		wasCancelled := w.loadState() == StateCancelling
 		completedThreadID := w.thread.itemID // capture before clearing
 
-		// Promote a forced-close thread's text result if its mandated
-		// return_result turn degraded to plain text — writeThreadResult is a
-		// no-op for every other ending. A turn that ended on plain text, or on
-		// an error, leaves the thread OPEN (no result). Run BEFORE clearing
-		// state so the Y.Map read can find the items.
+		// Promote a close's text result if its mandated return_result turn
+		// degraded to plain text — writeThreadResult is a no-op for every other
+		// ending. A turn that ended on plain text, or on an error, leaves the
+		// thread OPEN (no result). Run BEFORE clearing state so the Y.Map read
+		// can find the items, and before the close request is cleared below.
 		if completedThreadID != "" && !wasCancelled {
 			w.writeThreadResult(completedThreadID)
 			// A delegated child (spawned by a delegatesToSubthread tool) whose
@@ -96,6 +96,11 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 		w.processingStartedAt = 0
 		w.approvalWaitStartedAt = 0
 		w.lastProgressWriteMs = 0
+		// The close request is turn-scoped: the turn is over, so a later turn on
+		// this thread (a reopen, a follow-up message) is never silently forced.
+		// The awaiting_llm early return above deliberately keeps it — that turn
+		// is still in flight and still owes its close.
+		w.closeRequestThreadID = ""
 		w.resetThreadContext()
 
 		if wasCancelled {
@@ -283,7 +288,7 @@ strategyLoop:
 			tools = append(tools, ToolDefinition{
 				Name:        "return_result",
 				Category:    "meta",
-				Description: `Return your result to the parent conversation when this thread's task is complete. Put the full summary in the required "result" argument (not "summary" or a plain text reply) — that string is exactly what the parent receives.`,
+				Description: `Return your result to the parent conversation when this thread's task is complete. Put the full summary in the required "result" argument (not "summary" or a plain text reply) — that string is exactly what the parent receives. Make this call your whole response: any text you write alongside it is discarded, so writing the summary twice only costs tokens.`,
 				InputSchema: json.RawMessage(`{"type":"object","properties":{"result":{"type":"string","description":"The summary of what this thread accomplished, returned verbatim to the parent conversation."}},"required":["result"]}`),
 			})
 		}

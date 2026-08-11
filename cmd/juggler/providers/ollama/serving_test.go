@@ -37,14 +37,14 @@ func TestOllamaPublishesSilentTruncationGuard(t *testing.T) {
 	}
 }
 
-func TestOllamaRoutesCompactionToPlainTextFinal(t *testing.T) {
+func TestOllamaDeclaresForcedToolChoiceUnsupported(t *testing.T) {
 	Register()
 	info, found := provider.GetProviderInfo("ollama")
 	if !found {
 		t.Fatal("Ollama provider was not registered")
 	}
 	if !info.ForcedToolChoiceUnsupported {
-		t.Fatal("Ollama should be marked ForcedToolChoiceUnsupported so bounded compaction uses the tool-free final call")
+		t.Fatal("Ollama should be marked ForcedToolChoiceUnsupported so the worker never spends a turn on a forced tool call it cannot make")
 	}
 }
 

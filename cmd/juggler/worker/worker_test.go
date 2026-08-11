@@ -2948,6 +2948,97 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 			t.Errorf("unforced request must not carry toolChoice, got %v", req["toolChoice"])
 		}
 	})
+
+	// A close (/close, the footer's summarise action) forces return_result for
+	// that ONE turn without writing the sticky field, so the close is a
+	// mechanism rather than a request the model may answer with prose.
+	t.Run("close request forces without the sticky field", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+		threadID := insertThreadWithOpts(w, threadOpts{goal: "Work"})
+		w.thread.itemID = threadID
+		w.closeRequestThreadID = threadID
+
+		raw := w.buildLLMRequest(ctxResult, tools, "txn-3", false)
+		var req map[string]any
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		tc, ok := req["toolChoice"].(map[string]any)
+		if !ok || tc["mode"] != "tool" || tc["name"] != "return_result" {
+			t.Fatalf("close-request toolChoice = %v, want {mode:tool, name:return_result}", req["toolChoice"])
+		}
+		if ymap := w.doc.GetThreadYMap(threadID); ymap != nil {
+			if ft, _ := ymap.Get("forceTool").(string); ft != "" {
+				t.Fatalf("close request wrote forceTool=%q; it must stay turn-scoped", ft)
+			}
+		}
+	})
+
+	// The arming is scoped to the thread that asked to close: a close request on
+	// one thread must never force another thread's turn.
+	t.Run("close request does not leak to another thread", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+		closing := insertThreadWithOpts(w, threadOpts{goal: "Closing"})
+		other := insertThreadWithOpts(w, threadOpts{goal: "Other"})
+		w.thread.itemID = other
+		w.closeRequestThreadID = closing
+
+		raw := w.buildLLMRequest(ctxResult, tools, "txn-4", false)
+		var req map[string]any
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		if _, present := req["toolChoice"]; present {
+			t.Errorf("another thread's turn was forced by a close request: %v", req["toolChoice"])
+		}
+	})
+}
+
+// TestCloseRequestPromotesTrailingTextResult pins the other half of the close
+// mechanism: a provider that ignores the forced tool_choice answers the close in
+// plain text, and that trailing text is promoted as the thread result. Without
+// it the close silently does nothing — the thread stays open with a summary
+// sitting in the transcript. An identical turn WITHOUT a close request leaves
+// the thread open, which is its normal resting state.
+func TestCloseRequestPromotesTrailingTextResult(t *testing.T) {
+	newThreadWithReply := func(t *testing.T, w *ConversationWorker) string {
+		t.Helper()
+		threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", userMessage: "do it"})
+		w.thread.itemID = threadID
+		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+			Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "Did the work, here is the summary.",
+		})
+		return threadID
+	}
+
+	t.Run("close request promotes", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		threadID := newThreadWithReply(t, w)
+		w.closeRequestThreadID = threadID
+
+		w.writeThreadResult(threadID)
+		result, _ := w.doc.GetThreadYMap(threadID).Get("result").(string)
+		if result != "Did the work, here is the summary." {
+			t.Fatalf("thread result = %q, want the trailing reply promoted", result)
+		}
+	})
+
+	t.Run("ordinary turn leaves the thread open", func(t *testing.T) {
+		w := NewConversationWorker("test-conv", "user:test")
+		defer w.doc.Destroy()
+		threadID := newThreadWithReply(t, w)
+
+		w.writeThreadResult(threadID)
+		if result, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); result != "" {
+			t.Fatalf("thread result = %q, want an open thread", result)
+		}
+	})
 }
 
 // TestFilterToolsForThread verifies the per-thread canSpawnThreads capability
@@ -3173,15 +3264,13 @@ func TestCompactionSubthread_DrainsRootQueueOnCompletion(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// Two calls through the shared transport (callLLMWithSink pops the mock queue
-	// in order): (1) the bounded reducer's hidden compaction probe takes
-	// return_result and becomes the thread summary; (2) the queued root follow-up
-	// is answered by a normal strategy turn. If the root queue is never drained,
-	// the follow-up is never answered and its scripted response is left unconsumed.
+	// in order): (1) the bounded reducer's hidden compaction probe, whose reply
+	// text becomes the thread summary (the probe is tool-free); (2) the queued
+	// root follow-up is answered by a normal strategy turn. If the root queue is
+	// never drained, the follow-up is never answered and its scripted response is
+	// left unconsumed.
 	w.setMockResponses([]MockResponse{
-		{Blocks: []LLMResponseBlock{
-			{Type: "tool_use", ID: "tu-compact", Name: "return_result",
-				Input: json.RawMessage(`{"result":"Summary of conversation"}`)},
-		}, StopReason: "tool_use"},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Summary of conversation"}}, StopReason: "end_turn"},
 		{Blocks: []LLMResponseBlock{{Type: "text", Content: "answer to follow-up"}}, StopReason: "end_turn"},
 	})
 

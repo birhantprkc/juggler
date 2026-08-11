@@ -323,9 +323,17 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		}
 		w.thread.itemID = msg.ThreadItemID
 		w.thread.itemsArray = itemsArray
+		// Arm the one-shot close only on the accepted path — a send that was
+		// queued above (worker busy) runs its turn later, unforced, exactly as a
+		// plain message would.
+		w.closeRequestThreadID = ""
+		if msg.CloseRequest {
+			w.closeRequestThreadID = msg.ThreadItemID
+		}
 	} else {
 		w.thread.itemID = ""
 		w.thread.itemsArray = nil
+		w.closeRequestThreadID = ""
 	}
 
 	// Add user message to doc before signaling the reducer.
@@ -1052,6 +1060,33 @@ func (w *ConversationWorker) handleReopenThread(payload json.RawMessage) {
 		"ackId":  msg.AckID,
 		"result": success,
 	})
+}
+
+// handleResummarizeCompactionThread re-runs the folded-compaction summarizer
+// over a compaction thread's existing source: clear the committed summary,
+// re-arm the one-shot needsStrategyRun trigger, then drive the pickup. When the
+// worker is busy the pickup is a no-op and a later handleItemsChange runs it, so
+// the re-arm alone is enough to guarantee the run.
+func (w *ConversationWorker) handleResummarizeCompactionThread(payload json.RawMessage) {
+	var msg ResummarizeCompactionThreadMessage
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		w.log.Error("Failed to parse resummarize-compaction-thread message: %v", err)
+		return
+	}
+	handled := w.isBoundedCompactionThread(msg.ThreadItemID)
+	if handled {
+		w.clearThreadResult(msg.ThreadItemID)
+		w.setThreadNeedsStrategyRun(msg.ThreadItemID)
+	}
+	w.batcher.Flush()
+	w.reply(map[string]any{
+		"type":   "ack",
+		"ackId":  msg.AckID,
+		"result": handled,
+	})
+	if handled {
+		w.checkForNewThreads()
+	}
 }
 
 // handleCloseThreadWithLastMessage closes an open thread by promoting its

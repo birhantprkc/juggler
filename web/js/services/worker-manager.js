@@ -479,8 +479,12 @@ class WorkerManager {
    *   Content-addressed asset references (uploaded images) to store on the user item.
    * @param {string[]} [skills] - Agent Skill names the user explicitly chose to load
    *   before this turn; the worker injects each as a visible `skill` tool-action.
+   * @param {{closeRequest?: boolean}} [options] - `closeRequest` marks this send
+   *   as a thread close (/close, the footer's summarise action): the worker
+   *   forces return_result for that one turn and promotes its trailing text as
+   *   the result if the provider ignored the force.
    */
-  sendMessage(conversationId, text, threadItemId, attachments, skills) {
+  sendMessage(conversationId, text, threadItemId, attachments, skills, options = {}) {
     // Store only the reference fields on the doc item — never raw bytes / data
     // URLs. Omit the key entirely when there are no attachments so the worker
     // writes a byte-identical user item to a plain text message.
@@ -495,7 +499,14 @@ class WorkerManager {
       }))
       : undefined;
     const skillNames = Array.isArray(skills) && skills.length ? skills : undefined;
-    this.sendToWorker(conversationId, { type: 'send-message', text, threadItemId: threadItemId || undefined, attachments: refs, skills: skillNames });
+    this.sendToWorker(conversationId, {
+      type: 'send-message',
+      text,
+      threadItemId: threadItemId || undefined,
+      attachments: refs,
+      skills: skillNames,
+      closeRequest: options.closeRequest || undefined
+    });
   }
 
   /**
@@ -1100,6 +1111,20 @@ class WorkerManager {
    */
   async reopenThread(conversationId, threadItemId) {
     return await this._sendWithAck(conversationId, { type: 'reopen-thread', threadItemId });
+  }
+
+  /**
+   * Re-run the folded-compaction summariser over a compaction (/compact or
+   * /handoff) thread: the worker clears the committed summary and re-arms the
+   * thread's run trigger, so the summary is regenerated from the same source
+   * with the summariser's own prompt — nothing is appended to the thread.
+   * @param {string} conversationId - Conversation ID
+   * @param {string} threadItemId - Compaction thread item ID
+   * @returns {Promise<boolean>} True if the thread was re-armed (false when it
+   *   is not a compaction thread)
+   */
+  async resummarizeCompactionThread(conversationId, threadItemId) {
+    return await this._sendWithAck(conversationId, { type: 'resummarize-compaction-thread', threadItemId });
   }
 
   /**

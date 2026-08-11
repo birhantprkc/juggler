@@ -41,6 +41,137 @@ func insertBoundedCompactionThread(t *testing.T, w *ConversationWorker, content 
 	return threadID
 }
 
+// TestCompactRefusesWhileLLMClaimHeld pins the busy guard against the reported
+// failure: /compact folded the conversation, the fold appeared as a thread tile,
+// and it then sat unrun forever with the conversation reporting idle. The cause
+// is that run state and the doc-native LLM claim are separate — a turn can leave
+// state Idle while still holding the claim — so the old state-only guard folded
+// at a moment the pickup could not claim. A fold that cannot be summarized must
+// not be committed at all; say "busy" instead.
+func TestCompactRefusesWhileLLMClaimHeld(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0,
+		ConversationItem{Type: ItemTypeUser, ItemID: "u1", Content: "do some work"},
+		ConversationItem{Type: ItemTypeAssistant, ItemID: "a1", Content: "did some work"},
+	)
+	// State Idle, claim still held — the exact divergence that stranded the fold.
+	w.claimLLM("")
+	w.storeState(StateIdle)
+
+	payload, _ := json.Marshal(CompactMessage{Type: "compact", AckID: "ack-1"})
+	w.handleCompact(payload)
+
+	for _, it := range w.doc.GetItems() {
+		if it.Type == ItemTypeThread {
+			t.Fatalf("compaction folded while the LLM claim was held; the fold can never be summarized and the conversation reports %v", w.loadState())
+		}
+	}
+}
+
+// TestStrategyRunThreadRecoveredByReconcileTick pins the other half: a fold that
+// IS committed and then loses the claim race must still run. needsStrategyRun is
+// consumed only after a successful claim, and the release that frees the claim
+// writes processingState rather than items — so the items observer never fires
+// again. The reducer tick is the retry; without it the thread waits forever.
+func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedCompactionContextAndTools(w)
+	w.setMockResponses([]MockResponse{
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Recovered summary."}}, StopReason: "end_turn"},
+	})
+
+	// The claim is held when the fold lands, so the observer's pickup fails.
+	w.claimLLM("")
+	w.storeState(StateIdle)
+	threadID := insertThreadWithOpts(w, threadOpts{
+		goal: "Compacted conversation history", needsStrategyRun: true,
+		noAutoSelect: true, boundedCompaction: true, userMessage: "history to summarize",
+	})
+	if got, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); got != "" {
+		t.Fatalf("fold summarized while the claim was held: %q", got)
+	}
+	if !w.needsReconcile {
+		t.Fatal("a fold that lost the claim race left no reconcile armed — nothing will ever revisit it")
+	}
+
+	// The in-flight operation ends, freeing the claim; the reducer ticks.
+	w.releaseLLM()
+	w.storeState(StateIdle)
+	for i := 0; i < maxReconcilePasses && w.needsReconcile; i++ {
+		w.tryReconcile()
+	}
+
+	if got, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); got != "Recovered summary." {
+		t.Fatalf("thread result = %q, want the fold summarized once the claim freed", got)
+	}
+}
+
+// TestResummarizeCompactionThreadRerunsSummarizer pins the Re-summarise route
+// for a /compact (or /handoff) fold: the folded summarizer is re-run over the
+// SAME source — the committed summary is replaced and nothing is appended to the
+// thread. Routing a re-summarise through the ordinary close turn instead would
+// inject a "call return_result" instruction into the very transcript being
+// summarized, which the tool-free summarizer then feeds back to the model.
+func TestResummarizeCompactionThreadRerunsSummarizer(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	threadID := insertBoundedCompactionThread(t, w, "history to summarize")
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		w.doc.GetThreadYMap(threadID).Set("result", "Stale summary.")
+	}, w.doc.authorID)
+	w.resetThreadContext()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	ctxResp, _ := json.Marshal(map[string]any{
+		"type": "render-context-items-result", "systemPrompt": "sys", "contexts": []any{},
+	})
+	toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case w.contextResultChan <- ctxResp:
+			}
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case w.toolsResultChan <- toolsResp:
+			}
+		}
+	}()
+
+	itemsBefore := len(w.doc.GetItemsFromArray(w.doc.GetThreadItemsArray(threadID)))
+	w.setMockResponses([]MockResponse{
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Fresh summary."}}, StopReason: "end_turn"},
+	})
+
+	payload, _ := json.Marshal(ResummarizeCompactionThreadMessage{
+		Type: "resummarize-compaction-thread", ThreadItemID: threadID,
+	})
+	w.handleResummarizeCompactionThread(payload)
+
+	if got, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); got != "Fresh summary." {
+		t.Fatalf("thread result = %q, want the regenerated summary", got)
+	}
+	if itemsAfter := len(w.doc.GetItemsFromArray(w.doc.GetThreadItemsArray(threadID))); itemsAfter != itemsBefore {
+		t.Fatalf("thread items = %d, want %d unchanged — re-summarise must not append to the source", itemsAfter, itemsBefore)
+	}
+}
+
 // TestRunFoldedThreadCompactionOnePassAppendsPrompt pins the cache-preserving
 // probe: ordinary history remains a message prefix and the summary instruction
 // is appended as the final user message rather than replacing the system prompt.
@@ -72,7 +203,7 @@ func TestRunFoldedThreadCompactionOnePassAppendsPrompt(t *testing.T) {
 	if sawReq.SystemPrompt != "ordinary system prompt" {
 		t.Fatalf("folded probe system prompt = %q, want ordinary prompt unchanged", sawReq.SystemPrompt)
 	}
-	if len(sawReq.Messages) != 2 || sawReq.Messages[0].Content != "a short conversation history to summarize" || sawReq.Messages[1].Content != plainTextSummarizationPrompt() {
+	if len(sawReq.Messages) != 2 || sawReq.Messages[0].Content != "a short conversation history to summarize" || sawReq.Messages[1].Content != DefaultSummarizationPrompt {
 		t.Fatalf("folded probe messages = %#v, want history plus appended summary prompt", sawReq.Messages)
 	}
 	if sawReq.ThreadID != "" || len(sawReq.Tools) != 1 || sawReq.Tools[0].Name != "edit" {
@@ -113,8 +244,10 @@ func TestRunFoldedThreadCompactionProbeOverflowChunks(t *testing.T) {
 			// rejected with the real window, driving the reducer to split.
 			return nil, &provider.ContextLimitExceededError{EstimatedInputTokens: estimate, OutputReserveTokens: reserve, ContextWindowTokens: window}
 		}
-		if len(req.Tools) > 0 {
-			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"final compact summary"}`)}}}, nil
+		// Every compaction call is tool-free, so map and final are told apart by
+		// their system prompt, not by whether tools were offered.
+		if req.SystemPrompt != boundedCompactionMapPrompt {
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "final compact summary"}}}, nil
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
@@ -129,6 +262,47 @@ func TestRunFoldedThreadCompactionProbeOverflowChunks(t *testing.T) {
 	thread := w.doc.GetThreadYMap(threadID)
 	if got, _ := thread.Get("result").(string); got != "final compact summary" {
 		t.Fatalf("thread result = %q, want %q", got, "final compact summary")
+	}
+}
+
+// TestFoldedCompactionPublishesBusyStatus pins the only sign of life a
+// summarizer run gives the UI. Every one of its LLM calls is hidden, so nothing
+// streams into the transcript and no item lands while it works: the doc's
+// processingState is the sole thing the spinner, its label, and the elapsed
+// digit are driven from. A run that leaves the previous turn's resting "idle"
+// frame in place is indistinguishable from a conversation doing nothing.
+func TestFoldedCompactionPublishesBusyStatus(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	// The resting frame every real /compact starts from: the preceding turn ended
+	// at idle, and the pickup's claim deliberately leaves status untouched.
+	w.sendStatus("idle", "")
+	insertBoundedCompactionThread(t, w, "history to summarize")
+
+	var sawStatus, sawMessage string
+	var sawStarted bool
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		state := w.readProcessingState()
+		sawStatus, _ = state["status"].(string)
+		sawMessage, _ = state["message"].(string)
+		_, sawStarted = state["startedAt"]
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "the handoff summary"}}}, nil
+	}
+
+	handled, err := w.runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{}, nil)
+	if !handled || err != nil {
+		t.Fatalf("runFoldedThreadCompaction = (%v, %v), want handled success", handled, err)
+	}
+	if sawStatus != "compacting" {
+		t.Fatalf("processingState.status during the summarizer call = %q, want %q — the run is invisible to the UI", sawStatus, "compacting")
+	}
+	if sawMessage == "" {
+		t.Fatal("processingState.message during the summarizer call is empty — the spinner has no label")
+	}
+	if !sawStarted {
+		t.Fatal("processingState.startedAt missing during the summarizer call — the spinner shows no elapsed time")
 	}
 }
 
@@ -152,8 +326,8 @@ func TestBoundedCompactionMapsReducesAndPublishesOnlyFinalResult(t *testing.T) {
 		if estimate+reserve > window {
 			t.Fatalf("hidden request %d does not fit: %d + %d > %d", calls, estimate, reserve, window)
 		}
-		if len(req.Tools) > 0 {
-			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"final compact summary"}`)}}}, nil
+		if req.SystemPrompt != boundedCompactionMapPrompt {
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "final compact summary"}}}, nil
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
@@ -207,8 +381,8 @@ func TestBoundedCompactionPinsRejectedRequestModel(t *testing.T) {
 			t.Fatalf("hidden call %d model = %+v, want pinned %+v", calls, req.ModelConfig, pinned)
 		}
 		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "changed-again", "model": "new-default"})
-		if len(req.Tools) > 0 {
-			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"done"}`)}}}, nil
+		if req.SystemPrompt != boundedCompactionMapPrompt {
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "done"}}}, nil
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
 	}
@@ -276,20 +450,17 @@ func TestCanonicalCompactionRecordsFailClosedOnMarshalError(t *testing.T) {
 	}
 }
 
-// TestPlainTextSummarizationPromptSwapsInstruction pins the composed prompt
-// variants: both share summarizationPromptBody and differ only in the final
-// instruction, so the folded probe (which runs tool-free) is never instructed
-// to make a return_result call it can't.
-func TestPlainTextSummarizationPromptSwapsInstruction(t *testing.T) {
-	plain := plainTextSummarizationPrompt()
-	if plain == DefaultSummarizationPrompt {
-		t.Fatal("plainTextSummarizationPrompt did not change DefaultSummarizationPrompt — the tool-instruction sentence no longer matches, so the swap silently no-op'd")
+// TestSummarizationPromptAsksForOneDeliverable pins the prompt's contract: every
+// summarization call is tool-free, so the prompt must never ask for a
+// return_result call (a second deliverable the model pays for and nothing
+// reads), and it must tell the model the <analysis> scratchpad is discarded —
+// otherwise it is asked to both write the block and not return it.
+func TestSummarizationPromptAsksForOneDeliverable(t *testing.T) {
+	if strings.Contains(DefaultSummarizationPrompt, "return_result") {
+		t.Fatalf("summarization prompt instructs a return_result call, but every summarization call is tool-free:\n%s", DefaultSummarizationPrompt)
 	}
-	if strings.Contains(plain, "call return_result") {
-		t.Fatalf("plain-text summarization prompt still instructs a return_result tool call:\n%s", plain)
-	}
-	if !strings.Contains(plain, summarizationTextInstruction) {
-		t.Fatalf("plain-text summarization prompt missing the plain-text instruction:\n%s", plain)
+	if !strings.Contains(DefaultSummarizationPrompt, "it is stripped from the stored summary") {
+		t.Fatalf("summarization prompt does not tell the model its <analysis> scratchpad is stripped:\n%s", DefaultSummarizationPrompt)
 	}
 }
 
@@ -539,22 +710,13 @@ func TestHiddenCompactionUsesRegistryAdmissionAndDiscardsAllStreamChunks(t *test
 	}
 }
 
-func TestCompactionResponseTextReturnResultPrecedenceAndFallback(t *testing.T) {
+func TestCompactionResponseTextJoinsTextBlocks(t *testing.T) {
 	tests := []struct {
 		name   string
 		blocks []LLMResponseBlock
 		want   string
 	}{
-		{name: "valid result wins over text", blocks: []LLMResponseBlock{
-			{Type: provider.ContentBlockTypeText, Content: "fallback"},
-			{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"tool result"}`)},
-		}, want: "tool result"},
-		{name: "malformed result falls back", blocks: []LLMResponseBlock{
-			{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":`)},
-			{Type: provider.ContentBlockTypeText, Content: "fallback"},
-		}, want: "fallback"},
-		{name: "empty result falls back", blocks: []LLMResponseBlock{
-			{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"  "}`)},
+		{name: "text blocks joined, thinking ignored", blocks: []LLMResponseBlock{
 			{Type: provider.ContentBlockTypeText, Content: "first "},
 			{Type: provider.ContentBlockTypeThinking, Content: "ignored"},
 			{Type: provider.ContentBlockTypeText, Content: "second"},
@@ -562,9 +724,12 @@ func TestCompactionResponseTextReturnResultPrecedenceAndFallback(t *testing.T) {
 		{name: "leading scratchpad stripped from text", blocks: []LLMResponseBlock{
 			{Type: provider.ContentBlockTypeText, Content: "<analysis>walked the log</analysis>\n\n1. Intent"},
 		}, want: "1. Intent"},
-		{name: "scratchpad stripped from tool result", blocks: []LLMResponseBlock{
-			{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"<analysis>notes</analysis>\n1. Intent"}`)},
-		}, want: "1. Intent"},
+		// The summary is the response text: a tool_use block is never the
+		// deliverable, since no compaction call offers a tool to call.
+		{name: "tool call contributes nothing", blocks: []LLMResponseBlock{
+			{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"tool result"}`)},
+			{Type: provider.ContentBlockTypeText, Content: "the summary"},
+		}, want: "the summary"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

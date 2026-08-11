@@ -364,6 +364,20 @@ func (w *ConversationWorker) tryReconcile() {
 	// than relying on the engine's reactive observer to notice and react.
 	w.driveToolActions()
 
+	// Doc-driven threads (a /compact or /handoff fold, any plugin-inserted
+	// needsStrategyRun thread) are picked up here as well as from the items
+	// observer. The observer alone is not enough: the claim such a thread needs
+	// can be held at the moment it is inserted, and the release that frees it
+	// writes processingState, not items — so no further observer tick arrives and
+	// the thread waits forever, unrun, while the conversation reports idle. This
+	// tick is the retry. It self-guards on idle, so it is inert mid-turn.
+	if w.checkForNewThreads() {
+		// The run mutated the doc and settled; re-evaluate from scratch rather
+		// than walking down with items read before it.
+		w.needsReconcile = true
+		return
+	}
+
 	// Read activity first. The threadItemId in processingState is only
 	// meaningful when an operation is in flight (activity != null).
 	// When idle, the reducer evaluates the root thread.
@@ -554,11 +568,11 @@ func selectThreadFallbackResult(items []ConversationItem) string {
 }
 
 // writeThreadResult promotes a forced-close thread's trailing text as its
-// result in the one case a close was intended but not recorded: a thread whose
-// turn was MANDATED to call return_result (forceTool, e.g. /compact) answered in
-// plain text instead because the provider can't honour a forced tool_choice
-// (claudecode degrades to text). Called from the strategy loop defer when a turn
-// ends; a no-op for every other ending.
+// result in the one case a close was intended but not recorded: a turn MANDATED
+// to call return_result (a close request, or a thread's sticky forceTool)
+// answered in plain text instead because the provider can't honour a forced
+// tool_choice (claudecode degrades to text). Called from the strategy loop defer
+// when a turn ends; a no-op for every other ending.
 //
 // An error is NOT such a case. A turn that stops on an error is just a turn that
 // ended without closing — identical to one ending on plain assistant text: the
@@ -592,14 +606,16 @@ func (w *ConversationWorker) writeThreadResultLocked(threadItemID string) (wrote
 		return false, 0 // return_result already wrote it
 	}
 
-	// The sole ending that stamps a result here is a thread MANDATED to close
-	// via return_result (forceTool, e.g. /compact) whose turn answered in plain
-	// text — the provider couldn't honour the forced tool_choice (claudecode
-	// degrades to text). Promote that trailing assistant text so the mandated
-	// close isn't lost. Any other ending — plain text, or an error — leaves the
-	// thread OPEN: that is its normal resting state, resumable until a
+	// The sole ending that stamps a result here is a turn MANDATED to close via
+	// return_result — a close request (/close, the footer's summarise action) or
+	// a thread whose sticky forceTool pins it — that answered in plain text
+	// instead, because the provider couldn't honour the forced tool_choice
+	// (claudecode degrades to text). Promote that trailing assistant text so the
+	// mandated close isn't lost. Any other ending — plain text, or an error —
+	// leaves the thread OPEN: that is its normal resting state, resumable until a
 	// return_result (or the footer) closes it.
-	if ft, _ := threadYMap.Get("forceTool").(string); ft != "return_result" {
+	ft, _ := threadYMap.Get("forceTool").(string)
+	if ft != "return_result" && !w.closeRequested(threadItemID) {
 		return false, 0
 	}
 

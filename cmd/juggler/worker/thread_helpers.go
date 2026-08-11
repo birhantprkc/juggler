@@ -16,6 +16,13 @@ func (w *ConversationWorker) resetThreadContext() {
 	w.thread = threadContext{}
 }
 
+// closeRequested reports whether the turn running on this thread was started by
+// a close request, so return_result is forced and trailing text is promoted as
+// the result. False for every ordinary turn.
+func (w *ConversationWorker) closeRequested(threadItemID string) bool {
+	return threadItemID != "" && w.closeRequestThreadID == threadItemID
+}
+
 // getTargetItems returns items from the thread's nested array when in thread mode,
 // or from the root items array otherwise.
 func (w *ConversationWorker) getTargetItems() []ConversationItem {

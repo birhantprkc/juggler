@@ -49,7 +49,7 @@ export function defaultSummarizationPrompt() {
   }
   return `You are creating a handoff summary of the conversation so far. Another instance of yourself will use ONLY this summary (plus the most recent messages) to continue the work seamlessly, so completeness matters more than brevity — never drop information you cannot reconstruct later.
 
-First, in <analysis> tags, walk the conversation chronologically: note each user request, each significant action you took, every error hit and how it was resolved, and what is in flight right now. This is your scratchpad.
+First, in <analysis> tags, walk the conversation chronologically: note each user request, each significant action you took, every error hit and how it was resolved, and what is in flight right now. This is your scratchpad: it is stripped from the stored summary, so anything that matters must be repeated in the sections below.
 
 Then write the summary with these sections:
 
@@ -61,7 +61,7 @@ Then write the summary with these sections:
 6. Next step — the immediate next action, which must follow directly from the most recent work above. If continuing an interrupted task, quote the relevant request verbatim. Do not introduce new direction the user didn't ask for.
 7. Open issues — anything unresolved or uncertain.
 
-Be precise and technical within each section; compress prose, never facts. Then call return_result, passing the summary (sections 1–7, not the <analysis>) in its "result" argument.`;
+Be precise and technical within each section; compress prose, never facts. Reply with the <analysis> block followed by sections 1–7 and nothing else: no preamble, no sign-off, no tool call. That reply text is the summary.`;
 }
 
 /**
