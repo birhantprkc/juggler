@@ -173,6 +173,16 @@ class TodoContextItem extends ContextItem {
     return false;
   }
 
+  /**
+   * With no standing card, the todo tool-action row is the checklist's only
+   * presence in the transcript. It is there so the user can see progress at a
+   * glance, which folding it into a collapsed run of tool uses would defeat.
+   * @returns {boolean} False — todo rows never fold into a tool group.
+   */
+  static isGroupable() {
+    return false;
+  }
+
   /** @returns {string} Brief summary */
   getBriefSummary() {
     const todos = this.data.todos || [];

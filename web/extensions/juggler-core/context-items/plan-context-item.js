@@ -264,6 +264,17 @@ class PlanContextItem extends ContextItem {
   }
 
   /**
+   * With no standing card, the plan tool-action row is the plan's only presence
+   * in the transcript. Folding it into a collapsed run of tool uses would hide
+   * the plan itself behind a "+N more" tile — and a plan the user cannot see is
+   * a plan they cannot approve or follow.
+   * @returns {boolean} False — plan rows never fold into a tool group.
+   */
+  static isGroupable() {
+    return false;
+  }
+
+  /**
    * Get brief summary string for item display
    * @returns {string} Brief summary
    */

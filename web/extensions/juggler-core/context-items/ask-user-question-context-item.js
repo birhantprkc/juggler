@@ -82,6 +82,17 @@ class AskUserQuestionContextItem extends ContextItem {
   };
 
   /**
+   * The row is the record of an exchange with the user: the question that was
+   * put to them and the answer they gave. That answer explains what the agent
+   * did next, so it stays on screen rather than folding into a collapsed run of
+   * tool uses.
+   * @returns {boolean} False — question rows never fold into a tool group.
+   */
+  static isGroupable() {
+    return false;
+  }
+
+  /**
    * Get tool definitions for AskUserQuestion action
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */

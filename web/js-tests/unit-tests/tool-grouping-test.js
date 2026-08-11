@@ -8,7 +8,7 @@
  * The feature is display-only, so the assertions are about the display
  * transform and the things that read it, never about the document:
  *   1. Which runs fold (and which items break a run) — derived from item type
- *      alone, so no plugin has to declare anything.
+ *      alone, except for the types that declare `static isGroupable()` false.
  *   2. The tile's composition summary and its aggregate status.
  *   3. The column chain: a group id resolves to a column listing that run,
  *      still bound to the same thread, and a selection inside it resolves on.
@@ -25,7 +25,7 @@
  * @module unit-tests/tool-grouping-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
+import { assert, initializeRegistries } from '../utilities/test-helpers.js';
 import {
   buildDisplayItems,
   findGroup,
@@ -36,6 +36,7 @@ import {
   countGroupRows,
   groupMemberIndices,
 } from '../../js/utils/item-grouping.js';
+import contextItemRegistry from '../../js/registries/context-item-registry.js';
 import { ColumnSelectionState } from '../../js/utils/column-selection.js';
 import { positionElements, buildElementMap } from '../../js/components/conversation-area-rendering.js';
 import {
@@ -59,6 +60,9 @@ function msg(e) {
  */
 export async function runTests() {
   const Y = await import('../../js/vendor/yjs.mjs');
+  // Groupability is a property of the owning plugin, so the opt-outs below are
+  // asserted against the real registered classes rather than a stub policy.
+  await initializeRegistries();
   let passed = 0;
   let failed = 0;
   /** @type {string[]} */
@@ -166,6 +170,41 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`run boundaries: ${msg(e)}`); }
 
+  // --- 3b: a type that declares itself ungroupable is never folded away ---
+  try {
+    // These rows are ordinary tool-actions, so type alone would fold them. The
+    // plan and the todo list have no standing card — the row IS the item, and a
+    // plan or checklist hidden behind a "+N more" tile is one the user cannot
+    // follow. The others are records the user must be able to find: what they
+    // were asked and answered, and artifacts created outside this transcript.
+    for (const toolName of ['plan', 'todo', 'AskUserQuestion', 'define_command', 'new_conversation']) {
+      const ActionClass = /** @type {any} */ (contextItemRegistry.getByToolName(toolName));
+      assert(!!ActionClass, `precondition: a plugin is registered for '${toolName}'`);
+      assert(ActionClass.isGroupable() === false,
+        `'${toolName}' must declare itself ungroupable`);
+
+      // Unfolded AND a barrier: it splits the run rather than riding along as a
+      // passenger, so no tile ever spans it and its position is preserved.
+      const { items } = build([tool('read'), tool('read'), tool(toolName), tool('read'), tool('read')]);
+      const entries = fold(items);
+      assert(entries.length === 3 && isGroupEntry(entries[0]) && isGroupEntry(entries[2]),
+        `a '${toolName}' row must split the run (got ${entries.length} entries)`);
+      assert(!isGroupEntry(entries[1]) && entries[1].get('toolName') === toolName,
+        `the '${toolName}' row itself is left unfolded, in place`);
+
+      // Not even a run made only of these folds — MIN_RUN must not rescue them.
+      const solid = fold(build([tool(toolName), tool(toolName), tool(toolName)]).items);
+      assert(solid.length === 3 && !solid.some(isGroupEntry),
+        `a run of '${toolName}' rows still doesn't fold (got ${solid.length} entries)`);
+    }
+
+    // The default is unchanged: a tool that declares nothing still folds, and so
+    // does one no plugin claims at all (an MCP tool, an unknown name).
+    const { items } = build([tool('read'), tool('mcp__acme__deploy')]);
+    assert(isGroupEntry(fold(items)[0]), 'an unclaimed tool name folds by default');
+    passed++;
+  } catch (e) { failed++; errors.push(`declared opt-out: ${msg(e)}`); }
+
   // --- 4: composition summary counts each kind, commonest first, and adds up ---
   try {
     const { items } = build([tool('bash'), tool('read'), tool('read'), tool('read')]);
@@ -182,7 +221,9 @@ export async function runTests() {
     const many = build([
       ...Array.from({ length: 4 }, () => tool('replace')),
       ...Array.from({ length: 3 }, () => tool('read')),
-      tool('bash'), tool('glob'), tool('grep'), tool('write'), tool('todo'),
+      // All groupable: a row that declares itself ungroupable (`todo`, `plan`)
+      // would break this run rather than join it — that is case 3b's business.
+      tool('bash'), tool('glob'), tool('grep'), tool('write'), tool('explore_code'),
     ]).items;
     const capped = summarizeGroup(fold(many)[0].members);
     const total = [...capped.matchAll(/(\d+)(?:×|\u00A0more)/g)].reduce((n, m) => n + Number(m[1]), 0);

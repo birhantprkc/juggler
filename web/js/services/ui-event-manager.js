@@ -71,6 +71,9 @@ class UIEventManager {
 
     /** @type {(() => void)|null} @private */
     this._unregisterShowShortcuts = null;
+
+    /** @type {(() => void)|null} @private */
+    this._unregisterToolGrouping = null;
   }
 
   /**
@@ -277,6 +280,8 @@ class UIEventManager {
    * header toggle backed by a localStorage pref, re-reflected from the shared
    * pref-changed event so any other control that flips it stays in sync. The
    * open columns re-render themselves off the same event (conversation-tab).
+   * The keyboard shortcut flips the same pref; the button reflects it either
+   * way, since both routes go through the pref's change event.
    * @private
    */
   _setupToolGroupingButton() {
@@ -308,6 +313,11 @@ class UIEventManager {
     const prefsHandler = () => reflect();
     window.addEventListener(TOOL_GROUPING_EVENT, prefsHandler);
     this._listeners.push({ element: window, event: TOOL_GROUPING_EVENT, handler: prefsHandler });
+
+    this._unregisterToolGrouping = keyShortcutManager.register('toggle-tool-grouping', () => {
+      toggleToolGrouping();
+      return true;
+    });
 
     reflect();
   }
@@ -659,6 +669,7 @@ class UIEventManager {
     this._unregisterZoomIn?.();
     this._unregisterZoomOut?.();
     this._unregisterShowShortcuts?.();
+    this._unregisterToolGrouping?.();
   }
 }
 

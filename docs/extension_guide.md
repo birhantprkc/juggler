@@ -271,6 +271,19 @@ live in **`web/sdk/context-item.js`**. Good templates: `glob-context-item.js`
 `write-file-context-item.js` (approval + diff), `search-context-item.js` (many
 params, truncation).
 
+**Staying out of collapsed tool groups — `static isGroupable()`:** the transcript
+can fold a run of adjacent tool rows into a single tile, and every ordinary tool
+row folds — a run of "this tool ran" records is exactly what is worth collapsing.
+Return `false` from `static isGroupable()` when your row must stay on screen in
+its own right: either because the row IS the item (a type that returns `false`
+from `isVisible()` has no standing card, so it renders its whole state on the
+row, and folding would hide the item rather than a record of it), or because the
+user is meant to keep it in sight. The built-ins that opt out are `plan` and
+`todo` (no standing card), `AskUserQuestion` (the record of what the user was
+asked and answered), and `define_command` / `new_conversation` (artifacts created
+outside this transcript). An opted-out row is left unfolded and breaks the run
+around it, so no tile ever spans it.
+
 **Per-turn side-effects — `static onTurnEnd(ctx)`:** to do work once at the end of
 every turn — retain a memory, ping an external service, checkpoint state — add a
 static `onTurnEnd(ctx)`. It runs in the engine each time the root conversation

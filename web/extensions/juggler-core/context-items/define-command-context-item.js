@@ -51,6 +51,16 @@ class DefineCommandContextItem extends ContextItem {
   }
 
   /**
+   * Defining a command installs something durable that outlives this
+   * conversation, so the row is a record the user should be able to find rather
+   * than one to summarise away inside a collapsed run of tool uses.
+   * @returns {boolean} False — define_command rows never fold into a tool group.
+   */
+  static isGroupable() {
+    return false;
+  }
+
+  /**
    * Tool definition for define_command.
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */

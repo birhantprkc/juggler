@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Tool-use grouping now has a keyboard shortcut (⌥⌘G / Ctrl+Alt+G)
+
 ## [0.5.5] - 2026-08-11
 
 - Added a togglable mode that collapses runs of consecutive tool uses into group items

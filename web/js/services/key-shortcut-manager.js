@@ -362,6 +362,19 @@ const SHORTCUT_DEFS = [
     allowInInput: true,
   },
   {
+    id: 'toggle-tool-grouping',
+    label: 'Group consecutive tool uses',
+    description: 'Collapse runs of adjacent tool uses into a single group item, or '
+      + 'show them individually again.',
+    category: 'View',
+    // ⌥⌘G / Ctrl+Alt+G — G for "group"; bare ⌘G is find-next everywhere, so the
+    // Option is load-bearing. Fires from the composer (allowInInput) since it is
+    // a display-only toggle you reach for while typing, and the command modifier
+    // means it never lands as typed text.
+    defaultBinding: { mod: true, alt: true, key: 'g' },
+    allowInInput: true,
+  },
+  {
     id: 'show-shortcuts',
     label: 'Show keyboard shortcuts',
     description: 'Open Settings to this Keyboard shortcuts tab.',

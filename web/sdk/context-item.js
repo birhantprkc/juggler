@@ -1031,6 +1031,28 @@ class ContextItem {
   }
 
   /**
+   * Whether this type's tool rows may be folded into a collapsed group when the
+   * transcript collapses a run of adjacent tool uses into one tile.
+   *
+   * Grouping is otherwise inferred from the item's type, so an ordinary tool
+   * needs to declare nothing: its row records that the tool ran, and a run of
+   * such records is exactly what is worth folding away. Override this to false
+   * for a type whose row must stay on screen in its own right — the two cases
+   * are an item whose row IS its only visible surface (a type that opts out of
+   * a standing card with `isVisible()`, and so renders its whole state on the
+   * row, where folding would hide the item itself rather than a record of it),
+   * and a row the user is meant to keep in sight (a question they answered, an
+   * artifact created outside the transcript).
+   *
+   * A type that opts out is left unfolded and, being a visible row, breaks the
+   * run around it — so a group tile never spans it.
+   * @returns {boolean} True if rows of this type may be folded into a group
+   */
+  static isGroupable() {
+    return true;
+  }
+
+  /**
    * Whether this item is currently visible in the conversation.
    * Override in subclasses to conditionally hide items (e.g., transaction markers).
    * @returns {boolean} True if the item should be rendered

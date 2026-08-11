@@ -92,7 +92,8 @@ export async function runTests(_ctx) {
     const ids = keyShortcutManager.all().map((d) => d.id);
     for (const id of ['jump-to-attention', 'new-conversation', 'bin-conversation',
       'toggle-file-editing', 'pause-conversation', 'undo', 'redo', 'zoom-in', 'zoom-out',
-      'show-shortcuts', 'strategy-switch', 'cycle-model', 'cycle-thinking']) {
+      'show-shortcuts', 'toggle-tool-grouping', 'strategy-switch', 'cycle-model',
+      'cycle-thinking']) {
       assert(ids.includes(id), `expected shortcut "${id}" in the table`);
     }
   });
@@ -115,6 +116,21 @@ export async function runTests(_ctx) {
     // Rendered for macOS regardless of host, since the binding only ships there.
     assert(formatBindingForPlatform(prev, true) === '⌥⌘↑', `prev-tab mac label wrong: ${formatBindingForPlatform(prev, true)}`);
     assert(formatBindingForPlatform(next, true) === '⌥⌘↓', `next-tab mac label wrong: ${formatBindingForPlatform(next, true)}`);
+  });
+
+  await run('toggle-tool-grouping is Mod+Alt+G and survives the ⌥ glyph remap', () => {
+    const grouping = keyShortcutManager.getBinding('toggle-tool-grouping');
+    assert(grouping.mod && grouping.alt && grouping.key === 'g', 'tool grouping is Mod+Alt+G');
+    assert(formatBindingForPlatform(grouping, true) === '⌥⌘G',
+      `mac label wrong: ${formatBindingForPlatform(grouping, true)}`);
+    assert(formatBindingForPlatform(grouping, false) === 'Ctrl+Alt+G',
+      `non-mac label wrong: ${formatBindingForPlatform(grouping, false)}`);
+    // macOS reports the Option-modified glyph in `key` (⌥G → '©'), so the chord
+    // only matches via the physical-code fallback.
+    assert(eventMatchesBinding(grouping, evt({ ...modProp, altKey: true, key: '©', code: 'KeyG' })),
+      'matches through the Option glyph via e.code');
+    assert(!eventMatchesBinding(grouping, evt({ ...modProp, key: 'g' })),
+      'bare Mod+G (find-next) must not toggle grouping');
   });
 
   await run('byCategoryForPlatform hides macOS-only commands off macOS', () => {

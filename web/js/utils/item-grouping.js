@@ -11,15 +11,25 @@
  * {@link ItemGroup} wrapper. Turning the preference off renders the identical
  * list unfolded, because the model never changed.
  *
- * ## What counts as groupable — inferred, never declared
+ * ## What counts as groupable — inferred, with one declared exception
  *
  * A tool use is exactly an item whose Yjs `type` is `'tool-action'` (see
  * `model/SCHEMA.md` §2). Every item that must NOT fold already has a different
  * type: `user`, `assistant`, `thinking`, `error`, `thread`, and standing
  * context items (whose `type` IS their context-item id — `system-prompt`,
- * `memory`, `file-content`, …). So groupability needs no flag on `ContextItem`,
- * no MANIFEST field, and nothing for an extension author to opt into: a new
- * tool groups automatically, and a new standing-context type never does.
+ * `memory`, `file-content`, …). So for almost everything groupability needs no
+ * declaration at all: a new tool groups automatically, and a new
+ * standing-context type never does.
+ *
+ * What the type cannot express is a tool row that is not merely the record of a
+ * tool having run. An item that opts out of a standing card (`isVisible()`
+ * false — the plan and the todo list) renders its entire state on its tool row,
+ * so folding that row hides the item ITSELF, not a record of it; and a row the
+ * user must keep in sight (a question they answered, a slash command or a
+ * conversation created outside this transcript) is not summary fodder either.
+ * Such a type declares `static isGroupable()` false on its `ContextItem` class
+ * — the one thing an author opts into — and its rows are left unfolded, each
+ * breaking the run around it like any other real row.
  *
  * The one refinement is invisibility. A tool-action whose result is a context
  * item renders no row at all (`conversation-area-rendering.createToolActionElement`),
@@ -160,12 +170,27 @@ function rendersNothing(item) {
 }
 
 /**
- * Whether an item is a tool row eligible to fold into a group.
+ * The context-item plugin class that owns a tool row, if any is registered for
+ * its tool name. A tool no plugin claims (an MCP tool, an unknown name) has no
+ * class, and callers fall back to their defaults.
+ * @param {any} item - Tool-action item.
+ * @returns {any} The owning plugin class, or null.
+ */
+function pluginFor(item) {
+  const toolName = item?.get?.('toolName') || '';
+  return toolName ? contextItemRegistry.getByToolName(toolName) || null : null;
+}
+
+/**
+ * Whether an item is a tool row eligible to fold into a group. A row whose
+ * owning plugin declares `static isGroupable()` false is never folded; a tool
+ * with no registered plugin folds, as every ordinary tool does.
  * @param {any} item - Conversation item Y.Map.
- * @returns {boolean} True if the item is a visible tool-action row.
+ * @returns {boolean} True if the item is a visible, foldable tool-action row.
  */
 function isGroupable(item) {
-  return item?.get?.('type') === 'tool-action' && !rendersNothing(item);
+  if (item?.get?.('type') !== 'tool-action' || rendersNothing(item)) return false;
+  return pluginFor(item)?.isGroupable?.() !== false;
 }
 
 /**
@@ -270,9 +295,7 @@ export function groupMemberIndices(items, groupId) {
  * @returns {string} Display label.
  */
 function toolLabel(item) {
-  const toolName = item?.get?.('toolName') || '';
-  const ActionClass = toolName ? contextItemRegistry.getByToolName(toolName) : null;
-  return /** @type {any} */ (ActionClass)?.MANIFEST?.name || toolName || 'Tool';
+  return pluginFor(item)?.MANIFEST?.name || item?.get?.('toolName') || 'Tool';
 }
 
 /**

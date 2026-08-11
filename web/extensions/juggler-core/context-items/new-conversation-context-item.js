@@ -54,6 +54,17 @@ class NewConversationContextItem extends ContextItem {
     return { color: 'thread', icon: 'icon-document' };
   }
 
+  /**
+   * The row is the only pointer this conversation keeps to a peer conversation
+   * that was opened from it — and that peer reports nothing back. Folding it
+   * into a collapsed run of tool uses would bury the one link to work happening
+   * elsewhere.
+   * @returns {boolean} False — new_conversation rows never fold into a tool group.
+   */
+  static isGroupable() {
+    return false;
+  }
+
   /** @returns {string} Short type label shown on the item badge and panel header */
   static getTypeName() {
     return 'New Conversation';
