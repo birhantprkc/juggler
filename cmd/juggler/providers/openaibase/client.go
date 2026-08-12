@@ -6,6 +6,7 @@ package openaibase
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -91,6 +92,16 @@ type Quirks struct {
 	// sends it. The Platform Responses API accepts it, so this stays off by
 	// default and is enabled only for the Codex-plan provider.
 	OmitResponsesMaxOutputTokens bool
+
+	// SessionAffinityHeader sends a stable per-conversation `session_id`
+	// header on Responses requests. The ChatGPT Codex backend keys its
+	// cache-affinity routing on this header, NOT on prompt_cache_key: live
+	// A/B probing measured a 26–40% prompt-cache miss rate on rapid
+	// consecutive requests without it and 0 misses in 52 rounds with it
+	// (originator / OpenAI-Beta headers had no effect). Off by default —
+	// other vendors don't know the header — and enabled for the Codex-plan
+	// provider, whose CLI always sends it.
+	SessionAffinityHeader bool
 
 	// IncludePresencePenalty / IncludeFrequencyPenalty send the named
 	// penalty params even when they would be zero. Most vendors silently
@@ -546,6 +557,24 @@ func promptCacheKey(req provider.MessageRequest) string {
 	return req.ConversationID + "/" + req.ThreadID
 }
 
+// sessionAffinityID derives a stable UUID-shaped session id from the
+// conversation id, for the SessionAffinityHeader quirk. Deterministic (a
+// hash, not a random UUID) so the same conversation presents the same
+// session_id across turns, threads, and app restarts — a value that changed
+// on restart would lose replica affinity and cold-miss the whole prefix.
+// UUID-shaped because that is what the Codex CLI sends; "" (no conversation
+// id) sends no header, keeping conv-less unit-test requests byte-stable.
+func sessionAffinityID(convID string) string {
+	if convID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(convID))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4 bits
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant bits
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 // streamMessageResponses uses the Responses API for models that need it.
 func (c *Client) streamMessageResponses(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	jlog.Debug("Streaming message with Responses API, model %s, %d messages", c.model, len(req.Messages))
@@ -602,6 +631,14 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			option.WithJSONSet("store", false),
 			option.WithJSONSet("stream", true),
 		)
+	}
+	// Cache-affinity routing: the backend pins consecutive requests for the
+	// same session_id to the replica holding their prompt cache. See the
+	// quirk's doc comment for the measured effect.
+	if c.quirks.SessionAffinityHeader {
+		if sid := sessionAffinityID(req.ConversationID); sid != "" {
+			opts = append(opts, option.WithHeader("session_id", sid))
+		}
 	}
 	// Provider-boundary liveness: guard the SDK stream (no read deadline of its
 	// own) with an idle watchdog that cancels streamCtx if the upstream goes
