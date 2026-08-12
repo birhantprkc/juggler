@@ -3,10 +3,10 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Switching conversation tabs must keep each tab's live composer intact —
- * its exact text AND its native undo history. Each top-level tab has its own
- * persistent <composer-box>/<textarea>, so the browser undo stack lives on that
- * element and should survive a switch untouched. Two failure modes broke that:
+ * Switching conversation tabs persists the live composer before releasing the
+ * hidden tab's transcript DOM. The box is recreated from model-backed state on
+ * activation, so switching must preserve exact draft text while renderer memory
+ * remains bounded by the visible conversation. Three failure modes are covered:
  *
  *  A. The draft is only persisted by a keystroke DEBOUNCE. Leaving a tab within
  *     the debounce window stranded the last-typed characters in the live
@@ -149,6 +149,28 @@ export async function runTests() {
       textarea.value === restoreC,
       `Case C: binding a not-yet-shown thread must restore its persisted draft; ` +
       `got ${JSON.stringify(textarea.value)}`
+    );
+
+    // ---- Case D: hidden tabs release transcript DOM and restore drafts -------
+    tab.setActive();
+    tab.setHidden();
+    check(
+      tab.querySelectorAll('conversation-area').length === 0,
+      'Case D: a hidden tab must discard its conversation-area transcript DOM'
+    );
+
+    tab.setActive();
+    await waitFor(
+      () => !!tab.querySelector('composer-box textarea'),
+      { description: 'parked tab composer-box to rebuild' }
+    );
+    const restoredTextarea = /** @type {HTMLTextAreaElement} */ (
+      tab.querySelector('composer-box textarea')
+    );
+    check(
+      restoredTextarea.value === restoreC,
+      `Case D: reactivating a parked tab must restore its persisted draft; ` +
+      `got ${JSON.stringify(restoredTextarea.value)}`
     );
   } catch (e) {
     failed++;

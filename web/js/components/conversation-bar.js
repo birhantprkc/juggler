@@ -499,14 +499,15 @@ class ConversationBar extends HTMLElement {
    * @private
    */
   _showTab(conversationId) {
+    // Activate first: a newly-created selected tab starts hidden, and parking the
+    // old tabs must not transiently leave the page without a live transcript.
+    const activeTab = this._tabElements.get(conversationId);
+    // @ts-ignore - setActive is a method on conversation-tab
+    activeTab?.setActive();
     this._tabElements.forEach((tabElement, id) => {
-      if (id === conversationId) {
-        // @ts-ignore - setActive is a method on conversation-tab
-        tabElement.setActive();
-      } else {
-        // @ts-ignore - setHidden is a method on conversation-tab
-        tabElement.setHidden();
-      }
+      if (id === conversationId) return;
+      // @ts-ignore - setHidden is a method on conversation-tab
+      tabElement.setHidden();
     });
   }
 

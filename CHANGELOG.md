@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Hidden conversation tabs release their transcript DOM, preventing memory growth in large projects
 - The Escape key's behaviour is now a setting: stop, pause, two-step, press-twice, or clear only
 - Tool-use grouping now has a keyboard shortcut (⌥⌘G / Ctrl+Alt+G)
 - Cache token stats distinguish provider-reported zero from not-reported (shown as unknown)

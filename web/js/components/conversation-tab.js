@@ -71,6 +71,8 @@ class ConversationTab extends HTMLElement {
     // records that a deferred sync is pending and is consumed by setActive.
     /** @type {boolean} @private */
     this._isHidden = true;
+    /** @type {boolean} @private - Whether hidden transcript DOM has been discarded */
+    this._isParked = false;
     /** @type {boolean} @private */
     this._needsResync = false;
     /**
@@ -636,6 +638,13 @@ class ConversationTab extends HTMLElement {
     this.classList.remove('hidden');
     this._isHidden = false;
 
+    // Hidden tabs retain only their model-backed selection/draft state. Rebuild
+    // the lightweight column shell before syncing the transcript back from Yjs.
+    if (this._isParked) {
+      this._isParked = false;
+      this.render();
+    }
+
     if (this._columns[0] && this._conversation) {
       /** @type {any} */ (this._columns[0]).conversation = this._conversation;
     }
@@ -808,6 +817,20 @@ class ConversationTab extends HTMLElement {
     this.classList.remove('active');
     this.classList.add('hidden');
     this._isHidden = true;
+
+    // A transcript can contain thousands of rich message nodes. Keeping one full
+    // tree for every hidden tab makes renderer memory scale with the entire
+    // project rather than the visible conversation. Drafts and scroll anchors
+    // are persisted above/in the conversation model, so discard hidden columns
+    // and recreate them from Yjs on next activation.
+    if (this._columns.length > 0) {
+      const root = /** @type {any} */ (this._columns[0]);
+      root.saveScrollPositionImmediately?.();
+      this._columnContainer?.replaceChildren();
+      this._columns = [];
+      this._isParked = true;
+      this._needsResync = true;
+    }
   }
 
   /**
