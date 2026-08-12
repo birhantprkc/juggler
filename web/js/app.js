@@ -849,25 +849,38 @@ class JugglerApp {
   }
 
   /**
-   * True if Escape should fire `cancelLLMOperation` rather than clear the input.
+   * The conversation the user is looking at, or null before the session is up.
+   * The public read for global gestures that act on "whatever is on screen" —
+   * {@link shouldHandleEscape} asks it what is running, and the Escape-behaviour
+   * service reads its pause latch to decide whether a second press escalates.
+   * @returns {import('./model/conversation.js').default|null} The visible conversation, or null.
+   */
+  getVisibleConversation() {
+    return this._connectionManager?.getSession?.()?.getVisibleConversation?.() ?? null;
+  }
+
+  /**
+   * True if there is something for Escape to stop — the single "is this
+   * conversation running" decision behind the stop rung of the Escape ladder
+   * (escape-behaviour.js decides what the key then does with that answer).
    *
    * Scoped to the VISIBLE conversation, using the worker-authoritative
    * `processingState.activity` claim: the worker sets it to 'calling_llm' or
    * 'awaiting_llm' for exactly the span a turn is claimed on that conversation
    * (an LLM call is streaming, or a tool — including a re-run's — is mid-flight
    * with an LLM call still owed), and it reads back as none on idle AND on
-   * terminal error/cancel. So Escape cancels only while THIS conversation is
-   * genuinely running, and clears the box in every not-running case.
+   * terminal error/cancel. So Escape acts on a turn only while THIS conversation
+   * is genuinely running, and takes its idle behaviour in every other case.
    *
    * Deliberately NOT `isLLMActive()`: that is the cross-conversation llmState
    * projection (`_statusMessages.size > 0`), true whenever ANY conversation has
    * a status entry — and a client-side value that can linger after a turn ends.
    * Using it here let a background turn (or a stale entry) swallow a mis-pressed
    * Escape meant to clear an idle composer.
-   * @returns {boolean} True when Escape should invoke `cancelLLMOperation`
+   * @returns {boolean} True when the visible conversation has work Escape could stop.
    */
   shouldHandleEscape() {
-    const conv = this._connectionManager?.getSession?.()?.getVisibleConversation?.();
+    const conv = this.getVisibleConversation();
     const activity = conv?.processingState?.activity;
     if (activity === 'calling_llm' || activity === 'awaiting_llm') return true;
     // A tool action running outside a claimed turn (a "Re-run command" click) is

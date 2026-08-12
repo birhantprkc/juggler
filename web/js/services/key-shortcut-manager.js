@@ -309,11 +309,14 @@ const SHORTCUT_DEFS = [
     id: 'pause-conversation',
     label: 'Pause conversation',
     description: 'Stops as soon as possible without interrupting any tool'
-      + ' uses or in-flight LLM responses.',
+      + ' uses or in-flight LLM responses. Trades places with plain Escape under'
+      + ' some Escape-key behaviours (see below).',
     category: 'Conversations',
-    // Dispatched externally: the Escape keydown handlers in conversation-tab.js and
-    // composer.js route Shift+Escape through cancelLLMOperation({polite:true}). The
-    // manager lists it (Settings, tooltips, onboarding tip) but never dispatches it.
+    // Dispatched externally: both Escape keydown handlers (conversation-tab.js and
+    // composer.js) delegate to escape-behaviour.js, which routes Shift+Escape to
+    // whichever stop the plain key isn't bound to — a polite pause under the
+    // default. The manager lists it (Settings, tooltips, onboarding tip) but never
+    // dispatches it.
     defaultBinding: { shift: true, key: 'Escape' },
     allowInInput: true,
     external: true,

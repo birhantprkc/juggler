@@ -118,6 +118,7 @@ import { runTests as runNestedApprovalStatusTests } from '../unit-tests/nested-a
 import { runTests as runToolGroupingTests } from '../unit-tests/tool-grouping-test.js';
 import { runTests as runChimeRecoveryTests } from '../unit-tests/chime-recovery-test.js';
 import { runTests as runKeyShortcutManagerTests } from '../unit-tests/key-shortcut-manager-test.js';
+import { runTests as runEscapeBehaviourTests } from '../unit-tests/escape-behaviour-test.js';
 import { runTests as runHoldToCycleTests } from '../unit-tests/hold-to-cycle-test.js';
 import { runTests as runRecentModelsTests } from '../unit-tests/recent-models-test.js';
 import { runTests as runUsageStatsCacheTests } from '../unit-tests/usage-stats-cache-test.js';
@@ -252,6 +253,9 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:cache-miss-warning', run: runCacheMissWarningTests },
   { name: 'unit:compaction-status', run: runCompactionStatusTests },
   { name: 'unit:key-shortcut-manager', run: runKeyShortcutManagerTests },
+  // Exclusive: the Escape preference is one localStorage key on an origin every
+  // lane shares, so writing it mid-run would change a sibling's answer.
+  { name: 'unit:escape-behaviour', run: runEscapeBehaviourTests, needsExclusiveRun: true },
   { name: 'unit:hold-to-cycle', run: runHoldToCycleTests },
   { name: 'unit:recent-models', run: runRecentModelsTests },
   { name: 'unit:usage-stats-cache', run: runUsageStatsCacheTests },

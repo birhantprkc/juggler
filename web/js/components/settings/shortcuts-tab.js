@@ -10,6 +10,10 @@
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
 import keyShortcutManager, { isMac } from '../../services/key-shortcut-manager.js';
+import { buildEscapeBehaviourRow } from '../../services/escape-behaviour.js';
+
+/** Category the Escape-behaviour row is appended to (home of the Pause chord). */
+const ESCAPE_ROW_CATEGORY = 'Conversations';
 
 /**
  * Keyboard shortcuts tab: every command from the KeyShortcutManager, grouped by
@@ -34,9 +38,15 @@ export class ShortcutsTab {
   /**
    * Render the Keyboard shortcuts tab: every command from the KeyShortcutManager,
    * grouped by category, each showing its current binding for this platform. The
-   * manager is the single source of truth, so this needs no server fetch. Read-only
-   * for now; each row's `.provider-control` is where a future "record binding"
-   * affordance will live.
+   * manager is the single source of truth, so this needs no server fetch. Rows are
+   * read-only for now; each one's `.provider-control` is where a future "record
+   * binding" affordance will live.
+   *
+   * Escape is the exception, and isn't a manager command at all: it's a ladder of
+   * meanings (dismiss ▸ cancel an edit ▸ stop the turn ▸ clear the prompt) rather
+   * than one command, and its last two rungs are already configurable. Its row is
+   * built by the module that owns that behaviour and joined onto the same category
+   * as the Pause chord it trades places with.
    * @private
    */
   renderShortcutsForm() {
@@ -53,6 +63,8 @@ export class ShortcutsTab {
       for (const def of group.shortcuts) {
         container.appendChild(this._buildShortcutRow(def));
       }
+
+      if (group.category === ESCAPE_ROW_CATEGORY) container.appendChild(buildEscapeBehaviourRow());
     }
   }
 

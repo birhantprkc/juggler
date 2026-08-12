@@ -8,6 +8,7 @@ import './permission-controls.js';
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/constants.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
 import { isAnyPopupOpen } from '../utils/popup-manager.js';
+import { handleEscapeKey } from '../services/escape-behaviour.js';
 import { presentPopup } from '../utils/popup-surface.js';
 import { CompletionMenu } from './completion-menu.js';
 import { fileMentionProvider, extractFileMentionsAsync } from './file-mention-provider.js';
@@ -652,7 +653,7 @@ class Composer extends HTMLElement {
         return;
       }
 
-      // Escape to cancel LLM or clear input
+      // Escape to stop the turn or clear the input
       if (e.key === 'Escape') {
         // A popup/modal open over the input owns Escape — it dismisses
         // itself via its own handler / popup-manager. Don't let the key
@@ -663,26 +664,16 @@ class Composer extends HTMLElement {
 
         e.preventDefault();
 
-        // Single decision shared with the conversation-area Escape and the
-        // footer Stop button: shouldHandleEscape() is true only while the
-        // VISIBLE conversation is actually running a turn (its worker activity
-        // is claimed). When it's idle — even if a background conversation is
-        // busy — Escape clears this box instead.
-        // @ts-ignore - jugglerApp is added dynamically in app.js
-        if (window.jugglerApp && window.jugglerApp.shouldHandleEscape()) {
-          // Cancel from THIS box's vantage: a sub-thread box (threadItemId set)
-          // interrupts that thread without closing it; the root box (null) stops
-          // everything and closes open sub-threads. Shift+Escape instead requests
-          // a polite stop (Pause): finish the current step, then rest at idle —
-          // nothing cancelled. (Plain Escape while a Pause is pending escalates
-          // to a hard cancel, per D7.)
-          // @ts-ignore - jugglerApp is added dynamically in app.js
-          window.jugglerApp.cancelLLMOperation(this.threadItemId ?? null, { polite: e.shiftKey });
-        } else {
-          // No active LLM - clear the box as an undoable edit (Ctrl/Cmd+Z
-          // restores it) so a mis-pressed Escape can't silently lose a draft.
-          this.clearTextUndoable();
-        }
+        // What Escape MEANS on a running/idle conversation is the user's choice
+        // (Settings ▸ Keyboard shortcuts ▸ Escape key), so the whole decision —
+        // stop, pause, two-step, clear — lives in escape-behaviour.js and is
+        // shared with the conversation-area Escape. All this box contributes is
+        // the vantage: a sub-thread box (threadItemId set) interrupts that
+        // thread without closing it; the root box (null) stops everything.
+        handleEscapeKey(e, {
+          focusedThreadId: this.threadItemId ?? null,
+          getComposer: () => this,
+        });
         return;
       }
 

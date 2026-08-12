@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- The Escape key's behaviour is now a setting: stop, pause, two-step, press-twice, or clear only
 - Tool-use grouping now has a keyboard shortcut (⌥⌘G / Ctrl+Alt+G)
 - Cache token stats distinguish provider-reported zero from not-reported (shown as unknown)
 - Codex ChatGPT-plan requests send a session_id header, eliminating ~30% random prompt-cache misses

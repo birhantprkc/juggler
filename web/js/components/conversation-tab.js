@@ -16,6 +16,7 @@ import { buildDisplayItems, isGroupId, groupMemberIndices } from '../utils/item-
 import { isItemSelectable } from '../services/context-item-utilities.js';
 import { recordTape } from '../utils/event-tape.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
+import { handleEscapeKey } from '../services/escape-behaviour.js';
 // Columns are created via createElement('conversation-area' | 'properties-panel')
 // in _buildConversationColumn. Import the defining modules so the custom elements
 // are registered before this component ever instantiates one (otherwise an
@@ -966,49 +967,39 @@ class ConversationTab extends HTMLElement {
             }
             break;
           }
-          case 'Escape':
+          case 'Escape': {
             // A popup/modal open over the conversation owns Escape (popup-manager
             // dismisses it and stops the key at document); the overlay gate at the
             // top of this handler already returned before we got here, so by this
-            // point no overlay is open and Escape means "stop the turn behind me".
-            // Cancel fires regardless of which column type is active (a
-            // "Re-run command" click lands in the properties panel; gating
-            // cancel on CONVERSATION-AREA left Escape a silent no-op there).
-            // shouldHandleEscape() is the single decision for "is there
-            // something to stop" (it catches the re-run's activity='awaiting_llm').
+            // point no overlay is open and Escape means "back out one level".
+            //
+            // What that does — stop, pause, two-step, clear the prompt — is the
+            // user's choice, so the decision lives in escape-behaviour.js and is
+            // shared with the composer's own Escape. It fires regardless of which
+            // column type is active (a "Re-run command" click lands in the
+            // properties panel; gating on CONVERSATION-AREA left Escape a silent
+            // no-op there).
+            //
             // The vantage is the active column's thread: a sub-thread column
             // interrupts that thread (leaves it open); the root column (or a
             // non-thread column like properties) stops everything and closes
-            // open sub-threads.
-            // @ts-ignore - jugglerApp is added dynamically in app.js
-            if (window.jugglerApp && window.jugglerApp.shouldHandleEscape()) {
-              const focusedThreadId = (activeCol.tagName === 'CONVERSATION-AREA'
-                && typeof (/** @type {any} */ (activeCol).getMessageThread) === 'function')
-                ? (/** @type {any} */ (activeCol).getMessageThread()?.threadItemId ?? null)
-                : null;
-              // Shift+Escape = polite stop (Pause): finish the current step then
-              // rest at idle, cancelling nothing. No `toggle` flag — unlike the
-              // footer Pause button, pressing Shift+Escape again while a Pause is
-              // pending re-affirms it rather than turning it off. Plain Escape =
-              // hard cancel, and (per D7) escalates a pending Pause to a full cancel.
-              // @ts-ignore
-              window.jugglerApp.cancelLLMOperation(focusedThreadId, { polite: e.shiftKey });
-            } else {
-              // Nothing to stop: Escape clears the visible composer. This
-              // handler only runs when focus ISN'T in the textarea (the early
-              // TEXTAREA/INPUT return above) — the focused case is cleared by
-              // composer-box's own keydown handler. Routing through the box's
-              // undoable clear covers Escape from an empty conversation (where
-              // the box never took focus) while keeping the clear recoverable
-              // with Ctrl/Cmd+Z.
-              const composer = /** @type {any} */ (this.getComposer());
-              if (composer && typeof composer.clearTextUndoable === 'function') {
-                composer.clearTextUndoable();
-              }
-            }
+            // open sub-threads. Any prompt-clearing routes through the visible
+            // composer's undoable clear — this handler only runs when focus
+            // ISN'T in the textarea (the early TEXTAREA/INPUT return above), so
+            // it covers Escape from an empty conversation where the box never
+            // took focus.
+            const focusedThreadId = (activeCol.tagName === 'CONVERSATION-AREA'
+              && typeof (/** @type {any} */ (activeCol).getMessageThread) === 'function')
+              ? (/** @type {any} */ (activeCol).getMessageThread()?.threadItemId ?? null)
+              : null;
+            handleEscapeKey(e, {
+              focusedThreadId,
+              getComposer: () => this.getComposer(),
+            });
             // Rule 17: escape while navigating the conversation-area → typing mode.
             if (activeCol.tagName === 'CONVERSATION-AREA') this._focusInput();
             break;
+          }
         }
       } finally {
         this._isKeyboardNavigating = false;
