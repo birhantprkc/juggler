@@ -264,6 +264,25 @@ func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
 	w.tools.clear(id)
 }
 
+// engineLivenessSummary describes, for a diagnostic log line, who the worker
+// believes the engine is and how long it has been since that engine last spoke
+// about THIS conversation (an engine-trace). Together they narrow a tool the
+// engine never advanced to one of two causes: no engine attached / the commands
+// never landed ("engine=none", or a trace age far exceeding the dispatch window),
+// versus an engine that received the command and declined to act, which emits an
+// evaluate-noact/execute-noact trace naming its reason.
+func (w *ConversationWorker) engineLivenessSummary() (engine, lastTrace string) {
+	engine = w.callbacks.engineClientID()
+	if engine == "" {
+		engine = "none"
+	}
+	lastTrace = "never"
+	if !w.lastEngineTraceAt.IsZero() {
+		lastTrace = time.Since(w.lastEngineTraceAt).Round(time.Second).String() + " ago"
+	}
+	return engine, lastTrace
+}
+
 // escalateStaleToolCommand fails a tool whose engine command stayed stuck at the
 // same delivery state past maxToolCommandAttempts. It writes a terminal error
 // result onto the tool-action — the same recovery shape as a worker-side cancel
@@ -277,6 +296,7 @@ func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
 // we just drop the stale bookkeeping. All bookkeeping for the id is cleared.
 func (w *ConversationWorker) escalateStaleToolCommand(id, expectState string) {
 	stillStuck := false
+	toolName := ""
 	ycrdtMu.Lock()
 	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
 		if t, _ := m.Get("type").(string); t != ItemTypeToolAction {
@@ -285,6 +305,7 @@ func (w *ConversationWorker) escalateStaleToolCommand(id, expectState string) {
 		if tid, _ := m.Get("toolUseId").(string); tid != id {
 			return false
 		}
+		toolName, _ = m.Get("toolName").(string)
 		if state, _ := m.Get("state").(string); state == expectState && m.Get("result") == nil {
 			stillStuck = true
 		}
@@ -296,10 +317,12 @@ func (w *ConversationWorker) escalateStaleToolCommand(id, expectState string) {
 		return
 	}
 
-	w.log.Error("[worker] tool-command for %s in %s stayed at state=%q unhandled %d×; failing the tool to unblock the turn",
-		id, w.conversationID, expectState, maxToolCommandAttempts)
+	engine, lastTrace := w.engineLivenessSummary()
+	w.log.Error("[worker] tool-command for %s (%s) in %s stayed at state=%q unhandled %d×; failing the tool to unblock the turn (engine=%s lastEngineTrace=%s)",
+		id, toolName, w.conversationID, expectState, maxToolCommandAttempts, engine, lastTrace)
 	w.tape.Record("tool-command-attempts-escalate", map[string]any{
-		"id": id, "state": expectState, "attempts": maxToolCommandAttempts,
+		"id": id, "tool": toolName, "state": expectState, "attempts": maxToolCommandAttempts,
+		"engine": engine, "lastEngineTrace": lastTrace,
 	})
 	w.doc.UpdateToolActionFieldsRecursive(id, map[string]any{
 		"state": StateCompleted,

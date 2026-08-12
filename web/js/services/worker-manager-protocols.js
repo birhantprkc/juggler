@@ -18,6 +18,7 @@ import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import actionExecutor from './action-executor.js';
+import wsService from './websocket.js';
 import {
   handleNewToolAction,
   executeToolAction,
@@ -527,14 +528,26 @@ export async function handleEvaluateTool(wm, conversationId, toolUseId) {
   }
   // false → could not act (conv/tool not loaded yet); the worker re-drives this
   // tool from its unchanged doc state once the dispatch goes stale.
+  //
+  // Each no-act exit is traced (evaluate-noact + reason), symmetrically with
+  // handleExecuteTool. A tool the engine never evaluates stays at state='' until
+  // the worker escalates it to a terminal error (escalateStaleToolCommand), and
+  // an untraced no-act makes that indistinguishable from a command the engine
+  // never received — the two have opposite causes and opposite fixes.
   const c = await loadAndFlush(wm, conversationId);
-  if (!c) return false;
+  if (!c) { sendEngineTrace(wm, conversationId, 'evaluate-noact', { toolUseId, reason: 'conv-not-loaded' }); return false; }
   const mt = findThreadForTool(c, toolUseId);
-  if (!mt) return false;
+  if (!mt) { sendEngineTrace(wm, conversationId, 'evaluate-noact', { toolUseId, reason: 'no-thread' }); return false; }
   // Synchronous guard: don't launch a second concurrent evaluation while one is
   // in flight for this tool (e.g. a re-driven command). The in-flight evaluation
   // will produce the result, so this is "handled", not a retry.
-  if (c._handlingNewToolAction.has(toolUseId)) return true;
+  if (c._handlingNewToolAction.has(toolUseId)) {
+    // Traced too: a re-drive only reaches this after redriveInterval, so seeing
+    // it means the first evaluation has been running that long — an evaluation
+    // stalled inside action.prepare() reads as repeated 'in-flight' lines.
+    sendEngineTrace(wm, conversationId, 'evaluate-noact', { toolUseId, reason: 'in-flight' });
+    return true;
+  }
   c._handlingNewToolAction.add(toolUseId);
   try {
     await handleNewToolAction(mt, toolUseId, c);
@@ -614,13 +627,26 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
  * isn't captured anywhere, so this is the only durable record of the engine-side
  * tool-execution lifecycle — used to diagnose the "tool stuck in running" wedge.
  * Fire-and-forget and purely diagnostic; never gate behaviour on it.
- * @param {any} wm - WorkerManager instance
+ *
+ * Sent straight down the WS rather than through wm.sendToWorker: a trace has to
+ * survive the very conditions it reports. sendToWorker drops the message when
+ * the engine holds no worker entry for the conversation and otherwise awaits
+ * worker-ready (a promise that REJECTS on timeout, which here would surface as
+ * an unhandled rejection) — exactly the states an 'evaluate-noact
+ * conv-not-loaded' trace exists to record. The Go worker is addressed by
+ * conversation id and is necessarily initialized: it sent the command being
+ * traced. The wm argument is kept for call-site symmetry with the handlers.
+ * @param {any} wm - WorkerManager instance (unused; call-site symmetry)
  * @param {string} conversationId
  * @param {string} event - short event name (e.g. 'execute-start', 'cancel')
  * @param {Record<string, any>} [fields] - extra correlation fields (toolUseId, etc.)
  */
 export function sendEngineTrace(wm, conversationId, event, fields = {}) {
-  wm.sendToWorker(conversationId, { type: 'engine-trace', event, ...fields });
+  try {
+    wsService.sendWorkerMessage(conversationId, { type: 'engine-trace', event, ...fields });
+  } catch {
+    // Diagnostics never break the path they observe.
+  }
 }
 
 /**

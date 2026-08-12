@@ -306,6 +306,15 @@ type ConversationWorker struct {
 	execReportSeq    int64
 	execReportClient string
 
+	// lastEngineTraceAt is when this worker last received an engine-trace for this
+	// conversation (handleEngineTrace). Purely diagnostic: it is the worker's only
+	// evidence that the engine is reaching its tool-command handlers at all, so
+	// escalateStaleToolCommand reports it — "never" separates an engine that never
+	// received the command (or is wedged before its handlers) from one that
+	// received it and declined to act, which the trace itself then explains. Zero
+	// until the first trace arrives. Run goroutine only.
+	lastEngineTraceAt time.Time
+
 	// redriveInterval is how long driveToolActions waits before re-dispatching a
 	// tool-command still stuck at the state it was last sent at. A field (defaulting
 	// to defaultRedriveInterval) so tests can shrink it to force staleness.

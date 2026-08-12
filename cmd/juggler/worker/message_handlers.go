@@ -894,8 +894,11 @@ func (w *ConversationWorker) resetRunningToolsForReattach() {
 // adds appear without a Go change. Purely diagnostic — no behaviour depends on it.
 // Logged at Trace: this is a file-only durable record (3–4 events per tool, plus
 // a failed tool's full error blob), kept out of the console even under --verbose.
-// Recover it with the file log when diagnosing a wedge.
+// Recover it with the file log when diagnosing a wedge. The receipt time is also
+// stamped on the worker (lastEngineTraceAt), which escalateStaleToolCommand
+// reports as its evidence that the engine is reaching its handlers at all.
 func (w *ConversationWorker) handleEngineTrace(payload json.RawMessage) {
+	w.lastEngineTraceAt = time.Now()
 	w.log.Trace("[engine-trace] conv=%s %s", w.conversationID, string(payload))
 }
 
