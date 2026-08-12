@@ -361,10 +361,11 @@ class JugglerApp {
     // toggle-file-editing) and install the global shortcut dispatcher.
     registerConversationShortcuts(session);
 
-    // Name the native OS window after the session's project path so the
-    // macOS "Window" menu can tell windows apart (project switches reload
-    // the page, so session:loaded carries the current path each time).
-    const syncWindowTitle = () => updateWindowTitle(session.projectPath || '', session.home || '');
+    // Name the native OS window after the session's project so the macOS
+    // "Window" menu and the Windows/Linux taskbar can tell windows apart
+    // (project switches reload the page, so session:loaded carries the
+    // current path each time).
+    const syncWindowTitle = () => updateWindowTitle(session.projectPath || '');
     session.subscribe(/** @param {{type: string}} event */ (event) => {
       if (event.type === 'session:loaded') syncWindowTitle();
     });

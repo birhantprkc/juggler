@@ -8,6 +8,8 @@ of changes; this project follows semantic versioning.
 - Tool-use grouping now has a keyboard shortcut (⌥⌘G / Ctrl+Alt+G)
 - Cache token stats distinguish provider-reported zero from not-reported (shown as unknown)
 - Codex ChatGPT-plan requests send a session_id header, eliminating ~30% random prompt-cache misses
+- Linux windows now carry their project name in the taskbar and window switcher instead of all reading "Juggler"
+- Window titles show the project's directory name, which survives taskbar and menu truncation
 
 ## [0.5.5] - 2026-08-11
 

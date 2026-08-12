@@ -149,6 +149,7 @@ import { runTests as runReconnectPolicyTests } from '../unit-tests/reconnect-pol
 import { runTests as runPopupBackButtonTests } from '../unit-tests/popup-back-button-test.js';
 import { runTests as runModelDisplayTests } from '../unit-tests/model-display-test.js';
 import { runTests as runEngineProjectSwitchTests } from '../unit-tests/engine-project-switch-test.js';
+import { runTests as runWindowTitleTests } from '../unit-tests/window-title-test.js';
 import './golden-comparator.js'; // Initialize window.__integrationTestHelpers
 import logger from './test-logger.js';
 import {
@@ -347,6 +348,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:popup-back-button', run: runPopupBackButtonTests },
   { name: 'unit:model-display', run: runModelDisplayTests },
   { name: 'unit:engine-project-switch', run: runEngineProjectSwitchTests },
+  { name: 'unit:window-title', run: runWindowTitleTests },
 ];
 
 /**
