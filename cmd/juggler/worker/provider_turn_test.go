@@ -35,8 +35,8 @@ func TestHandleProviderTurn_FinalizesCost(t *testing.T) {
 		InputTokens:            100621,
 		InputTokensApproximate: true,
 		OutputTokens:           2261,
-		CachedTokens:           96818,
-		CacheWriteTokens:       3801,
+		CachedTokens:           provider.Reported(96818),
+		CacheWriteTokens:       provider.Reported(3801),
 		Autonomous:             true,
 	})
 

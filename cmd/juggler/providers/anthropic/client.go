@@ -471,7 +471,8 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 	// boundary contract (registry/provider.go StreamResult), InputTokens
 	// is the TOTAL prompt (fresh + cache_read + cache_creation), and
 	// cacheRead/cacheWrite are reported as their own subset fields.
-	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int
+	var inputTokens, outputTokens int
+	var cacheReadTokens, cacheWriteTokens *int
 	var stopReason string
 
 	// Running output-token estimate for the UI's mid-stream spinner.
@@ -602,8 +603,8 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 				// (InputTokens = total prompt; CachedTokens / CacheWriteTokens
 				// reported separately as subsets).
 				inputTokens = total
-				cacheReadTokens = cacheRead
-				cacheWriteTokens = cacheWrite
+				cacheReadTokens = provider.Reported(cacheRead)
+				cacheWriteTokens = provider.Reported(cacheWrite)
 				if _, err := callback(provider.StreamChunk{
 					Type: provider.ContentBlockTypeUsage,
 					Metadata: map[string]any{

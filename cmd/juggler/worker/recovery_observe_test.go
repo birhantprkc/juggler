@@ -43,8 +43,8 @@ func observedRecoveryStub(t *testing.T, calls *int) func(context.Context, json.R
 				Blocks:           []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered prefix summary"}},
 				InputTokens:      150,
 				OutputTokens:     40,
-				CachedTokens:     10,
-				CacheWriteTokens: 5,
+				CachedTokens:     provider.Reported(10),
+				CacheWriteTokens: provider.Reported(5),
 			}, nil
 		}
 		return &LLMResponse{

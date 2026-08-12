@@ -95,10 +95,15 @@ function _buildMetadataBar(blob) {
   if (blob.inputTokens || blob.outputTokens) {
     add(`Tokens: ${blob.inputTokensApproximate ? '~' : ''}${formatNumber(blob.inputTokens ?? 0)} in \u2192 ${formatNumber(blob.outputTokens ?? 0)} out`);
   }
-  if (blob.cachedTokens || blob.cacheWriteTokens) {
-    const read = blob.cachedTokens ?? 0;
-    const write = blob.cacheWriteTokens ?? 0;
-    add(`Cache: ${formatNumber(read)} read / ${formatNumber(write)} written`);
+  if (blob.cachedTokens !== undefined || blob.cacheWriteTokens !== undefined) {
+    // A key that is present but 0 is a provider-reported zero; format it as a
+    // real number. Only a fully absent pair means the provider reported no
+    // cache usage at all.
+    const read = blob.cachedTokens !== undefined ? formatNumber(blob.cachedTokens) : '?';
+    const write = blob.cacheWriteTokens !== undefined ? formatNumber(blob.cacheWriteTokens) : '?';
+    add(`Cache: ${read} read / ${write} written`);
+  } else if (blob.inputTokens) {
+    add('Cache: not reported');
   }
   if (blob.stopReason) {
     add(`Stop: ${blob.stopReason}`);
@@ -179,7 +184,9 @@ function _buildOutputSection(blob) {
       stopReason: blob.stopReason,
       inputTokens: blob.inputTokens,
       outputTokens: blob.outputTokens,
-      cachedTokens: blob.cachedTokens || 0
+      // Absent means the provider reported no cache usage (unknown, not 0);
+      // JSON.stringify drops the undefined key so the copy stays honest.
+      cachedTokens: blob.cachedTokens
     };
     section.appendChild(_copyableJson(reconstructed, JSON.stringify(reconstructed, null, 2)));
   } else if (!error) {

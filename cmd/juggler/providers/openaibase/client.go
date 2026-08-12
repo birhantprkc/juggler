@@ -614,7 +614,8 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	stream := c.client.Responses.NewStreaming(streamCtx, params, opts...)
 
-	var inputTokens, outputTokens, cachedTokens int
+	var inputTokens, outputTokens int
+	var cachedTokens *int
 	var textContent strings.Builder
 	var thinkingContent strings.Builder
 
@@ -708,8 +709,12 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			if completed.Response.Usage.OutputTokens > 0 {
 				outputTokens = int(completed.Response.Usage.OutputTokens)
 			}
-			if completed.Response.Usage.InputTokensDetails.CachedTokens > 0 {
-				cachedTokens = int(completed.Response.Usage.InputTokensDetails.CachedTokens)
+			// Presence check, not a value check: cached usage is recorded only
+			// when the backend actually sent input_tokens_details, so an
+			// explicit cached_tokens:0 becomes a reported zero while an omitted
+			// details block leaves CachedTokens nil (unknown).
+			if completed.Response.Usage.JSON.InputTokensDetails.Valid() {
+				cachedTokens = provider.Reported(int(completed.Response.Usage.InputTokensDetails.CachedTokens))
 			}
 			// Re-emit authoritative per-call prompt usage as a transient chunk so
 			// the footer meter can anchor on it mid-turn (StreamsLiveUsage
@@ -717,7 +722,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			if inputTokens > 0 {
 				if _, err := callback(provider.StreamChunk{
 					Type:     provider.ContentBlockTypeUsage,
-					Metadata: map[string]any{"inputTokens": inputTokens, "cachedTokens": cachedTokens},
+					Metadata: map[string]any{"inputTokens": inputTokens, "cachedTokens": provider.TokenCount(cachedTokens)},
 				}); err != nil {
 					return nil, err
 				}
@@ -764,6 +769,8 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 		InputTokensApproximate: inputTokensApproximate,
 		OutputTokens:           outputTokens,
 		CachedTokens:           cachedTokens,
+		// CacheWriteTokens stays nil: the Responses API has no cache-write
+		// usage field, so a write count is unknowable here — never claim 0.
 	}, nil
 }
 
@@ -1233,7 +1240,8 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 	// Track tool calls being assembled (OpenAI streams them incrementally)
 	toolCallBuffers := make(map[int]*toolCallAccumulator)
 
-	var inputTokens, outputTokens, cachedTokens, lastEmittedInput int
+	var inputTokens, outputTokens, lastEmittedInput int
+	var cachedTokens *int
 	var lastFinishReason string
 	var textContent strings.Builder
 	var thinkingContent strings.Builder
@@ -1252,8 +1260,12 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 		if chunk.Usage.CompletionTokens > 0 {
 			outputTokens = int(chunk.Usage.CompletionTokens)
 		}
-		if chunk.Usage.PromptTokensDetails.CachedTokens > 0 {
-			cachedTokens = int(chunk.Usage.PromptTokensDetails.CachedTokens)
+		// Presence check, not a value check: cached usage is recorded only when
+		// the chunk actually carries prompt_tokens_details, so an explicit
+		// cached_tokens:0 becomes a reported zero while an omitted details
+		// block leaves CachedTokens nil (unknown).
+		if chunk.Usage.JSON.PromptTokensDetails.Valid() {
+			cachedTokens = provider.Reported(int(chunk.Usage.PromptTokensDetails.CachedTokens))
 		}
 		// Re-emit authoritative per-call prompt usage as a transient chunk so the
 		// footer meter can anchor on it mid-turn (StreamsLiveUsage providers).
@@ -1263,7 +1275,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 			lastEmittedInput = inputTokens
 			if _, err := callback(provider.StreamChunk{
 				Type:     provider.ContentBlockTypeUsage,
-				Metadata: map[string]any{"inputTokens": inputTokens, "cachedTokens": cachedTokens},
+				Metadata: map[string]any{"inputTokens": inputTokens, "cachedTokens": provider.TokenCount(cachedTokens)},
 			}); err != nil {
 				return nil, err
 			}
@@ -1337,7 +1349,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 
 	// Log the response summary
 	jlog.Trace("[openai RESPONSE] text=%d chars, thinking=%d chars, tools=%d, finish=%s, input_tokens=%d, output_tokens=%d, cached=%d",
-		textContent.Len(), thinkingContent.Len(), len(toolCallBuffers), lastFinishReason, inputTokens, outputTokens, cachedTokens)
+		textContent.Len(), thinkingContent.Len(), len(toolCallBuffers), lastFinishReason, inputTokens, outputTokens, provider.TokenCount(cachedTokens))
 
 	// Stream tool_use blocks to frontend (no execution - frontend handles that)
 	if err := flushToolCalls(toolCallBuffers, callback); err != nil {

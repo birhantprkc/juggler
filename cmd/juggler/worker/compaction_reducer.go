@@ -592,8 +592,8 @@ func (b *boundedCompactionBudget) recordUsage(response *LLMResponse) {
 	}
 	b.usage.InputTokens = provider.SaturatingAdd(b.usage.InputTokens, int64(response.InputTokens))
 	b.usage.OutputTokens = provider.SaturatingAdd(b.usage.OutputTokens, int64(response.OutputTokens))
-	b.usage.CachedTokens = provider.SaturatingAdd(b.usage.CachedTokens, int64(response.CachedTokens))
-	b.usage.CacheWriteTokens = provider.SaturatingAdd(b.usage.CacheWriteTokens, int64(response.CacheWriteTokens))
+	b.usage.CachedTokens = provider.SaturatingAdd(b.usage.CachedTokens, int64(provider.TokenCount(response.CachedTokens)))
+	b.usage.CacheWriteTokens = provider.SaturatingAdd(b.usage.CacheWriteTokens, int64(provider.TokenCount(response.CacheWriteTokens)))
 }
 
 func largestRunePrefix(text string, accepts func(string) bool) (string, string) {

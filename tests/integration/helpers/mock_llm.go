@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	provider "juggler/cmd/juggler/providers/registry"
 	"juggler/cmd/juggler/worker"
 )
 
@@ -116,7 +117,7 @@ func WithUsage(m MockResponse, inputTokens, outputTokens, cachedTokens int) Mock
 	}
 	m.Response.InputTokens = inputTokens
 	m.Response.OutputTokens = outputTokens
-	m.Response.CachedTokens = cachedTokens
+	m.Response.CachedTokens = provider.Reported(cachedTokens)
 	return m
 }
 

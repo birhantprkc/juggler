@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - Tool-use grouping now has a keyboard shortcut (⌥⌘G / Ctrl+Alt+G)
+- Cache token stats distinguish provider-reported zero from not-reported (shown as unknown)
 
 ## [0.5.5] - 2026-08-11
 

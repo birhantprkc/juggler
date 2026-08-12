@@ -524,7 +524,7 @@ func TestKeepAlive_MultiTurnReusesSubprocess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("turn 2 StreamMessage: %v", err)
 	}
-	if res2.CachedTokens == 0 {
+	if provider.TokenCount(res2.CachedTokens) == 0 {
 		t.Errorf("turn 2 actual CachedTokens = 0; expected the fake's reported cache_read (warm)")
 	}
 
@@ -535,7 +535,7 @@ func TestKeepAlive_MultiTurnReusesSubprocess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("turn 3 StreamMessage: %v", err)
 	}
-	if res3.CachedTokens == 0 {
+	if provider.TokenCount(res3.CachedTokens) == 0 {
 		t.Errorf("turn 3 actual CachedTokens = 0; expected warm")
 	}
 

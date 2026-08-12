@@ -396,10 +396,11 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		// drop the in-memory session, but KEEP the sidecar so the user's
 		// retry --resumes warm instead of cold-starting the whole history.
 		// Surface whatever usage we managed to collect before the failure.
-		var inTok, outTok, cacheR, cacheW int
+		var inTok, outTok int
+		var cacheR, cacheW *int
 		if turn != nil {
 			inTok, outTok = turn.InputTokens+turn.CacheReadTokens+turn.CacheWriteTokens, turn.OutputTokens
-			cacheR, cacheW = turn.CacheReadTokens, turn.CacheWriteTokens
+			cacheR, cacheW = provider.Reported(turn.CacheReadTokens), provider.Reported(turn.CacheWriteTokens)
 		}
 		// releaseSession's contract (kill the live CLI, KEEP the sidecar so a
 		// retry --resumes warm), inlined so we can read the reaped process's
@@ -514,10 +515,12 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		// Report only the fresh cache-creation of this parked call (see the long
 		// note above): non-double-counted, and it keeps a cold-start re-ingest
 		// visible in the [turn tokens] line instead of an all-zero row.
+		// CachedTokens stays nil: the cache-read of a parked call is deliberately
+		// not reported here (it would double-count against the end_turn total).
 		return &provider.StreamResult{
 			StopReason:       turn.StopReason,
 			InputTokens:      turn.CacheWriteTokens,
-			CacheWriteTokens: turn.CacheWriteTokens,
+			CacheWriteTokens: provider.Reported(turn.CacheWriteTokens),
 		}, nil
 	}
 
@@ -576,7 +579,7 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		StopReason:       stopReason,
 		InputTokens:      in,
 		OutputTokens:     out,
-		CachedTokens:     cacheR,
-		CacheWriteTokens: cacheW,
+		CachedTokens:     provider.Reported(cacheR),
+		CacheWriteTokens: provider.Reported(cacheW),
 	}, nil
 }

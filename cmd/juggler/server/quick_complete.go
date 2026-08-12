@@ -197,7 +197,7 @@ func (s *Server) QuickComplete(ctx context.Context, req QuickCompleteRequest) (Q
 	if result != nil {
 		usage.InputTokens = result.InputTokens
 		usage.OutputTokens = result.OutputTokens
-		usage.CachedTokens = result.CachedTokens
+		usage.CachedTokens = provider.TokenCount(result.CachedTokens)
 	}
 	return QuickCompleteResult{Text: strings.TrimSpace(b.String()), Usage: usage}, nil
 }

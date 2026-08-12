@@ -74,8 +74,8 @@ func turnResultToProviderTurn(tr *turnResult) provider.ProviderTurn {
 			StopReason:       tr.StopReason,
 			InputTokens:      tr.InputTokens + tr.CacheReadTokens + tr.CacheWriteTokens,
 			OutputTokens:     tr.OutputTokens,
-			CachedTokens:     tr.CacheReadTokens,
-			CacheWriteTokens: tr.CacheWriteTokens,
+			CachedTokens:     provider.Reported(tr.CacheReadTokens),
+			CacheWriteTokens: provider.Reported(tr.CacheWriteTokens),
 		},
 	}
 }

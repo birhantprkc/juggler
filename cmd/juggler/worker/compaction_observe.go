@@ -6,6 +6,8 @@ package worker
 
 import (
 	"errors"
+
+	provider "juggler/cmd/juggler/providers/registry"
 )
 
 // Compaction observability. Three surfaces, three audiences:
@@ -50,7 +52,8 @@ func (w *ConversationWorker) compactionTapeHooks(kind string) compactionHooks {
 			w.tape.Record("compaction-call", map[string]any{
 				"kind": kind, "thread": threadID, "pass": pass,
 				"input": response.InputTokens, "output": response.OutputTokens,
-				"cached": response.CachedTokens, "cacheWrite": response.CacheWriteTokens,
+				"cached":     provider.TokenCount(response.CachedTokens),
+				"cacheWrite": provider.TokenCount(response.CacheWriteTokens),
 			})
 		},
 	}

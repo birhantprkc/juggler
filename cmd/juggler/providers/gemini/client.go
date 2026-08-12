@@ -430,6 +430,7 @@ func (c *Client) streamMessage(ctx context.Context, req provider.MessageRequest,
 // callStreamWithRetry encapsulates the retry logic for Gemini API calls.
 func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	var inputTokens, outputTokens int
+	var cachedTokens *int
 	var sentAnyContent bool
 	var lastFinishReason genai.FinishReason
 	var streamedResultsFromSuccess []*genai.GenerateContentResponse
@@ -461,6 +462,7 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 		streamedResultsForCurrentAttempt := []*genai.GenerateContentResponse{} // Reset for each attempt
 
 		var currentInputTokens, currentOutputTokens int
+		var currentCachedTokens *int
 		var currentLastFinishReason genai.FinishReason
 		var currentSentAnyContent bool
 
@@ -532,6 +534,11 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 					if result.UsageMetadata.CandidatesTokenCount > 0 {
 						currentOutputTokens = int(result.UsageMetadata.CandidatesTokenCount)
 					}
+					// UsageMetadata presence is the report: CachedContentTokenCount
+					// is authoritative (possibly zero) whenever the block arrives,
+					// so capture it as an explicit reported value. Last write wins —
+					// the final chunk carries the call's totals.
+					currentCachedTokens = provider.Reported(int(result.UsageMetadata.CachedContentTokenCount))
 					// Re-emit the authoritative prompt total (incl. cached) as a
 					// transient usage chunk so the footer meter anchors on it
 					// mid-turn. PromptTokenCount recurs on every chunk, so emit only
@@ -610,6 +617,7 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 		// misreported as a failure by the post-loop check.
 		lastErr = nil
 		inputTokens = currentInputTokens
+		cachedTokens = currentCachedTokens
 		outputTokens = currentOutputTokens
 		lastFinishReason = currentLastFinishReason
 		sentAnyContent = currentSentAnyContent
@@ -622,11 +630,11 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 		return nil, fmt.Errorf("gemini API call failed after %d retries: %w", maxRetries, lastErr)
 	}
 
-	return c.processStreamResult(lastFinishReason, sentAnyContent, streamedResultsFromSuccess, inputTokens, outputTokens)
+	return c.processStreamResult(lastFinishReason, sentAnyContent, streamedResultsFromSuccess, inputTokens, outputTokens, cachedTokens)
 }
 
 // processStreamResult handles the final processing of a successful stream result.
-func (c *Client) processStreamResult(lastFinishReason genai.FinishReason, sentAnyContent bool, streamedResultsFromSuccess []*genai.GenerateContentResponse, inputTokens, outputTokens int) (*provider.StreamResult, error) {
+func (c *Client) processStreamResult(lastFinishReason genai.FinishReason, sentAnyContent bool, streamedResultsFromSuccess []*genai.GenerateContentResponse, inputTokens, outputTokens int, cachedTokens *int) (*provider.StreamResult, error) {
 	// Check finish reason for errors
 	if lastFinishReason == genai.FinishReasonSafety {
 		return nil, fmt.Errorf("gemini blocked response due to safety filters")
@@ -647,6 +655,7 @@ func (c *Client) processStreamResult(lastFinishReason genai.FinishReason, sentAn
 		StopReason:   mapGeminiFinishReason(lastFinishReason),
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
+		CachedTokens: cachedTokens,
 	}, nil
 }
 

@@ -271,8 +271,8 @@ type ProviderTurnMessage struct {
 	InputTokens            int                `json:"inputTokens"`
 	InputTokensApproximate bool               `json:"inputTokensApproximate,omitempty"`
 	OutputTokens           int                `json:"outputTokens"`
-	CachedTokens           int                `json:"cachedTokens"`
-	CacheWriteTokens       int                `json:"cacheWriteTokens"`
+	CachedTokens           *int               `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       *int               `json:"cacheWriteTokens,omitempty"`
 	Autonomous             bool               `json:"autonomous"`
 }
 
@@ -308,14 +308,17 @@ type deliveredLLMError struct {
 func (e *deliveredLLMError) Error() string { return e.err.Error() }
 func (e *deliveredLLMError) Unwrap() error { return e.err }
 
-// LLMResponse represents a complete LLM response
+// LLMResponse represents a complete LLM response.
+// CachedTokens / CacheWriteTokens are nil when the provider did not report
+// cache usage for the call (unknown — NOT a miss); an explicit 0 means the
+// provider reported zero. See provider.StreamResult for the full contract.
 type LLMResponse struct {
 	Blocks                 []LLMResponseBlock `json:"blocks"`
 	InputTokens            int                `json:"inputTokens"`
 	InputTokensApproximate bool               `json:"inputTokensApproximate,omitempty"`
 	OutputTokens           int                `json:"outputTokens"`
-	CachedTokens           int                `json:"cachedTokens,omitempty"`
-	CacheWriteTokens       int                `json:"cacheWriteTokens,omitempty"`
+	CachedTokens           *int               `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       *int               `json:"cacheWriteTokens,omitempty"`
 	StopReason             string             `json:"stopReason"` // "end_turn", "tool_use", "max_tokens"
 	Error                  string             `json:"error,omitempty"`
 	TransactionID          string             `json:"transactionId,omitempty"`

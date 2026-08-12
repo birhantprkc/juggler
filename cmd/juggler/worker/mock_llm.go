@@ -83,7 +83,7 @@ func (w *ConversationWorker) popMockResponse(sink func(StreamChunk)) (*LLMRespon
 		InputTokens:            mock.InputTokens,
 		InputTokensApproximate: mock.InputTokensApproximate,
 		OutputTokens:           mock.OutputTokens,
-		CachedTokens:           mock.CachedTokens,
+		CachedTokens:           provider.Reported(mock.CachedTokens),
 		Error:                  mock.Error,
 	}
 

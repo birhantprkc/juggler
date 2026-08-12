@@ -73,8 +73,14 @@ func (s *TransactionStore) SaveBlob(in TransactionBlobInput) error {
 			blob["inputTokensApproximate"] = true
 		}
 		blob["outputTokens"] = in.Response.OutputTokens
-		blob["cachedTokens"] = in.Response.CachedTokens
-		blob["cacheWriteTokens"] = in.Response.CacheWriteTokens
+		// Cache usage is written only when the provider reported it: an absent
+		// key means unknown, while an explicit 0 is a provider-reported zero.
+		if in.Response.CachedTokens != nil {
+			blob["cachedTokens"] = *in.Response.CachedTokens
+		}
+		if in.Response.CacheWriteTokens != nil {
+			blob["cacheWriteTokens"] = *in.Response.CacheWriteTokens
+		}
 		blob["stopReason"] = in.Response.StopReason
 		output["blocks"] = in.Response.Blocks
 	}

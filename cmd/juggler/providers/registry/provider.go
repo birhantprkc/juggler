@@ -206,8 +206,8 @@ type StructuredResponse struct {
 	InputTokens            int            `json:"inputTokens,omitempty"`
 	InputTokensApproximate bool           `json:"inputTokensApproximate,omitempty"`
 	OutputTokens           int            `json:"outputTokens,omitempty"`
-	CachedTokens           int            `json:"cachedTokens,omitempty"`
-	CacheWriteTokens       int            `json:"cacheWriteTokens,omitempty"`
+	CachedTokens           *int           `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       *int           `json:"cacheWriteTokens,omitempty"`
 }
 
 // StreamResult contains metadata about a completed stream.
@@ -229,17 +229,39 @@ type StructuredResponse struct {
 //   - CachedTokens:     Prompt tokens served from prompt cache (subset
 //     of InputTokens). Anthropic cache_read /
 //     OpenAI prompt_tokens_details.cached_tokens.
+//     nil means the provider did not report cache
+//     usage for this call — unknown, NOT a miss.
+//     An explicit &0 means the provider reported
+//     zero cache reuse. Consumers that only need a
+//     number use TokenCount (nil ⇒ 0); anything
+//     persisted or displayed must preserve the
+//     nil/0 distinction by omission.
 //   - CacheWriteTokens: Prompt tokens written to cache this turn
 //     (subset of InputTokens). Anthropic
-//     cache_creation; 0 for providers without an
-//     explicit cache-write phase.
+//     cache_creation. Same nil-means-unreported
+//     contract as CachedTokens: providers without
+//     an explicit cache-write phase leave it nil.
 type StreamResult struct {
 	StopReason             string `json:"stopReason,omitempty"`
 	InputTokens            int    `json:"inputTokens,omitempty"`
 	InputTokensApproximate bool   `json:"inputTokensApproximate,omitempty"`
 	OutputTokens           int    `json:"outputTokens,omitempty"`
-	CachedTokens           int    `json:"cachedTokens,omitempty"`
-	CacheWriteTokens       int    `json:"cacheWriteTokens,omitempty"`
+	CachedTokens           *int   `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       *int   `json:"cacheWriteTokens,omitempty"`
+}
+
+// Reported wraps a provider-reported token count for the optional (*int)
+// usage fields — including an explicit zero, which is a real report and must
+// stay distinguishable from nil (not reported).
+func Reported(v int) *int { return &v }
+
+// TokenCount reads an optional token count, treating nil (not reported) as 0.
+// For arithmetic and display where the unknown/zero distinction is irrelevant.
+func TokenCount(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // ProviderTurn is a complete turn surfaced by a Conversation — either

@@ -449,17 +449,25 @@ strategyLoop:
 		// input is the prefix-cache hit rate: on an agent loop it should climb
 		// toward ~1.0 once routing is pinned (prompt_cache_key). A persistent 0
 		// on an OpenAI/Codex model means the growing prefix is being re-billed
-		// every turn — the shard-misrouting burn. thread is logged so an
-		// interleaved sub-context (its own short prefix, tiny output) is
-		// distinguishable from the main task's turns rather than looking like a
-		// cache miss on the same conversation.
-		hitPct := 0
-		if response.InputTokens > 0 {
-			hitPct = response.CachedTokens * 100 / response.InputTokens
+		// every turn — the shard-misrouting burn. cached=? / cacheWrite=? mean
+		// the provider reported no cache usage for the call: unknown, not a
+		// miss. thread is logged so an interleaved sub-context (its own short
+		// prefix, tiny output) is distinguishable from the main task's turns
+		// rather than looking like a cache miss on the same conversation.
+		cached, hit, cacheWrite := "?", "?", "?"
+		if response.CachedTokens != nil {
+			cached = fmt.Sprintf("%d", *response.CachedTokens)
+			hit = "0"
+			if response.InputTokens > 0 {
+				hit = fmt.Sprintf("%d", *response.CachedTokens*100/response.InputTokens)
+			}
 		}
-		w.log.Info("[turn tokens] thread=%q input=%d cached=%d (%d%% hit) output=%d cacheWrite=%d stop=%s in %s",
-			w.thread.itemID, response.InputTokens, response.CachedTokens, hitPct,
-			response.OutputTokens, response.CacheWriteTokens, response.StopReason,
+		if response.CacheWriteTokens != nil {
+			cacheWrite = fmt.Sprintf("%d", *response.CacheWriteTokens)
+		}
+		w.log.Info("[turn tokens] thread=%q input=%d cached=%s (%s%% hit) output=%d cacheWrite=%s stop=%s in %s",
+			w.thread.itemID, response.InputTokens, cached, hit,
+			response.OutputTokens, cacheWrite, response.StopReason,
 			duration.Round(time.Millisecond))
 
 		shouldContinue, err := w.processLLMResponse(response)

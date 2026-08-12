@@ -46,12 +46,12 @@ func TestFinalizeTurn_ToolUsePauseSurfacesColdIngest(t *testing.T) {
 	if res.StopReason != "tool_use" {
 		t.Fatalf("StopReason = %q, want tool_use", res.StopReason)
 	}
-	if res.CacheWriteTokens != 45000 || res.InputTokens != 45000 {
+	if provider.TokenCount(res.CacheWriteTokens) != 45000 || res.InputTokens != 45000 {
 		t.Fatalf("pause must surface cache-creation as the ingest cost: InputTokens=%d CacheWriteTokens=%d, want 45000/45000",
-			res.InputTokens, res.CacheWriteTokens)
+			res.InputTokens, provider.TokenCount(res.CacheWriteTokens))
 	}
-	if res.CachedTokens != 0 {
-		t.Fatalf("pause must NOT report cache-read (double-count/inflation trap): CachedTokens=%d, want 0", res.CachedTokens)
+	if res.CachedTokens != nil {
+		t.Fatalf("pause must NOT report cache-read (double-count/inflation trap): CachedTokens=%d, want nil", *res.CachedTokens)
 	}
 	if res.OutputTokens != 0 {
 		t.Fatalf("pause must NOT report partial output: OutputTokens=%d, want 0", res.OutputTokens)
@@ -88,8 +88,8 @@ func TestFinalizeTurn_WarmToolUsePauseStaysQuiet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finalizeTurn: %v", err)
 	}
-	if res.InputTokens != 0 || res.CacheWriteTokens != 0 || res.CachedTokens != 0 {
-		t.Fatalf("warm pause must stay quiet: input=%d cacheWrite=%d cached=%d, want all 0",
-			res.InputTokens, res.CacheWriteTokens, res.CachedTokens)
+	if res.InputTokens != 0 || provider.TokenCount(res.CacheWriteTokens) != 0 || res.CachedTokens != nil {
+		t.Fatalf("warm pause must stay quiet: input=%d cacheWrite=%d cachedReported=%v, want all quiet",
+			res.InputTokens, provider.TokenCount(res.CacheWriteTokens), res.CachedTokens != nil)
 	}
 }
