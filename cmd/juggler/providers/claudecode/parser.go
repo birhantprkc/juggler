@@ -109,6 +109,15 @@ type turnResult struct {
 	// the UI's "Receiving..." spinner can show a live count. Owned by a
 	// single goroutine for the duration of one stream.
 	progress *provider.ProgressEmitter
+
+	// Per-API-call tool tallies, reset at every message_start. A juggler turn
+	// can span several API calls, and the tool_use pause decision is about the
+	// call that just ended: dispatchableThisCall counts tool_use blocks emitted
+	// for juggler to execute, cliServedThisCall counts blocks the CLI answers
+	// itself (unparseable tool input). A pause with the first at zero and the
+	// second above it parks nothing on our side — see the message_delta arm.
+	dispatchableThisCall int
+	cliServedThisCall    int
 }
 
 // partialBlock accumulates a single content block's incremental data as
@@ -455,6 +464,10 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 		// OutputTokens reset too — message_delta of the final call will
 		// set the authoritative value.
 		result.OutputTokens = 0
+		// The tool tallies describe one API call's block batch, and this is
+		// the start of a new one.
+		result.dispatchableThisCall = 0
+		result.cliServedThisCall = 0
 		if ev.Message != nil && ev.Message.Usage != nil {
 			result.InputTokens = ev.Message.Usage.InputTokens
 			result.OutputTokens = ev.Message.Usage.OutputTokens
@@ -568,21 +581,33 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 			input := map[string]any{}
 			if raw := pb.toolJSON.String(); raw != "" {
 				if err := json.Unmarshal([]byte(raw), &input); err != nil {
-					// A non-empty payload that won't parse is a CORRUPT tool block
-					// (observed in the wild as a stray quote: `"offset": 142"` from a
-					// torn/interrupted pre-resume stream segment). DO NOT fall through
-					// to empty args: dispatching a {}-args tool_use makes the worker
-					// execute a phantom call (e.g. read with no file_path) and feed its
-					// error result into the control-protocol (name+args) FIFO, where it
-					// matches no CLI park — permanently shifting every later result by
-					// one and cross-delivering wrong file contents (the "tool/request
-					// divergence" cascade seen in juggler-1017f191's 16:52 read run).
-					// Fail the turn instead, as a transient error: dispatchTurnWithRetry
-					// warm-resumes when nothing has streamed yet, and surfaces it loudly
-					// (no silent corruption, and no re-execution of already-streamed
-					// sibling tools, which would be gated out by `streamed`) when it has.
-					jlog.Error("claudecode: malformed tool input JSON for %s — failing turn to avoid a phantom empty-args dispatch desyncing tool-result delivery: %v (raw=%s)", toolName, err, raw)
-					return false, 0, &transientCLIError{msg: fmt.Sprintf("malformed tool input JSON for %s: %v", toolName, err)}
+					// A non-empty payload that won't parse is a block the model
+					// mis-sampled: observed as a doubled comma (`"offset": 340, ,
+					// "limit": 70`) and as JSON that simply stops mid-object. The CLI
+					// validates tool input too, and answers such a block ITSELF —
+					// recording it as `__unparsedToolInput`, synthesising an
+					// InputValidationError tool_result, and feeding that back so the
+					// model retries the call through the same open process. So:
+					//
+					// DO NOT dispatch it. Falling through to empty args makes the
+					// worker execute a phantom call (e.g. read with no file_path) and
+					// feed its error into the control-protocol (name+args) FIFO, where
+					// it matches no CLI park — permanently shifting every later result
+					// by one and cross-delivering wrong file contents (the "tool/request
+					// divergence" cascade).
+					//
+					// DO NOT fail the turn either. The CLI is mid-recovery; a turn
+					// error tears the process down (finalizeTurn) and kills the retry
+					// it was about to make. Skip the block, tally it as CLI-served so
+					// the message_delta arm knows this batch parks nothing on our side,
+					// and keep reading.
+					jlog.Error("claudecode: malformed tool input JSON for %s — skipping the block; the CLI answers it with an InputValidationError and drives the model's retry: %v (raw=%s)", toolName, err, raw)
+					result.cliServedThisCall++
+					_, _ = callback(provider.StreamChunk{
+						Type:    provider.ContentBlockTypeStatus,
+						Content: fmt.Sprintf("Invalid tool input for %s — retrying", toolName),
+					})
+					return false, 0, nil
 				}
 			}
 			toolName, input = convertClaudeNativeTool(toolName, input)
@@ -596,6 +621,7 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 				return false, 0, err
 			}
 			result.Blocks = append(result.Blocks, provider.ContentBlock(chunk))
+			result.dispatchableThisCall++
 		}
 
 	case "message_delta":
@@ -604,6 +630,17 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 			// pause; end_turn lets readUntilPauseOrComplete exit cleanly.
 			switch ev.Delta.StopReason {
 			case "tool_use":
+				// A batch the CLI serves entirely on its own (every block had
+				// unparseable input) parks nothing for us to answer. Pausing would
+				// hand the worker a round with no tools to execute while the CLI
+				// streams its recovery call into s.content with nobody reading it —
+				// content that the next Submit would then dequeue as if it were that
+				// message's reply. Stay in the read loop: the recovery round belongs
+				// to this turn, and the turn ends at its real stop reason.
+				if result.dispatchableThisCall == 0 && result.cliServedThisCall > 0 {
+					jlog.Info("claudecode: tool_use pause with no dispatchable blocks (%d answered by the CLI itself) — reading on for its recovery round", result.cliServedThisCall)
+					return false, 0, nil
+				}
 				result.StopReason = "tool_use"
 				// Count emitted tool_use blocks for the caller's tally.
 				count := 0

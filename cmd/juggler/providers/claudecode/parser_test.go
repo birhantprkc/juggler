@@ -663,39 +663,44 @@ func TestParser_ProgressEmittedDuringToolUseInputJSON(t *testing.T) {
 	}
 }
 
-// TestParser_MalformedToolInputFailsLoudly is the regression test for the
+// malformedToolUseLines builds the JSONL for one tool_use block whose
+// accumulated input payload is non-empty but unparseable — the shape the model
+// mis-samples (here the doubled comma observed in the wild).
+func malformedToolUseLines(t *testing.T, index int, id string) []string {
+	t.Helper()
+	return []string{
+		mustJSON(t, map[string]any{
+			"type":  "stream_event",
+			"event": map[string]any{"type": "content_block_start", "index": index, "content_block": map[string]any{"type": "tool_use", "id": id, "name": "mcp__juggler__read"}},
+		}),
+		mustJSON(t, map[string]any{
+			"type":  "stream_event",
+			"event": map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": "input_json_delta", "partial_json": `{"file_path": "thread_helpers.go", "offset": 340, , "limit": 70}`}},
+		}),
+		mustJSON(t, map[string]any{
+			"type":  "stream_event",
+			"event": map[string]any{"type": "content_block_stop", "index": index},
+		}),
+	}
+}
+
+// TestParser_MalformedToolInputSkipped is the regression test for the
 // "tool/request divergence" +1-shift cascade. When a tool_use block's
-// accumulated input_json_delta payload is non-empty but won't parse (observed
-// in the wild as a stray quote: `"offset": 142"`), the parser must NOT coerce
-// it to empty args and emit the tool_use anyway. Executing a tool with empty
-// args (e.g. read with no file_path) injects a phantom result that the
-// control-protocol's (name+args) FIFO mis-pairs, desyncing every later tool
-// result in the turn. The corrupt block must instead fail the turn loudly —
-// and as a transient error, so dispatchTurnWithRetry can warm-resume when
-// nothing has streamed yet.
-func TestParser_MalformedToolInputFailsLoudly(t *testing.T) {
+// accumulated input_json_delta payload is non-empty but won't parse, the parser
+// must NOT coerce it to empty args and emit the tool_use anyway: executing a
+// tool with empty args (e.g. read with no file_path) injects a phantom result
+// that the control-protocol's (name+args) FIFO mis-pairs, desyncing every later
+// tool result in the turn. It must also not fail the turn — the CLI answers
+// such a block itself with an InputValidationError and drives the model's
+// retry, and a turn error would tear the process down mid-recovery.
+func TestParser_MalformedToolInputSkipped(t *testing.T) {
 	c := newParserClient()
-	lines := []string{
-		mustJSON(t, map[string]any{
-			"type":  "stream_event",
-			"event": map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "tool_use", "id": "t-bad", "name": "mcp__juggler__read"}},
-		}),
-		// Stray quote after 142 — the exact corruption shape from the server log.
-		mustJSON(t, map[string]any{
-			"type":  "stream_event",
-			"event": map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "input_json_delta", "partial_json": `{"file_path": "thread_helpers.go", "offset": 142" , "limit": 60}`}},
-		}),
-		mustJSON(t, map[string]any{
-			"type":  "stream_event",
-			"event": map[string]any{"type": "content_block_stop", "index": 0},
-		}),
+	res, chunks, pause, count, err := feedLines(t, c, malformedToolUseLines(t, 0, "t-bad"))
+	if err != nil {
+		t.Fatalf("malformed tool input must not fail the turn (the CLI recovers from it), got %v", err)
 	}
-	res, chunks, _, _, err := feedLines(t, c, lines)
-	if err == nil {
-		t.Fatal("expected a hard error on malformed tool input; parser silently emitted empty args instead")
-	}
-	if !isTransientCLIError(err) {
-		t.Errorf("malformed tool input should be a transient error (warm-resume retryable), got %T: %v", err, err)
+	if pause || count != 0 {
+		t.Errorf("skipped block should neither pause nor count, got pause=%v count=%d", pause, count)
 	}
 	for _, ch := range chunks {
 		if ch.Type == provider.ContentBlockTypeToolUse {
@@ -706,6 +711,83 @@ func TestParser_MalformedToolInputFailsLoudly(t *testing.T) {
 		if b.Type == provider.ContentBlockTypeToolUse {
 			t.Errorf("malformed tool input must not append a tool_use block, got input=%+v", b.ToolInput)
 		}
+	}
+	if res.cliServedThisCall != 1 {
+		t.Errorf("skipped block should be tallied as CLI-served, got %d", res.cliServedThisCall)
+	}
+	if lastStatusChunk(chunks) == "" {
+		t.Error("skipped block should emit a status chunk so the user sees the retry")
+	}
+}
+
+// TestParser_MalformedToolInputAloneDoesNotPause covers the second half of the
+// fix: a tool_use batch whose every block was skipped parks nothing on our
+// side, so the message_delta pause must be suppressed and the read loop must
+// carry on into the CLI's recovery call. Pausing there would hand the worker a
+// round with no tools to run while the CLI streams that call to nobody.
+func TestParser_MalformedToolInputAloneDoesNotPause(t *testing.T) {
+	c := newParserClient()
+	lines := []string{mustJSON(t, map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_start"}})}
+	lines = append(lines, malformedToolUseLines(t, 0, "t-bad")...)
+	lines = append(lines,
+		mustJSON(t, map[string]any{"type": "stream_event", "event": map[string]any{
+			"type": "message_delta", "delta": map[string]any{"stop_reason": "tool_use"},
+		}}),
+		// The CLI's recovery call: the model retries, this time with valid
+		// input, and the turn ends normally.
+		mustJSON(t, map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_start"}}),
+	)
+	lines = append(lines, streamToolUseLines(t, 0, "t-good", "mcp__juggler__read", map[string]any{"file_path": "thread_helpers.go"})...)
+	lines = append(lines, mustJSON(t, map[string]any{"type": "stream_event", "event": map[string]any{
+		"type": "message_delta", "delta": map[string]any{"stop_reason": "tool_use"},
+	}}))
+
+	res, chunks, pause, count, err := feedLines(t, c, lines)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !pause {
+		t.Fatal("the recovery call's tool_use must still pause the turn")
+	}
+	if count != 1 {
+		t.Errorf("only the well-formed block should count, got %d", count)
+	}
+	tools := 0
+	for _, ch := range filterNonProgress(chunks) {
+		if ch.Type == provider.ContentBlockTypeToolUse {
+			tools++
+			if ch.ToolUseID != "t-good" {
+				t.Errorf("emitted the wrong tool_use: %q", ch.ToolUseID)
+			}
+		}
+	}
+	if tools != 1 || len(res.Blocks) != 1 {
+		t.Fatalf("expected exactly the recovery tool_use, got chunks=%d blocks=%d", tools, len(res.Blocks))
+	}
+}
+
+// TestParser_MalformedToolInputMixedBatchStillPauses guards the boundary: when
+// a batch carries a well-formed block alongside a skipped one, the CLI IS
+// parked on the good one, so the turn must pause and deliver its result as
+// normal.
+func TestParser_MalformedToolInputMixedBatchStillPauses(t *testing.T) {
+	c := newParserClient()
+	lines := []string{mustJSON(t, map[string]any{"type": "stream_event", "event": map[string]any{"type": "message_start"}})}
+	lines = append(lines, streamToolUseLines(t, 0, "t-good", "mcp__juggler__read", map[string]any{"file_path": "a.go"})...)
+	lines = append(lines, malformedToolUseLines(t, 1, "t-bad")...)
+	lines = append(lines, mustJSON(t, map[string]any{"type": "stream_event", "event": map[string]any{
+		"type": "message_delta", "delta": map[string]any{"stop_reason": "tool_use"},
+	}}))
+
+	res, _, pause, count, err := feedLines(t, c, lines)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !pause || count != 1 {
+		t.Fatalf("a batch with one dispatchable block must pause with count 1, got pause=%v count=%d", pause, count)
+	}
+	if res.StopReason != "tool_use" {
+		t.Errorf("StopReason = %q, want tool_use", res.StopReason)
 	}
 }
 
