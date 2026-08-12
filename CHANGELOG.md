@@ -10,6 +10,7 @@ of changes; this project follows semantic versioning.
 - Codex ChatGPT-plan requests send a session_id header, eliminating ~30% random prompt-cache misses
 - Linux windows now carry their project name in the taskbar and window switcher instead of all reading "Juggler"
 - Window titles show the project's directory name, which survives taskbar and menu truncation
+- Dangerous-command filter stopped rejecting ordinary commands like `rm -rf /tmp/foo`
 
 ## [0.5.5] - 2026-08-11
 

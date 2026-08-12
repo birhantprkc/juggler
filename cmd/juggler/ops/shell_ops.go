@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -1504,6 +1505,33 @@ func consumeHeredocs(s string, i int, specs []heredocSpec, buf *strings.Builder)
 	return i
 }
 
+// Foot-gun patterns for bestEffortShellSanityCheck, each paired with the
+// reason reported to the caller. Every pattern is deliberately narrow: the
+// filter gates every shell execution, so one that also matches an everyday
+// command (`rm -rf /tmp/build`, `2> /dev/null`) costs far more than the
+// accident it catches.
+var shellFootGuns = []struct {
+	re     *regexp.Regexp
+	reason string
+}{
+	// An `rm` whose target is the filesystem root — `/` or `/*`, optionally
+	// quoted — with any flags before or after it. The trailing boundary is
+	// what keeps `/tmp/...` and every other absolute path out.
+	{regexp.MustCompile(
+		"(?i)(?:^|[\\s;&|(`])(?:sudo\\s+)?rm(?:\\s+-\\S+)*\\s+[\"']?/\\*?[\"']?(?:[\\s;&|)`]|$)"),
+		"rm -rf /"},
+
+	// Redirecting or `dd`-ing onto a raw block device. Reading one
+	// (`ls -l /dev/sda`) is harmless and stays allowed, as does the far more
+	// common `> /dev/null`.
+	{regexp.MustCompile(`(?i)(?:>\s*|\bof=)/dev/r?(?:sd|hd|vd|nvme|disk)`),
+		"write to a raw disk device"},
+
+	{regexp.MustCompile(`(?i)\bmkfs(?:\.\w+)?\b`), "mkfs"},
+	{regexp.MustCompile(`(?i)\bdd\s+if=`), "dd if="},
+	{regexp.MustCompile(`:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`), "fork bomb"},
+}
+
 // bestEffortShellSanityCheck rejects empty / oversized commands and a tiny
 // hand-coded list of obviously-destructive patterns. It is NOT a security
 // boundary — a determined caller can trivially bypass it (`rm -rf $(pwd)`
@@ -1523,20 +1551,9 @@ func bestEffortShellSanityCheck(command string) error {
 
 	// Reject a tiny set of obviously-destructive patterns. This is a
 	// foot-gun filter, not a security control — bypass is trivial.
-	dangerousPatterns := []string{
-		"rm -rf /",
-		"mkfs",
-		"dd if=",
-		"> /dev/",
-		":(){ :|:& };:", // fork bomb
-		"/dev/sda",
-		"/dev/hda",
-	}
-
-	commandLower := strings.ToLower(command)
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(commandLower, strings.ToLower(pattern)) {
-			return fmt.Errorf("command contains dangerous pattern: %s", pattern)
+	for _, fg := range shellFootGuns {
+		if fg.re.MatchString(command) {
+			return fmt.Errorf("command contains dangerous pattern: %s", fg.reason)
 		}
 	}
 

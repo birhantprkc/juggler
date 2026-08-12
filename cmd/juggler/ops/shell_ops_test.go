@@ -413,3 +413,51 @@ func TestValidateCwd_EmptyReturnsWorkingDir(t *testing.T) {
 		t.Fatalf("validateCwd returned %q, want %q", got, project)
 	}
 }
+
+// TestBestEffortShellSanityCheck pins the foot-gun filter from both sides. The
+// blocked cases are the accidents it exists for; the allowed cases are ordinary
+// commands that a substring match rejects — every absolute path under `/tmp`
+// contains "rm -rf /", and `2> /dev/null` contains "> /dev/".
+func TestBestEffortShellSanityCheck(t *testing.T) {
+	blocked := []string{
+		"rm -rf /",
+		"rm -rf /*",
+		`rm -rf "/"`,
+		"rm -fr /",
+		"rm -rf / --no-preserve-root",
+		"rm -rf --no-preserve-root /",
+		"sudo rm -rf /",
+		"echo hello; rm -rf /",
+		"echo hello && rm -rf /",
+		"echo hello | rm -rf /",
+		"echo $(rm -rf /)",
+		"echo hello\nrm -rf /",
+		"mkfs.ext4 /dev/sdb1",
+		"dd if=/dev/zero of=/dev/sda",
+		"cat disk.img > /dev/nvme0n1",
+		":(){ :|:& };:",
+	}
+	for _, cmd := range blocked {
+		if err := bestEffortShellSanityCheck(cmd); err == nil {
+			t.Errorf("expected %q to be rejected, got nil", cmd)
+		}
+	}
+
+	allowed := []string{
+		"rm -rf /tmp/whatever",
+		"rm -rf /tmp/juggler-build",
+		"rm -rf /var/folders/xy/cache",
+		"rm -rf ./build",
+		"rm -rf node_modules",
+		`rm -rf "$HOME/.cache/juggler"`,
+		"make build 2> /dev/null",
+		"echo hello > /dev/null",
+		"ls -l /dev/sda",
+		"echo hello",
+	}
+	for _, cmd := range allowed {
+		if err := bestEffortShellSanityCheck(cmd); err != nil {
+			t.Errorf("expected %q to be allowed, got: %v", cmd, err)
+		}
+	}
+}
