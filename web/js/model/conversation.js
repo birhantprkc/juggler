@@ -49,6 +49,15 @@ const CANCEL_POLL_MS = 16;
 const CANCEL_CEILING_MS = 5000;
 
 /**
+ * How many items a single delete must remove before it announces itself as
+ * undoable (`conversation:items-removed` → the column footer's Undo offer).
+ * Removing one item is a small, obvious edit whose effect is visible in the
+ * spot the user was already looking at; removing a span is the case where the
+ * conversation changes shape faster than it can be read.
+ */
+const UNDO_OFFER_MIN_ITEMS = 2;
+
+/**
  * @typedef {import('./session.js').default} Session
  */
 
@@ -464,8 +473,12 @@ class Conversation {
   }
 
   /**
-   * Delete items from fromIndex to end with full orchestration:
-   * cancels pending approvals, stops processing, and clears next steps.
+   * Run a user-driven delete with full orchestration: cancels pending
+   * approvals, stops processing, seals the undo group around the delete, and
+   * announces a span removal so the column footer can offer an undo.
+   *
+   * Every user-facing multi-item delete goes through here, so the announcement
+   * cannot be forgotten by a new call site.
    *
    * Intentionally does NOT call `cancelAndSettle()` — that would also
    * cancel any in-flight tool actions, but rerun/edit flows orchestrate
@@ -473,9 +486,11 @@ class Conversation {
    * out from under them. Only the LLM turn is stopped here; deletion of
    * specific items is the caller's contract.
    * @param {import('./message-thread.js').default} messageThread
-   * @param {number} fromIndex
+   * @param {() => number} deleteFn - Performs the delete, returns items removed
+   * @returns {number} How many items were deleted
+   * @private
    */
-  deleteRangeWithCleanup(messageThread, fromIndex) {
+  _deleteWithCleanup(messageThread, deleteFn) {
     messageThread.cancelPendingApprovals();
 
     if (this._llmState &&
@@ -483,7 +498,52 @@ class Conversation {
       this.stopProcessing();
     }
 
-    messageThread.deleteRange(fromIndex);
+    // Seal the undo group on both sides. The worker's UndoManager merges
+    // whatever lands inside its capture window, so without this the delete can
+    // share a group with an unrelated neighbouring edit — and an Undo offer
+    // that silently reverses one of those too is worse than no offer at all.
+    workerManager.stopUndoCapturing(this.id);
+    const removed = deleteFn();
+    workerManager.stopUndoCapturing(this.id);
+
+    if (removed >= UNDO_OFFER_MIN_ITEMS) {
+      this._session?.notifyConversationChange?.('conversation:items-removed', {
+        conversation: this,
+        messageThread,
+        removed,
+      });
+    }
+    return removed;
+  }
+
+  /**
+   * Delete items from fromIndex to end (inclusive) with full cleanup.
+   * @param {import('./message-thread.js').default} messageThread
+   * @param {number} fromIndex
+   * @returns {number} How many items were deleted
+   */
+  deleteRangeWithCleanup(messageThread, fromIndex) {
+    return this._deleteWithCleanup(messageThread, () => messageThread.deleteRange(fromIndex));
+  }
+
+  /**
+   * Delete every user-deletable item after index (exclusive) with full cleanup.
+   * @param {import('./message-thread.js').default} messageThread
+   * @param {number} index
+   * @returns {number} How many items were deleted
+   */
+  deleteAfterWithCleanup(messageThread, index) {
+    return this._deleteWithCleanup(messageThread, () => messageThread.deleteAfter(index));
+  }
+
+  /**
+   * Delete every user-deletable item before index (exclusive) with full cleanup.
+   * @param {import('./message-thread.js').default} messageThread
+   * @param {number} index
+   * @returns {number} How many items were deleted
+   */
+  deleteUpToWithCleanup(messageThread, index) {
+    return this._deleteWithCleanup(messageThread, () => messageThread.deleteUpTo(index));
   }
 
   /**

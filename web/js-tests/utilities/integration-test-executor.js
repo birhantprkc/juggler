@@ -35,6 +35,7 @@ import { tests as editTests } from '../integration-tests/edit-tests.js';
 import { tests as selectionRuleTests } from '../integration-tests/selection-rule-tests.js';
 import { tests as fileMentionTests } from '../integration-tests/file-mention-tests.js';
 import { tests as footerCacheTests } from '../integration-tests/footer-cache-tests.js';
+import { tests as footerUndoOfferTests } from '../integration-tests/footer-undo-offer-tests.js';
 import { tests as imageAttachmentTests } from '../integration-tests/image-attachment-tests.js';
 import { tests as continueBtnTests } from '../integration-tests/continue-btn-tests.js';
 import { tests as commandApprovalTests } from '../integration-tests/bash-approval-tests.js';
@@ -218,6 +219,7 @@ const ALL_TESTS = [
   ...selectionRuleTests,
   ...fileMentionTests,
   ...footerCacheTests,
+  ...footerUndoOfferTests,
   ...imageAttachmentTests,
   ...continueBtnTests,
   ...commandApprovalTests,

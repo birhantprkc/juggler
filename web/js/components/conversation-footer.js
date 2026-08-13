@@ -91,9 +91,29 @@ class ConversationFooter extends HTMLElement {
    */
   _statusOnly = false;
 
+  /**
+   * Metadata observer watching `undoState` while the Undo offer is showing,
+   * so the offer can retire the moment its undo entry stops being the one
+   * `undo()` would pop. Attached on show, detached on hide — an offer is rare
+   * and short-lived, so there is nothing to observe the rest of the time.
+   * @type {((event: any) => void)|null}
+   * @private
+   */
+  _undoObserver = null;
+
+  /**
+   * `undoState.seq` of the undo entry the visible offer refers to, or null
+   * while the offer is still waiting to see it (the delete's own frame has not
+   * synced back yet). See `_showUndoOffer`.
+   * @type {number|null}
+   * @private
+   */
+  _undoOfferSeq = null;
+
   disconnectedCallback() {
     if (this._unsubscribe) { this._unsubscribe(); this._unsubscribe = null; }
     if (this._statusUnsubscribe) { this._statusUnsubscribe(); this._statusUnsubscribe = null; }
+    this._hideUndoOffer();
     this._cancelDeferredTokenDisplayUpdate();
   }
 
@@ -104,6 +124,12 @@ class ConversationFooter extends HTMLElement {
   setMessageThread(mt) {
     if (this._unsubscribe) { this._unsubscribe(); this._unsubscribe = null; }
     if (this._statusUnsubscribe) { this._statusUnsubscribe(); this._statusUnsubscribe = null; }
+    // Only a real change of thread retires the Undo offer. A column re-hands
+    // its footer the thread it already has on every rebuild, and a rebuild runs
+    // on any conversation:changed — including the undoState frame the offer is
+    // waiting for to arm itself, so an unconditional retire here means the
+    // offer can never outlive the delete that raised it.
+    if (!this._isOwnThread(mt)) this._hideUndoOffer();
     this._cancelDeferredTokenDisplayUpdate();
     // Defensive: if this element is recycled across threads (or across
     // conversations) the per-txnID cache from the previous thread is no
@@ -122,6 +148,11 @@ class ConversationFooter extends HTMLElement {
             this._scheduleTokenDisplayUpdate();
           } else if (event.type === 'contextItems:changed' || event.type === 'conversation:changed') {
             this._scheduleTokenDisplayUpdate();
+          } else if (event.type === 'conversation:items-removed'
+            && this._isOwnThread(event.data?.messageThread)) {
+            // The delete happened in THIS column, whose end is now exactly
+            // where the removed items used to be.
+            this._showUndoOffer(event.data.removed);
           }
         }));
       }
@@ -183,6 +214,78 @@ class ConversationFooter extends HTMLElement {
       // The status-only footer hides itself while its run is settled; a full
       // footer is always present.
       this.classList.remove('hidden');
+    }
+  }
+
+  /**
+   * Whether `mt` addresses the same thread this footer is already bound to.
+   *
+   * Compared by container rather than by wrapper identity: a column builds a
+   * fresh MessageThread wrapper for a sub-thread on every rebuild (the root
+   * thread is the one that keeps its wrapper), so wrapper identity would report
+   * a change on every rebuild of a thread column while the thread on screen
+   * never moved. The container is the thread's Y.Array, which is the thread.
+   * @param {import('../model/message-thread.js').default|null|undefined} mt
+   * @returns {boolean} True when `mt` is the thread this footer is showing.
+   * @private
+   */
+  _isOwnThread(mt) {
+    if (!mt || !this._messageThread) return false;
+    return mt.container === this._messageThread.container
+      && mt.conversation === this._messageThread.conversation;
+  }
+
+  /**
+   * Offer to undo a delete that just removed a span of items from this column.
+   *
+   * The offer is a promise about ONE undo entry, but `undo()` pops whatever is
+   * on top of a stack the worker owns and every client of this conversation
+   * shares. So the offer arms itself against `undoState.seq`: the first frame
+   * it sees is the delete's own, and any later change means the top of the
+   * stack is some other operation now — at which point the offer retires
+   * rather than reverse something the user never asked about. Adopting the
+   * wrong frame (a remote edit racing the delete) can only retire the offer
+   * early; it can never point it at the wrong entry.
+   * @param {number} removed - How many items the delete took out
+   * @private
+   */
+  _showUndoOffer(removed) {
+    // A group column shares its parent's thread, so a delete there reaches both
+    // footers. The offer belongs to the column the span was listed in, not to a
+    // lens on a handful of its rows — and a status-only footer hides itself
+    // between runs, which would take the offer with it.
+    if (this._statusOnly) return;
+    const row = this.querySelector('.footer-undo-offer');
+    const conversation = this._messageThread?.conversation;
+    if (!row || !conversation) return;
+
+    const label = this.querySelector('.footer-undo-text');
+    if (label) label.textContent = `${removed} items removed`;
+    row.classList.remove('hidden');
+    this._undoOfferSeq = null;
+
+    if (!this._undoObserver) {
+      this._undoObserver = (/** @type {any} */ event) => {
+        if (!event.keysChanged?.has?.('undoState')) return;
+        const seq = conversation.getMetadata('undoState')?.seq ?? null;
+        if (this._undoOfferSeq === null) this._undoOfferSeq = seq;
+        else if (seq !== this._undoOfferSeq) this._hideUndoOffer();
+      };
+      conversation.observeMetadata(this._undoObserver);
+    }
+  }
+
+  /**
+   * Retire the Undo offer and stop watching the undo stack. Safe to call when
+   * no offer is showing; `_undoObserver` is non-null exactly while one is.
+   * @private
+   */
+  _hideUndoOffer() {
+    this.querySelector('.footer-undo-offer')?.classList.add('hidden');
+    this._undoOfferSeq = null;
+    if (this._undoObserver) {
+      this._messageThread?.conversation?.unobserveMetadata(this._undoObserver);
+      this._undoObserver = null;
     }
   }
 
@@ -343,6 +446,13 @@ class ConversationFooter extends HTMLElement {
                 </button>
             </footer-processing>
             <div class="llm-next-steps hidden"></div>
+            <div class="footer-undo-offer hidden" role="status">
+                <span class="footer-undo-text"></span>
+                <button class="message-action-btn footer-undo-btn" type="button">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" aria-hidden="true"><path d="M280-200v-80h284q63 0 109.5-40T720-420q0-60-46.5-100T564-560H312l104 104-56 56-200-200 200-200 56 56-104 104h252q97 0 166.5 63T800-420q0 94-69.5 157T564-200H280Z"/></svg>
+                    Undo
+                </button>
+            </div>
             <token-display></token-display>
             <footer-idle>
                 <div class="footer-idle-row footer-idle-main">
@@ -418,6 +528,15 @@ class ConversationFooter extends HTMLElement {
           composed: true,
           detail: { button: addCIBtn, threadItemId: this._messageThread?.threadItemId ?? null }
         }));
+      });
+    }
+
+    const undoBtn = this.querySelector('.footer-undo-btn');
+    if (undoBtn) {
+      undoBtn.addEventListener('click', () => {
+        const conversation = this._messageThread?.conversation;
+        this._hideUndoOffer();
+        void conversation?.undo();
       });
     }
 
@@ -505,6 +624,12 @@ class ConversationFooter extends HTMLElement {
    * @param {FooterState} state - Current conversation state
    */
   update(state) {
+    // A new turn supersedes the Undo offer: undo is locked out while the worker
+    // is mutating the doc, so leaving the button up would leave a dead control
+    // on screen. This is also what dismisses the offer once the user has moved
+    // on and sent their next message.
+    if (state.isProcessing && this._undoObserver) this._hideUndoOffer();
+
     if (this._statusOnly) {
       // A run that isn't doing anything has nothing to say, and an empty strip
       // would leave dead space under the last row — so the whole footer goes.

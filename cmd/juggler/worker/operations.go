@@ -26,6 +26,13 @@ type OperationTracker struct {
 	doc         *ConversationDocument
 	undoManager *ycrdt.UndoManager
 	maxGroups   int
+	// undoSeq counts undo-stack changes and rides along in the emitted
+	// undoState. canUndo/canRedo alone cannot tell a client "the stack moved"
+	// from "the same state re-emitted" — both stay true across a new operation —
+	// so a UI holding a reference to one particular undo entry (the footer's
+	// post-delete Undo offer) has no way to notice that entry is no longer on
+	// top. The number changes on every emit, which is exactly that signal.
+	undoSeq int
 }
 
 // auxiliaryTypes are inserted without starting a new undo group —
@@ -482,7 +489,7 @@ func (t *OperationTracker) ClearHistory() {
 // INTERNAL
 // =============================================================================
 
-// emitUndoState writes canUndo/canRedo to document metadata so the browser
+// emitUndoState writes canUndo/canRedo/seq to document metadata so the browser
 // reads it reactively via Yjs sync. Called under ycrdtMu.
 func (t *OperationTracker) emitUndoState() {
 	var canUndo, canRedo bool
@@ -490,9 +497,11 @@ func (t *OperationTracker) emitUndoState() {
 		canUndo = len(t.undoManager.UndoStack) > 0
 		canRedo = len(t.undoManager.RedoStack) > 0
 	}
+	t.undoSeq++
 	t.doc.setMetadata("undoState", map[string]any{
 		"canUndo": canUndo,
 		"canRedo": canRedo,
+		"seq":     t.undoSeq,
 	})
 }
 

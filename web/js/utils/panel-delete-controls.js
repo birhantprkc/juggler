@@ -22,13 +22,19 @@ export function appendDeleteControls(container, parentThread, itemIndex, onDelet
   deleteBtn.addEventListener('click', (e) => onDelete(e));
   container.appendChild(deleteBtn);
 
+  // Both span deletes go through the conversation rather than straight to the
+  // thread: a span delete has to cancel pending approvals and stop the turn
+  // (the items it removes may be the ones the turn is waiting on), and it is
+  // what offers the footer's undo.
   if (itemIndex > 0) {
     const upBtn = makeBtn('Delete up to here');
-    upBtn.addEventListener('click', () => parentThread.deleteUpTo(itemIndex));
+    upBtn.addEventListener('click',
+      () => parentThread.conversation.deleteUpToWithCleanup(parentThread, itemIndex));
     container.appendChild(upBtn);
   }
 
   const fromBtn = makeBtn('Delete from here');
-  fromBtn.addEventListener('click', () => parentThread.deleteAfter(itemIndex));
+  fromBtn.addEventListener('click',
+    () => parentThread.conversation.deleteAfterWithCleanup(parentThread, itemIndex));
   container.appendChild(fromBtn);
 }

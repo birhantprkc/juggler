@@ -5,14 +5,15 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Hidden conversation tabs release their transcript DOM, preventing memory growth in large projects
 - The Escape key's behaviour is now a setting: stop, pause, two-step, press-twice, or clear only
+- Hidden conversation tabs release their transcript DOM, preventing memory growth in large projects
 - Tool-use grouping now has a keyboard shortcut (⌥⌘G / Ctrl+Alt+G)
-- Cache token stats distinguish provider-reported zero from not-reported (shown as unknown)
-- Codex ChatGPT-plan requests send a session_id header, eliminating ~30% random prompt-cache misses
-- Linux windows now carry their project name in the taskbar and window switcher instead of all reading "Juggler"
 - Window titles show the project's directory name, which survives taskbar and menu truncation
-- Dangerous-command filter stopped rejecting ordinary commands like `rm -rf /tmp/foo`
+- Linux windows now carry their project name in the taskbar and window switcher instead of all reading "Juggler"
+- Codex ChatGPT-plan requests send a session_id header, eliminating random prompt-cache misses
+- Cache token stats distinguish provider-reported zero from not-reported (shown as unknown)
+- Deleting or rewinding past several items offers an Undo in that column's footer
+- Span deletes now cancel a running turn and undo as a single step, not several
 
 ## [0.5.5] - 2026-08-11
 

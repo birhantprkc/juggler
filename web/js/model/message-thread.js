@@ -552,29 +552,48 @@ export default class MessageThread {
   /**
    * Delete all user-deletable items before the given index.
    * Skips items with preventUserDeletion. Iterates in reverse to preserve indices.
+   *
+   * The sweep is one transaction, so it reaches the worker as a single update
+   * and lands as a single undo group. Deleting item-by-item instead would leave
+   * grouping to the worker UndoManager's capture window, which it measures on
+   * arrival — a long sweep straddling that window splits into several groups
+   * and one undo then restores only part of it.
    * @param {number} index - Items before this index are deleted
+   * @returns {number} How many items were deleted
    */
   deleteUpTo(index) {
     const items = this.items;
-    for (let i = index - 1; i >= 0; i--) {
-      if (!items[i]?.get('preventUserDeletion')) {
-        this.deleteAt(i);
+    let deleted = 0;
+    this.transact(() => {
+      for (let i = index - 1; i >= 0; i--) {
+        if (!items[i]?.get('preventUserDeletion')) {
+          this.deleteAt(i);
+          deleted++;
+        }
       }
-    }
+    });
+    return deleted;
   }
 
   /**
    * Delete all user-deletable items after the given index (exclusive).
    * Skips items with preventUserDeletion. Iterates in reverse to preserve indices.
+   * One transaction, for the reason given on {@link deleteUpTo}.
    * @param {number} index - Items after this index are deleted
+   * @returns {number} How many items were deleted
    */
   deleteAfter(index) {
     const items = this.items;
-    for (let i = items.length - 1; i > index; i--) {
-      if (!items[i]?.get('preventUserDeletion')) {
-        this.deleteAt(i);
+    let deleted = 0;
+    this.transact(() => {
+      for (let i = items.length - 1; i > index; i--) {
+        if (!items[i]?.get('preventUserDeletion')) {
+          this.deleteAt(i);
+          deleted++;
+        }
       }
-    }
+    });
+    return deleted;
   }
 
   /**
@@ -596,15 +615,17 @@ export default class MessageThread {
    * Callers needing orchestration (cancel approvals, stop processing)
    * should use conversation.deleteRangeWithCleanup() instead.
    * @param {number} fromIndex
+   * @returns {number} How many items were deleted
    */
   deleteRange(fromIndex) {
-    if (fromIndex < 0 || fromIndex >= this.items.length) return;
+    if (fromIndex < 0 || fromIndex >= this.items.length) return 0;
 
     const arr = this.ensureYarray();
     const deleteCount = arr.length - fromIndex;
     if (deleteCount > 0) {
       arr.delete(fromIndex, deleteCount);
     }
+    return deleteCount;
   }
 
   /**

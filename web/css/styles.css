@@ -1581,6 +1581,28 @@ footer-processing[data-message-id] {
     display: inline-block;
 }
 
+/* Undo offer: shown for a span delete, at the end of the column the items were
+   removed from. Deliberately louder than the other footer rows — it is the one
+   thing here that is only worth showing because something just disappeared. */
+.footer-undo-offer {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--accent-blue, #58a6ff);
+    border-radius: 0.375rem;
+    background-color: rgb(88 166 255 / 8%);
+}
+
+.footer-undo-text {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.footer-undo-btn {
+    margin-left: auto;
+}
+
 footer-idle {
     display: flex; /* Visible by default */
     flex-direction: column;
