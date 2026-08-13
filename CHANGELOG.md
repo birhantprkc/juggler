@@ -15,6 +15,7 @@ of changes; this project follows semantic versioning.
 - Deleting or rewinding past several items offers an Undo in that column's footer
 - Span deletes now cancel a running turn and undo as a single step, not several
 - Auto-approve now says why it left a tool call parked for you, and no longer gives up when a turn parks several tool calls at once
+- Auto-approve is told which permissions you already granted, so it stops re-asking about work you sanctioned
 - An overloaded provider is reported in minutes instead of hanging forever, and the spinner admits it is retrying
 - A Claude model that botches a tool call now retries it instead of ending the conversation without explanation
 

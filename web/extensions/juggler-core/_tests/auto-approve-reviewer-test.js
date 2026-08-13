@@ -87,6 +87,16 @@ export async function runTests(_ctx) {
       'POLICY_PROMPT should ask for a reason on deny');
     assert(/verdict/i.test(POLICY_PROMPT),
       'POLICY_PROMPT should require the verdict word first');
+    // The ENVIRONMENT block states standing grants; the policy must say they
+    // count as the user's authorization, otherwise the "authorization only from
+    // the user's own words" rule instructs the model to ignore the whole block.
+    for (const line of ['FILE EDITS', 'ALLOWED PATHS', 'ALLOWLISTED COMMANDS']) {
+      assert(POLICY_PROMPT.includes(line),
+        `POLICY_PROMPT should explain the ${line} grant line`);
+    }
+    // ...and that the grants stop short of the dangerous categories.
+    assert(/never authorize/i.test(POLICY_PROMPT),
+      'POLICY_PROMPT should bound what standing permissions authorize');
   });
 
   // =========================================================================
@@ -146,6 +156,74 @@ export async function runTests(_ctx) {
   await run('omits the ENVIRONMENT block when no context paths are supplied', () => {
     const out = buildReviewerPrompt([userItem('hi')], { toolName: 'bash', toolInput: {} }, { context: {} });
     assert(!out.includes('=== ENVIRONMENT'), 'no env paths → no environment block');
+  });
+
+  await run('states the standing permission grants in the ENVIRONMENT block', () => {
+    // The grants are the user's authorization for work they approved with a
+    // control rather than a sentence — without them the policy's "unauthorized
+    // until the user's words cover it" rule denies routine in-project writes.
+    const out = buildReviewerPrompt(
+      [userItem('carry on')],
+      { toolName: 'bash', toolInput: { command: 'mkdir -p build' } },
+      {
+        context: {
+          projectRoot: '/home/crem/proj',
+          home: '/home/crem',
+          fileEdits: true,
+          allowedPaths: ['/home/crem/proj', '/home/crem/scratch'],
+          allowedCommands: ['make *', 'git status']
+        }
+      }
+    );
+    const env = out.slice(0, out.indexOf('USER: carry on'));
+    assert(/FILE EDITS: allowed/.test(env), `edits-on must be stated, got:\n${env}`);
+    assert(env.includes('ALLOWED PATHS: /home/crem/proj, /home/crem/scratch'),
+      `allowed paths must be listed verbatim, got:\n${env}`);
+    assert(env.includes('ALLOWLISTED COMMANDS: make *, git status'),
+      `allowlisted commands must be listed verbatim, got:\n${env}`);
+  });
+
+  await run('states edits-off explicitly, and omits the line when unknown', () => {
+    // `false` is signal in its own right: the user asked to see every write, so
+    // the reviewer should deny file-touching commands rather than clear them.
+    const off = buildReviewerPrompt([], { toolName: 'bash', toolInput: {} },
+      { context: { projectRoot: '/p', fileEdits: false } });
+    assert(/FILE EDITS: must be approved individually/.test(off),
+      `edits-off must be stated, got:\n${off}`);
+    // Absent flag = the caller could not read the permission model. Asserting
+    // either state on a guess is worse than saying nothing.
+    const unknown = buildReviewerPrompt([], { toolName: 'bash', toolInput: {} },
+      { context: { projectRoot: '/p' } });
+    assert(!unknown.includes('FILE EDITS'), `an unknown toggle must be omitted, got:\n${unknown}`);
+  });
+
+  await run('a grant block alone is enough to emit the ENVIRONMENT block', () => {
+    const out = buildReviewerPrompt([], { toolName: 'bash', toolInput: {} },
+      { context: { allowedCommands: ['npm test'] } });
+    assert(out.startsWith('=== ENVIRONMENT (ground truth) ==='),
+      `grants with no paths should still lead with the block, got:\n${out}`);
+  });
+
+  await run('bounds a runaway grant list rather than crowding out the transcript', () => {
+    const paths = [];
+    for (let i = 0; i < 50; i++) paths.push(`/home/crem/p${i}`);
+    const out = buildReviewerPrompt([userItem('hi')], { toolName: 'bash', toolInput: {} },
+      { context: { allowedPaths: paths, allowedCommands: ['x'.repeat(500)] } });
+    const pathLine = out.split('\n').find((l) => l.startsWith('ALLOWED PATHS:')) || '';
+    assert(!pathLine.includes('/home/crem/p49'), 'an overlong list must be truncated');
+    assert(/\(\+\d+ more\)/.test(pathLine),
+      `a truncated list must say how many were dropped, got:\n${pathLine}`);
+    const cmdLine = out.split('\n').find((l) => l.startsWith('ALLOWLISTED COMMANDS:')) || '';
+    assert(cmdLine.length < 400, `an overlong entry must be bounded, got length ${cmdLine.length}`);
+    // The transcript still survives alongside the (bounded) grants.
+    assert(out.includes('USER: hi'), 'grants must not displace the transcript');
+  });
+
+  await run('drops blank / empty grant entries instead of emitting an empty line', () => {
+    const out = buildReviewerPrompt([], { toolName: 'bash', toolInput: {} },
+      { context: { projectRoot: '/p', allowedPaths: ['', '   ', null], allowedCommands: [] } });
+    assert(!out.includes('ALLOWED PATHS'), `an all-blank list must emit nothing, got:\n${out}`);
+    assert(!out.includes('ALLOWLISTED COMMANDS'), `an empty list must emit nothing, got:\n${out}`);
   });
 
   // =========================================================================

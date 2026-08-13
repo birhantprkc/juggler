@@ -14,7 +14,7 @@ import {
   isBusyRejection,
   busyRetryDelay
 } from './auto-approve-reviewer.js';
-import { WRITE_FILE_ITEM_TYPE } from '../../../js/services/file-editing-permission.js';
+import { WRITE_FILE_ITEM_TYPE, isFileEditingAllowed } from '../../../js/services/file-editing-permission.js';
 
 /**
  * AutoApproveStrategyType - Default behavior plus an out-of-band safety reviewer
@@ -99,6 +99,7 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
       ],
       approach: 'Auto-approve runs the same loop as Default, so the permission system still decides everything first: read tools, allowlisted commands, and in-project edits are approved automatically, and only the calls that would otherwise stop to ask you are handed off for review.\n\n'
         + 'Each parked call is checked by a cheap, fast model — the one set as your cheap model in settings — against a fixed safety policy. To keep that judgement trustworthy the reviewer sees only your own messages and the agent\'s raw tool calls; it never sees the agent\'s explanations or any tool output, so it cannot be argued into an approval or fed instructions hidden in a tool result.\n\n'
+        + 'Alongside that it is given the facts of your setup as ground truth: the project root, your home directory, and the permissions you have already granted — whether file editing is on, which folders are allowed, which commands are allowlisted. Those come from your settings rather than the conversation, so the reviewer can tell routine work you have already sanctioned from something the agent decided on its own.\n\n'
         + 'The reviewer answers a simple allow or deny. A confident allow silently approves the call and the run continues. Anything else — a deny, an uncertain answer, a timeout, or an errored reviewer — leaves the call parked for you to decide, exactly as under Default, and the card tells you which it was.\n\n'
           + 'Reviews run on a small shared pool, so when a turn parks several calls at once they queue: a call refused a slot waits a moment and tries again for a few seconds before giving up and leaving itself parked. The approval buttons stay live throughout, so you can always decide instantly rather than wait.\n\n'
         + 'Because it only ever approves, the strategy can remove a prompt you would have granted but can never block the model or run something on its own that the reviewer distrusts.',
@@ -163,9 +164,11 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
     // delete/overwrite is judged against where it actually lands — not fooled
     // by a path substring (e.g. `tmp`) that reads as scratch. Additive signal
     // on the probabilistic path; it blocks nothing on its own.
-    const session = /** @type {any} */ (this.messageThread.conversation)?.session;
-    const context = { projectRoot: session?.projectPath || '', home: session?.home || '' };
-    const prompt = buildReviewerPrompt(this.messageThread.items, { toolName, toolInput }, { context });
+    const prompt = buildReviewerPrompt(
+      this.messageThread.items,
+      { toolName, toolInput },
+      { context: this._reviewContext() }
+    );
     const model = /** @type {any} */ (this.state)?.reviewerModel ?? 'cheap';
 
     for (let attempt = 0; ; attempt++) {
@@ -223,6 +226,48 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
         };
       }
     }
+  }
+
+  /**
+   * The ground truth the reviewer judges the parked call against: where the
+   * project and home actually are, and what the user has *already* authorized.
+   *
+   * The grants matter as much as the paths. The policy treats everything the
+   * agent chose on its own as unauthorized until the user's own words cover it,
+   * and a user who granted file editing or allowlisted `make *` authorized those
+   * things by flipping a control rather than by typing a sentence — invisible in
+   * a transcript of user messages. Without the grants the reviewer denies
+   * ordinary in-project work (a `mkdir`, a redirect into the build dir) on the
+   * grounds that nobody asked for it, which is exactly the routine prompt this
+   * strategy exists to clear.
+   *
+   * Everything here is read from the conversation's own permission model, so it
+   * is the user's authorization rather than the agent's assertion — nothing in
+   * the transcript can forge it. Every read is guarded: a host that exposes its
+   * thread differently degrades to omitting a line, never to a thrown review
+   * (which would fail closed and silently disable the whole feature).
+   * @returns {{projectRoot: string, home: string, fileEdits?: boolean, allowedPaths: string[], allowedCommands: string[]}} Environment + standing grants
+   * @private
+   */
+  _reviewContext() {
+    const mt = /** @type {any} */ (this.messageThread);
+    const session = mt?.conversation?.session;
+    const canReadRules = typeof mt?.getRulesFor === 'function';
+    return {
+      projectRoot: session?.projectPath || '',
+      home: session?.home || '',
+      // Left undefined (line omitted) when the rules cannot be read at all —
+      // asserting either state on a guess would be worse than saying nothing.
+      fileEdits: canReadRules ? isFileEditingAllowed(mt) : undefined,
+      allowedPaths: mt?.getAllowedPaths?.() || [],
+      // Mirrors the `execute` domain's own reading of its grants
+      // (`execute/command-permission.js`): the glob rules, in order.
+      allowedCommands: canReadRules
+        ? mt.getRulesFor('execute')
+          .filter((/** @type {any} */ r) => r.kind === 'glob' && typeof r.value === 'string')
+          .map((/** @type {any} */ r) => r.value)
+        : []
+    };
   }
 
   /**

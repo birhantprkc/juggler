@@ -35,7 +35,7 @@ import AutoApproveStrategyType from '../strategies/auto-approve-strategy-type.js
  * Construct a strategy with a stubbed LLM and a fake message thread that records
  * every resolveApproval call.
  * @param {(params: any, signal?: any) => Promise<{text: string}>} completeImpl - Stubbed `_complete`
- * @param {{items?: any[], state?: object}} [opts] - Optional thread items / strategy state
+ * @param {{items?: any[], state?: object, rules?: any[], allowedPaths?: string[], noPermissions?: boolean}} [opts] - Optional thread items / strategy state / permission surface
  * @returns {{strategy: AutoApproveStrategyType, resolveCalls: any[], completeCalls: any[]}} The strategy and its recorded calls
  */
 function makeStrategy(completeImpl, opts = {}) {
@@ -48,13 +48,22 @@ function makeStrategy(completeImpl, opts = {}) {
   // The parked call's state, as _stillParked reads it. Tests flip this to
   // simulate the human resolving the call mid-retry.
   const toolState = { state: 'pending' };
+  const rules = opts.rules || [];
   const messageThread = /** @type {any} */ ({
     conversation: { session: { projectPath: '/home/crem/tmp/juggler', home: '/home/crem', platform: 'linux' } },
     items: opts.items || [],
     getToolAction: () => ({ get: (/** @type {string} */ k) => (k === 'state' ? toolState.state : undefined) }),
     resolveApproval: (/** @type {string} */ id, /** @type {string} */ resp) => {
       resolveCalls.push({ id, resp });
-    }
+    },
+    // The permission surface the reviewer's ground-truth block is read from.
+    // `noPermissions` omits it entirely, standing in for a host that exposes
+    // its thread differently — the review must still run.
+    ...(opts.noPermissions ? {} : {
+      getRulesFor: (/** @type {string} */ itemType) =>
+        rules.filter((/** @type {any} */ r) => r.itemType === itemType),
+      getAllowedPaths: () => opts.allowedPaths || ['/home/crem/tmp/juggler']
+    })
   });
   const strategy = new AutoApproveStrategyType({ messageThread });
   strategy._complete = async (/** @type {any} */ params, /** @type {any} */ signal) => {
@@ -364,6 +373,69 @@ export async function runTests(_ctx) {
       'the prompt must include the action-under-review block');
     assert(params.maxTokens && params.maxTokens <= 512,
       `maxTokens should be small and within the server ceiling, got ${params.maxTokens}`);
+  });
+
+  // =========================================================================
+  // ground truth — the reviewer is told the user's standing permission grants
+  // =========================================================================
+  await run("the prompt states the user's standing grants read from the permission model", async () => {
+    // A user who turned file editing on, opened a folder, and allowlisted a
+    // command authorized those things with a control, not a sentence — none of
+    // it appears in the transcript the reviewer sees, so it must be stated.
+    const { strategy, completeCalls } = makeStrategy(async () => ({ text: 'deny' }), {
+      rules: [
+        { itemType: 'write-file', kind: 'boolean', value: true, scope: 'conversation' },
+        { itemType: 'execute', kind: 'glob', value: 'make *', scope: 'conversation' },
+        { itemType: 'execute', kind: 'boolean', value: true, scope: 'session' }
+      ],
+      allowedPaths: ['/home/crem/tmp/juggler', '/home/crem/scratch']
+    });
+    await strategy.onToolPending({ ...PENDING });
+    const { prompt } = completeCalls[0];
+    assert(/FILE EDITS: allowed/.test(prompt), `edits-on must be stated, got:\n${prompt}`);
+    assert(prompt.includes('/home/crem/scratch'), `granted paths must be stated, got:\n${prompt}`);
+    assert(prompt.includes('ALLOWLISTED COMMANDS: make *'),
+      `allowlisted globs must be stated, got:\n${prompt}`);
+    // Only glob rules are command patterns — a boolean under `execute` is a
+    // different grant shape and must not be rendered as a command.
+    assert(!/ALLOWLISTED COMMANDS:.*true/.test(prompt),
+      `non-glob execute rules must not be listed as commands, got:\n${prompt}`);
+    // The grants lead the prompt: everything after them is agent-influenced.
+    assert(prompt.indexOf('FILE EDITS') < prompt.indexOf('=== ACTION UNDER REVIEW ==='),
+      'ground truth must precede the action under review');
+  });
+
+  await run('a conversation without the file-editing grant is stated as edits-off', async () => {
+    const { strategy, completeCalls } = makeStrategy(async () => ({ text: 'deny' }));
+    await strategy.onToolPending({ ...PENDING });
+    assert(/FILE EDITS: must be approved individually/.test(completeCalls[0].prompt),
+      `edits-off must be stated, got:\n${completeCalls[0].prompt}`);
+  });
+
+  await run('a session-scoped write-file rule does not count as the edits grant', async () => {
+    // Mirrors EditBase.isPermitted / isFileEditingAllowed exactly: file-write
+    // permission is conversation-scoped, so a session-scoped rule authorises
+    // nothing. Telling the reviewer otherwise would manufacture allows for a
+    // conversation where every edit still prompts.
+    const { strategy, completeCalls } = makeStrategy(async () => ({ text: 'deny' }), {
+      rules: [{ itemType: 'write-file', kind: 'boolean', value: true, scope: 'session' }]
+    });
+    await strategy.onToolPending({ ...PENDING });
+    assert(/FILE EDITS: must be approved individually/.test(completeCalls[0].prompt),
+      `a session-scoped rule must not read as granted, got:\n${completeCalls[0].prompt}`);
+  });
+
+  await run('a thread with no permission surface still reviews (no throw, no claim)', async () => {
+    // Fail-closed cuts both ways: an unreadable permission model must degrade to
+    // omitting the line, never to a thrown review that silently disables the
+    // whole feature.
+    const { strategy, completeCalls, resolveCalls } = makeStrategy(async () => ({ text: 'allow' }),
+      { noPermissions: true });
+    await strategy.onToolPending({ ...PENDING });
+    assert(completeCalls.length === 1, 'the review must still run');
+    assert(resolveCalls.length === 1, 'a clean allow must still approve');
+    assert(!completeCalls[0].prompt.includes('FILE EDITS'),
+      `an unknown toggle must not be asserted, got:\n${completeCalls[0].prompt}`);
   });
 
   await run('state.reviewerModel overrides the default cheap model', async () => {
