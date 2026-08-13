@@ -4,7 +4,9 @@ Yes, it's another AI coding agent. The industry definitely needed one more.
 
 If Juggler has an angle, it's that it's for people who want to be more hands-on over what the LLM is doing to their codebase. It gives you a visual workbench: inspectable tool calls, branching threads, editable context.
 
-More blurb on the website: [https://juggler.studio](https://juggler.studio)
+It's built by the developer behind [JUCE](https://juce.com), [Tracktion](https://www.tracktion.com) and [Cmajor](https://cmajor.dev). It's free and open-source, with no signup: just download the Go binary and run it.
+
+More blurb on the website: [https://juggler.studio](https://juggler.studio) — and there's a [Discord](https://discord.gg/HyqZwKvSMd) if you want to come and say hello.
 
 <p align="center">
   <img src="https://juggler.studio/assets/screenshot-main.webp" alt="Juggler's Miller-column workbench: tool calls, item properties and nested sub-threads" width="880">
@@ -13,13 +15,13 @@ More blurb on the website: [https://juggler.studio](https://juggler.studio)
 
 And here's the TL;DR:
 
-- **It is a proper GUI.** This is not a console app. It's all about graphical visual navigation, inspection, and control.
+- **It is a proper GUI.** Using a code agent means editing big chunks of multi-line text and getting hosed with information you need to absorb — I find a terminal horrible for that. Juggler is all about visual navigation, inspection, and control.
 - **The session is a tree, not a doom-scroll.** It's a Yjs document, not a transcript. Create sub-threads, drill down, backtrack, compare, and edit.
 - **Sessions are persistent and stateful.** Because a session is a document on disk, you can quit or relaunch and it resumes every conversation exactly where you left it. That even includes states such as an agent waiting for user approval. You can restart, reconnect, and the approval dialog will be there waiting for you.
 - **Everything is inspectable.** Tool calls, approvals, thread structure, item properties, raw context — laid out in Finder-style Miller columns for fast navigation.
-- **It's plugins all the way down.** Context items, slash commands, LLM loop strategies, and their UIs are JavaScript extensions you can inspect, fork, or replace.
+- **It's plugins all the way down.** Context items, slash commands, LLM loop strategies, and their UIs are JavaScript extensions you can inspect, fork, or replace. MCP servers and skills plug into the same document, so anything you've already set up comes along.
 - **It runs locally, remotely, or both at once.** Use the same session with the same UI in the native desktop app, and/or browsers. Multiple clients can attach to the same session.
-- **It talks to the usual model zoo.** Claude Code (via CLI or API), OpenAI (codex plan or API), Gemini, Ollama, OpenRouter, Z.AI, Deepseek, etc.
+- **It talks to the usual model zoo.** Claude Code (via CLI or API), OpenAI (Codex plan or API), GitHub Copilot, Gemini, Mistral, Z.ai, Ollama, OpenRouter, Deepseek, etc. Bring the subscription you already pay for, or your own API keys.
 
 ----------
 
@@ -82,6 +84,8 @@ The core app manages the document and orchestration. Almost all the objects that
 - **Strategies** — high-level LLM loops such as `plan`, `research`, or your own fever-dream inventions are plugins too.
 - **Commands** — slash commands like `/clear` and `/compact` are all just plugins that manipulate the session document.
 
+Every tool, even basics like read/write/bash, is a plugin you can swap out. MCP servers and skills plug into the same document, so anything you've already set up comes along.
+
 Not every LLM workflow wants to live as a headless Python script skulking in a terminal. If an orchestration idea needs its own UI, controls, or visualisation, Juggler is a platform for that.
 
 <p align="center">
@@ -108,9 +112,21 @@ That means you can run the server where the code lives — local workstation, de
 
 #### Model support
 
-Juggler connects to the usual suspects: Claude Code (via CLI or API), OpenAI (codex plan or API), Gemini, Ollama, OpenRouter, Z.AI, Deepseek, etc. It's easy to add more providers, so if yours is missing, ask your friendly neighbourhood LLM to add it as a PR.
+Juggler connects to the usual suspects: Claude Code (via CLI or API), OpenAI (Codex plan or API), GitHub Copilot, Gemini, Mistral, Z.ai, Ollama, OpenRouter, Deepseek, etc. Bring the subscription you already pay for, or your own API keys. It's easy to add more providers, so if yours is missing, ask your friendly neighbourhood LLM to add it as a PR.
 
 How Juggler keeps every request inside the model's context window — limits, admission, and automatic history recovery: [`docs/context-window.md`](docs/context-window.md).
+
+----------
+
+## Status and roadmap
+
+Juggler is still very new, and since its release I've churned out hundreds of changes in response to feedback from people trying it out: some big new features, lots of stability fixes, and lots of UX nitpicks. The big features coming next:
+
+- **A "workspace" abstraction.** The filesystem and execution environment a task runs in becomes an abstraction, so plugins can add worktrees, remote SSH to build machines, sandboxing, and other exotic environments.
+- **Recursive Language Models.** Juggler's thread-folding architecture already does the hard part, so I just need the remaining plumbing to let a model search its own history.
+- **The terminal app becomes a real server.** One machine, many clients, many projects, plus (optional!) user accounts, so you can log in anywhere and enumerate your own servers.
+
+Constructive feedback is welcome — come and say hello on the [Discord](https://discord.gg/HyqZwKvSMd). But be gentle! This isn't being developed by a huge team at a trillion-dollar AI company; it's a one-man side-hustle.
 
 ----------
 
@@ -133,7 +149,7 @@ Windows binaries cross-compile from any host with `make build-windows`; the Linu
 
 ## Tech stack
 
-Juggler is a simple native app without baggage. The backend is Go, using Wails for windowing. The UI is HTML/JS served by the Go backend. Session documents are stored and synchronised with Yjs. Extensions are JavaScript. It doesn't use electron.
+Juggler is a simple native app without baggage — no node, no electron, no dependencies to install. The backend is Go, using Wails for windowing. The UI is HTML/JS served by the Go backend. Session documents are stored and synchronised with Yjs. Extensions are JavaScript.
 
 The frontend is type-checked JavaScript rather than TypeScript: types live in JSDoc and are enforced in CI with strict static linting. There's no build step between source and what ships.
 
