@@ -61,6 +61,19 @@ class EngineApp {
       console.info('[Engine] Plugin registries reloaded');
     });
 
+    // The enabled/disabled capability set is per-project — the server resolves
+    // it with core.LoadConfig(projectPath) — so a project switch changes which
+    // context items, strategies and commands should be registered. A viewer
+    // picks that up by reloading the page; the engine is persistent across the
+    // switch and would otherwise keep serving the previous project's set,
+    // offering the model tools this project disables (or withholding ones it
+    // enables). Same deferred reload as a plugin toggle.
+    wsService.on('project-changed', async () => {
+      console.info('[Engine] Project changed — reloading registries');
+      await reloadRegistries();
+      console.info('[Engine] Project registries reloaded');
+    });
+
     // Initialize services
     this._llmState = new LLMState();
 

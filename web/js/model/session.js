@@ -713,7 +713,9 @@ class Session {
         // exposing the PREVIOUS project's root to the model, which then reads /
         // globs the old tree while the header bar shows the new project.
         if (isEngine()) {
-          this._applyEngineProjectRoot(/** @type {{projectPath?: string}} */ (data)?.projectPath);
+          // Fire-and-forget: the reseed it kicks off guards its own failures,
+          // and the websocket callback must not block on a session refetch.
+          void this._applyEngineProjectRoot(/** @type {{projectPath?: string}} */ (data)?.projectPath);
           return;
         }
         // Viewers: hard reload — the worker manager, conversation tabs, context
@@ -753,12 +755,120 @@ class Session {
    * read per run, so a switched project stops leaking the previous root to the
    * model. No-op-safe for viewers (they hard-reload instead); only the engine
    * realm calls this.
+   *
+   * The path is repointed synchronously (callers and the sandbox read it
+   * immediately); the rest of the project-scoped state a viewer gets free from
+   * its reload is reseeded asynchronously — see
+   * {@link _reseedProjectScopedState}, whose promise is returned so callers
+   * that care can await the full switch.
    * @param {string} [newPath] - The switched-to project root ("" = no project)
+   * @returns {Promise<void>} Resolves once the project-scoped state is reseeded
    */
   _applyEngineProjectRoot(newPath) {
     this.projectPath = newPath || '';
     /** @type {any} */ (globalThis).__jugglerProjectRoot =
       toSandboxProjectRoot(this.projectPath);
+    workerManager.setProjectPath(this.projectPath);
+    this._releaseProjectScopedConversations();
+    return this._reseedProjectScopedState();
+  }
+
+  /**
+   * Release the previous project's conversations from the engine on a switch.
+   *
+   * Conversations are project-bound (transcript folder, Yjs doc, context
+   * items), and the server already dropped them as part of the switch
+   * (`conversationCache.CloseAllConversations`). A viewer sheds them by
+   * reloading; the persistent engine would otherwise hold every doc it had
+   * touched for the rest of the process, and judge their parked approvals
+   * against the NEXT project's permission rules.
+   *
+   * Only client-side bookkeeping is torn down: `workerManager.terminateAll`
+   * clears local worker tracking without killing the server-lifetime workers,
+   * which deliberately outlive a switch. If one of those is still live and
+   * syncs again, the ordinary auto-load path rebuilds the conversation against
+   * the loaded project — the authority for what exists.
+   * @private
+   */
+  _releaseProjectScopedConversations() {
+    workerManager.terminateAll();
+    for (const conv of this.conversations.values()) {
+      try {
+        conv.destroy?.();
+      } catch (err) {
+        console.error('[Session] Failed to release a conversation on project switch:', err);
+      }
+    }
+    this.conversations.clear();
+    this._unloadedConversationIds = [];
+    this._conversationNames = {};
+    this._mruList = [];
+    this.visibleConversationId = null;
+  }
+
+  /**
+   * Re-read the project-scoped session state after a project switch — the work
+   * a viewer gets for free by hard-reloading into a fresh `_doLoad`.
+   *
+   * `session.metadata` is where session-scoped permission rules
+   * (`sessionPermissionRules`) and folder grants (`sessionAllowedPaths`) live,
+   * and it belongs to ONE project's `session.json`. The engine is persistent
+   * across a switch, so without this it keeps serving the previous project's
+   * rules while `projectPath` already names the new one — the two halves
+   * `isPermitted` reads disagree. A command matching a standing rule of the
+   * switched-to project is then wrongly parked for approval, and the suggestion
+   * engine offers to add the very rule the user already has; conversely the old
+   * project's folder grants would still authorise commands here.
+   *
+   * Metadata is REPLACED, not patched: a switch means a different session.json,
+   * so a key absent from the new project must disappear rather than linger.
+   * A switch that lands while this is in flight wins — the late response is
+   * dropped rather than reinstating the project we just left.
+   * @returns {Promise<void>} Resolves once metadata/history are reseeded
+   * @private
+   */
+  async _reseedProjectScopedState() {
+    const requestedFor = this.projectPath;
+    /** @type {SessionData|null} */
+    let data = null;
+    try {
+      data = await this._apiService.getSession();
+    } catch (error) {
+      console.error('[Session] Failed to reload session state after a project switch:', error);
+      return;
+    }
+    if (this.projectPath !== requestedFor) return;
+
+    if (data.platform) this.platform = data.platform;
+    if (data.home) this.home = data.home;
+    this.messageHistory = Array.isArray(data.messageHistory)
+      ? data.messageHistory.map(normalizeHistoryEntry)
+      : [];
+
+    const metadata = data.metadata || {};
+    this.metadata = metadata;
+    this._notify('session:metadata-changed', {
+      keys: Object.keys(metadata),
+      metadata,
+      remote: true
+    });
+
+    // The switch already released the previous project's conversations, so this
+    // covers the race window between that and the metadata landing: a worker
+    // that syncs in between auto-loads a conversation which evaluates its
+    // approvals against the outgoing rules. Re-judge them against the loaded
+    // project's, so a command covered by a standing rule here stops waiting on
+    // an approval it never needed.
+    for (const conversation of this.conversations.values()) {
+      try {
+        approvePermittedPendingApprovals(conversation, {
+          allowViewer: true,
+          itemTypes: ['execute', 'write-file']
+        });
+      } catch (err) {
+        console.error('[Session] permission re-check failed after a project switch:', err);
+      }
+    }
   }
 
   /**

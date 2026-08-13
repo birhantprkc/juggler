@@ -223,6 +223,25 @@ class WorkerManager {
   }
 
   /**
+   * Repoint the project root every subsequently-spawned worker is initialised
+   * with, after a runtime project switch.
+   *
+   * `init` runs once per client, but the engine is persistent across
+   * SwitchProject and keeps spawning workers afterwards (a yjs-sync for an
+   * unknown conversation triggers `_autoLoadConversation` → `_spawnWorker`).
+   * The config is sent verbatim in each worker's `init` message and becomes the
+   * worker's `projectPath` server-side, which is what its transcript logs,
+   * persistence and transaction store are keyed on — so a stale value writes
+   * the new project's conversation into the previous project's directory.
+   * No-op before `init` (nothing to repoint yet).
+   * @param {string} projectPath - The switched-to project root ("" = no project)
+   */
+  setProjectPath(projectPath) {
+    if (!this._config) return;
+    this._config = { ...this._config, projectPath: projectPath || '' };
+  }
+
+  /**
    * Handle incoming worker message from WebSocket
    * Unwraps the envelope and routes to internal message handler
    * @param {{type: string, conversationId: string, workerMsgType: string, payload: object}} envelope - Worker message envelope

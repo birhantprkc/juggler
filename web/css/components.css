@@ -4550,9 +4550,11 @@ composer-box .permission-btn.open {
 }
 
 /* Edit-family toggle. It shares the .gitignore search-scope toggle's visual
- * language — a borderless tick/cross line that fills its card — so both
- * permission toggles read as state checkboxes, not action buttons. The whole
- * box is the click target; a subtle hover signals it flips the permission. */
+ * language — a tick/cross line that fills its card — so both permission
+ * toggles read as state checkboxes rather than action buttons. The whole box
+ * is the click target: at rest it is unframed, and on hover it picks up a
+ * border and a tinted background so it is unmistakably clickable. The resting
+ * border is transparent rather than absent, so hovering never shifts the row. */
 .permissions-popup .plugin-section-wrapper[data-section-id="write-file"] {
     padding: 0.375rem 0.5rem;
 }
@@ -4563,17 +4565,20 @@ composer-box .permission-btn.open {
     width: 100%;
     justify-content: flex-start;
     gap: 0.375rem;
-    padding: 0.125rem;
+    padding: 0.25rem 0.375rem;
     height: auto;
-    border: none;
+    border: 0.0625rem solid transparent;
+    border-radius: 0.25rem;
     background: none;
     font-size: 0.75rem;
     color: var(--text-secondary);
     cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
 }
 
 .permissions-popup .write-file-btn:hover {
-    background: none;
+    border-color: var(--accent-blue);
+    background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
     color: var(--text-primary);
 }
 
@@ -4600,10 +4605,11 @@ composer-box .permission-btn.open {
     color: var(--text-tertiary);
 }
 
-/* The .gitignore search-scope toggle is a rarely-needed control, so it keeps
- * its section card but stays low-key inside it: a borderless tick/cross line,
- * not a prominent framed button like the edit toggle. The card's own
- * background (from .plugin-section-wrapper) is retained. */
+/* The .gitignore search-scope toggle keeps its section card and stays low-key
+ * inside it: an unframed tick/cross line at rest that, like the edit toggle,
+ * gains a border and tinted background on hover to advertise that the whole
+ * line is a clickable switch. The card's own background (from
+ * .plugin-section-wrapper) is retained. */
 .permissions-popup .plugin-section-wrapper[data-section-id="search-scope"] {
     padding: 0.375rem 0.5rem;
 }
@@ -4614,17 +4620,20 @@ composer-box .permission-btn.open {
     width: 100%;
     justify-content: flex-start;
     gap: 0.375rem;
-    padding: 0.125rem;
+    padding: 0.25rem 0.375rem;
     height: auto;
-    border: none;
+    border: 0.0625rem solid transparent;
+    border-radius: 0.25rem;
     background: none;
     font-size: 0.75rem;
     color: var(--text-secondary);
     cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
 }
 
 .permissions-popup .search-scope-btn:hover {
-    background: none;
+    border-color: var(--accent-blue);
+    background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
     color: var(--text-primary);
 }
 
