@@ -38,6 +38,12 @@ type transientCLIError struct {
 	// diag is an optional exit-status annotation ("exit status 1",
 	// "signal: killed") filled in by finalizeTurn once the dead CLI is reaped.
 	diag string
+	// ladderExhausted marks the retryLadderCap failure: the CLI was alive and
+	// retrying the whole time, so the upstream is persistently overloaded
+	// rather than the process having died. Re-dispatching immediately would
+	// just re-enter the same ladder, so the turn-level retry skips these —
+	// they still count as stalls for the circuit breaker.
+	ladderExhausted bool
 }
 
 func (e *transientCLIError) Error() string {
@@ -48,10 +54,29 @@ func (e *transientCLIError) Error() string {
 }
 
 // isTransientCLIError reports whether err (or anything it wraps) is a
-// transientCLIError — the retry predicate.
+// transientCLIError — CLI infrastructure failed rather than the API returning
+// a definitive result. Drives the circuit-breaker's stall bookkeeping.
 func isTransientCLIError(err error) bool {
 	var t *transientCLIError
 	return errors.As(err, &t)
+}
+
+// isRetryableCLIError reports whether a transient failure is worth
+// re-dispatching immediately. Everything transient qualifies except an
+// exhausted retry ladder, where the CLI already spent retryLadderCap retrying
+// this exact request — a fresh dispatch would only repeat it.
+func isRetryableCLIError(err error) bool {
+	var t *transientCLIError
+	return errors.As(err, &t) && !t.ladderExhausted
+}
+
+// isLadderExhaustedError reports whether err is the retryLadderCap failure: the
+// UPSTREAM was persistently overloaded, as distinct from this CLI session being
+// wedged. The two look alike from a distance and must not be treated alike —
+// see the circuit-breaker bookkeeping in dispatchTurnWithRetry.
+func isLadderExhaustedError(err error) bool {
+	var t *transientCLIError
+	return errors.As(err, &t) && t.ladderExhausted
 }
 
 // annotateExit attaches an exit-status diagnostic (e.g. "exit status 1",
@@ -78,6 +103,22 @@ func annotateExit(err error, diag string) error {
 // lets the turn surface a clear error and be retried. Generous so it never
 // trips on first-token latency; a package var so tests can shrink it.
 var streamIdleTimeout = 120 * time.Second
+
+// retryLadderCap bounds how long a single turn may sit in the CLI's own in-band
+// backoff ladder without making progress. The CLI retries an overloaded
+// upstream (HTTP 529) itself, announcing each attempt as a system/api_retry
+// line. Those lines are LIVENESS, not PROGRESS: they keep resetting
+// streamIdleTimeout, so the silence watchdog alone can never end a turn whose
+// upstream is persistently overloaded — the turn would run until the worker's
+// 30-minute LLMTimeout backstop with the UI still claiming to receive.
+//
+// Generous enough to ride out a normal backoff ladder (which recovers in tens
+// of seconds, and disarms the cap the moment it does), short enough to report a
+// genuinely unavailable upstream while the user is still watching — and short
+// enough to pre-empt the CLI's own give-up, which takes about five minutes to
+// arrive as an in-band 529 the worker then retries from scratch. A package var
+// so tests can shrink it.
+var retryLadderCap = 2 * time.Minute
 
 // turnResult holds the results from a single CLI invocation.
 type turnResult struct {
@@ -118,6 +159,12 @@ type turnResult struct {
 	// second above it parks nothing on our side — see the message_delta arm.
 	dispatchableThisCall int
 	cliServedThisCall    int
+
+	// retryNotices counts system/api_retry lines seen this turn — the CLI
+	// announcing its own in-band backoff against an overloaded upstream. The
+	// read loop watches this to tell "alive but retrying" apart from "making
+	// progress"; see retryLadderCap.
+	retryNotices int
 }
 
 // partialBlock accumulates a single content block's incremental data as
@@ -139,10 +186,24 @@ type partialBlock struct {
 //
 // Detecting end_turn from the stream itself (rather than waiting for stdout to
 // close) is what lets persistent CLI processes survive across juggler turns.
-func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider.StructuredStreamCallback) (*turnResult, int, error) {
+func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider.StructuredStreamCallback) (res *turnResult, toolUses int, err error) {
 	if c.activeSession == nil {
 		return nil, 0, fmt.Errorf("no active session")
 	}
+
+	// Named returns exist for this: every exit from the loop below — clean
+	// pause, end_turn, stall, CLI death, cancel — reports how long it read for
+	// and why it stopped, so a turn that ends without a visible error still
+	// leaves a trace of which arm it took.
+	armedAt := time.Now()
+	defer func() {
+		stop := ""
+		if res != nil {
+			stop = res.StopReason
+		}
+		jlog.Debug("claudecode read loop exited after %v (stop=%q toolUses=%d err=%v)",
+			time.Since(armedAt).Round(time.Millisecond), stop, toolUses, err)
+	}()
 
 	// Capture the live-CLI stream channels up front. Every caller reaches here
 	// with a live CLI; if there is none, content stays nil and the select
@@ -172,10 +233,47 @@ func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider
 		idle.Reset(streamIdleTimeout)
 	}
 
+	// Retry-ladder cap: armed by the first api_retry notice of a stretch and
+	// dropped by the next line carrying real progress. Starts stopped, so a
+	// turn that never sees a retry notice is never subject to it.
+	ladder := time.NewTimer(retryLadderCap)
+	if !ladder.Stop() {
+		<-ladder.C
+	}
+	defer ladder.Stop()
+	ladderArmed := false
+	armLadder := func() {
+		if ladderArmed {
+			return
+		}
+		ladder.Reset(retryLadderCap)
+		ladderArmed = true
+	}
+	disarmLadder := func() {
+		if !ladderArmed {
+			return
+		}
+		if !ladder.Stop() {
+			select {
+			case <-ladder.C:
+			default:
+			}
+		}
+		ladderArmed = false
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return result, toolUseCount, ctx.Err()
+
+		case <-ladder.C:
+			ladderArmed = false
+			return result, toolUseCount, &transientCLIError{
+				msg: fmt.Sprintf("claude CLI stream stalled: %s of provider retries with no progress (upstream persistently overloaded)",
+					retryLadderCap),
+				ladderExhausted: true,
+			}
 
 		case <-idle.C:
 			stderr := ""
@@ -227,11 +325,21 @@ func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider
 				continue
 			}
 
+			noticesBefore := result.retryNotices
 			pause, count, err := c.processStreamLineWithEarlyReturn(line, result, callback)
 			if err != nil {
 				return result, toolUseCount, err
 			}
 			toolUseCount += count
+
+			// A retry notice re-armed the idle window above without the turn
+			// having moved. Put it on the ladder clock instead; any line that
+			// carries real progress takes it back off.
+			if result.retryNotices > noticesBefore {
+				armLadder()
+			} else {
+				disarmLadder()
+			}
 
 			if pause {
 				result.StopReason = "tool_use"
@@ -273,6 +381,7 @@ func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResul
 				ErrorStatus  int     `json:"error_status"`
 				Error        string  `json:"error"`
 			}
+			result.retryNotices++
 			if json.Unmarshal([]byte(line), &retry) == nil {
 				delaySec := int(retry.RetryDelayMs/1000 + 0.5)
 				statusMsg := fmt.Sprintf("Rate limited (HTTP %d) — retrying (%d/%d, waiting %ds)",

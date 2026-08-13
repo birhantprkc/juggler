@@ -49,6 +49,18 @@ const (
 	fakeModeAlwaysExit     = "always_exit"      // every spawn exits with no result (retry never succeeds)
 	fakeModeStreamThenExit = "stream_then_exit" // streams a complete text block, then exits with no end_turn
 
+	// fakeModeRetryLadder models a CLI wedged in a permanent in-band backoff:
+	// the upstream keeps answering 529, so the CLI emits system/api_retry
+	// notices indefinitely and never produces content or a terminal stop
+	// reason. The notices prove the process is ALIVE without it making any
+	// PROGRESS — the shape that must still fail the turn in bounded time.
+	fakeModeRetryLadder = "retry_ladder"
+
+	// fakeRetryNoticeInterval is the gap between fakeModeRetryLadder notices.
+	// Well under any idle window a test shrinks to, so the notices always
+	// arrive in time to re-arm it.
+	fakeRetryNoticeInterval = 25 * time.Millisecond
+
 	// fakeModeWedgeOnResume models a CLI-side session that has become wedged:
 	// any --resume of the ORIGINAL captured uuid produces no output (a
 	// backed-up stdin queue / corrupt transcript), but a cold start — a bare
@@ -56,6 +68,13 @@ const (
 	// Drives the consecutive-stall circuit breaker that must abandon the
 	// wedged uuid and cold-start instead of locking up forever.
 	fakeModeWedgeOnResume = "wedge_on_resume"
+
+	// fakeModeLadderOnResume is fakeModeWedgeOnResume's overload twin: a
+	// --resume of the original uuid streams api_retry notices forever (the CLI
+	// is healthy and talking to us; the UPSTREAM is overloaded), while a cold
+	// start works. Distinguishes "this session is wedged, escape it" from
+	// "this provider is down, say so" — the two must not be treated alike.
+	fakeModeLadderOnResume = "ladder_on_resume"
 
 	// fakeModeScript is the fully scriptable, tape-recording mode used by the
 	// permutation harness. Unlike the fixed modes above, its per-turn tool
@@ -244,6 +263,51 @@ func runFakeClaude() {
 			"event": map[string]any{"type": "content_block_stop", "index": 0},
 		})
 		return
+	case fakeModeRetryLadder:
+		// One retry notice per interval and nothing else, ever. Bounded only
+		// so a failing test can't leave the helper process spinning; every
+		// caller kills us long before the count runs out.
+		emitInit()
+		for attempt := 1; attempt <= 4000; attempt++ {
+			emit(out, map[string]any{
+				"type": "system", "subtype": "api_retry",
+				"attempt": attempt, "max_retries": 10,
+				"retry_delay_ms": 1000, "error_status": 529,
+				"error": "Overloaded",
+			})
+			time.Sleep(fakeRetryNoticeInterval)
+		}
+		return
+	case fakeModeLadderOnResume:
+		ladderWedged := sessionID
+		sid := resumeID
+		if sid == "" {
+			sid = sessionID
+		}
+		emit(out, map[string]any{"type": "system", "subtype": "init", "session_id": sid})
+		if resumeID == ladderWedged {
+			// Warm resume: alive and announcing retries, forever.
+			for attempt := 1; attempt <= 4000; attempt++ {
+				emit(out, map[string]any{
+					"type": "system", "subtype": "api_retry",
+					"attempt": attempt, "max_retries": 10,
+					"retry_delay_ms": 1000, "error_status": 529,
+					"error": "Overloaded",
+				})
+				time.Sleep(fakeRetryNoticeInterval)
+			}
+			return
+		}
+		turn := 0
+		ladderScanner := bufio.NewScanner(os.Stdin)
+		ladderScanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for ladderScanner.Scan() {
+			if !fakeStdinIsUserTurn(ladderScanner.Bytes()) {
+				continue
+			}
+			turn++
+			emitTextTurn(out, fmt.Sprintf("turn %d", turn), 1000*(turn+1))
+		}
 	case fakeModeWedgeOnResume:
 		// The wedged session id is the one this fake mints at init
 		// (envFakeSession). A --resume of THAT id is the warm-resume path and

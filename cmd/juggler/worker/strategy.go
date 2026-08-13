@@ -28,6 +28,16 @@ const (
 	ToolExecTimeout = 2 * time.Minute
 	ContextTimeout  = 30 * time.Second
 
+	// MaxLLMRetryWindow caps the total wall-clock time a retry sequence may
+	// spend failing before the error is surfaced instead of retried again.
+	// MaxLLMRetries alone bounds only the COUNT, and an attempt is not cheap:
+	// a provider that runs its own internal backoff ladder (the claude CLI
+	// against an overloaded upstream) can take minutes to report a single
+	// failure, so three attempts could burn a quarter of an hour with the user
+	// watching a spinner. Retries exist to paper over a blip; once this much
+	// time has gone, the outage is not a blip and the user deserves to be told.
+	MaxLLMRetryWindow = 5 * time.Minute
+
 	// LLMTimeout is a coarse wall-clock backstop on one waitForLLMResponse,
 	// NOT the primary stream-liveness guard. Liveness now lives at the provider
 	// boundary: every streaming provider arms an idle watchdog
@@ -565,33 +575,66 @@ func (w *ConversationWorker) insertBarrenStallPlaceholder() {
 // callLLMWithRetry calls the LLM with rate-limit retry handling.
 // Returns ErrCancelled if the user cancelled, ErrRestartStrategy if a new user
 // message arrived during a rate-limit wait (caller must continue strategyLoop).
+//
+// Retries are bounded twice over: by MaxLLMRetries (how many) and by
+// MaxLLMRetryWindow (how long in total). The second bound is the load-bearing
+// one whenever a single attempt is expensive.
 func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse, error) {
 	for attempt := 0; attempt < MaxLLMRetries; attempt++ {
-		w.sendStatus("streaming", "")
+		// Only the first attempt claims to be receiving. A retry keeps the
+		// "retrying" spinner until real content arrives (clearRetryingStatus),
+		// because the fresh attempt may itself spend minutes inside the
+		// provider's own backoff before producing anything.
+		if attempt == 0 {
+			w.sendStatus("streaming", "")
+		}
 		w.batcher.Flush()
 
+		attemptStart := time.Now()
 		response, err := w.callLLM(req)
 		if err == nil {
+			w.resetLLMRetryBudget()
 			return response, nil
 		}
 
+		// Only time spent FAILING is charged to the budget, so a long healthy
+		// turn followed by a single blip still gets its full allowance.
+		w.llmRetrySpent += time.Since(attemptStart)
+
 		var rErr retryableError
 		if !errors.As(err, &rErr) || attempt == MaxLLMRetries-1 {
+			w.resetLLMRetryBudget()
+			return nil, err
+		}
+
+		if w.llmRetrySpent >= MaxLLMRetryWindow {
+			w.log.Info("Retryable LLM error (%v), but %v has already gone on retries (budget %v) — surfacing instead of retrying again",
+				err, w.llmRetrySpent.Round(time.Second), MaxLLMRetryWindow)
+			w.resetLLMRetryBudget()
 			return nil, err
 		}
 
 		wait := rErr.retryWait()
-		w.log.Info("Retryable LLM error (%v), retrying in %v (attempt %d/%d)", err, wait, attempt+1, MaxLLMRetries)
-		w.sendStatus("retrying", rErr.retryStatus(attempt+1, MaxLLMRetries))
+		w.log.Info("Retryable LLM error (%v), retrying in %v (attempt %d/%d, %v of %v budget spent)",
+			err, wait, attempt+1, MaxLLMRetries, w.llmRetrySpent.Round(time.Second), MaxLLMRetryWindow)
+
+		status := rErr.retryStatus(attempt+1, MaxLLMRetries)
+		if w.llmRetrySpent >= time.Minute {
+			status = fmt.Sprintf("%s — %s so far", status, w.llmRetrySpent.Round(time.Second))
+		}
+		w.sendRetryingStatus(status)
 		w.batcher.Flush()
 
 		res := w.waitForRetryDelay(wait)
 		if res.Cancelled {
 			w.currentTxnID = ""
+			w.resetLLMRetryBudget()
 			return nil, ErrCancelled
 		}
 		if res.NewMessage {
+			// A new user message is a new intent, and gets a fresh allowance.
 			w.currentTxnID = ""
+			w.resetLLMRetryBudget()
 			return nil, ErrRestartStrategy
 		}
 
@@ -600,6 +643,33 @@ func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse
 		w.streaming.thinkingContent = ""
 	}
 	return nil, errors.New("unexpected retry loop exit")
+}
+
+// resetLLMRetryBudget ends the current retry sequence's wall-clock accounting.
+// Called on every exit from callLLMWithRetry — success, terminal error, cancel,
+// or a new user message — so the next sequence starts with a full allowance.
+func (w *ConversationWorker) resetLLMRetryBudget() {
+	w.llmRetrySpent = 0
+}
+
+// sendRetryingStatus publishes the "retrying" spinner and latches it so the
+// label survives into the next attempt. Without the latch the loop announced a
+// retry and then immediately claimed to be streaming again, so the UI read
+// "Receiving" for however long the fresh attempt spent backing off.
+func (w *ConversationWorker) sendRetryingStatus(message string) {
+	w.llmRetryStatusActive = true
+	w.sendStatus("retrying", message)
+}
+
+// clearRetryingStatus flips the spinner off "retrying" once real content
+// arrives. Only content may do this: merely starting an attempt proves nothing,
+// which is exactly the mistake that made the spinner lie.
+func (w *ConversationWorker) clearRetryingStatus() {
+	if !w.llmRetryStatusActive {
+		return
+	}
+	w.llmRetryStatusActive = false
+	w.sendStatus("streaming", "")
 }
 
 // finalizeCancellation handles cleanup when runStrategyLoop exits due to cancellation.

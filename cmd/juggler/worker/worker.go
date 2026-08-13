@@ -221,6 +221,21 @@ type ConversationWorker struct {
 	// the round-trip carries the id without each call site having to plumb it.
 	currentTxnID string
 
+	// llmRetrySpent accumulates wall-clock time spent on FAILED LLM attempts in
+	// the current retry sequence. Counting attempts alone bounds nothing: a
+	// single attempt can cost minutes when the provider runs its own internal
+	// backoff before reporting, so MaxLLMRetries alone permitted a quarter-hour
+	// of silence. It lives on the worker rather than in callLLMWithRetry so a
+	// strategy-loop restart resumes the same budget instead of beginning a
+	// fresh ladder. Reset by resetLLMRetryBudget when the sequence ends.
+	llmRetrySpent time.Duration
+
+	// llmRetryStatusActive is true while the spinner is showing "retrying" and
+	// no content has arrived since. It keeps the honest label up for the whole
+	// of the next attempt — which may itself spend minutes backing off — until
+	// real content flips it back; see clearRetryingStatus.
+	llmRetryStatusActive bool
+
 	// processingStartedAt is the single anchor every client renders the spinner's
 	// elapsed digit against (mirrored into processingState.startedAt). The whole
 	// timer is just this one number: clients show `now - startedAt`, or nothing

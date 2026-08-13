@@ -98,6 +98,61 @@ func TestCallLLMWithRetryRetriesRateAndTransientErrors(t *testing.T) {
 	}
 }
 
+// TestCallLLMWithRetryStopsWhenRetryBudgetSpent: retries are bounded by
+// wall-clock as well as by count. When a single attempt is expensive — a
+// provider CLI that runs its own internal backoff ladder against an overloaded
+// upstream before reporting anything — MaxLLMRetries alone bounds nothing, and
+// three attempts become a quarter-hour of silence.
+func TestCallLLMWithRetryStopsWhenRetryBudgetSpent(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	calls := 0
+	w.llmCallFunc = func(context.Context, json.RawMessage, func(StreamChunk)) (*LLMResponse, error) {
+		calls++
+		return nil, &TransientError{Wait: time.Nanosecond, Message: "overloaded"}
+	}
+
+	// Earlier attempts in this sequence already used the whole allowance.
+	w.llmRetrySpent = MaxLLMRetryWindow
+
+	_, err := w.callLLMWithRetry(nil)
+	if err == nil {
+		t.Fatal("expected the transient error to surface once the retry budget was spent")
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want 1 — an exhausted budget must not buy another attempt", calls)
+	}
+	if w.llmRetrySpent != 0 {
+		t.Fatalf("llmRetrySpent = %v, want 0 — the budget must reset when the sequence ends", w.llmRetrySpent)
+	}
+}
+
+// TestRetryingStatusClearedOnlyByContent: the "retrying" spinner must survive
+// into the next attempt and be cleared only by real content. Clearing it on
+// anything weaker is what let the UI report "Receiving" for minutes while the
+// fresh attempt was still silently backing off.
+func TestRetryingStatusClearedOnlyByContent(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	w.sendRetryingStatus("Rate limited, retrying (1/3)")
+	if !w.llmRetryStatusActive {
+		t.Fatal("sendRetryingStatus must latch the retrying label")
+	}
+
+	// A provider phase label is liveness, not progress.
+	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeStatus, Content: "Waiting for response"})
+	if !w.llmRetryStatusActive {
+		t.Fatal("a status chunk cleared the retrying label — only real content may")
+	}
+
+	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeText, Content: "hello"})
+	if w.llmRetryStatusActive {
+		t.Fatal("real content must clear the retrying label")
+	}
+}
+
 func TestClassifyLLMErrorPreservesTypedCause(t *testing.T) {
 	tests := []struct {
 		name string

@@ -347,21 +347,38 @@ func (c *Client) dispatchTurnWithRetry(ctx context.Context, req provider.Message
 
 		res, err := c.dispatchTurn(ctx, req, wrapped)
 
+		// Every failed attempt is logged here, including the ones that return
+		// without retrying below. A silent return leaves a respawn in the log
+		// with no reason attached, which is indistinguishable from the turn
+		// simply restarting on its own.
+		if err != nil {
+			jlog.Info("[claudecode] turn attempt %d/%d failed conv=%s (transient=%v streamed=%v ctxErr=%v): %v",
+				attempt+1, cliMaxRetries+1, shortID(req.ConversationID),
+				isTransientCLIError(err), streamed, ctx.Err(), err)
+		}
+
 		// Circuit-breaker bookkeeping: only consecutive transient stalls/exits
 		// accumulate. A clean success or a definitive (non-transient) error
 		// means the session isn't wedged, so reset. The count persists across
 		// turns on the Client, so a wedge that spans user submissions still
 		// escalates to a cold start on the next dispatch (see dispatchTurn).
-		if err == nil || !isTransientCLIError(err) {
+		switch {
+		case err == nil || !isTransientCLIError(err):
 			c.consecutiveStalls = 0
-		} else {
+		case isLadderExhaustedError(err):
+			// Upstream overload, NOT a wedged session: the CLI streamed its
+			// retry notices to us throughout, so the session and its prompt
+			// cache are healthy. Cold-starting here would torch that cache and
+			// re-send a LARGER request into the same overloaded upstream, so
+			// leave the breaker's count alone and let the error surface.
+		default:
 			c.consecutiveStalls++
 		}
 
 		if err == nil || attempt >= cliMaxRetries {
 			return res, err
 		}
-		if ctx.Err() != nil || !isTransientCLIError(err) || streamed {
+		if ctx.Err() != nil || !isRetryableCLIError(err) || streamed {
 			// Cancelled, a definitive (non-transient) error, or content has
 			// already streamed — none are safely retryable.
 			return res, err

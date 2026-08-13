@@ -89,6 +89,75 @@ func TestRetry_TransientCLIExitGivesUp(t *testing.T) {
 	c.dropSession(convID)
 }
 
+// TestRetry_OverloadedUpstreamSurfacesWithoutColdStart is the counterpart to
+// the wedged-session test below, and the two together draw the line the client
+// has to hold. Both look identical from a distance — a --resume that produces
+// no answer — but the causes are opposite:
+//
+//   - wedged session: the CLI is silent, so ABANDON the uuid and cold-start.
+//   - overloaded upstream: the CLI is healthy and streaming retry notices, so
+//     the session and its prompt cache are fine. Cold-starting would throw away
+//     a warm 100k-token cache and re-send a LARGER request into the very
+//     upstream that is already refusing traffic. Report it instead.
+func TestRetry_OverloadedUpstreamSurfacesWithoutColdStart(t *testing.T) {
+	fastRetryBackoff(t)
+	prevIdle, prevLadder := streamIdleTimeout, retryLadderCap
+	// A silence window long enough that only the ladder cap can end this turn:
+	// the notices never stop arriving, so the idle watchdog never fires.
+	streamIdleTimeout = 30 * time.Second
+	retryLadderCap = 300 * time.Millisecond
+	t.Cleanup(func() { streamIdleTimeout, retryLadderCap = prevIdle, prevLadder })
+
+	tracePath := installFakeClaude(t, fakeModeLadderOnResume, "uuid-ladder-resume")
+	c := mkClient(t, "claude-sonnet-4-6")
+	convID := "conv_ladder_resume"
+	ctx := context.Background()
+
+	if err := os.MkdirAll(filepath.Join(c.workingDir, ".juggler", "ladder--"+convID), 0o755); err != nil {
+		t.Fatalf("mkdir conv folder: %v", err)
+	}
+
+	// Turn 1: bare fresh start; captures uuid-ladder-resume and succeeds.
+	if _, err := c.streamMessage(ctx, provider.MessageRequest{
+		ConversationID: convID, SystemPrompt: "sys",
+		Messages: []provider.Message{userMsg("hello")},
+	}, nopCallback()); err != nil {
+		t.Fatalf("turn 1 should succeed, got: %v", err)
+	}
+	c.activeSession.tearDownLiveCLI()
+
+	// Turn 2: the resume finds an overloaded upstream and retries forever.
+	start := time.Now()
+	_, err := c.streamMessage(ctx, provider.MessageRequest{
+		ConversationID: convID, SystemPrompt: "sys",
+		Messages: []provider.Message{userMsg("hello"), assistantMsg("turn 1"), userMsg("again")},
+	}, nopCallback())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("turn 2 should surface the overload, not hang or silently succeed")
+	}
+	if !strings.Contains(err.Error(), "overloaded") {
+		t.Errorf("error should name the overloaded upstream, got: %v", err)
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("turn 2 took %v — the ladder cap did not bound the wait", elapsed)
+	}
+
+	// The breaker must NOT have been charged: nothing about this session is
+	// wedged, and a later genuine stall deserves its full allowance.
+	if c.consecutiveStalls != 0 {
+		t.Errorf("consecutiveStalls = %d, want 0 — an overloaded upstream is not evidence of a wedged session", c.consecutiveStalls)
+	}
+	// Every spawn stayed on the warm uuid; no cache-torching cold start.
+	for i, rec := range readTrace(t, tracePath) {
+		if i > 0 && rec.ResumeID != "uuid-ladder-resume" {
+			t.Errorf("spawn #%d resumed %q — an overload must not trigger a cold start", i, rec.ResumeID)
+		}
+	}
+	c.dropSession(convID)
+}
+
 // TestRetry_WedgedResumeColdStartsInsteadOfLockingUp models the production
 // lock-up: a CLI-side session whose --resume stalls forever (a backed-up stdin
 // queue / corrupt transcript). Re-resuming the same wedged uuid every turn

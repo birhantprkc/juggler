@@ -91,8 +91,10 @@ process:
 func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 	switch chunk.Type {
 	case provider.ContentBlockTypeText:
+		w.clearRetryingStatus()
 		w.processTextChunk(chunk)
 	case provider.ContentBlockTypeThinking:
+		w.clearRetryingStatus()
 		w.processThinkingChunk(chunk)
 	case provider.ContentBlockTypeProgress:
 		// Transient mid-stream progress: a running output-token estimate
