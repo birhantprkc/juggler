@@ -879,26 +879,16 @@ export class IntegrationTestHarness {
     if (!conv) {
       throw new Error(`Conversation ${conversationId} not found`);
     }
-    const rootThread = conv.rootMessageThread;
-
-    await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
-      const cleanup = () => rootThread.unobserveItemsDeep?.(check);
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error(
-          `Timeout waiting for items to sync: expected ${expectedCount}, got ${conv.rootItems.length}`
-        ));
-      }, timeout);
-      const check = () => {
-        if (conv.rootItems.length >= expectedCount) {
-          clearTimeout(timer);
-          cleanup();
-          resolve();
-        }
-      };
-      rootThread.observeItemsDeep?.(check);
-      check();
-    }));
+    // observeUntil deep-observes the root map rather than the items array: a
+    // just-duplicated conversation loads with an empty doc, so its items array
+    // does not exist until the worker's first yjs-sync creates it. Observing
+    // the array directly would silently register nothing and miss that sync.
+    await observeUntil(conv, (items) => items.length >= expectedCount, {
+      deadlineMs: this._perTestDeadlineMs,
+      signal: this._abortSignal,
+      timeoutMs: timeout,
+      label: `${expectedCount} items to sync in ${conversationId}`
+    });
   }
 
   /**
