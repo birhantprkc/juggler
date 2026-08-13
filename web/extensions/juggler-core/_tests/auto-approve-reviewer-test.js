@@ -19,7 +19,11 @@ import { assert } from '../../../js-tests/utilities/test-helpers.js';
 import {
   POLICY_PROMPT,
   buildReviewerPrompt,
-  parseVerdict
+  parseReview,
+  parseVerdict,
+  describeReviewFailure,
+  isBusyRejection,
+  busyRetryDelay
 } from '../strategies/auto-approve-reviewer.js';
 
 /**
@@ -77,6 +81,12 @@ export async function runTests(_ctx) {
       'POLICY_PROMPT should be a substantial string');
     assert(/allow/i.test(POLICY_PROMPT) && /deny/i.test(POLICY_PROMPT),
       'POLICY_PROMPT should mention both allow and deny verdicts');
+    // The verdict must lead the answer — that is what keeps parsing (and the
+    // default-deny bias) correct even when the reason is cut off by maxTokens.
+    assert(/reason/i.test(POLICY_PROMPT),
+      'POLICY_PROMPT should ask for a reason on deny');
+    assert(/verdict/i.test(POLICY_PROMPT),
+      'POLICY_PROMPT should require the verdict word first');
   });
 
   // =========================================================================
@@ -211,6 +221,134 @@ export async function runTests(_ctx) {
       assert(parseVerdict(/** @type {any} */ (t)) === 'deny',
         `expected 'deny' for ${JSON.stringify(t)}`);
     }
+  });
+
+  // =========================================================================
+  // parseReview — the deny reason surfaced in the approval card
+  // =========================================================================
+  await run('parseReview: extracts the reason after a deny verdict', () => {
+    const cases = [
+      'deny: force-pushes over shared history',
+      'deny — force-pushes over shared history',
+      'deny - force-pushes over shared history',
+      'Deny: force-pushes over shared history',
+      '`deny`: force-pushes over shared history',
+      'deny:\n  force-pushes over   shared history  '
+    ];
+    for (const t of cases) {
+      const { verdict, reason } = parseReview(t);
+      assert(verdict === 'deny', `expected deny for ${JSON.stringify(t)}, got ${verdict}`);
+      assert(reason === 'force-pushes over shared history',
+        `expected the flattened reason for ${JSON.stringify(t)}, got ${JSON.stringify(reason)}`);
+    }
+  });
+
+  await run('parseReview: allow never carries a reason', () => {
+    for (const t of ['allow', 'allow: looks fine to me', ' Allow.']) {
+      const { verdict, reason } = parseReview(t);
+      assert(verdict === 'allow', `expected allow for ${JSON.stringify(t)}`);
+      assert(reason === '', `allow must carry no reason, got ${JSON.stringify(reason)}`);
+    }
+  });
+
+  await run('parseReview: a verdictless or bare answer denies with no reason', () => {
+    // A model that never states a verdict is malformed, not a rationale — we
+    // deny, but we do not quote its confusion back at the user.
+    for (const t of ['', '   ', 'I think this is fine', 'allowing? no', 'denying this one',
+      undefined, null]) {
+      const { verdict, reason } = parseReview(/** @type {any} */ (t));
+      assert(verdict === 'deny', `expected deny for ${JSON.stringify(t)}`);
+      assert(reason === '', `expected no reason for ${JSON.stringify(t)}, got ${JSON.stringify(reason)}`);
+    }
+    assert(parseReview('deny').reason === '', 'a bare deny carries no reason');
+  });
+
+  await run('parseReview: a runaway reason is capped', () => {
+    const { reason } = parseReview(`deny: ${'x'.repeat(1000)}`);
+    assert(reason.length <= 200, `reason should be capped, got length ${reason.length}`);
+    assert(reason.endsWith('…'), `a truncated reason should be elided, got ${JSON.stringify(reason.slice(-5))}`);
+  });
+
+  await run('parseReview: strips a quoted reason', () => {
+    assert(parseReview('deny: "reads your ssh keys"').reason === 'reads your ssh keys',
+      'surrounding quotes should be stripped');
+  });
+
+  // =========================================================================
+  // describeReviewFailure — a broken reviewer must say what broke
+  // =========================================================================
+  await run('describeReviewFailure: surfaces the message and strips the HTTP prefix', () => {
+    assert(describeReviewFailure(new Error('HTTP 400: no cheap model available'))
+      === 'no cheap model available', 'the HTTP prefix should be stripped');
+    assert(describeReviewFailure(new Error('Too many concurrent completions, try again'))
+      === 'Too many concurrent completions, try again', 'the message should survive intact');
+    // Structured errors (a raw {error} body) must not render as [object Object].
+    assert(describeReviewFailure({ error: 'no cheap model available' })
+      === 'no cheap model available', 'a structured error should yield its message');
+  });
+
+  await run('describeReviewFailure: always yields something actionable-looking', () => {
+    for (const e of [undefined, null, '', '   ', new Error('')]) {
+      const out = describeReviewFailure(e);
+      assert(typeof out === 'string' && out.length > 0 && !/\[object/.test(out),
+        `expected a non-empty plain description for ${JSON.stringify(e)}, got ${JSON.stringify(out)}`);
+    }
+  });
+
+  // =========================================================================
+  // busy-pool retry — keyed on status, never on message text
+  // =========================================================================
+  await run('isBusyRejection: recognises 429 and nothing else', () => {
+    const busy = /** @type {any} */ (new Error('Too many concurrent completions, try again'));
+    busy.status = 429;
+    assert(isBusyRejection(busy) === true, 'a 429 is the retryable busy rejection');
+    // The identifying signal is the status. A message that merely *reads* busy
+    // is not a contract, and a real failure must never be retried into silence.
+    assert(isBusyRejection(new Error('Too many concurrent completions, try again')) === false,
+      'message text alone must not mark an error retryable');
+    for (const s of [400, 401, 500, 502, undefined]) {
+      const e = /** @type {any} */ (new Error('nope'));
+      e.status = s;
+      assert(isBusyRejection(e) === false, `status ${s} must not be retryable`);
+    }
+    assert(isBusyRejection(undefined) === false, 'a missing error is not retryable');
+  });
+
+  await run('busyRetryDelay: bounded, non-decreasing schedule that terminates', () => {
+    // Deterministic RNG endpoints: the whole band must stay positive and ordered.
+    for (const rnd of [() => 0, () => 0.999]) {
+      /** @type {number[]} */
+      const schedule = [];
+      for (let a = 0; ; a++) {
+        const d = busyRetryDelay(a, rnd);
+        if (d < 0) break;
+        schedule.push(d);
+        assert(a < 10, 'the schedule must terminate, not retry forever');
+      }
+      assert(schedule.length >= 2, `expected a few re-attempts, got ${JSON.stringify(schedule)}`);
+      assert(schedule.every((d) => d > 0), `every delay must be positive, got ${JSON.stringify(schedule)}`);
+      for (let i = 1; i < schedule.length; i++) {
+        assert(schedule[i] >= schedule[i - 1], `schedule should not shrink: ${JSON.stringify(schedule)}`);
+      }
+      const total = schedule.reduce((n, d) => n + d, 0);
+      assert(total <= 6000, `the whole schedule must stay within a few seconds, got ${total}ms`);
+    }
+  });
+
+  await run('busyRetryDelay: jitter actually spreads collided retries', () => {
+    // Without jitter every reviewer refused at the same instant would return to
+    // the pool together and collide again, which is the whole failure being
+    // fixed — so the same attempt must NOT always yield the same delay.
+    const lo = busyRetryDelay(0, () => 0);
+    const hi = busyRetryDelay(0, () => 0.999);
+    assert(hi > lo, `attempt 0 should span a range, got ${lo}..${hi}`);
+    assert(lo > 0, 'even the lowest jitter must still wait');
+  });
+
+  await run('describeReviewFailure: caps a runaway body (e.g. an HTML error page)', () => {
+    const out = describeReviewFailure(new Error('<html>' + 'x'.repeat(5000)));
+    assert(out.length <= 120, `expected a capped description, got length ${out.length}`);
+    assert(out.endsWith('…'), 'a truncated description should be elided');
   });
 
   return { passed, failed, errors };

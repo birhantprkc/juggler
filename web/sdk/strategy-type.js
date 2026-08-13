@@ -461,12 +461,22 @@ class StrategyType {
    * {@link import('../js/model/message-thread.js').default#resolveApproval}:
    * `this.messageThread.resolveApproval(toolUseId, 'yes' | 'no')`.
    *
-   * The framework does not await this hook and ignores its return value. The
-   * tool stays parked until something resolves it — this strategy, or the user.
-   * That makes the safe default **fail-closed**: if the hook errors, times out,
-   * or never resolves, the tool simply waits for human approval. Because the
-   * hook runs only on the authoritative engine (never in passive viewers), it
-   * fires exactly once per park; no viewer election is needed.
+   * The framework does not await this hook. The tool stays parked until
+   * something resolves it — this strategy, or the user. That makes the safe
+   * default **fail-closed**: if the hook errors, times out, or never resolves,
+   * the tool simply waits for human approval. Because the hook runs only on the
+   * authoritative engine (never in passive viewers), it fires exactly once per
+   * park; no viewer election is needed.
+   *
+   * While the returned promise is in flight the approval card shows a transient
+   * "reviewing…" indicator (labelled from `static REVIEW_LABEL`, else the
+   * manifest `name`), with the approval buttons fully live so the user can
+   * always decide instantly and race the hook. Resolving with `{note}` swaps
+   * that indicator for the note and leaves it in the card — the way to tell the
+   * user why a call is still parked (e.g. an out-of-band reviewer declined, and
+   * its reason). Resolve with nothing to clear the indicator instead. A note is
+   * display only: it is shown as plain text (never markup), is trimmed to a
+   * single capped line, and can neither resolve nor block the parked call.
    *
    * Note: worker-managed tools (e.g. `create_thread`) are driven entirely by
    * the Go worker and are not routed through this hook — it covers the
@@ -491,7 +501,8 @@ class StrategyType {
    *   - autoApprovable: false when the action forbids silent auto-approval (a
    *     plan submit, a project-root/home deletion). A strategy reviewer must NOT
    *     resolve such a call — leave it parked for a human.
-   * @returns {void|Promise<void>} Ignored by the framework
+   * @returns {void|Promise<{note?: string}|void>} Resolve with `{note}` to leave that
+   *   message in the approval card; anything else clears the review indicator
    */
   onToolPending(info) {
     void info;

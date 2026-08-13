@@ -6758,9 +6758,9 @@ action-confirmation:focus {
 /* Transient "reviewing…" indicator shown inside the approval box while a
    strategy's onToolPending reviewer deliberates. Purely additive — sits above
    the approval buttons, which stay fully live throughout. No background or
-   border: just bright amber monospace text and a matching spinner (the spinner
+   border: just bright monospace text and a matching spinner (the spinner
    inherits `color`, so the two are always the same hue), gently breathing via
-   opacity so it reads as "actively working". --accent-orange is defined in both
+   opacity so it reads as "actively working". --accent-blue is defined in both
    themes, so it stays legible in light and dark. */
 .approval-review-status {
     display: flex;
@@ -6771,7 +6771,7 @@ action-confirmation:focus {
     padding: 0.5rem 0;
     color: var(--accent-blue);
     font-family: var(--font-mono);
-    font-size: 1rem;
+    font-size: 0.9rem;
     font-weight: var(--font-weight-normal);
     animation: approval-review-pulse 1.8s ease-in-out infinite;
 }
@@ -6784,6 +6784,31 @@ action-confirmation:focus {
     flex: 1 1 auto;
     color: inherit;
     min-width: 0;
+}
+
+/* Settled variant: the reviewer finished without approving and left a note
+   saying why the call is still parked. Same row, but static — no spinner, no
+   breathing, and a muted colour so it reads as a closing remark next to the live
+   buttons rather than work still in progress. Notes are a sentence rather than a
+   two-word label, so this one wraps. */
+.approval-review-status--done {
+    color: var(--text-secondary);
+    align-items: flex-start;
+    animation: none;
+    opacity: 1;
+}
+
+.approval-review-status--done .icon-auto-awesome {
+    width: 1rem;
+    height: 1rem;
+
+    /* Nudge onto the first line's optical centre — the row is top-aligned so a
+       wrapped note keeps the icon beside its opening words. */
+    margin-top: 0.15rem;
+}
+
+.approval-review-status--done .approval-review-status-label {
+    overflow-wrap: anywhere;
 }
 
 /* Gentle opacity breathe — signals live deliberation without a box or colour

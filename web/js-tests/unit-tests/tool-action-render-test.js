@@ -19,8 +19,10 @@
  *
  * Also covers the auto-approve review indicator's in-place update: a
  * reviewStatus-only change is churn (`_isReviewStatusChurn` → true) so the live
- * approval buttons are never rebuilt, and a first paint with `reviewStatus.busy`
- * renders the `.approval-review-status` row above the buttons.
+ * approval buttons are never rebuilt; a first paint renders the
+ * `.approval-review-status` row above the buttons for both a busy review and a
+ * settled note; and busy → settled swaps the row in place, leaving the buttons
+ * untouched.
  * @module unit-tests/tool-action-render
  */
 
@@ -135,6 +137,60 @@ export async function runTests() {
     if (!rowBeforeButtons) throw new Error('review-status row must be above the buttons');
     passed++;
   } catch (e) { failed++; errors.push(`review-status first paint: ${e.message}`); }
+
+  // D2 — a settled (non-busy) reviewStatus is a closing note that must still
+  // paint: no spinner, the --done styling, and the note shown verbatim as text.
+  // This is what tells the user why a call is still parked after the reviewer
+  // declined to approve it.
+  try {
+    const NOTE = 'Auto-approve declined: force-pushes over shared history';
+    const paintEl = /** @type {any} */ (document.createElement('tool-action-message'));
+    const container = document.createElement('div');
+    container.className = 'action-approval-container';
+    paintEl._appendApprovalButtons(container, fakeItem({
+      toolUseId: 't-review-done', toolName: 'bash',
+      approvalOptions: { options: [{ label: 'Approve', value: 'yes' }] },
+      reviewStatus: { busy: false, label: NOTE },
+    }));
+    const row = container.querySelector('.approval-review-status');
+    if (!row) throw new Error('a settled note must still render a row');
+    if (!row.classList.contains('approval-review-status--done'))
+      throw new Error('a settled row must carry the --done modifier');
+    if (row.querySelector('juggler-spinner'))
+      throw new Error('a settled row must not spin');
+    const labelEl = row.querySelector('.approval-review-status-label');
+    if (!labelEl || labelEl.textContent !== NOTE)
+      throw new Error(`expected the note verbatim, got ${labelEl && labelEl.textContent}`);
+    if (!container.querySelector('action-confirmation'))
+      throw new Error('the approval buttons must stay live alongside the note');
+    passed++;
+  } catch (e) { failed++; errors.push(`review-status settled note: ${e.message}`); }
+
+  // D3 — busy → settled is applied in place: _applyReviewStatus swaps the row
+  // (spinner out, note in) without disturbing the mounted approval buttons.
+  try {
+    const el2 = /** @type {any} */ (document.createElement('tool-action-message'));
+    const container = document.createElement('div');
+    container.className = 'action-approval-container';
+    el2.appendChild(container);
+    const buttons = document.createElement('action-confirmation');
+    container.appendChild(buttons);
+    container.insertBefore(el2._buildReviewStatusRow('Auto-approve reviewing…', true), buttons);
+
+    el2._applyReviewStatus(fakeItem({ reviewStatus: { busy: false, label: 'Auto-approve declined: nope' } }));
+    const rows = container.querySelectorAll('.approval-review-status');
+    if (rows.length !== 1) throw new Error(`expected exactly one row, got ${rows.length}`);
+    if (!rows[0].classList.contains('approval-review-status--done'))
+      throw new Error('the row should have become the settled variant');
+    if (container.querySelector('action-confirmation') !== buttons)
+      throw new Error('the original buttons element must be untouched');
+
+    // Clearing the status removes the row entirely.
+    el2._applyReviewStatus(fakeItem({ reviewStatus: null }));
+    if (container.querySelector('.approval-review-status'))
+      throw new Error('a cleared reviewStatus must remove the row');
+    passed++;
+  } catch (e) { failed++; errors.push(`review-status in-place swap: ${e.message}`); }
 
   // E — approval-provenance badge (properties panel only). Each known source
   // names its approving body with a lozenge carrying a leading icon + label; an

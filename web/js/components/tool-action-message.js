@@ -220,10 +220,12 @@ class ToolActionMessage extends HTMLElement {
   }
 
   /**
-   * Show/hide the transient "reviewing…" indicator in place, without a
-   * destructive re-render. Adds a `.approval-review-status` row directly above
-   * the approval buttons when `reviewStatus.busy`, updates its label, or removes
-   * it otherwise. Never touches the buttons themselves.
+   * Update the review indicator in place, without a destructive re-render. The
+   * row sits directly above the approval buttons and is shown whenever
+   * `reviewStatus` carries anything: a spinner while `busy`, and the strategy's
+   * closing note (no spinner) once its review has settled without approving —
+   * so the card keeps explaining why it is still asking. An empty/absent status
+   * removes the row. Never touches the buttons themselves.
    * @param {ToolActionItem|null} item - The tool action item
    * @private
    */
@@ -233,38 +235,47 @@ class ToolActionMessage extends HTMLElement {
     const reviewStatus = item.get('reviewStatus');
     const busy = reviewStatus?.get ? reviewStatus.get('busy') : reviewStatus?.busy;
     const label = reviewStatus?.get ? reviewStatus.get('label') : reviewStatus?.label;
-    let row = /** @type {HTMLElement|null} */ (container.querySelector('.approval-review-status'));
-    if (busy) {
-      if (!row) {
-        row = this._buildReviewStatusRow(label);
-        const buttons = container.querySelector('action-confirmation');
-        container.insertBefore(row, buttons);
-      } else {
-        const labelEl = row.querySelector('.approval-review-status-label');
-        if (labelEl) labelEl.textContent = label || 'Reviewing…';
-      }
-    } else if (row) {
-      row.remove();
+    const row = /** @type {HTMLElement|null} */ (container.querySelector('.approval-review-status'));
+    if (!busy && !label) {
+      row?.remove();
+      return;
     }
+    // Rebuild rather than patch: busy→settled swaps the spinner and the styling,
+    // not just the text. The row carries no interactive controls, so replacing it
+    // can't move anything under the user's cursor — the buttons are untouched.
+    const next = this._buildReviewStatusRow(label, !!busy);
+    if (row) row.replaceWith(next);
+    else container.insertBefore(next, container.querySelector('action-confirmation'));
   }
 
   /**
-   * Build the "reviewing…" indicator row (spinner + label). Purely additive —
-   * rendered above the approval buttons; the buttons stay live.
-   * @param {string} [label] - The review label to show
+   * Build the review indicator row. Purely additive — rendered above the
+   * approval buttons; the buttons stay live. While busy it is a spinner plus
+   * label; once settled the spinner gives way to a static icon and the muted
+   * `--done` styling, marking it as a closing note rather than live work.
+   * @param {string} [label] - The review label or closing note to show
+   * @param {boolean} [busy] - Whether a review is still in flight
    * @returns {HTMLElement} The indicator row
    * @private
    */
-  _buildReviewStatusRow(label) {
+  _buildReviewStatusRow(label, busy = true) {
     const row = document.createElement('div');
-    row.className = 'approval-review-status';
-    const spinner = document.createElement('juggler-spinner');
-    spinner.setAttribute('style', '--size: 1.5rem');
-    spinner.setAttribute('aria-hidden', 'true');
+    row.className = busy ? 'approval-review-status' : 'approval-review-status approval-review-status--done';
+    if (busy) {
+      const spinner = document.createElement('juggler-spinner');
+      spinner.setAttribute('style', '--size: 1.5rem');
+      spinner.setAttribute('aria-hidden', 'true');
+      row.appendChild(spinner);
+    } else {
+      const icon = document.createElement('span');
+      icon.className = 'icon-auto-awesome';
+      icon.setAttribute('aria-hidden', 'true');
+      row.appendChild(icon);
+    }
     const text = document.createElement('span');
     text.className = 'approval-review-status-label';
+    // textContent, never innerHTML: the note is model-authored text.
     text.textContent = label || 'Reviewing…';
-    row.appendChild(spinner);
     row.appendChild(text);
     return row;
   }
@@ -837,14 +848,15 @@ class ToolActionMessage extends HTMLElement {
       }
     }, onRevise ? { onRevise } : undefined);
 
-    // First-paint of the review indicator: if a strategy's onToolPending
-    // reviewer is already in flight (e.g. a reload mid-review), render the
-    // "reviewing…" row directly above the buttons so it paints correctly.
+    // First-paint of the review indicator: a strategy's onToolPending reviewer
+    // may already be in flight (e.g. a reload mid-review) or may have left a
+    // closing note on a call still parked. Either way the row belongs directly
+    // above the buttons, so paint it here rather than waiting for a change.
     const reviewStatus = item.get('reviewStatus');
     const reviewBusy = reviewStatus?.get ? reviewStatus.get('busy') : reviewStatus?.busy;
-    if (reviewBusy) {
-      const reviewLabel = reviewStatus?.get ? reviewStatus.get('label') : reviewStatus?.label;
-      container.appendChild(this._buildReviewStatusRow(reviewLabel));
+    const reviewLabel = reviewStatus?.get ? reviewStatus.get('label') : reviewStatus?.label;
+    if (reviewBusy || reviewLabel) {
+      container.appendChild(this._buildReviewStatusRow(reviewLabel, !!reviewBusy));
     }
 
     container.appendChild(buttonsEl);

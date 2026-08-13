@@ -5,7 +5,15 @@
 
 import { generateText } from 'juggler/ops';
 import DefaultStrategyType from './default-strategy-type.js';
-import { POLICY_PROMPT, buildReviewerPrompt, parseVerdict } from './auto-approve-reviewer.js';
+import { TOOL_STATES } from 'juggler/model';
+import {
+  POLICY_PROMPT,
+  buildReviewerPrompt,
+  parseReview,
+  describeReviewFailure,
+  isBusyRejection,
+  busyRetryDelay
+} from './auto-approve-reviewer.js';
 import { WRITE_FILE_ITEM_TYPE } from '../../../js/services/file-editing-permission.js';
 
 /**
@@ -45,11 +53,14 @@ import { WRITE_FILE_ITEM_TYPE } from '../../../js/services/file-editing-permissi
  * While `onToolPending`'s returned promise is in flight the framework surfaces a
  * transient "Auto-approve reviewing…" indicator in the approval card (label
  * derived from this manifest's `name`); the approval buttons stay fully live, so
- * the human can always decide instantly and race the reviewer.
+ * the human can always decide instantly and race the reviewer. When the review
+ * ends without approving, this hook resolves with a `note` and the framework
+ * leaves that message in place of the spinner, so the card says why the call is
+ * still sitting there instead of falling silent.
  *
  * Future (deliberately out of scope for v1): hard-deny with rationale fed back
- * to the model, a per-turn circuit breaker, a per-strategy reviewer-model
- * setting UI, and surfacing the reviewer's rationale in the approval card.
+ * to the model, a per-turn circuit breaker, and a per-strategy reviewer-model
+ * setting UI.
  * @augments {DefaultStrategyType}
  */
 export default class AutoApproveStrategyType extends DefaultStrategyType {
@@ -88,7 +99,8 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
       ],
       approach: 'Auto-approve runs the same loop as Default, so the permission system still decides everything first: read tools, allowlisted commands, and in-project edits are approved automatically, and only the calls that would otherwise stop to ask you are handed off for review.\n\n'
         + 'Each parked call is checked by a cheap, fast model — the one set as your cheap model in settings — against a fixed safety policy. To keep that judgement trustworthy the reviewer sees only your own messages and the agent\'s raw tool calls; it never sees the agent\'s explanations or any tool output, so it cannot be argued into an approval or fed instructions hidden in a tool result.\n\n'
-        + 'The reviewer answers a simple allow or deny. A confident allow silently approves the call and the run continues. Anything else — a deny, an uncertain answer, a timeout, or a reviewer that is busy or errors — leaves the call parked for you to decide, exactly as under Default.\n\n'
+        + 'The reviewer answers a simple allow or deny. A confident allow silently approves the call and the run continues. Anything else — a deny, an uncertain answer, a timeout, or an errored reviewer — leaves the call parked for you to decide, exactly as under Default, and the card tells you which it was.\n\n'
+          + 'Reviews run on a small shared pool, so when a turn parks several calls at once they queue: a call refused a slot waits a moment and tries again for a few seconds before giving up and leaving itself parked. The approval buttons stay live throughout, so you can always decide instantly rather than wait.\n\n'
         + 'Because it only ever approves, the strategy can remove a prompt you would have granted but can never block the model or run something on its own that the reviewer distrusts.',
       tradeoffs: {
         pros: [
@@ -97,7 +109,7 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
           'Uses a cheap/fast model, low cost per review'
         ],
         cons: [
-          'Adds ~1–3s latency to a parked call while it reviews',
+          'Adds ~1–3s latency to a parked call while it reviews, longer when a batch of calls queues for the pool',
           'The reviewer is a probabilistic model and will sometimes leave a safe action parked',
           'Not a security boundary — for untrusted code use Read-only'
         ]
@@ -110,9 +122,12 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
    * the reviewer is confident it is safe and user-authorized.
    *
    * Fire-and-forget by contract (see StrategyType#onToolPending): the framework
-   * does not await this and ignores its return value, so any error just leaves
-   * the tool parked — fail-closed. We only ever call `resolveApproval(_, 'yes')`
-   * on a clean `allow`; for deny (or any failure) we do nothing.
+   * does not await this, so any error just leaves the tool parked —
+   * fail-closed. We only ever call `resolveApproval(_, 'yes')` on a clean
+   * `allow`; for deny (or any failure) we resolve nothing and instead return a
+   * `note`, which the framework leaves showing in the approval card so the human
+   * knows why the call is still parked. The note is a report, not a decision —
+   * returning one can never resolve, block, or change the parked call.
    * The framework only fires this hook for **gate** interactions (see
    * StrategyType#onToolPending / INTERACTION_KIND). Elicitations like
    * AskUserQuestion are never delivered here — their resolution is the user's
@@ -120,7 +135,7 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
    * against auto-answering a question.
    * @override
    * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined, permissionKey: string, autoApprovable?: boolean}} info
-   * @returns {Promise<void>}
+   * @returns {Promise<{note: string}|undefined>} A note to leave in the approval card, or nothing
    */
   async onToolPending({ toolUseId, toolName, toolInput, category, permissionKey, autoApprovable }) {
     // `category` is unused in v1 but kept for future use (e.g. skipping review
@@ -139,30 +154,74 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
     // for the human. Guarding on the permission key (not a tool-name list) keeps
     // every current and future edit-family plugin covered uniformly.
     if (permissionKey === WRITE_FILE_ITEM_TYPE) return;
-    try {
-      // Give the reviewer the real project root and home as ground truth, so a
-      // delete/overwrite is judged against where it actually lands — not fooled
-      // by a path substring (e.g. `tmp`) that reads as scratch. Additive signal
-      // on the probabilistic path; it blocks nothing on its own.
-      const session = /** @type {any} */ (this.messageThread.conversation)?.session;
-      const context = { projectRoot: session?.projectPath || '', home: session?.home || '' };
-      const prompt = buildReviewerPrompt(this.messageThread.items, { toolName, toolInput }, { context });
-      const model = /** @type {any} */ (this.state)?.reviewerModel ?? 'cheap';
-      const { text } = await this._complete(
-        { system: POLICY_PROMPT, prompt, model, maxTokens: 16 },
-        this._abortController?.signal
-      );
-      if (parseVerdict(text) === 'allow') {
-        // Provenance `strategy`: this strategy is the approving body. The value
-        // names WHO approved (a strategy), not the process (an automatic review).
-        this.messageThread.resolveApproval(toolUseId, 'yes', { source: 'strategy' });
+    // Assembled once and reused across re-attempts: neither the parked call nor
+    // the transcript it is judged against changes while we wait for a slot.
+    // Non-throwing by construction (the builders swallow malformed input), so
+    // this sits outside the attempt loop's error handling.
+    //
+    // Give the reviewer the real project root and home as ground truth, so a
+    // delete/overwrite is judged against where it actually lands — not fooled
+    // by a path substring (e.g. `tmp`) that reads as scratch. Additive signal
+    // on the probabilistic path; it blocks nothing on its own.
+    const session = /** @type {any} */ (this.messageThread.conversation)?.session;
+    const context = { projectRoot: session?.projectPath || '', home: session?.home || '' };
+    const prompt = buildReviewerPrompt(this.messageThread.items, { toolName, toolInput }, { context });
+    const model = /** @type {any} */ (this.state)?.reviewerModel ?? 'cheap';
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // Budget: the verdict word plus a ~12-word reason. The verdict comes
+        // first by prompt design, so even a truncated answer parses correctly.
+        const { text } = await this._complete(
+          { system: POLICY_PROMPT, prompt, model, maxTokens: 48 },
+          this._abortController?.signal
+        );
+        const { verdict, reason } = parseReview(text);
+        if (verdict === 'allow') {
+          // Provenance `strategy`: this strategy is the approving body. The value
+          // names WHO approved (a strategy), not the process (an automatic review).
+          this.messageThread.resolveApproval(toolUseId, 'yes', { source: 'strategy' });
+          return;
+        }
+        // deny → resolve nothing; the tool stays parked for the human. Hand back
+        // the reviewer's own words so the card explains the wait. A malformed or
+        // reasonless answer yields no reason, so say only what we know.
+        return {
+          note: reason
+            ? `Auto-approve declined: ${reason}`
+            : 'Auto-approve declined — over to you'
+        };
+      } catch (err) {
+        // A cancelled turn aborts the review in flight. That is not a reviewer
+        // failure, and the user already knows they stopped it, so clear the
+        // indicator rather than reporting their own cancel back at them.
+        if (/** @type {any} */ (err)?.name === 'AbortError') return;
+
+        // The out-of-band completion pool is small and shared, and a turn that
+        // parks several tool calls at once asks every one of them to review
+        // simultaneously — so being refused a slot is the ordinary condition of
+        // a batch, not a failure. The server documents it as retryable and the
+        // auto-namer already re-attempts it; treating it as fatal is what made
+        // this feature quietly stop working on any multi-tool turn. Give up
+        // only once the schedule is spent, or once the call is no longer parked
+        // (the human beat us to it, so there is nothing left to approve).
+        const delay = isBusyRejection(err) ? busyRetryDelay(attempt) : -1;
+        if (delay >= 0 && this._stillParked(toolUseId)) {
+          await this._wait(delay);
+          continue;
+        }
+
+        // Fail-closed: the tool stays parked. Log for diagnosis; never rethrow.
+        // The note names the actual cause — these failures need completely
+        // different fixes, and a bare "unavailable" is both unactionable and
+        // indistinguishable from a considered deny.
+        console.error('[auto-approve] review failed, leaving parked:', err);
+        return {
+          note: isBusyRejection(err)
+            ? "Auto-approve couldn't run — too many reviews in flight"
+            : `Auto-approve couldn't run — ${describeReviewFailure(err)}`
+        };
       }
-      // deny → intentionally do nothing; the tool stays parked for the human.
-    } catch (err) {
-      // Fail-closed: any error (429 busy, timeout, network, parse) leaves the
-      // tool parked. Log for diagnosis; never rethrow (the framework ignores it
-      // anyway, but keep it tidy).
-      console.error('[auto-approve] review failed, leaving parked:', err);
     }
   }
 
@@ -176,5 +235,37 @@ export default class AutoApproveStrategyType extends DefaultStrategyType {
    */
   async _complete(params, signal) {
     return generateText(params, signal);
+  }
+
+  /**
+   * Thin seam around the retry backoff, so tests exercise the schedule without
+   * real time passing. Do not add logic here.
+   * @param {number} ms - Delay in milliseconds
+   * @returns {Promise<void>} Resolves once the delay has elapsed
+   */
+  async _wait(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Whether the call is still awaiting a decision, i.e. whether re-attempting a
+   * review is still worth anything. Once the human has approved or denied it
+   * there is nothing left to resolve, so a pending re-attempt is abandoned
+   * rather than spending a slot (and a provider call) on a settled question.
+   *
+   * Deliberately permissive in the other direction: when the state cannot be
+   * read at all we assume it is still parked. A late review can only ever be
+   * ignored — `resolveApproval` is itself guarded on PENDING — so guessing
+   * "parked" risks nothing, while guessing "gone" would silently disable the
+   * retry for any host that exposes its items differently.
+   * @param {string} toolUseId - The parked call's id
+   * @returns {boolean} True when a re-attempt is still worthwhile
+   * @private
+   */
+  _stillParked(toolUseId) {
+    const action = /** @type {any} */ (this.messageThread)?.getToolAction?.(toolUseId);
+    if (!action) return true;
+    const state = typeof action.get === 'function' ? action.get('state') : action.state;
+    return state === undefined || state === TOOL_STATES.PENDING;
   }
 }

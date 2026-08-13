@@ -46,37 +46,32 @@ function reviewLabelFor(strategy) {
 }
 
 /**
- * Mark a parked tool-action as under out-of-band review by writing a transient
- * `reviewStatus` field. Tagged ENGINE_DERIVED_ORIGIN so the worker's UndoManager
- * skips it, matching the sibling approvalOptions/displayData writes.
- * @param {import('./message-thread.js').default} messageThread
- * @param {string} toolUseId
- * @param {string} label
+ * Cap on a strategy-authored review note. The note is arbitrary text from a
+ * strategy (typically an LLM reviewer's own words), so the framework bounds what
+ * it will write into the doc rather than trusting the caller.
+ * @type {number}
  */
-function setReviewStatus(messageThread, toolUseId, label) {
-  const doc = messageThread.conversation?._doc?.doc;
-  if (!doc) return;
-  doc.transact(() => {
-    const items = messageThread.items;
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (isToolActionMessage(/** @type {Message} */ (item)) && item.get('toolUseId') === toolUseId) {
-        messageThread.updateItemField(i, 'reviewStatus', { busy: true, label });
-        break;
-      }
-    }
-  }, ENGINE_DERIVED_ORIGIN);
-}
+const MAX_REVIEW_NOTE_CHARS = 240;
 
 /**
- * Clear the transient `reviewStatus` once a strategy's `onToolPending` promise
- * settles — but only if the tool is still PENDING. On the allow path it already
- * transitioned to APPROVED and the approval surface is gone, so the stale field
- * is harmless; we leave it untouched rather than write onto a resolved item.
+ * Write the transient `reviewStatus` field of a parked tool-action — the state
+ * behind the approval card's review indicator. Two shapes are written: a busy
+ * status while a strategy's `onToolPending` promise is in flight, and a
+ * non-busy status carrying the strategy's closing note once it settles. `null`
+ * clears the field.
+ *
+ * Only ever writes while the tool is still PENDING. On the allow path the tool
+ * has already transitioned to APPROVED and the approval surface is gone, so
+ * there is nothing to annotate; the stale field is harmless and we leave it
+ * untouched rather than write onto a resolved item.
+ *
+ * Tagged ENGINE_DERIVED_ORIGIN so the worker's UndoManager skips it, matching
+ * the sibling approvalOptions/displayData writes.
  * @param {import('./message-thread.js').default} messageThread
  * @param {string} toolUseId
+ * @param {{busy: boolean, label: string}|null} status - The status to write, or null to clear
  */
-function clearReviewStatus(messageThread, toolUseId) {
+function writeReviewStatus(messageThread, toolUseId, status) {
   const doc = messageThread.conversation?._doc?.doc;
   if (!doc) return;
   doc.transact(() => {
@@ -85,12 +80,28 @@ function clearReviewStatus(messageThread, toolUseId) {
       const item = items[i];
       if (isToolActionMessage(/** @type {Message} */ (item)) && item.get('toolUseId') === toolUseId) {
         if (item.get('state') === TOOL_STATES.PENDING) {
-          messageThread.updateItemField(i, 'reviewStatus', null);
+          messageThread.updateItemField(i, 'reviewStatus', status);
         }
         break;
       }
     }
   }, ENGINE_DERIVED_ORIGIN);
+}
+
+/**
+ * Turn a settled `onToolPending` result into the closing review status. A
+ * strategy may resolve with `{note}` to leave a short explanation in the
+ * approval card (e.g. why its reviewer declined to approve); anything else —
+ * `undefined`, a non-string note, an empty one — simply clears the indicator.
+ * The note is trimmed, flattened to one line, and capped; it is displayed as
+ * text, never markup.
+ * @param {any} result - Whatever the hook's promise resolved with
+ * @returns {{busy: boolean, label: string}|null} The status to write, or null to clear
+ */
+function closingReviewStatus(result) {
+  const note = typeof result?.note === 'string' ? result.note.replace(/\s+/g, ' ').trim() : '';
+  if (!note) return null;
+  return { busy: false, label: note.slice(0, MAX_REVIEW_NOTE_CHARS) };
 }
 
 /**
@@ -365,14 +376,25 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
         // The hook returned a still-pending promise: the strategy is reviewing
         // this parked call out-of-band. Surface a transient "reviewing…"
         // indicator for exactly the promise's lifetime (the approval buttons
-        // stay fully live throughout — the indicator is purely additive), and
-        // clear it when the promise settles.
-        setReviewStatus(messageThread, toolUseId, reviewLabelFor(messageThread.strategy));
+        // stay fully live throughout — the indicator is purely additive).
+        //
+        // When it settles, a resolved `{note}` replaces the spinner with that
+        // message and leaves it in the card, so a call still sitting there says
+        // why (e.g. the reviewer declined, and its reason); anything else clears
+        // the indicator as if it had never run. A note is display only — it
+        // cannot resolve the tool, which still waits for the human.
+        writeReviewStatus(messageThread, toolUseId, {
+          busy: true,
+          label: reviewLabelFor(messageThread.strategy)
+        });
         pendingResult
+          .then((/** @type {unknown} */ result) => {
+            writeReviewStatus(messageThread, toolUseId, closingReviewStatus(result));
+          })
           .catch((/** @type {unknown} */ err) => {
             console.error('[handleNewToolAction] onToolPending rejected:', err);
-          })
-          .finally(() => clearReviewStatus(messageThread, toolUseId));
+            writeReviewStatus(messageThread, toolUseId, null);
+          });
       }
     } catch (err) {
       console.error('[handleNewToolAction] onToolPending threw:', err);

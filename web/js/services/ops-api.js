@@ -28,10 +28,20 @@
 export class OpsError extends Error {
   /**
    * @param {string} message - Error message
+   * @param {number} [status] - HTTP status, when the error came from an HTTP response
    */
-  constructor(message) {
+  constructor(message, status) {
     super(message);
     this.name = 'OpsError';
+    /**
+     * The HTTP status this error was reported with, when it came from an HTTP
+     * response (undefined otherwise). Lets a caller branch on the KIND of
+     * failure — notably 429, a fast "busy, try again" rejection that is meant to
+     * be retried — without matching on the human-readable message, which is
+     * prose for the user and not a stable contract.
+     * @type {number|undefined}
+     */
+    this.status = status;
   }
 }
 
@@ -1279,7 +1289,7 @@ export async function generateText(params, signal) {
     } catch {
       // Fall back to statusText if the body can't be read.
     }
-    throw new OpsError(errorDetail);
+    throw new OpsError(errorDetail, response.status);
   }
 
   return response.json();

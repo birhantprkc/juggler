@@ -23,6 +23,7 @@
  */
 
 import { isUserMessage, isToolActionMessage } from 'juggler/model';
+import { extractUserMessage } from '../../../sdk/lib/error-utils.js';
 
 /**
  * System prompt for the safety classifier. It gates a single parked tool call,
@@ -52,7 +53,9 @@ The trust boundary is the current project directory. Writing, deleting, or readi
 
 You may be given an ENVIRONMENT block stating the PROJECT ROOT and HOME directory. Treat those paths as authoritative ground truth. A recursive/forced delete or overwrite (rm -rf, force-push, truncation) of the project root itself, the home directory, or an ancestor of either is a destroy action that requires human approval — no matter how the path is written. A directory name that merely contains words like "tmp", "scratch", "temp", or "cache" does NOT make it a safe scratch area if it resolves to the project root or the home directory: judge the resolved path against the ENVIRONMENT block, not the vibe of its name.
 
-Answer with a single word and nothing else: \`allow\` if you are confident the action is safe AND authorized by the user; otherwise \`deny\`. When uncertain, answer \`deny\`.`;
+Begin your answer with the verdict word and nothing before it: \`allow\` if you are confident the action is safe AND authorized by the user; otherwise \`deny\`. When uncertain, answer \`deny\`.
+
+For \`allow\`, answer with that single word alone — never explain an allow. For \`deny\`, follow the word with a colon and a reason of at most 12 words, addressed to the user and naming the specific concern (for example: \`deny: force-pushes over shared history you never asked me to rewrite\`).`;
 
 /**
  * Default caps for {@link buildReviewerPrompt}.
@@ -198,13 +201,139 @@ export function buildReviewerPrompt(items, action, opts = {}) {
 }
 
 /**
- * Interpret the reviewer's raw text into a verdict. Lenient and default-deny:
- * only text that clearly *starts with* the word `allow` counts as `allow`;
- * anything else (including empty, malformed, or hedged output) is `deny`. In
- * allow-only mode `deny` means "leave the tool parked", so ambiguity is safe.
+ * Cap on the reviewer-authored deny reason. The reason is model-written text
+ * shown verbatim in the approval card, so it is bounded here rather than in the
+ * UI — one place, and the doc never carries an unbounded string.
+ * @type {number}
+ */
+const MAX_REASON_CHARS = 200;
+
+/**
+ * Matches a leading `deny` verdict word plus whatever separates it from the
+ * reason (`deny: …`, `deny — …`, `deny - …`, `\`deny\`: …`, or just whitespace).
+ * Only one separator character is consumed, so a reason that opens with
+ * punctuation of its own (`deny: ~/.ssh is scanned`) survives intact.
+ * @type {RegExp}
+ */
+const DENY_PREFIX = /^\W*deny\b["'`\s]*[:—–-]?\s*/i;
+
+/**
+ * Interpret the reviewer's raw text into a verdict and, on deny, the short
+ * reason it gave. Lenient and default-deny: only text that clearly *starts
+ * with* the word `allow` counts as `allow`; anything else (including empty,
+ * malformed, or hedged output) is `deny`. In allow-only mode `deny` means
+ * "leave the tool parked", so ambiguity is safe.
+ *
+ * A reason is extracted only when the text actually opens with the `deny`
+ * verdict. Text that fails to state a verdict at all is a malformed answer, not
+ * a rationale, so it denies with an empty reason rather than quoting the model's
+ * confusion back at the user. The reason is flattened to one line, unquoted, and
+ * capped at {@link MAX_REASON_CHARS}.
+ * @param {string} text - The model's raw completion text
+ * @returns {{verdict: 'allow'|'deny', reason: string}} The verdict and (deny-only) reason
+ */
+export function parseReview(text) {
+  const trimmed = (text || '').trim();
+  if (/^\W*allow\b/i.test(trimmed)) return { verdict: 'allow', reason: '' };
+  if (!DENY_PREFIX.test(trimmed)) return { verdict: 'deny', reason: '' };
+  const reason = trimmed
+    .replace(DENY_PREFIX, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim();
+  return {
+    verdict: 'deny',
+    reason: reason.length > MAX_REASON_CHARS
+      ? `${reason.slice(0, MAX_REASON_CHARS - 1).trimEnd()}…`
+      : reason
+  };
+}
+
+/**
+ * The verdict alone, for callers that don't care why. Thin wrapper over
+ * {@link parseReview} so there is a single parsing rule.
  * @param {string} text - The model's raw completion text
  * @returns {'allow'|'deny'} The verdict
  */
 export function parseVerdict(text) {
-  return /^\W*allow\b/i.test((text || '').trim()) ? 'allow' : 'deny';
+  return parseReview(text).verdict;
+}
+
+/**
+ * HTTP status the server uses for a fast "the out-of-band completion pool is
+ * saturated, try again" rejection (ErrQuickCompleteBusy → 429). Documented as
+ * retryable and never a turn failure.
+ * @type {number}
+ */
+const BUSY_STATUS = 429;
+
+/**
+ * Whether a failed completion was the shared out-of-band pool refusing a slot,
+ * rather than a real failure. Keyed on the HTTP status carried by `OpsError`,
+ * never on the message text: the message is prose written for the user and is
+ * free to change, while the status is the contract.
+ * @param {unknown} err - Whatever the completion call threw
+ * @returns {boolean} True when the call should be re-attempted
+ */
+export function isBusyRejection(err) {
+  return /** @type {any} */ (err)?.status === BUSY_STATUS;
+}
+
+/**
+ * Backoff schedule for re-attempting a review the pool was too busy to accept.
+ *
+ * Sized against the thing being waited for: the slots are held by *other*
+ * reviews of the same batch, each taking on the order of a second or two, so
+ * these wait about that long rather than milliseconds. The whole schedule is
+ * ~4s worst case — bounded because the approval buttons are live the entire
+ * time and a reviewer that deliberates longer than the human is worthless.
+ * @type {number[]}
+ */
+const BUSY_BACKOFF_MS = [600, 1200, 2400];
+
+/**
+ * The delay before re-attempting a busy review, or -1 once the schedule is
+ * exhausted and the call should be left parked.
+ *
+ * The delay is jittered across 50–100% of its slot. Jitter is the point, not a
+ * detail: a batch of parked calls is rejected at the same instant, so a fixed
+ * backoff would march them all into the pool together again and reproduce the
+ * collision at every step.
+ * @param {number} attempt - 0-based count of attempts already refused
+ * @param {() => number} [random] - Injectable RNG (tests)
+ * @returns {number} Delay in ms, or -1 when no retry remains
+ */
+export function busyRetryDelay(attempt, random = Math.random) {
+  const base = BUSY_BACKOFF_MS[attempt];
+  if (base === undefined) return -1;
+  return Math.round(base * (0.5 + 0.5 * random()));
+}
+
+/**
+ * Cap on a rendered failure cause. Shorter than a deny reason: this is a
+ * diagnostic tail on an already-labelled line, not the message itself.
+ * @type {number}
+ */
+const MAX_FAILURE_CHARS = 120;
+
+/**
+ * Render why a review could not be completed, for display in the approval card.
+ *
+ * The reviewer fails for causes that are wildly different to act on — no cheap
+ * model configured, the out-of-band channel saturated, a dead provider
+ * credential, a timeout — and a generic "unavailable" collapses all of them into
+ * something the user can neither diagnose nor distinguish from a considered
+ * deny. So the underlying message is shown. It comes from our own server
+ * (`/api/llm/complete` returns `{error}`, which `OpsError` carries verbatim), is
+ * rendered as text rather than markup, and is stripped of the `HTTP NNN:` prefix
+ * and capped here so a stray HTML error body can't flood the card.
+ * @param {unknown} err - Whatever the completion call threw
+ * @returns {string} A short human-readable cause
+ */
+export function describeReviewFailure(err) {
+  const text = extractUserMessage(err).replace(/\s+/g, ' ').trim();
+  if (!text) return 'the reviewer could not be reached';
+  return text.length > MAX_FAILURE_CHARS
+    ? `${text.slice(0, MAX_FAILURE_CHARS - 1).trimEnd()}…`
+    : text;
 }

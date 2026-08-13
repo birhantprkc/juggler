@@ -27,6 +27,9 @@
  *   7. A synchronous (non-thenable) hook never sets `reviewStatus`.
  *   8. If the tool resolves before the promise settles (the allow path), the
  *      clear is a guarded no-op — it never writes onto the resolved item.
+ *   9. A hook that resolves with `{note}` leaves a settled (non-busy)
+ *      `reviewStatus` carrying that note, so a still-parked call says why; a
+ *      rejected hook clears instead, and the note never resolves the tool.
  * @module unit-tests/tool-pending-hook-test
  */
 
@@ -384,6 +387,66 @@ export async function runTests(_ctx) {
     } catch (e) {
       failed++;
       errors.push(`clear is a no-op on a resolved tool: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // =======================================================================
+    // Test 9: a hook resolving with {note} leaves a settled reviewStatus on the
+    // still-parked tool (the "why is this still asking?" message), while a
+    // rejecting hook clears the indicator entirely.
+    // =======================================================================
+    try {
+      const conversation = await createApprovalTestConversation(session);
+      const mt = conversation.rootMessageThread;
+
+      const toolUseId = insertUnstartedBash(conversation, 'review-note-1', 'echo note');
+      /** @type {(v: any) => void} */
+      let releaseHook = () => {};
+      const gate = new Promise((res) => { releaseHook = res; });
+      mt.strategy = {
+        getApprovalPolicy: () => 'require-approval',
+        onToolPending: () => gate
+      };
+
+      await handleNewToolAction(mt, toolUseId, conversation);
+      releaseHook({ note: '  Auto-approve declined:\n force-pushes over shared history  ' });
+      await gate;
+      await new Promise((r) => setTimeout(r, 0));
+
+      const ta = mt.getToolAction(toolUseId);
+      assert(ta?.get('state') === TOOL_STATES.PENDING,
+        `a note must never resolve the tool, got ${ta?.get('state')}`);
+      const rs = ta?.get('reviewStatus');
+      const busy = rs && (rs.get ? rs.get('busy') : rs.busy);
+      const label = rs && (rs.get ? rs.get('label') : rs.label);
+      assert(busy === false, `a settled note must not stay busy, got ${JSON.stringify(busy)}`);
+      // Flattened to one line and trimmed by the framework before it lands.
+      assert(label === 'Auto-approve declined: force-pushes over shared history',
+        `expected the flattened note, got ${JSON.stringify(label)}`);
+
+      // A rejecting hook reports nothing: the indicator clears.
+      const failId = insertUnstartedBash(conversation, 'review-note-2', 'echo fail');
+      /** @type {(e: any) => void} */
+      let rejectHook = () => {};
+      const failGate = new Promise((_res, rej) => { rejectHook = rej; });
+      mt.strategy = {
+        getApprovalPolicy: () => 'require-approval',
+        onToolPending: () => failGate
+      };
+
+      await handleNewToolAction(mt, failId, conversation);
+      rejectHook(new Error('reviewer exploded'));
+      await failGate.catch(() => {});
+      await new Promise((r) => setTimeout(r, 0));
+
+      const failTa = mt.getToolAction(failId);
+      const failRs = failTa?.get('reviewStatus');
+      assert(failRs === null || failRs === undefined,
+        `a rejected hook must clear the indicator, got ${JSON.stringify(failRs)}`);
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`settled note sticks, rejection clears: ${e instanceof Error ? e.message : String(e)}`);
     }
   } finally {
     /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;
