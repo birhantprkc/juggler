@@ -11,13 +11,20 @@
  *
  * Plugins consume a merged view via `messageThread.getRulesFor(...)` and
  * remain scope-agnostic. UI code can inspect/toggle `scope`.
+ *
+ * Rules and allowed paths are two instances of the same two-scope collection
+ * ({@link module:model/scoped-permission-store}); only the entry shape, the
+ * defaults and the identity test differ. What lives here is that per-kind
+ * configuration plus the semantics on top: scope policy, dedupe on add, and
+ * the implicit project-root path entry.
  * @module model/message-thread-permissions
  */
 
 import { approvePermittedPendingApprovals } from './conversation-tool-actions.js';
+import { createScopedStore, SCOPE_SESSION, SCOPE_CONVERSATION } from './scoped-permission-store.js';
 
 /**
- * @typedef {'session'|'conversation'} PermissionScope
+ * @typedef {import('./scoped-permission-store.js').PermissionScope} PermissionScope
  */
 
 /**
@@ -37,8 +44,7 @@ import { approvePermittedPendingApprovals } from './conversation-tool-actions.js
  * @property {boolean} [implicit] Derived project-root entry: always present, session-wide, not editable or removable.
  */
 
-export const SCOPE_SESSION = 'session';
-export const SCOPE_CONVERSATION = 'conversation';
+export { SCOPE_SESSION, SCOPE_CONVERSATION };
 
 export const SESSION_RULES_KEY = 'sessionPermissionRules';
 export const SESSION_PATHS_KEY = 'sessionAllowedPaths';
@@ -67,41 +73,6 @@ function scopeAllowedFor(mt, itemType, scope) {
   return !policy?.allowedScopes || policy.allowedScopes.includes(scope);
 }
 
-/** @param {any} v @returns {any} */
-function plain(v) { return v?.toJSON ? v.toJSON() : v; }
-
-/** @param {any} mt @returns {Record<string, any>} */
-function sessionMetadata(mt) {
-  return mt.conversation?.session?.metadata || {};
-}
-
-/**
- * Session-scoped rules, restricted to itemTypes whose owning plugin actually
- * permits session scope. A stored rule under a conversation-only itemType (e.g.
- * `write-file`) is inert — the plugin's `isPermitted` ignores it — yet it would
- * still match {@link addRule}'s dedupe and silently swallow the
- * conversation-scoped grant a "don't ask again" button is trying to write,
- * leaving the permission permanently unflippable for that project. Dropping it
- * on read keeps the stored shape and the enforced shape in agreement. An
- * itemType with no loaded plugin keeps both scopes, so rules belonging to an
- * extension that hasn't registered yet are never discarded.
- * @param {any} mt @returns {PermissionRule[]}
- */
-function getSessionRules(mt) {
-  const stored = sessionMetadata(mt)[SESSION_RULES_KEY];
-  if (!Array.isArray(stored)) return [];
-  return stored
-    .map(r => normalizeRule(r, SCOPE_SESSION))
-    .filter(r => scopeAllowedFor(mt, r.itemType, SCOPE_SESSION));
-}
-
-/** @param {any} mt @returns {PermissionRule[]} */
-function getConversationRules(mt) {
-  const stored = plain(mt.conversation.getMetadata(CONVERSATION_RULES_KEY));
-  if (Array.isArray(stored)) return stored.map(r => normalizeRule(r, SCOPE_CONVERSATION));
-  return getDefaultRules(mt).map(r => normalizeRule(r, SCOPE_CONVERSATION));
-}
-
 /** @param {any} r @param {PermissionScope} fallbackScope @returns {PermissionRule} */
 function normalizeRule(r, fallbackScope) {
   return {
@@ -113,48 +84,42 @@ function normalizeRule(r, fallbackScope) {
   };
 }
 
-/** @param {any} mt @returns {PermissionRule[]} */
-export function getAllRules(mt) {
-  return [...getSessionRules(mt), ...getConversationRules(mt)];
-}
-
-/** @param {any} mt @param {string} itemType @returns {PermissionRule[]} */
-export function getRulesFor(mt, itemType) {
-  return getAllRules(mt).filter(r => r.itemType === itemType);
-}
-
 /** @param {any} a @param {any} b @returns {boolean} */
 function sameRuleIdentity(a, b) {
   return a.itemType === b.itemType && a.kind === b.kind && a.value === b.value;
 }
 
-/** @param {any} mt @param {PermissionRule[]} rules */
-function saveConversationRules(mt, rules) {
-  const normalized = rules.map(r => normalizeRule(r, SCOPE_CONVERSATION));
-  mt.conversation.setMetadata(CONVERSATION_RULES_KEY, normalized);
-  approvePermittedPendingApprovals(mt.conversation, {
+const rulesStore = createScopedStore({
+  sessionKey: SESSION_RULES_KEY,
+  conversationKey: CONVERSATION_RULES_KEY,
+  normalize: normalizeRule,
+  sameIdentity: sameRuleIdentity,
+  matches: (rule, ruleId) => rule.id === ruleId,
+  defaults: mt => getDefaultRules(mt),
+  // Session rules are restricted to itemTypes whose owning plugin actually
+  // permits session scope. A stored rule under a conversation-only itemType
+  // (e.g. `write-file`) is inert — the plugin's `isPermitted` ignores it — yet
+  // it would still match {@link addRule}'s dedupe and silently swallow the
+  // conversation-scoped grant a "don't ask again" button is trying to write,
+  // leaving the permission permanently unflippable for that project. Dropping
+  // it on read keeps the stored shape and the enforced shape in agreement. An
+  // itemType with no loaded plugin keeps both scopes, so rules belonging to an
+  // extension that hasn't registered yet are never discarded.
+  sessionAllows: (mt, rule) => scopeAllowedFor(mt, rule.itemType, SCOPE_SESSION),
+  afterConversationSave: (mt, rules) => approvePermittedPendingApprovals(mt.conversation, {
     allowViewer: true,
-    itemTypes: [...new Set(normalized.map(r => r.itemType))]
-  });
+    itemTypes: [...new Set(rules.map((/** @type {PermissionRule} */ r) => r.itemType))]
+  })
+});
+
+/** @param {any} mt @returns {PermissionRule[]} */
+export function getAllRules(mt) {
+  return rulesStore.all(mt);
 }
 
-/** @param {any} mt @param {PermissionRule[]} rules */
-function saveSessionRules(mt, rules) {
-  const session = mt.conversation?.session;
-  const normalized = rules.map(r => normalizeRule(r, SCOPE_SESSION));
-  if (session?.patchMetadata) session.patchMetadata({ [SESSION_RULES_KEY]: normalized });
-  else if (session) session.metadata = { ...(session.metadata || {}), [SESSION_RULES_KEY]: normalized };
-}
-
-/** @param {any} mt @param {PermissionScope} scope @returns {PermissionRule[]} */
-function readRulesByScope(mt, scope) {
-  return scope === SCOPE_SESSION ? getSessionRules(mt) : getConversationRules(mt);
-}
-
-/** @param {any} mt @param {PermissionScope} scope @param {PermissionRule[]} rules */
-function saveRulesByScope(mt, scope, rules) {
-  if (scope === SCOPE_SESSION) saveSessionRules(mt, rules);
-  else saveConversationRules(mt, rules);
+/** @param {any} mt @param {string} itemType @returns {PermissionRule[]} */
+export function getRulesFor(mt, itemType) {
+  return getAllRules(mt).filter(r => r.itemType === itemType);
 }
 
 /**
@@ -174,84 +139,38 @@ export function addRule(mt, itemType, rule) {
   const existing = all.find(r => sameRuleIdentity(r, desired) && r.scope === scope)
     || all.find(r => sameRuleIdentity(r, desired));
   if (existing) return existing;
-  const rules = readRulesByScope(mt, scope);
-  rules.push(desired);
-  saveRulesByScope(mt, scope, rules);
+  rulesStore.append(mt, desired, scope);
   return desired;
-}
-
-/** @param {any} mt @param {string} ruleId @returns {{scope: PermissionScope, rules: PermissionRule[], index: number}|null} */
-function locateRule(mt, ruleId) {
-  for (const scope of /** @type {PermissionScope[]} */ ([SCOPE_SESSION, SCOPE_CONVERSATION])) {
-    const rules = readRulesByScope(mt, scope);
-    const index = rules.findIndex(r => r.id === ruleId);
-    if (index !== -1) return { scope, rules, index };
-  }
-  return null;
 }
 
 /** @param {any} mt @param {string} ruleId @returns {boolean} */
 export function removeRule(mt, ruleId) {
-  const hit = locateRule(mt, ruleId);
-  if (!hit) return false;
-  const next = hit.rules.slice();
-  next.splice(hit.index, 1);
-  saveRulesByScope(mt, hit.scope, next);
-  return true;
+  return rulesStore.remove(mt, ruleId);
 }
 
 /** @param {any} mt @param {string} ruleId @param {Partial<PermissionRule>} patch @returns {boolean} */
 export function updateRule(mt, ruleId, patch) {
-  const hit = locateRule(mt, ruleId);
-  if (!hit) return false;
-  const next = hit.rules.slice();
-  const cur = /** @type {PermissionRule} */ (next[hit.index]);
-  next[hit.index] = normalizeRule({ ...cur, ...patch, id: cur.id, itemType: cur.itemType }, hit.scope);
-  saveRulesByScope(mt, hit.scope, next);
-  return true;
+  return rulesStore.update(mt, ruleId, (cur, scope) =>
+    normalizeRule({ ...cur, ...patch, id: cur.id, itemType: cur.itemType }, scope));
 }
 
 /** @param {any} mt @param {string} ruleId @param {PermissionScope} targetScope @returns {boolean} */
 export function setRuleScope(mt, ruleId, targetScope) {
-  const target = targetScope === SCOPE_SESSION ? SCOPE_SESSION : SCOPE_CONVERSATION;
-  const hit = locateRule(mt, ruleId);
-  if (!hit) return false;
-  if (hit.scope === target) return true;
-  const rule = normalizeRule({ ...hit.rules[hit.index], scope: target }, target);
-  if (!scopeAllowedFor(mt, rule.itemType, target)) return false;
-  const sourceNext = hit.rules.slice();
-  sourceNext.splice(hit.index, 1);
-  const targetRules = readRulesByScope(mt, target);
-  const duplicate = targetRules.find(r => sameRuleIdentity(r, rule));
-  // Write the destination before removing the source so live popup renderers
-  // never see the row disappear and re-enter at a different position.
-  if (!duplicate) saveRulesByScope(mt, target, [...targetRules, rule]);
-  saveRulesByScope(mt, hit.scope, sourceNext);
-  return true;
+  return rulesStore.move(mt, ruleId, targetScope, {
+    canMoveTo: (m, rule) => scopeAllowedFor(m, rule.itemType, rule.scope)
+  });
 }
 
 /** @param {any} mt @param {string} itemType */
 export function clearRules(mt, itemType) {
-  saveConversationRules(mt, getConversationRules(mt).filter(r => r.itemType !== itemType));
-  saveSessionRules(mt, getSessionRules(mt).filter(r => r.itemType !== itemType));
+  for (const scope of /** @type {PermissionScope[]} */ ([SCOPE_CONVERSATION, SCOPE_SESSION])) {
+    rulesStore.save(mt, scope, rulesStore.read(mt, scope).filter(r => r.itemType !== itemType));
+  }
 }
 
 // ============================================================================
 // Allowed paths
 // ============================================================================
-
-/** @param {any} mt @returns {AllowedPathEntry[]} */
-function getSessionPathEntries(mt) {
-  const stored = sessionMetadata(mt)[SESSION_PATHS_KEY];
-  return Array.isArray(stored) ? stored.map(p => normalizePathEntry(p, SCOPE_SESSION)) : [];
-}
-
-/** @param {any} mt @returns {AllowedPathEntry[]} */
-function getConversationPathEntries(mt) {
-  const stored = plain(mt.conversation.getMetadata(CONVERSATION_PATHS_KEY));
-  if (Array.isArray(stored)) return stored.map(p => normalizePathEntry(p, SCOPE_CONVERSATION));
-  return getDefaultAllowedPaths(mt).map(path => ({ id: defaultPathId(path), path, scope: SCOPE_CONVERSATION }));
-}
 
 /** @param {any} p @param {PermissionScope} fallbackScope @returns {AllowedPathEntry} */
 function normalizePathEntry(p, fallbackScope) {
@@ -265,6 +184,19 @@ function normalizePathEntry(p, fallbackScope) {
 
 /** @param {string} path @returns {string} */
 function defaultPathId(path) { return `path:${path}`; }
+
+const pathsStore = createScopedStore({
+  sessionKey: SESSION_PATHS_KEY,
+  conversationKey: CONVERSATION_PATHS_KEY,
+  normalize: normalizePathEntry,
+  sameIdentity: (a, b) => a.path === b.path,
+  matches: (entry, idOrPath) => entry.id === idOrPath || entry.path === idOrPath,
+  defaults: mt => getDefaultAllowedPaths(mt).map(path => ({ id: defaultPathId(path), path })),
+  afterConversationSave: mt => approvePermittedPendingApprovals(mt.conversation, {
+    allowViewer: true,
+    itemTypes: ['execute']
+  })
+});
 
 /**
  * The project root is an implicit, always-present, session-wide allowed path
@@ -281,7 +213,7 @@ function getProjectRootEntry(mt) {
 /** @param {any} mt @returns {AllowedPathEntry[]} */
 export function getAllowedPathEntries(mt) {
   const root = getProjectRootEntry(mt);
-  const stored = [...getSessionPathEntries(mt), ...getConversationPathEntries(mt)].filter(p => p.path);
+  const stored = pathsStore.all(mt).filter(p => p.path);
   if (!root) return stored;
   // The implicit project root is listed first; any stored entry equal to it
   // (e.g. a legacy per-tab copy) collapses into the implicit one.
@@ -312,34 +244,9 @@ export function getExplicitAllowedPaths(mt) {
   return getAllowedPathEntries(mt).filter(p => !p.implicit).map(p => p.path);
 }
 
-/** @param {any} mt @param {AllowedPathEntry[]} paths */
-function saveConversationPathEntries(mt, paths) {
-  mt.conversation.setMetadata(CONVERSATION_PATHS_KEY, paths.map(p => normalizePathEntry(p, SCOPE_CONVERSATION)));
-  approvePermittedPendingApprovals(mt.conversation, { allowViewer: true, itemTypes: ['execute'] });
-}
-
-/** @param {any} mt @param {AllowedPathEntry[]} paths */
-function saveSessionPathEntries(mt, paths) {
-  const session = mt.conversation?.session;
-  const normalized = paths.map(p => normalizePathEntry(p, SCOPE_SESSION));
-  if (session?.patchMetadata) session.patchMetadata({ [SESSION_PATHS_KEY]: normalized });
-  else if (session) session.metadata = { ...(session.metadata || {}), [SESSION_PATHS_KEY]: normalized };
-}
-
-/** @param {any} mt @param {PermissionScope} scope @returns {AllowedPathEntry[]} */
-function readPathEntriesByScope(mt, scope) {
-  return scope === SCOPE_SESSION ? getSessionPathEntries(mt) : getConversationPathEntries(mt);
-}
-
-/** @param {any} mt @param {PermissionScope} scope @param {AllowedPathEntry[]} paths */
-function savePathEntriesByScope(mt, scope, paths) {
-  if (scope === SCOPE_SESSION) saveSessionPathEntries(mt, paths);
-  else saveConversationPathEntries(mt, paths);
-}
-
 /** @param {any} mt @param {string[]} paths */
 export function setAllowedPaths(mt, paths) {
-  saveConversationPathEntries(mt, paths.map(path => ({ id: defaultPathId(path), path, scope: SCOPE_CONVERSATION })));
+  pathsStore.save(mt, SCOPE_CONVERSATION, paths.map(path => ({ id: defaultPathId(path), path, scope: SCOPE_CONVERSATION })));
 }
 
 /** @param {any} mt @param {string} p @param {{scope?: PermissionScope}} [options] @returns {boolean} */
@@ -348,61 +255,25 @@ export function addAllowedPath(mt, p, options = {}) {
   if (!normalized) return false;
   if (getAllowedPathEntries(mt).some(entry => entry.path === normalized)) return false;
   const scope = options.scope === SCOPE_SESSION ? SCOPE_SESSION : SCOPE_CONVERSATION;
-  /** @type {AllowedPathEntry} */
-  const entry = { id: newPathId(), path: normalized, scope };
-  savePathEntriesByScope(mt, scope, [...readPathEntriesByScope(mt, scope), entry]);
+  pathsStore.append(mt, { id: newPathId(), path: normalized, scope }, scope);
   return true;
-}
-
-/** @param {any} mt @param {string} idOrPath @returns {{scope: PermissionScope, paths: AllowedPathEntry[], index: number}|null} */
-function locatePath(mt, idOrPath) {
-  for (const scope of /** @type {PermissionScope[]} */ ([SCOPE_SESSION, SCOPE_CONVERSATION])) {
-    const paths = readPathEntriesByScope(mt, scope);
-    const index = paths.findIndex(p => p.id === idOrPath || p.path === idOrPath);
-    if (index !== -1) return { scope, paths, index };
-  }
-  return null;
 }
 
 /** @param {any} mt @param {string} idOrPath @returns {boolean} */
 export function removeAllowedPath(mt, idOrPath) {
-  const hit = locatePath(mt, idOrPath);
-  if (!hit) return false;
-  const next = hit.paths.slice();
-  next.splice(hit.index, 1);
-  savePathEntriesByScope(mt, hit.scope, next);
-  return true;
+  return pathsStore.remove(mt, idOrPath);
 }
 
 /** @param {any} mt @param {string} idOrPath @param {string} newPath @returns {boolean} */
 export function updateAllowedPath(mt, idOrPath, newPath) {
   const normalized = (newPath || '').trim();
   if (!normalized) return false;
-  const hit = locatePath(mt, idOrPath);
-  if (!hit) return false;
-  const next = hit.paths.slice();
-  next[hit.index] = { ...(/** @type {AllowedPathEntry} */ (next[hit.index])), path: normalized };
-  savePathEntriesByScope(mt, hit.scope, next);
-  return true;
+  return pathsStore.update(mt, idOrPath, entry => ({ ...entry, path: normalized }));
 }
 
 /** @param {any} mt @param {string} idOrPath @param {PermissionScope} targetScope @returns {boolean} */
 export function setAllowedPathScope(mt, idOrPath, targetScope) {
-  const target = targetScope === SCOPE_SESSION ? SCOPE_SESSION : SCOPE_CONVERSATION;
-  const hit = locatePath(mt, idOrPath);
-  if (!hit) return false;
-  if (hit.scope === target) return true;
-  /** @type {AllowedPathEntry} */
-  const entry = { ...(/** @type {AllowedPathEntry} */ (hit.paths[hit.index])), scope: target };
-  const sourceNext = hit.paths.slice();
-  sourceNext.splice(hit.index, 1);
-  const targetPaths = readPathEntriesByScope(mt, target);
-  const duplicate = targetPaths.find(p => p.path === entry.path);
-  // Write destination first so open popup row-order snapshots keep the row in
-  // place while scope changes.
-  if (!duplicate) savePathEntriesByScope(mt, target, [...targetPaths, entry]);
-  savePathEntriesByScope(mt, hit.scope, sourceNext);
-  return true;
+  return pathsStore.move(mt, idOrPath, targetScope);
 }
 
 // ============================================================================

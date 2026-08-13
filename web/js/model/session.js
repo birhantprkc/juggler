@@ -591,6 +591,33 @@ class Session {
   }
 
   /**
+   * Rebuild `this.conversations` in `orderedIds` order.
+   *
+   * Map insertion order IS the tab-bar order, so every insert, move and
+   * reorder is a full rebuild rather than an in-place mutation — this is the
+   * one place that rebuild lives. An id naming neither a current entry nor an
+   * addition is skipped (an id we don't have yet arrives with its own
+   * `created` / `restored` event); a current entry the caller didn't name keeps
+   * its relative position at the end (defensive — a drag-reorder always carries
+   * the full order).
+   * @param {string[]} orderedIds - Ids in their new order
+   * @param {Map<string, any>} [additions] - Entries not in the map yet (freshly created/loaded), keyed by id
+   * @private
+   */
+  _setConversationOrder(orderedIds, additions) {
+    /** @type {Map<string, any>} */
+    const next = new Map();
+    for (const id of orderedIds) {
+      const conv = additions?.get(id) ?? this.conversations.get(id);
+      if (conv) next.set(id, conv);
+    }
+    for (const [id, conv] of this.conversations) {
+      if (!next.has(id)) next.set(id, conv);
+    }
+    this.conversations = next;
+  }
+
+  /**
    * Load a conversation from disk and insert it into the active map.
    * With `prepend: true` the new entry becomes the first key (tab bar
    * head); with `prepend: false` it is appended via `Map.set` (insertion
@@ -604,12 +631,7 @@ class Session {
     try {
       const conv = await workerManager.loadExistingConversation(id, this);
       if (prepend) {
-        const reordered = new Map();
-        reordered.set(id, conv);
-        for (const [cid, c] of this.conversations) {
-          if (cid !== id) reordered.set(cid, c);
-        }
-        this.conversations = reordered;
+        this._setConversationOrder([id], new Map([[id, conv]]));
       } else {
         recordTape('session-mut', id, { op: 'set', from: '_loadAndInsertConversation' });
         this.conversations.set(id, conv);
@@ -648,19 +670,7 @@ class Session {
       return;
     }
 
-    // Rebuild Map in server order. Ids we don't have are skipped — their
-    // matching `created` / `restored` event will land separately and
-    // insert them. Ids the server didn't mention are appended (defensive;
-    // a drag-reorder always carries the full order).
-    const next = new Map();
-    for (const id of order) {
-      const conv = this.conversations.get(id);
-      if (conv) next.set(id, conv);
-    }
-    for (const [id, conv] of this.conversations) {
-      if (!next.has(id)) next.set(id, conv);
-    }
-    this.conversations = next;
+    this._setConversationOrder(order);
     this._notify('conversation:reordered', {});
   }
 
@@ -970,14 +980,9 @@ class Session {
     const current = order.indexOf(conversationId);
     if (current <= target) return; // at or above its ceiling — no churn, no POST
 
-    const conv = this.conversations.get(conversationId);
-    const rebuilt = new Map();
     const without = order.filter(id => id !== conversationId);
     without.splice(target, 0, conversationId);
-    for (const id of without) {
-      rebuilt.set(id, id === conversationId ? conv : this.conversations.get(id));
-    }
-    this.conversations = rebuilt;
+    this._setConversationOrder(without);
 
     this._notify('conversation:reordered', { conversationId });
 
@@ -1609,11 +1614,8 @@ class Session {
       conversation = await workerManager.createNewConversation(id, canonicalName, this);
 
       // Insert at top: rebuild Map so the new conversation is the first entry.
-      const reordered = new Map();
-      reordered.set(conversation.id, conversation);
-      for (const [cid, c] of this.conversations) reordered.set(cid, c);
       recordTape('session-mut', conversation.id, { op: 'set', from: 'createConversation-insertTop' });
-      this.conversations = reordered;
+      this._setConversationOrder([conversation.id], new Map([[conversation.id, conversation]]));
     } finally {
       this._pendingCreates.delete(requestedId);
       if (response && response.id !== requestedId) {
@@ -1832,14 +1834,13 @@ class Session {
 
     // 4. Insert clone right after source (Maps maintain insertion order) and
     //    persist the new ordering via POST /reorder.
-    const newConversations = new Map();
-    for (const [id, conv] of this.conversations) {
-      newConversations.set(id, conv);
-      if (id === conversationId) {
-        newConversations.set(loadedClone.id, loadedClone);
-      }
+    /** @type {string[]} */
+    const withClone = [];
+    for (const id of this.conversations.keys()) {
+      withClone.push(id);
+      if (id === conversationId) withClone.push(loadedClone.id);
     }
-    this.conversations = newConversations;
+    this._setConversationOrder(withClone, new Map([[loadedClone.id, loadedClone]]));
     this._persistOrder('duplicate reorder');
 
     // Clear undo history so user starts fresh (copied items are not undoable)
@@ -1879,21 +1880,10 @@ class Session {
       return false;
     }
 
-    // Build new Map with conversation moved to new position
-    const newConversations = new Map();
-    for (const [id, c] of this.conversations) {
-      if (id === conversationId) {
-        // Skip - will insert at target position
-        continue;
-      }
-      if (id === beforeId) {
-        // Insert moved conversation before target
-        newConversations.set(conversationId, conv);
-      }
-      newConversations.set(id, c);
-    }
-
-    this.conversations = newConversations;
+    // Move the conversation to sit immediately before `beforeId`.
+    const order = Array.from(this.conversations.keys()).filter(id => id !== conversationId);
+    order.splice(order.indexOf(beforeId), 0, conversationId);
+    this._setConversationOrder(order);
     this._notify('conversation:reordered', { conversationId, beforeId });
 
     // POST /reorder is the sole writer of conversation order.
