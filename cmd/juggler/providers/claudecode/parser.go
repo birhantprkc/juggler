@@ -739,15 +739,35 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 			// pause; end_turn lets readUntilPauseOrComplete exit cleanly.
 			switch ev.Delta.StopReason {
 			case "tool_use":
-				// A batch the CLI serves entirely on its own (every block had
-				// unparseable input) parks nothing for us to answer. Pausing would
-				// hand the worker a round with no tools to execute while the CLI
-				// streams its recovery call into s.content with nobody reading it —
-				// content that the next Submit would then dequeue as if it were that
-				// message's reply. Stay in the read loop: the recovery round belongs
-				// to this turn, and the turn ends at its real stop reason.
-				if result.dispatchableThisCall == 0 && result.cliServedThisCall > 0 {
-					jlog.Info("claudecode: tool_use pause with no dispatchable blocks (%d answered by the CLI itself) — reading on for its recovery round", result.cliServedThisCall)
+				// A batch that parked nothing on our side must not pause the turn.
+				// Two shapes reach here, and the CLI recovers from both by itself
+				// on the same open process:
+				//
+				//   - every block had unparseable input, so the CLI answered each
+				//     one with an InputValidationError (cliServedThisCall > 0);
+				//   - the response carried no usable tool_use block at all — the
+				//     model stopped mid-block, or emitted none — so the CLI
+				//     discards the message and feeds itself "The previous response
+				//     failed to produce a valid tool call. Please retry the tool
+				//     call now."
+				//
+				// Pausing on either hands the worker a round with no tools to
+				// execute while the CLI streams its recovery call into s.content
+				// with nobody reading it — content the next Submit would then
+				// dequeue as if it were that message's reply. And a round that
+				// streamed text before failing reads to the worker as a finished
+				// turn (text counts as an action, no tool_use means nothing left to
+				// do), so the conversation ends with no tool run, no error, and no
+				// explanation. Stay in the read loop: the recovery round belongs to
+				// this turn, and the turn ends at its real stop reason. A CLI that
+				// recovers with nothing instead trips the idle watchdog, which ends
+				// the turn with a visible stall.
+				if result.dispatchableThisCall == 0 {
+					if result.cliServedThisCall > 0 {
+						jlog.Info("claudecode: tool_use pause with no dispatchable blocks (%d answered by the CLI itself) — reading on for its recovery round", result.cliServedThisCall)
+					} else {
+						jlog.Info("claudecode: tool_use stop carrying no tool call at all — the CLI discards the message and re-prompts itself; reading on for its recovery round")
+					}
 					return false, 0, nil
 				}
 				result.StopReason = "tool_use"

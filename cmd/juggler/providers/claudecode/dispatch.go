@@ -480,9 +480,24 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 			})
 		}
 		if len(pending) == 0 {
-			// Defensive: tool_use stop with no ids — bail and start fresh next time.
+			// Defensive: a tool_use stop that parked nothing. The parser
+			// suppresses this pause and reads on for the CLI's recovery round,
+			// so reaching here means the stop reason arrived by some other route
+			// — and the round ran no tool while claiming to be waiting on one.
+			//
+			// It must surface as a turn failure. Reporting the bare tool_use stop
+			// instead is indistinguishable from a finished turn to the worker: if
+			// the round streamed any text at all the barren-turn retry doesn't
+			// engage either, and the conversation simply stops — no tool, no
+			// error, spinner to idle. Transient, so an attempt that streamed
+			// nothing is retried silently and one that already streamed surfaces.
+			// The anchor is no longer safe to resume, so the sidecar goes too.
 			c.dropSession(req.ConversationID)
-			return &provider.StreamResult{StopReason: turn.StopReason}, nil
+			return &provider.StreamResult{
+				StopReason:       "error",
+				InputTokens:      turn.CacheWriteTokens,
+				CacheWriteTokens: provider.Reported(turn.CacheWriteTokens),
+			}, &transientCLIError{msg: "claude CLI stopped for tool_use but emitted no usable tool call"}
 		}
 		c.activeSession.pendingTools = pending
 		// Stash the snapshot for diagnostic logging only — never returned.
