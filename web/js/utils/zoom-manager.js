@@ -30,6 +30,7 @@
 
 import { onDocumentReady } from './document-ready.js';
 import { postWindowControl } from '../../sdk/lib/window-control.js';
+import { fetchJson } from '../services/http.js';
 
 const ZOOM_KEY = 'juggler-zoom';
 const ZOOM_STEP = 10;
@@ -104,15 +105,8 @@ function applyZoom(level) {
  * @private
  */
 function persistToSession(level) {
-  try {
-    void fetch('/api/session/ui-zoom', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uiZoom: level }),
-    }).catch(() => {});
-  } catch (_e) {
-    /* best-effort — a missing/blocked fetch just skips session persistence */
-  }
+  // Best-effort — a missing/blocked fetch just skips session persistence.
+  void fetchJson('/api/session/ui-zoom', { method: 'PUT', body: { uiZoom: level }, fallback: null });
 }
 
 /**

@@ -31,6 +31,7 @@
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { fetchJson, HttpError } from './http.js';
 
 /** The "no in-app updater" answer used whenever there is no native host. */
 const ABSENT = /** @type {UpdaterState} */ ({ present: false });
@@ -43,14 +44,8 @@ const ABSENT = /** @type {UpdaterState} */ ({ present: false });
 export async function getUpdaterState() {
   const url = windowControlURL('updater', '?op=state');
   if (!url) return ABSENT;
-  try {
-    const resp = await fetch(url, { method: 'POST' });
-    if (!resp.ok) return ABSENT;
-    const data = await resp.json();
-    return data && typeof data === 'object' ? data : ABSENT;
-  } catch {
-    return ABSENT;
-  }
+  const data = await fetchJson(url, { method: 'POST', fallback: null });
+  return data && typeof data === 'object' ? data : ABSENT;
 }
 
 /**
@@ -62,11 +57,8 @@ export async function getUpdaterState() {
 export async function startInstall() {
   const url = windowControlURL('updater', '?op=install');
   if (!url) return;
-  try {
-    await fetch(url, { method: 'POST' });
-  } catch {
-    /* transient — the next pushed snapshot reflects reality */
-  }
+  // Transient failures are ignored — the next pushed snapshot reflects reality.
+  await fetchJson(url, { method: 'POST', fallback: null });
 }
 
 /**
@@ -79,11 +71,8 @@ export async function startInstall() {
 export async function startCheck() {
   const url = windowControlURL('updater', '?op=check');
   if (!url) return;
-  try {
-    await fetch(url, { method: 'POST' });
-  } catch {
-    /* transient — the next pushed snapshot reflects reality */
-  }
+  // Transient failures are ignored — the next pushed snapshot reflects reality.
+  await fetchJson(url, { method: 'POST', fallback: null });
 }
 
 /**
@@ -106,15 +95,16 @@ export async function requestRestart({ force = false } = {}) {
   const url = windowControlURL('updater', force ? '?op=restart&force=1' : '?op=restart');
   if (!url) return { status: 'absent' };
   try {
-    const resp = await fetch(url, { method: 'POST' });
-    if (resp.status === 204) return { status: 'ok' };
-    if (resp.status === 409) {
-      const body = await resp.json().catch(() => ({}));
+    await fetchJson(url, { method: 'POST' });
+    return { status: 'ok' };
+  } catch (err) {
+    if (!(err instanceof HttpError)) {
+      return { status: 'error', message: extractErrorMessage(err) };
+    }
+    const body = err.body && typeof err.body === 'object' ? err.body : {};
+    if (err.status === 409) {
       return { status: 'busy', busy: body.busy, message: body.message };
     }
-    const body = await resp.json().catch(() => ({}));
-    return { status: 'error', message: body.error || `Restart failed (HTTP ${resp.status})` };
-  } catch (err) {
-    return { status: 'error', message: extractErrorMessage(err) };
+    return { status: 'error', message: body.error || `Restart failed (HTTP ${err.status})` };
   }
 }

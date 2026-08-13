@@ -13,6 +13,7 @@ import { formatTimeAgo } from '../../utils/format.js';
 import { createCopyButton } from '../../../sdk/lib/copy-button.js';
 import wsService from '../../services/websocket.js';
 import { ProxySettings } from './proxy-settings.js';
+import { fetchJson } from '../../services/http.js';
 
 /** Polling interval (ms) for refreshing the Connectivity tab while it's open. */
 const CONNECTIVITY_POLL_MS = 2000;
@@ -204,15 +205,13 @@ export class ConnectivityTab {
     if (this._launchPrefsLoaded || this._launchPrefsFetching) return;
     this._launchPrefsFetching = true;
     try {
-      const res = await fetch('/api/settings');
-      if (!res.ok) return;
-      const data = await res.json();
-      const conn = (data && data.connectivity) || {};
+      // Offline — leave defaults; a later show() retries.
+      const data = await fetchJson('/api/settings', { fallback: null });
+      if (!data) return;
+      const conn = data.connectivity || {};
       this._launchPrefs = { lanOnLaunch: !!conn.lanOnLaunch, wanOnLaunch: conn.wanOnLaunch || '' };
       this._launchPrefsLoaded = true;
       if (this._loaded) this.renderConnectivityFields();
-    } catch {
-      /* offline — leave defaults; a later show() retries */
     } finally {
       this._launchPrefsFetching = false;
     }
@@ -249,9 +248,8 @@ export class ConnectivityTab {
    */
   async refreshConnectivity(force = false) {
     try {
-      const res = await fetch('/api/connectivity');
-      if (!res.ok) return;
-      const next = await res.json();
+      const next = await fetchJson('/api/connectivity');
+      if (!next) return;
       const prev = this.connectivity;
       this.connectivity = next;
       // The connected-clients section owns no inputs or QR images, so refresh it
@@ -533,12 +531,8 @@ export class ConnectivityTab {
    */
   async _putLaunchPrefs(connectivity) {
     try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ connectivity }),
-      });
-      return res.ok;
+      await fetchJson('/api/settings', { method: 'PUT', body: { connectivity } });
+      return true;
     } catch {
       return false;
     }
@@ -551,11 +545,7 @@ export class ConnectivityTab {
    */
   async _setLAN(enabled) {
     try {
-      await fetch('/api/connectivity/lan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      });
+      await fetchJson('/api/connectivity/lan', { method: 'POST', body: { enabled } });
     } catch (e) {
       console.error('Failed to set LAN access:', e);
     }
@@ -734,13 +724,11 @@ export class ConnectivityTab {
   async _startTunnel(mode) {
     this._wanError = '';
     try {
-      const res = await fetch('/api/connectivity/tunnel', {
+      const data = await fetchJson('/api/connectivity/tunnel', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true, mode }),
+        body: { enabled: true, mode },
       });
-      const data = await res.json();
-      if (!data.ok) this._wanError = data.error || 'Failed to start tunnel';
+      if (!data?.ok) this._wanError = data?.error || 'Failed to start tunnel';
     } catch (e) {
       this._wanError = 'Failed to start tunnel';
     }
@@ -754,13 +742,11 @@ export class ConnectivityTab {
   async _stopTunnel() {
     this._wanError = '';
     try {
-      const res = await fetch('/api/connectivity/tunnel', {
+      const data = await fetchJson('/api/connectivity/tunnel', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: false }),
+        body: { enabled: false },
       });
-      const data = await res.json();
-      if (!data.ok) this._wanError = data.error || 'Failed to stop tunnel';
+      if (!data?.ok) this._wanError = data?.error || 'Failed to stop tunnel';
     } catch (e) {
       this._wanError = 'Failed to stop tunnel';
     }

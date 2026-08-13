@@ -16,6 +16,7 @@
 
 import { resolveAssetUrl, importModuleUrl } from '../utils/asset-url.js';
 import { whenRegistriesReady } from '../registries/registry-ready.js';
+import { fetchJson } from './http.js';
 
 /**
  * @typedef {object} ExtensionManifest
@@ -101,20 +102,14 @@ export async function fetchExtensions() {
     return cached;
   }
 
-  try {
-    const response = await fetch('/api/extensions');
-    if (!response.ok) {
-      console.warn('[Extensions] Failed to fetch extensions:', response.status);
-      return [];
-    }
-    /** @type {Extension[]} */
-    const result = await response.json();
-    cached = Array.isArray(result) ? result : [];
-    return cached;
-  } catch (err) {
-    console.warn('[Extensions] Error fetching extensions:', err);
-    return [];
-  }
+  /** @type {Extension[]|null} */
+  const result = await fetchJson('/api/extensions', {
+    errorPrefix: '[Extensions] Failed to fetch extensions',
+    fallback: null,
+  });
+  if (result === null) return [];
+  cached = Array.isArray(result) ? result : [];
+  return cached;
 }
 
 /**
@@ -164,15 +159,10 @@ export function resetExtensionsCache() {
  * @returns {Promise<Set<string>>} Disabled capability/extension ids
  */
 export async function fetchDisabledPluginIds() {
-  try {
-    const response = await fetch('/api/config/plugins');
-    if (!response.ok) return lastKnownDisabled || new Set();
-    const { disabled } = await response.json();
-    lastKnownDisabled = new Set(Array.isArray(disabled) ? disabled : []);
-    return lastKnownDisabled;
-  } catch {
-    return lastKnownDisabled || new Set();
-  }
+  const data = await fetchJson('/api/config/plugins', { fallback: null });
+  if (!data) return lastKnownDisabled || new Set();
+  lastKnownDisabled = new Set(Array.isArray(data.disabled) ? data.disabled : []);
+  return lastKnownDisabled;
 }
 
 /**
@@ -259,11 +249,6 @@ const EMPTY_LOCATIONS = { userExtensions: '' };
  * @returns {Promise<ExtensionLocations>} The install locations (fields may be empty)
  */
 export async function fetchExtensionLocations() {
-  try {
-    const response = await fetch('/api/extensions/locations');
-    if (!response.ok) return { ...EMPTY_LOCATIONS };
-    return await response.json();
-  } catch {
-    return { ...EMPTY_LOCATIONS };
-  }
+  return await fetchJson('/api/extensions/locations', { fallback: { ...EMPTY_LOCATIONS } })
+    || { ...EMPTY_LOCATIONS };
 }

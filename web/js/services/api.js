@@ -6,6 +6,7 @@ import { windowControlURL } from '../../sdk/lib/window-control.js';
 import { conversationAssetURL } from '../../sdk/file-source.js';
 import { getPaintedTheme, getMode } from '../utils/theme-manager.js';
 import { getCurrentZoom } from '../utils/zoom-manager.js';
+import { fetchJson } from './http.js';
 
 /**
  * The full session payload returned by GET /api/session. Mirrors the shape
@@ -75,62 +76,13 @@ class APIService {
 
   /**
    * @param {string} endpoint
-   * @param {RequestInit} [options]
+   * @param {{method?: string, body?: any, headers?: Record<string, string>, signal?: AbortSignal}} [options]
    * @returns {Promise<any>} Parsed JSON response or null
    * @private
    */
   async request(endpoint, options = {}) {
-    const url = `${this.baseURL}${endpoint}`;
-    const defaultOptions = {
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    };
-
-    const mergedOptions = { ...defaultOptions, ...options };
-
     try {
-      const response = await fetch(url, mergedOptions);
-
-      if (!response.ok) {
-        // Try to surface the server's structured error body. Backends
-        // commonly return {"error": "..."} JSON; fall back to text or
-        // statusText if the body is empty / unparseable.
-        let bodyMsg = '';
-        try {
-          const text = await response.text();
-          if (text) {
-            try {
-              const parsed = JSON.parse(text);
-              if (parsed && typeof parsed.error === 'string') {
-                bodyMsg = parsed.error;
-              } else {
-                bodyMsg = text;
-              }
-            } catch {
-              bodyMsg = text;
-            }
-          }
-        } catch {
-          /* ignore — fall through to statusText */
-        }
-        const detail = bodyMsg || response.statusText;
-        throw new Error(`HTTP ${response.status}: ${detail}`);
-      }
-
-      // Handle 204 No Content responses
-      if (response.status === 204) {
-        return null;
-      }
-
-      // Check if response has content before parsing JSON
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        return await response.json();
-      }
-
-      // For non-JSON responses, return null
-      return null;
+      return await fetchJson(`${this.baseURL}${endpoint}`, options);
     } catch (error) {
       console.error(`[API] Request failed for ${endpoint}:`, error);
       throw error;
@@ -179,12 +131,12 @@ class APIService {
   async updateSession(conversations, activeConversationId, messageHistory, metadata) {
     return await this.request('/session', {
       method: 'PUT',
-      body: JSON.stringify({
+      body: {
         conversations,
         activeConversationId,
         messageHistory,
         metadata
-      })
+      }
     });
   }
 
@@ -196,7 +148,7 @@ class APIService {
   async patchSessionMetadata(metadata) {
     return await this.request('/session/metadata', {
       method: 'PATCH',
-      body: JSON.stringify({ metadata })
+      body: { metadata }
     });
   }
 
@@ -228,7 +180,7 @@ class APIService {
     const qs = params.size > 0 ? `?${params}` : '';
     return await this.request(`/conversations${qs}`, {
       method: 'POST',
-      body: JSON.stringify({
+      body: {
         name,
         ...(id ? { id } : {}),
         // duplicateFrom makes the server clone the source's files (doc.yjs +
@@ -245,7 +197,7 @@ class APIService {
         // focusFrom rides along so viewers can apply their own follow policy.
         ...(options.focus ? { focus: true } : {}),
         ...(options.focusFrom ? { focusFrom: options.focusFrom } : {})
-      })
+      }
     });
   }
 
@@ -259,7 +211,7 @@ class APIService {
   async renameConversation(conversationId, name) {
     return await this.request(`/session/conversations/${encodeURIComponent(conversationId)}/name`, {
       method: 'PATCH',
-      body: JSON.stringify({ name })
+      body: { name }
     });
   }
 
@@ -272,7 +224,7 @@ class APIService {
   async updateConversation(conversationId, conversationData) {
     return await this.request(`/session/conversations/${conversationId}`, {
       method: 'PUT',
-      body: JSON.stringify(conversationData)
+      body: conversationData
     });
   }
 
@@ -359,18 +311,12 @@ class APIService {
    */
   async saveConversationBinary(conversationId, yjsData) {
     const url = `${this.baseURL}/session/conversations/${conversationId}`;
-    const response = await fetch(url, {
+    await fetchJson(url, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/octet-stream'
-      },
-      // @ts-ignore - Uint8Array is valid for fetch body but TypeScript types are incomplete
-      body: yjsData
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: yjsData,
+      errorPrefix: 'Failed to save conversation binary'
     });
-
-    if (!response.ok) {
-      throw new Error(`Failed to save conversation binary: ${response.status} ${response.statusText}`);
-    }
   }
 
   /**
@@ -381,7 +327,7 @@ class APIService {
   async reorderConversations(conversationOrder) {
     return await this.request('/session/reorder', {
       method: 'PUT',
-      body: JSON.stringify({ order: conversationOrder })
+      body: { order: conversationOrder }
     });
   }
 
@@ -431,7 +377,7 @@ class APIService {
   async saveSystemPromptPreset(name, content) {
     return await this.request('/system-prompt-presets', {
       method: 'POST',
-      body: JSON.stringify({ name, content })
+      body: { name, content }
     });
   }
 
@@ -456,7 +402,7 @@ class APIService {
   async updateSystemPromptPreset(id, name, content) {
     return await this.request(`/system-prompt-presets/${encodeURIComponent(id)}`, {
       method: 'PUT',
-      body: JSON.stringify({ name, content })
+      body: { name, content }
     });
   }
 
@@ -469,7 +415,7 @@ class APIService {
   async setDefaultSystemPromptPreset(id) {
     return await this.request('/system-prompt-presets/default', {
       method: 'PUT',
-      body: JSON.stringify({ id })
+      body: { id }
     });
   }
 
@@ -500,7 +446,7 @@ class APIService {
   async openProject(path) {
     return await this.request('/project', {
       method: 'POST',
-      body: JSON.stringify({ path })
+      body: { path }
     });
   }
 
@@ -526,15 +472,7 @@ class APIService {
     if (path) params.set('project', path);
     const url = windowControlURL('new', `?${params.toString()}`);
     if (!url) return; // no native host (browser tab) — nothing to open
-    const res = await fetch(url, { method: 'POST' });
-    if (!res.ok) {
-      let msg = `Could not open a new window (HTTP ${res.status})`;
-      try {
-        const body = await res.json();
-        if (body && body.error) msg = body.error;
-      } catch (_e) { /* non-JSON error body; keep default message */ }
-      throw new Error(msg);
-    }
+    await fetchJson(url, { method: 'POST', errorPrefix: 'Could not open a new window' });
   }
 
   /**
@@ -561,7 +499,7 @@ class APIService {
   async removeRecent(path) {
     return await this.request('/recents', {
       method: 'DELETE',
-      body: JSON.stringify({ path })
+      body: { path }
     });
   }
 
@@ -575,29 +513,12 @@ class APIService {
    */
   async uploadAsset(conversationId, file) {
     const url = `${this.baseURL}/session/conversations/${encodeURIComponent(conversationId)}/assets`;
-    const response = await fetch(url, {
+    return await fetchJson(url, {
       method: 'POST',
       headers: { 'Content-Type': file.type || 'application/octet-stream' },
-      body: file
+      body: file,
+      errorPrefix: 'Asset upload failed'
     });
-    if (!response.ok) {
-      let detail = response.statusText;
-      try {
-        const text = await response.text();
-        if (text) {
-          try {
-            const parsed = JSON.parse(text);
-            detail = (parsed && typeof parsed.error === 'string') ? parsed.error : text;
-          } catch {
-            detail = text;
-          }
-        }
-      } catch {
-        /* ignore — fall through to statusText */
-      }
-      throw new Error(`Asset upload failed (HTTP ${response.status}): ${detail}`);
-    }
-    return await response.json();
   }
 
   /**

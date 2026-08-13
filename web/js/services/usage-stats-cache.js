@@ -16,6 +16,8 @@
  * debounced to one call per REFRESH_INTERVAL_MS and de-dupes concurrent callers.
  */
 
+import { fetchJson } from './http.js';
+
 /**
  * @typedef {object} UsageStat
  * @property {string} name - e.g. "Session (5h)", "Week (7d)", "Balance"
@@ -91,11 +93,10 @@ const usageStatsCache = {
 
     const fetchPromise = (async () => {
       try {
-        const resp = await fetch(`/api/providers/usage?provider=${encodeURIComponent(providerName)}`);
-        if (!resp.ok) throw new Error(`usage fetch failed: ${resp.status}`);
-        const data = await resp.json();
+        const data = await fetchJson(`/api/providers/usage?provider=${encodeURIComponent(providerName)}`,
+          { errorPrefix: 'usage fetch failed' });
         /** @type {UsageStats[]} */
-        const list = Array.isArray(data.usage) ? data.usage : [];
+        const list = Array.isArray(data?.usage) ? data.usage : [];
         const snapshot = list.find(u => u && u.provider === providerName) || null;
         // Retain the last known-good snapshot when this fetch came back empty.
         // The upstream usage endpoint refreshes only every few minutes and hands

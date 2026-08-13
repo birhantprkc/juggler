@@ -16,6 +16,7 @@ import { bytesToBase64, base64ToBytes } from '../utils/base64.js';
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { setBootstrapSummarizationPrompt } from '../utils/compaction-utils.js';
+import { fetchJson } from './http.js';
 
 // ============================================================================
 // Type Definitions
@@ -1741,15 +1742,15 @@ class WorkerManager {
         // 404s in production (over the studio tunnel that 404 is a visible
         // console line). Fire-and-forget.
         if (/** @type {any} */ (globalThis).JUGGLER_TEST_MODE) {
-          fetch('/api/test/debug-log', {
+          void fetchJson('/api/test/debug-log', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            body: {
               where: 'engine-auto-load-failed',
               conversationId,
               error: extractErrorMessage(err)
-            })
-          }).catch(() => {});
+            },
+            fallback: null,
+          });
         }
         // The first failure is usually a race: the worker's first-init
         // 'ready' (triggered by whichever client booted the worker) lands in

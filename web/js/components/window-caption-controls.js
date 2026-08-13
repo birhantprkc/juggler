@@ -29,6 +29,7 @@
  */
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
+import { fetchJson } from '../services/http.js';
 
 // Caption glyphs, drawn as 1px strokes on a 10×10 grid so they stay crisp and
 // match the thin-line Windows convention. currentColor lets them inherit the
@@ -117,10 +118,9 @@ class WindowCaptionControls extends HTMLElement {
   _control(action) {
     const url = windowControlURL('control', '?action=' + encodeURIComponent(action));
     if (!url) return; // no native host to drive
-    fetch(url, { method: 'POST' })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => { if (data) this._renderMaxGlyph(!!data.maximised); })
-      .catch(() => { /* window closing or transient — nothing to sync */ });
+    // A window closing or a transient failure leaves nothing to sync.
+    fetchJson(url, { method: 'POST', fallback: null })
+      .then((data) => { if (data) this._renderMaxGlyph(!!data.maximised); });
   }
 
   /** @param {boolean} maximised */

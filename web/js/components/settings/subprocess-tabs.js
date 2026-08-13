@@ -20,6 +20,7 @@
  */
 
 import wsService from '../../services/websocket.js';
+import { fetchJson } from '../../services/http.js';
 import {
   mcpListServers,
   mcpGetConfig,
@@ -320,10 +321,9 @@ export function acpDotClass(status) {
  */
 async function ensureAcpProviderEnabled() {
   try {
-    await fetch('/api/config/provider-enabled', {
+    await fetchJson('/api/config/provider-enabled', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'acp', enabled: true }),
+      body: { provider: 'acp', enabled: true },
     });
     const modelSelector = document.querySelector('model-selector');
     if (modelSelector && /** @type {any} */ (modelSelector).refresh) {

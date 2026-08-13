@@ -10,6 +10,7 @@
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
 import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
+import { fetchJson } from '../../services/http.js';
 
 /**
  * The three proxy modes, matching core.ProxyMode* (and httpx.Mode*) on the
@@ -162,17 +163,13 @@ export class ProxySettings {
    * @private
    */
   async _loadSettings() {
-    try {
-      const resp = await fetch('/api/settings');
-      if (!resp.ok) return;
-      const data = await resp.json();
-      const proxy = (data && data.network && data.network.proxy) || {};
-      this._mode = proxy.mode || 'system';
-      this._url = proxy.url || '';
-      this._reflect();
-    } catch {
-      /* offline — leave the controls as they are */
-    }
+    // Offline — leave the controls as they are.
+    const data = await fetchJson('/api/settings', { fallback: null });
+    if (!data) return;
+    const proxy = (data.network && data.network.proxy) || {};
+    this._mode = proxy.mode || 'system';
+    this._url = proxy.url || '';
+    this._reflect();
   }
 
   /**
@@ -269,13 +266,10 @@ export class ProxySettings {
     this._mode = mode;
     this._url = url;
     try {
-      const resp = await fetch('/api/settings', {
+      const data = await fetchJson('/api/settings', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ network: { proxy: { mode, url } } }),
+        body: { network: { proxy: { mode, url } } },
       });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
       const proxy = (data && data.network && data.network.proxy) || {};
       this._mode = proxy.mode || mode;
       this._url = proxy.url || '';

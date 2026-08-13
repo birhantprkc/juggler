@@ -9,6 +9,7 @@ import infoCardRegistry from '../registries/info-card-registry.js';
 import fileViewerRegistry from '../registries/file-viewer-registry.js';
 import { reloadRegistries } from '../registries/reload-registries.js';
 import { fetchExtensions, fetchExtensionLocations } from '../services/extensions.js';
+import { fetchJson } from '../services/http.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
 import { renderMarkdown, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
 import { ExtensionSettingsEditor } from './settings/extensions-settings.js';
@@ -331,19 +332,13 @@ class PluginCatalog extends HTMLElement {
    * @returns {Promise<Set<string>>} The disabled-id set
    */
   async _fetchConfig() {
-    try {
-      const response = await fetch('/api/config/plugins');
-      if (!response.ok) {
-        this._enabledIds = [];
-        return new Set();
-      }
-      const { disabled, enabled } = await response.json();
-      this._enabledIds = Array.isArray(enabled) ? enabled : [];
-      return new Set(Array.isArray(disabled) ? disabled : []);
-    } catch {
+    const data = await fetchJson('/api/config/plugins', { fallback: null });
+    if (!data) {
       this._enabledIds = [];
       return new Set();
     }
+    this._enabledIds = Array.isArray(data.enabled) ? data.enabled : [];
+    return new Set(Array.isArray(data.disabled) ? data.disabled : []);
   }
 
   /**
@@ -353,12 +348,11 @@ class PluginCatalog extends HTMLElement {
    * @returns {Promise<void>}
    */
   async _persist(disabledList) {
-    const resp = await fetch('/api/config/plugins', {
+    await fetchJson('/api/config/plugins', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ disabled: disabledList, enabled: this._enabledIds }),
+      body: { disabled: disabledList, enabled: this._enabledIds },
+      errorPrefix: 'Failed to save extension config',
     });
-    if (!resp.ok) throw new Error(`Failed to save extension config (${resp.status})`);
   }
 
   /**
@@ -367,9 +361,8 @@ class PluginCatalog extends HTMLElement {
    * @returns {Promise<{active: boolean, conversationIds: string[]}>} Active flag and active conversation IDs
    */
   async _fetchActiveHealth() {
-    const resp = await fetch('/api/health/active');
-    if (!resp.ok) return { active: false, conversationIds: [] };
-    const data = await resp.json();
+    const data = await fetchJson('/api/health/active', { fallback: null });
+    if (!data) return { active: false, conversationIds: [] };
     return {
       active: !!data.active,
       conversationIds: Array.isArray(data.conversationIds) ? data.conversationIds : [],

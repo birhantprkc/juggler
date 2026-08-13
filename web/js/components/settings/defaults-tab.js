@@ -15,6 +15,7 @@ import { isDefaultFileEditingOn, setDefaultFileEditingOn } from '../../services/
 import { setAutoNameEnabledCached } from '../../services/auto-name-setting.js';
 import strategyRegistry from '../../registries/strategy-registry.js';
 import { getDefaultStrategyId, setDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID } from '../../services/default-strategy.js';
+import { fetchJson } from '../../services/http.js';
 
 /**
  * "Defaults" tab (id `defaults`): the default-model and cheap-model pickers, the
@@ -133,12 +134,7 @@ export class DefaultsTab {
       async (on) => {
         const previous = toggleInput.checked;
         try {
-          const response = await fetch('/api/config', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ auto_name_disabled: !on }),
-          });
-          if (!response.ok) throw new Error(`Server returned ${response.status}`);
+          await fetchJson('/api/config', { method: 'PUT', body: { auto_name_disabled: !on } });
           /** @type {any} */ (this.config).autoNameDisabled = !on;
           setAutoNameEnabledCached(on);
           // The instruction only shapes an auto-derived title, so hide it while
@@ -208,12 +204,7 @@ export class DefaultsTab {
       if (value === (/** @type {any} */ (this.config).autoNameInstruction || '')) return;
       status.textContent = 'Saving…';
       try {
-        const response = await fetch('/api/config', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ auto_name_instruction: value }),
-        });
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        await fetchJson('/api/config', { method: 'PUT', body: { auto_name_instruction: value } });
         /** @type {any} */ (this.config).autoNameInstruction = value;
         status.textContent = value ? 'Saved custom instruction.' : 'Saved. Using the built-in prompt.';
       } catch (e) {
@@ -345,12 +336,7 @@ export class DefaultsTab {
       async (on) => {
         const previous = autoCompactInput.checked;
         try {
-          const response = await fetch('/api/config', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ auto_compact_disabled: !on }),
-          });
-          if (!response.ok) throw new Error(`Server returned ${response.status}`);
+          await fetchJson('/api/config', { method: 'PUT', body: { auto_compact_disabled: !on } });
           /** @type {any} */ (this.config).autoCompactDisabled = !on;
         } catch (e) {
           console.error('[SettingsPanel] Failed to save automatic compaction setting:', e);
@@ -421,12 +407,7 @@ export class DefaultsTab {
       }
       status.textContent = 'Saving…';
       try {
-        const response = await fetch('/api/config', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stream_idle_timeout: value }),
-        });
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        await fetchJson('/api/config', { method: 'PUT', body: { stream_idle_timeout: value } });
         /** @type {any} */ (this.config).streamIdleTimeout = value;
         status.textContent = value ? `Saved. Waiting up to ${value}s.` : 'Saved. Using default (180s).';
       } catch (e) {
@@ -677,26 +658,14 @@ export class DefaultsTab {
       if (thinking) body.thinking = thinking;
     }
     try {
-      const response = await fetch('/api/cheap-model', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) {
-        throw new Error(`Server returned ${response.status}`);
-      }
+      await fetchJson('/api/cheap-model', { method: 'PUT', body });
       // Reflect the saved state locally. When cleared to Auto, re-fetch so the
       // auto-derived hint under the combo box refreshes; otherwise update in place.
       if (body.provider && body.model) {
         this.cheapModel = { provider: body.provider, model: body.model, thinking: body.thinking || '', explicit: true };
         this.renderCheapModelField();
       } else {
-        try {
-          const refreshed = await fetch('/api/cheap-model');
-          this.cheapModel = refreshed.ok ? await refreshed.json() : { explicit: false };
-        } catch {
-          this.cheapModel = { explicit: false };
-        }
+        this.cheapModel = await fetchJson('/api/cheap-model', { fallback: null }) || { explicit: false };
         this.renderCheapModelField();
       }
     } catch (err) {
@@ -775,14 +744,7 @@ export class DefaultsTab {
       if (thinking) body.thinking = thinking;
     }
     try {
-      const response = await fetch('/api/default-model', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) {
-        throw new Error(`Server returned ${response.status}`);
-      }
+      await fetchJson('/api/default-model', { method: 'PUT', body });
       // Reflect the saved state locally and re-render so the status hint
       // and selection update without a full reload.
       this.defaultModel = { provider: body.provider, model: body.model, thinking: body.thinking || '', explicit: !!(body.provider && body.model) };

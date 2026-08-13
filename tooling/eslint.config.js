@@ -198,11 +198,11 @@ export default [
         // All backend operations MUST go through ops-api.js for type safety.
         // This prevents runtime errors from parameter typos and wrong types.
         {
-          selector: "CallExpression[callee.name='fetch'] > Literal[value*='/api/ops/call']",
+          selector: "CallExpression[callee.name=/^(fetch|fetchJson)$/] > Literal[value*='/api/ops/call']",
           message: 'FORBIDDEN: Direct fetch() to /api/ops/call detected. Use typed functions from ops-api.js instead. Example: import { readFileLoad } from \'./services/ops-api.js\' and call readFileLoad(params)'
         },
         {
-          selector: "CallExpression[callee.name='fetch'] > TemplateLiteral:has(TemplateElement[value.raw*='/api/ops/call'])",
+          selector: "CallExpression[callee.name=/^(fetch|fetchJson)$/] > TemplateLiteral:has(TemplateElement[value.raw*='/api/ops/call'])",
           message: 'FORBIDDEN: Direct fetch() to /api/ops/call detected. Use typed functions from ops-api.js instead. Example: import { readFileLoad } from \'./services/ops-api.js\' and call readFileLoad(params)'
         },
         // ===================================================================

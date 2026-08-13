@@ -22,6 +22,8 @@
  * @module services/skills-registry
  */
 
+import { fetchJson, HttpError } from './http.js';
+
 /**
  * @typedef {object} CatalogInstalled
  * @property {'user'|'project'} scope - Provenance scope of the install.
@@ -86,14 +88,10 @@ export async function fetchCatalog({ force = false, refresh = false } = {}) {
     return cachedCatalog;
   }
   const url = refresh ? '/api/skills/catalog?refresh=1' : '/api/skills/catalog';
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to load skill catalog: ${res.status}`);
-  }
-  const data = await res.json();
+  const data = await fetchJson(url, { errorPrefix: 'Failed to load skill catalog' });
   cachedCatalog = {
-    entries: Array.isArray(data.entries) ? data.entries : [],
-    sources: Array.isArray(data.sources) ? data.sources : [],
+    entries: Array.isArray(data?.entries) ? data.entries : [],
+    sources: Array.isArray(data?.sources) ? data.sources : [],
   };
   return cachedCatalog;
 }
@@ -111,11 +109,7 @@ export function resetCatalogCache() {
  */
 export async function fetchCatalogEntry(source, path) {
   const url = `/api/skills/catalog/entry?source=${encodeURIComponent(source)}&path=${encodeURIComponent(path)}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to load skill preview: ${await errorText(res)}`);
-  }
-  return res.json();
+  return await fetchJson(url, { errorPrefix: 'Failed to load skill preview' });
 }
 
 /**
@@ -132,23 +126,27 @@ export async function fetchCatalogEntry(source, path) {
  * @returns {Promise<{ installedPath: string, name: string, scope: string, source: string }>} The installed location.
  */
 export async function installSkill(req) {
-  const res = await fetch('/api/skills/install', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: 'install', ...req }),
-  });
-  if (res.status === 409) {
-    const body = await res.json().catch(() => ({}));
-    const err = new Error(body.error || 'A skill with that name already exists');
-    /** @type {any} */ (err).collision = true;
-    /** @type {any} */ (err).existing = body.existing;
+  let result;
+  try {
+    result = await fetchJson('/api/skills/install', {
+      method: 'POST',
+      body: { mode: 'install', ...req },
+      errorPrefix: 'Install failed',
+    });
+  } catch (err) {
+    // 409 is the name-collision answer, not a transport failure: re-shape it
+    // into the typed error the install flow branches on.
+    if (err instanceof HttpError && err.status === 409) {
+      const body = err.body && typeof err.body === 'object' ? err.body : {};
+      const collision = new Error(body.error || 'A skill with that name already exists');
+      /** @type {any} */ (collision).collision = true;
+      /** @type {any} */ (collision).existing = body.existing;
+      throw collision;
+    }
     throw err;
   }
-  if (!res.ok) {
-    throw new Error(`Install failed: ${await errorText(res)}`);
-  }
   resetCatalogCache();
-  return res.json();
+  return result;
 }
 
 /**
@@ -161,10 +159,7 @@ export async function installSkill(req) {
  */
 export async function uninstallSkill(scope, source, name) {
   const url = `/api/skills/${encodeURIComponent(scope)}/${encodeURIComponent(source)}/${encodeURIComponent(name)}`;
-  const res = await fetch(url, { method: 'DELETE' });
-  if (!res.ok) {
-    throw new Error(`Uninstall failed: ${await errorText(res)}`);
-  }
+  await fetchJson(url, { method: 'DELETE', errorPrefix: 'Uninstall failed' });
   resetCatalogCache();
 }
 
@@ -175,16 +170,13 @@ export async function uninstallSkill(scope, source, name) {
  * @returns {Promise<CatalogSourceStatus>} The added source status.
  */
 export async function addSource(url, label) {
-  const res = await fetch('/api/skills/registries', {
+  const source = await fetchJson('/api/skills/registries', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, label }),
+    body: { url, label },
+    errorPrefix: 'Could not add source',
   });
-  if (!res.ok) {
-    throw new Error(`Could not add source: ${await errorText(res)}`);
-  }
   resetCatalogCache();
-  return res.json();
+  return source;
 }
 
 /**
@@ -193,11 +185,9 @@ export async function addSource(url, label) {
  * @returns {Promise<Array<{id:string,label:string,repo:string,trust:string}>>} The default sources.
  */
 export async function fetchDefaultSources() {
-  const res = await fetch('/api/skills/registries/defaults');
-  if (!res.ok) {
-    throw new Error(`Could not load default sources: ${await errorText(res)}`);
-  }
-  return res.json();
+  return await fetchJson('/api/skills/registries/defaults', {
+    errorPrefix: 'Could not load default sources',
+  });
 }
 
 /**
@@ -207,12 +197,12 @@ export async function fetchDefaultSources() {
  * @returns {Promise<{id:string,label:string,repo:string,trust:string}>} The restored source.
  */
 export async function restoreDefaultSource(id) {
-  const res = await fetch(`/api/skills/registries/defaults/${encodeURIComponent(id)}`, { method: 'POST' });
-  if (!res.ok) {
-    throw new Error(`Could not add source: ${await errorText(res)}`);
-  }
+  const source = await fetchJson(`/api/skills/registries/defaults/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    errorPrefix: 'Could not add source',
+  });
   resetCatalogCache();
-  return res.json();
+  return source;
 }
 
 /**
@@ -222,24 +212,9 @@ export async function restoreDefaultSource(id) {
  * @returns {Promise<void>} Resolves once removed.
  */
 export async function removeSource(id) {
-  const res = await fetch(`/api/skills/registries/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (!res.ok) {
-    throw new Error(`Could not remove source: ${await errorText(res)}`);
-  }
+  await fetchJson(`/api/skills/registries/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    errorPrefix: 'Could not remove source',
+  });
   resetCatalogCache();
-}
-
-/**
- * Extract a human error string from a non-OK response's JSON envelope.
- * @param {Response} res
- * @returns {Promise<string>} A human-readable error message.
- */
-async function errorText(res) {
-  try {
-    const body = await res.json();
-    if (body && body.error) return body.error;
-  } catch {
-    // non-JSON body — fall through
-  }
-  return res.statusText || `HTTP ${res.status}`;
 }

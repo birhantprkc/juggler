@@ -11,6 +11,7 @@
 
 import { formatBytes } from '../../utils/format.js';
 import { addFilePath } from '../../utils/properties-panel-helpers.js';
+import { fetchJson } from '../../services/http.js';
 
 /** Polling interval (ms) for tailing the selected log while the Logs tab is open. */
 const LOGS_POLL_MS = 2000;
@@ -113,12 +114,9 @@ export class LogsTab {
   async _refreshLogList() {
     /** @type {any[]} */
     let files = [];
-    try {
-      const res = await fetch('/api/logs');
-      if (res.ok) files = (await res.json()).files || [];
-    } catch {
-      // Treat a failed fetch as "no logs" and fall through to the empty state.
-    }
+    // Treat a failed fetch as "no logs" and fall through to the empty state.
+    const data = await fetchJson('/api/logs', { fallback: null });
+    if (data) files = data.files || [];
     this._logFiles = files;
 
     const hasFiles = files.length > 0;
@@ -227,14 +225,10 @@ export class LogsTab {
     if (!path || !viewer) return;
 
     const offset = reset ? 0 : this._logOffset;
-    let data;
-    try {
-      const res = await fetch(`/api/logs/content?path=${encodeURIComponent(path)}&offset=${offset}`);
-      if (!res.ok) return;
-      data = await res.json();
-    } catch {
-      return; // Transient; the next poll retries.
-    }
+    // A failure is transient; the next poll retries.
+    const data = await fetchJson(`/api/logs/content?path=${encodeURIComponent(path)}&offset=${offset}`,
+      { fallback: null });
+    if (!data) return;
     // Drop a stale response for a file the user has since switched away from.
     if (path !== this._selectedLogPath) return;
 

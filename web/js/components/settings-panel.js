@@ -10,6 +10,7 @@
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { fetchJson } from '../services/http.js';
 import { ProvidersTab } from './settings/providers-tab.js';
 import { DefaultsTab } from './settings/defaults-tab.js';
 import { ConnectivityTab } from './settings/connectivity-tab.js';
@@ -458,23 +459,17 @@ class SettingsPanel extends HTMLElement {
    */
   async loadConfig(renderFields = true) {
     try {
-      // Load config, providers, the default model, and connectivity state
-      const [configResponse, providersResponse, defaultModelResponse, cheapModelResponse, connectivityResponse] = await Promise.all([
-        fetch('/api/config'),
-        fetch('/api/providers'),
-        fetch('/api/default-model'),
-        fetch('/api/cheap-model'),
-        fetch('/api/connectivity'),
+      // Load config, providers, the default model, and connectivity state.
+      // Config and providers are required — a failure aborts the whole load;
+      // the other three fall back to the tab's current value, so a blip leaves
+      // the already-rendered picker alone rather than blanking it.
+      const [config, providersData, defaultModel, cheapModel, connectivity] = await Promise.all([
+        fetchJson('/api/config', { errorPrefix: 'Failed to load config' }),
+        fetchJson('/api/providers', { errorPrefix: 'Failed to load providers' }),
+        fetchJson('/api/default-model', { fallback: /** @type {any} */ (this._tabs.defaults).defaultModel }),
+        fetchJson('/api/cheap-model', { fallback: /** @type {any} */ (this._tabs.defaults).cheapModel }),
+        fetchJson('/api/connectivity', { fallback: /** @type {any} */ (this._tabs.connectivity).connectivity }),
       ]);
-
-      if (!configResponse.ok) {
-        throw new Error('Failed to load config');
-      }
-      if (!providersResponse.ok) {
-        throw new Error('Failed to load providers');
-      }
-
-      const config = await configResponse.json();
 
       // Show the platform-correct credentials location (XDG on Linux,
       // ~/.juggler on macOS/Windows) rather than the hardcoded literal.
@@ -483,24 +478,9 @@ class SettingsPanel extends HTMLElement {
         credsPathEl.textContent = `${config.configDir}/credentials.json`;
       }
 
-      const providersData = await providersResponse.json();
       const providers = (providersData.providers || []).sort((/** @type {any} */ a, /** @type {any} */ b) =>
         a.displayName.localeCompare(b.displayName)
       );
-      // Keep the tab's current value if a response isn't ok (matches the old
-      // element-level fields, which only updated on a successful fetch).
-      let defaultModel = /** @type {any} */ (this._tabs.defaults).defaultModel;
-      if (defaultModelResponse.ok) {
-        defaultModel = await defaultModelResponse.json();
-      }
-      let cheapModel = /** @type {any} */ (this._tabs.defaults).cheapModel;
-      if (cheapModelResponse.ok) {
-        cheapModel = await cheapModelResponse.json();
-      }
-      let connectivity = /** @type {any} */ (this._tabs.connectivity).connectivity;
-      if (connectivityResponse.ok) {
-        connectivity = await connectivityResponse.json();
-      }
 
       /** @type {LoadedSettings} */
       const data = { config, providers, defaultModel, cheapModel, connectivity };

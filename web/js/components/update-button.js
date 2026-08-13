@@ -4,6 +4,7 @@
 
 import wsService from '../services/websocket.js';
 import { getUpdaterState, startInstall } from '../services/updater-control.js';
+import { fetchJson } from '../services/http.js';
 
 /**
  * <update-button> — the single header affordance for updates. It merges the two
@@ -112,14 +113,11 @@ class UpdateButton extends HTMLElement {
 
   /** @private */
   async _seedServer() {
-    try {
-      const resp = await fetch('/api/update-status');
-      if (!resp.ok) return;
-      this._server = await resp.json();
-      this._scheduleRender();
-    } catch {
-      /* offline — the WS push will seed us when it connects */
-    }
+    // Offline — the WS push will seed us when it connects.
+    const status = await fetchJson('/api/update-status', { fallback: null });
+    if (!status) return;
+    this._server = status;
+    this._scheduleRender();
   }
 
   /** @private */

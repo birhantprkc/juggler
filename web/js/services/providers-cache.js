@@ -11,6 +11,7 @@
  */
 
 import wsService from './websocket.js';
+import { fetchJson } from './http.js';
 
 /** @typedef {{ id: string, contextWindow: number, maxOutputTokens: number, fromAPI: boolean, inputModalities?: string[], streamsLiveUsage?: boolean }} ModelWithContext */
 /** @typedef {{ name: string, displayName: string, description: string, authType: string, authSource?: string, authHint?: string, configKeyName: string, envVarName: string, apiKeyURL: string, keySource: string, available: boolean, modelsWithContext: ModelWithContext[] }} Provider */
@@ -108,10 +109,7 @@ const providersCache = {
    * @returns {Promise<void>}
    */
   async refresh() {
-    const response = await fetch('/api/providers/refresh', { method: 'POST' });
-    if (!response.ok) {
-      throw new Error(`Provider refresh failed: ${response.status}`);
-    }
+    await fetchJson('/api/providers/refresh', { method: 'POST', errorPrefix: 'Provider refresh failed' });
   }
 };
 

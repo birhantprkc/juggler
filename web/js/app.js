@@ -14,6 +14,7 @@ import UIEventManager from './services/ui-event-manager.js';
 import StrategySwitcher from './services/strategy-switcher.js';
 import { ModelCycler, ThinkingCycler } from './services/model-cycler.js';
 import wsService from './services/websocket.js';
+import { fetchJson } from './services/http.js';
 import { reloadRegistries, initAllRegistries } from './registries/reload-registries.js';
 import actionExecutor from './services/action-executor.js';
 import workerManager from './services/worker-manager.js';
@@ -1033,9 +1034,8 @@ window.jugglerApp = app;
 if (window.JUGGLER_TEST_MODE) {
   setInterval(async () => {
     try {
-      const resp = await fetch('/api/test/pending');
-      if (resp.status === 204) return;
-      const entry = await resp.json();
+      const entry = await fetchJson('/api/test/pending');
+      if (!entry) return; // 204 — nothing queued
       if (entry.name === '__list__') {
         window.location.href = '/headless-test?list=1';
       } else if (entry.taskId) {

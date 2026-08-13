@@ -2,6 +2,8 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
+import { fetchJson } from './http.js';
+
 /** @type {AbortController|null} */
 let _currentController = null;
 
@@ -16,16 +18,10 @@ let _pathController = null;
  */
 export async function fetchExistingPaths(paths) {
   if (!paths || paths.length === 0) return new Set();
-  try {
-    const qs = paths.map(p => `paths=${encodeURIComponent(p)}`).join('&');
-    const resp = await fetch(`/api/completions/exists?${qs}`);
-    if (!resp.ok) return new Set();
-    /** @type {{existing: string[]}} */
-    const data = await resp.json();
-    return new Set(data.existing || []);
-  } catch {
-    return new Set();
-  }
+  const qs = paths.map(p => `paths=${encodeURIComponent(p)}`).join('&');
+  /** @type {{existing: string[]}|null} */
+  const data = await fetchJson(`/api/completions/exists?${qs}`, { fallback: null });
+  return new Set(data?.existing || []);
 }
 
 /**
@@ -44,11 +40,9 @@ export async function fetchFileCompletions(query) {
 
   try {
     const url = `/api/completions/files?q=${encodeURIComponent(query)}`;
-    const resp = await fetch(url, { signal: controller.signal });
-    if (!resp.ok) return [];
-    /** @type {{results: Array<{path: string}>}} */
-    const data = await resp.json();
-    return (data.results || []).map(r => r.path);
+    /** @type {{results: Array<{path: string}>}|null} */
+    const data = await fetchJson(url, { signal: controller.signal });
+    return (data?.results || []).map(r => r.path);
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') return [];
     return [];
@@ -76,11 +70,9 @@ export async function fetchPathCompletions(query) {
 
   try {
     const url = `/api/completions/path?q=${encodeURIComponent(query)}`;
-    const resp = await fetch(url, { signal: controller.signal });
-    if (!resp.ok) return [];
-    /** @type {{results: Array<{path: string}>}} */
-    const data = await resp.json();
-    return (data.results || []).map(r => r.path);
+    /** @type {{results: Array<{path: string}>}|null} */
+    const data = await fetchJson(url, { signal: controller.signal });
+    return (data?.results || []).map(r => r.path);
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') return null;
     return [];

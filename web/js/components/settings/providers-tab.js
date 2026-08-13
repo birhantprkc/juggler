@@ -12,6 +12,7 @@
 import { openExternalURL } from '../../../sdk/lib/window-control.js';
 import wsService from '../../services/websocket.js';
 import providersCache from '../../services/providers-cache.js';
+import { fetchJson, httpErrorText } from '../../services/http.js';
 
 // Standard refresh glyph for the OAuth "re-check sign-in" button. Fill is left to
 // CSS (currentColor) so it tracks the button's theme colour.
@@ -281,10 +282,9 @@ export class ProvidersTab {
     input.spellcheck = false;
 
     // Prefill with the saved host; the default above shows until this resolves.
-    fetch('/api/providers/copilot/host')
-      .then((r) => r.json())
-      .then((d) => { if (d && d.success && d.host) input.value = d.host; })
-      .catch(() => { /* keep the default */ });
+    // Best-effort prefill — a failure just keeps the default host.
+    fetchJson('/api/providers/copilot/host', { fallback: null })
+      .then((d) => { if (d && d.success && d.host) input.value = d.host; });
 
     input.addEventListener('change', () => this._copilotSetHost(provider, input));
 
@@ -303,18 +303,13 @@ export class ProvidersTab {
   async _copilotSetHost(provider, input) {
     const host = input.value.trim() || 'github.com';
     try {
-      const res = await fetch('/api/providers/copilot/host', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to set host');
+      const data = await fetchJson('/api/providers/copilot/host', { method: 'POST', body: { host } });
+      if (!data?.success) throw new Error(data?.error || 'Failed to set host');
       // Re-check against the new host (rebuilds this field with the saved value).
       await this._refreshOAuthProvider(provider, this._buildOAuthRefreshButton(provider));
     } catch (err) {
       if (window.showAlert) {
-        await window.showAlert(err instanceof Error ? err.message : 'Failed to set host', 'GitHub Copilot');
+        await window.showAlert(httpErrorText(err, 'Failed to set host'), 'GitHub Copilot');
       }
     }
   }
@@ -336,13 +331,8 @@ export class ProvidersTab {
     button.disabled = true;
     button.textContent = 'Starting\u2026';
     try {
-      const res = await fetch('/api/providers/copilot/device/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to start sign-in');
+      const data = await fetchJson('/api/providers/copilot/device/start', { method: 'POST', body: { host } });
+      if (!data?.success) throw new Error(data?.error || 'Failed to start sign-in');
 
       const { userCode, verificationUri, deviceCode, interval } = data;
       try { await navigator.clipboard.writeText(userCode); } catch { /* clipboard is best-effort */ }
@@ -358,7 +348,7 @@ export class ProvidersTab {
       button.disabled = false;
       button.textContent = originalText;
       if (window.showAlert) {
-        await window.showAlert(err instanceof Error ? err.message : 'Sign-in failed', 'GitHub Copilot');
+        await window.showAlert(httpErrorText(err, 'Sign-in failed'), 'GitHub Copilot');
       }
     }
   }
@@ -376,13 +366,11 @@ export class ProvidersTab {
     const deadline = Date.now() + 15 * 60 * 1000;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, delayMs));
-      const res = await fetch('/api/providers/copilot/device/poll', {
+      const data = await fetchJson('/api/providers/copilot/device/poll', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceCode, host }),
+        body: { deviceCode, host },
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Sign-in check failed');
+      if (!data?.success) throw new Error(data?.error || 'Sign-in check failed');
       switch (data.status) {
         case 'authorized': return;
         case 'pending': break;
@@ -413,14 +401,13 @@ export class ProvidersTab {
     }
     button.disabled = true;
     try {
-      const res = await fetch('/api/providers/copilot/signout', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Sign out failed');
+      const data = await fetchJson('/api/providers/copilot/signout', { method: 'POST' });
+      if (!data?.success) throw new Error(data?.error || 'Sign out failed');
       await this._refreshAfterAuthChange(provider, false);
     } catch (err) {
       button.disabled = false;
       if (window.showAlert) {
-        await window.showAlert(err instanceof Error ? err.message : 'Sign out failed', 'GitHub Copilot');
+        await window.showAlert(httpErrorText(err, 'Sign out failed'), 'GitHub Copilot');
       }
     }
   }
@@ -739,12 +726,7 @@ export class ProvidersTab {
         }
         setStatus('Saving…', 'pending');
         try {
-          const response = await fetch('/api/config', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ [key]: value }),
-          });
-          if (!response.ok) throw new Error(`Server returned ${response.status}`);
+          await fetchJson('/api/config', { method: 'PUT', body: { [key]: value } });
           /** @type {any} */ (this.config)[configField] = value;
           setStatus(value ? 'Saved' : 'Cleared', 'ok');
         } catch (e) {
@@ -834,12 +816,7 @@ export class ProvidersTab {
       if (value === (/** @type {any} */ (this.config)[configField] || '')) return;
       status.textContent = 'Saving…';
       try {
-        const response = await fetch('/api/config', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ [configKey]: value }),
-        });
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        await fetchJson('/api/config', { method: 'PUT', body: { [configKey]: value } });
         /** @type {any} */ (this.config)[configField] = value;
         status.textContent = value
           ? `Saved. Pointing at ${value}.`
@@ -904,12 +881,7 @@ export class ProvidersTab {
       if (value === (/** @type {any} */ (this.config).claudecodeBinaryPath || '')) return;
       status.textContent = 'Saving…';
       try {
-        const response = await fetch('/api/config', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ claudecode_binary_path: value }),
-        });
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        await fetchJson('/api/config', { method: 'PUT', body: { claudecode_binary_path: value } });
         /** @type {any} */ (this.config).claudecodeBinaryPath = value;
         if (value) {
           // A user pointing us at a binary means "use Claude Code" — enable it
@@ -949,21 +921,11 @@ export class ProvidersTab {
    */
   async toggleProviderEnabled(provider, enabled) {
     try {
-      const response = await fetch('/api/config/provider-enabled', {
+      await fetchJson('/api/config/provider-enabled', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          provider: provider.name,
-          enabled: enabled
-        }),
+        body: { provider: provider.name, enabled },
+        errorPrefix: 'Failed to update provider',
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to update provider');
-      }
 
       // Refresh model selector to pick up new provider
       const modelSelector = document.querySelector('model-selector');
@@ -1059,20 +1021,11 @@ export class ProvidersTab {
     if (!apiKey) return;
 
     try {
-      const response = await fetch('/api/config', {
+      await fetchJson('/api/config', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          [provider.configKeyName]: apiKey
-        }),
+        body: { [provider.configKeyName]: apiKey },
+        errorPrefix: 'Failed to save API key',
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to save API key');
-      }
 
       // Clear the input so the UI returns to the "key is active" state
       const input = /** @type {HTMLInputElement|null} */ (this.host.querySelector(`#${provider.name}-key`));
@@ -1105,20 +1058,11 @@ export class ProvidersTab {
   async deleteProviderKey(provider) {
     try {
       // Send empty string to delete the key
-      const response = await fetch('/api/config', {
+      await fetchJson('/api/config', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          [provider.configKeyName]: ''
-        }),
+        body: { [provider.configKeyName]: '' },
+        errorPrefix: 'Failed to delete API key',
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to delete API key');
-      }
 
       // Reload config from server to get actual state (don't re-render fields)
       await this.host.loadConfig(false);

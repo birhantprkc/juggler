@@ -2,6 +2,8 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
+import { fetchJson } from '../services/http.js';
+
 /**
  * Chime synth — generates the "needs your attention" notification tone with
  * Web Audio, no samples. Rather than a single struck note, the chime plays a
@@ -42,6 +44,7 @@ export const CHIME_DEFAULTS = Object.freeze({
   sound: 'retro',
   volume: 0.6,
 });
+
 
 /**
  * Reference pitch: A4 = 440 Hz. A pattern's `root` is a semitone offset from
@@ -394,14 +397,13 @@ let streamDest = null;
  * @returns {void}
  */
 function areport(level, message) {
-  try {
-    if (typeof fetch !== 'function') return;
-    fetch('/api/client/report', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: 'chime', event: level, message }),
-    }).catch(() => { /* reporting a fault must never surface as an error itself */ });
-  } catch { /* fetch unavailable (tests/workers) — never throw into the audio path */ }
+  // Reporting a fault must never surface as an error itself, and fetch may be
+  // unavailable (tests/workers) — never throw into the audio path.
+  void fetchJson('/api/client/report', {
+    method: 'POST',
+    body: { source: 'chime', event: level, message },
+    fallback: null,
+  });
 }
 
 /**

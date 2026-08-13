@@ -33,6 +33,7 @@
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
 import { onDocumentReady } from './document-ready.js';
+import { fetchJson } from '../services/http.js';
 
 const THEME_KEY = 'juggler-theme';
 
@@ -213,15 +214,8 @@ function rememberWindowMode(mode) {
  * @private
  */
 function persistThemeToSession(mode) {
-  try {
-    void fetch('/api/session/ui-theme', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uiTheme: mode }),
-    }).catch(() => {});
-  } catch (_e) {
-    /* best-effort — a missing/blocked fetch just skips session persistence */
-  }
+  // Best-effort — a missing/blocked fetch just skips session persistence.
+  void fetchJson('/api/session/ui-theme', { method: 'PUT', body: { uiTheme: mode }, fallback: null });
 }
 
 /**
@@ -297,9 +291,9 @@ function applyTheme(theme, mode) {
   const url = windowControlURL('theme',
     '?theme=' + encodeURIComponent(theme) + '&mode=' + encodeURIComponent(mode));
   if (!url) return;
-  fetch(url, { method: 'POST' })
-    .then((resp) => (mode === MODES.SYSTEM ? resp.json() : null))
+  fetchJson(url, { method: 'POST', fallback: null })
     .then((data) => {
+      if (mode !== MODES.SYSTEM) return;
       // System mode: repaint to the host's authoritative OS theme if it differs
       // from our (possibly appearance-pinned) guess. Don't re-post — the host
       // has already painted its chrome to match.
@@ -308,8 +302,7 @@ function applyTheme(theme, mode) {
           && osTheme !== document.documentElement.getAttribute('data-theme')) {
         paintDocument(osTheme);
       }
-    })
-    .catch(() => {});
+    });
 }
 
 /**

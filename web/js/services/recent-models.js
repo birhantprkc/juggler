@@ -20,6 +20,8 @@
  * the menu), and `record()` updates it optimistically before POSTing.
  */
 
+import { fetchJson } from './http.js';
+
 const MAX = 6;
 
 /** @typedef {{ provider: string, model: string, thinking?: string }} RecentModel */
@@ -71,15 +73,10 @@ const recentModels = {
    * @returns {Promise<RecentModel[]>} The refreshed list (also cached).
    */
   async refresh() {
-    try {
-      const response = await fetch('/api/recent-models');
-      if (!response.ok) return _cache;
-      const data = await response.json();
-      _cache = sanitize(data?.models);
-    } catch {
-      // Network/parse failure — keep the existing cache; recents are
-      // best-effort convenience state.
-    }
+    // Network/parse failure — keep the existing cache; recents are best-effort
+    // convenience state.
+    const data = await fetchJson('/api/recent-models', { fallback: null });
+    if (data) _cache = sanitize(data.models);
     return _cache;
   },
 
@@ -98,16 +95,9 @@ const recentModels = {
     const entry = thinking ? { provider, model, thinking } : { provider, model };
     _cache = [entry, ..._cache.filter(x =>
       !(x.provider === provider && x.model === model && (x.thinking || '') === (thinking || '')))].slice(0, MAX);
-    try {
-      await fetch('/api/recent-models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(entry),
-      });
-    } catch {
-      // Best-effort persistence; the optimistic cache update already reflects
-      // the pick for this session.
-    }
+    // Best-effort persistence; the optimistic cache update already reflects the
+    // pick for this session.
+    await fetchJson('/api/recent-models', { method: 'POST', body: entry, fallback: null });
   },
 };
 

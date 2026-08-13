@@ -12,6 +12,7 @@
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import wsService from '../services/websocket.js';
 import { hasNativeHost } from '../../sdk/lib/window-control.js';
+import { fetchJson } from '../services/http.js';
 
 /**
  * @typedef {import('../model/session.js').default} Session
@@ -195,10 +196,9 @@ export function setupHeaderControls(session) {
     wsService.on('clients-changed', (/** @type {any} */ data) => updateClientsIndicator(data?.count));
     // Seed the initial count: the join broadcast may have fired before this
     // listener was attached, so fetch the authoritative count once at startup.
-    fetch('/api/connectivity')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((c) => { if (c) updateClientsIndicator(c.clientCount); })
-      .catch(() => { /* offline seed failure — a later clients-changed will correct it */ });
+    // An offline seed failure is corrected by a later clients-changed.
+    fetchJson('/api/connectivity', { fallback: null })
+      .then((c) => { if (c) updateClientsIndicator(c.clientCount); });
   }
 
   // Native menu (File ▸ Open…) bridges to the picker via this event, since the

@@ -16,6 +16,8 @@
  * - Single source of truth for API contracts
  */
 
+import { extractHttpErrorDetail } from './http.js';
+
 // ============================================================================
 // OpsError - Backend Operation Errors (not bugs)
 // ============================================================================
@@ -390,24 +392,7 @@ async function callOp(toolId, operation, params, signal, allowedPaths) {
 
   // Check HTTP status
   if (!response.ok) {
-    // Try to read error details from response body
-    let errorDetail = response.statusText;
-    try {
-      const errorBody = await response.text();
-      if (errorBody) {
-        // Try to parse as JSON first
-        try {
-          const errorJson = JSON.parse(errorBody);
-          errorDetail = errorJson.error || errorBody;
-        } catch {
-          // Not JSON, use raw text
-          errorDetail = errorBody;
-        }
-      }
-    } catch {
-      // If reading body fails, use statusText
-    }
-    throw new Error(`HTTP ${response.status}: ${errorDetail}`);
+    throw new Error(`HTTP ${response.status}: ${await extractHttpErrorDetail(response)}`);
   }
 
   /** @type {OpsResponse<T>} */
@@ -485,11 +470,7 @@ export async function uploadAssetBase64(convId, base64, mime, signal) {
     { method: 'POST', headers, body: bytes, signal }
   );
   if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = await response.json();
-      if (body && body.error) detail = body.error;
-    } catch { /* non-JSON body */ }
+    const detail = await extractHttpErrorDetail(response);
     throw new OpsError(`Failed to upload image (HTTP ${response.status}): ${detail}`);
   }
   return /** @type {Promise<AssetRef>} */ (response.json());

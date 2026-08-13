@@ -10,6 +10,7 @@
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
 import { getUpdaterState, startCheck } from '../../services/updater-control.js';
+import { fetchJson } from '../../services/http.js';
 import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
 
 /**
@@ -157,16 +158,12 @@ export class UpdatesTab {
    * @private
    */
   async _loadSettings() {
-    try {
-      const resp = await fetch('/api/settings');
-      if (!resp.ok) return;
-      const data = await resp.json();
-      const mode = (data && data.updates && data.updates.mode) || 'automatic';
-      this._mode = mode;
-      this._reflectMode(mode);
-    } catch {
-      /* offline — leave the radios as they are */
-    }
+    // Offline — leave the radios as they are.
+    const data = await fetchJson('/api/settings', { fallback: null });
+    if (!data) return;
+    const mode = (data.updates && data.updates.mode) || 'automatic';
+    this._mode = mode;
+    this._reflectMode(mode);
   }
 
   /**
@@ -175,14 +172,9 @@ export class UpdatesTab {
    * @private
    */
   async _loadVersion() {
+    // Offline — show what little we have.
     /** @type {any} */
-    let status = {};
-    try {
-      const resp = await fetch('/api/update-status');
-      if (resp.ok) status = await resp.json();
-    } catch {
-      /* offline — show what little we have */
-    }
+    const status = await fetchJson('/api/update-status', { fallback: {} });
     const updater = await getUpdaterState();
     this._updaterPresent = !!updater.present;
     this._renderVersion(status, updater);
@@ -239,13 +231,7 @@ export class UpdatesTab {
     const prev = this._mode;
     this._mode = mode;
     try {
-      const resp = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates: { mode } }),
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
+      const data = await fetchJson('/api/settings', { method: 'PUT', body: { updates: { mode } } });
       const saved = (data && data.updates && data.updates.mode) || mode;
       this._mode = saved;
       this._reflectMode(saved);
@@ -273,9 +259,7 @@ export class UpdatesTab {
       // result arrives via the pushed snapshot the header button consumes).
       if (this._updaterPresent) void startCheck();
 
-      const resp = await fetch('/api/update-status/check', { method: 'POST' });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const status = await resp.json();
+      const status = await fetchJson('/api/update-status/check', { method: 'POST' });
       if (status.error) {
         this._setStatus('Couldn’t reach the update server. Try again later.');
       } else if (status.updateAvailable) {

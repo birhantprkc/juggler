@@ -24,6 +24,8 @@
  * @module services/skills
  */
 
+import { fetchJson } from './http.js';
+
 /**
  * @typedef {object} SkillFrontmatter
  * @property {string} [name] - Declared skill name (must equal the directory name)
@@ -76,19 +78,10 @@ export async function fetchSkills() {
   if (cached) {
     return cached;
   }
-  try {
-    const response = await fetch('/api/skills');
-    if (!response.ok) {
-      console.warn('[Skills] Failed to fetch skills:', response.status);
-      return [];
-    }
-    const result = await response.json();
-    cached = Array.isArray(result) ? result : [];
-    return cached;
-  } catch (err) {
-    console.warn('[Skills] Error fetching skills:', err);
-    return [];
-  }
+  const result = await fetchJson('/api/skills', { errorPrefix: '[Skills] Failed to fetch skills', fallback: null });
+  if (result === null) return [];
+  cached = Array.isArray(result) ? result : [];
+  return cached;
 }
 
 /**
@@ -115,18 +108,7 @@ export async function getAvailableSkills() {
  */
 export async function fetchSkillBody(scope, source, name) {
   const url = `/api/skills/${encodeURIComponent(scope)}/${encodeURIComponent(source)}/${encodeURIComponent(name)}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = await response.json();
-      if (body && body.error) detail = body.error;
-    } catch {
-      // non-JSON error body — keep statusText
-    }
-    throw new Error(`Failed to load skill "${name}": ${detail}`);
-  }
-  return response.json();
+  return await fetchJson(url, { errorPrefix: `Failed to load skill "${name}"` });
 }
 
 /**

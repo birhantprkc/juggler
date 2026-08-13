@@ -4,6 +4,7 @@
 
 import { resolveAssetUrl, importModuleUrl } from '../utils/asset-url.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { fetchJson } from '../services/http.js';
 
 /**
  * Extract the served URL from a capability descriptor. Tolerates a bare path
@@ -237,10 +238,10 @@ class BaseRegistry {
    */
   async _applyDisabledFilter() {
     try {
-      const response = await fetch('/api/config/plugins');
-      if (!response.ok) return;
+      const data = await fetchJson('/api/config/plugins', { fallback: null });
+      if (!data) return;
 
-      const { disabled } = await response.json();
+      const { disabled } = data;
       if (!Array.isArray(disabled) || disabled.length === 0) return;
 
       const disabledSet = new Set(disabled);

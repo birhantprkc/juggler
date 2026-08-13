@@ -4,6 +4,7 @@
 
 import { recordTape } from '../utils/event-tape.js';
 import { isEngine } from '../../sdk/lib/client-role.js';
+import { fetchJson } from './http.js';
 
 const WEBRTC_CHUNK_TYPE = '__juggler_dc_chunk';
 const WEBRTC_CHUNK_SIZE = 16 * 1024;
@@ -183,15 +184,11 @@ class WebSocketService {
       await pc.setLocalDescription(offer);
       await this._waitForIceGathering(pc, 5000);
 
-      const resp = await fetch('/api/webrtc/signal', {
+      const answer = await fetchJson('/api/webrtc/signal', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role, offer: pc.localDescription })
+        body: { role, offer: pc.localDescription },
+        errorPrefix: 'WebRTC signaling failed',
       });
-      if (!resp.ok) {
-        throw new Error(`WebRTC signaling failed: HTTP ${resp.status}`);
-      }
-      const answer = await resp.json();
       await pc.setRemoteDescription(answer.answer);
       await opened;
     } catch (error) {

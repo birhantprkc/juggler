@@ -4,6 +4,7 @@
 
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { focusWhenShown } from '../utils/focus.js';
+import { fetchJson } from '../services/http.js';
 
 /**
  * AboutModal - Shows information about the application
@@ -71,15 +72,11 @@ class AboutModal extends HTMLElement {
    * @returns {Promise<string>} The version string or 'Unknown' on error
    */
   async _fetchVersion() {
-    try {
-      const response = await fetch('/api/version');
-      if (!response.ok) return 'Unknown';
-      const data = await response.json();
-      return data.version || 'Unknown';
-    } catch (error) {
-      console.warn('[AboutModal] Failed to fetch version:', error);
-      return 'Unknown';
-    }
+    const data = await fetchJson('/api/version', {
+      errorPrefix: '[AboutModal] Failed to fetch version',
+      fallback: null,
+    });
+    return data?.version || 'Unknown';
   }
 
   /**

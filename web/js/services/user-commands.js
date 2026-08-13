@@ -15,6 +15,8 @@
  * @module services/user-commands
  */
 
+import { fetchJson } from './http.js';
+
 /**
  * Allowed command name (= filename sans .md): lowercase, starting with a
  * letter, using only letters, digits, and hyphens. Mirrors the server's
@@ -56,19 +58,13 @@ export async function fetchUserCommands() {
   if (cached) {
     return cached;
   }
-  try {
-    const response = await fetch('/api/user-commands');
-    if (!response.ok) {
-      console.warn('[UserCommands] Failed to fetch user commands:', response.status);
-      return [];
-    }
-    const result = await response.json();
-    cached = Array.isArray(result) ? result : [];
-    return cached;
-  } catch (err) {
-    console.warn('[UserCommands] Error fetching user commands:', err);
-    return [];
-  }
+  const result = await fetchJson('/api/user-commands', {
+    errorPrefix: '[UserCommands] Failed to fetch user commands',
+    fallback: null,
+  });
+  if (result === null) return [];
+  cached = Array.isArray(result) ? result : [];
+  return cached;
 }
 
 /**
