@@ -8,7 +8,7 @@ import { shellBackground, shellOutput, MAX_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { createSummaryWithSubtitle } from 'juggler/ui';
 import { ansiToFragment, applyAnsi } from '../../../sdk/lib/ansi.js';
 import { renderTaskDeliveryControl } from '../../../sdk/lib/task-delivery-control.js';
-import { isCommandAutoApproved, isCatastrophicDeletion } from './execute/command-approval.js';
+import { isShellCommandPermitted, isShellCommandCatastrophic } from './execute/command-permission.js';
 
 /**
  * MonitorContextItem — start a long-running background command whose output is
@@ -100,46 +100,37 @@ class MonitorContextItem extends ContextItem {
 
   /**
    * Auto-approve when the command is already permitted by the conversation's
-   * `execute` rules — mirrors {@link ExecuteContextItem#isPermitted}.
+   * `execute` rules — the same shared check the bash tool runs, so a grant the
+   * user gave `bash` covers the equivalent monitor.
    * @override
    * @param {Record<string, unknown>} toolInput - Tool input with command
    * @returns {boolean} True if command is auto-approved
    */
   isPermitted(toolInput) {
-    const command = /** @type {string} */ (toolInput.command || '');
-    if (!command) return false;
-    const mt = this.messageThread;
-    if (!mt) return false;
-    const patterns = mt.getRulesFor('execute')
-      .filter(r => r.kind === 'glob')
-      .map(r => /** @type {string} */ (r.value));
-    return isCommandAutoApproved(command, {
-      platform: this.conversation.session?.platform || 'darwin',
-      home: this.conversation.session?.home || '',
-      allowedRoots: mt.getAllowedPaths(),
-      patterns,
+    return isShellCommandPermitted(/** @type {string} */ (toolInput.command || ''), {
+      messageThread: this.messageThread,
+      session: this.conversation.session,
+      // A monitor only tails output; it never redirects into the project, so a
+      // write grant must not widen what it may run.
       writeEnabled: false
     });
   }
 
   /**
    * A monitored command is still a shell command, so it inherits the same
-   * catastrophic-deletion floor as {@link ExecuteContextItem#autoApprovable}: a
-   * recursive/forced delete of the project root, an ancestor, home, or a
-   * filesystem root is never silently auto-approved (it parks for an explicit
-   * human decision or YOLO). Every other command stays auto-approvable.
+   * catastrophic-deletion floor as the bash tool: a recursive/forced delete of
+   * the project root, an ancestor, home, or a filesystem root is never silently
+   * auto-approved (it parks for an explicit human decision or YOLO). Every
+   * other command stays auto-approvable.
    * @override
    * @param {Record<string, unknown>} toolInput - Tool input with command
    * @returns {boolean} False only for a catastrophic-radius recursive delete
    */
   autoApprovable(toolInput) {
-    const command = /** @type {string} */ (toolInput?.command || '');
-    if (!command) return true;
-    return !isCatastrophicDeletion(command, {
-      platform: this.conversation.session?.platform || 'darwin',
-      home: this.conversation.session?.home || '',
-      projectRoot: this.conversation.session?.projectPath || ''
-    });
+    return !isShellCommandCatastrophic(
+      /** @type {string} */ (toolInput?.command || ''),
+      this.conversation.session
+    );
   }
 
   /**

@@ -6,7 +6,8 @@
 import ContextItem from 'juggler/context-item';
 import { shell, shellStreaming, shellBackground, MAX_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { createHighlightedCode, createSummaryWithSubtitle } from 'juggler/ui';
-import { isCommandAutoApproved, isCatastrophicDeletion, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
+import { isCommandAutoApproved, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
+import { isShellCommandPermitted, isShellCommandCatastrophic } from './execute/command-permission.js';
 import { renderExecutePermissionSection } from './execute/permission-section.js';
 
 /**
@@ -279,26 +280,18 @@ class ExecuteContextItem extends ContextItem {
   /**
    * Check if this command is permitted by conversation permissions.
    *
-   * Pulls the user's enabled `glob` rules for this plugin and the
-   * conversation's allowed-paths list, then defers to the static analyser in
-   * `./execute/command-approval.js`.
+   * Defers to the shared `execute`-domain check in
+   * `./execute/command-permission.js` — the same one the Monitor tool uses, so
+   * a grant given here covers the equivalent monitored command.
    * @override
    * @param {Record<string, unknown>} toolInput - Tool input with command
    * @returns {boolean} True if command is auto-approved
    */
   isPermitted(toolInput) {
-    const command = /** @type {string} */ (toolInput.command || '');
-    if (!command) return false;
     const mt = this.messageThread;
-    if (!mt) return false;
-    const patterns = mt.getRulesFor('execute')
-      .filter(r => r.kind === 'glob')
-      .map(r => /** @type {string} */ (r.value));
-    return isCommandAutoApproved(command, {
-      platform: this.conversation.session?.platform || 'darwin',
-      home: this.conversation.session?.home || '',
-      allowedRoots: mt.getAllowedPaths(),
-      patterns,
+    return isShellCommandPermitted(/** @type {string} */ (toolInput.command || ''), {
+      messageThread: mt,
+      session: this.conversation.session,
       writeEnabled: ExecuteContextItem._isFileWritingEnabled(mt)
     });
   }
@@ -317,13 +310,10 @@ class ExecuteContextItem extends ContextItem {
    * @returns {boolean} False only for a catastrophic-radius recursive delete
    */
   autoApprovable(toolInput) {
-    const command = /** @type {string} */ (toolInput?.command || '');
-    if (!command) return true;
-    return !isCatastrophicDeletion(command, {
-      platform: this.conversation.session?.platform || 'darwin',
-      home: this.conversation.session?.home || '',
-      projectRoot: this.conversation.session?.projectPath || ''
-    });
+    return !isShellCommandCatastrophic(
+      /** @type {string} */ (toolInput?.command || ''),
+      this.conversation.session
+    );
   }
 
   /**
