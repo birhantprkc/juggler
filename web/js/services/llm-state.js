@@ -30,6 +30,19 @@ const cancelFrame = typeof cancelAnimationFrame === 'function'
  */
 
 /**
+ * Quiet stretch after which an output-token count that has stopped advancing is
+ * reported as no flow at all, rather than coasting on the last known rate.
+ */
+const THROUGHPUT_STALL_MS = 2000;
+
+/**
+ * Weight given to the newest observation in the throughput moving average.
+ * Low, because provider chunks arrive lumpily and an unsmoothed rate is mostly
+ * noise.
+ */
+const THROUGHPUT_SMOOTHING = 0.3;
+
+/**
  * LLMState - Centralized state management for LLM loop
  *
  * Manages processing state and UI updates for LLM conversations.
@@ -70,6 +83,9 @@ class LLMState {
 
     /** @type {Set<(conversationId: string) => void>} @private Observers notified whenever a conversation's processing state changes */
     this._statusObservers = new Set();
+
+    /** @type {Map<string, {tokens: number, at: number, rate: number}>} @private Map of conversationId -> last output-token sample and the rate derived from it */
+    this._throughput = new Map();
   }
 
   /**
@@ -186,6 +202,69 @@ class LLMState {
   }
 
   /**
+   * How fast output is currently arriving, in tokens per second.
+   *
+   * Derived from the running `outputTokens` count the worker stamps into the
+   * Yjs processingState: each write is a real observation, so the delta between
+   * two of them over the elapsed wall time is a genuine rate rather than an
+   * estimate. Smoothed across samples, because chunk sizes are lumpy and the
+   * raw per-chunk rate swings wildly enough to be useless.
+   *
+   * Returns 0 whenever nothing is actually streaming — parked on a tool call,
+   * preparing a request, waiting on the network, or simply idle. That zero is
+   * the honest answer, not a placeholder: during a slow tool call no output IS
+   * arriving. Callers should render it as "barely moving", never as "broken".
+   * @param {string} conversationId - Conversation ID
+   * @returns {number} Tokens per second, or 0 when no output is flowing.
+   */
+  getThroughput(conversationId) {
+    if (!this.isConversationProcessing(conversationId)) return 0;
+    // Only the streaming phase carries token flow. Every other phase has a
+    // legitimate reason to report nothing, and inferring a rate from a stale
+    // sample would invent movement that isn't happening.
+    if (this._statusData.get(conversationId)?.type !== 'streaming') return 0;
+    const sample = this._throughput.get(conversationId);
+    if (!sample) return 0;
+    // A sample that has stopped advancing is a stall, not a held rate — decay
+    // it to zero rather than coasting on the last good number.
+    if (Date.now() - sample.at > THROUGHPUT_STALL_MS) return 0;
+    return sample.rate;
+  }
+
+  /**
+   * Fold one `outputTokens` observation into the conversation's rate estimate.
+   *
+   * Only advancing counts produce a sample: the elapsed-time ticker re-stamps
+   * the status roughly once a second with the token fields preserved, and
+   * treating those as observations would divide a zero delta by real time and
+   * read every turn as a stall.
+   * @param {string} conversationId - Conversation ID
+   * @param {number|undefined} outputTokens - Running output-token count, if reported.
+   * @private
+   */
+  _sampleThroughput(conversationId, outputTokens) {
+    if (typeof outputTokens !== 'number' || outputTokens < 0) return;
+    const now = Date.now();
+    const prev = this._throughput.get(conversationId);
+    // First sample of a turn, or a count that went backwards (a new turn reusing
+    // the entry): anchor on it without emitting a rate.
+    if (!prev || outputTokens < prev.tokens) {
+      this._throughput.set(conversationId, { tokens: outputTokens, at: now, rate: 0 });
+      return;
+    }
+    const dt = now - prev.at;
+    const dTokens = outputTokens - prev.tokens;
+    if (dTokens === 0 || dt <= 0) return;
+    const instant = (dTokens / dt) * 1000;
+    // Exponential moving average. Weighted towards history so the rate glides
+    // between chunk arrivals instead of spiking with each one.
+    const rate = prev.rate > 0
+      ? prev.rate + THROUGHPUT_SMOOTHING * (instant - prev.rate)
+      : instant;
+    this._throughput.set(conversationId, { tokens: outputTokens, at: now, rate });
+  }
+
+  /**
    * Start LLM processing for a specific conversation
    * - Sets status message (this IS the processing state)
    * - Shows busy indicator for this conversation's tab
@@ -258,6 +337,7 @@ class LLMState {
     this._statusMessages.delete(conversationId);
     this._statusData.delete(conversationId);
     this._statusThreadIds.delete(conversationId);
+    this._throughput.delete(conversationId);
 
     // Stop elapsed time timer
     this._stopElapsedTimeTimer(conversationId);
@@ -529,6 +609,13 @@ class LLMState {
 
     // Track which thread (if any) this status targets
     this._statusThreadIds.set(conversationId, state.threadItemId || null);
+
+    // Sample output throughput here rather than in updateStatus: this is the
+    // one path driven by an actual worker write, so every call is a real
+    // observation of how much output has arrived and when.
+    this._sampleThroughput(conversationId, typeof state.outputTokens === 'number'
+      ? state.outputTokens
+      : undefined);
 
     // Pull running token counts off the Yjs state so every observing client
     // renders the same spinner text. The worker writes these into

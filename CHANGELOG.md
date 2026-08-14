@@ -5,6 +5,9 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- The busy spinner juggles a club per parallel tool call, at the speed the work is moving
+- The spinner tires gradually through a long tool call, and picks up when the next one starts
+
 ## [0.5.6] - 2026-08-14
 
 - The Escape key's behaviour is now a setting: stop, pause, two-step, press-twice, or clear only

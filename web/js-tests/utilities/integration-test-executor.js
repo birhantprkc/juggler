@@ -89,6 +89,7 @@ import { runTests as runSearchActionTests } from '../unit-tests/search-action-te
 import { runTests as runToolCancellationTests } from '../unit-tests/tool-cancellation-test.js';
 import { runTests as runToolExecutionOrderTests } from '../unit-tests/tool-execution-order-test.js';
 import { runTests as runToolActionRenderTests } from '../unit-tests/tool-action-render-test.js';
+import { runTests as runJugglerSpinnerLiveTests } from '../unit-tests/juggler-spinner-live-test.js';
 import { runTests as runSubmitPlanActionTests } from '../unit-tests/submit-plan-action-test.js';
 import { runTests as runPlanApprovalTests } from '../unit-tests/plan-approval-test.js';
 import { runTests as runTodoActionTests } from '../unit-tests/todo-action-test.js';
@@ -303,6 +304,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:tool-cancellation', run: runToolCancellationTests },
   { name: 'unit:tool-execution-order', run: runToolExecutionOrderTests },
   { name: 'unit:tool-action-render', run: runToolActionRenderTests },
+  { name: 'unit:juggler-spinner-live', run: runJugglerSpinnerLiveTests },
   { name: 'unit:submit-plan-action', run: runSubmitPlanActionTests },
   { name: 'unit:plan-approval', run: runPlanApprovalTests },
   { name: 'unit:todo-action', run: runTodoActionTests },

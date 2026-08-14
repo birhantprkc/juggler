@@ -27,7 +27,12 @@ import { createIconBadge, createTypeBadge } from '../utils/icon-message-renderer
 import { badgeForItem } from '../utils/item-badge.js';
 import { SCROLL_TOP_SVG, SCROLL_BOTTOM_SVG, REOPEN_THREAD_SVG } from '../utils/icons.js';
 import { setupColumnResize } from '../utils/column-resize.js';
-import { isThreadClosed, hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
+import {
+  isThreadClosed,
+  hasPendingApprovalInTree,
+  hasUnsettledToolInTree,
+  runningToolsInTree,
+} from '../model/thread-navigation.js';
 import { appendDeleteControls } from '../utils/panel-delete-controls.js';
 import { findNeighborItemId } from '../services/context-item-utilities.js';
 import {
@@ -2379,6 +2384,34 @@ class ConversationArea extends HTMLElement {
     // "still working" — but the actual blocker is user input. Override the
     // footer text (and drop the spinner) so the status reflects reality.
     const isProcessing = hasPendingApprovals || !!busyState;
+
+    // Spinner inputs, computed ONLY while a turn is running. Both are read by
+    // the busy spinner and by nothing else, and updateFooter runs on every
+    // streaming tick — several times a second, on every column — so doing this
+    // work on an idle footer would walk the whole item tree many times a second
+    // to feed an indicator that isn't on screen.
+    //
+    // How much is genuinely executing at once, for the club count. Scoped the
+    // same way as the status signals above: a group column reports only the run
+    // it shows, everything else the whole thread (nested threads included).
+    const running = isProcessing
+      ? runningToolsInTree(groupItems || this._messageThread?.items)
+      : { count: 0, oldestStart: 0 };
+    const runningTools = running.count;
+    // How long we have been waiting on the tool call we are STILL waiting on,
+    // for the tool-wait ramp. Null when nothing is executing, which is what
+    // tells the spinner to read the speed off throughput instead. A running
+    // tool with no claim stamp yet counts as freshly started (0) rather than as
+    // no tool at all — the wait is real, we just can't date it.
+    const toolWaitMs = runningTools > 0
+      ? Math.max(0, running.oldestStart ? Date.now() - running.oldestStart : 0)
+      : null;
+    // How fast output is arriving, for the speed while streaming. Zero while
+    // parked on a tool call or waiting on the network — the truth of those
+    // moments rather than a missing reading.
+    const throughput = isProcessing
+      ? (this._conversation?._llmState?.getThroughput?.(this._conversation.id) ?? 0)
+      : 0;
     const statusMessage = hasPendingApprovals
       ? StatusMessageBuilder.withBusyMarker('Waiting for user approval')
       : (busyState?.message || '');
@@ -2392,7 +2425,7 @@ class ConversationArea extends HTMLElement {
     // above have already narrowed to this run — is left out.
     if (this._isGroupColumn) {
       footer.setStatusOnly(true);
-      footer.update({ isProcessing, canContinue: false, statusMessage, showSpinner });
+      footer.update({ isProcessing, canContinue: false, statusMessage, showSpinner, runningTools, throughput, toolWaitMs });
       return;
     }
     footer.setStatusOnly(false);
@@ -2425,7 +2458,10 @@ class ConversationArea extends HTMLElement {
       showCloseWithLastMessage,
       showDuplicateTab,
       busyItemMessageId: itemBusy?.messageId,
-      politePending: !!this._conversation?.isPolitePending?.()
+      politePending: !!this._conversation?.isPolitePending?.(),
+      runningTools,
+      throughput,
+      toolWaitMs,
     });
   }
 

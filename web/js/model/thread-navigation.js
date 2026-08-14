@@ -175,6 +175,68 @@ export function hasUnsettledToolInTree(items) {
 }
 
 /**
+ * Survey the tool-actions actually EXECUTING in a subtree, searching
+ * recursively through nested threads.
+ *
+ * The narrow sibling of `hasUnsettledToolInTree`: that one asks "is anything
+ * unfinished under here" and counts a tool sitting at a pending approval or
+ * waiting to be claimed; this one counts only `running` — work the machine is
+ * doing this instant. That distinction is the point. The tool executor fires
+ * consecutive read/meta calls as one parallel batch (see services/tool-executor),
+ * so this number is genuinely how many things are in flight at once: 1 for a
+ * lone bash, several for a read fan-out. Anything looser would count queued work
+ * as concurrent and overstate it.
+ *
+ * Recursing through `thread` items means the count picks up work in sub-threads
+ * for free, so it stays correct if threads ever run concurrently rather than
+ * one at a time.
+ *
+ * `oldestStart` is the claim stamp (`runningStartedAt`, written by
+ * claimRunning) of the longest-running of those tools — how long the machine
+ * has been waiting on the thing it is still waiting on, as opposed to how long
+ * the turn has been going. A running tool with no stamp (an older doc, or a
+ * claim whose stamp hasn't replicated yet) contributes nothing, which reads as
+ * "just started" rather than inventing an age for it.
+ *
+ * Both numbers come from ONE walk on purpose: the callers ask on every
+ * streaming tick, and a second traversal of the whole tree to answer the
+ * second half of the same question is exactly the work that made this hot.
+ * @param {Array<*>|{toArray: () => Array<*>}|null|undefined} items - Items to
+ *   search (plain JS array or Y.Array).
+ * @returns {{count: number, oldestStart: number}} How many descendant
+ *   tool-actions are running, and the earliest claim stamp among them (0 when
+ *   none is running or none carries a stamp).
+ */
+export function runningToolsInTree(items) {
+  if (!items) return { count: 0, oldestStart: 0 };
+  const arr = typeof (/** @type {any} */ (items).toArray) === 'function'
+    ? /** @type {any} */ (items).toArray()
+    : items;
+  let count = 0;
+  let oldestStart = 0;
+  for (const item of arr) {
+    if (!item || typeof item.get !== 'function') continue;
+    const type = item.get('type');
+    if (type === 'tool-action') {
+      if (item.get('state') !== TOOL_STATES.RUNNING) continue;
+      count++;
+      const startedAt = Number(item.get('runningStartedAt'));
+      if (Number.isFinite(startedAt) && startedAt > 0
+          && (oldestStart === 0 || startedAt < oldestStart)) {
+        oldestStart = startedAt;
+      }
+    } else if (type === 'thread') {
+      const nested = runningToolsInTree(item.get('items'));
+      count += nested.count;
+      if (nested.oldestStart > 0 && (oldestStart === 0 || nested.oldestStart < oldestStart)) {
+        oldestStart = nested.oldestStart;
+      }
+    }
+  }
+  return { count, oldestStart };
+}
+
+/**
  * Whether a thread is "closed" (genuinely finished) for navigation/display.
  *
  * A thread is closed when it has a non-empty `result` AND nothing in its

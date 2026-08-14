@@ -3104,6 +3104,7 @@ composer-box .model-selector-button .model-name {
 juggler-spinner {
     --size: 2rem;
     --duration: 1.5s;
+    --js-n: 3;
     --js-radius: calc(var(--size) * 0.28);
     --js-club-w: calc(var(--size) * 0.22);
     --js-club-h: calc(var(--size) * 0.36);
@@ -3117,25 +3118,68 @@ juggler-spinner {
     contain: layout style;
 }
 
-/* Do NOT add `will-change: transform` here (or on .js-club). A permanent layer
-   promotion makes WebKit run these as accelerated compositor animations, and an
-   accelerated animation paused via the hidden-document rule below does not
-   reliably re-commit after the window has been occluded for a long time (e.g.
-   overnight): the layer stays frozen at its last transform even though the CSS
-   is `running` again. Only spinners created after the un-hide would animate.
-   Leaving these on the main-thread animation path resumes cleanly. */
+/* Do NOT add `will-change: transform` here (or on .js-orbit / .js-club). A
+   permanent layer promotion makes WebKit run these as accelerated compositor
+   animations, and an accelerated animation paused via the hidden-document rule
+   below does not reliably re-commit after the window has been occluded for a
+   long time (e.g. overnight): the layer stays frozen at its last transform even
+   though the CSS is `running` again. Only spinners created after the un-hide
+   would animate. Leaving these on the main-thread animation path resumes
+   cleanly. */
+
+/* Each club rides two nested rotations, and the split is what makes a variable
+   club count possible:
+
+     .js-pivot — STATIC rotation to this club's slot on the orbit (--js-angle,
+                 stamped inline as 360deg * i / n).
+     .js-orbit — the shared spin around the centre. Identical timing on every
+                 club, with NO animation-delay anywhere.
+
+   Rotations compose, so club i sits at (--js-angle + the common orbit angle) —
+   the same evenly-spaced cascade the delays used to produce. Splitting it this
+   way buys two things a per-club animation-delay cannot. First, all the orbit
+   animations are literally the same animation with the same start time, so they
+   can never drift apart. Second, re-spacing for a new club count only changes
+   --js-angle, and a static transform is transition-able (unlike
+   animation-delay, which is not animatable and would snap every club to a new
+   position) — so the cascade opens out and closes up smoothly instead of
+   bunching. */
 juggler-spinner .js-pivot {
     position: absolute;
     left: 50%;
     top: 50%;
     width: 0;
     height: 0;
+    transform: rotate(var(--js-angle, 0deg));
+    transition: transform 400ms ease, opacity 250ms ease;
+}
+
+/* Clubs joining or leaving the cascade fade rather than pop — the same
+   transparent state at both ends. On insert it is set and cleared a frame later
+   so a new club fades up while the others are still gliding apart to make room;
+   on removal it is set and the element detaches once the fade has run. The fade
+   is shorter than the re-spacing glide, so the count settles visually before
+   the spacing does. */
+juggler-spinner .js-pivot.js-faded {
+    opacity: 0;
+}
+
+juggler-spinner .js-orbit {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 0;
     animation: juggler-spinner-orbit var(--duration) linear infinite;
 }
 
-juggler-spinner .js-pivot:nth-child(2) { animation-delay: calc(var(--duration) / -3); }
-juggler-spinner .js-pivot:nth-child(3) { animation-delay: calc(var(--duration) * -2 / 3); }
 
+
+/* The flip's slow-zone has to line up with the bottom of THIS club's orbit, so
+   it keeps a per-club phase offset — generalised from the hardcoded thirds to
+   any club count. Expressed against the --duration variable (not
+   animation-duration) so the offsets stay proportional if --duration is
+   overridden. */
 juggler-spinner .js-club {
     position: absolute;
     width: var(--js-club-w);
@@ -3143,10 +3187,8 @@ juggler-spinner .js-club {
     left: calc(var(--js-club-w) / -2);
     top: calc((var(--js-radius) + var(--js-club-h) / 2) * -1);
     animation: juggler-spinner-spin var(--duration) linear infinite;
+    animation-delay: calc(var(--duration) * var(--js-phase, 0) / var(--js-n) * -1);
 }
-
-juggler-spinner .js-pivot:nth-child(2) .js-club { animation-delay: calc(var(--duration) / -3); }
-juggler-spinner .js-pivot:nth-child(3) .js-club { animation-delay: calc(var(--duration) * -2 / 3); }
 
 /* Scoped through .js-club (not a bare `juggler-spinner svg`) on purpose: it
    raises specificity to (0,1,2) so a container's own icon rule can't reach in
@@ -3185,12 +3227,92 @@ juggler-spinner .js-club svg {
     100% { transform: rotate(360deg); }
 }
 
+/* ---- The drop -------------------------------------------------------------
+   Very occasionally one club is fumbled: it sags out of the ring, wobbles, and
+   is caught. Animated on the `translate` PROPERTY rather than `transform`,
+   which is what makes it composable — the club's `transform` is already fully
+   occupied by its flip, and CSS applies `translate` before `transform`, so the
+   two combine instead of one clobbering the other. The club therefore never
+   leaves the cascade's timing: it keeps flipping and keeps orbiting throughout,
+   and rejoins the ring exactly in phase.
+
+   Local +Y on the club points at the centre of the orbit, so the negative
+   offsets below push it outward — off the ring, below the orbit path at the
+   bottom of a throw. Outward is a direction in the ROTATING frame, so it only
+   coincides with screen-down while the club is near the bottom of its orbit:
+   the same offset fired at the top would fling the club upward and read as a
+   glitch rather than a fumble. That is why the club is chosen by where it is on
+   the ring (see _pickDropVictim) instead of at random — the shape below assumes
+   the fall lands in the bottom of a throw.
+
+   The duration is a fraction of the orbit rather than an absolute, so the fall
+   still finishes within one pass of the bottom whatever --duration says. */
+juggler-spinner .js-club.js-dropping {
+    animation:
+        juggler-spinner-spin var(--duration) linear infinite,
+        juggler-spinner-drop calc(var(--duration) * 0.6) linear 1;
+    animation-delay:
+        calc(var(--duration) * var(--js-phase, 0) / var(--js-n) * -1),
+        0s;
+}
+
+/* Each segment carries its own timing function (the shorthand above is
+   `linear`), because a single easing across the whole fumble is what made the
+   old one lurch: gravity accelerates, an impact decelerates hard, and a catch
+   eases out — one curve cannot be all three. The catch is deliberately the
+   longest phase, nearly half the animation, so the club is gathered back into
+   the pattern rather than snapping to its slot. */
+@keyframes juggler-spinner-drop {
+    /* dropped — accelerating away from the ring */
+    0% {
+        translate: 0 0;
+        animation-timing-function: cubic-bezier(0.45, 0, 1, 1);
+    }
+
+    /* hits the floor */
+    26% {
+        translate: 0 calc(var(--js-radius) * -1.2);
+        animation-timing-function: cubic-bezier(0, 0, 0.35, 1);
+    }
+
+    /* bounces */
+    40% {
+        translate: 0 calc(var(--js-radius) * -0.9);
+        animation-timing-function: cubic-bezier(0.45, 0, 1, 1);
+    }
+
+    /* and settles */
+    52% {
+        translate: 0 calc(var(--js-radius) * -1.2);
+        animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* scooped back into the cascade */
+    100% { translate: 0 0; }
+}
+
+/* The drop is the one thing here that is decoration rather than
+   instrumentation: the club count and the speed report real work and stay live
+   under reduced motion, but a club lurching off its orbit tells the user
+   nothing they need and is exactly the unrequested movement this preference
+   exists to stop. Suppressed, and nothing informational is withheld. */
+@media (prefers-reduced-motion: reduce) {
+    juggler-spinner .js-club.js-dropping {
+        animation:
+            juggler-spinner-spin var(--duration) linear infinite;
+        animation-delay: calc(var(--duration) * var(--js-phase, 0) / var(--js-n) * -1);
+    }
+}
+
 /* No prefers-reduced-motion slowdown: a busy spinner is an essential status
    indicator (it signals the app is working), not decorative motion, so it
    runs at its normal --duration everywhere. If a gentle slowdown is ever
    wanted here, override the --duration *variable* (not animation-duration) so
-   the calc()'d per-club phase delays scale with it and the clubs stay 120°
-   apart — overriding animation-duration alone bunches them. */
+   the calc()'d per-club flip delays scale with it and each club's slow-zone
+   stays aligned with the bottom of its orbit — overriding animation-duration
+   alone desynchronises them. To change the RATE of a running spinner, set
+   playbackRate on its animations instead: that preserves each animation's
+   current time, so the cascade speeds up or slows down without jumping. */
 
 /* Pause ALL CSS animations while the document is hidden — minimised, fully
    occluded, or on another virtual desktop. A hidden window paints nothing a
@@ -4987,15 +5109,221 @@ about-modal .about-header {
     background: linear-gradient(180deg, rgb(88 166 255 / 8%) 0%, transparent 100%);
 }
 
+/* Inline SVG rather than the usual masked box (see utils/juggler-logo.js): the
+   clubs have to move independently of the lettering. position/z-index puts the
+   mark above the panel's later content, so a club thrown across the description
+   passes in front of the text instead of behind it. */
 about-modal .about-logo {
+    position: relative;
+    z-index: 1;
     height: 3rem;
-    aspect-ratio: 79.433 / 31.038;
     margin: 0 auto 0.75rem;
-    background-color: var(--text-primary);
-    mask-image: var(--logo-with-name-url);
-    mask-size: contain;
-    mask-repeat: no-repeat;
-    mask-position: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 2.2rem inside the 3rem row is the size the masked logo drew at: its viewBox
+   was wider than the box's aspect-ratio, so `mask-size: contain` fitted it to
+   the width and it never filled the row's height. Keeping that size means the
+   header looks unchanged; raise it towards 3rem to make the mark bigger.
+
+   overflow: visible lets a thrown club paint outside the mark — modal-panel's
+   own overflow: hidden is what clips it, so clubs disappear at the panel edge
+   rather than floating over the app. */
+about-modal .about-logo svg {
+    height: 2.2rem;
+    width: auto;
+    overflow: visible;
+    fill: var(--text-primary);
+}
+
+/* ---- The throw -------------------------------------------------------------
+
+   A moment after the box opens the three clubs are lobbed out of the panel and
+   tumble back into place. Each club is g.logo-club (travel) wrapping g.logo-spin
+   (rotation): separating them lets the spin run at a steady rate while the
+   travel eases along its arc, which is what makes a club read as thrown rather
+   than slid. Clicking the logo throws them again (about-modal.js).
+
+   Per-club aim lives in custom properties so tuning the feel is editing numbers:
+     --throw-dx/dy    where it ends up, in SVG user units (~1.25px each here)
+     --throw-ax/ay    where it is 26% of the way through — the arc's shape
+     --throw-rot      rotation on the way out
+     --throw-back     rotation on landing; a multiple of 360deg so it lands square
+     --throw-hop      the small bob upwards before it goes
+     --throw-delay    when this club leaves
+
+   Down is the expensive direction — the panel body sits below the mark — so the
+   clubs fall outwards through the lower side walls, which is the shortest way
+   out of sight while still reading as a drop. */
+about-modal .logo-club,
+about-modal .logo-spin,
+about-modal .logo-name {
+    transform-box: fill-box;
+    transform-origin: 50% 50%;
+}
+
+/* Lengths below are SVG user units in the mark's own coordinate system, which
+   is what a CSS transform on an SVG element resolves px against — they scale
+   with the logo and have nothing to do with device pixels. rem here would be
+   read as 16 user units and would not track the mark's size at all. */
+/* stylelint-disable rem-over-px/rem-over-px, unit-disallowed-list */
+about-modal .logo-club-1 {
+    --throw-delay: 600ms;
+    --throw-ax: -40px;
+    --throw-ay: 9px;
+    --throw-dx: -143px;
+    --throw-dy: 118px;
+    --throw-rot: -720deg;
+    --throw-back: -1080deg;
+    --throw-hop: -3.1px;
+}
+
+about-modal .logo-club-2 {
+    --throw-delay: 690ms;
+    --throw-ax: 55px;
+    --throw-ay: 7px;
+    --throw-dx: 196px;
+    --throw-dy: 102px;
+    --throw-rot: 720deg;
+    --throw-back: 1440deg;
+    --throw-hop: -3.1px;
+}
+
+about-modal .logo-club-3 {
+    --throw-delay: 780ms;
+    --throw-ax: -37px;
+    --throw-ay: 11px;
+    --throw-dx: -145px;
+    --throw-dy: 155px;
+    --throw-rot: -360deg;
+    --throw-back: -720deg;
+    --throw-hop: -4.35px;
+}
+
+about-modal .about-logo.tossing .logo-club {
+    animation: about-logo-throw 1500ms var(--throw-delay) both;
+}
+
+about-modal .about-logo.tossing .logo-spin {
+    animation: about-logo-spin 1500ms var(--throw-delay) both;
+}
+
+about-modal .about-logo.tossing .logo-name {
+    animation: about-logo-jolt 700ms 640ms both;
+}
+
+@keyframes about-logo-throw {
+    /* A hop up before the fall: being tossed is what makes this read as thrown
+       rather than dropped, and it is the beat the whole thing bounces off. */
+    0% {
+        transform: translate(0, 0) scale(1);
+        animation-timing-function: cubic-bezier(0.35, 0, 0.65, -0.2);
+    }
+
+    6% {
+        transform: translate(1px, var(--throw-hop)) scale(0.94, 1.07);
+        animation-timing-function: cubic-bezier(0.2, 0.6, 0.5, 0.9);
+    }
+
+    /* Most of the sideways travel done, barely any of the drop — then gravity,
+       so the horizontal speed stays flat while the fall accelerates. */
+    26% {
+        transform: translate(var(--throw-ax), var(--throw-ay)) scale(1.03);
+        animation-timing-function: cubic-bezier(0.45, 0, 0.9, 0.55);
+    }
+
+    46% {
+        transform: translate(var(--throw-dx), var(--throw-dy)) scale(1);
+        animation-timing-function: ease-in-out;
+    }
+
+    /* Out of sight, doing who knows what. It drifts a little so it does not read
+       as parked just off-stage waiting for its cue. */
+    56% {
+        transform: translate(calc(var(--throw-dx) * 1.06), calc(var(--throw-dy) * 1.06)) scale(1);
+        animation-timing-function: cubic-bezier(0.3, 0.1, 0.2, 1);
+    }
+
+    /* Home, slightly past it, and settled. */
+    86% {
+        transform: translate(calc(var(--throw-dx) * -0.06), calc(var(--throw-dy) * -0.06)) scale(1.03);
+    }
+
+    94% {
+        transform: translate(calc(var(--throw-dx) * 0.02), calc(var(--throw-dy) * 0.02)) scale(0.98, 1.02);
+    }
+
+    100% {
+        transform: translate(0, 0) scale(1);
+    }
+}
+
+@keyframes about-logo-spin {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    6% {
+        transform: rotate(-12deg);
+        animation-timing-function: linear;
+    }
+
+    46% {
+        transform: rotate(var(--throw-rot));
+    }
+
+    56% {
+        transform: rotate(calc(var(--throw-rot) * 1.06));
+        animation-timing-function: cubic-bezier(0.3, 0.1, 0.2, 1);
+    }
+
+    90% {
+        transform: rotate(calc(var(--throw-back) + 9deg));
+    }
+
+    100% {
+        transform: rotate(var(--throw-back));
+    }
+}
+
+/* The lettering flinches as the clubs leave, then settles. */
+@keyframes about-logo-jolt {
+    0% {
+        transform: translate(0, 0) rotate(0deg) scale(1);
+    }
+
+    14% {
+        transform: translate(0, 1.2px) rotate(0deg) scale(1.02, 0.94);
+    }
+
+    34% {
+        transform: translate(0, -1.6px) rotate(-1.4deg) scale(0.99, 1.03);
+    }
+
+    58% {
+        transform: translate(0, 0.5px) rotate(0.8deg) scale(1.01, 0.99);
+    }
+
+    78% {
+        transform: translate(0, -0.2px) rotate(-0.3deg) scale(1);
+    }
+
+    100% {
+        transform: translate(0, 0) rotate(0deg) scale(1);
+    }
+}
+/* stylelint-enable rem-over-px/rem-over-px, unit-disallowed-list */
+
+/* Pure decoration, and unrequested movement is exactly what the preference is
+   there to stop. The logo simply sits still. */
+@media (prefers-reduced-motion: reduce) {
+    about-modal .about-logo.tossing .logo-club,
+    about-modal .about-logo.tossing .logo-spin,
+    about-modal .about-logo.tossing .logo-name {
+        animation: none;
+    }
 }
 
 about-modal .about-version {

@@ -5,6 +5,7 @@
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { focusWhenShown } from '../utils/focus.js';
 import { fetchJson } from '../services/http.js';
+import { LOGO_WITH_NAME_SVG } from '../utils/juggler-logo.js';
 
 /**
  * AboutModal - Shows information about the application
@@ -122,7 +123,7 @@ class AboutModal extends HTMLElement {
             <modal-backdrop class="about-backdrop"></modal-backdrop>
             <modal-panel class="about-container">
                 <header class="about-header">
-                    <div class="about-logo"></div>
+                    <div class="about-logo tossing">${LOGO_WITH_NAME_SVG}</div>
                     <span class="about-version">${this._version}</span>
                 </header>
 
@@ -165,6 +166,31 @@ class AboutModal extends HTMLElement {
       // Focus the close button
       focusWhenShown(/** @type {HTMLElement} */ (closeButton));
     }
+
+    // The clubs are thrown off the panel and caught again shortly after the box
+    // opens; the animation is declared in CSS and starts on its own because
+    // render() builds the logo fresh every time. Clicking the logo throws them
+    // again, which is the whole reason to click a logo.
+    const logo = /** @type {HTMLElement|null} */ (this.querySelector('.about-logo'));
+    if (logo) {
+      logo.addEventListener('click', () => this._throwClubs(logo));
+    }
+  }
+
+  /**
+   * Re-run the club throw from the top.
+   *
+   * The animations are spent once they have played, so restarting means taking
+   * the class off, forcing a reflow to discard them, and putting it back — the
+   * same trick the spinner uses to recover a frozen cascade. Both writes and the
+   * reflow happen in one task, so no intermediate frame is ever painted.
+   * @param {HTMLElement} logo - The `.about-logo` element carrying the class.
+   * @private
+   */
+  _throwClubs(logo) {
+    logo.classList.remove('tossing');
+    void logo.offsetWidth;
+    logo.classList.add('tossing');
   }
 }
 

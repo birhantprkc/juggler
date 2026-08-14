@@ -15,6 +15,9 @@
  * @property {boolean} [showDuplicateTab] - Whether to show the duplicate tab button (root thread only)
  * @property {string} [busyItemMessageId] - message-id of the busy thread item, enables clicking footer to select it
  * @property {boolean} [politePending] - A polite stop (Pause) is in progress: render the Pause button active until the worker rests
+ * @property {number} [runningTools] - How many tool-actions are executing right now; drives the spinner's club count
+ * @property {number} [throughput] - Output tokens per second right now (0 when nothing is streaming); drives the spinner's speed
+ * @property {number|null} [toolWaitMs] - How long the longest-running tool call has been running, or null when none is; drives the spinner's tool-wait ramp
  */
 
 /**
@@ -109,6 +112,15 @@ class ConversationFooter extends HTMLElement {
    * @private
    */
   _undoOfferSeq = null;
+
+  /**
+   * Whether the last `update` saw a running turn, so the start of a turn can be
+   * told apart from the many ticks that follow it. Only the rising edge offers
+   * the spinner its once-per-turn fumble; every tick after that must not.
+   * @type {boolean}
+   * @private
+   */
+  _wasProcessing = false;
 
   disconnectedCallback() {
     if (this._unsubscribe) { this._unsubscribe(); this._unsubscribe = null; }
@@ -433,7 +445,7 @@ class ConversationFooter extends HTMLElement {
   connectedCallback() {
     this.innerHTML = `
             <footer-processing class="hidden">
-                <juggler-spinner></juggler-spinner>
+                <juggler-spinner live></juggler-spinner>
                 <span class="llm-busy-text"></span>
                 <button class="message-action-btn footer-pause-btn" type="button" title="Pause as soon as possible, without cancelling any operations in progress">
                     <svg class="footer-pause-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M560-200v-560h160v560H560Zm-320 0v-560h160v560H240Z"/></svg>
@@ -667,7 +679,20 @@ class ConversationFooter extends HTMLElement {
       hide(idle);
       setText(text, state.statusMessage || '');
       const spinner = this.querySelector('juggler-spinner');
-      if (spinner) toggle(spinner, state.showSpinner !== false);
+      if (spinner) {
+        toggle(spinner, state.showSpinner !== false);
+        // Report the live work behind the spinner. Doing this on every tick is
+        // free — the spinner ignores an unchanged count and deadbands the rate —
+        // and it is ignored outright by any spinner not marked `live`.
+        /** @type {any} */ (spinner).clubs = state.runningTools ?? 0;
+        /** @type {any} */ (spinner).report({
+          throughput: state.throughput ?? 0,
+          toolWaitMs: state.toolWaitMs ?? null,
+        });
+        // One roll of the dice per turn, on the rising edge only.
+        if (!this._wasProcessing) /** @type {any} */ (spinner).offerDrop();
+      }
+      this._wasProcessing = true;
       if (nextSteps) {
         // The plan belongs to the thread, not to a run of its tool calls.
         const text = this._statusOnly ? '' : (state.nextSteps || '');
@@ -696,7 +721,17 @@ class ConversationFooter extends HTMLElement {
         setText(pauseBtn.querySelector('.footer-pause-label'), pending ? 'Pausing…' : 'Pause');
       }
     } else {
-      // Idle state — show appropriate buttons
+      // Idle state — show appropriate buttons.
+      //
+      // `footer-processing` is hidden the instant the turn ends, with nothing
+      // held back for a closing flourish. Its visibility is not merely cosmetic:
+      // it is this column's "still working" signal, read by the selection logic
+      // that decides what the keyboard acts on (conversation-area's
+      // _resolveSelectionTarget) and by the test harness's idle detection.
+      // Keeping the row up a few hundred milliseconds past the end of the work
+      // makes that signal false, and points the keyboard at a status row
+      // describing a turn that is already over.
+      this._wasProcessing = false;
       hide(processing);
       if (processing) delete /** @type {HTMLElement} */ (processing).dataset.messageId;
       if (nextSteps) { nextSteps.textContent = ''; hide(nextSteps); }
