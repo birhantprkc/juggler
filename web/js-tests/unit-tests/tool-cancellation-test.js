@@ -312,7 +312,7 @@ export async function runTests(_ctx) {
     const originalSendStart = wsService.sendShellStart;
     const originalSendCancel = wsService.sendShellCancel;
     try {
-      const { shellExecuteStreaming } = await import('../../js/services/ops-api.js');
+      const { shellExecuteStreaming } = await import('../../js/services/shell-streaming.js');
 
       /** @type {string|null} */
       let startedShellId = null;
@@ -337,8 +337,8 @@ export async function runTests(_ctx) {
         controller.signal
       );
 
-      // shell-start is sent synchronously inside the promise executor after the
-      // (already-cached) dynamic import resolves; give it a microtask-safe beat.
+      // shell-start is sent synchronously inside the promise executor; give it a
+      // microtask-safe beat rather than assuming the ordering.
       await Promise.race([
         (async () => { while (startedShellId === null) await new Promise((r) => setTimeout(r, 10)); })(),
         new Promise((_r, rej) => setTimeout(() => rej(new Error('shell-start was never sent')), 4000))

@@ -45,8 +45,6 @@ export {
   grepFindSymbol as findSymbol,
   // Shell
   shellExecute as shell,
-  shellExecuteStreaming as shellStreaming,
-  shellCancelStreaming as cancelShellStreaming,
   shellStartBackground as shellBackground,
   shellGetOutput as shellOutput,
   shellGetOutputDelta as shellOutputDelta,
@@ -74,4 +72,12 @@ export {
   mcpGetConfig,
   mcpSetConfig,
 } from '../js/services/ops-api.js';
+
+// Live shell execution is the one op that streams rather than returning once,
+// so it rides the WebSocket instead of /api/ops/call and lives beside it.
+export {
+  shellExecuteStreaming as shellStreaming,
+  shellCancelStreaming as cancelShellStreaming,
+} from '../js/services/shell-streaming.js';
+
 export { FileSystem, ReadOnlyFileSystem } from '../js/services/fs.js';

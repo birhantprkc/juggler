@@ -2,21 +2,15 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import actionExecutor from './action-executor.js';
 import { generateToolDefinitions, getBlockedToolReason, resolveToolName } from './tool-generator.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { extractErrorInfo, extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { createContextWriter } from './context-writer.js';
-import { buildApprovalButtons } from './approval-options.js';
-import { RESULT_TYPES, ACTION_STATES, TOOL_STATES } from '../../sdk/lib/message.js';
-import { INTERACTION_KIND } from '../../sdk/context-item.js';
+import { RESULT_TYPES } from '../../sdk/lib/message.js';
 import { hashString } from '../utils/hash.js';
-import { plain } from '../model/item-accessor.js';
 import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import toolExecutor from './tool-executor.js';
-import workerManager from './worker-manager.js';
-import wsService from './websocket.js';
-import { APPROVAL_POLICY } from 'juggler/strategy-type';
+import * as actions from './response-handler-actions.js';
 
 /**
  * @typedef {import('../../sdk/lib/message.js').Message} Message
@@ -222,7 +216,7 @@ class ResponseHandler {
         if (!itemDetails) {
           // It's an action - resolve and prepare through the shared pipeline so
           // multi-tool classes get the same toolName-based routing as execution.
-          const { ActionClass, prepared, blockedReason } = await this._resolveAndPrepare(tc, /** @type {Record<string, unknown>} */ (tc.input), messageThread);
+          const { ActionClass, prepared, blockedReason } = await actions.resolveAndPrepare(this, tc, /** @type {Record<string, unknown>} */ (tc.input), messageThread);
           if (!ActionClass) {
             return {
               toolId: tc.id,
@@ -343,24 +337,14 @@ class ResponseHandler {
       };
     } catch (error) {
       const { message, stack } = extractErrorInfo(error);
-      // DOCUMENT-DRIVEN FLOW: Update existing tool-action created by worker
-      // (Without this, the conversation is unchanged and LLM will retry the same thing)
       const errorContent = `Error: ${message}`;
       if (stack) console.error(`[ResponseHandler] Tool error stack:\n${stack}`);
-      messageThread.completeToolAction(toolCall.id, {
+      return actions.failToolAction(messageThread, toolCall, {
         content: errorContent,
-        isError: true,
-        resultType: resultType,
-        fullResult: { state: 'error', success: false, error: message }
+        resultType,
+        fullResult: { state: 'error', success: false, error: message },
+        outcome: { result: { error: message }, content: errorContent }
       });
-
-      return {
-        toolName: toolCall.name,
-        success: false,
-        resultStatus: /** @type {ResultStatus} */ ('error'),
-        result: { error: message },
-        content: errorContent
-      };
     }
   }
 
@@ -471,20 +455,12 @@ class ResponseHandler {
    */
   createUnknownToolResult(toolCall, messageThread) {
     const errorMsg = `Unknown tool: "${toolCall.name}". This tool is not registered with any handler.`;
-    // DOCUMENT-DRIVEN FLOW: Update existing tool-action created by worker
-    messageThread.completeToolAction(toolCall.id, {
+    return actions.failToolAction(messageThread, toolCall, {
       content: errorMsg,
-      isError: true,
       resultType: RESULT_TYPES.META_TOOL,
-      fullResult: { success: false, error: errorMsg, unknownTool: true }
+      fullResult: { success: false, error: errorMsg, unknownTool: true },
+      outcome: { result: errorMsg }
     });
-
-    return {
-      toolName: toolCall.name,
-      success: false,
-      resultStatus: /** @type {ResultStatus} */ ('error'),
-      result: errorMsg
-    };
   }
 
   /**
@@ -517,532 +493,6 @@ class ResponseHandler {
       },
       data: itemResult
     };
-  }
-
-  /**
-   * Execute an action tool with declarative state-driven pattern. Called by
-   * ToolExecutor. Message state drives UI rendering - NO DOM manipulation here.
-   * States: waiting_for_approval → running → completed/cancelled/error
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @param {{onApproved?: () => void}} [outerOptions] - Callbacks
-   * @returns {Promise<ToolExecutionResult>} Standardized result for orchestrator
-   */
-  async executeAction(toolCall, messageThread, outerOptions = {}) {
-    const toolInput = /** @type {Record<string, unknown>} */ (toolCall.input || {});
-
-    // Common tool-use data for all exit paths
-    const toolUseData = { toolUseId: toolCall.id, toolName: toolCall.name, toolInput };
-
-    // Wrap entire function in try-catch to ensure loop continues on any error
-    try {
-      return await this._executeActionCore(toolCall, toolInput, toolUseData, messageThread, { onApproved: outerOptions.onApproved });
-    } catch (error) {
-      // Catch any uncaught errors and return a result that continues the loop
-      const { message, stack } = extractErrorInfo(error);
-      // DOCUMENT-DRIVEN FLOW: Update existing tool-action created by worker
-      const errorContent = `Error: ${message}`;
-      if (stack) console.error(`[ResponseHandler] Action error stack:\n${stack}`);
-      messageThread.completeToolAction(toolCall.id, {
-        content: errorContent,
-        isError: true,
-        resultType: RESULT_TYPES.ACTION,
-        fullResult: { state: ACTION_STATES.ERROR, success: false, error: message }
-      });
-
-      return {
-        toolName: toolCall.name,
-        success: false,
-        resultStatus: /** @type {ResultStatus} */ ('error'),
-        result: { error: errorContent }
-      };
-    }
-  }
-
-  /**
-   * Build approval options from action and prepared parameters.
-   * Public for use by session.js worker flow.
-   * @param {any} action - Action instance
-   * @param {any} prepared - Prepared parameters from action.prepareParameters()
-   * @returns {import('../components/action-confirmation.js').ActionConfirmationOptions} Approval options
-   */
-  buildApprovalOptions(action, prepared) {
-    const manifest = action.getManifest();
-    const approval = prepared.approval || {};
-
-    // A plugin can supply a fully custom button set via getApprovalConfig;
-    // honour it verbatim. Otherwise build the standard, plugin-driven set
-    // (Yes, one "Don't Ask Again" per suggestion, No) — see buildApprovalButtons.
-    const options = approval.options || buildApprovalButtons(action, prepared.params || {});
-
-    return {
-      title: approval.title || `Approve: ${manifest.name}`,
-      message: approval.message || '',
-      options,
-      ...approval.display // Extra display data (diffs, previews, etc.)
-    };
-  }
-
-  /**
-   * Core action execution logic - handles both approval and non-approval paths.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {Record<string, unknown>} toolInput - Tool input parameters
-   * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>}} toolUseData - Common tool-use data
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @param {{isRetry?: boolean, existingApprovalOptions?: import('../components/action-confirmation.js').ActionConfirmationOptions, onApproved?: () => void}} [options] - Options for retry flow
-   * @returns {Promise<ToolExecutionResult>} Standardized result for orchestrator
-   * @private
-   */
-  async _executeActionCore(toolCall, toolInput, toolUseData, messageThread, options = {}) {
-    const { existingApprovalOptions, onApproved } = options;
-
-    const prep = await this._prepareAction(toolCall, toolInput, messageThread);
-    if (prep.result) return prep.result;
-    const { ActionClass, action, actionId, prepared, resolvedName } = prep;
-
-    const needsApproval = this._determineApprovalNeeded(
-      toolCall, toolInput, resolvedName, ActionClass, action, messageThread, existingApprovalOptions
-    );
-
-    if (needsApproval) {
-      const approvalOutcome = await this._handleApprovalFlow(
-        toolCall, action, prepared, messageThread, existingApprovalOptions
-      );
-      if (approvalOutcome) return approvalOutcome;
-    }
-
-    // Signal that the tool is now running (approval complete or not needed).
-    // Allows the server to start its execution timeout from this point.
-    onApproved?.();
-
-    return this._runActionAndComplete(toolCall, actionId, toolInput, messageThread);
-  }
-
-  /**
-   * Resolve an action class and prepare its parameters — the pipeline shared by
-   * execution (`_prepareAction`) and pre-execution validation (`validateToolCalls`).
-   * When the class is unknown/blocked, `ActionClass` is null and `blockedReason`
-   * carries the reason (if any); otherwise the instance is constructed with
-   * `toolName` set (so a multi-tool class routes validate/approval to the invoked
-   * tool) and `prepare()` has run. Purely computational — no document mutation.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {Record<string, unknown>} toolInput - Tool input parameters
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @returns {Promise<{resolvedName: string, ActionClass: any, actionId?: string, action?: any, prepared?: any, blockedReason: string|null}>} Resolved action context (ActionClass null when unknown/blocked)
-   * @private
-   */
-  async _resolveAndPrepare(toolCall, toolInput, messageThread) {
-    // Resolve aliases (e.g., 'Bash' -> 'bash') for registry lookup
-    const resolvedName = resolveToolName(toolCall.name);
-    const ActionClass = /** @type {any} */ (contextItemRegistry.getByToolName(resolvedName));
-    if (!ActionClass) {
-      return { resolvedName, ActionClass: null, blockedReason: getBlockedToolReason(resolvedName) || null };
-    }
-
-    const actionId = ActionClass.MANIFEST.id;
-    const action = new ActionClass({
-      id: actionId,
-      session: this._conversation.session,
-      conversation: this._conversation,
-      messageThread,
-      toolName: resolvedName  // Lets a multi-tool class route validate/approval to the invoked tool
-    });
-    const prepared = await action.prepare(toolInput);
-
-    return { resolvedName, ActionClass, actionId, action, prepared, blockedReason: null };
-  }
-
-  /**
-   * Resolve the action class and prepare its parameters. Returns `{result}`
-   * to short-circuit (unknown/blocked tool or invalid params — after updating
-   * the tool-action with the error), otherwise the prepared action context.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {Record<string, unknown>} toolInput - Tool input parameters
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @returns {Promise<{result: ToolExecutionResult} | {result?: undefined, ActionClass: any, action: any, actionId: string, prepared: any, resolvedName: string}>} Short-circuit result or prepared action context
-   * @private
-   */
-  async _prepareAction(toolCall, toolInput, messageThread) {
-    // ========== 1. RESOLVE ACTION CLASS AND PREPARE PARAMETERS ==========
-    const { resolvedName, ActionClass, actionId, action, prepared, blockedReason } =
-      await this._resolveAndPrepare(toolCall, toolInput, messageThread);
-    if (!ActionClass) {
-      const errorMessage = blockedReason
-        ? `Tool "${toolCall.name}" is not available: ${blockedReason}`
-        : `Unknown action: ${toolCall.name}`;
-
-      // DOCUMENT-DRIVEN FLOW: Worker created tool-action, we update it with error
-      messageThread.completeToolAction(toolCall.id, {
-        content: errorMessage,
-        isError: true,
-        resultType: RESULT_TYPES.ACTION,
-        fullResult: { state: ACTION_STATES.ERROR, success: false, error: errorMessage, blocked: !!blockedReason }
-      });
-
-      return {
-        result: {
-          toolName: toolCall.name,
-          success: false,
-          resultStatus: /** @type {ResultStatus} */ ('error'),
-          result: { error: errorMessage, blocked: !!blockedReason }
-        }
-      };
-    }
-
-    // ========== 2. HANDLE INVALID PARAMETERS ==========
-    if (!prepared.valid) {
-      const errorMessage = prepared.error || 'Validation failed';
-
-      // DOCUMENT-DRIVEN FLOW: Worker created tool-action, we update it with error
-      messageThread.completeToolAction(toolCall.id, {
-        content: errorMessage,
-        isError: true,
-        resultType: RESULT_TYPES.ACTION,
-        fullResult: { state: ACTION_STATES.ERROR, success: false, error: errorMessage, actionId }
-      });
-
-      return {
-        result: {
-          toolName: toolCall.name,
-          success: false,
-          resultStatus: /** @type {ResultStatus} */ ('error'),
-          result: { error: errorMessage }
-        }
-      };
-    }
-
-    return { ActionClass, action, actionId: /** @type {string} */ (actionId), prepared, resolvedName };
-  }
-
-  /**
-   * Determine whether this action requires user approval, consulting the
-   * action's own policy and the strategy's master approval policy.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {Record<string, unknown>} toolInput - Tool input parameters
-   * @param {string} resolvedName - Alias-resolved tool name
-   * @param {any} ActionClass - Resolved action class
-   * @param {any} action - Action instance
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @param {import('../components/action-confirmation.js').ActionConfirmationOptions} [existingApprovalOptions] - Approval options from an existing tool-use message (retry)
-   * @returns {boolean} Whether approval is needed
-   * @private
-   */
-  _determineApprovalNeeded(toolCall, toolInput, resolvedName, ActionClass, action, messageThread, existingApprovalOptions) {
-    // ========== 3. CHECK IF APPROVAL NEEDED ==========
-    // Check if this is a retry (already has approval options)
-    const isRetry = !!existingApprovalOptions;
-    const defaultApproval = isRetry || (action.requiresApproval() && !action.isPermitted(toolInput));
-
-    // Consult strategy approval policy (strategy has master control)
-    const toolDefs = ActionClass.getToolDefinitions?.() || [];
-    const toolDef = toolDefs.find((/** @type {{name: string}} */ t) => t.name === resolvedName);
-    const strategyPolicy = messageThread.strategy?.getApprovalPolicy?.({
-      toolName: toolCall.name,
-      toolInput,
-      category: toolDef?.category,
-      defaultApproval,
-      // The parked-state kind (gate vs elicitation), so a policy can decline to
-      // stand in for the user on an elicitation whose resolution IS the user's
-      // own answer (e.g. AskUserQuestion) — see getApprovalPolicy's contract.
-      interactionKind: action.interactionKind(),
-      // Whether this call may be silently auto-approved. False for a deliberate
-      // human checkpoint (a plan submit; a catastrophic delete) — so a blanket
-      // auto-approve (YOLO) returns DEFAULT for it and it still parks for review.
-      autoApprovable: action.autoApprovable?.(toolInput) ?? true
-    });
-
-    let needsApproval;
-    if (strategyPolicy === APPROVAL_POLICY.APPROVE) {
-      needsApproval = false;
-    } else if (strategyPolicy === APPROVAL_POLICY.REQUIRE_APPROVAL) {
-      needsApproval = true;
-    } else {
-      needsApproval = defaultApproval;
-    }
-    return needsApproval;
-  }
-
-  /**
-   * Run the approval path: wait for user approval if needed, then either
-   * short-circuit (rejection, or an already-executed result) or fall through
-   * to execution.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {any} action - Action instance
-   * @param {any} prepared - Prepared parameters from action.prepare()
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @param {import('../components/action-confirmation.js').ActionConfirmationOptions} [existingApprovalOptions] - Approval options from an existing tool-use message (retry)
-   * @returns {Promise<ToolExecutionResult|null>} Result to return, or null to continue to execution
-   * @private
-   */
-  async _handleApprovalFlow(toolCall, action, prepared, messageThread, existingApprovalOptions) {
-    // ========== 4. HANDLE APPROVAL PATH ==========
-    // Check if approval is already done (observer flow - called after user approved)
-    const existingAction = messageThread.getToolAction(toolCall.id);
-    const existingState = existingAction?.get('state');
-    const approvalAlreadyDone = existingState === TOOL_STATES.APPROVED ||
-                                      existingState === TOOL_STATES.RUNNING ||
-                                      existingState === TOOL_STATES.COMPLETED ||
-                                      existingState === TOOL_STATES.CANCELLED;
-
-    let approvalResult = 'yes';  // Default for already-approved case
-
-    if (!approvalAlreadyDone) {
-      // Need to wait for user approval
-      const approvalOptions = existingApprovalOptions || this.buildApprovalOptions(action, prepared);
-
-      // DOCUMENT-DRIVEN FLOW: For retries, approval state is already set by observer.
-      // For initial execution, observer's handleNewToolAction sets state to 'pending'.
-      // Create promise BEFORE updating message (prevents race condition)
-      // waitForApproval polls message state - no options needed (they're on the message)
-      const approvalPromise = messageThread.waitForApproval(toolCall.id);
-
-      // Update existing tool-action with approval options (both first-time and retry)
-      // Worker created the item, we add the UI-specific approval options
-      workerManager.updateToolActionForRetry(
-        this._conversation.id,
-        toolCall.id,
-        approvalOptions,
-        prepared.displayData
-      );
-
-      approvalResult = await approvalPromise;
-    } else if (existingState === TOOL_STATES.CANCELLED) {
-      approvalResult = 'cancel';
-    }
-
-    // resolveApproval already executed/added tool-result for all cases
-    // We just need to read the result and return
-
-    // Handle rejection (no or cancel) - both use 'cancelled' now
-    if (approvalResult === 'no' || approvalResult === 'cancel') {
-      return {
-        toolName: toolCall.name,
-        success: false,
-        resultStatus: /** @type {ResultStatus} */ ('cancelled'),
-        result: { cancelled: true }
-      };
-    }
-
-    // Check if tool-action already exists (approval path creates it)
-    // CRITICAL: Check existence first to prevent duplication bug
-    const existingToolAction = messageThread.getToolAction(toolCall.id);
-
-    if (existingToolAction) {
-      // Tool-action already exists from approval flow
-      // Check if already executed (result set with actual content)
-      // Note: Yjs sync can result in {} when result is unset, so check for content
-      const existingResult = existingToolAction.get('result');
-      const hasRealResult = existingResult !== null &&
-                  existingResult !== undefined &&
-                  (existingResult.get?.('content') !== undefined ||
-                   existingResult.get?.('cancelled') === true);
-      if (hasRealResult) {
-        // Already executed by resolveApproval - return result
-        const result = plain(existingResult);
-
-        return {
-          toolName: toolCall.name,
-          success: !result.isError,
-          resultStatus: result.isError
-            ? /** @type {ResultStatus} */ ('error')
-            : /** @type {ResultStatus} */ ('success'),
-          content: result.content,
-          result: result.fullResult
-        };
-      }
-
-      // Exists but not executed yet (approval just resolved)
-      // Fall through to execution - don't create duplicate
-    }
-    // Tool-action was already created when approval was requested, but Yjs sync
-    // delay can make getToolAction() return undefined. DO NOT create a duplicate
-    // here — just fall through to execution.
-    return null;
-  }
-
-  /**
-   * Fold an elicitation tool's captured answer (its approval response) into the
-   * tool input before execution. A gate tool's approval response is a bare
-   * verdict carrying no data, so it passes through unchanged.
-   *
-   * Kind-driven, not name-driven: the tool declares `interaction: 'elicitation'`
-   * and owns the parse via its static `applyApprovalResponse` — there is no
-   * per-tool special-casing here.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {Record<string, unknown>} toolInput - Tool input parameters
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @returns {Record<string, unknown>} Final tool input for execution
-   * @private
-   */
-  _resolveFinalToolInput(toolCall, toolInput, messageThread) {
-    const ActionClass = /** @type {any} */ (contextItemRegistry.getByToolName(toolCall.name));
-    if (ActionClass?.interactionKind?.() !== INTERACTION_KIND.ELICITATION) {
-      return toolInput;
-    }
-    const approvalResponse = messageThread.getToolAction(toolCall.id)?.get('approvalResponse');
-    if (!approvalResponse) return toolInput;
-    return ActionClass.applyApprovalResponse(toolInput, approvalResponse);
-  }
-
-  /**
-   * Execute the action and update the tool-action with the final result,
-   * handling the success, cancellation (no Yjs write), and error paths.
-   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
-   * @param {string} actionId - Resolved action manifest id
-   * @param {Record<string, unknown>} toolInput - Tool input parameters
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @returns {Promise<ToolExecutionResult>} Standardized result for orchestrator
-   * @private
-   */
-  async _runActionAndComplete(toolCall, actionId, toolInput, messageThread) {
-    // ========== 6. EXECUTE ACTION (SHARED - NO DUPLICATION!) ==========
-    try {
-      const finalToolInput = this._resolveFinalToolInput(toolCall, toolInput, messageThread);
-
-      // Carry the execution generation + claim stamp claimRunning wrote onto the
-      // tool-action into the executor's running-action registry. runningEpoch
-      // scopes a later cancel-tool to this exact incarnation (cancelByToolUseId's
-      // epoch guard); runningStartedAt feeds the worker's tool-execution-report
-      // happens-after guard. Both read live from the ymap — the single source of
-      // truth the worker's signals are generated against.
-      const ta = messageThread.getToolAction(toolCall.id);
-      const runningEpoch = Number(ta?.get('runningEpoch')) || undefined;
-      const runningStartedAt = Number(ta?.get('runningStartedAt')) || undefined;
-
-      const result = await actionExecutor.execute(
-        actionId,
-        finalToolInput,
-        {
-          session: this._conversation.session,
-          conversation: this._conversation,
-          messageThread,
-          toolUseId: toolCall.id,
-          toolName: resolveToolName(toolCall.name),  // route multi-tool classes to the invoked tool
-          runningEpoch,
-          runningStartedAt,
-          _approvalHandled: true
-        }
-      );
-
-      // CONTIGUITY INVARIANT (tool-execution-report causality, INV-C): there must
-      // be NO await between the execute() completion above and completeToolAction
-      // below. The executing-set entry is removed inside execute()'s finally, and
-      // the terminal doc write happens in completeToolAction; keeping them in one
-      // await-free region guarantees any report showing this tool absent was sent
-      // after its terminal write (see action-executor.js execute() finally).
-
-      // Build content from result
-      let content = typeof result.formatted?.summary === 'string'
-        ? result.formatted.summary
-        : extractErrorMessage(result.formatted?.summary) || 'Action completed.';
-      if (result.formatted?.feedbackForLLM) {
-        const feedback = typeof result.formatted.feedbackForLLM === 'string'
-          ? result.formatted.feedbackForLLM
-          : extractErrorMessage(result.formatted.feedbackForLLM);
-        content += '\n\n' + feedback;
-      }
-
-      // On cancellation, do NOT write to the Yjs doc. The Go worker
-      // is the sole writer of cancellation state (via CancelStaleToolActions
-      // in the strategy loop defer). Having the frontend also write creates
-      // a CRDT merge conflict that can overwrite a rerun's state='approved'
-      // back to 'cancelled', causing an infinite restart loop.
-      if (result.cancelled) {
-        // Diagnostic breadcrumb: this is the one exit that leaves the
-        // tool-action without a result on purpose. If the worker isn't
-        // about to stamp 'cancelled' (e.g. a rerun whose execution got
-        // spuriously aborted), the tool wedges at running-with-no-result
-        // — surface the decision on every viewer's tape.
-        wsService.sendEngineBridge('juggler-tool-exec', {
-          toolUseId: toolCall.id,
-          toolName: toolCall.name,
-          conversationId: /** @type {any} */ (this._conversation)?.id,
-          phase: 'cancelled-no-write'
-        });
-        return {
-          toolName: toolCall.name,
-          success: false,
-          resultStatus: /** @type {ResultStatus} */ ('cancelled'),
-          content,
-          result: result.result
-        };
-      }
-
-      // Determine state
-      let state = 'completed';
-      if (!result.success) {
-        state = 'error';
-      }
-
-      // Extract llmFeedback if present
-      const resultData = /** @type {{llmFeedback?: string}} */ (result.result);
-      const llmFeedback = resultData?.llmFeedback;
-
-      // Strip large arrays from result: UI renders `content` (same as the LLM
-      // sees), so duplicating them in fullResult is wasted storage.
-      const minimalResult = this._stripLargeArrays(result.result);
-
-      // Update tool-action with final result (summary omitted — redundant with content)
-      /** @type {import('../../sdk/lib/message.js').ActionFullResult} */
-      const fullResult = {
-        state,
-        actionId: result.actionId,
-        success: result.success,
-        result: minimalResult,
-        displayData: result.displayData,
-        error: result.error,
-        llmFeedback,
-        durationMs: result.durationMs
-      };
-      // A tool that produced image output surfaces AssetRefs via getSummary's
-      // `attachments`. Carry them into the tool-action so they are stored at the
-      // item level (same field user attachments use) and emitted as image parts
-      // in the tool_result.
-      const attachments = Array.isArray(result.formatted?.attachments)
-        ? result.formatted.attachments.filter((/** @type {any} */ a) => a && a.id)
-        : undefined;
-
-      messageThread.completeToolAction(toolCall.id, {
-        content,
-        isError: !result.success,
-        resultType: RESULT_TYPES.ACTION,
-        fullResult,
-        ...(attachments && attachments.length ? { attachments } : {})
-      });
-
-      // Determine result status
-      /** @type {ResultStatus} */
-      let resultStatus = 'success';
-      if (!result.success) {
-        resultStatus = 'error';
-      }
-
-      return {
-        toolName: toolCall.name,
-        success: result.success,
-        resultStatus,
-        content,
-        result: result.result
-      };
-    } catch (error) {
-      const { message, stack } = extractErrorInfo(error);
-      const errorContent = `Error: ${message}`;
-      if (stack) console.error(`[ResponseHandler] Action error stack:\n${stack}`);
-      messageThread.completeToolAction(toolCall.id, {
-        content: errorContent,
-        isError: true,
-        resultType: RESULT_TYPES.ACTION,
-        fullResult: { state: ACTION_STATES.ERROR, success: false, error: message, actionId }
-      });
-
-      return {
-        toolName: toolCall.name,
-        success: false,
-        resultStatus: /** @type {ResultStatus} */ ('error'),
-        content: errorContent,
-        result: { error: message }
-      };
-    }
   }
 
   /**
@@ -1119,29 +569,21 @@ class ResponseHandler {
     };
   }
 
-  /**
-   * Strip large arrays from result object for storage efficiency.
-   * UI renders `content` (same as the LLM sees), so large data needn't be
-   * duplicated in fullResult. Keeps counts and metadata.
-   * @param {unknown} result - Raw result from action
-   * @returns {unknown} Result with large arrays stripped
-   * @private
-   */
-  _stripLargeArrays(result) {
-    if (!result || typeof result !== 'object') {
-      return result;
-    }
+  // ========== ACTION PIPELINE ==========
+  // The multi-stage resolve → approve → execute flow lives in
+  // response-handler-actions.js; these are its entry points.
 
-    const stripped = /** @type {Record<string, unknown>} */ ({});
-    for (const [key, value] of Object.entries(result)) {
-      if (Array.isArray(value) && value.length > 5) {
-        // Replace large arrays with count
-        stripped[key + 'Count'] = value.length;
-      } else {
-        stripped[key] = value;
-      }
-    }
-    return stripped;
+  /**
+   * Execute an action tool with declarative state-driven pattern. Called by
+   * ToolExecutor. Message state drives UI rendering - NO DOM manipulation here.
+   * States: waiting_for_approval → running → completed/cancelled/error
+   * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
+   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
+   * @param {{onApproved?: () => void}} [outerOptions] - Callbacks
+   * @returns {Promise<ToolExecutionResult>} Standardized result for orchestrator
+   */
+  async executeAction(toolCall, messageThread, outerOptions = {}) {
+    return actions.executeAction(this, toolCall, messageThread, outerOptions);
   }
 
   /**
@@ -1150,16 +592,21 @@ class ResponseHandler {
    * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call to execute
    * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
    * @param {import('../components/action-confirmation.js').ActionConfirmationOptions} [existingApprovalOptions] - Approval options from the existing tool-use message
+   * @returns {Promise<void>} Resolves once the retry has run to completion
    */
   async executeActionRetry(toolCall, messageThread, existingApprovalOptions) {
-    const toolInput = /** @type {Record<string, unknown>} */ (toolCall.input || {});
-    const toolUseData = { toolUseId: toolCall.id, toolName: toolCall.name, toolInput };
+    return actions.executeActionRetry(this, toolCall, messageThread, existingApprovalOptions);
+  }
 
-    // Use unified _executeActionCore with isRetry flag
-    await this._executeActionCore(toolCall, toolInput, toolUseData, messageThread, {
-      isRetry: true,
-      existingApprovalOptions
-    });
+  /**
+   * Build approval options from action and prepared parameters.
+   * Public for use by session.js worker flow.
+   * @param {any} action - Action instance
+   * @param {any} prepared - Prepared parameters from action.prepareParameters()
+   * @returns {import('../components/action-confirmation.js').ActionConfirmationOptions} Approval options
+   */
+  buildApprovalOptions(action, prepared) {
+    return actions.buildApprovalOptions(action, prepared);
   }
 }
 
