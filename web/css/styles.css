@@ -2361,6 +2361,14 @@ error-message article.error {
     font-size: 0.85rem;
 }
 
+/* Plain-English lead above the provider's own error text, which keeps its own
+   styling below so the diagnostic detail stays as readable as ever. */
+.error-message-lead {
+    margin-bottom: 0.35rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
 /* Retry action row sits below the error text, right-aligned. */
 .error-message-actions {
     display: flex;

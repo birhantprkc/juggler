@@ -458,7 +458,7 @@ class SkillContextItem extends ContextItem {
     container.appendChild(createElement('div', 'skill-panel-heading', heading));
 
     if (!Array.isArray(skills) || skills.length === 0) {
-      container.appendChild(createElement('div', 'skills-empty', 'No skills available yet.'));
+      container.appendChild(createElement('div', 'skills-empty', 'No skills yet.'));
     } else {
       const loaded = this._loadedSet();
       const list = createElement('div', 'skills-manage-list');

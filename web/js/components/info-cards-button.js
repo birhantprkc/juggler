@@ -162,7 +162,7 @@ class InfoCardsButton extends HTMLElement {
     if (cards.length === 0) {
       const empty = document.createElement('li');
       empty.className = 'menu-item unavailable';
-      empty.textContent = 'No info cards available';
+      empty.textContent = 'No info cards.';
       list.appendChild(empty);
       this._menu.replaceChildren(list);
       return;

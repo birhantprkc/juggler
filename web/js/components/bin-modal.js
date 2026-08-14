@@ -44,7 +44,7 @@ class BinModal extends JugglerElement {
     if (!this._releasePopupOpen) {
       this._releasePopupOpen = markPopupOpen(() => this.close());
     }
-    await this._refreshList();
+    await this._refreshList({ onOpen: true });
   }
 
   close() {
@@ -67,7 +67,7 @@ class BinModal extends JugglerElement {
           </div>
         </header>
         <div class="modal-body bin-body">
-          <div class="bin-empty hidden">The bin is empty.</div>
+            <div class="bin-empty hidden">The bin is empty.</div>
           <ul class="bin-list" role="list"></ul>
         </div>
       </modal-panel>
@@ -88,9 +88,12 @@ class BinModal extends JugglerElement {
 
   /**
    * Re-fetch the binned list and re-render rows.
+   * @param {{onOpen?: boolean}} [options] - `onOpen` marks the first refresh of
+   *   a freshly opened modal, where an empty bin is a standing state rather than
+   *   the result of something the user just did in here.
    * @private
    */
-  async _refreshList() {
+  async _refreshList({ onOpen = false } = {}) {
     if (!this._session) return;
     const list = /** @type {HTMLUListElement|null} */ (this.querySelector('.bin-list'));
     const empty = /** @type {HTMLElement|null} */ (this.querySelector('.bin-empty'));
@@ -104,7 +107,7 @@ class BinModal extends JugglerElement {
     } catch (e) {
       console.error('[BinModal] Failed to load binned list:', e);
       empty.classList.remove('hidden');
-      empty.textContent = 'Failed to load the bin.';
+      empty.textContent = 'Couldn’t load the bin.';
       list.innerHTML = '';
       if (emptyBtn) {
         emptyBtn.disabled = true;
@@ -126,7 +129,12 @@ class BinModal extends JugglerElement {
     }
     if (binned.length === 0) {
       empty.classList.remove('hidden');
-      empty.textContent = 'The bin is empty.';
+      // The wry reading only holds for a bin that was already empty when the
+      // user got here. After they restore, delete, or empty something the
+      // emptiness is their own doing, so it is stated plainly.
+      empty.textContent = onOpen
+        ? 'Empty. Either you’re very tidy or you’re new.'
+        : 'The bin is empty.';
       return;
     }
     empty.classList.add('hidden');
@@ -172,7 +180,7 @@ class BinModal extends JugglerElement {
     } catch (e) {
       console.error('[BinModal] restore failed:', e);
       await showAlert(
-        `Failed to restore: ${/** @type {any} */ (e)?.message || e}`,
+        `Couldn’t restore: ${/** @type {any} */ (e)?.message || e}`,
         'Restore failed'
       );
     }
@@ -196,7 +204,7 @@ class BinModal extends JugglerElement {
     } catch (e) {
       console.error('[BinModal] delete failed:', e);
       await showAlert(
-        `Failed to delete: ${/** @type {any} */ (e)?.message || e}`,
+        `Couldn’t delete: ${/** @type {any} */ (e)?.message || e}`,
         'Delete failed'
       );
     }
@@ -239,7 +247,7 @@ class BinModal extends JugglerElement {
     } catch (e) {
       console.error('[BinModal] empty bin failed:', e);
       await showAlert(
-        `Failed to empty the bin: ${/** @type {any} */ (e)?.message || e}`,
+        `Couldn’t empty the bin: ${/** @type {any} */ (e)?.message || e}`,
         'Empty Bin failed'
       );
     }

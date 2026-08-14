@@ -539,7 +539,7 @@ class StrategySelector extends HTMLElement {
     if (this._strategies.length === 0) {
       return `
                 <li class="strategy-item unavailable">
-                    <p class="strategy-item-description">No strategies available</p>
+                    <p class="strategy-item-description">No strategies.</p>
                 </li>
             `;
     }

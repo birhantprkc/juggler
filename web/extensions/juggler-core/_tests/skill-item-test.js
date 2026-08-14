@@ -258,7 +258,7 @@ export async function runTests(_ctx) {
     const item = makeItem([]);
     const container = document.createElement('div');
     await item._renderPanel(container);
-    assert(/No skills available/i.test(container.textContent || ''), 'empty catalog should show an empty-state note');
+    assert(/No skills yet/i.test(container.textContent || ''), 'empty catalog should show an empty-state note');
   });
 
   await test('seeding via handleToolCall with empty params succeeds (no base onToolCall throw)', async () => {

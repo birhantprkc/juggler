@@ -10,6 +10,24 @@
 import { formatDuration } from '../utils/format.js';
 
 /**
+ * Elapsed thresholds at which a waiting label is restated more plainly.
+ *
+ * A wait of a few seconds and a wait of ten minutes are different situations,
+ * and the second one is better described by saying nothing has arrived than by
+ * repeating that we are waiting. The elapsed digit alongside the label already
+ * carries the number; these only change the words.
+ * @type {{waitingQuiet: number, waitingLong: number, toolsLong: number}}
+ */
+const RESTATE_AFTER_MS = Object.freeze({
+  /** Awaiting the first token: nothing has come back yet. */
+  waitingQuiet: 3 * 60 * 1000,
+  /** Awaiting the first token, well past the point of being unusual. */
+  waitingLong: 8 * 60 * 1000,
+  /** Tool calls still executing long after a typical tool would have finished. */
+  toolsLong: 5 * 60 * 1000,
+});
+
+/**
  * @typedef {object} StreamingStatusData
  * @property {number} [inputTokens] - Tokens sent to LLM
  * @property {number} [outputTokens] - Tokens received from LLM
@@ -149,12 +167,20 @@ export class StatusMessageBuilder {
   }
 
   /**
-   * Builds status message for waiting for LLM response
+   * Builds status message for waiting for LLM response.
+   *
+   * The label restates itself as the wait grows (see {@link RESTATE_AFTER_MS}):
+   * past a few minutes with no first token, the useful fact is that nothing has
+   * arrived, not that we are still waiting for it.
    * @param {StreamingStatusData} [data] - Optional data with elapsed time
    * @returns {string} Formatted status message
    */
   static buildWaitingStatus(data = {}) {
-    return this._withElapsed('Waiting for response', data);
+    const elapsed = data.elapsedTime ?? 0;
+    let label = 'Waiting for response';
+    if (elapsed >= RESTATE_AFTER_MS.waitingLong) label = 'Still nothing back';
+    else if (elapsed >= RESTATE_AFTER_MS.waitingQuiet) label = 'Nothing back yet';
+    return this._withElapsed(label, data);
   }
 
   /**
@@ -168,12 +194,18 @@ export class StatusMessageBuilder {
   }
 
   /**
-   * Builds status message for processing tools
+   * Builds status message for processing tools.
+   *
+   * Past {@link RESTATE_AFTER_MS.toolsLong} the label drops the expectation
+   * that they are about to finish and just reports that they are still going.
    * @param {StreamingStatusData} [data] - Optional data with elapsed time
    * @returns {string} Formatted status message
    */
   static buildProcessingToolsStatus(data = {}) {
-    return this._withElapsed('Waiting for tools to finish', data);
+    const label = (data.elapsedTime ?? 0) >= RESTATE_AFTER_MS.toolsLong
+      ? 'Tools still running'
+      : 'Waiting for tools to finish';
+    return this._withElapsed(label, data);
   }
 
   /**

@@ -7,6 +7,9 @@ import { formatTokens as fmtTokens } from '../utils/format.js';
 /** Uncached delta above this earns the `cache-warn` treatment (tokens). */
 const UNCACHED_WARN_TOKENS = 5000;
 
+/** Fullness above which the pill carries a plain-language note (percent). */
+const NEARLY_FULL_PCT = 95;
+
 /**
  * Footer token-status pill. Numbers come from transaction blobs; input usage
  * may be provider-reported or an explicitly marked fallback estimate. There is
@@ -75,6 +78,7 @@ class TokenDisplay extends HTMLElement {
     if (!this._hasData) {
       this.innerHTML = '';
       this.classList.remove('token-medium', 'token-high', 'cache-warn');
+      this.removeAttribute('title');
       return;
     }
 
@@ -103,6 +107,14 @@ class TokenDisplay extends HTMLElement {
     const meterHTML = hasBudget
       ? `<div class="token-bar"><div class="token-fill-cached" style="width: ${cachedPct}%;"></div><div class="token-fill" style="width: ${usedPct}%;"></div></div><span class="token-text token-denominator">/ ${fmtTokens(this.budget)}</span>`
       : '';
+
+    // Rule 1 keeps the visible count neutral, so a nearly-full window says so
+    // in the tooltip rather than in the pill itself.
+    if (hasBudget && totalPct >= NEARLY_FULL_PCT) {
+      this.title = `${Math.round(totalPct)}% full. Something’s got to give.`;
+    } else {
+      this.removeAttribute('title');
+    }
 
     this.innerHTML = `<span class="token-text">${leftText}</span>${meterHTML}`;
   }

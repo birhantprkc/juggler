@@ -7985,6 +7985,15 @@ textarea[data-confirmation-pending="true"] {
     color: var(--text-primary);
 }
 
+/* Its own line below the message, so the retry timer and the wording never
+   overwrite one another. Height is reserved so blanking it shifts nothing. */
+.disconnection-overlay__countdown {
+    margin-top: 0.5rem;
+    min-height: 1.25em;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
 .disconnection-overlay__url {
     margin-top: 0.5rem;
     font-size: 0.875rem;

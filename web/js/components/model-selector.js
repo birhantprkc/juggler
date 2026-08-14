@@ -785,7 +785,7 @@ class ModelSelector extends HTMLElement {
       content += `
                 <li class="menu-divider"></li>
                 <li class="menu-item menu-item-hint">
-                    <span class="menu-hint-text">No providers configured yet.<br/>Click "Manage LLM providers..." above to add credentials.</span>
+                    <span class="menu-hint-text">No providers yet.<br/>Click "Manage LLM providers…" above to add credentials.</span>
                 </li>
             `;
     }
@@ -928,7 +928,7 @@ class ModelSelector extends HTMLElement {
    * {@link USAGE_STALE_MS} is blanked while refreshing (the numbers are often
    * wrong by then). When nothing is displayable the body is a short message —
    * "refreshing…" while fetching (the header spinner is the activity cue), else
-   * "no usage data available".
+   * "no usage data".
    * @private
    * @param {string} providerName
    * @returns {string} HTML for the `.model-usage` block, or ''.
@@ -956,7 +956,7 @@ class ModelSelector extends HTMLElement {
             </div>`;
     }
 
-    const message = this._usageLoading ? 'refreshing…' : 'no usage data available';
+    const message = this._usageLoading ? 'refreshing…' : 'no usage data';
     return `
             <div class="model-usage">
                 <div class="model-usage-header"><span>Usage</span>${spinner}</div>

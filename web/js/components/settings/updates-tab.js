@@ -196,7 +196,7 @@ export class UpdatesTab {
     } else if (latest) {
       parts.push(`This is the latest version (${latest}).`);
     } else {
-      parts.push('No update information available yet.');
+      parts.push('No update information yet.');
     }
     // App-bundle / server skew: an in-app updater whose bundle version differs
     // from the viewed server (a server started outside the app), mirroring

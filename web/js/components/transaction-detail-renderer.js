@@ -58,7 +58,7 @@ export function renderTransactionDetail(parent, blob) {
   if (!blob) {
     const empty = document.createElement('div');
     empty.className = 'properties-panel-text';
-    empty.textContent = 'No transaction data available.';
+    empty.textContent = 'No transaction data.';
     parent.appendChild(empty);
     return;
   }
@@ -190,7 +190,7 @@ function _buildOutputSection(blob) {
     };
     section.appendChild(_copyableJson(reconstructed, JSON.stringify(reconstructed, null, 2)));
   } else if (!error) {
-    const msg = blob.stopReason === 'cancelled' ? 'Cancelled before any output.' : 'No response data available.';
+    const msg = blob.stopReason === 'cancelled' ? 'Cancelled before any output.' : 'The model returned nothing.';
     section.appendChild(_textBlock(msg));
   }
 
