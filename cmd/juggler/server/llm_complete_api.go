@@ -34,24 +34,23 @@ const llmCompleteTimeout = 30 * time.Second
 // floor gives a reasoning cheap model room to think, so plugins never starve it
 // into an empty reply.
 func (s *Server) handleLLMComplete(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		System    string          `json:"system"`
 		Prompt    string          `json:"prompt"`
 		Model     json.RawMessage `json:"model"`
 		MaxTokens int64           `json:"maxTokens"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if strings.TrimSpace(req.Prompt) == "" {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": "prompt is required"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "prompt is required")
 		return
 	}
 
 	modelRef, errMsg := s.resolveLLMCompleteModel(r.Context(), req.Model)
 	if errMsg != "" {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": errMsg})
+		handlers.WriteError(w, r, http.StatusBadRequest, errMsg)
 		return
 	}
 
@@ -67,10 +66,10 @@ func (s *Server) handleLLMComplete(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, ErrQuickCompleteBusy) {
-			handlers.WriteJSON(w, r, http.StatusTooManyRequests, map[string]any{"error": "Too many concurrent completions, try again"})
+			handlers.WriteError(w, r, http.StatusTooManyRequests, "Too many concurrent completions, try again")
 			return
 		}
-		handlers.WriteJSON(w, r, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		handlers.WriteError(w, r, http.StatusBadGateway, err.Error())
 		return
 	}
 

@@ -5,7 +5,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -60,21 +59,20 @@ func (api *ProjectAPI) HandleGetProject(w http.ResponseWriter, r *http.Request) 
 // HandlePostProject opens (or switches to) a project folder.
 // POST /api/project  { "path": "/abs/or/relative/path" }
 func (api *ProjectAPI) HandlePostProject(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Path string `json:"path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if req.Path == "" {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": "path is required"})
+		WriteError(w, r, http.StatusBadRequest, "path is required")
 		return
 	}
 
 	abs, err := filepath.Abs(expandTilde(req.Path))
 	if err != nil {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		WriteError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -86,7 +84,7 @@ func (api *ProjectAPI) HandlePostProject(w http.ResponseWriter, r *http.Request)
 		case errors.Is(err, core.ErrProjectLocked):
 			status = http.StatusConflict
 		}
-		WriteJSON(w, r, status, map[string]any{"error": err.Error()})
+		WriteError(w, r, status, err.Error())
 		return
 	}
 
@@ -152,7 +150,7 @@ func (api *ProjectAPI) HandleCheckProject(w http.ResponseWriter, r *http.Request
 // DELETE /api/project
 func (api *ProjectAPI) HandleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := api.switchFn(""); err != nil {
-		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	WriteJSON(w, r, 0, map[string]any{"projectPath": ""})
@@ -178,11 +176,10 @@ func (api *ProjectAPI) HandleGetRecents(w http.ResponseWriter, r *http.Request) 
 // HandleDeleteRecent removes one path from the recents list.
 // DELETE /api/recents  { "path": "/abs/path" }
 func (api *ProjectAPI) HandleDeleteRecent(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Path string `json:"path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if api.recents != nil {

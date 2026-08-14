@@ -5,7 +5,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -101,10 +100,7 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 	// Load current config
 	cfg, err := core.LoadConfig(c.projectPath())
 	if err != nil {
-		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("Failed to load config: %v", err),
-		})
+		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to load config: %v", err))
 		return
 	}
 
@@ -145,12 +141,8 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 // HandleUpdateConfig updates the configuration
 func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Decode as generic map to handle dynamic provider keys
-	var req map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   "Invalid request body",
-		})
+	req, ok := DecodeJSON[map[string]any](w, r)
+	if !ok {
 		return
 	}
 
@@ -176,10 +168,7 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			if apiKey, ok := value.(string); ok {
 				// Empty string means delete, non-empty means save
 				if err := c.credStore.SetAPIKey(providerName, apiKey); err != nil {
-					WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-						"success": false,
-						"error":   fmt.Sprintf("Failed to save %s API key: %v", providerName, err),
-					})
+					WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save %s API key: %v", providerName, err))
 					return
 				}
 				if apiKey != "" {
@@ -314,20 +303,14 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if model, ok := modelValue.(string); ok && model != "" {
 			cfg, err := core.LoadConfig(c.projectPath())
 			if err != nil {
-				WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-					"success": false,
-					"error":   fmt.Sprintf("Failed to load config: %v", err),
-				})
+				WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to load config: %v", err))
 				return
 			}
 
 			cfg.Model = model
 
 			if err := cfg.Save(c.projectPath()); err != nil {
-				WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-					"success": false,
-					"error":   fmt.Sprintf("Failed to save config: %v", err),
-				})
+				WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save config: %v", err))
 				return
 			}
 		}
@@ -351,9 +334,7 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 func (c *ConfigAPI) HandleGetPluginConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := core.LoadConfig(c.projectPath())
 	if err != nil {
-		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-			"error": fmt.Sprintf("Failed to load config: %v", err),
-		})
+		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to load config: %v", err))
 		return
 	}
 
@@ -376,25 +357,17 @@ func (c *ConfigAPI) HandleGetPluginConfig(w http.ResponseWriter, r *http.Request
 
 // HandleUpdatePluginConfig updates the plugin disabled/enabled lists
 func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Disabled []string `json:"disabled"`
 		Enabled  []string `json:"enabled"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   "Invalid request body",
-		})
+	}](w, r)
+	if !ok {
 		return
 	}
 
 	cfg, err := core.LoadConfig(c.projectPath())
 	if err != nil {
-		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("Failed to load config: %v", err),
-		})
+		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to load config: %v", err))
 		return
 	}
 
@@ -414,10 +387,7 @@ func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := cfg.Save(c.projectPath()); err != nil {
-		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("Failed to save config: %v", err),
-		})
+		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save config: %v", err))
 		return
 	}
 
@@ -432,50 +402,33 @@ func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Requ
 // POST /api/config/provider-enabled
 // Body: { "provider": "claudecode", "enabled": true }
 func (c *ConfigAPI) HandleSetProviderEnabled(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Provider string `json:"provider"`
 		Enabled  bool   `json:"enabled"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   "Invalid request body",
-		})
+	}](w, r)
+	if !ok {
 		return
 	}
 
 	if req.Provider == "" {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   "Provider name is required",
-		})
+		WriteError(w, r, http.StatusBadRequest, "Provider name is required")
 		return
 	}
 
 	// Verify provider exists and is a toggle-style keyless provider.
 	info, found := provider.GetProviderInfo(req.Provider)
 	if found && info.EffectiveAuthType() != provider.AuthTypeToggle {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   "This provider cannot be enabled with a toggle",
-		})
+		WriteError(w, r, http.StatusBadRequest, "This provider cannot be enabled with a toggle")
 		return
 	}
 
 	if !found {
-		WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   "Unknown provider",
-		})
+		WriteError(w, r, http.StatusBadRequest, "Unknown provider")
 		return
 	}
 
 	if err := c.credStore.SetProviderEnabled(req.Provider, req.Enabled); err != nil {
-		WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("Failed to update provider: %v", err),
-		})
+		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to update provider: %v", err))
 		return
 	}
 

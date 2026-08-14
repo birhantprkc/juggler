@@ -5,7 +5,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -23,9 +22,7 @@ import (
 func (s *Server) handleGetSystemPromptPresets(w http.ResponseWriter, r *http.Request) {
 	presets, defaultID, err := s.systemPromptPresetStore.Load()
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-			"error": fmt.Sprintf("Failed to load system prompt presets: %v", err),
-		})
+		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to load system prompt presets: %v", err))
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{
@@ -39,17 +36,16 @@ func (s *Server) handleGetSystemPromptPresets(w http.ResponseWriter, r *http.Req
 //
 //	POST /api/system-prompt-presets {name, content} → {success, preset}
 func (s *Server) handleCreateSystemPromptPreset(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		Name    string `json:"name"`
 		Content string `json:"content"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	preset, err := s.systemPromptPresetStore.Create(req.Name, req.Content)
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
+		handlers.WriteError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true, "preset": preset})
@@ -61,7 +57,7 @@ func (s *Server) handleCreateSystemPromptPreset(w http.ResponseWriter, r *http.R
 func (s *Server) handleDeleteSystemPromptPreset(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	if err := s.systemPromptPresetStore.Delete(id); err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to delete preset: %v", err)})
+		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to delete preset: %v", err))
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
@@ -73,17 +69,16 @@ func (s *Server) handleDeleteSystemPromptPreset(w http.ResponseWriter, r *http.R
 //	PUT /api/system-prompt-presets/{id} {name, content} → {success, preset}
 func (s *Server) handleUpdateSystemPromptPreset(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		Name    string `json:"name"`
 		Content string `json:"content"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	preset, err := s.systemPromptPresetStore.Update(id, req.Name, req.Content)
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
+		handlers.WriteError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true, "preset": preset})
@@ -94,15 +89,14 @@ func (s *Server) handleUpdateSystemPromptPreset(w http.ResponseWriter, r *http.R
 //
 //	PUT /api/system-prompt-presets/default {id} → {success}
 func (s *Server) handleSetDefaultSystemPromptPreset(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if err := s.systemPromptPresetStore.SetDefault(req.ID); err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to set default preset: %v", err)})
+		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to set default preset: %v", err))
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})

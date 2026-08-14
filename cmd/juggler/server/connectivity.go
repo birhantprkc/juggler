@@ -5,7 +5,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -77,11 +76,10 @@ func (s *Server) handleGetConnectivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetLAN(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		Enabled bool `json:"enabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	s.SetPublicMode(req.Enabled)
@@ -89,12 +87,11 @@ func (s *Server) handleSetLAN(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetTunnel(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		Enabled bool   `json:"enabled"`
 		Mode    string `json:"mode"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if !req.Enabled {
@@ -108,17 +105,17 @@ func (s *Server) handleSetTunnel(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		modes := TunnelModes()
 		if len(modes) == 0 {
-			handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"ok": false, "error": "no WAN tunnel modes are available in this build"})
+			handlers.WriteError(w, r, http.StatusBadRequest, "no WAN tunnel modes are available in this build")
 			return
 		}
 		mode = modes[0].Mode
 	} else if _, ok := findTunnelMode(mode); !ok {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"ok": false, "error": fmt.Sprintf("unknown tunnel mode %q", req.Mode)})
+		handlers.WriteError(w, r, http.StatusBadRequest, fmt.Sprintf("unknown tunnel mode %q", req.Mode))
 		return
 	}
 	tunnelURL, err := s.StartTunnelMode(mode)
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		handlers.WriteError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	relay := false

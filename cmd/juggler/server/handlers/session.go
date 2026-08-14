@@ -161,13 +161,12 @@ func (api *SessionAPI) HandleGetWindowState(w http.ResponseWriter, r *http.Reque
 // window and once more at close. A no-project session no-ops (see
 // SessionManager.SetWindowState).
 func (api *SessionAPI) HandleSetWindowState(w http.ResponseWriter, r *http.Request) {
-	var ws core.WindowState
-	if err := json.NewDecoder(r.Body).Decode(&ws); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+	ws, ok := DecodeJSON[core.WindowState](w, r)
+	if !ok {
 		return
 	}
 	if err := api.manager().SetWindowState(ws); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
@@ -187,15 +186,14 @@ func (api *SessionAPI) HandleGetUIZoom(w http.ResponseWriter, r *http.Request) {
 // the project remembers it across relaunches. A no-project session no-ops (see
 // SessionManager.SetUIZoom).
 func (api *SessionAPI) HandleSetUIZoom(w http.ResponseWriter, r *http.Request) {
-	var body struct {
+	body, ok := DecodeJSON[struct {
 		UIZoom int `json:"uiZoom"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+	}](w, r)
+	if !ok {
 		return
 	}
 	if err := api.manager().SetUIZoom(body.UIZoom); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
@@ -217,15 +215,14 @@ func (api *SessionAPI) HandleGetUITheme(w http.ResponseWriter, r *http.Request) 
 // whichever theme another project left in the origin-shared localStorage. A
 // no-project session no-ops (see SessionManager.SetUITheme).
 func (api *SessionAPI) HandleSetUITheme(w http.ResponseWriter, r *http.Request) {
-	var body struct {
+	body, ok := DecodeJSON[struct {
 		UITheme string `json:"uiTheme"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+	}](w, r)
+	if !ok {
 		return
 	}
 	if err := api.manager().SetUITheme(body.UITheme); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
@@ -257,14 +254,13 @@ func (api *SessionAPI) HandleGetSession(w http.ResponseWriter, r *http.Request) 
 // HandleUpdateSession replaces conversations/metadata for the session
 // No validation - frontend manages all structure
 func (api *SessionAPI) HandleUpdateSession(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Conversations        []json.RawMessage `json:"conversations"`
 		ActiveConversationID string            `json:"activeConversationId"`
 		MessageHistory       []json.RawMessage `json:"messageHistory"`
 		Metadata             map[string]any    `json:"metadata"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+	}](w, r)
+	if !ok {
 		return
 	}
 
@@ -289,7 +285,7 @@ func (api *SessionAPI) HandleUpdateSession(w http.ResponseWriter, r *http.Reques
 		}
 		return nil
 	}); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -301,15 +297,14 @@ func (api *SessionAPI) HandleUpdateSession(w http.ResponseWriter, r *http.Reques
 // update project/session-scoped UI state without serializing conversation state
 // or clobbering unrelated metadata keys.
 func (api *SessionAPI) HandlePatchSessionMetadata(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Metadata map[string]any `json:"metadata"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+	}](w, r)
+	if !ok {
 		return
 	}
 	if req.Metadata == nil {
-		writeError(w, r, http.StatusBadRequest, "metadata is required")
+		WriteError(w, r, http.StatusBadRequest, "metadata is required")
 		return
 	}
 
@@ -319,7 +314,7 @@ func (api *SessionAPI) HandlePatchSessionMetadata(w http.ResponseWriter, r *http
 	// detector, killing the whole server under load.
 	changed, err := api.manager().PatchMetadata(req.Metadata)
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -336,7 +331,7 @@ func (api *SessionAPI) HandlePatchSessionMetadata(w http.ResponseWriter, r *http
 // name actually written to disk and is the single source of truth for the
 // conversation's display name.
 func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Name string `json:"name"`
 		ID   string `json:"id"`
 		// DuplicateFrom, when set, makes this create a clone: the server copies
@@ -363,9 +358,8 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 		// watching a different tab, or mid-message in the requesting one, keeps
 		// its place. Empty means unattributed — viewers follow unconditionally.
 		FocusFrom string `json:"focusFrom"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+	}](w, r)
+	if !ok {
 		return
 	}
 
@@ -377,7 +371,7 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 		} else if errors.Is(err, core.ErrConvIDExists) {
 			status = http.StatusConflict
 		}
-		writeError(w, r, status, err.Error())
+		WriteError(w, r, status, err.Error())
 		return
 	}
 
@@ -395,7 +389,7 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 	if req.DuplicateFrom != "" {
 		if err := api.duplicateConversationFiles(req.DuplicateFrom, id); err != nil {
 			jlog.Error("[session.Duplicate] conv=%s → %s failed: %v", req.DuplicateFrom, id, err)
-			writeError(w, r, http.StatusInternalServerError, "Failed to duplicate conversation: "+err.Error())
+			WriteError(w, r, http.StatusInternalServerError, "Failed to duplicate conversation: "+err.Error())
 			return
 		}
 		jlog.Info("[session.Duplicate] conv=%s → %s (server-side file copy)", req.DuplicateFrom, id)
@@ -415,7 +409,7 @@ func (api *SessionAPI) HandleCreateConversation(w http.ResponseWriter, r *http.R
 		}
 		if err := api.workerManager.SeedNewConversation(id, finalName, projectPath, created, model); err != nil {
 			jlog.Error("[session.Create] seed conv=%s failed: %v", id, err)
-			writeError(w, r, http.StatusInternalServerError, "Failed to initialize conversation: "+err.Error())
+			WriteError(w, r, http.StatusInternalServerError, "Failed to initialize conversation: "+err.Error())
 			return
 		}
 	}
@@ -543,7 +537,7 @@ func copyDirContents(srcDir, dstDir string) error {
 func ConvIDFromVars(w http.ResponseWriter, r *http.Request) (string, bool) {
 	convID := mux.Vars(r)["convId"]
 	if convID == "" {
-		writeError(w, r, http.StatusBadRequest, "Conversation ID is required")
+		WriteError(w, r, http.StatusBadRequest, "Conversation ID is required")
 		return "", false
 	}
 	return convID, true
@@ -558,13 +552,13 @@ func (api *SessionAPI) HandleGetConversation(w http.ResponseWriter, r *http.Requ
 
 	yjsData, err := api.manager().LoadConversationBinary(convID)
 	if err != nil {
-		writeError(w, r, http.StatusNotFound, err.Error())
+		WriteError(w, r, http.StatusNotFound, err.Error())
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	if _, err := w.Write(yjsData); err != nil {
-		writeError(w, r, http.StatusInternalServerError, "Failed to write response")
+		WriteError(w, r, http.StatusInternalServerError, "Failed to write response")
 	}
 }
 
@@ -583,12 +577,12 @@ func (api *SessionAPI) HandleGetAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	sha := mux.Vars(r)["sha"]
 	if !assetSHARe.MatchString(sha) {
-		writeError(w, r, http.StatusBadRequest, "Invalid asset id")
+		WriteError(w, r, http.StatusBadRequest, "Invalid asset id")
 		return
 	}
 	convDir, ok := api.manager().ConvDir(convID)
 	if !ok {
-		writeError(w, r, http.StatusNotFound, "Conversation not found")
+		WriteError(w, r, http.StatusNotFound, "Conversation not found")
 		return
 	}
 
@@ -604,13 +598,13 @@ func (api *SessionAPI) HandleGetAsset(w http.ResponseWriter, r *http.Request) {
 		break
 	}
 	if assetPath == "" {
-		writeError(w, r, http.StatusNotFound, "Asset not found")
+		WriteError(w, r, http.StatusNotFound, "Asset not found")
 		return
 	}
 
 	f, err := os.Open(assetPath)
 	if err != nil {
-		writeError(w, r, http.StatusNotFound, "Asset not found")
+		WriteError(w, r, http.StatusNotFound, "Asset not found")
 		return
 	}
 	defer f.Close()
@@ -650,7 +644,7 @@ func (api *SessionAPI) HandleUpdateConversation(w http.ResponseWriter, r *http.R
 	if contentType == "application/octet-stream" {
 		yjsData, err := io.ReadAll(r.Body)
 		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "Failed to read request body")
+			WriteError(w, r, http.StatusBadRequest, "Failed to read request body")
 			return
 		}
 
@@ -664,14 +658,14 @@ func (api *SessionAPI) HandleUpdateConversation(w http.ResponseWriter, r *http.R
 		// it is the loaded project).
 		saved, err := api.manager().SaveConversationBinaryIfOwned(convID, yjsData)
 		if err != nil {
-			writeError(w, r, http.StatusInternalServerError, err.Error())
+			WriteError(w, r, http.StatusInternalServerError, err.Error())
 			return
 		}
 		if !saved {
 			jlog.Debug("[session.Update] skipped unowned conv=%s (not in loaded project)", convID)
 		}
 	} else {
-		writeError(w, r, http.StatusBadRequest, "Only binary format (application/octet-stream) is supported")
+		WriteError(w, r, http.StatusBadRequest, "Only binary format (application/octet-stream) is supported")
 		return
 	}
 
@@ -703,7 +697,7 @@ func (api *SessionAPI) HandleDeleteConversation(w http.ResponseWriter, r *http.R
 	if api.checkConvDelete != nil {
 		if err := api.checkConvDelete(convID, lane); err != nil {
 			jlog.Error("[session.Delete] REJECTED: %v", err)
-			writeError(w, r, http.StatusForbidden, err.Error())
+			WriteError(w, r, http.StatusForbidden, err.Error())
 			return
 		}
 	}
@@ -723,7 +717,7 @@ func (api *SessionAPI) HandleDeleteConversation(w http.ResponseWriter, r *http.R
 	}
 
 	if err := api.manager().DeleteConversation(convID, permanent); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -761,7 +755,7 @@ func (api *SessionAPI) HandleBinConversation(w http.ResponseWriter, r *http.Requ
 	if api.checkConvDelete != nil {
 		if err := api.checkConvDelete(convID, lane); err != nil {
 			jlog.Error("[session.Bin] REJECTED: %v", err)
-			writeError(w, r, http.StatusForbidden, err.Error())
+			WriteError(w, r, http.StatusForbidden, err.Error())
 			return
 		}
 	}
@@ -775,10 +769,10 @@ func (api *SessionAPI) HandleBinConversation(w http.ResponseWriter, r *http.Requ
 
 	if err := api.manager().BinConversation(convID); err != nil {
 		if errors.Is(err, core.ErrConversationNotFound) {
-			writeError(w, r, http.StatusNotFound, "Conversation not found")
+			WriteError(w, r, http.StatusNotFound, "Conversation not found")
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -799,10 +793,10 @@ func (api *SessionAPI) HandleRestoreConversation(w http.ResponseWriter, r *http.
 
 	if err := api.manager().RestoreConversation(convID); err != nil {
 		if errors.Is(err, core.ErrConversationNotFound) {
-			writeError(w, r, http.StatusNotFound, "Conversation not found")
+			WriteError(w, r, http.StatusNotFound, "Conversation not found")
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -836,7 +830,7 @@ func (api *SessionAPI) HandleDeleteBinnedConversation(w http.ResponseWriter, r *
 	}
 
 	if err := api.manager().DeleteBinnedConversation(convID); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -851,7 +845,7 @@ func (api *SessionAPI) HandleDeleteBinnedConversation(w http.ResponseWriter, r *
 func (api *SessionAPI) HandleEmptyBin(w http.ResponseWriter, r *http.Request) {
 	removed, err := api.manager().EmptyBin()
 	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -872,11 +866,10 @@ func (api *SessionAPI) HandleRenameConversation(w http.ResponseWriter, r *http.R
 	if !ok {
 		return
 	}
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+	}](w, r)
+	if !ok {
 		return
 	}
 
@@ -884,13 +877,13 @@ func (api *SessionAPI) HandleRenameConversation(w http.ResponseWriter, r *http.R
 	if err != nil {
 		switch {
 		case errors.Is(err, core.ErrInvalidName):
-			writeError(w, r, http.StatusBadRequest, "Name is invalid")
+			WriteError(w, r, http.StatusBadRequest, "Name is invalid")
 		case errors.Is(err, core.ErrNameCollision):
-			writeError(w, r, http.StatusConflict, "Name already in use")
+			WriteError(w, r, http.StatusConflict, "Name already in use")
 		case errors.Is(err, core.ErrConversationNotFound):
-			writeError(w, r, http.StatusNotFound, "Conversation not found")
+			WriteError(w, r, http.StatusNotFound, "Conversation not found")
 		default:
-			writeError(w, r, http.StatusInternalServerError, err.Error())
+			WriteError(w, r, http.StatusInternalServerError, err.Error())
 		}
 		return
 	}
@@ -910,16 +903,15 @@ func (api *SessionAPI) HandleRenameConversation(w http.ResponseWriter, r *http.R
 
 // HandleReorderConversations updates the conversation order
 func (api *SessionAPI) HandleReorderConversations(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := DecodeJSON[struct {
 		Order []string `json:"order"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+	}](w, r)
+	if !ok {
 		return
 	}
 
 	if err := api.manager().ReorderConversations(req.Order); err != nil {
-		writeError(w, r, http.StatusInternalServerError, err.Error())
+		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 

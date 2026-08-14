@@ -67,13 +67,13 @@ func (s *Server) handleListLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogContent(w http.ResponseWriter, r *http.Request) {
 	abs, ok := resolveLogPath(r.URL.Query().Get("path"))
 	if !ok {
-		handlers.WriteJSON(w, r, http.StatusForbidden, map[string]string{"error": "path is not a Juggler log file"})
+		handlers.WriteError(w, r, http.StatusForbidden, "path is not a Juggler log file")
 		return
 	}
 	offset, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
 	win, err := readLogWindow(abs, offset, maxInitialLogBytes)
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusNotFound, map[string]string{"error": "log file is unavailable"})
+		handlers.WriteError(w, r, http.StatusNotFound, "log file is unavailable")
 		return
 	}
 	handlers.WriteJSON(w, r, 0, win)

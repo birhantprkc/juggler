@@ -13,7 +13,7 @@ import { formatTimeAgo } from '../../utils/format.js';
 import { createCopyButton } from '../../../sdk/lib/copy-button.js';
 import wsService from '../../services/websocket.js';
 import { ProxySettings } from './proxy-settings.js';
-import { fetchJson } from '../../services/http.js';
+import { fetchJson, httpErrorText } from '../../services/http.js';
 
 /** Polling interval (ms) for refreshing the Connectivity tab while it's open. */
 const CONNECTIVITY_POLL_MS = 2000;
@@ -730,7 +730,7 @@ export class ConnectivityTab {
       });
       if (!data?.ok) this._wanError = data?.error || 'Failed to start tunnel';
     } catch (e) {
-      this._wanError = 'Failed to start tunnel';
+      this._wanError = httpErrorText(e, 'Failed to start tunnel');
     }
     await this.refreshConnectivity(true);
   }
@@ -748,7 +748,7 @@ export class ConnectivityTab {
       });
       if (!data?.ok) this._wanError = data?.error || 'Failed to stop tunnel';
     } catch (e) {
-      this._wanError = 'Failed to stop tunnel';
+      this._wanError = httpErrorText(e, 'Failed to stop tunnel');
     }
     await this.refreshConnectivity(true);
   }

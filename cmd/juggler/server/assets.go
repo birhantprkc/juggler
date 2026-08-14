@@ -32,7 +32,7 @@ func (s *Server) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
 		contentType = strings.TrimSpace(mediaType)
 	}
 	if !strings.HasPrefix(contentType, "image/") {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Only image/* uploads are accepted"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "Only image/* uploads are accepted")
 		return
 	}
 
@@ -44,17 +44,17 @@ func (s *Server) handleUploadAsset(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAssetUploadBytes)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Upload too large or read failed"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "Upload too large or read failed")
 		return
 	}
 	if len(data) == 0 {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Empty upload"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "Empty upload")
 		return
 	}
 
 	ref, err := assetStore.Save(convID, data, contentType)
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		handlers.WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	handlers.WriteJSON(w, r, http.StatusOK, ref)

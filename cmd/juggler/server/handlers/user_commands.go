@@ -5,7 +5,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -122,7 +121,7 @@ func (api *UserCommandsAPI) resolveTarget(w http.ResponseWriter, r *http.Request
 	name = mux.Vars(r)["name"]
 	dir = api.scopeDir(scope)
 	if dir == "" {
-		writeError(w, r, http.StatusBadRequest, fmt.Sprintf("unknown or unavailable scope %q", scope))
+		WriteError(w, r, http.StatusBadRequest, fmt.Sprintf("unknown or unavailable scope %q", scope))
 		return "", "", "", false
 	}
 	return scope, name, dir, true
@@ -154,9 +153,8 @@ func (api *UserCommandsAPI) HandlePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req UserCommandWriteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid JSON body")
+	req, ok := DecodeJSON[UserCommandWriteRequest](w, r)
+	if !ok {
 		return
 	}
 
@@ -166,12 +164,12 @@ func (api *UserCommandsAPI) HandlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		writeError(w, r, http.StatusInternalServerError, fmt.Sprintf("could not create commands dir: %v", err))
+		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("could not create commands dir: %v", err))
 		return
 	}
 	path := filepath.Join(dir, name+".md")
 	if err := os.WriteFile(path, []byte(serializeCommand(req)), 0o644); err != nil {
-		writeError(w, r, http.StatusInternalServerError, fmt.Sprintf("could not write command: %v", err))
+		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("could not write command: %v", err))
 		return
 	}
 	WriteJSON(w, r, 0, UserCommand{
@@ -191,12 +189,12 @@ func (api *UserCommandsAPI) HandleDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !userCommandNamePattern.MatchString(name) {
-		writeError(w, r, http.StatusBadRequest, "invalid command name")
+		WriteError(w, r, http.StatusBadRequest, "invalid command name")
 		return
 	}
 	path := filepath.Join(dir, name+".md")
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		writeError(w, r, http.StatusInternalServerError, fmt.Sprintf("could not delete command: %v", err))
+		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("could not delete command: %v", err))
 		return
 	}
 	WriteJSON(w, r, 0, map[string]bool{"deleted": true})

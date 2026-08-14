@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"juggler/cmd/juggler/server/handlers"
 	"juggler/internal/jlog"
 
 	"github.com/pion/webrtc/v4"
@@ -71,21 +72,20 @@ type webRTCChunkAssembly struct {
 // shared with the juggler.studio rendezvous client.
 func (s *Server) handleWebRTCSignal(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		handlers.WriteError(w, r, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	var req webrtcSignalRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid WebRTC offer", http.StatusBadRequest)
+	req, ok := handlers.DecodeJSON[webrtcSignalRequest](w, r)
+	if !ok {
 		return
 	}
 	if req.Role == "engine" {
-		http.Error(w, "WebRTC engine role is not supported", http.StatusForbidden)
+		handlers.WriteError(w, r, http.StatusForbidden, "WebRTC engine role is not supported")
 		return
 	}
 	if req.Offer.Type != webrtc.SDPTypeOffer || req.Offer.SDP == "" {
-		http.Error(w, "missing WebRTC offer", http.StatusBadRequest)
+		handlers.WriteError(w, r, http.StatusBadRequest, "missing WebRTC offer")
 		return
 	}
 
@@ -96,7 +96,7 @@ func (s *Server) handleWebRTCSignal(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &bad) {
 			status = http.StatusBadRequest
 		}
-		http.Error(w, err.Error(), status)
+		handlers.WriteError(w, r, status, err.Error())
 		return
 	}
 

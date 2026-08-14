@@ -6,7 +6,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -504,20 +503,19 @@ func (s *Server) handleCheapModel(w http.ResponseWriter, r *http.Request) {
 // optional. An empty provider/model clears the stored value, reverting to Auto.
 func (s *Server) handleSetCheapModel(w http.ResponseWriter, r *http.Request) {
 	if s.cheapModelStore == nil {
-		handlers.WriteJSON(w, r, http.StatusServiceUnavailable, map[string]any{"success": false, "error": "Cheap model is not available"})
+		handlers.WriteError(w, r, http.StatusServiceUnavailable, "Cheap model is not available")
 		return
 	}
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
 		Thinking string `json:"thinking"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if err := s.cheapModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to save cheap model: %v", err)})
+		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save cheap model: %v", err))
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
@@ -549,17 +547,16 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 // optional; absent/empty means the model's default level. An empty
 // provider/model clears the stored value, reverting to automatic selection.
 func (s *Server) handleSetDefaultModel(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
 		Thinking string `json:"thinking"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if err := s.defaultModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to save default model: %v", err)})
+		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save default model: %v", err))
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
@@ -593,7 +590,7 @@ func (s *Server) handleRecentModelsGet(w http.ResponseWriter, r *http.Request) {
 
 	models, err := s.recentModelsStore.Load()
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("Failed to load recent models: %v", err)})
+		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to load recent models: %v", err))
 		return
 	}
 	if models == nil {
@@ -604,21 +601,20 @@ func (s *Server) handleRecentModelsGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRecentModelsPost(w http.ResponseWriter, r *http.Request) {
 	if s.recentModelsStore == nil {
-		handlers.WriteJSON(w, r, http.StatusServiceUnavailable, map[string]any{"success": false, "error": "Recent models are not available"})
+		handlers.WriteError(w, r, http.StatusServiceUnavailable, "Recent models are not available")
 		return
 	}
 
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
 		Thinking string `json:"thinking"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{"success": false, "error": "Invalid request body"})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if err := s.recentModelsStore.Add(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{"success": false, "error": fmt.Sprintf("Failed to record recent model: %v", err)})
+		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to record recent model: %v", err))
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})

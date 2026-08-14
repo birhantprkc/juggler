@@ -112,7 +112,7 @@ func validProxyURL(raw string) bool {
 // without waiting for the next scheduled poll.
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if s.settings == nil {
-		handlers.WriteJSON(w, r, http.StatusServiceUnavailable, map[string]string{"error": "settings unavailable"})
+		handlers.WriteError(w, r, http.StatusServiceUnavailable, "settings unavailable")
 		return
 	}
 	// Seed the decode target from the current document so a partial PUT (e.g. the
@@ -121,26 +121,26 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// zeroing the sections it omits. Absent JSON keys keep their current values.
 	incoming := s.settings.get()
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&incoming); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	// A non-empty mode must be one we recognise; empty normalises to automatic.
 	if incoming.Updates.Mode != "" && !core.IsKnownUpdateMode(incoming.Updates.Mode) {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid update mode"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "invalid update mode")
 		return
 	}
 	// A non-empty wanOnLaunch must name a registered tunnel mode; "" means none.
 	if incoming.Connectivity.WANOnLaunch != "" && !isRegisteredTunnelMode(incoming.Connectivity.WANOnLaunch) {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid WAN launch mode"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "invalid WAN launch mode")
 		return
 	}
 	// A non-empty proxy mode must be recognised; manual mode needs a usable URL.
 	if incoming.Network.Proxy.Mode != "" && !core.IsKnownProxyMode(incoming.Network.Proxy.Mode) {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid proxy mode"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "invalid proxy mode")
 		return
 	}
 	if incoming.Network.Proxy.Mode == core.ProxyModeManual && !validProxyURL(incoming.Network.Proxy.URL) {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid proxy URL"})
+		handlers.WriteError(w, r, http.StatusBadRequest, "invalid proxy URL")
 		return
 	}
 	prevMode := s.updateMode()
@@ -148,7 +148,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	incoming.Network.Proxy.Mode = core.NormalizeProxyMode(incoming.Network.Proxy.Mode)
 	if err := s.settings.set(incoming); err != nil {
 		jlog.Error("settings: save failed: %v", err)
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
+		handlers.WriteError(w, r, http.StatusInternalServerError, "failed to save settings")
 		return
 	}
 	// Apply the proxy policy live so a change takes effect without a restart; the

@@ -5,9 +5,9 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 
+	"juggler/cmd/juggler/server/handlers"
 	"juggler/internal/jlog"
 )
 
@@ -27,14 +27,13 @@ import (
 // "ready" at Info, anything else at Debug. Callers send only untoward events, so
 // the app log stays quiet unless something actually went wrong.
 func (s *Server) handleClientReport(w http.ResponseWriter, r *http.Request) {
-	var body struct {
+	body, ok := handlers.DecodeJSON[struct {
 		Source  string `json:"source"`
 		Event   string `json:"event"`
 		Message string `json:"message"`
 		Stack   string `json:"stack"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
+	}](w, r)
+	if !ok {
 		return
 	}
 

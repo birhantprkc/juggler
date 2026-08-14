@@ -213,22 +213,22 @@ func (api *SkillsAPI) HandleGet(w http.ResponseWriter, r *http.Request) {
 	scope, source, name := vars["scope"], vars["source"], vars["name"]
 
 	if !validSkillName(name) {
-		writeError(w, r, http.StatusBadRequest, "invalid skill name")
+		WriteError(w, r, http.StatusBadRequest, "invalid skill name")
 		return
 	}
 	rootDir, ok := api.resolveRootDir(scope, source)
 	if !ok {
-		writeError(w, r, http.StatusBadRequest, fmt.Sprintf("unknown or unavailable source %q/%q", scope, source))
+		WriteError(w, r, http.StatusBadRequest, fmt.Sprintf("unknown or unavailable source %q/%q", scope, source))
 		return
 	}
 	dir := filepath.Join(rootDir, name)
 	if !pathWithin(rootDir, dir) {
-		writeError(w, r, http.StatusBadRequest, "invalid skill path")
+		WriteError(w, r, http.StatusBadRequest, "invalid skill path")
 		return
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
 	if err != nil {
-		writeError(w, r, http.StatusNotFound, fmt.Sprintf("skill %q not found in %s/%s", name, scope, source))
+		WriteError(w, r, http.StatusNotFound, fmt.Sprintf("skill %q not found in %s/%s", name, scope, source))
 		return
 	}
 	_, body, _ := parseSkillFile(data) // body is served even when frontmatter is malformed

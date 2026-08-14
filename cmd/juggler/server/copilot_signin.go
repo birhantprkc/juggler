@@ -29,10 +29,7 @@ func (s *Server) handleCopilotDeviceStart(w http.ResponseWriter, r *http.Request
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	code, err := core.StartCopilotDeviceLogin(r.Context(), req.Host)
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadGateway, map[string]any{
-			"success": false,
-			"error":   err.Error(),
-		})
+		handlers.WriteError(w, r, http.StatusBadGateway, err.Error())
 		return
 	}
 	handlers.WriteJSON(w, r, 0, map[string]any{
@@ -49,23 +46,16 @@ func (s *Server) handleCopilotDeviceStart(w http.ResponseWriter, r *http.Request
 // handleCopilotDevicePoll performs one poll for the pending device code. On
 // authorization it refreshes the provider list before responding.
 func (s *Server) handleCopilotDevicePoll(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		DeviceCode string `json:"deviceCode"`
 		Host       string `json:"host"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   "Invalid request body",
-		})
+	}](w, r)
+	if !ok {
 		return
 	}
 	status, err := core.PollCopilotDeviceLogin(r.Context(), req.Host, req.DeviceCode)
 	if err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadGateway, map[string]any{
-			"success": false,
-			"error":   err.Error(),
-		})
+		handlers.WriteError(w, r, http.StatusBadGateway, err.Error())
 		return
 	}
 	if status == core.CopilotLoginAuthorized {
@@ -81,10 +71,7 @@ func (s *Server) handleCopilotDevicePoll(w http.ResponseWriter, r *http.Request)
 // provider list. It does not disturb an editor-managed login on disk.
 func (s *Server) handleCopilotSignOut(w http.ResponseWriter, r *http.Request) {
 	if err := core.SignOutCopilot(); err != nil {
-		handlers.WriteJSON(w, r, http.StatusInternalServerError, map[string]any{
-			"success": false,
-			"error":   err.Error(),
-		})
+		handlers.WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.RefreshProviders()
@@ -104,21 +91,14 @@ func (s *Server) handleCopilotGetHost(w http.ResponseWriter, r *http.Request) {
 // github.com to reset to the public default) and refreshes the provider list so
 // the Copilot row re-evaluates against the new host.
 func (s *Server) handleCopilotSetHost(w http.ResponseWriter, r *http.Request) {
-	var req struct {
+	req, ok := handlers.DecodeJSON[struct {
 		Host string `json:"host"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   "Invalid request body",
-		})
+	}](w, r)
+	if !ok {
 		return
 	}
 	if err := core.SetCopilotHost(req.Host); err != nil {
-		handlers.WriteJSON(w, r, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   err.Error(),
-		})
+		handlers.WriteError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	s.RefreshProviders()
