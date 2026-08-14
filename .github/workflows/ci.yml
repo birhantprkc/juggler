@@ -10,13 +10,16 @@ name: CI
 #   * No packaging, no releases, no artifact publishing. Official binaries are
 #     built and published by the maintainer's private release pipeline.
 on:
-  # PRs get green/red feedback on hosted (ephemeral) runners; pushes to main
-  # re-verify the merged tree. There is deliberately nothing else — no tags,
-  # no releases.
+  # PRs get green/red feedback automatically, on hosted (ephemeral) runners.
+  # Everything else is on demand: a maintainer starts a run against any branch
+  # from the Actions tab (or `gh workflow run ci.yml --ref <branch>`) when they
+  # want the full matrix on a tree that is not in a PR — typically the
+  # development branch before it is published. There is deliberately no branch
+  # push trigger: branch updates here fast-forward an already-verified tree, so
+  # a push-triggered run would only ever re-test what a PR or a manual run has
+  # just tested. And deliberately nothing else — no tags, no releases.
   pull_request:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 # Supersede an in-flight run when a newer commit lands on the same ref/PR, so
 # a rapid push sequence doesn't pile up parallel matrix runs.
