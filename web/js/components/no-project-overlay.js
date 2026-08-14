@@ -54,21 +54,21 @@ class NoProjectOverlay extends HTMLElement {
   _refresh() {
     const empty = !this._session || !this._session.projectPath;
 
-    const tabsContainer = /** @type {HTMLElement|null} */ (document.querySelector('conversation-tabs-container'));
-    const convBar = /** @type {HTMLElement|null} */ (document.querySelector('conversation-bar'));
+    // The sidebar and the tab column are hidden by one class on <body>, whose
+    // rule lives beside this element's own CSS. Writing inline display on each
+    // sibling instead would mean this element deciding, from the outside, what
+    // "visible" means for two components that style themselves — and the reset
+    // to `''` would silently clear any display those components ever set.
+    document.body.classList.toggle('no-project', empty);
 
     if (!empty) {
       this.hidden = true;
       this._rendered = false;
       this.innerHTML = '';
-      if (tabsContainer) tabsContainer.style.display = '';
-      if (convBar) convBar.style.display = '';
       return;
     }
 
     this.hidden = false;
-    if (tabsContainer) tabsContainer.style.display = 'none';
-    if (convBar) convBar.style.display = 'none';
 
     if (!this._rendered) {
       this._rendered = true;

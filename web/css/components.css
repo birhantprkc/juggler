@@ -1369,6 +1369,16 @@ no-project-overlay[hidden] {
     display: none;
 }
 
+/* With no project loaded there are no conversations, so the sidebar and the
+   tab column have nothing to show and the overlay gets the whole main area.
+   <no-project-overlay> toggles `no-project` on <body>; the layout consequence
+   is stated here once rather than as inline styles written onto two siblings
+   from the outside. */
+body.no-project conversation-bar,
+body.no-project conversation-tabs-container {
+    display: none;
+}
+
 no-project-overlay .no-project-onboarding {
     max-width: 34rem;
     text-align: center;

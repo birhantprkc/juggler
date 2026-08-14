@@ -5,6 +5,7 @@
 import { presentPopup } from '../utils/popup-surface.js';
 import wsService from '../services/websocket.js';
 import providersCache from '../services/providers-cache.js';
+import connectionStatus from '../services/connection-status.js';
 import usageStatsCache from '../services/usage-stats-cache.js';
 import recentModels from '../services/recent-models.js';
 import { getRecommendedModels, sortModelsByVersion } from '../utils/model-filter.js';
@@ -73,8 +74,10 @@ class ModelSelector extends HTMLElement {
     this.providers = [];
     /** @type {boolean} @private */
     this.dropdownOpen = false;
-    /** @type {string|null} @private */
+    /** @type {import('../services/connection-status.js').ConnectionStatus} @private */
     this.connectionStatus = null; // 'error', 'disconnected', 'connecting', or null for connected
+    /** @type {(() => void)|null} @private - connectionStatus subscription. */
+    this._connectionStatusOff = null;
     /** @type {boolean} @private */
     this.loadingProviders = false;
     /** @type {import('../model/conversation.js').default|null} @private */
@@ -150,6 +153,15 @@ class ModelSelector extends HTMLElement {
   }
 
   connectedCallback() {
+    // Seed before the first render, then follow: an instance created during an
+    // outage (a tab opened while the socket is down) must show the fault too,
+    // and every instance shows it — not just whichever one a document query
+    // happened to reach first.
+    this.connectionStatus = connectionStatus.get();
+    this._connectionStatusOff = connectionStatus.subscribe(
+      (status) => this.setConnectionStatus(status)
+    );
+
     this.render();
     this.fetchProviders();
 
@@ -189,6 +201,10 @@ class ModelSelector extends HTMLElement {
     // Clean up WebSocket listener
     if (this._providersUpdateHandler) {
       wsService.off('providers-update', this._providersUpdateHandler);
+    }
+    if (this._connectionStatusOff) {
+      this._connectionStatusOff();
+      this._connectionStatusOff = null;
     }
     // Clean up this instance's dropdown if it was moved to document.body.
     if (this._liveDropdown) {
@@ -283,13 +299,6 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
-   * Refresh provider list from server (public API)
-   */
-  async refresh() {
-    await providersCache.refresh();
-  }
-
-  /**
    * Re-sync the dropdown from the cache. The WS push subscriber already
    * keeps `this.providers` fresh; this just covers the case where the
    * cache was populated after fetchProviders() ran but before the menu
@@ -332,8 +341,9 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
-   * Set connection status to display
-   * @param {string|null} status - 'error', 'disconnected', 'connecting', or null for connected
+   * Set connection status to display. Driven by the connectionStatus
+   * subscription; exposed for tests that want to force a state.
+   * @param {import('../services/connection-status.js').ConnectionStatus} status - 'error', 'disconnected', 'connecting', or null for connected
    */
   setConnectionStatus(status) {
     if (this.connectionStatus === status) {
@@ -355,7 +365,7 @@ class ModelSelector extends HTMLElement {
     // Ask the server to re-check external provider state. This catches
     // cases like `codex login` completing while Juggler is already open;
     // the fresh list arrives asynchronously via providers-update.
-    this.refresh().catch(err => console.warn('[ModelSelector] Failed to refresh providers:', err));
+    providersCache.refresh().catch(err => console.warn('[ModelSelector] Failed to refresh providers:', err));
 
     // Silently sync providers from cache in background (self-healing if initial fetch failed)
     this._refreshProvidersInBackground();
@@ -1098,7 +1108,7 @@ class ModelSelector extends HTMLElement {
       }, 4000);
     }));
     try {
-      await this.refresh();
+      await providersCache.refresh();
     } catch (err) {
       console.warn('[ModelSelector] Provider re-check refresh failed:', err);
     }

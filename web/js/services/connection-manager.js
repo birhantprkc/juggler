@@ -86,9 +86,6 @@ class ConnectionManager {
 
     // Handle connection events
     const openCallback = /** @type {any} */ (async () => {
-      // Update connection status in titlebar
-      this._updateConnectionStatus(null); // null = connected
-
       // Hide disconnection overlay (page will reload on reconnect, but good for consistency)
       if (this._disconnectionOverlay) this._disconnectionOverlay.hide();
 
@@ -109,7 +106,6 @@ class ConnectionManager {
     wsService.on('open', openCallback);
 
     const closeCallback = /** @type {any} */ (() => {
-      this._updateConnectionStatus('disconnected');
       if (this._disconnectionOverlay) this._disconnectionOverlay.show();
     });
     this._wsCallbacks.set('close', closeCallback);
@@ -124,7 +120,6 @@ class ConnectionManager {
 
     const errorCallback = /** @type {any} */ ((/** @type {Error} */ error) => {
       console.error('[ConnectionManager] WebSocket error:', error);
-      this._updateConnectionStatus('error');
     });
     this._wsCallbacks.set('error', errorCallback);
     wsService.on('error', errorCallback);
@@ -318,20 +313,6 @@ class ConnectionManager {
           break;
       }
     });
-  }
-
-  /**
-   * Update connection status in titlebar
-   * @param {string|null} status - Connection status ('disconnected', 'error', or null for connected)
-   * @private
-   */
-  _updateConnectionStatus(status) {
-    // Pure UI affordance — the engine worker has no document/model-selector.
-    if (typeof document === 'undefined') return;
-    const modelSelector = /** @type {any} */ (document.querySelector('model-selector'));
-    if (modelSelector && typeof modelSelector.setConnectionStatus === 'function') {
-      modelSelector.setConnectionStatus(status);
-    }
   }
 
   /**

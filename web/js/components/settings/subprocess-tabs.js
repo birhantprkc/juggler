@@ -314,9 +314,11 @@ export function acpDotClass(status) {
 }
 
 /**
- * Best-effort: enable the "acp" provider and refresh the model selector, so a
- * newly-added agent shows up in the picker immediately. Failure is non-fatal —
- * the provider can still be toggled on manually in the Provider API Keys tab.
+ * Best-effort: enable the "acp" provider so a newly-added agent shows up in the
+ * picker immediately — the handler queues a provider recompute, whose
+ * `providers-update` broadcast reaches every model selector. Failure is
+ * non-fatal: the provider can still be toggled on manually in the Provider API
+ * Keys tab.
  * @returns {Promise<void>}
  */
 async function ensureAcpProviderEnabled() {
@@ -325,10 +327,6 @@ async function ensureAcpProviderEnabled() {
       method: 'POST',
       body: { provider: 'acp', enabled: true },
     });
-    const modelSelector = document.querySelector('model-selector');
-    if (modelSelector && /** @type {any} */ (modelSelector).refresh) {
-      await /** @type {any} */ (modelSelector).refresh();
-    }
   } catch {
     // Non-fatal: the ACP provider can still be enabled manually.
   }

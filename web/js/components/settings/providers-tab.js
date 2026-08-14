@@ -187,8 +187,9 @@ export class ProvidersTab {
    * server to recompute providers (which re-reads the CLI token file / re-probes
    * the editor login) and waits for the settled `providers-update`, then
    * re-renders this tab so the status line and Sign in/out controls reflect the
-   * fresh availability. Also refreshes the model selector so newly-available
-   * models appear.
+   * fresh availability. The same push reaches every model selector (they all
+   * subscribe to `providers-update`), so newly-available models appear there
+   * without this tab reaching across to poke them.
    * @param {any} provider
    * @param {HTMLButtonElement} button
    * @private
@@ -209,10 +210,6 @@ export class ProvidersTab {
       // status line, so no manual cleanup is needed on the success path.
       this.renderProviderFields();
       this.updateAllButtons();
-      const modelSelector = /** @type {any} */ (document.querySelector('model-selector'));
-      if (modelSelector && modelSelector.refresh) {
-        await modelSelector.refresh();
-      }
     } catch (err) {
       button.disabled = false;
       button.classList.remove('spinning');
@@ -418,7 +415,8 @@ export class ProvidersTab {
    * immediately (the backend's queued RefreshProviders broadcasts the settled
    * state shortly after via `providers-update`). Re-rendering is non-destructive:
    * API-key inputs always render empty and are reconciled by updateAllButtons.
-   * Also refreshes the model selector so the new provider's models appear.
+   * That same broadcast is what puts the new provider's models in every model
+   * selector, so this tab has nothing to tell them.
    * @param {any} provider
    * @param {boolean} available
    * @private
@@ -428,10 +426,6 @@ export class ProvidersTab {
     provider.authHint = available ? 'Signed in with GitHub' : '';
     this.renderProviderFields();
     this.updateAllButtons();
-    const modelSelector = /** @type {any} */ (document.querySelector('model-selector'));
-    if (modelSelector && modelSelector.refresh) {
-      await modelSelector.refresh();
-    }
   }
 
   /**
@@ -926,12 +920,8 @@ export class ProvidersTab {
         body: { provider: provider.name, enabled },
         errorPrefix: 'Failed to update provider',
       });
-
-      // Refresh model selector to pick up new provider
-      const modelSelector = document.querySelector('model-selector');
-      if (modelSelector && modelSelector.refresh) {
-        await modelSelector.refresh();
-      }
+      // The handler queues a provider recompute; the resulting providers-update
+      // is what refreshes every model selector.
     } catch (error) {
       console.error('Failed to toggle provider:', error);
       // Revert toggle on error
@@ -1033,12 +1023,8 @@ export class ProvidersTab {
 
       // Reload config from server to get actual state (don't re-render fields)
       await this.host.loadConfig(false);
-
-      // Refresh model selector to pick up new provider
-      const modelSelector = document.querySelector('model-selector');
-      if (modelSelector && modelSelector.refresh) {
-        await modelSelector.refresh();
-      }
+      // PUT /api/config queues a provider recompute of its own; the resulting
+      // providers-update is what refreshes every model selector.
     } catch (error) {
       console.error('Failed to save API key:', error);
       if (window.showAlert) {
@@ -1066,12 +1052,8 @@ export class ProvidersTab {
 
       // Reload config from server to get actual state (don't re-render fields)
       await this.host.loadConfig(false);
-
-      // Refresh model selector to update available providers
-      const modelSelector = document.querySelector('model-selector');
-      if (modelSelector && modelSelector.refresh) {
-        await modelSelector.refresh();
-      }
+      // PUT /api/config queues a provider recompute of its own; the resulting
+      // providers-update is what drops the key from every model selector.
     } catch (error) {
       console.error('Failed to delete API key:', error);
       if (window.showAlert) {
