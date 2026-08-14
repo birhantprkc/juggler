@@ -108,7 +108,7 @@ export class SkillsTab {
           <button class="skills-mode active" data-mode="discover" role="tab">Discover</button>
           <button class="skills-mode" data-mode="manage" role="tab">Installed</button>
         </div>
-        <button class="skills-refresh" data-action="refresh" title="Refresh" aria-label="Refresh">${REFRESH_SVG}</button>
+        <button class="u-btn-ghost skills-refresh" data-action="refresh" title="Refresh" aria-label="Refresh">${REFRESH_SVG}</button>
       </div>
       <div class="skills-body" id="skills-body"></div>
       <div class="skills-drawer" id="skills-drawer" hidden></div>

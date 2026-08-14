@@ -111,7 +111,7 @@ class ContextPreviewModal extends HTMLElement {
               </svg>
               Copy
             </button>
-            <button class="close-button" id="close-button" title="Close (Esc)">×</button>
+            <button class="close-button" id="close-button" title="Close (Esc)" aria-label="Close"><span class="icon-close"></span></button>
           </div>
         </header>
         <main class="context-preview-body">

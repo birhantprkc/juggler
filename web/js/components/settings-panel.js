@@ -118,7 +118,7 @@ class SettingsPanel extends HTMLElement {
     this.innerHTML = `
             <modal-backdrop class="settings-backdrop" id="settings-backdrop"></modal-backdrop>
             <modal-panel class="settings-container">
-                <button class="close-button" id="settings-close" title="Close" aria-label="Close">×</button>
+                <button class="close-button" id="settings-close" title="Close" aria-label="Close"><span class="icon-close"></span></button>
                 <nav class="settings-tabs">
                     <div class="settings-tabs-scroll">
                         <button class="settings-tab active" data-tab="providers">Provider API Keys</button>

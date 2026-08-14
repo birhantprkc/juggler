@@ -42,24 +42,15 @@
 }
 
 /* Refresh the active view: re-fetch registries on Discover, rescan local folders
-   on Installed. Icon-only, right-aligned on the header row. */
+   on Installed. Icon-only, right-aligned on the header row. Carries
+   .u-btn-ghost for the shared button chrome; this owns placement and size. */
 .skills-refresh {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
   padding: 0.35rem;
-  border-radius: var(--radius-md);
-  cursor: pointer;
   flex-shrink: 0;
-}
-
-.skills-refresh:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
 }
 
 .skills-refresh svg {
@@ -468,22 +459,9 @@
   white-space: nowrap;
 }
 
-.skills-preview-close {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 1.4rem;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0.1rem 0.45rem;
-  border-radius: var(--radius-sm);
-}
-
-.skills-preview-close:hover {
-  color: var(--text-primary);
-  background: var(--bg-raised);
-}
+/* The dialog's × is the shared .close-button (chrome + box from the house
+   style); .skills-preview-close remains only as the click hook in
+   skill-preview.js. */
 
 .skills-preview-body {
   flex: 1 1 auto;
@@ -813,7 +791,6 @@
   .skills-btn:active,
   .skills-chip:active,
   .skills-mode:active,
-  .skills-refresh:active,
   .skills-scope-action:active {
     background: var(--bg-tertiary);
   }

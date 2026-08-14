@@ -167,15 +167,17 @@
    Ghost Buttons (u-btn-ghost) — the house style
    Transparent at rest; on hover/press a subtle fill, a hairline border and
    primary-colour text/icon appear, and the button dips to 0.95 on press. This
-   is the shared chrome for the header-bar controls (.u-btn-ghost) and the
-   composer-box controls (composer-box .input-ctrl-btn). Size, padding and any extra
+   is the shared chrome for the header-bar controls (.u-btn-ghost), the
+   composer-box controls (composer-box .input-ctrl-btn) and the panel/modal
+   close buttons (.close-button). Size, padding and any extra
    affordance come from the element or a co-class; this owns only the chrome.
    The transparent resting border reserves its space so nothing shifts on hover.
    Placed after the size co-classes above so it wins by source order where a
    header button carries both (e.g. .u-btn-ghost.u-btn-circular-control).
    ========================================================================== */
 .u-btn-ghost,
-composer-box .input-ctrl-btn {
+composer-box .input-ctrl-btn,
+.close-button {
     border: 0.0625rem solid transparent;
     border-radius: 1rem;
     background: transparent;
@@ -186,7 +188,8 @@ composer-box .input-ctrl-btn {
 
 .u-btn-ghost:hover:not(:disabled),
 .u-btn-ghost:active:not(:disabled),
-composer-box .input-ctrl-btn:hover:not(:disabled) {
+composer-box .input-ctrl-btn:hover:not(:disabled),
+.close-button:hover:not(:disabled) {
     background: var(--overlay-dark-70);
     border-color: var(--overlay-light-30);
     color: var(--text-primary);
@@ -201,7 +204,8 @@ composer-box .input-ctrl-btn:disabled {
 }
 
 .u-btn-ghost:active:not(:disabled),
-composer-box .input-ctrl-btn:active {
+composer-box .input-ctrl-btn:active,
+.close-button:active:not(:disabled) {
     transform: scale(0.95);
 }
 
@@ -215,7 +219,8 @@ composer-box .input-ctrl-btn:active {
 
 :root[data-theme="light"] .u-btn-ghost:hover:not(:disabled),
 :root[data-theme="light"] .u-btn-ghost:active:not(:disabled),
-:root[data-theme="light"] composer-box .input-ctrl-btn:hover:not(:disabled) {
+:root[data-theme="light"] composer-box .input-ctrl-btn:hover:not(:disabled),
+:root[data-theme="light"] .close-button:hover:not(:disabled) {
     background: rgb(255 255 255 / 95%);
     border-color: var(--text-tertiary);
 }

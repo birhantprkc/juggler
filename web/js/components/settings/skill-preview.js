@@ -49,7 +49,7 @@ export function skillPreviewShell(title, bodyHtml, footerHtml = '') {
     <modal-panel class="skills-preview-panel">
       <header class="skills-preview-header">
         <h2 class="skills-preview-title">${title}</h2>
-        <button class="skills-preview-close" data-action="drawer-close" title="Close (Esc)" aria-label="Close">&times;</button>
+        <button class="close-button skills-preview-close" data-action="drawer-close" title="Close (Esc)" aria-label="Close"><span class="icon-close"></span></button>
       </header>
       <div class="skills-preview-body">${bodyHtml}</div>
       ${footerHtml ? `<footer class="skills-preview-footer">${footerHtml}</footer>` : ''}

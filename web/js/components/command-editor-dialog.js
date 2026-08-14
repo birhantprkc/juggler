@@ -236,7 +236,7 @@ export function openCommandManager() {
       <div class="command-editor-panel" role="dialog" aria-modal="true" aria-label="Slash commands">
         <header class="command-editor-header">
           <h2>Slash commands</h2>
-          <button id="cmd-close" class="close-button command-editor-close" title="Close" aria-label="Close">×</button>
+          <button id="cmd-close" class="close-button command-editor-close" title="Close" aria-label="Close"><span class="icon-close"></span></button>
         </header>
         <div class="command-editor-body" id="cmd-manager-body"></div>
         <footer class="command-editor-footer">
@@ -421,7 +421,7 @@ function buildMarkup(v) {
     <div class="command-editor-panel" role="dialog" aria-modal="true" aria-label="Command editor">
       <header class="command-editor-header">
         <h2>${v.editing ? 'Edit command' : 'New command'}</h2>
-        <button id="cmd-close" class="close-button command-editor-close" title="Close" aria-label="Close">×</button>
+        <button id="cmd-close" class="close-button command-editor-close" title="Close" aria-label="Close"><span class="icon-close"></span></button>
       </header>
       <div class="command-editor-body">
         <label class="command-editor-label">Name
