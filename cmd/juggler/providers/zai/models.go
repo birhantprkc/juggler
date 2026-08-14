@@ -22,16 +22,17 @@ import (
 
 // ModelContextWindows overrides DefaultContextWindow for models whose window is
 // not 200K. The bulk of the modern line (glm-4.6 onward, glm-5, glm-5.1) is 200K;
-// the glm-4.5 series is 128K. GLM-5.2 carries a 1M-token window under its plain
-// base id — z.ai serves it directly over the standard coding endpoint, not via a
-// special variant. (Verified on the wire: the coding endpoint ingested and billed
-// 640K+ input tokens for a single glm-5.2 request. An earlier "glm-5.2[1m]" suffix
-// was a phantom — z.ai 400s it as "Unknown Model" — so the 1M window belongs on
-// the base id, not an opt-in variant.)
+// the glm-4.5 series is 128K. GLM-5.2 and GLM-5.3 carry a 1M-token window under
+// their plain base ids — z.ai serves them directly over the standard coding
+// endpoint, not via a special variant. (Verified on the wire: the coding endpoint
+// ingested and billed 640K+ input tokens for a single glm-5.2 request. An earlier
+// "glm-5.2[1m]" suffix was a phantom — z.ai 400s it as "Unknown Model" — so the 1M
+// window belongs on the base id, not an opt-in variant.)
 var ModelContextWindows = map[string]int{
 	"glm-4.5":     128000,
 	"glm-4.5-air": 128000,
 	"glm-5.2":     1000000,
+	"glm-5.3":     1000000,
 }
 
 // DefaultContextWindow is used for unknown models. The whole current z.ai
@@ -61,28 +62,27 @@ var (
 // hides the control. Those models still stream thinking — z.ai enables it by
 // default — there is simply no wire knob to change the effort.
 //
-// z.ai documents seven values (max/xhigh/high/medium/low/minimal/none) but
-// collapses most of them server-side (low/medium → high, xhigh → max, minimal ≈
-// none), so only the three behaviourally-distinct tiers are advertised: none
-// (skip thinking), high, and max. Levels are sent verbatim, so exposing the
-// collapsed aliases would show knobs that quietly do nothing. max is z.ai's own
-// default — what a GLM turn uses when no level is sent — so it is the labelled
-// default here too.
+// Both generations advertise three behaviourally-distinct tiers, defaulting to
+// max — z.ai's own default, what a GLM turn uses when no level is sent. They
+// differ at the bottom of the range. GLM-5.2 accepts none, which skips thinking
+// altogether. GLM-5.3 always thinks: its documented vocabulary is max/high/low
+// only, and the coding endpoint answers a none request with as much reasoning as
+// max (verified on the wire: low and minimal yield zero reasoning tokens, none
+// yields ~1000, the same as max), so low is its floor.
+//
+// z.ai collapses the rest of the seven documented values server-side (medium →
+// high, xhigh → max, minimal ≈ the floor). Levels are sent verbatim, so those
+// aliases stay unadvertised — they would be knobs that quietly do nothing.
 func thinkingSpec(modelID string) openaibase.ThinkingSpec {
-	if glmSupportsReasoningEffort(modelID) {
-		return openaibase.EffortSpec("max", "none", "high", "max")
-	}
-	return openaibase.ThinkingSpec{}
-}
-
-// glmSupportsReasoningEffort reports whether a GLM model id accepts the
-// reasoning_effort parameter — GLM-5.2 and above, per z.ai's documentation.
-func glmSupportsReasoningEffort(modelID string) bool {
 	major, minor, ok := glmVersion(modelID)
-	if !ok {
-		return false
+	switch {
+	case !ok || major < 5 || (major == 5 && minor < 2):
+		return openaibase.ThinkingSpec{}
+	case major == 5 && minor == 2:
+		return openaibase.EffortSpec("max", "none", "high", "max")
+	default:
+		return openaibase.EffortSpec("max", "low", "high", "max")
 	}
-	return major > 5 || (major == 5 && minor >= 2)
 }
 
 // glmVersion extracts the numeric major.minor version from a GLM model id

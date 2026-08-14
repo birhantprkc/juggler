@@ -26,6 +26,7 @@ func TestGLMOutputCapHasReasoningHeadroom(t *testing.T) {
 		{"glm-4.5", 32768, 98304},
 		{"glm-4.7", 32768, 98304},
 		{"glm-5.2", 16384, 98304}, // unknown/newer → generous default, still bounded
+		{"glm-5.3", 16384, 98304},
 		{"glm-4-flash", 16384, 98304},
 	}
 	for _, tc := range cases {
@@ -43,8 +44,9 @@ func TestGLMOutputCapHasReasoningHeadroom(t *testing.T) {
 // current z.ai catalog is 200K except the glm-4.5 series (128K), so the default
 // is optimistic (200K) and only off-default models carry an override. A new
 // model the API starts advertising therefore inherits 200K, not a stale 128K.
-// GLM-5.2 overrides upward: it serves a 1M window under its plain base id over
-// the standard coding endpoint (verified on the wire — see models.go).
+// GLM-5.2 and GLM-5.3 override upward: they serve a 1M window under their plain
+// base ids over the standard coding endpoint (verified on the wire — see
+// models.go).
 func TestContextWindowDefaultsToModernCatalog(t *testing.T) {
 	cases := []struct {
 		model string
@@ -54,6 +56,7 @@ func TestContextWindowDefaultsToModernCatalog(t *testing.T) {
 		{"glm-4.7", 200000},      // default
 		{"glm-5.1", 200000},      // default
 		{"glm-5.2", 1000000},     // override → 1M window on the base id
+		{"glm-5.3", 1000000},     // override → 1M window on the base id
 		{"glm-9-future", 200000}, // unknown → default
 		{"glm-4.5", 128000},      // override
 		{"glm-4.5-air", 128000},  // override
@@ -66,18 +69,27 @@ func TestContextWindowDefaultsToModernCatalog(t *testing.T) {
 }
 
 // TestThinkingSpec pins the reasoning-effort selector to GLM-5.2+: those models
-// advertise the three distinct tiers (none/high/max, default max), while
-// earlier GLM releases expose no control — sending them reasoning_effort would
-// be rejected. A forward-dated major (glm-6) inherits the selector.
+// advertise three distinct tiers (default max), while earlier GLM releases expose
+// no control — sending them reasoning_effort would be rejected. GLM-5.2's floor
+// is none (it can skip thinking); GLM-5.3 always thinks, so its floor is low and
+// a forward-dated release (glm-6) inherits that shape.
 func TestThinkingSpec(t *testing.T) {
-	withSelector := []string{"glm-5.2", "glm-6", "glm-6.1-air"}
-	for _, m := range withSelector {
-		spec := thinkingSpec(m)
-		if !slices.Equal(spec.Levels, []string{"none", "high", "max"}) {
-			t.Errorf("thinkingSpec(%q).Levels = %v, want [none high max]", m, spec.Levels)
-		}
-		if spec.Default != "max" {
-			t.Errorf("thinkingSpec(%q).Default = %q, want max", m, spec.Default)
+	cases := []struct {
+		models []string
+		want   []string
+	}{
+		{[]string{"glm-5.2"}, []string{"none", "high", "max"}},
+		{[]string{"glm-5.3", "glm-6", "glm-6.1-air"}, []string{"low", "high", "max"}},
+	}
+	for _, tc := range cases {
+		for _, m := range tc.models {
+			spec := thinkingSpec(m)
+			if !slices.Equal(spec.Levels, tc.want) {
+				t.Errorf("thinkingSpec(%q).Levels = %v, want %v", m, spec.Levels, tc.want)
+			}
+			if spec.Default != "max" {
+				t.Errorf("thinkingSpec(%q).Default = %q, want max", m, spec.Default)
+			}
 		}
 	}
 	noSelector := []string{"glm-5.1", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5", "glm-4.5-air", "glm-4-flash"}
@@ -97,6 +109,7 @@ func TestGLMVersion(t *testing.T) {
 		ok           bool
 	}{
 		{"glm-5.2", 5, 2, true},
+		{"glm-5.3", 5, 3, true},
 		{"glm-4.5-air", 4, 5, true},
 		{"glm-5", 5, 0, true},
 		{"glm-4.6", 4, 6, true},
