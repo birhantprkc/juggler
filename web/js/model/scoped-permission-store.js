@@ -18,6 +18,8 @@
  * @module model/scoped-permission-store
  */
 
+import { plain } from './item-accessor.js';
+
 /**
  * @typedef {'session'|'conversation'} PermissionScope
  */
@@ -27,9 +29,6 @@ export const SCOPE_CONVERSATION = 'conversation';
 
 /** @type {PermissionScope[]} Lookup order: session entries outrank conversation ones. */
 const SCOPES = [SCOPE_SESSION, SCOPE_CONVERSATION];
-
-/** @param {any} v @returns {any} */
-function plain(v) { return v?.toJSON ? v.toJSON() : v; }
 
 /** @param {any} mt @returns {Record<string, any>} */
 function sessionMetadata(mt) {

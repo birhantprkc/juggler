@@ -22,6 +22,7 @@
 
 import { TYPE_ICONS, TYPE_COLORS } from './icon-message-renderer.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
+import { yGet } from '../model/item-accessor.js';
 
 const USER_AVATAR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M480-480q-66 0-113-47t-47-113q0-66 47-113t113-47q66 0 113 47t47 113q0 66-47 113t-113 47ZM160-160v-112q0-34 17.5-62.5T224-378q62-31 126-46.5T480-440q66 0 130 15.5T736-378q29 15 46.5 43.5T800-272v112H160Z"/></svg>';
 
@@ -199,14 +200,11 @@ function pluginTypeName(instance, PluginClass, statusArgs, fallback) {
  */
 function toolActionStatusArgs(item, ctx) {
   const toolName = (item.get('toolName') || '').toLowerCase();
-  const rawInput = item.get('toolInput');
-  const input = rawInput?.toJSON ? rawInput.toJSON() : (rawInput || {});
-  const rawResult = item.get('result');
-  const resultPlain = rawResult?.toJSON ? rawResult.toJSON() : (rawResult || null);
-  const dd = item.get('displayData');
+  const input = yGet(item, 'toolInput') || {};
+  const resultPlain = yGet(item, 'result') || null;
   const actionStatus = resultPlain
     ? { content: resultPlain.content || '', ...resultPlain }
-    : { pending: true, actionId: toolName, displayData: dd?.toJSON ? dd.toJSON() : dd, state: item.get('state') };
+    : { pending: true, actionId: toolName, displayData: yGet(item, 'displayData'), state: item.get('state') };
   const context = {
     conversation: ctx.conversation,
     messageThread: ctx.messageThread,

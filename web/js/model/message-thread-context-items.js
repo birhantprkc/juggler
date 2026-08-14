@@ -9,7 +9,7 @@
  * @module model/message-thread-context-items
  */
 
-import { plainToYMap, convertToYType } from './item-accessor.js';
+import { plainToYMap, convertToYType, yGet } from './item-accessor.js';
 import { createContextItemMessage } from '../../sdk/lib/message.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import workerManager from '../services/worker-manager.js';
@@ -27,11 +27,10 @@ function contextItemDescriptor(item, wantId) {
   if (item.get('itemId') && !item.get('toolUseId')) {
     const id = item.get('itemId');
     if (wantId !== undefined && id !== wantId) return null;
-    const rawData = item.get('data');
     return {
       id,
       type: item.get('type') || 'unknown',
-      data: rawData?.toJSON ? rawData.toJSON() : (rawData || {})
+      data: yGet(item, 'data') || {}
     };
   }
   if (item.get('type') === 'tool-action' && item.get('contextItemId')) {
@@ -40,11 +39,10 @@ function contextItemDescriptor(item, wantId) {
     const result = item.get('result');
     if (result?.get?.('resultType') === 'context') {
       const fullResult = result.get?.('fullResult');
-      const rawCtxData = fullResult?.get?.('data');
       return {
         id,
         type: result.get?.('itemType') || 'unknown',
-        data: rawCtxData?.toJSON ? rawCtxData.toJSON() : (rawCtxData || {})
+        data: yGet(fullResult, 'data') || {}
       };
     }
   }
@@ -132,10 +130,10 @@ export function addContextItem(mt, contextItem) {
   );
   if (existingIndex >= 0) {
     const ymap = items[existingIndex];
-    mt.conversation._doc.doc.transact(() => {
+    mt.conversation.atomicUpdate(() => {
       ymap.set('type', itemJSON.type);
       if (itemJSON.data !== undefined) ymap.set('data', convertToYType(itemJSON.data));
-    }, mt.conversation._doc.authorId);
+    });
   } else {
     const newMsg = createContextItemMessage({
       itemId: contextItem.id,
@@ -165,9 +163,9 @@ export function removeContextItem(mt, itemId) {
   workerManager.stopUndoCapturing(mt.conversation.id);
   const itemIndex = mt.findIndexByItemId(itemId);
   if (itemIndex >= 0) {
-    mt.conversation._doc.doc.transact(() => {
+    mt.conversation.atomicUpdate(() => {
       mt.deleteAt(itemIndex);
-    }, mt.conversation._doc.authorId);
+    });
   }
   if (contextItem.destroy) {
     contextItem.destroy();
@@ -192,11 +190,11 @@ export function clearContextItems(mt) {
       itemIndices.push(i);
     }
   }
-  mt.conversation._doc.doc.transact(() => {
+  mt.conversation.atomicUpdate(() => {
     for (let i = itemIndices.length - 1; i >= 0; i--) {
       mt.deleteAt(itemIndices[i]);
     }
-  }, mt.conversation._doc.authorId);
+  });
 }
 
 /**
@@ -207,14 +205,12 @@ export function clearContextItems(mt) {
 export function updateContextItem(mt, itemId, updates) {
   const ymap = mt.findByItemId(itemId);
   if (!ymap) return;
-  mt.conversation._doc.doc.transact(() => {
+  mt.conversation.atomicUpdate(() => {
     if (updates.data !== undefined) {
-      const existingData = ymap.get('data');
-      const existingPlain = existingData?.toJSON ? existingData.toJSON() : (existingData || {});
-      const mergedData = { ...existingPlain, ...updates.data };
+      const mergedData = { ...(yGet(ymap, 'data') || {}), ...updates.data };
       ymap.set('data', convertToYType(mergedData));
     }
-  }, mt.conversation._doc.authorId);
+  });
 }
 
 /**

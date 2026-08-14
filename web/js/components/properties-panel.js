@@ -23,6 +23,7 @@ import { dispatchItemRenderer, renderContextItem } from '../services/renderers/i
 import workerManager from '../services/worker-manager.js';
 import { setupColumnResize } from '../utils/column-resize.js';
 import { formatDuration, formatRelativeDateTime } from '../utils/format.js';
+import { plain } from '../model/item-accessor.js';
 
 /**
  * @typedef {import('../model/conversation.js').default} Conversation
@@ -484,7 +485,7 @@ class PropertiesPanel extends HTMLElement {
     if (msgType === 'tool-action') {
       const result = msg.get('result');
       const displayData = msg.get('displayData');
-      const ddJson = displayData?.toJSON ? JSON.stringify(displayData.toJSON()) : (displayData ? JSON.stringify(displayData) : '');
+      const ddJson = displayData ? JSON.stringify(plain(displayData)) : '';
       return {
         state: msg.get('state'),
         hasResult: result !== null && result !== undefined,

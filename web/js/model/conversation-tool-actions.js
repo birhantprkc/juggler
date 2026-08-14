@@ -24,7 +24,7 @@ import toolExecutor from '../services/tool-executor.js';
 import { resolveToolName } from '../services/tool-generator.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isViewer } from '../../sdk/lib/client-role.js';
-import { ENGINE_DERIVED_ORIGIN } from '../utils/document-sync-manager.js';
+import { plain, yGet } from './item-accessor.js';
 import { APPROVAL_POLICY } from 'juggler/strategy-type';
 import { INTERACTION_KIND } from '../../sdk/context-item.js';
 
@@ -65,16 +65,16 @@ const MAX_REVIEW_NOTE_CHARS = 240;
  * there is nothing to annotate; the stale field is harmless and we leave it
  * untouched rather than write onto a resolved item.
  *
- * Tagged ENGINE_DERIVED_ORIGIN so the worker's UndoManager skips it, matching
- * the sibling approvalOptions/displayData writes.
+ * Written as an engine-derived update so the worker's UndoManager skips it,
+ * matching the sibling approvalOptions/displayData writes.
  * @param {import('./message-thread.js').default} messageThread
  * @param {string} toolUseId
  * @param {{busy: boolean, label: string}|null} status - The status to write, or null to clear
  */
 function writeReviewStatus(messageThread, toolUseId, status) {
-  const doc = messageThread.conversation?._doc?.doc;
-  if (!doc) return;
-  doc.transact(() => {
+  const conversation = messageThread.conversation;
+  if (!conversation?._doc) return;
+  conversation.engineDerivedUpdate(() => {
     const items = messageThread.items;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
@@ -85,7 +85,7 @@ function writeReviewStatus(messageThread, toolUseId, status) {
         break;
       }
     }
-  }, ENGINE_DERIVED_ORIGIN);
+  });
 }
 
 /**
@@ -130,7 +130,7 @@ export async function executeToolAction(messageThread, toolUseId, conversation) 
     const toolCall = {
       id: toolUseId,
       name: toolName,
-      input: toolInput?.toJSON ? toolInput.toJSON() : toolInput
+      input: plain(toolInput)
     };
 
     await toolExecutor.executeToolCall(toolCall, conversation._responseHandler, messageThread);
@@ -162,8 +162,7 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
   if (!toolAction) return;
 
   const toolName = toolAction.get('toolName');
-  const toolInput = toolAction.get('toolInput');
-  const toolInputPlain = toolInput?.toJSON ? toolInput.toJSON() : toolInput;
+  const toolInputPlain = yGet(toolAction, 'toolInput');
   const ActionClass = contextItemRegistry.getByToolName(toolName);
   if (!ActionClass) {
     messageThread.completeToolAction(toolUseId, {
@@ -179,13 +178,13 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
   // execution. Stamp executor='worker' authoritatively (this is where the plugin
   // manifest is actually known) so the worker's tool-execution-report liveness
   // rule can skip tools it executes itself — the engine's executor is not their
-  // liveness oracle and they never appear in a report. Additive field, tagged
-  // ENGINE_DERIVED_ORIGIN like every other derivation here so undo skips it.
+  // liveness oracle and they never appear in a report. Additive field, written
+  // as an engine-derived update like every other derivation here so undo skips it.
   if (ActionClass.MANIFEST?.workerManaged) {
     if (toolAction.get('executor') !== 'worker') {
-      conversation._doc.doc.transact(() => {
+      conversation.engineDerivedUpdate(() => {
         toolAction.set('executor', 'worker');
-      }, ENGINE_DERIVED_ORIGIN);
+      });
     }
     return;
   }
@@ -287,12 +286,11 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
   }
 
   // All writes below are pure derivations of the just-observed tool-action
-  // (toolName + toolInput + plugin manifest). Wrap them in the
-  // ENGINE_DERIVED_ORIGIN transaction so the worker's UndoManager skips
-  // them — otherwise undo of the tool-action's insert would only pop these
-  // derivations and the engine would immediately re-derive on the next
-  // observer tick.
-  conversation._doc.doc.transact(() => {
+  // (toolName + toolInput + plugin manifest), so they go through
+  // engineDerivedUpdate and the worker's UndoManager skips them — otherwise
+  // undo of the tool-action's insert would only pop these derivations and the
+  // engine would immediately re-derive on the next observer tick.
+  conversation.engineDerivedUpdate(() => {
     if (needsApproval) {
       const approvalOptions = conversation._responseHandler.buildApprovalOptions(action, prepared);
       // CAS guard: only write pending if still unstarted (ifState: '').
@@ -332,7 +330,7 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
         }
       }
     }
-  }, ENGINE_DERIVED_ORIGIN);
+  });
 
   // The tool has now parked awaiting approval (state=PENDING committed above).
   // Notify the strategy so out-of-band approval automation (e.g. a cheap-model
@@ -415,9 +413,9 @@ export async function handleNewToolAction(messageThread, toolUseId, conversation
 export function claimRunning(c, ymap) {
   let claimed = false;
   // APPROVED → RUNNING is a pure derivation of the previously-approved
-  // state; tag with ENGINE_DERIVED_ORIGIN so the worker's UndoManager
-  // doesn't see it as a separate undoable step.
-  c._doc.doc.transact(() => {
+  // state, so it goes through engineDerivedUpdate and the worker's
+  // UndoManager doesn't see it as a separate undoable step.
+  c.engineDerivedUpdate(() => {
     if (ymap.get('state') === TOOL_STATES.APPROVED) {
       ymap.set('state', TOOL_STATES.RUNNING);
       // Stamp the moment execution actually starts so the properties
@@ -438,7 +436,7 @@ export function claimRunning(c, ymap) {
       ymap.set('runningEpoch', (Number(ymap.get('runningEpoch')) || 0) + 1);
       claimed = true;
     }
-  }, ENGINE_DERIVED_ORIGIN);
+  });
   return claimed;
 }
 
@@ -460,7 +458,7 @@ export function saveAutoApprovalPermission(c, ymap, messageThread) {
   const approvalRules = ymap.get('approvalRules');
   const approvalItemType = ymap.get('approvalItemType');
   if (approvalRules && approvalItemType) {
-    const rules = approvalRules.toJSON ? approvalRules.toJSON() : approvalRules;
+    const rules = plain(approvalRules);
     for (const r of rules) {
       messageThread.addRule(approvalItemType, { kind: r.kind, value: r.value, scope: r.scope });
     }
@@ -473,7 +471,7 @@ export function saveAutoApprovalPermission(c, ymap, messageThread) {
   // command without any command-shape wildcard.
   const approvalAllowedPaths = ymap.get('approvalAllowedPaths');
   if (approvalAllowedPaths) {
-    const paths = approvalAllowedPaths.toJSON ? approvalAllowedPaths.toJSON() : approvalAllowedPaths;
+    const paths = plain(approvalAllowedPaths);
     for (const p of paths) {
       messageThread.addAllowedPath(p, { scope: 'conversation' });
     }
@@ -488,8 +486,7 @@ export function saveAutoApprovalPermission(c, ymap, messageThread) {
   // permission key. This is the single approval-persistence system — there is no
   // separate per-plugin save path.
   const toolName = ymap.get('toolName');
-  const toolInputY = ymap.get('toolInput');
-  const toolInput = toolInputY?.toJSON ? toolInputY.toJSON() : (toolInputY || {});
+  const toolInput = yGet(ymap, 'toolInput') || {};
   const ActionClass = contextItemRegistry.getByToolName(toolName);
   if (!ActionClass) return;
   const actionId = /** @type {any} */ (ActionClass).MANIFEST?.id || toolName;
@@ -535,8 +532,7 @@ export function approvePermittedPendingApprovals(c, options = {}) {
     for (const toolAction of pending) {
       const toolUseId = toolAction.get('toolUseId');
       const toolName = toolAction.get('toolName');
-      const toolInput = toolAction.get('toolInput');
-      const toolInputPlain = toolInput?.toJSON ? toolInput.toJSON() : toolInput;
+      const toolInputPlain = yGet(toolAction, 'toolInput');
       const ActionClass = contextItemRegistry.getByToolName(toolName);
       if (!ActionClass) continue;
 

@@ -490,15 +490,14 @@ export default class MessageThread {
    */
   enqueuePendingItem(message) {
     this._ensureItemId(message);
-    const cdoc = this.conversation._doc;
-    cdoc.doc.transact(() => {
+    this.transact(() => {
       let arr = this.container.get('pendingItems');
       if (!arr) {
         arr = new Y.Array();
         this.container.set('pendingItems', arr);
       }
       arr.insert(arr.length, [plainToYMap(message)]);
-    }, cdoc.authorId);
+    });
   }
 
   /**
@@ -649,8 +648,7 @@ export default class MessageThread {
    * @param {() => void} fn - Function to execute inside the transaction
    */
   transact(fn) {
-    const cdoc = this.conversation._doc;
-    cdoc.doc.transact(fn, cdoc.authorId);
+    this.conversation.atomicUpdate(fn);
   }
 
   /**

@@ -11,6 +11,7 @@ import { buildApprovalButtons } from './approval-options.js';
 import { RESULT_TYPES, ACTION_STATES, TOOL_STATES } from '../../sdk/lib/message.js';
 import { INTERACTION_KIND } from '../../sdk/context-item.js';
 import { hashString } from '../utils/hash.js';
+import { plain } from '../model/item-accessor.js';
 import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import toolExecutor from './tool-executor.js';
 import workerManager from './worker-manager.js';
@@ -837,7 +838,7 @@ class ResponseHandler {
                    existingResult.get?.('cancelled') === true);
       if (hasRealResult) {
         // Already executed by resolveApproval - return result
-        const result = existingResult.toJSON ? existingResult.toJSON() : existingResult;
+        const result = plain(existingResult);
 
         return {
           toolName: toolCall.name,

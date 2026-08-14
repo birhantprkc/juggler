@@ -40,14 +40,13 @@ const PENDING_REQUESTS_KEY = 'pendingRequests';
  */
 export function ensurePendingRequests(thread) {
   const container = thread.container;
-  const doc = thread.conversation._doc;
   let arr = container.get(PENDING_REQUESTS_KEY);
   if (!arr) {
-    doc.doc.transact(() => {
+    thread.conversation.atomicUpdate(() => {
       if (!container.get(PENDING_REQUESTS_KEY)) {
         container.set(PENDING_REQUESTS_KEY, new Y.Array());
       }
-    }, doc.authorId);
+    });
     arr = container.get(PENDING_REQUESTS_KEY);
   }
   return arr;

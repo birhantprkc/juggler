@@ -10,6 +10,7 @@ import {
 } from '../../sdk/lib/message.js';
 import { wrapWithIcon, createErrorArticle } from '../utils/icon-message-renderer.js';
 import { iconOptionsForItem } from '../utils/item-badge.js';
+import { plain, yGet } from '../model/item-accessor.js';
 
 /**
  * @typedef {import('../../sdk/lib/message.js').Message} Message
@@ -150,8 +151,8 @@ class ToolActionMessage extends HTMLElement {
       hasResult: resultMap !== null && resultMap !== undefined,
       resultIsError: !!isError,
       hasApprovalOptions: !!item.get('approvalOptions'),
-      displayDataJson: displayData ? JSON.stringify(displayData.toJSON ? displayData.toJSON() : displayData) : '',
-      reviewStatusJson: reviewStatus ? JSON.stringify(reviewStatus.toJSON ? reviewStatus.toJSON() : reviewStatus) : ''
+      displayDataJson: displayData ? JSON.stringify(plain(displayData)) : '',
+      reviewStatusJson: reviewStatus ? JSON.stringify(plain(reviewStatus)) : ''
     };
   }
 
@@ -413,10 +414,8 @@ class ToolActionMessage extends HTMLElement {
       try {
         const actionInstance = this._createActionForUI(ActionClass, actionId, conversation);
         if (!actionInstance) throw new Error('missing context');
-        const displayData = item.get('displayData');
-        const displayDataPlain = displayData?.toJSON ? displayData.toJSON() : displayData;
-        const toolInput = item.get('toolInput');
-        const toolInputPlain = toolInput?.toJSON ? toolInput.toJSON() : toolInput;
+        const displayDataPlain = yGet(item, 'displayData');
+        const toolInputPlain = yGet(item, 'toolInput');
         const actionResult = {
           pending: true,
           actionId,
@@ -488,10 +487,8 @@ class ToolActionMessage extends HTMLElement {
       try {
         const actionInstance = this._createActionForUI(ActionClass, actionId, conversation);
         if (!actionInstance) throw new Error('missing context');
-        const displayData = item.get('displayData');
-        const displayDataPlain = displayData?.toJSON ? displayData.toJSON() : displayData;
-        const toolInput = item.get('toolInput');
-        const toolInputPlain = toolInput?.toJSON ? toolInput.toJSON() : toolInput;
+        const displayDataPlain = yGet(item, 'displayData');
+        const toolInputPlain = yGet(item, 'toolInput');
         const actionResult = {
           pending: true,  // Signals to getStatusUI to show streaming UI
           actionId,
@@ -536,8 +533,7 @@ class ToolActionMessage extends HTMLElement {
    */
   _renderCancelled(item) {
     const toolName = item.get('toolName') || 'Action';
-    const resultMap = item.get('result');
-    const result = resultMap?.toJSON ? resultMap.toJSON() : resultMap;
+    const result = yGet(item, 'result');
     const conversation = this._getConversation();
 
     // Create article wrapper
@@ -552,10 +548,8 @@ class ToolActionMessage extends HTMLElement {
       try {
         const actionInstance = this._createActionForUI(ActionClass, toolName, conversation);
         if (!actionInstance) throw new Error('missing context');
-        const displayData = item.get('displayData');
-        const displayDataPlain = displayData?.toJSON ? displayData.toJSON() : displayData;
-        const toolInput = item.get('toolInput');
-        const toolInputPlain = toolInput?.toJSON ? toolInput.toJSON() : toolInput;
+        const displayDataPlain = yGet(item, 'displayData');
+        const toolInputPlain = yGet(item, 'toolInput');
         const actionStatus = {
           cancelled: result?.cancelled,
           actionId: toolName,
@@ -599,7 +593,7 @@ class ToolActionMessage extends HTMLElement {
   _renderResult(item) {
     const resultMap = item.get('result');
     const fullResultMap = resultMap?.get ? resultMap.get('fullResult') : resultMap?.fullResult;
-    const result = /** @type {ActionResult|undefined} */ (fullResultMap?.toJSON ? fullResultMap.toJSON() : fullResultMap);
+    const result = /** @type {ActionResult|undefined} */ (plain(fullResultMap));
     const conversation = this._getConversation();
     const itemToolName = item.get('toolName');
 
@@ -677,8 +671,7 @@ class ToolActionMessage extends HTMLElement {
           actionResult = { content, ...(result || { pending: true, actionId }) };
         }
 
-        const toolInput = item.get('toolInput');
-        const toolInputPlain = toolInput?.toJSON ? toolInput.toJSON() : toolInput;
+        const toolInputPlain = yGet(item, 'toolInput');
         const actionInstance = this._createActionForUI(ActionClass, actionId, conversation);
         if (!actionInstance) throw new Error('missing context');
         const statusConfig = actionInstance.getStatusUI(actionResult, toolInputPlain || {}, {
@@ -783,8 +776,7 @@ class ToolActionMessage extends HTMLElement {
    * @private
    */
   _appendApprovalButtons(container, item, overrideOptions) {
-    const approvalOptionsRaw = item.get('approvalOptions');
-    const approvalOptionsPlain = approvalOptionsRaw?.toJSON ? approvalOptionsRaw.toJSON() : approvalOptionsRaw;
+    const approvalOptionsPlain = yGet(item, 'approvalOptions');
     const approvalOptions = /** @type {ActionConfirmationOptions|undefined} */ (
       overrideOptions || approvalOptionsPlain
     );
@@ -884,8 +876,7 @@ class ToolActionMessage extends HTMLElement {
     if (!actionInstance || typeof actionInstance.reviseApprovalSuggestion !== 'function') {
       return null;
     }
-    const toolInput = item.get('toolInput');
-    const params = toolInput?.toJSON ? toolInput.toJSON() : (toolInput || {});
+    const params = yGet(item, 'toolInput') || {};
     return async (index, editedText) => {
       const original = originalOptions[index];
       if (!original) return null;

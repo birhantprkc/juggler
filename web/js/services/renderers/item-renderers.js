@@ -35,6 +35,7 @@ import { normalizeAttachments, formatAttachmentBytes } from '../../utils/attachm
 import { createImageThumb } from '../../utils/image-lightbox.js';
 import { renderTaskDeliveryControl } from '../../../sdk/lib/task-delivery-control.js';
 import apiService from '../../services/api.js';
+import { plain, yGet } from '../../model/item-accessor.js';
 
 /**
  * Normalise a Yjs Y.Map result (or already-plain object) to a plain JS object.
@@ -43,7 +44,7 @@ import apiService from '../../services/api.js';
  * @returns {{isError?: boolean, cancelled?: boolean, content?: string, output?: string, fullResult?: {error?: string, durationMs?: number}}} Normalised plain-object view of the result
  */
 function resolveResult(r) {
-  return r?.toJSON ? r.toJSON() : (r || {});
+  return plain(r) || {};
 }
 
 /**
@@ -293,7 +294,7 @@ export function renderMessage(host, container, message) {
 function renderTaskSourceControl(host, wrapper, message) {
   const raw = message.get('taskSource');
   if (!raw) return;
-  const ts = raw.toJSON ? raw.toJSON() : raw;
+  const ts = plain(raw);
   const taskId = ts?.taskId || '';
   if (!taskId) return;
   renderTaskDeliveryControl(wrapper, {
@@ -438,8 +439,7 @@ export function renderToolAction(host, container, toolAction) {
   const badge = badgeForItem(toolAction, badgeCtx(host));
 
   const toolName = (taToolName || '').toLowerCase();
-  const toolInputRaw = toolAction.get('toolInput');
-  const input = toolInputRaw?.toJSON ? toolInputRaw.toJSON() : (toolInputRaw || {});
+  const input = yGet(toolAction, 'toolInput') || {};
 
   // A separate instance drives the panel-only tool-specific input section.
   const actionInstance = ActionClass ? makeActionInstance(host, ActionClass) : null;
@@ -582,8 +582,7 @@ export function renderToolAction(host, container, toolAction) {
       const outputDiv = document.createElement('pre');
       outputDiv.className = 'properties-panel-result';
       const isAwaitingApproval = toolAction.get('state') === TOOL_STATES.PENDING;
-      const displayData = toolAction.get('displayData');
-      const displayDataPlain = displayData?.toJSON ? displayData.toJSON() : displayData;
+      const displayDataPlain = yGet(toolAction, 'displayData');
       const streamedOutput = displayDataPlain?.output;
       const streamText = streamedOutput || displayDataPlain?.status || (isAwaitingApproval ? 'Waiting for approval...' : '');
       if (isTerminal) applyAnsi(outputDiv, streamText);
@@ -623,8 +622,7 @@ export function renderToolAction(host, container, toolAction) {
         // Start pulsing once running.
         if (!awaitingApproval) wrapper.setAttribute('data-processing', 'true');
 
-        const dd = msg.get('displayData');
-        const ddPlain = dd?.toJSON ? dd.toJSON() : dd;
+        const ddPlain = yGet(msg, 'displayData');
         const liveText = ddPlain?.output || ddPlain?.status || (awaitingApproval ? 'Waiting for approval...' : '');
         if (isTerminal) applyAnsi(outputDiv, liveText);
         else outputDiv.textContent = liveText;

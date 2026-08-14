@@ -16,7 +16,7 @@
 import contextItemRegistry from '../registries/context-item-registry.js';
 import workerManager from './worker-manager.js';
 import { createContextItemMessage } from '../../sdk/lib/message.js';
-import { convertToYType } from '../model/item-accessor.js';
+import { convertToYType, yGet } from '../model/item-accessor.js';
 import { hashString } from '../utils/hash.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { animateContextItemRefresh } from './animation-service.js';
@@ -276,11 +276,10 @@ export async function handleContextItemContentChanged(mt, conv, itemId, changedI
   const existingItem = mt.findByItemId(itemId);
   if (!existingItem) return;
 
-  const existingDataRaw = existingItem.get('data');
   const existingItemData = {
     id: existingItem.get('itemId'),
     type: existingItem.get('type') || 'unknown',
-    data: existingDataRaw?.toJSON ? existingDataRaw.toJSON() : (existingDataRaw || {})
+    data: yGet(existingItem, 'data') || {}
   };
   const newData = (typeof contextItem.toJSON === 'function' ? contextItem.toJSON().data : contextItem.data) || {};
   const dataChanged = JSON.stringify(existingItemData.data) !== JSON.stringify(newData);

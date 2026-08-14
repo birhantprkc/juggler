@@ -18,6 +18,7 @@ import { TextSectionRenderer } from './renderers/text-section-renderer.js';
 import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import { assembleSystemPrompt } from './system-prompt-builder.js';
 import { buildExtensionSystemPromptContributions } from './extensions.js';
+import { yGet } from '../model/item-accessor.js';
 import {
   createSystemReminderMessage,
   MESSAGE_TYPES,
@@ -123,7 +124,7 @@ export class ContextBuilder {
           type: MESSAGE_TYPES.TOOL_USE,
           toolUseId: msg.get('toolUseId'),
           toolName: msg.get('toolName'),
-          toolInput: msg.get('toolInput')?.toJSON ? msg.get('toolInput').toJSON() : msg.get('toolInput')
+          toolInput: yGet(msg, 'toolInput')
         });
 
         // Emit tool-result only if action is complete (result !== null/undefined)

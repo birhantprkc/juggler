@@ -14,10 +14,11 @@ import workerManager from '../services/worker-manager.js';
 import toolExecutor from '../services/tool-executor.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import MessageThread from './message-thread.js';
-import { plainToYMap } from './item-accessor.js';
+import { plainToYMap, plain } from './item-accessor.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { TURN_CANCELLED_NOTICE } from '../utils/constants.js';
+import { ENGINE_DERIVED_ORIGIN } from '../utils/document-sync-manager.js';
 import {
   findThreadForArray,
   findParentInArray,
@@ -618,7 +619,7 @@ class Conversation {
     if (!this._doc) return undefined;
     const raw = this._doc.metadata.get('processingState');
     if (!raw) return undefined;
-    return raw.toJSON ? raw.toJSON() : raw;
+    return plain(raw);
   }
 
   /**
@@ -924,6 +925,20 @@ class Conversation {
    */
   atomicUpdate(txFn) {
     this._doc.doc.transact(txFn, this._doc.authorId);
+  }
+
+  /**
+   * Run a Yjs mutation atomically, tagged as engine-derived rather than
+   * authored. Use this — never `atomicUpdate` — for writes that are pure
+   * derivations of state the engine just observed (stamping `executor`,
+   * `approvalOptions`, `displayData`, `reviewStatus`, the APPROVED→RUNNING
+   * claim). The worker's UndoManager skips this origin, so undoing the
+   * originating item pops the item itself instead of peeling off a derivation
+   * the engine would immediately recompute.
+   * @param {() => void} txFn
+   */
+  engineDerivedUpdate(txFn) {
+    this._doc.doc.transact(txFn, ENGINE_DERIVED_ORIGIN);
   }
 
   /** @returns {string} The authorId this conversation tags its writes with. */
@@ -1277,10 +1292,10 @@ class Conversation {
     const convRules = this.getMetadata(CONVERSATION_RULES_KEY);
     const convPaths = this.getMetadata(CONVERSATION_PATHS_KEY);
     if (convRules !== undefined) {
-      destConversation.setMetadata(CONVERSATION_RULES_KEY, convRules?.toJSON ? convRules.toJSON() : convRules);
+      destConversation.setMetadata(CONVERSATION_RULES_KEY, plain(convRules));
     }
     if (convPaths !== undefined) {
-      destConversation.setMetadata(CONVERSATION_PATHS_KEY, convPaths?.toJSON ? convPaths.toJSON() : convPaths);
+      destConversation.setMetadata(CONVERSATION_PATHS_KEY, plain(convPaths));
     }
   }
 

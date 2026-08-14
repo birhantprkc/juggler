@@ -18,6 +18,7 @@ import { applyAnsi, stripAnsi } from '../../sdk/lib/ansi.js';
 import { copyToClipboard } from '../../sdk/lib/clipboard.js';
 import { createCopyButton } from '../../sdk/lib/copy-button.js';
 import { highlightCode } from '../../sdk/lib/syntax-highlight.js';
+import { yGet } from '../model/item-accessor.js';
 
 // Re-exported so existing importers keep their `properties-panel-helpers`
 // import path; the button itself is now a plugin-neutral primitive.
@@ -163,9 +164,7 @@ export function addFilePath(wrapper, path, info) {
  * @returns {boolean} True if a diff viewer was added
  */
 export function addDiffViewer(wrapper, toolAction, fallbackPath) {
-  const raw = toolAction.get('displayData');
-  const plain = raw?.toJSON ? raw.toJSON() : raw;
-  const diffData = plain?.diffData;
+  const diffData = yGet(toolAction, 'displayData')?.diffData;
   if (!diffData?.oldContent || !diffData?.newContent) return false;
 
   const diffViewer = document.createElement('diff-viewer');
