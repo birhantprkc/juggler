@@ -138,12 +138,28 @@
 
         const urlParams = new URLSearchParams(window.location.search);
 
+        // POST with a bounded transport-error retry. A transport failure
+        // (dropped keep-alive, transient socket error) means the request never
+        // reached the server, so re-sending is safe — the same rationale as
+        // the Go harness's postToServer retry. This matters most for
+        // /api/test/result: the browser never retries a failed POST itself,
+        // and a lost result post turns into a 60s Go-side subtest timeout.
         async function postJSON(url, body) {
-            await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
+            const payload = JSON.stringify(body);
+            const deadline = Date.now() + 10000;
+            for (;;) {
+                try {
+                    await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: payload,
+                    });
+                    return;
+                } catch (err) {
+                    if (Date.now() >= deadline) throw err;
+                    await new Promise(r => setTimeout(r, 250));
+                }
+            }
         }
 
         // Poll /api/test/pending for the next entry. Resolves when an entry is available.
@@ -208,21 +224,30 @@
             }
 
             while (true) {
-                const entry = await waitForNextEntry();
-                if (entry.name === '__list__') {
-                    await postJSON('/api/test/names', { names: listTests(), exclusive: listExclusiveTests() });
-                    continue;
+                // Nothing here may be allowed to throw: this loop IS the lane.
+                // An escaped rejection would end the top-level module await and
+                // silently kill the lane for the rest of the run — the Go side
+                // keeps dispatching to N lanes while only N-1 consume, and
+                // later tests time out "queued, no consumer" with no culprit.
+                try {
+                    const entry = await waitForNextEntry();
+                    if (entry.name === '__list__') {
+                        await postJSON('/api/test/names', { names: listTests(), exclusive: listExclusiveTests() });
+                        continue;
+                    }
+                    if (entry.taskId) {
+                        // Benchmark/task mode runs via a separate orchestrator path.
+                        // Hand off via navigation (rare; happens at most once per process).
+                        let url = `/headless-test?task=${encodeURIComponent(entry.taskId)}&projectPath=${encodeURIComponent(entry.projectPath)}&quiet=true`;
+                        if (entry.model) url += `&model=${encodeURIComponent(entry.model)}`;
+                        if (entry.provider) url += `&provider=${encodeURIComponent(entry.provider)}`;
+                        window.location.href = url;
+                        break;
+                    }
+                    await runOneTest(entry.name, entry.projectPath);
+                } catch (err) {
+                    window.__earlyErrors.push('lane loop error (lane survived): ' + (err && err.message || err));
                 }
-                if (entry.taskId) {
-                    // Benchmark/task mode runs via a separate orchestrator path.
-                    // Hand off via navigation (rare; happens at most once per process).
-                    let url = `/headless-test?task=${encodeURIComponent(entry.taskId)}&projectPath=${encodeURIComponent(entry.projectPath)}&quiet=true`;
-                    if (entry.model) url += `&model=${encodeURIComponent(entry.model)}`;
-                    if (entry.provider) url += `&provider=${encodeURIComponent(entry.provider)}`;
-                    window.location.href = url;
-                    break;
-                }
-                await runOneTest(entry.name, entry.projectPath);
             }
         } else {
             // Task mode (real-LLM benchmark tasks) — run via TestOrchestrator

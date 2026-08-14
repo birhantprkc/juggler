@@ -394,6 +394,17 @@ func (t *OperationTracker) CanRedo() bool {
 	return len(t.undoManager.RedoStack) > 0
 }
 
+// UndoSeq returns the sequence number of the most recent emitUndoState frame.
+// Every writer of the undoState metadata map must carry this along: the map is
+// replaced wholesale on each write, so a writer that omits seq erases the
+// signal the footer's Undo offer (and any test waiting on a specific frame)
+// keys on.
+func (t *OperationTracker) UndoSeq() int {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	return t.undoSeq
+}
+
 // Undo reverses the last recorded operation group. Returns true if anything changed.
 func (t *OperationTracker) Undo() bool {
 	ycrdtMu.Lock()

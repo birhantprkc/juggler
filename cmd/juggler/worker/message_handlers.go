@@ -51,9 +51,13 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 			"loadFromDisk": msg.Conversation.LoadFromDisk,
 		})
 
-		// Sync the reconnecting client with current Yjs state
+		// Sync the reconnecting client with current Yjs state. That full-state
+		// sync already carries metadata.undoState, so no separate undo-state
+		// write is needed — and none is safe: a reconnect must be read-only on
+		// the doc. Every client's attach broadcasts to ALL viewers, so a doc
+		// mutation here would let one client's mere attach perturb a turn (and
+		// its undo capture window) another viewer has in flight.
 		w.broadcastFullState()
-		w.sendUndoState(w.tracker.CanUndo(), w.tracker.CanRedo())
 
 		// Send ready with metadata if requested. The conversation name is
 		// the folder name on disk and lives on the session manifest, not

@@ -1435,10 +1435,15 @@ func (w *ConversationWorker) sendYjsSync(update []byte) {
 }
 
 func (w *ConversationWorker) sendUndoState(canUndo, canRedo bool) {
-	// Store undo state in Yjs metadata for reactive UI updates (no messages)
+	// Store undo state in Yjs metadata for reactive UI updates (no messages).
+	// The map is replaced wholesale, so seq must ride along unchanged
+	// (SCHEMA.md: undoState is {canUndo, canRedo, seq}): omitting it would
+	// erase the sequence the tracker's emitUndoState stamped, breaking every
+	// reader that keys on seq to tell "the stack moved" from a re-emit.
 	w.doc.SetMetadata("undoState", map[string]any{
 		"canUndo": canUndo,
 		"canRedo": canRedo,
+		"seq":     w.tracker.UndoSeq(),
 	})
 }
 
