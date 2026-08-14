@@ -702,9 +702,18 @@ func normalizeOutputLimit(capabilities provider.ModelCapabilities) provider.Mode
 // handleProviders returns the cached provider/model list. The list is
 // populated at startup and on every credential change via RefreshProviders;
 // this handler never makes upstream calls of its own.
+//
+// `ready` reports whether that first refresh has completed, exactly as the
+// connect-time seed push does (see the providers-update send in
+// realtime_loop.go). Until it has, the cache is empty, and an empty list is
+// indistinguishable from a genuine "no providers configured" result — a caller
+// that renders the list without checking this flag paints a blank page during
+// the startup window. Clients that get `false` should wait for the settled
+// providers-update rather than trust the array.
 func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	handlers.WriteJSON(w, r, 0, map[string]any{
 		"providers": s.cachedProviders(),
+		"ready":     s.providersReadyNow(),
 	})
 }
 

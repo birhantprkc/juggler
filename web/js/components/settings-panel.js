@@ -11,6 +11,7 @@
 
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { fetchJson } from '../services/http.js';
+import providersCache from '../services/providers-cache.js';
 import { ProvidersTab } from './settings/providers-tab.js';
 import { DefaultsTab } from './settings/defaults-tab.js';
 import { ConnectivityTab } from './settings/connectivity-tab.js';
@@ -20,6 +21,15 @@ import { LogsTab } from './settings/logs-tab.js';
 import { McpTab, AcpTab } from './settings/subprocess-tabs.js';
 import { SkillsTab } from './settings/skills-tab.js';
 import { UpdatesTab } from './settings/updates-tab.js';
+
+/**
+ * Longest the first load will wait for the server's provider list to settle
+ * before rendering whatever the REST snapshot held. The server's first refresh
+ * normally lands within a second or so of the port opening, so this ceiling is
+ * only reached when the settled push never arrives at all (e.g. a dead
+ * WebSocket), where rendering the empty snapshot is the old behaviour anyway.
+ */
+const PROVIDERS_READY_TIMEOUT_MS = 5000;
 
 /**
  * The shared payload the shell's loadConfig() fans out to every tab.
@@ -400,10 +410,14 @@ class SettingsPanel extends HTMLElement {
       this._revealCapability(options.capability);
     }
 
-    // Load config (only fetches from API on first load)
+    // Load config (only fetches from API on first load). The first-load latch is
+    // set only when the load actually succeeded: a failed load leaves the panel
+    // with nothing rendered, so latching it would make that emptiness permanent
+    // for the life of the window. Reveal the content pane either way, so a
+    // failure leaves a dismissable panel rather than an endless spinner.
     if (isFirstLoad) {
-      await this.loadConfig();
-      this._hasLoadedOnce = true;
+      const loaded = await this.loadConfig();
+      this._hasLoadedOnce = loaded;
       this.classList.add('loaded');
     }
   }
@@ -453,8 +467,45 @@ class SettingsPanel extends HTMLElement {
   }
 
   /**
+   * Resolve the provider list to render from the /api/providers payload.
+   *
+   * That endpoint serves a cache the server fills asynchronously *after* it
+   * starts listening, so for the first moments of a launch it answers 200 with
+   * an empty list and `ready: false`. An empty list is otherwise
+   * indistinguishable from a genuine "no providers configured", and rendering it
+   * leaves the panel blank for as long as it stays open — so an unsettled empty
+   * snapshot waits for the settled providers-update instead (providersCache
+   * mirrors that push and resolves immediately once it has arrived).
+   *
+   * A non-empty list is a real answer whatever the flag says, which also keeps
+   * servers and test fixtures that never send `ready` on the fast path.
+   * @param {any} payload - The decoded /api/providers response.
+   * @returns {Promise<any[]>} The provider list to render.
+   * @private
+   */
+  async _settledProviders(payload) {
+    const list = payload?.providers || [];
+    if (payload?.ready === true || list.length > 0) return list;
+
+    /** @type {ReturnType<typeof setTimeout>|null} */
+    let timer = null;
+    try {
+      const settled = await Promise.race([
+        providersCache.waitForReady(),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(null), PROVIDERS_READY_TIMEOUT_MS);
+        }),
+      ]);
+      return settled || list;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
    * Load current configuration from backend and fan it out to every tab.
    * @param {boolean} [renderFields=true] - Whether to render form fields (false when just updating status)
+   * @returns {Promise<boolean>} True if the load succeeded; false if it failed and should be retried.
    * @private
    */
   async loadConfig(renderFields = true) {
@@ -478,8 +529,10 @@ class SettingsPanel extends HTMLElement {
         credsPathEl.textContent = `${config.configDir}/credentials.json`;
       }
 
-      const providers = (providersData.providers || []).sort((/** @type {any} */ a, /** @type {any} */ b) =>
-        a.displayName.localeCompare(b.displayName)
+      // Copied before sorting: an unsettled snapshot resolves to providersCache's
+      // own array, which is shared with every other reader of the push.
+      const providers = [...await this._settledProviders(providersData)].sort(
+        (/** @type {any} */ a, /** @type {any} */ b) => a.displayName.localeCompare(b.displayName)
       );
 
       /** @type {LoadedSettings} */
@@ -487,11 +540,13 @@ class SettingsPanel extends HTMLElement {
       for (const tab of Object.values(this._tabs)) {
         if (tab.onConfigLoaded) tab.onConfigLoaded(data, renderFields);
       }
+      return true;
     } catch (error) {
       console.error('Failed to load config:', error);
       if (window.showAlert) {
         await window.showAlert('Failed to load configuration', 'Error');
       }
+      return false;
     }
   }
 

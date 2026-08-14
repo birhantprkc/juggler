@@ -6,6 +6,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -91,4 +94,41 @@ func TestMarkProvidersReadyIdempotent(t *testing.T) {
 	s := newReadyTestServer()
 	s.markProvidersReady()
 	s.markProvidersReady() // must not panic on a second close
+}
+
+// TestHandleProvidersReportsReadiness guards the contract clients read to tell a
+// pre-compute snapshot from the settled list. The cache is empty until the first
+// refresh completes, and without this flag that empty list is indistinguishable
+// from a genuine "no providers configured" — which is what left a settings panel
+// opened during the startup window permanently blank.
+func TestHandleProvidersReportsReadiness(t *testing.T) {
+	s := newReadyTestServer()
+
+	get := func() map[string]any {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.handleProviders(rec, httptest.NewRequest(http.MethodGet, "/api/providers", nil))
+		var body map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("decoding /api/providers response: %v", err)
+		}
+		return body
+	}
+
+	before := get()
+	if before["ready"] != false {
+		t.Fatalf("ready before the first refresh = %v, want false", before["ready"])
+	}
+
+	s.providersList.Store(&[]ProviderStatus{{Name: "anthropic"}})
+	s.markProvidersReady()
+
+	after := get()
+	if after["ready"] != true {
+		t.Fatalf("ready after the first refresh = %v, want true", after["ready"])
+	}
+	list, ok := after["providers"].([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("providers after the first refresh = %#v, want the one cached entry", after["providers"])
+	}
 }
