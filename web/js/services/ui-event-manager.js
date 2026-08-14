@@ -37,6 +37,7 @@ const THEME_BUTTON_UI = {
 import { toggleSound, isSoundEnabled, ATTENTION_PREFS_EVENT } from '../utils/attention-manager.js';
 import { isToolGroupingEnabled, toggleToolGrouping, TOOL_GROUPING_EVENT } from '../utils/tool-grouping-pref.js';
 import { zoomIn, zoomOut } from '../utils/zoom-manager.js';
+import { isAutoNameEnabled } from './auto-name-setting.js';
 import keyShortcutManager from './key-shortcut-manager.js';
 
 /**
@@ -440,9 +441,12 @@ class UIEventManager {
     // tab's on-screen rect, so closing the drawer slides that tab off-canvas and
     // the overlay lands clipped at the viewport edge (and tearing the editor down
     // with the drawer would make rename impossible). Two taps enter rename:
-    // creating a conversation (the "+") and tapping the ALREADY-active tab — both
-    // are exempt. So only dismiss on a real navigation: a tap on a non-active
-    // tab. Taps on "+", the active tab, or inside the rename editor keep it open.
+    // tapping the ALREADY-active tab, and creating a conversation ("+") while
+    // auto-naming is OFF. With auto-naming ON the "+" opens no editor — it names
+    // the tab "Untitled N" and focuses the composer — so the drawer must get out
+    // of the way, otherwise it covers the composer it just focused. So only
+    // dismiss on a tap that leaves nothing to edit here: a non-active tab, or a
+    // "+" that won't prompt for a name.
     //
     // CAPTURE PHASE is load-bearing: the tab's own bubble-phase click handler
     // calls switchConversation(), which synchronously notifies the bar and
@@ -455,8 +459,11 @@ class UIEventManager {
       const handler = (e) => {
         if (!isOpen()) return;
         const target = /** @type {HTMLElement|null} */ (e.target);
-        if (target?.closest('.conversation-add-item')) return;
         if (target?.closest('.conversation-tab-rename')) return;
+        if (target?.closest('.conversation-add-item')) {
+          if (isAutoNameEnabled()) close();
+          return;
+        }
         const tab = target?.closest('.conversation-tab');
         if (tab && !tab.classList.contains('active')) close();
       };
