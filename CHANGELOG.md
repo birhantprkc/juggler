@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-08-14
+
 - The Escape key's behaviour is now a setting: stop, pause, two-step, press-twice, or clear only
 - Hidden conversation tabs release their transcript DOM, preventing memory growth in large projects
 - Tool-use grouping now has a keyboard shortcut (⌥⌘G / Ctrl+Alt+G)
