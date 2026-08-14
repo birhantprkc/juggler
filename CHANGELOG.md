@@ -8,6 +8,7 @@ of changes; this project follows semantic versioning.
 - llama.cpp models report the context window the server really serves, multi-model setups included
 - The busy spinner juggles a club per parallel tool call, at the speed the work is moving
 - The spinner tires gradually through a long tool call, and picks up when the next one starts
+- New settings stop tabs highlighting, or floating to the top, when a conversation wants you
 
 ## [0.5.6] - 2026-08-14
 

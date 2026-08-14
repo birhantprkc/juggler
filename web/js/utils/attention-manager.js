@@ -16,12 +16,21 @@
  * is the one on screen. So the thread you're actively watching never beeps; a
  * backgrounded window, or an off-screen tab, does.
  *
- * Two layers of visual signal:
- *  - The conversation's **tab always flashes** and keeps a standing highlight —
- *    this is not a preference; it fires on every alert in every mode.
- *  - An optional **out-of-app signal** (the `notify` pref) on top: a dock-icon
- *    bounce in the desktop app, or a leading ● on this browser tab's title in a
- *    browser. This is the configurable part — the one the toggle governs.
+ * Two layers of visual signal, each with its own toggle:
+ *  - The conversation's **tab highlight** (the `tabHighlight` pref): a one-shot
+ *    blink plus a standing tint on its sidebar tab. Turning it off silences the
+ *    tab's appearance only — the conversation is still tracked as flagged, so
+ *    the chime, the out-of-app signal, and the jump-to-attention command all
+ *    still find it.
+ *  - An **out-of-app signal** (the `notify` pref) on top: a dock-icon bounce in
+ *    the desktop app, or a leading ● on this browser tab's title in a browser.
+ *
+ * `tabHighlight` reaches one surface this module does not own: the sidebar tab's
+ * standing **awaiting pulse**, which the conversation bar paints from live
+ * approval state (not from an alert, and regardless of focus). It is the loudest
+ * and longest-lived yellow on a tab, so a user turning tab highlighting off means
+ * that one above all — `conversation-bar._refreshTabStatus` reads
+ * {@link isTabHighlightEnabled} for exactly that reason.
  *
  * A standing alert clears when you view the conversation, or auto-dismisses after
  * {@link alertTimeoutMs} so it never lingers when you don't return to it.
@@ -29,9 +38,14 @@
  * Preference model mirrors {@link module:utils/theme-manager}: a per-window
  * choice in localStorage, so different windows can have different needs (one
  * babysitting a long autonomous run wants alerts; one you're typing in doesn't).
- * Sound and the out-of-app notification are independent toggles. The header bell
- * is the on/off for notification sounds — the same `sound` pref the settings
- * checkbox drives.
+ * Every toggle is independent. The header bell is the on/off for notification
+ * sounds — the same `sound` pref the settings checkbox drives.
+ *
+ * One pref here isn't an alert surface at all: `tabReorder` governs whether this
+ * window floats a conversation's tab up the list on activity. It lives with the
+ * alert prefs because it's the same kind of per-window "how much may a tab
+ * demand of me" choice, and shares their settings section; the gate itself is
+ * read by {@link module:model/session~Session#bumpConversation}.
  * @module utils/attention-manager
  */
 
@@ -49,18 +63,30 @@ export const ATTENTION_PREFS_EVENT = 'juggler:attention-prefs-changed';
  * @property {boolean} sound - Play the chime on alert (the header bell's toggle).
  * @property {boolean} notify - Raise an out-of-app attention signal on alert: a
  *   dock-icon bounce in the desktop app, or a ● on this browser tab's title in a
- *   browser. Independent of the in-app conversation-tab flash, which is always on.
+ *   browser. Independent of the in-app conversation-tab highlight.
+ * @property {boolean} tabHighlight - Let a conversation's sidebar tab change
+ *   appearance to get noticed: the alert blink and standing tint here, plus the
+ *   conversation bar's awaiting pulse. Off leaves tabs looking untouched; the
+ *   conversation is still flagged, so the other surfaces and jump-to-attention
+ *   are unaffected.
+ * @property {boolean} tabReorder - Let activity float a conversation's tab up
+ *   the list in this window (read by `Session.bumpConversation`). Off pins the
+ *   order to whatever the user last dragged it to.
  * @property {ChimeParams} chime - Abstract chime voice parameters.
  */
 
 /**
  * Defaults: notify on (unobtrusive, no permission), sound off (enabling it is
- * the gesture that unlocks audio).
+ * the gesture that unlocks audio), and both tab behaviours on — the highlight
+ * and the recency bump are how a tab has always announced itself, so opting out
+ * is the deliberate choice.
  * @type {AttentionPrefs}
  */
 const DEFAULT_PREFS = {
   sound: false,
   notify: true,
+  tabHighlight: true,
+  tabReorder: true,
   chime: { ...CHIME_DEFAULTS },
 };
 
@@ -152,6 +178,48 @@ export function isNotifyEnabled() {
 export function setNotifyEnabled(on) {
   savePrefs({ notify: !!on });
   syncBrowserTitleBadge();
+}
+
+/**
+ * Whether a conversation's sidebar tab may change appearance to get noticed.
+ * Read here for the alert marks, and by `conversation-bar._refreshTabStatus` for
+ * the awaiting pulse.
+ * @returns {boolean} True when tab highlighting is enabled.
+ */
+export function isTabHighlightEnabled() {
+  return getAttentionPrefs().tabHighlight;
+}
+
+/**
+ * Turn conversation-tab highlighting on or off. Turning it off also strips the
+ * alert marks from tabs flagged before the change, so the tab bar goes quiet
+ * immediately rather than at the next auto-dismiss. The flags themselves stay —
+ * those conversations still need the user, and jump-to-attention still finds
+ * them. The awaiting pulse is repainted by the conversation bar, which listens
+ * for the {@link ATTENTION_PREFS_EVENT} this fires.
+ * @param {boolean} on
+ * @returns {void}
+ */
+export function setTabHighlightEnabled(on) {
+  savePrefs({ tabHighlight: !!on });
+  if (!on) {
+    for (const convId of flagged) clearTabMarks(convId);
+  }
+}
+
+/** @returns {boolean} Whether this window may float tabs up the list on activity. */
+export function isTabReorderEnabled() {
+  return getAttentionPrefs().tabReorder;
+}
+
+/**
+ * Set whether activity may float a conversation's tab up the tab list in this
+ * window. Read by `Session.bumpConversation`; existing order is left as it is.
+ * @param {boolean} on
+ * @returns {void}
+ */
+export function setTabReorderEnabled(on) {
+  savePrefs({ tabReorder: !!on });
 }
 
 /**
@@ -255,17 +323,39 @@ function requestDockBounce() {
 }
 
 /**
- * Flash a conversation's tab: a brief one-shot animation plus a standing
- * highlight on its sidebar tab, auto-dismissing after {@link alertTimeoutMs}.
- * This is the in-app signal and is ALWAYS applied on alert — never gated on a
- * preference (the out-of-app dock/title signal is the configurable part). Also
- * re-syncs the browser-tab title badge, which honours the `notify` pref.
+ * The sidebar tab element for a conversation, if it's currently in the DOM.
+ * @param {string} convId
+ * @returns {Element|null} The tab element, or null when it isn't rendered.
+ * @private
+ */
+function tabElement(convId) {
+  return document.querySelector(`.conversation-tab[data-conversation-id="${CSS.escape(convId)}"]`);
+}
+
+/**
+ * Remove both flash marks from a conversation's tab. Leaves the `flagged` entry
+ * and its dismiss timer alone — this is only the visual half.
+ * @param {string} convId
+ * @private
+ */
+function clearTabMarks(convId) {
+  const tab = tabElement(convId);
+  if (tab) tab.classList.remove('needs-attention', 'attention-flash');
+}
+
+/**
+ * Flag a conversation as needing the user and, when the `tabHighlight` pref
+ * allows, mark its sidebar tab: a brief one-shot animation plus a standing tint,
+ * auto-dismissing after {@link alertTimeoutMs}. With the pref off the tab is
+ * left untouched but the conversation is still flagged, so the chime, the
+ * out-of-app signal and jump-to-attention behave identically. Also re-syncs the
+ * browser-tab title badge, which honours the `notify` pref.
  * @param {string} convId
  * @private
  */
 function flashConversation(convId) {
   flagged.add(convId);
-  const tab = document.querySelector(`.conversation-tab[data-conversation-id="${CSS.escape(convId)}"]`);
+  const tab = getAttentionPrefs().tabHighlight ? tabElement(convId) : null;
   if (tab) {
     tab.classList.add('needs-attention');
     // Restart the one-shot flash animation if it's already present.
@@ -297,8 +387,7 @@ function clearFlash(convId) {
     dismissTimers.delete(convId);
   }
   if (!flagged.delete(convId)) return;
-  const tab = document.querySelector(`.conversation-tab[data-conversation-id="${CSS.escape(convId)}"]`);
-  if (tab) tab.classList.remove('needs-attention', 'attention-flash');
+  clearTabMarks(convId);
   syncBrowserTitleBadge();
 }
 
@@ -363,7 +452,8 @@ function isLookingAt(convId) {
 function raiseAttention(convId) {
   const prefs = getAttentionPrefs();
   if (prefs.sound) playChime(prefs.chime);
-  // In-app conversation-tab flash: always — never gated on a preference.
+  // Flag the conversation; whether its tab shows the flash is the `tabHighlight`
+  // pref, applied inside.
   flashConversation(convId);
   // Out-of-app signal (dock bounce on desktop; the browser-tab title badge is
   // handled reactively in syncBrowserTitleBadge): only when the user opted in.

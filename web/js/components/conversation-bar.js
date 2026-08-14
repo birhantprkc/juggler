@@ -33,6 +33,7 @@ import { formatBytes } from '../utils/format.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import { isAutoNameEnabled, refreshAutoNameSetting } from '../services/auto-name-setting.js';
+import { isTabHighlightEnabled, ATTENTION_PREFS_EVENT } from '../utils/attention-manager.js';
 import './bin-modal.js';
 import './info-rail.js';
 
@@ -118,6 +119,9 @@ class ConversationBar extends HTMLElement {
     /** @type {(() => void)|null} @private */
     this._renameActiveHandler = null;
 
+    /** @type {(() => void)|null} @private Repaints tab status when the tab-highlight preference changes */
+    this._attentionPrefsHandler = null;
+
     /** @type {number} @private Timestamp (ms) of the last accepted new-conversation create, for leading-edge debounce */
     this._lastCreateAt = 0;
   }
@@ -170,6 +174,10 @@ class ConversationBar extends HTMLElement {
     if (this._renameActiveHandler) {
       document.removeEventListener('juggler:rename-active-conversation', this._renameActiveHandler);
       this._renameActiveHandler = null;
+    }
+    if (this._attentionPrefsHandler) {
+      window.removeEventListener(ATTENTION_PREFS_EVENT, this._attentionPrefsHandler);
+      this._attentionPrefsHandler = null;
     }
   }
 
@@ -280,6 +288,11 @@ class ConversationBar extends HTMLElement {
       if (id) this._enterRenameMode(id);
     };
 
+    // The tab-highlight preference decides whether an awaiting tab pulses at
+    // all, so a change to it must repaint the tabs currently pulsing — the whole
+    // point of the toggle is to quiet them now, not once their approval clears.
+    this._attentionPrefsHandler = () => this._refreshAllTabStatus();
+
     document.addEventListener('juggler:focus-tab-list', this._focusTabListHandler);
     this.addEventListener('click', this._barClickHandler);
     document.addEventListener('keydown', this._keydownHandler);
@@ -288,6 +301,7 @@ class ConversationBar extends HTMLElement {
     document.addEventListener('juggler:new-conversation', this._newConversationHandler);
     document.addEventListener('juggler:bin-active-conversation', this._binActiveHandler);
     document.addEventListener('juggler:rename-active-conversation', this._renameActiveHandler);
+    window.addEventListener(ATTENTION_PREFS_EVENT, this._attentionPrefsHandler);
   }
 
   /**
@@ -831,6 +845,13 @@ class ConversationBar extends HTMLElement {
   /**
    * Toggle status indicator classes (.is-running / .is-awaiting) on a single
    * tab based on the current LLMState. Targeted update — no full re-render.
+   *
+   * `.is-awaiting` pulses the whole tab yellow for as long as the approval is
+   * parked, which makes it the tab bar's loudest demand for attention — so it is
+   * suppressed when the user has turned tab highlighting off, leaving an
+   * awaiting tab looking exactly like an idle one. Only the paint is gated:
+   * {@link _conversationActivity} still reports the true state, so the bin guard
+   * and every other consumer are unaffected.
    * @param {string} convId
    * @private
    */
@@ -838,8 +859,21 @@ class ConversationBar extends HTMLElement {
     const tab = this._cachedElements.get(convId);
     if (!tab) return;
     const { awaiting, running } = this._conversationActivity(convId);
-    tab.classList.toggle('is-awaiting', awaiting);
+    tab.classList.toggle('is-awaiting', awaiting && isTabHighlightEnabled());
     tab.classList.toggle('is-running', running);
+  }
+
+  /**
+   * Repaint every tab's status classes. Used when something other than a
+   * conversation's own state changes what a tab should look like — namely the
+   * tab-highlight preference, which must take effect on tabs already pulsing
+   * rather than at the next status change.
+   * @private
+   */
+  _refreshAllTabStatus() {
+    for (const convId of this._session?.conversations.keys() || []) {
+      this._refreshTabStatus(convId);
+    }
   }
 
   /**

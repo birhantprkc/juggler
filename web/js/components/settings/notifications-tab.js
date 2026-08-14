@@ -13,6 +13,8 @@ import {
   getAttentionPrefs,
   setSoundEnabled,
   setNotifyEnabled,
+  setTabHighlightEnabled,
+  setTabReorderEnabled,
   setChimeParam,
   resetChimeParams,
   previewChime,
@@ -69,10 +71,12 @@ export function buildToggleRow(name, description, checked, onChange) {
 }
 
 /**
- * Notifications tab: per-window attention prefs (sound, notify) plus abstract
- * rotary controls for the chime voice. All values come from localStorage (the
- * attention-manager), so it renders eagerly with no server fetch, and keeps its
- * controls in sync with the header bell via ATTENTION_PREFS_EVENT.
+ * Notifications tab: per-window attention prefs (sound, notify) with abstract
+ * rotary controls for the chime voice, plus a Tabs section for what a
+ * conversation's tab may do to get noticed (flash, move to the top). All values
+ * come from localStorage (the attention-manager), so it renders eagerly with no
+ * server fetch, and keeps its controls in sync with the header bell via
+ * ATTENTION_PREFS_EVENT.
  */
 export class NotificationsTab {
   /**
@@ -101,11 +105,12 @@ export class NotificationsTab {
   }
 
   /**
-   * Render the Notifications tab: per-window attention prefs (sound, notify) plus
-   * abstract rotary controls for the chime voice. Reads initial values from
-   * {@link getAttentionPrefs} (localStorage, no server fetch) and keeps the
-   * controls in sync with the header bell via {@link ATTENTION_PREFS_EVENT} — so
-   * the sound toggle and the bell always reflect the same `sound` pref.
+   * Render the Notifications tab: per-window attention prefs (sound, notify),
+   * abstract rotary controls for the chime voice, and the Tabs section below
+   * them. Reads initial values from {@link getAttentionPrefs} (localStorage, no
+   * server fetch) and keeps every control in sync with prefs changed elsewhere
+   * via {@link ATTENTION_PREFS_EVENT} — so the sound toggle and the header bell
+   * always reflect the same `sound` pref.
    * @private
    */
   renderNotificationsForm() {
@@ -145,6 +150,9 @@ export class NotificationsTab {
     const chimeRow = this._buildChimeControlsRow(prefs.chime);
     container.appendChild(chimeRow.row);
 
+    // ── Tab behaviour (its own section below the alert surfaces) ───────
+    const tabRows = this._renderTabBehaviourForm(prefs);
+
     // Keep this tab's controls in sync when prefs change elsewhere (the header
     // bell, or another open settings panel). Registered once; removed in
     // dispose().
@@ -153,12 +161,50 @@ export class NotificationsTab {
         const p = getAttentionPrefs();
         soundRow.input.checked = p.sound;
         notifyRow.input.checked = p.notify;
+        if (tabRows) {
+          tabRows.highlight.input.checked = p.tabHighlight;
+          tabRows.reorder.input.checked = p.tabReorder;
+        }
         chimeRow.controls.pattern.setValue(p.chime.pattern);
         chimeRow.controls.sound.setValue(p.chime.sound);
         chimeRow.controls.volume.setValue(p.chime.volume);
       };
       window.addEventListener(ATTENTION_PREFS_EVENT, this._onAttentionPrefs);
     }
+  }
+
+  /**
+   * Render the Tabs section: what a conversation's tab in the sidebar is allowed
+   * to do to get noticed. Both toggles are per-window, like the alert prefs above
+   * them, and both are on by default — a tab announcing itself is the norm, and
+   * these opt out of it.
+   * @param {import('../../utils/attention-manager.js').AttentionPrefs} prefs
+   * @returns {{highlight: {row: HTMLElement, input: HTMLInputElement}, reorder: {row: HTMLElement, input: HTMLInputElement}}|null} The
+   *   built rows, or null when the section's container isn't present.
+   * @private
+   */
+  _renderTabBehaviourForm(prefs) {
+    const container = this.host.querySelector('#tab-behaviour-form');
+    if (!container) return null;
+
+    container.innerHTML = '';
+
+    const highlightRow = buildToggleRow(
+      'Highlight conversations that need attention',
+      'Pulse a conversation’s tab while it’s waiting for you. With this off the tab stays plain, but the “Jump to conversation needing attention” shortcut still finds it.',
+      prefs.tabHighlight,
+      (on) => setTabHighlightEnabled(on),
+    );
+    const reorderRow = buildToggleRow(
+      'Updated conversations move to the top',
+      'Float a conversation’s tab up the list when it’s active or you send to it. With this off, tabs only move when you drag them.',
+      prefs.tabReorder,
+      (on) => setTabReorderEnabled(on),
+    );
+    container.appendChild(highlightRow.row);
+    container.appendChild(reorderRow.row);
+
+    return { highlight: highlightRow, reorder: reorderRow };
   }
 
   /**

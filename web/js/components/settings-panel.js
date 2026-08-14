@@ -223,6 +223,8 @@ class SettingsPanel extends HTMLElement {
 
                     <section class="settings-tab-content" id="tab-notifications">
                         <div class="settings-form" id="notifications-form"></div>
+                        <div class="settings-section-heading">Tabs</div>
+                        <div class="settings-form" id="tab-behaviour-form"></div>
                     </section>
 
                     <section class="settings-tab-content" id="tab-shortcuts">

@@ -323,9 +323,12 @@ conversation-bar .conversation-tab.has-close {
    - .is-running   → pulsing green blob in the trailing slot (LLM loop active),
                      replacing the bin button so a tab can't be binned
                      mid-loop. Same size as the button, so the layout is stable.
-   - .is-awaiting  → tab background pulses between orange and the regular
-                     tab background (needs your input)
-   Idle tabs get nothing. */
+    - .is-awaiting  → tab background pulses between orange and the regular
+                      tab background (needs your input). Withheld entirely when
+                      the user turns tab highlighting off, so such a tab is
+                      indistinguishable from an idle one — see
+                      conversation-bar._refreshTabStatus.
+    Idle tabs get nothing. */
 conversation-bar .conversation-tab.is-running .conversation-tab-activity {
     display: flex;
 }

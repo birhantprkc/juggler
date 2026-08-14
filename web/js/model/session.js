@@ -24,6 +24,7 @@ import ConversationLoadQueue from '../services/conversation-load-queue.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { recordTape } from '../utils/event-tape.js';
+import { isTabReorderEnabled } from '../utils/attention-manager.js';
 import { setupWorkerCallbacks } from './session-worker-callbacks.js';
 import { approvePermittedPendingApprovals } from './conversation-tool-actions.js';
 import { ensureUserPresetsLoaded, getDefaultPresetSeed } from '../services/system-prompt-presets.js';
@@ -952,10 +953,18 @@ class Session {
    * Honours manual drag order otherwise — this only moves the one conversation.
    * Persists via the reorder endpoint (no-op when already in place, which also
    * dedupes the convergent writes other viewers make for the same transition).
+   *
+   * The `tabReorder` attention pref switches the whole thing off, which is why
+   * the gate sits here rather than at either call site: it's the one choke point
+   * both the remote-activity bump and the local send's forceTop bump pass
+   * through. The pref is per-window, so it stops THIS window initiating bumps —
+   * a window with it on still persists its own, and this one follows the
+   * resulting reordered event like any other remote order change.
    * @param {string} conversationId
    * @param {{forceTop?: boolean}} [options]
    */
   bumpConversation(conversationId, options = {}) {
+    if (!isTabReorderEnabled()) return;
     if (!this.conversations.has(conversationId)) return;
     const order = Array.from(this.conversations.keys());
 
