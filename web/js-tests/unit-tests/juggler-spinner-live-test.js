@@ -204,30 +204,82 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`re-grow cancels pending shrink: ${e.message}`); }
 
-  // G — rate is applied to every animation via playbackRate, and clamped. This
-  // is what keeps the cascade from jumping: nothing rewrites --duration.
+  // G — rate is applied to every animation via updatePlaybackRate, and clamped.
+  // This is what keeps the cascade from jumping: nothing rewrites --duration.
   try {
     const el = mount(true); mounted.push(el);
-    el.rate = 1.75;
-    if (Math.abs(el.rate - 1.75) > 0.001) throw new Error(`expected 1.75, got ${el.rate}`);
 
-    // updatePlaybackRate STAGES the change and applies it a frame or so later —
-    // that deferral is the whole point, since it lets the engine preserve each
-    // animation's current time instead of re-mapping progress and jumping. So
-    // give it a bounded number of frames to land rather than reading
-    // playbackRate straight back.
-    /** @type {any[]} */ const anims = [];
-    for (const node of Array.from(el.querySelectorAll('.js-orbit, .js-club'))) {
-      for (const a of /** @type {any} */ (node).getAnimations()) anims.push(a);
-    }
-    if (anims.length === 0) throw new Error('no animations found to check playbackRate on');
-    const landed = () => anims.every(a => Math.abs(a.playbackRate - 1.75) < 0.001);
-    for (let i = 0; i < 40 && !landed(); i++) {
-      await new Promise(r => setTimeout(r, 25));
-    }
-    if (!landed()) {
-      const stuck = anims.map(a => a.playbackRate).filter(r => Math.abs(r - 1.75) >= 0.001);
-      throw new Error(`expected every animation at 1.75, still at [${stuck}]`);
+    // Assert that the spinner ASKS every animation for the new rate, rather than
+    // reading playbackRate back afterwards. updatePlaybackRate deliberately
+    // stages the change (that deferral is the point — it preserves each
+    // animation's current time instead of re-mapping progress and jumping), and
+    // the browser only commits it on an animation frame. This harness page is
+    // hidden — the pool window lives offscreen — so no frames are produced and a
+    // staged rate can sit uncommitted indefinitely; reading it back asserted on
+    // the compositor rather than on the spinner, and passed only when an
+    // incidental style flush happened to commit it.
+    //
+    // Spied on the prototype, so the record survives the wholesale animation
+    // rebuild a spinner performs on its first visibility edge (restart() reflows
+    // and CSS builds fresh Animation objects, which _reapply then re-rates).
+    const animProto = /** @type {any} */ (globalThis).Animation.prototype;
+    const realUpdate = animProto.updatePlaybackRate;
+    /** @type {Map<any, number>} Rate each animation was last asked for. */
+    const asked = new Map();
+    /** @returns {any[]} Every animation currently driving the cascade. */
+    const animsNow = () => {
+      /** @type {any[]} */ const list = [];
+      for (const node of Array.from(el.querySelectorAll('.js-orbit, .js-club'))) {
+        for (const a of /** @type {any} */ (node).getAnimations()) list.push(a);
+      }
+      return list;
+    };
+    try {
+      animProto.updatePlaybackRate = function (/** @type {number} */ r) {
+        asked.set(this, r);
+        return realUpdate.call(this, r);
+      };
+
+      el.rate = 1.75;
+      if (Math.abs(el.rate - 1.75) > 0.001) throw new Error(`expected 1.75, got ${el.rate}`);
+
+      // Pin the expected population: one orbit and one flip per resting club.
+      // Without it the check passes on a partial cascade — a rebuild can be
+      // caught mid-flight, and "every animation I could see was asked" is
+      // vacuously true of the three it happened to see.
+      const EXPECTED_ANIMS = 6; // resting 3 clubs × (orbit + flip)
+
+
+      // Application is coalesced onto a trailing timer, so give it a bounded
+      // wait — a timer, not a frame, so it fires on a hidden page.
+      // Report on the same set the decision was made from: re-resolving for the
+      // message can read a cascade the spinner has since rebuilt, and describe a
+      // set that never failed.
+      const asking = 1.75;
+      // Stated as "was asked, and for the right rate" rather than as a distance
+      // test on a missing value: `Math.abs(undefined - r) >= eps` is NaN >= eps,
+      // which is false, so an animation that was never asked at all would read
+      // as satisfying the assertion.
+      const wasAsked = (/** @type {any} */ a) => {
+        const r = asked.get(a);
+        return typeof r === 'number' && Math.abs(r - asking) < 0.001;
+      };
+      let count = 0, missed = 0;
+      const landed = () => {
+        const list = animsNow();
+        count = list.length;
+        missed = list.filter(a => !wasAsked(a)).length;
+        return count === EXPECTED_ANIMS && missed === 0;
+      };
+      for (let i = 0; i < 40 && !landed(); i++) {
+        await new Promise(r => setTimeout(r, 25));
+      }
+      if (!landed()) {
+        throw new Error(
+          `expected all ${EXPECTED_ANIMS} animations asked for 1.75, saw ${count} of which ${missed} never were`);
+      }
+    } finally {
+      animProto.updatePlaybackRate = realUpdate;
     }
 
     el.rate = 99;

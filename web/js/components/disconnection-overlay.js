@@ -11,13 +11,31 @@
 const SPINNER_ONLY_MS = 5000;
 
 /**
+ * How often the wait is advanced.
+ * @type {number}
+ */
+const TICK_MS = 1000;
+
+/**
+ * Longest gap between ticks that counts as time spent waiting. The wait is
+ * accumulated tick by tick rather than measured against the wall clock because
+ * the page can stop running: a suspended laptop drops the link and then freezes
+ * for hours, and a hidden tab has its timers throttled to once a minute.
+ * Counting that gap put the overlay on its last line the instant the machine
+ * woke, before a single retry had been given the chance to fail. A gap longer
+ * than this is time the page wasn't running, so it doesn't count.
+ * @type {number}
+ */
+const MAX_TICK_MS = 2000;
+
+/**
  * Wording for the wait, restated as it drags on.
- * @param {number} elapsedMs - How long the overlay has been up.
+ * @param {number} waitedMs - Time spent waiting for the connection to return.
  * @returns {string} The line to show.
  */
-function messageForWait(elapsedMs) {
-  if (elapsedMs >= 2 * 60 * 1000) return 'This isn’t going very well.';
-  if (elapsedMs >= 30 * 1000) return 'Still trying.';
+function messageForWait(waitedMs) {
+  if (waitedMs >= 2 * 60 * 1000) return 'This isn’t going very well.';
+  if (waitedMs >= 30 * 1000) return 'Still trying.';
   return 'Lost the server.';
 }
 
@@ -29,7 +47,8 @@ function messageForWait(elapsedMs) {
  * describing the wait, the retry countdown, and the server URL it is trying to
  * reach. The message restates itself as the wait grows (see
  * {@link messageForWait}) and the countdown ticks on its own line, so neither
- * overwrites the other.
+ * overwrites the other. Both the grace period and the wording run off time the
+ * page actually spent waiting, not wall-clock elapsed (see {@link MAX_TICK_MS}).
  */
 class DisconnectionOverlay {
   constructor() {
@@ -43,12 +62,12 @@ class DisconnectionOverlay {
     this._countdownElement = null;
     /** @type {number|null} @private */
     this._countdownInterval = null;
-    /** @type {number|null} @private */
-    this._revealTimeout = null;
-    /** @type {number|null} @private Drives the message through its tiers. */
-    this._messageTimer = null;
-    /** @type {number} @private When the overlay went up, for wording selection. */
-    this._shownAt = 0;
+    /** @type {number|null} @private Drives the reveal and the message tiers. */
+    this._waitTimer = null;
+    /** @type {number} @private Time spent waiting while the page was running. */
+    this._waitedMs = 0;
+    /** @type {number} @private When the wait was last advanced. */
+    this._lastTickAt = 0;
   }
 
   /**
@@ -59,7 +78,8 @@ class DisconnectionOverlay {
       return; // Already showing
     }
 
-    this._shownAt = Date.now();
+    this._waitedMs = 0;
+    this._lastTickAt = Date.now();
 
     this._element = document.createElement('div');
     this._element.className = 'disconnection-overlay';
@@ -93,16 +113,7 @@ class DisconnectionOverlay {
     const host = document.querySelector('app-container') || document.body;
     host.appendChild(this._element);
 
-    // The info block is always laid out (reserving its space so nothing
-    // shifts); it's only kept invisible during the spinner-only grace
-    // period and faded in afterwards.
-    this._revealTimeout = window.setTimeout(() => {
-      this._revealTimeout = null;
-      if (!this._infoElement) return;
-      this._updateMessage();
-      this._infoElement.classList.add('disconnection-overlay__info--visible');
-      this._messageTimer = window.setInterval(() => this._updateMessage(), 1000);
-    }, SPINNER_ONLY_MS);
+    this._waitTimer = window.setInterval(() => this._tick(), TICK_MS);
   }
 
   /**
@@ -113,13 +124,9 @@ class DisconnectionOverlay {
       clearInterval(this._countdownInterval);
       this._countdownInterval = null;
     }
-    if (this._messageTimer) {
-      clearInterval(this._messageTimer);
-      this._messageTimer = null;
-    }
-    if (this._revealTimeout) {
-      clearTimeout(this._revealTimeout);
-      this._revealTimeout = null;
+    if (this._waitTimer) {
+      clearInterval(this._waitTimer);
+      this._waitTimer = null;
     }
     if (this._element) {
       this._element.remove();
@@ -131,12 +138,22 @@ class DisconnectionOverlay {
   }
 
   /**
-   * Write the wording for the current wait into the message line.
+   * Advance the wait, then reveal the info block once the spinner-only grace
+   * period has passed and keep its wording current.
    * @private
    */
-  _updateMessage() {
-    if (!this._messageElement) return;
-    this._messageElement.textContent = messageForWait(Date.now() - this._shownAt);
+  _tick() {
+    const now = Date.now();
+    this._waitedMs += Math.min(now - this._lastTickAt, MAX_TICK_MS);
+    this._lastTickAt = now;
+
+    // The info block is always laid out (reserving its space so nothing
+    // shifts); it's only kept invisible during the grace period.
+    if (this._waitedMs < SPINNER_ONLY_MS || !this._infoElement) return;
+    if (this._messageElement) {
+      this._messageElement.textContent = messageForWait(this._waitedMs);
+    }
+    this._infoElement.classList.add('disconnection-overlay__info--visible');
   }
 
   /**
