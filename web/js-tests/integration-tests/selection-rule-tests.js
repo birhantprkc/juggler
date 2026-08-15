@@ -253,9 +253,8 @@ export const selectionNewThreadAutoOpens = {
       goal: 'Investigate',
       prompt: 'Look at the code'
     }),
-    // Thread: respond and close via return_result (threads no longer
-    // auto-close on a plain text reply)
-    toolUseResponse('call_2', 'return_result', { result: 'Found the issue.' }),
+    // Thread: reply — the run comes to rest on it and returns it
+    textResponse('Found the issue.'),
     // Root: summarize
     textResponse('Thread completed.')
   ],
@@ -307,14 +306,13 @@ export const selectionContinueInNewThread = {
       goal: 'First task',
       prompt: 'Do the first thing'
     }),
-    // Thread A: respond and close via return_result
-    toolUseResponse('call_2', 'return_result', { result: 'First task done.' }),
+    // Thread A: reply — the run comes to rest on it
+    textResponse('First task done.'),
     // Root: summarize thread A result
     textResponse('Task A completed.'),
     // Continuation thread B (created inside thread A by continueInNewThread):
-    // respond and close via return_result so continueInNewThread (which awaits
-    // the new thread's result) resolves — a thread no longer auto-closes on text.
-    toolUseResponse('cont1', 'return_result', { result: 'Continuation complete.' })
+    // its reply settles the run, which is what continueInNewThread awaits.
+    textResponse('Continuation complete.')
   ],
 
   operations: [
@@ -370,8 +368,8 @@ export const selectionAutoSelectInSubThread = {
     }),
     // Thread LLM turn 1: write a file (auto-executes, should be auto-selected in thread column)
     toolUseResponse('call_2', 'write', { file_path: 'sub-file.txt', content: 'hello' }, 'Writing...'),
-    // Thread LLM turn 2: close via return_result after the write completes
-    toolUseResponse('call_3', 'return_result', { result: 'File written successfully.' }),
+    // Thread LLM turn 2: reply once the write completes, settling the run
+    textResponse('File written successfully.'),
     // Root: summarize
     textResponse('Thread finished.')
   ],
@@ -440,8 +438,8 @@ export const selectionAutoSelectInRootAfterThread = {
       goal: 'Analyse',
       prompt: 'Look around'
     }),
-    // Thread: close via return_result so the thread finishes
-    toolUseResponse('ret1', 'return_result', { result: 'Analysis done.' }),
+    // Thread: reply, settling the run so the thread finishes
+    textResponse('Analysis done.'),
     // Root continues after thread finishes: write a file (should be auto-selected in root column)
     toolUseResponse('call_2', 'write', { file_path: 'root-file.txt', content: 'data' }, 'Writing root file.'),
     textResponse('All done.')
@@ -843,7 +841,7 @@ export const selectionResizeHandleTracksLogicalOrder = {
       prompt: 'Write rh-file.txt'
     }),
     toolUseResponse('call_2', 'write', { file_path: 'rh-file.txt', content: 'hello' }, 'Writing...'),
-    toolUseResponse('call_3', 'return_result', { result: 'File written successfully.' }),
+    textResponse('File written successfully.'),
     textResponse('Thread finished.')
   ],
 
@@ -921,7 +919,7 @@ export const selectionRightmostConversationKeepsResizeHandle = {
       prompt: 'Write rkh-file.txt'
     }),
     toolUseResponse('call_2', 'write', { file_path: 'rkh-file.txt', content: 'hello' }, 'Writing...'),
-    toolUseResponse('call_3', 'return_result', { result: 'File written successfully.' }),
+    textResponse('File written successfully.'),
     textResponse('Thread finished.')
   ],
 

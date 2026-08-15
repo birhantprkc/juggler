@@ -16,7 +16,7 @@ import {
  *
  * The fold is performed worker-side (the single Go fold, shared with
  * auto-compaction): every content item is moved into a new bounded-compaction
- * thread that the worker summarises via `return_result`. The conversation then
+ * thread that the worker summarises with its folded-compaction summariser. The conversation then
  * contains exactly one thread tile whose `result` is the summary. Standard undo
  * reverses fold + summary as one group.
  */

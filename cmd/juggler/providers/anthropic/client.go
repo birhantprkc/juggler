@@ -324,16 +324,16 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 	// Add tools if provided
 	if len(req.Tools) > 0 {
 		params.Tools = convertTools(req.Tools)
-		// Honour a forced tool choice (e.g. a plugin forcing return_result).
-		// Only meaningful when tools are present.
+		// Honour a forced tool choice set by a plugin. Only meaningful when
+		// tools are present.
 		if tc, ok := convertToolChoice(req.ToolChoice); ok {
 			params.ToolChoice = tc
 		}
 	}
 
 	// Extended thinking. Anthropic forbids a forced tool_choice (type "tool" or
-	// "any") together with thinking — a hard 400 — so a forced-tool turn (e.g.
-	// /compact forcing return_result) wins and drops thinking for that turn.
+	// "any") together with thinking — a hard 400 — so a forced-tool turn wins
+	// and drops thinking for that turn.
 	// Temperature is never set here, which thinking also requires.
 	if budget, ok := thinkingBudgetForLevel(c.model, req.ThinkingLevel, maxTokens); ok && !forcesTool(req.ToolChoice) {
 		params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)

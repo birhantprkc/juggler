@@ -74,7 +74,6 @@ export const INTERACTION_KIND = {
  * @typedef {import('./context-item-types.js').ContextItemManifest} ContextItemManifest
  * @typedef {import('./context-item-types.js').SubthreadSpec} SubthreadSpec
  * @typedef {import('./context-item-types.js').SubthreadBuildContext} SubthreadBuildContext
- * @typedef {import('./context-item-types.js').SubthreadErrorFallback} SubthreadErrorFallback
  */
 
 // ============================================================================
@@ -463,8 +462,8 @@ class ContextItem {
    * Decide whether this invocation runs as a subthread, and how to seed it.
    * Only consulted when the MANIFEST sets `delegatesToSubthread: true`. Runs in
    * the browser (engine), after `validate()`. Returning a spec delegates the
-   * call to a child agent turn (whose `return_result` becomes this tool's
-   * result); returning `null` runs the ordinary client-side `execute()`.
+   * call to a child agent run (whose last message becomes this tool's result);
+   * returning `null` runs the ordinary client-side `execute()`.
    * [Context: engine]
    * @param {Record<string, unknown>} toolInput - Validated tool input.
    * @param {SubthreadBuildContext} ctx - { conversation, session, signal }.
@@ -473,22 +472,6 @@ class ContextItem {
   buildSubthreadSpec(toolInput, ctx) {
     void toolInput;
     void ctx;
-    return null;
-  }
-
-  /**
-   * Optional fallback invoked when a delegated child ends without a result
-   * (it errored, or ended without calling return_result and left no clean
-   * trailing text). Return `{ result }` to deliver that text as the tool_result
-   * instead of a default error, or `null` to accept the default.
-   * [Context: engine]
-   * @param {Error} error - Why the child failed / ended open.
-   * @param {Record<string, unknown>} toolInput - The original validated input.
-   * @returns {Promise<SubthreadErrorFallback | null> | SubthreadErrorFallback | null} Fallback result, or null for the default (base: null)
-   */
-  onSubthreadError(error, toolInput) {
-    void error;
-    void toolInput;
     return null;
   }
 

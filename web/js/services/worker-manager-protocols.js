@@ -226,35 +226,6 @@ export function sendBuildSubthreadSpecResponse(wm, conversationId, requestId, sp
   });
 }
 
-/**
- * Dispatch a subthread-error request from the worker to the registered engine
- * callback (set via setOnSubthreadErrorRequest).
- * @param {any} wm
- * @param {string} conversationId
- * @param {any} data - {requestId, toolName, toolInput, reason}
- * @returns {Promise<void>}
- */
-export async function handleSubthreadError(wm, conversationId, data) {
-  if (!wm._onSubthreadErrorRequest) return;
-  await loadAndFlush(wm, conversationId);
-  wm._onSubthreadErrorRequest(data, conversationId);
-}
-
-/**
- * Send an onSubthreadError fallback result back to the worker.
- * @param {any} wm
- * @param {string} conversationId
- * @param {string} requestId
- * @param {string} result - '' → use default error result
- */
-export function sendSubthreadErrorResponse(wm, conversationId, requestId, result) {
-  wm.sendToWorker(conversationId, {
-    type: 'subthread-error-response',
-    requestId,
-    result: result || ''
-  });
-}
-
 // ── approval-request + tool-action mutations ─────────────────────────
 
 /**
@@ -481,7 +452,7 @@ function flushPendingSyncs(c) {
  * Ensure the engine's copy of a conversation is loaded, then flush its batched-
  * but-unapplied syncs so any state the worker pushed ahead of this command is
  * visible. The shared preamble for every worker-driven engine command
- * (render-context-items, build-subthread-spec, subthread-error, evaluate-tool,
+ * (render-context-items, build-subthread-spec, evaluate-tool,
  * execute-tool, cancel-tool). Returns the loaded conversation, or null if it
  * could not be loaded.
  * @param {any} wm - WorkerManager instance

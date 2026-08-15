@@ -13,6 +13,8 @@ of changes; this project follows semantic versioning.
 - Each item's properties header shows its token cost, exact when that info is available
 - The transaction view stays open as you browse, following whichever item is selected
 - The explore_code tool is now query_code, shown as "Script"; existing conversations keep working
+- Sub-threads are resumable sessions the agent can ask again, keeping everything they already worked out
+- Each call into a sub-thread gets its own tile, holding the answer that call was given
 
 ## [0.5.6] - 2026-08-14
 

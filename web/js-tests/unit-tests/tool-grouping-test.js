@@ -511,9 +511,6 @@ export async function runTests() {
         statusMessage: 'Running…',
         showSpinner: true,
         nextSteps: 'next: ship it',
-        showAddContextItem: true,
-        showCloseThread: true,
-        showCloseWithLastMessage: true,
         showDuplicateTab: true,
         busyItemMessageId: 'it_1',
       });
@@ -529,7 +526,7 @@ export async function runTests() {
       assert(footer.querySelector('.llm-busy-text')?.textContent === 'Running…',
         'the strip carries the status its column computed for the run');
       assert(hidden('footer-idle'),
-        'no thread controls: Continue, Close, Duplicate and Add Context Item all act on the parent thread');
+        'no thread controls: Continue, Duplicate and Add Context Item all act on the parent thread');
       assert(hidden('token-display'),
         'no token meter: it counts the whole thread, not the run of tool rows on screen');
       assert(hidden('.footer-pause-btn') && hidden('.footer-stop-btn'),
@@ -538,7 +535,7 @@ export async function runTests() {
       assert(!footer.querySelector('footer-processing')?.dataset.messageId,
         'no click-to-select — the busy row is already on screen in this column');
 
-      footer.update({ isProcessing: false, canContinue: true, showAddContextItem: true });
+      footer.update({ isProcessing: false, canContinue: true });
       assert(footer.classList.contains('hidden'),
         'a settled run leaves no footer at all, so the column ends at its last row');
 

@@ -5,17 +5,12 @@
 /**
  * Integration Tests: Composer controls during an active turn
  *
- * The composer exposes controls (New Thread button, slash-commands menu,
- * Close-thread button) that remain clickable while an LLM turn is in flight.
- * These tests pin the worker mid-turn with a paused mock and exercise each
- * control, asserting the active-turn behaviour:
- *
- *   - /thread (new-thread button + slash menu): rejects the request without
- *     cancelling the live turn and asks the user to wait.
- *   - Close thread: previously a non-slash summary message that hit the
- *     `if (isProcessing) return` guard in conversation.sendMessage and was
- *     silently DROPPED mid-turn. Now MessageThread.close() preempts the live
- *     turn (worker-truth cancel) and delivers the summary prompt.
+ * The composer exposes controls (the New Thread button, the slash-commands
+ * menu) that remain clickable while an LLM turn is in flight. These tests pin
+ * the worker mid-turn with a paused mock and exercise each control, asserting
+ * the active-turn behaviour: /thread (new-thread button + slash menu) rejects
+ * the request without cancelling the live turn and asks the user to wait, and
+ * the new-thread button with draft text does not auto-run the thread.
  * @module integration-tests/composer-turn-guard-tests
  */
 
@@ -67,46 +62,6 @@ function assertThreadOpenAndEmpty(thread, testName) {
   }
 }
 
-/**
- * @param {string} result
- * @returns {import('../utilities/integration-test-runner.js').MockResponse} A return_result tool response.
- */
-function returnResultResponse(result) {
-  return toolUseResponse('tu-summary', 'return_result', { result }, undefined);
-}
-
-/**
- * Recursively assert no item anywhere (parent or nested thread) is left in
- * state='running' — the signature of a turn that was mutated out from under
- * itself instead of being cancelled-and-settled first.
- * @param {any} conversation
- * @param {string} testName
- */
-function assertNoOrphanedRunning(conversation, testName) {
-  /**
-   * @param {any[]} items
-   * @param {string} path
-   */
-  const walk = (items, path) => {
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      if (it.get?.('state') === 'running') {
-        throw new Error(
-          `${testName}: item ${path}[${i}] (type=${it.get?.('type')}) left in ` +
-					`state='running' — the live turn was not cancelled before the control acted`
-        );
-      }
-      if (it.get?.('type') === 'thread') {
-        const sub = it.get?.('items');
-        if (sub && typeof sub.toArray === 'function') {
-          walk(sub.toArray(), `${path}[${i}].items`);
-        }
-      }
-    }
-  };
-  walk(conversation.rootMessageThread.items, 'root');
-}
-
 // ============================================================================
 // TEST 1: /thread fired mid-turn is rejected without cancelling the live turn
 // ============================================================================
@@ -152,56 +107,6 @@ export const threadMidTurnCancelsAndNotifiesTest = {
     if (status && status !== 'idle') {
       throw new Error(`Original active turn did not settle after /thread was rejected: ${status}`);
     }
-  }
-};
-
-// ============================================================================
-// TEST 2: Closing a thread mid-turn preempts the live turn (no silent drop)
-// ============================================================================
-
-/**
- * A user-created thread is processing (paused mid-stream). The user clicks
- * "Close thread" which (today) dispatches a plain summary message — that hits
- * `if (isProcessing) return` in conversation.sendMessage and is SILENTLY
- * DROPPED, leaving the thread open forever. The fix routes close through
- * MessageThread.close(), which preempts the live turn (worker-truth cancel)
- * and then delivers the summary prompt so the thread closes with a result.
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const closeThreadMidTurnPreemptsTest = {
-  name: 'close-thread-mid-turn-preempts',
-  description: 'Closing a thread mid-turn cancels the live turn and delivers the summary prompt',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    // The thread turn: streams partial text then pauses (live in-flight).
-    textResponse('Partial thread work cut short by close.', { pauseBeforeReturn: true }),
-    // The close summary turn: the thread answers with return_result.
-    returnResultResponse('Summary after mid-turn close.')
-  ],
-
-  operations: [
-    // Create an empty user thread (pure Yjs mutation, no LLM turn).
-    { type: 'run-command', command: 'thread' },
-    { type: 'wait-for-state', condition: { hasThreadItem: true } },
-    // Send a message into the thread; it pauses mid-stream.
-    { type: 'send-thread-message-no-wait', message: 'Work on it' },
-    { type: 'wait-for-mock-paused' },
-    // Close the thread mid-turn. Without the fix this summary is silently
-    // dropped and the thread never gets a result (wait-for-state times out).
-    { type: 'close-thread', message: 'wrap up' },
-    { type: 'wait-for-state', condition: { completedThreadCount: 1 } }
-  ],
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'thread', itemId: '$ITEM_2', result: 'Summary after mid-turn close.' }
-    ]
-  },
-
-  customAssertions: (conversation) => {
-    assertNoOrphanedRunning(conversation, 'close-thread-mid-turn-preempts');
   }
 };
 
@@ -302,7 +207,6 @@ export const newThreadWhileToolPendingDoesNotRunTest = {
 // Export all tests
 export const tests = [
   threadMidTurnCancelsAndNotifiesTest,
-  closeThreadMidTurnPreemptsTest,
   newThreadWithDraftDoesNotRunTest,
   newThreadWhileToolPendingDoesNotRunTest
 ];

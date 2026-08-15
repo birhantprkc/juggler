@@ -126,7 +126,7 @@ type Quirks struct {
 	// OpenAI-compatible upstreams reject a named tool_choice with a hard 400
 	// (DeepSeek/GLM/Kimi thinking modes, arbitrary gateways behind
 	// openai-compatible/OpenRouter, local llama.cpp/Ollama), which would brick
-	// any flow that forces a tool (e.g. /compact forcing return_result). When
+	// any flow that forces a tool. When
 	// downgraded, the caller's prompt still directs the model to the tool, so
 	// auto elicits the same call; a plain-text answer is handled by the caller's
 	// text fallback. Only first-party OpenAI-shaped providers proven to honour

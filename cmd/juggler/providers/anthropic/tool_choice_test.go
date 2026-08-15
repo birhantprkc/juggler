@@ -22,7 +22,7 @@ func TestConvertToolChoice(t *testing.T) {
 	}
 
 	// tool → {"type":"tool","name":...}
-	tc, ok := convertToolChoice(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"})
+	tc, ok := convertToolChoice(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "submit_answer"})
 	if !ok {
 		t.Fatal("tool mode must be ok")
 	}
@@ -31,8 +31,8 @@ func TestConvertToolChoice(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	js := string(b)
-	if !strings.Contains(js, `"type":"tool"`) || !strings.Contains(js, `"name":"return_result"`) {
-		t.Errorf("forced-tool JSON = %s, want type:tool name:return_result", js)
+	if !strings.Contains(js, `"type":"tool"`) || !strings.Contains(js, `"name":"submit_answer"`) {
+		t.Errorf("forced-tool JSON = %s, want type:tool name:submit_answer", js)
 	}
 
 	// tool with empty name is invalid → unset (don't send a broken request).

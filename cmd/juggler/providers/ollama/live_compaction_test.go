@@ -84,17 +84,17 @@ func TestLiveOllamaFinalCompactionShape(t *testing.T) {
 		return strings.TrimSpace(b.String()), err
 	}
 
-	// A forced single-tool request: the return_result tool plus a forced tool
-	// choice, the shape the worker withholds from this provider.
+	// A forced single-tool request: one summary tool plus a forced tool choice,
+	// the shape the worker withholds from this provider.
 	toolReq := provider.MessageRequest{
-		SystemPrompt: "Create the final handoff summary. Return the summary via return_result.",
+		SystemPrompt: "Create the final handoff summary. Return the summary via submit_summary.",
 		Messages:     []provider.Message{{Type: "user", Content: transcript}},
 		Tools: []provider.ToolDefinition{{
-			Name:        "return_result",
-			Description: `Return the final summary in the required "result" string.`,
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"result":{"type":"string"}},"required":["result"]}`),
+			Name:        "submit_summary",
+			Description: `Return the final summary in the required "summary" string.`,
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`),
 		}},
-		ToolChoice:         &provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"},
+		ToolChoice:         &provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "submit_summary"},
 		BypassContextGuard: true,
 	}
 	toolText, toolErr := submit(t, toolReq)

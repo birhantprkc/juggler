@@ -140,11 +140,11 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 			w.sendCorruptionRepaired(repairedCount)
 		}
 
-		// A thread with no result is OPEN, not stuck: a thread closes only on
-		// an explicit return_result call (or a hard error). So a resultless
-		// thread must survive a reload / server restart as open — there is no
-		// repair to do here. (A non-terminal tool-action left mid-flight is
-		// handled by CancelStaleToolActions below + the requestLLM re-drive.)
+		// A thread with no summary is stopped, not stuck — a thread is running
+		// or stopped, never closed — so it must survive a reload / server
+		// restart exactly as it was, free to run again. There is no repair to
+		// do here. (A non-terminal tool-action left mid-flight is handled by
+		// CancelStaleToolActions below + the requestLLM re-drive.)
 
 		// Cancel tool-actions left running when the app was killed
 		w.CancelStaleToolActions()
@@ -309,17 +309,15 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	w.suppressReconcileAfterHistoryNavUntilMs = 0
 
 	// Set thread context for this request. Validate the target thread BEFORE
-	// mutating w.thread, so an early return (completed thread / missing items
-	// array) can't leave w.thread pointing at a half-set thread from this request.
+	// mutating w.thread, so an early return (missing items array) can't leave
+	// w.thread pointing at a half-set thread from this request.
+	//
+	// A thread carrying a result is NOT refused. A result is the thread's current
+	// summary, not a terminal state: a thread is running or it is stopped, and a
+	// stopped thread accepts a message and runs again. This is the same property
+	// a parent LLM relies on to invoke a subthread more than once, so the human
+	// path and the delegation path are one mechanism.
 	if msg.ThreadItemID != "" {
-		// Guard: reject messages to completed threads
-		if threadYMap := w.doc.GetThreadYMap(msg.ThreadItemID); threadYMap != nil {
-			if result, _ := threadYMap.Get("result").(string); result != "" {
-				w.sendError("Thread is completed. Reopen it to send messages.", "")
-				return
-			}
-		}
-
 		itemsArray := w.doc.GetThreadItemsArray(msg.ThreadItemID)
 		if itemsArray == nil {
 			w.sendError(fmt.Sprintf("Thread item %s not found", msg.ThreadItemID), "")
@@ -327,17 +325,9 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		}
 		w.thread.itemID = msg.ThreadItemID
 		w.thread.itemsArray = itemsArray
-		// Arm the one-shot close only on the accepted path — a send that was
-		// queued above (worker busy) runs its turn later, unforced, exactly as a
-		// plain message would.
-		w.closeRequestThreadID = ""
-		if msg.CloseRequest {
-			w.closeRequestThreadID = msg.ThreadItemID
-		}
 	} else {
 		w.thread.itemID = ""
 		w.thread.itemsArray = nil
-		w.closeRequestThreadID = ""
 	}
 
 	// Add user message to doc before signaling the reducer.
@@ -707,13 +697,6 @@ func (w *ConversationWorker) handleBuildSubthreadSpecResponse(payload json.RawMe
 	}
 }
 
-func (w *ConversationWorker) handleSubthreadErrorResponse(payload json.RawMessage) {
-	select {
-	case w.subthreadErrorResultChan <- payload:
-	default:
-	}
-}
-
 func (w *ConversationWorker) handleYjsSync(payload json.RawMessage) {
 	var msg YjsSyncMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
@@ -1054,21 +1037,6 @@ func (w *ConversationWorker) cancelAndWaitForIdle() {
 	}
 }
 
-func (w *ConversationWorker) handleReopenThread(payload json.RawMessage) {
-	var msg ReopenThreadMessage
-	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.log.Error("Failed to parse reopen-thread message: %v", err)
-		return
-	}
-	success := w.clearThreadResult(msg.ThreadItemID)
-	w.batcher.Flush()
-	w.reply(map[string]any{
-		"type":   "ack",
-		"ackId":  msg.AckID,
-		"result": success,
-	})
-}
-
 // handleResummarizeCompactionThread re-runs the folded-compaction summarizer
 // over a compaction thread's existing source: clear the committed summary,
 // re-arm the one-shot needsStrategyRun trigger, then drive the pickup. When the
@@ -1094,25 +1062,6 @@ func (w *ConversationWorker) handleResummarizeCompactionThread(payload json.RawM
 	if handled {
 		w.checkForNewThreads()
 	}
-}
-
-// handleCloseThreadWithLastMessage closes an open thread by promoting its
-// trailing assistant message as the result — the footer's "Close with last
-// message" action. No LLM turn: it reuses the same trailing-assistant-text
-// selection the auto-fallback once applied, now triggered only on demand.
-func (w *ConversationWorker) handleCloseThreadWithLastMessage(payload json.RawMessage) {
-	var msg CloseThreadWithLastMessageMessage
-	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.log.Error("Failed to parse close-thread-with-last-message message: %v", err)
-		return
-	}
-	success := w.closeThreadWithLastMessage(msg.ThreadItemID)
-	w.batcher.Flush()
-	w.reply(map[string]any{
-		"type":   "ack",
-		"ackId":  msg.AckID,
-		"result": success,
-	})
 }
 
 // handleClearHistory clears all items (unified storage includes context items).

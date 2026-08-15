@@ -26,7 +26,7 @@
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import { hasPendingApprovalInTree, isThreadClosed } from '../../js/model/thread-navigation.js';
+import { hasPendingApprovalInTree } from '../../js/model/thread-navigation.js';
 import { getThreadStatus } from '../../js/utils/thread-display.js';
 import '../../js/components/conversation-bar.js';
 import '../../js/components/conversation-area.js';
@@ -227,35 +227,36 @@ export async function runTests() {
   }
 
   // --- 6: getThreadStatus — awaiting trumps a non-empty `result` ---
-  // On reload, a crashed thread gets result="Thread was interrupted". If that
-  // thread (or a descendant) is actually parked on a pending approval, the
-  // pending signal — a pure function of the live tree — must beat the stale
-  // result so the tile renders orange (paused), NOT closed. We never write the
-  // "has a pending child" property into the data model; it is always derived.
+  // A `result` is the thread's summary, not a terminal state. If the thread (or
+  // a descendant) is parked on a pending approval, the pending signal — a pure
+  // function of the live tree — must beat the summary so the tile renders
+  // orange (paused). We never write the "has a pending child" property into the
+  // data model; it is always derived.
   try {
-    const interruptedButWaiting = buildRoot([thread('I1', [toolAction('pending')])]).get(0);
-    interruptedButWaiting.set('result', 'Thread was interrupted');
-    const sI = getThreadStatus(interruptedButWaiting, null);
+    const summarisedButWaiting = buildRoot([thread('I1', [toolAction('pending')])]).get(0);
+    summarisedButWaiting.set('result', 'What I found');
+    const sI = getThreadStatus(summarisedButWaiting, null);
     assert(sI.kind === 'paused',
-      `a thread with a stale 'interrupted' result but a live pending approval ` +
-			`must be 'paused', not 'closed'; got '${sI.kind}'`);
+      `a thread with a summary but a live pending approval must be 'paused'; ` +
+			`got '${sI.kind}'`);
 
     // Same when the pending approval is in a nested sub-thread and only the
-    // ancestor carries the result (the ancestor must still light up).
-    const ancestorClosed = buildRoot([thread('A1', [thread('B1', [toolAction('pending')])])]).get(0);
-    ancestorClosed.set('result', 'Thread was interrupted');
-    const sA = getThreadStatus(ancestorClosed, null);
+    // ancestor carries the summary (the ancestor must still light up).
+    const ancestorSummarised = buildRoot([thread('A1', [thread('B1', [toolAction('pending')])])]).get(0);
+    ancestorSummarised.set('result', 'What I found');
+    const sA = getThreadStatus(ancestorSummarised, null);
     assert(sA.kind === 'paused',
-      `an ancestor with a result but a descendant awaiting approval must be ` +
+      `an ancestor with a summary but a descendant awaiting approval must be ` +
 			`'paused' so the orange route stays unbroken; got '${sA.kind}'`);
 
-    // Genuinely closed (result set, nothing pending) still reports 'closed'.
-    const reallyClosed = buildRoot([thread('C2', [toolAction('completed')])]).get(0);
-    reallyClosed.set('result', 'All done');
-    const sC = getThreadStatus(reallyClosed, null);
-    assert(sC.kind === 'closed',
-      `a thread with a result and no pending approval must report 'closed'; ` +
-			`got '${sC.kind}'`);
+    // At rest with a summary and nothing pending → 'idle', and the tile paints
+    // the summary rather than a status line (message is blank).
+    const atRest = buildRoot([thread('C2', [toolAction('completed')])]).get(0);
+    atRest.set('result', 'All done');
+    const sC = getThreadStatus(atRest, null);
+    assert(sC.kind === 'idle' && sC.showSummary === true,
+      `a thread at rest with a summary must report 'idle' and paint the ` +
+			`summary; got '${sC.kind}'/showSummary=${sC.showSummary}`);
 
     passed++;
   } catch (e) {
@@ -263,58 +264,56 @@ export async function runTests() {
     errors.push(`getThreadStatus awaiting-trumps-result: ${msg(e)}`);
   }
 
-  // --- 7: isThreadClosed — the one canonical "is this thread finished" seam ---
-  // Shared by the tile colour, composer-box placement, AND the footer's
-  // Reopen/Continue, so they can never disagree. "Closed" = non-empty result
-  // AND no live (non-terminal) tool anywhere inside. Crucially this covers
-  // RUNNING, not just pending: a stale 'interrupted' result on a thread whose
-  // tool is mid-execution must still read open — that is the bounce fix (the
-  // composer was hopping parent↔child as the tool cycled pending→running
-  // because the running phase fell through to the stale result).
+  // --- 7: a summary is not a terminal state ---
+  // There is no closed/open flag: a thread is running or it is stopped. So a
+  // `result` must never by itself make a thread read as finished — liveness
+  // decides, and it is derived at point of use. This covers RUNNING and
+  // APPROVED, not just pending: a summary on a thread whose tool is
+  // mid-execution must still read as working, otherwise the composer hops
+  // parent↔child as the tool cycles pending→running.
   try {
     for (const liveState of ['pending', 'approved', 'running']) {
-      const waiting = buildRoot([thread(`W_${liveState}`, [toolAction(liveState)])]).get(0);
-      waiting.set('result', 'Thread was interrupted');
-      assert(isThreadClosed(waiting) === false,
-        `a thread with a stale result but a ${liveState} tool must NOT be closed`);
+      const working = buildRoot([thread(`W_${liveState}`, [toolAction(liveState)])]).get(0);
+      working.set('result', 'An earlier summary');
+      assert(!getThreadStatus(working, null).showSummary,
+        `a thread with a summary but a ${liveState} tool is still working — it ` +
+				`must show a status block, not paint the summary over live work`);
 
       const nested = buildRoot([thread(`N_${liveState}`, [thread('inner', [toolAction(liveState)])])]).get(0);
-      nested.set('result', 'Thread was interrupted');
-      assert(isThreadClosed(nested) === false,
-        `a thread whose descendant has a ${liveState} tool must NOT be closed, even with a result`);
+      nested.set('result', 'An earlier summary');
+      assert(!getThreadStatus(nested, null).showSummary,
+        `a thread whose descendant has a ${liveState} tool must not paint its ` +
+				`summary, even though it has one`);
     }
 
-    const finished = buildRoot([thread('F1', [toolAction('completed')])]).get(0);
-    finished.set('result', 'All done');
-    assert(isThreadClosed(finished) === true,
-      'a thread with a result and only terminal tools must be closed');
+    // Terminal tools (completed / cancelled) leave the thread at rest.
+    for (const terminal of ['completed', 'cancelled']) {
+      const done = buildRoot([thread(`F_${terminal}`, [toolAction(terminal)])]).get(0);
+      done.set('result', 'All done');
+      assert(getThreadStatus(done, null).showSummary === true,
+        `a ${terminal} tool is terminal → the thread is at rest and paints its summary`);
+    }
 
-    const cancelledClosed = buildRoot([thread('F2', [toolAction('cancelled')])]).get(0);
-    cancelledClosed.set('result', 'Stopped');
-    assert(isThreadClosed(cancelledClosed) === true,
-      'cancelled tools are terminal → a thread with a result is closed');
-
+    // No summary yet is equally "at rest" — it just has nothing to show.
     const noResult = buildRoot([thread('R1', [toolAction('completed')])]).get(0);
-    assert(isThreadClosed(noResult) === false,
-      'a thread with no result is not closed');
-
-    assert(isThreadClosed(null) === false, 'null thread → not closed');
+    const sN = getThreadStatus(noResult, null);
+    assert(sN.kind === 'idle' && !sN.showSummary,
+      'a thread with no summary still reports idle, but has nothing to paint');
 
     passed++;
   } catch (e) {
     failed++;
-    errors.push(`isThreadClosed seam: ${msg(e)}`);
+    errors.push(`summary is not terminal: ${msg(e)}`);
   }
 
-  // --- 8: conversation-area._updateThreadHeaderStatus — the third reader ---
-  // The column's own header observer must ALSO treat a pending-approval thread
-  // as not-finished, so it doesn't force the composer hidden via inline style.
-  // Regression: it read raw `result` and set inline display:none on a waiting
-  // sub-thread that still carried a stale "interrupted" result from a reload —
-  // while the tab's data-hide-input walk wanted to SHOW it — so NEITHER the
-  // parent (hidden by the tab) nor the sub-thread (hidden inline) showed a box.
-  // The active branch must clear the inline style ('' → defer to CSS), never
-  // force-show, so the tab stays the single authority on which column wins.
+  // --- 8: a thread column never hides its own composer ---
+  // Every thread accepts a message: one carrying a summary is stopped, not
+  // finished, and typing into it runs it again — the same property a parent LLM
+  // relies on to invoke a subthread more than once. So the column's header
+  // observer must never force the composer hidden by inline style, whatever
+  // sits on the thread. Whether a column shows a box at all is the tab's
+  // business (data-hide-input, group columns only), so an inline display here
+  // could only fight it.
   try {
     const el = /** @type {any} */ (document.createElement('conversation-area'));
     document.body.appendChild(el); // connectedCallback → render() builds composer-box + header
@@ -325,22 +324,19 @@ export async function runTests() {
     assert(!!composer, 'conversation-area must render composer-box');
 
     try {
-      // Waiting sub-thread carrying a stale interrupted result: NOT finished
-      // → input deferred to CSS (inline display cleared).
       const waiting = buildRoot([thread('H1', [toolAction('pending')])]).get(0);
-      waiting.set('result', 'Thread was interrupted');
-      el._updateThreadHeaderStatus(waiting);
+      waiting.set('result', 'An earlier summary');
+      el._refreshThreadFooter(waiting);
       assert(composer.style.display !== 'none',
-        `waiting thread with stale result must NOT force composer-box hidden; ` +
+        `a thread awaiting approval must NOT force composer-box hidden; ` +
 				`inline display was "${composer.style.display}"`);
 
-      // Genuinely finished thread (result, nothing pending): force hidden.
       const done = buildRoot([thread('H2', [toolAction('completed')])]).get(0);
       done.set('result', 'All done');
-      el._updateThreadHeaderStatus(done);
-      assert(composer.style.display === 'none',
-        `a genuinely finished thread must hide its composer; ` +
-				`inline display was "${composer.style.display}"`);
+      el._refreshThreadFooter(done);
+      assert(composer.style.display !== 'none',
+        `a thread at rest with a summary keeps its composer — it is stopped, ` +
+				`not finished; inline display was "${composer.style.display}"`);
 
       passed++;
     } finally {
@@ -348,7 +344,7 @@ export async function runTests() {
     }
   } catch (e) {
     failed++;
-    errors.push(`_updateThreadHeaderStatus third reader: ${msg(e)}`);
+    errors.push(`_refreshThreadFooter never hides the composer: ${msg(e)}`);
   }
 
   return { passed, failed, errors };

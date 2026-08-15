@@ -2338,7 +2338,6 @@ properties-panel-controls:empty {
    the inline text-area copy button and the file-path-row copy button. */
 .properties-panel-inline-copy.copied::after,
 .properties-panel-filepath-btn.copied::after,
-.thread-result-copy-btn.copied::after,
 .message-copy-button.copied::after,
 .code-copy-button.copied::after,
 settings-panel .connectivity-url-copy.copied::after {
@@ -2392,8 +2391,7 @@ settings-panel .connectivity-url-copy.copied::after {
 @media (prefers-reduced-motion: reduce) {
     .properties-panel-inline-copy.copied::after,
     .properties-panel-filepath-btn.copied::after,
-    .thread-result-copy-btn.copied::after,
-    .message-copy-button.copied::after,
+        .message-copy-button.copied::after,
     .code-copy-button.copied::after,
     settings-panel .connectivity-url-copy.copied::after {
         animation: none;

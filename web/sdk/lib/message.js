@@ -506,7 +506,7 @@ export function createSystemReminderMessage({ content, source }) {
  * The nested `items` Y.Array is created separately when inserting into Yjs.
  * @param {object} params - Parameters for the thread
  * @param {string} params.goal - What this thread is for
- * @param {string|null} [params.result=null] - Result set by return_result
+ * @param {string|null} [params.result=null] - The thread's summary, when it already has one
  * @returns {ThreadMessage} The created thread message
  */
 export function createThreadMessage({ goal, result }) {

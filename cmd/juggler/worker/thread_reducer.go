@@ -175,17 +175,20 @@ func decideNextAction(items []ConversationItem, activity string, isRoot bool, ex
 	case ItemTypeAssistant:
 		// Assistant text-only reply (no tool-actions after it). Rest at idle
 		// for root AND nested threads alike: ending a turn with plain
-		// assistant text is the normal open resting state of a thread, not a
-		// close. A thread closes only when the LLM calls return_result (which
-		// stamps the result) — or when the user closes it from the footer. A
-		// turn that ends on an error rests the same way (see the ItemTypeError
-		// case): the error is just an item in the thread's history, not a
-		// verdict that closes the thread.
+		// assistant text is a thread's normal resting state. Coming to rest
+		// settles the run — that text is what the run returns, and what it
+		// writes as the thread's summary — but it ends nothing: the thread is
+		// free to run again. A turn that ends on an error rests the same way
+		// (see the ItemTypeError case): the error is just an item in the
+		// thread's history, not a verdict on the thread.
 		return ActionNone
 
 	case ItemTypeThread:
-		// A nested thread is the effective last item.
-		if hasThreadResult(last) {
+		// A nested thread is the effective last item. Asked of the run THIS item
+		// stands for: a call into a session already called stands as its own alias
+		// item, which owns no transcript, and asking the alias whether it has one
+		// would rest this thread on a run that already answered.
+		if itemRunSettled(items, last) {
 			// Child finished. Only dispatch if activity signals intent
 			// (same pattern as tool-batch completion). Without the gate,
 			// undo would re-dispatch on a stale thread-with-result.
@@ -416,11 +419,16 @@ func (w *ConversationWorker) tryReconcile() {
 			//
 			// Picking last-only would strand earlier siblings: after the
 			// last-spawned child completes, the loop terminates with
-			// !hasThreadResult(last)==false and the unfinished earlier
+			// !threadRunSettled(last)==false and the unfinished earlier
 			// siblings never get dispatched.
 			descended := false
 			for _, item := range effectiveItems(items) {
-				if item.Type != ItemTypeThread || hasThreadResult(item) {
+				// Asked of the THREAD, not of one call into it: descending is about
+				// finding a transcript with work left to do, and the thread's
+				// latest run is what says whether there is any. An alias holds no
+				// transcript at all — the thread it is a view of stands in this
+				// same array and is considered on its own.
+				if item.Type != ItemTypeThread || item.AliasOf != "" || threadRunSettled(item) {
 					continue
 				}
 				// Never descend into a brand-new EMPTY child thread. The only
@@ -547,14 +555,13 @@ func (w *ConversationWorker) dispatchCallLLMOnThread(threadItemID string) {
 	w.runStrategyLoop("", true)
 }
 
-// selectThreadFallbackResult returns the trailing assistant text suitable to
-// stand in as a thread result without an explicit return_result call. It is
-// used on demand by the footer's "Close with last message" action (handled in
-// the worker): it returns the content ONLY when the last effective item is a
-// non-empty assistant message — i.e. the LLM produced a final reply. Any
+// selectThreadFallbackResult returns a run's trailing assistant text — what a
+// run at rest returns to its caller, and what it writes as the thread's
+// summary. It yields the content ONLY when the last effective item is a
+// non-empty assistant message, i.e. the LLM produced a final reply. Any
 // trailing tool-action, meta-tool-result, user, or thread item means there is
-// no clean trailing reply to promote, so it returns "" (the caller then leaves
-// the thread open rather than stamping stale or unrelated text as the result).
+// no clean trailing reply, so it returns "" and the run settles as barren
+// rather than passing stale or unrelated text off as an answer.
 func selectThreadFallbackResult(items []ConversationItem) string {
 	eff := effectiveItems(items)
 	if len(eff) == 0 {
@@ -567,74 +574,10 @@ func selectThreadFallbackResult(items []ConversationItem) string {
 	return last.Content
 }
 
-// writeThreadResult promotes a forced-close thread's trailing text as its
-// result in the one case a close was intended but not recorded: a turn MANDATED
-// to call return_result (a close request, or a thread's sticky forceTool)
-// answered in plain text instead because the provider can't honour a forced
-// tool_choice (claudecode degrades to text). Called from the strategy loop defer
-// when a turn ends; a no-op for every other ending.
-//
-// An error is NOT such a case. A turn that stops on an error is just a turn that
-// ended without closing — identical to one ending on plain assistant text: the
-// thread is left OPEN and resumable, with the error visible as an error item.
-// The thread closes only when the model calls return_result (which may itself
-// report the error as the result) or the user closes it from the footer. The
-// worker never fabricates a failure result on the thread's behalf.
-//
-// Resolves the thread Y.Map, reads its current result, scans the items array,
-// and writes the result — ALL under one ycrdtMu critical section. Splitting
-// these into separate lock windows was unsafe: between releases a concurrent
-// ApplySyncUpdate could tombstone the resolved YMap, leaving the cached
-// pointer dangling.
-func (w *ConversationWorker) writeThreadResult(threadItemID string) {
-	ycrdtMu.Lock()
-	wrote, resultLen := w.writeThreadResultLocked(threadItemID)
-	ycrdtMu.Unlock()
-	if wrote {
-		w.log.Info("[reducer] Wrote thread result for %s (%d chars)", threadItemID, resultLen)
-	}
-}
-
-// writeThreadResultLocked performs the resolve→read→write atomically; caller
-// MUST already hold ycrdtMu.
-func (w *ConversationWorker) writeThreadResultLocked(threadItemID string) (wrote bool, resultLen int) {
-	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
-	if threadYMap == nil {
-		return false, 0
-	}
-	if existingResult, _ := threadYMap.Get("result").(string); existingResult != "" {
-		return false, 0 // return_result already wrote it
-	}
-
-	// The sole ending that stamps a result here is a turn MANDATED to close via
-	// return_result — a close request (/close, the footer's summarise action) or
-	// a thread whose sticky forceTool pins it — that answered in plain text
-	// instead, because the provider couldn't honour the forced tool_choice
-	// (claudecode degrades to text). Promote that trailing assistant text so the
-	// mandated close isn't lost. Any other ending — plain text, or an error —
-	// leaves the thread OPEN: that is its normal resting state, resumable until a
-	// return_result (or the footer) closes it.
-	ft, _ := threadYMap.Get("forceTool").(string)
-	if ft != "return_result" && !w.closeRequested(threadItemID) {
-		return false, 0
-	}
-
-	arr := findThreadItemsArray(w.doc.getItems(), threadItemID)
-	if arr == nil {
-		return false, 0
-	}
-	resultText := selectThreadFallbackResult(w.doc.getItemsFromArrayLocked(arr))
-	if resultText == "" {
-		return false, 0
-	}
-
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		threadYMap.Set("result", resultText)
-	}, w.doc.authorID)
-	return true, len(resultText)
-}
-
-// clearThreadResult clears the result field of a completed thread, reopening it.
+// clearThreadResult discards a thread's summary — the first half of a
+// re-summarise — along with the mark that says a human authored it, so the run
+// that writes the new one is free to. It does not change what the thread can do:
+// a thread is running or stopped, and a stopped thread always accepts work.
 // Uses authorID as the transaction origin so the operation is tracked by the
 // UndoManager and can be undone. The null item created here has Go's clientID,
 // which is required for RedoItem to succeed when undoing the clear.
@@ -666,54 +609,6 @@ func (w *ConversationWorker) clearThreadResult(threadItemID string) bool {
 	}
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		threadYMap.Set("result", nil)
-	}, w.doc.authorID)
-	return true
-}
-
-// closeThreadWithLastMessage closes an open thread by promoting its trailing
-// assistant message as the result — the footer's "Close with last message"
-// action, with no LLM turn. Returns false if the thread is already closed or
-// has no clean trailing assistant reply to promote (selectThreadFallbackResult
-// yields ""), in which case the caller leaves it open. Written under authorID,
-// like clearThreadResult, so the close is a discrete undoable step.
-func (w *ConversationWorker) closeThreadWithLastMessage(threadItemID string) bool {
-	ycrdtMu.Lock()
-	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
-	if threadYMap == nil {
-		ycrdtMu.Unlock()
-		return false
-	}
-	if existingResult, _ := threadYMap.Get("result").(string); existingResult != "" {
-		ycrdtMu.Unlock()
-		return false // already closed
-	}
-	arr := findThreadItemsArray(w.doc.getItems(), threadItemID)
-	if arr == nil {
-		ycrdtMu.Unlock()
-		return false
-	}
-	resultText := selectThreadFallbackResult(w.doc.getItemsFromArrayLocked(arr))
-	ycrdtMu.Unlock()
-	if resultText == "" {
-		return false // no clean trailing assistant reply to promote
-	}
-
-	// StopCapturing outside ycrdtMu (it takes the undo manager's own lock).
-	w.tracker.StopCapturing()
-
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	// Re-resolve under the write lock — a concurrent sync update could have
-	// invalidated the pointer or set a result between lock windows.
-	threadYMap = findThreadYMap(w.doc.getItems(), threadItemID)
-	if threadYMap == nil {
-		return false
-	}
-	if existingResult, _ := threadYMap.Get("result").(string); existingResult != "" {
-		return false
-	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		threadYMap.Set("result", resultText)
 	}, w.doc.authorID)
 	return true
 }

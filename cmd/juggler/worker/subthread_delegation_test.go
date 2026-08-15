@@ -26,12 +26,28 @@ func countThreads(w *ConversationWorker) int {
 }
 
 // newDelegationHarness wires a worker with an in-test "engine" that answers the
-// subthread-delegation round-trips: build-subthread-spec is answered with the
-// supplied spec (nil → do not delegate), and subthread-error is answered with
-// an empty fallback. The offered tools include a delegating WebFetch so
+// build-subthread-spec round-trip with the supplied spec (nil → do not
+// delegate). The offered tools include a delegating WebFetch so
 // turnDelegatingTools routes its calls through the delegation path.
 func newDelegationHarness(t *testing.T, spec *SubthreadSpec, mocks []MockResponse) *ConversationWorker {
 	t.Helper()
+	return newDelegationHarnessSpecs(t, []*SubthreadSpec{spec}, mocks)
+}
+
+// newDelegationHarnessSpecs is newDelegationHarness with one spec per call, in
+// order; the last repeats once the list runs out. Consumed only on the worker's
+// own goroutine, which is what serialises the round-trip.
+func newDelegationHarnessSpecs(t *testing.T, specs []*SubthreadSpec, mocks []MockResponse) *ConversationWorker {
+	t.Helper()
+	next := 0
+	spec := func() *SubthreadSpec {
+		if len(specs) == 0 {
+			return nil
+		}
+		s := specs[min(next, len(specs)-1)]
+		next++
+		return s
+	}
 	w := NewConversationWorker("conv-deleg", "user:test")
 	t.Cleanup(func() { w.doc.Destroy() })
 
@@ -51,21 +67,13 @@ func newDelegationHarness(t *testing.T, spec *SubthreadSpec, mocks []MockRespons
 		if json.Unmarshal(b, &head) != nil {
 			return
 		}
-		switch head.Type {
-		case "build-subthread-spec":
+		if head.Type == "build-subthread-spec" {
 			resp, _ := json.Marshal(BuildSubthreadSpecResponse{
 				Type:      "build-subthread-spec-response",
 				RequestID: head.RequestID,
-				Spec:      spec,
+				Spec:      spec(),
 			})
 			w.subthreadSpecResultChan <- resp
-		case "subthread-error":
-			resp, _ := json.Marshal(SubthreadErrorResponse{
-				Type:      "subthread-error-response",
-				RequestID: head.RequestID,
-				Result:    "",
-			})
-			w.subthreadErrorResultChan <- resp
 		}
 	})
 	w.SetEngineClientID("engine")
@@ -105,8 +113,8 @@ func newDelegationHarness(t *testing.T, spec *SubthreadSpec, mocks []MockRespons
 
 // TestDelegatingToolDeliversChildResultToParent is the happy path: the LLM calls
 // a delegating tool (WebFetch with a prompt), the engine returns a spec, a child
-// thread runs and closes via return_result, and the child's result is delivered
-// as THIS tool's tool_result — the parent sees a well-formed WebFetch
+// thread runs and comes to rest, and what that run returns is delivered as THIS
+// tool's tool_result — the parent sees a well-formed WebFetch
 // tool_use/tool_result pair, exactly like create_thread.
 func TestDelegatingToolDeliversChildResultToParent(t *testing.T) {
 	spec := &SubthreadSpec{
@@ -122,12 +130,10 @@ func TestDelegatingToolDeliversChildResultToParent(t *testing.T) {
 			},
 			StopReason: "tool_use",
 		},
-		// Child thread: closes via return_result.
+		// Child thread: comes to rest on its reply.
 		{
-			Blocks: []LLMResponseBlock{
-				{Type: "tool_use", ID: "tu-ret-1", Name: "return_result", Input: json.RawMessage(`{"result":"The answer is 42."}`)},
-			},
-			StopReason: "tool_use",
+			Blocks:     []LLMResponseBlock{{Type: "text", Content: "The answer is 42."}},
+			StopReason: "end_turn",
 		},
 		// Parent continuation.
 		{
@@ -157,7 +163,7 @@ func TestDelegatingToolDeliversChildResultToParent(t *testing.T) {
 		t.Fatalf("expected tool-result for tu-wf-1 (delegated child result) in parent messages; messages=%+v", messages)
 	}
 	if !strings.Contains(toolResultContent, "The answer is 42.") {
-		t.Errorf("tool-result should carry the child's return_result; got %q", toolResultContent)
+		t.Errorf("tool-result should carry what the child's run returned; got %q", toolResultContent)
 	}
 }
 
@@ -191,6 +197,37 @@ func TestDelegatingToolNullSpecRunsToolAction(t *testing.T) {
 	}
 	if foundThread {
 		t.Errorf("null spec must NOT spawn a delegated thread; a thread item was created")
+	}
+}
+
+// TestDelegatingToolEmptyPromptRunsToolAction covers a spec that names a goal
+// but asks nothing. A child with no invocation message has no run record to
+// stamp, so its run can only report through the thread's summary — and a child
+// agent handed no work is not a delegation in the first place. It degrades to
+// the ordinary tool-action, exactly as a null spec does.
+func TestDelegatingToolEmptyPromptRunsToolAction(t *testing.T) {
+	w := newDelegationHarness(t, &SubthreadSpec{Goal: "Read https://example.com"}, []MockResponse{
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: "tool_use", ID: "tu-wf-3", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com"}`)},
+			},
+			StopReason: "tool_use",
+		},
+	})
+
+	w.runStrategyLoop("Fetch the page", false)
+
+	var foundToolAction bool
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeToolAction && item.ToolUseID == "tu-wf-3" {
+			foundToolAction = true
+		}
+		if item.Type == ItemTypeThread {
+			t.Errorf("a spec with no prompt spawned a thread; it has nothing to ask a child")
+		}
+	}
+	if !foundToolAction {
+		t.Errorf("expected a client-side WebFetch tool-action (tu-wf-3); items=%+v", w.doc.GetItems())
 	}
 }
 
@@ -252,14 +289,13 @@ func TestDelegatedChildCannotReDelegate(t *testing.T) {
 	}
 }
 
-// TestDelegatedOpenChildResolvesResult proves the open-end guarantee: a
-// delegated child that ends WITHOUT calling return_result must still yield a
-// tool_result so the parent's stamped tool_use is never stranded. Here the child
-// ends on plain assistant text; resolveDelegatedThreadResult promotes that text
-// as the result, which resumes the parent and is delivered as the WebFetch
-// tool_result. Without the resolution the thread would stay open and the parent
-// would hang with an unpaired tool_use.
-func TestDelegatedOpenChildResolvesResult(t *testing.T) {
+// TestDelegatedChildSettlesOnTrailingText proves the return contract: a run's
+// answer is the assistant message it comes to rest on, with no tool involved.
+// The child here calls nothing and simply replies; that reply settles the run,
+// resumes the parent, and is delivered as the WebFetch tool_result. Were the
+// answer conditional on a tool call, this run would strand the parent's stamped
+// tool_use unpaired.
+func TestDelegatedChildSettlesOnTrailingText(t *testing.T) {
 	spec := &SubthreadSpec{
 		Goal:   "Read https://example.com",
 		Prompt: "Fetch https://example.com and answer: what colour?",
@@ -272,7 +308,7 @@ func TestDelegatedOpenChildResolvesResult(t *testing.T) {
 			},
 			StopReason: "tool_use",
 		},
-		// Child: plain text, NO return_result → ends open.
+		// Child: plain text — the run rests on it and returns it.
 		{
 			Blocks:     []LLMResponseBlock{{Type: "text", Content: "I read the page; the answer is Blue."}},
 			StopReason: "end_turn",
@@ -286,7 +322,7 @@ func TestDelegatedOpenChildResolvesResult(t *testing.T) {
 
 	w.runStrategyLoop("What colour?", false)
 
-	// The delegated thread must have a resolved result (not left open).
+	// A run that came to rest stamps its reply as the thread's summary.
 	var threadResult string
 	for _, item := range w.doc.GetItems() {
 		if item.Type == ItemTypeThread {
@@ -296,7 +332,7 @@ func TestDelegatedOpenChildResolvesResult(t *testing.T) {
 		}
 	}
 	if !strings.Contains(threadResult, "the answer is Blue") {
-		t.Errorf("open delegated child must resolve a result from its trailing text; got %q", threadResult)
+		t.Errorf("a run that rested on assistant text must summarise the thread with it; got %q", threadResult)
 	}
 
 	// And that result must reach the parent as the WebFetch tool_result.
@@ -308,6 +344,159 @@ func TestDelegatedOpenChildResolvesResult(t *testing.T) {
 		}
 	}
 	if !strings.Contains(toolResultContent, "the answer is Blue") {
-		t.Errorf("parent must receive a tool_result for the open delegated child (tu-wf-3); got %q", toolResultContent)
+		t.Errorf("parent must receive a tool_result for the settled run (tu-wf-3); got %q", toolResultContent)
+	}
+}
+
+// TestDelegatedSessionIsAutoNamedAndReported proves a caller never has to plan
+// ahead to follow up. A tool that names no session still gets one, derived from
+// its own name, and the result opens with that handle — so the usual shape
+// (call it, read the answer, THEN want more) is reachable rather than lost.
+func TestDelegatedSessionIsAutoNamedAndReported(t *testing.T) {
+	w := newDelegationHarness(t, &SubthreadSpec{
+		Goal:   "Read https://example.com",
+		Prompt: "Fetch https://example.com and answer: what colour?",
+	}, []MockResponse{
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: "tool_use", ID: "tu-wf-5", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com","prompt":"what colour?"}`)},
+			},
+			StopReason: "tool_use",
+		},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Blue."}}, StopReason: "end_turn"},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Thanks."}}, StopReason: "end_turn"},
+	})
+
+	w.runStrategyLoop("What colour?", false)
+
+	var sessionName string
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeThread {
+			sessionName = item.SessionName
+		}
+	}
+	if sessionName != "webfetch-1" {
+		t.Errorf("auto session name = %q, want webfetch-1 (derived from the calling tool)", sessionName)
+	}
+
+	var content string
+	for _, m := range w.buildMessages(nil) {
+		if m["type"] == "tool-result" && m["toolUseId"] == "tu-wf-5" {
+			content, _ = m["content"].(string)
+		}
+	}
+	if !strings.HasPrefix(content, "webfetch-1 · new") {
+		t.Errorf("a delegated result must report the handle it can be called on; got %q", content)
+	}
+}
+
+// TestDelegatedSessionResumeIsAppendOnly proves the delegation path carries the
+// same session contract as create_thread: a second call naming the session
+// appends one message to the child it already ran — nothing re-seeded, nothing
+// replayed — and the parent gets a second tool_result paired to that run alone.
+func TestDelegatedSessionResumeIsAppendOnly(t *testing.T) {
+	w := newDelegationHarnessSpecs(t, []*SubthreadSpec{
+		{Goal: "Read the page", Prompt: "What colour is it?", SessionName: "page"},
+		{Goal: "Read the page", Prompt: "And how big?", SessionName: "page"},
+	}, []MockResponse{
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: "tool_use", ID: "tu-a", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com","prompt":"colour?","session":"page"}`)},
+			},
+			StopReason: "tool_use",
+		},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "It is blue."}}, StopReason: "end_turn"},
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: "tool_use", ID: "tu-b", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com","prompt":"size?","session":"page"}`)},
+			},
+			StopReason: "tool_use",
+		},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "About 20kb."}}, StopReason: "end_turn"},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Done."}}, StopReason: "end_turn"},
+	})
+
+	w.runStrategyLoop("Tell me about the page", false)
+
+	if n := countThreads(w); n != 1 {
+		t.Fatalf("resuming a session must not spawn a sibling: expected 1 thread, got %d", n)
+	}
+
+	var threadItem ConversationItem
+	for _, item := range w.doc.GetItems() {
+		// The alias the resume appended is a second view of the same thread, not
+		// the container: the transcript hangs off the canonical.
+		if item.Type == ItemTypeThread && item.AliasOf == "" {
+			threadItem = item
+		}
+	}
+	items := threadItems(w, threadItem.ItemID)
+	first := indexOfItem(items, ItemTypeUser, "What colour is it?")
+	answer := indexOfItem(items, ItemTypeAssistant, "It is blue.")
+	second := indexOfItem(items, ItemTypeUser, "And how big?")
+	if first < 0 || answer < 0 || second < 0 || first >= answer || answer >= second {
+		t.Fatalf("resume must append after everything run 1 produced; items=%+v", items)
+	}
+
+	results := toolResultContents(w.buildMessages(nil))
+	if got := results["tu-a"]; !strings.HasPrefix(got, "page · new") || !strings.Contains(got, "It is blue.") {
+		t.Errorf("first delegated result = %q, want run 1's reply under the new-session preamble", got)
+	}
+	if got := results["tu-b"]; !strings.HasPrefix(got, "page · resumed, call 2") || !strings.Contains(got, "About 20kb.") {
+		t.Errorf("second delegated result = %q, want run 2's reply under the resumed preamble", got)
+	}
+}
+
+// TestDelegatedChildErrorReachesParent proves an errored run is an answer, not a
+// hang: the child's turn fails, the run settles as an error carrying the
+// provider's text, and that text is delivered as the delegating call's
+// tool_result so the parent can act on it. The child is left exactly as it is —
+// stopped, unsummarised, and free to run again.
+func TestDelegatedChildErrorReachesParent(t *testing.T) {
+	spec := &SubthreadSpec{
+		Goal:   "Read https://example.com",
+		Prompt: "Fetch https://example.com and answer: what colour?",
+	}
+	w := newDelegationHarness(t, spec, []MockResponse{
+		// Parent turn: calls delegating WebFetch.
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: "tool_use", ID: "tu-wf-4", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com","prompt":"what colour?"}`)},
+			},
+			StopReason: "tool_use",
+		},
+		// Child: the turn fails. "invalid request" is terminal — a transient
+		// phrase would be retried by the turn loop instead of surfacing.
+		{Error: "invalid request: the model refused"},
+		// Parent continuation (fires once the child's run settles).
+		{
+			Blocks:     []LLMResponseBlock{{Type: "text", Content: "Noted."}},
+			StopReason: "end_turn",
+		},
+	})
+
+	w.runStrategyLoop("What colour?", false)
+
+	// Nothing fabricates a summary out of a failure.
+	for _, item := range w.doc.GetItems() {
+		if item.Type != ItemTypeThread {
+			continue
+		}
+		if ym := w.doc.GetThreadYMap(item.ItemID); ym != nil {
+			if r, _ := ym.Get("result").(string); r != "" {
+				t.Errorf("an errored run must not summarise the thread; got %q", r)
+			}
+		}
+	}
+
+	messages := w.buildMessages(nil)
+	var toolResultContent string
+	for _, m := range messages {
+		if m["type"] == "tool-result" && m["toolUseId"] == "tu-wf-4" {
+			toolResultContent, _ = m["content"].(string)
+		}
+	}
+	if !strings.Contains(toolResultContent, "invalid request") {
+		t.Errorf("parent must receive the error text as the delegating call's tool_result; got %q", toolResultContent)
 	}
 }

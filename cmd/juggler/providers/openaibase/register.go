@@ -140,8 +140,8 @@ func Register(d Descriptor) {
 		ModelContextWindows: d.ContextWindows,
 		CheapModel:          d.CheapModel,
 		// A provider that does not opt into forced tool choice cannot reliably
-		// honor the return_result tool on bounded compaction's final call, so it
-		// is routed to the tool-free plain-text final instead.
+		// honor a named tool_choice, so the worker runs those turns unforced
+		// rather than send a choice the upstream rejects.
 		ForcedToolChoiceUnsupported: !d.Quirks.ForcedToolChoiceSupported,
 		// The OpenAI-compatible wire reports authoritative per-call prompt usage,
 		// which the stream loop re-emits as a transient usage chunk; the footer

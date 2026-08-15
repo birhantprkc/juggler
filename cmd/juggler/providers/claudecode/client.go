@@ -236,10 +236,10 @@ func (c *Client) deleteSidecar(convID string) {
 // req.ToolChoice is intentionally NOT honoured here: the claude CLI exposes no
 // tool_choice / forced-function-call equivalent (only --allowedTools /
 // --disallowedTools name-gating, which cannot compel a call). A plugin that
-// forces a tool (e.g. /compact forcing return_result) therefore degrades
-// gracefully under claudecode — the model may answer in text and the worker's
-// writeThreadResult fallback turns that into the thread result. If the CLI ever
-// gains a forced-tool option, translate req.ToolChoice here.
+// forces a tool therefore degrades gracefully under claudecode — the model may
+// answer in text, and the run settles on that trailing text as the thread's
+// summary. If the CLI ever gains a forced-tool option, translate
+// req.ToolChoice here.
 // req.MaxOutputTokens (F1's per-request wire output cap) is likewise ignored:
 // the CLI transport has no per-request max_tokens knob. Admission still charges
 // the smaller reserve, which is safe here — the CLI cannot overshoot its own

@@ -7,38 +7,27 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
-
-	ycrdt "github.com/skyterra/y-crdt"
 )
 
 // isMetaTool checks if a tool name is a meta tool (built-in tools that execute in worker).
 func isMetaTool(toolName string) bool {
-	return toolName == "drop_context_items" || toolName == "return_result"
+	return toolName == "drop_context_items"
 }
 
 // executeMetaTool executes a meta tool directly in the worker.
 // Meta tools are built-in operations that manipulate Yjs state (set metadata, drop context items).
 // They execute instantly and don't need frontend approval or action execution.
-func (w *ConversationWorker) executeMetaTool(toolUseID, toolName string, toolInput json.RawMessage, fallbackText string) error {
+func (w *ConversationWorker) executeMetaTool(toolUseID, toolName string, toolInput json.RawMessage) error {
 	var input map[string]any
 	if err := json.Unmarshal(toolInput, &input); err != nil {
 		return fmt.Errorf("failed to parse meta tool input: %w", err)
 	}
 
 	var (
-		message      string
-		execErr      error
-		showThinking = true
+		message string
+		execErr error
 	)
 	switch toolName {
-	case "return_result":
-		// The result is surfaced through the thread tile (Y.Map "result"), the
-		// same path every thread uses — not as a thinking bubble, which would
-		// mis-type the summary. Only the meta-tool-result below (LLM-context
-		// plumbing) is emitted.
-		message = w.execReturnResult(input, fallbackText)
-		showThinking = false
 	case "drop_context_items":
 		message, execErr = w.execDropContextItems(input)
 	default:
@@ -46,30 +35,10 @@ func (w *ConversationWorker) executeMetaTool(toolUseID, toolName string, toolInp
 		message = fmt.Sprintf("Error: %v", execErr)
 	}
 
-	if showThinking {
-		w.addThinkingMessage(message)
-	}
-
+	w.addThinkingMessage(message)
 	w.addMetaToolResult(toolUseID, toolName, toolInput, message, execErr != nil)
 
 	return execErr
-}
-
-// execReturnResult handles the return_result meta tool: it writes the recovered
-// result text onto the current thread's Y.Map (the single source of truth the
-// strategy loop reads to stop the child loop) and returns the log message.
-func (w *ConversationWorker) execReturnResult(input map[string]any, fallbackText string) string {
-	resultText := resolveReturnResultText(input, fallbackText)
-	if w.thread.itemID != "" {
-		if threadYMap := w.doc.GetThreadYMap(w.thread.itemID); threadYMap != nil {
-			ycrdtMu.Lock()
-			w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-				threadYMap.Set("result", resultText)
-			}, w.doc.authorID)
-			ycrdtMu.Unlock()
-		}
-	}
-	return fmt.Sprintf("Thread result: %s", resultText)
 }
 
 // execDropContextItems handles the drop_context_items meta tool: it deletes the
@@ -100,25 +69,4 @@ func (w *ConversationWorker) execDropContextItems(input map[string]any) (string,
 		w.tracker.DeleteMessages(indicesToDelete)
 	}
 	return fmt.Sprintf("Dropped %d context items", len(indicesToDelete)), nil
-}
-
-// resolveReturnResultText recovers the thread-result text from a return_result
-// call. The schema names the argument "result", but models mis-name it (most
-// commonly "summary") or write the summary as an assistant text block alongside
-// an empty arg object. Discarding that work and writing "No result provided"
-// loses real output, so we recover from the most likely sources in priority
-// order: the schema key, common aliases, then the turn's assistant text
-// (fallbackText). Only a genuinely empty turn yields the placeholder.
-func resolveReturnResultText(input map[string]any, fallbackText string) string {
-	for _, key := range []string{"result", "summary", "content", "text", "output", "message"} {
-		if s, ok := input[key].(string); ok {
-			if t := strings.TrimSpace(s); t != "" {
-				return t
-			}
-		}
-	}
-	if t := strings.TrimSpace(fallbackText); t != "" {
-		return t
-	}
-	return "No result provided"
 }

@@ -226,6 +226,119 @@ func TestContextRecoveryFoldsSubthreadPrefix(t *testing.T) {
 	}
 }
 
+// TestContextRecoveryKeepsDelegatedRunRecords covers the case a resumable
+// session makes routine: a delegated child folds its OWN history to stay inside
+// the window, and must come out of it with every call it has taken still
+// answerable. The fold swallows the earlier invocation messages along with the
+// run bodies around them and carries their records instead, so the three things
+// that read a run record all still find one — the caller's wire keeps a
+// tool_result per call, the session keeps the tool that owns it, and the fold
+// reads as the settled container it is rather than as a child still running.
+func TestContextRecoveryKeepsDelegatedRunRecords(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+
+	threadID := generateItemID()
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		thread := conversationItemToYMap(ConversationItem{
+			Type: ItemTypeThread, ItemID: threadID, Goal: "Research", SessionName: "explore-1",
+		})
+		thread.Set("items", ycrdt.NewYArray())
+		w.doc.ensureItems().Push(ycrdt.ArrayAny{thread})
+	}, w.doc.authorID)
+	arr := w.doc.GetThreadItemsArray(threadID)
+
+	// Two calls against one session: [invoc-1][run 1 body][invoc-2][run 2 body].
+	nested := []ConversationItem{invocationItemForTest("invoc-1", "tu-1", "first answer")}
+	for i := 0; i < 3; i++ {
+		nested = append(nested, ConversationItem{
+			Type: ItemTypeAssistant, ItemID: fmt.Sprintf("old-%d", i), Content: strings.Repeat("x", 2300),
+		})
+	}
+	nested = append(nested, invocationItemForTest("invoc-2", "tu-2", "second answer"))
+	for i := 0; i < 3; i++ {
+		nested = append(nested, ConversationItem{
+			Type: ItemTypeAssistant, ItemID: fmt.Sprintf("recent-%d", i), Content: fmt.Sprintf("recent reply %c", 'A'+i),
+		})
+	}
+	w.doc.InsertMessageIntoArray(arr, 0, nested...)
+	w.thread.itemID = threadID
+	w.thread.itemsArray = arr
+
+	wireBefore, err := json.Marshal(appendThreadMessages(nil, w.doc.GetItems()[0], w.doc.GetItems()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
+	_, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+		t.Fatal(err)
+	}
+
+	items := w.doc.GetItemsFromArray(arr)
+	// [summary(invoc-1, old-0..2), invoc-2, recent-0..2]
+	if len(items) != 5 {
+		t.Fatalf("nested items after fold = %s, want the summary, the open run's invocation message and the verbatim tail", itemIDs(items))
+	}
+	fold := items[0]
+	if fold.Type != ItemTypeThread || !fold.BoundedCompaction {
+		t.Fatalf("items[0] = %q (bounded=%v), want the compaction summary", fold.Type, fold.BoundedCompaction)
+	}
+	if !threadRunSettled(fold) {
+		t.Error("a summarized fold must read as settled, or the thread parks on it and re-summarizes it")
+	}
+	if len(fold.FoldedRuns) != 1 || fold.FoldedRuns[0].ToolUseID != "tu-1" || fold.FoldedRuns[0].Result != "first answer" {
+		t.Fatalf("the fold dropped the record of the call it swallowed: %+v", fold.FoldedRuns)
+	}
+	// The thread's most recent invocation message stays put: it is where the next
+	// run's outcome is stamped and where the thread's liveness is read from.
+	if items[1].ItemID != "invoc-2" || items[1].RunToolUseID != "tu-2" {
+		t.Fatalf("the open run's invocation message was folded away: %s", itemIDs(items))
+	}
+
+	// The caller's wire: one tool_use/tool_result pair per call, in call order,
+	// and the pair for the call that already returned comes back byte for byte.
+	child := w.doc.GetItems()[0]
+	runs := threadRunRecords(child)
+	if len(runs) != 2 || runs[0].call.ToolUseID != "tu-1" || runs[1].call.ToolUseID != "tu-2" {
+		t.Fatalf("run records after the child folded itself = %+v, want tu-1 then tu-2", runs)
+	}
+	msgs := appendThreadMessages(nil, child, nil)
+	if len(msgs) != 4 {
+		t.Fatalf("wire messages = %d, want a use/result pair per call", len(msgs))
+	}
+	wireAfter, err := json.Marshal(msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(wireAfter) != string(wireBefore) {
+		t.Errorf("the fold rewrote the caller's transcript:\n before %s\n after  %s", wireBefore, wireAfter)
+	}
+	if tool := sessionToolOf(child); tool != "Explore" {
+		t.Errorf("session tool after the fold = %q, want Explore — a resume would create instead", tool)
+	}
+	if !threadRunSettled(child) {
+		t.Error("the child's own latest run still reads as running after it folded its history")
+	}
+}
+
+// invocationItemForTest builds the message that starts one delegated run, as
+// createThread and resumeSession stamp it: the call's prompt plus the tool-use
+// coordinates its result is paired back from.
+func invocationItemForTest(id, toolUseID, result string) ConversationItem {
+	return ConversationItem{
+		Type: ItemTypeUser, ItemID: id, Content: "find the auth flow",
+		RunToolUseID: toolUseID, RunToolName: "Explore",
+		RunToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`),
+		RunStatus:    runStatusRest, RunResult: result,
+	}
+}
+
 // boundedSummaryItem builds a prior compaction summary thread as a recovery or
 // browser /compact fold would leave one: a BoundedCompaction thread whose
 // Result carries the summary text. It renders on the wire as its result, so

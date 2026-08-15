@@ -118,10 +118,10 @@ func TestDecideNextAction_LastIsAssistantText_Root(t *testing.T) {
 }
 
 // TestDecideNextAction_LastIsAssistantText_Nested: a nested thread ending in
-// an assistant message rests OPEN, exactly like root — ending a turn with
-// plain assistant text is no longer an auto-close (a thread closes only on an
-// explicit return_result call, or a hard error). So the reducer returns
-// ActionNone, never auto-completing the thread. With activity="awaiting_llm",
+// an assistant message rests, exactly like root. Resting settles the run — that
+// text is what the run returns — but it ends nothing, so the reducer returns
+// ActionNone and never drives the thread further on its own. With
+// activity="awaiting_llm",
 // the earlier guard treats trailing assistant text as a stale awaiting marker
 // (tools were deleted) and returns GoIdle unless this is an explicit user
 // continuation.
@@ -475,10 +475,9 @@ func TestCurrentToolBatch_NoTrailingTools(t *testing.T) {
 	}
 }
 
-// TestSelectThreadFallbackResult covers the pure picker used on demand by the
-// footer's "Close with last message" close (closeThreadWithLastMessage): it
-// promotes the trailing assistant text as the thread result, or returns "" when
-// there's no clean trailing assistant reply to promote.
+// TestSelectThreadFallbackResult covers the pure picker that promotes a run's
+// trailing assistant text as the thread result, or returns "" when there is no
+// clean trailing assistant reply to promote.
 func TestSelectThreadFallbackResult(t *testing.T) {
 	cases := []struct {
 		name  string

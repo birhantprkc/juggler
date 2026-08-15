@@ -11,6 +11,7 @@
  */
 
 import { findGroup, isGroupId } from './item-grouping.js';
+import { canonicalThread } from '../model/thread-alias.js';
 
 /**
  * @typedef {object} ColumnChainEntry
@@ -239,14 +240,20 @@ class ColumnSelectionState {
       }
 
       if (isThread(selectedItem)) {
-        const nestedItems = selectedItem.get('items');
+        // The one place an alias is resolved. A thread called more than once has
+        // one tile per call, each carrying its own result; every one of them
+        // opens the SAME column, because they are views of one transcript. The
+        // selection keeps naming the tile the user clicked — so that tile stays
+        // highlighted — and only the column it opens is the canonical's.
+        const thread = canonicalThread(selectedItem, currentItems);
+        const nestedItems = thread.get('items');
         if (!nestedItems) break;
 
         chain.push({
           type: /** @type {const} */ ('conversation'),
-          container: selectedItem,
-          threadItemId: selectedId,
-          threadYMap: selectedItem
+          container: thread,
+          threadItemId: thread.get('itemId') || selectedId,
+          threadYMap: thread
         });
 
         currentItems = nestedItems.toArray ? nestedItems.toArray() : [];

@@ -16,13 +16,6 @@ func (w *ConversationWorker) resetThreadContext() {
 	w.thread = threadContext{}
 }
 
-// closeRequested reports whether the turn running on this thread was started by
-// a close request, so return_result is forced and trailing text is promoted as
-// the result. False for every ordinary turn.
-func (w *ConversationWorker) closeRequested(threadItemID string) bool {
-	return threadItemID != "" && w.closeRequestThreadID == threadItemID
-}
-
 // getTargetItems returns items from the thread's nested array when in thread mode,
 // or from the root items array otherwise.
 func (w *ConversationWorker) getTargetItems() []ConversationItem {
@@ -216,6 +209,13 @@ func scanApprovalBlock(arr *ycrdt.YArray) (hasPending, hasExecuting bool) {
 				hasExecuting = true
 			}
 		case ItemTypeThread:
+			// An alias holds no transcript: the thread it is a second view of
+			// stands in this same array and is scanned on its own. Reading one
+			// here would find no items and no result and call it executing
+			// forever, wedging the desktop quit guard.
+			if aliasOf, _ := m.Get("aliasOf").(string); aliasOf != "" {
+				continue
+			}
 			// Recurse first so we can tell a genuinely-working sub-thread from
 			// one that is itself only parked on approvals.
 			var np, ne bool
@@ -224,8 +224,8 @@ func scanApprovalBlock(arr *ycrdt.YArray) (hasPending, hasExecuting bool) {
 			}
 			hasPending = hasPending || np
 			hasExecuting = hasExecuting || ne
-			// An open (resultless) sub-thread normally means work is in flight —
-			// its LLM turn is running with no in-doc tool marker yet. But a
+			// A sub-thread with an unsettled run normally means work is in flight
+			// — its LLM turn is running with no in-doc tool marker yet. But a
 			// sub-thread whose only non-terminal work is a pending approval
 			// (np && !ne) is suspended exactly like a top-level approval park:
 			// quitting and restarting leaves the approval intact, so it must NOT
@@ -233,7 +233,7 @@ func scanApprovalBlock(arr *ycrdt.YArray) (hasPending, hasExecuting bool) {
 			// on a conversation whose sub-thread is merely awaiting an approval.
 			// Equivalently (De Morgan): count it as executing only when it is not
 			// that pure-approval shape — nothing pending, or something executing.
-			if result, _ := m.Get("result").(string); result == "" && (!np || ne) {
+			if !threadRunSettledLocked(m) && (!np || ne) {
 				hasExecuting = true
 			}
 		}

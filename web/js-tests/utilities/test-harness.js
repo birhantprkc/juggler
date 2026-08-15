@@ -18,6 +18,7 @@
 import workerManager from '../../js/services/worker-manager.js';
 import wsService from '../../js/services/websocket.js';
 import { TOOL_STATES } from '../../sdk/lib/message.js';
+import { threadRunSettled } from '../../js/model/run-records.js';
 import { waitForTurnComplete, observeUntil, findItemRecursive, hasIncompleteApprovedTools } from './turn-sync.js';
 // Multi-iframe pool support: the integration-test-executor's BroadcastChannel
 // receiver filters action-progress events by `conversationId` so sibling
@@ -346,9 +347,9 @@ export class IntegrationTestHarness {
   }
 
   /**
-   * Send a message targeting an OPEN thread's sub-conversation WITHOUT waiting
-   * for the turn to complete. Used by tests that pin the thread turn at a mock
-   * barrier and then preempt it (e.g. close-thread mid-turn).
+   * Send a message into a thread's sub-conversation WITHOUT waiting for the
+   * turn to complete. Used by tests that pin the thread turn at a mock barrier
+   * and then act while it is still in flight.
    * @param {string} message - Message to send
    * @returns {Promise<void>}
    */
@@ -357,23 +358,30 @@ export class IntegrationTestHarness {
       throw new Error('Conversation not initialized');
     }
 
+    // A thread whose run is still going is the one a mid-turn test means. With
+    // none running, fall back to the first thread: a stopped thread takes a
+    // message and runs again, which is exactly how a resumed run is started.
     const items = this.rootThread.items || [];
     let threadItemId = null;
+    let firstThreadItemId = null;
     for (const item of items) {
-      if (item.get('type') === 'thread' && !item.get('result')) {
+      if (item.get('type') !== 'thread') continue;
+      if (firstThreadItemId === null) firstThreadItemId = item.get('itemId');
+      if (!threadRunSettled(item)) {
         threadItemId = item.get('itemId');
         break;
       }
     }
+    threadItemId = threadItemId || firstThreadItemId;
     if (!threadItemId) {
-      throw new Error('No open thread item found in root items');
+      throw new Error('No thread item found in root items');
     }
 
     // Track that we're consuming a response.
     this._nextResponseIndex++;
 
-    // Deliberately do NOT wait for turn completion — caller expects the turn
-    // to be interrupted before it can complete.
+    // Deliberately do NOT wait for turn completion — the caller acts while the
+    // turn is still in flight.
     const droppedNoWait = await this._conversation.sendMessage(message, threadItemId);
     if (droppedNoWait) {
       throw new Error(`thread send-message (no-wait) was dropped by conversation.sendMessage (${droppedNoWait})`);
@@ -1202,13 +1210,9 @@ export class IntegrationTestHarness {
 
     const threadMsg = createThreadMessage({ goal: 'Compacted conversation history' });
     /** @type {any} */ (threadMsg).needsStrategyRun = true;
-    // Mirror the /compact plugin: force the summarization turn to call
-    // return_result (the generic forceTool thread field).
-    /** @type {any} */ (threadMsg).forceTool = 'return_result';
     const userMsg = createUserMessage(
       `Summarize the preceding ${snapshots.length} messages concisely. ` +
-				'Focus on files modified, key decisions, and current state. ' +
-				'Then call return_result with your summary in its "result" argument.'
+				'Focus on files modified, key decisions, and current state.'
     );
 
     const doc = this._conversation._doc.doc;
@@ -1270,9 +1274,9 @@ export class IntegrationTestHarness {
    * @param {boolean} [condition.politePending] - Expected synced pause-pending cue (processingState.politePending)
    * @param {boolean} [condition.hasThreadItem] - Whether any thread item exists
    * @param {boolean} [condition.hasCompactionBarrier] - Whether compaction barrier exists
-   * @param {number} [condition.completedThreadCount] - Minimum count of completed threads (with results)
+   * @param {number} [condition.completedThreadCount] - Minimum count of threads whose run has settled
    * @param {number} [condition.atMostThreadCount] - Constraint: fail immediately if total thread count exceeds this
-   * @param {number} [condition.maxCompletedThreadCount] - Constraint: fail immediately if completed thread count exceeds this
+   * @param {number} [condition.maxCompletedThreadCount] - Constraint: fail immediately if settled thread count exceeds this
    * @param {boolean} [condition.mainThreadBusy] - Whether the main thread footer shows a spinner
    * @param {boolean} [condition.subThreadBusy] - Whether any sub-thread column footer shows a spinner
    * @param {number} [timeoutMs=5000] - Timeout in milliseconds
@@ -1287,7 +1291,8 @@ export class IntegrationTestHarness {
     // If it's the only key, the call is purely a constraint check that succeeds
     // after timeoutMs elapses with no violation. If combined with goal conditions,
     // goals must be met AND the constraint must hold the whole time.
-    const isConstraintKey = (/** @type {string} */ k) => k === 'atMostThreadCount' || k === 'maxCompletedThreadCount';
+    const isConstraintKey = (/** @type {string} */ k) => k === 'atMostThreadCount' ||
+			k === 'maxCompletedThreadCount';
     const hasConstraintOnly = Object.keys(condition).length > 0 &&
 			Object.keys(condition).every(isConstraintKey);
 
@@ -1319,7 +1324,7 @@ export class IntegrationTestHarness {
       }
       if (condition.completedThreadCount !== undefined) {
         const threadCount = items.filter(item =>
-          item.get('type') === 'thread' && item.get('result')
+          item.get('type') === 'thread' && threadRunSettled(item)
         ).length;
         if (threadCount < condition.completedThreadCount) goalsMet = false;
       }
@@ -1341,7 +1346,7 @@ export class IntegrationTestHarness {
       }
       if (condition.maxCompletedThreadCount !== undefined) {
         const completedCount = items.filter(item =>
-          item.get('type') === 'thread' && item.get('result')
+          item.get('type') === 'thread' && threadRunSettled(item)
         ).length;
         if (completedCount > condition.maxCompletedThreadCount) {
           throw new Error(
@@ -1714,8 +1719,8 @@ export class IntegrationTestHarness {
 
   /**
    * Stop from the ROOT/parent vantage — Escape while focused on the root, or
-   * the root footer Stop. Stops the in-flight worker turn AND closes every open
-   * sub-thread (stamping 'Cancelled'), so the composer returns to the root
+   * the root footer Stop. Stops the in-flight worker turn AND settles every
+   * sub-thread's open run as cancelled, so the composer returns to the root
    * column. Mirrors the root-vantage branch of app.cancelLLMOperation(null).
    * @param {number} [timeoutMs=10000] - Timeout for quiescence
    * @returns {Promise<void>}
@@ -1726,17 +1731,14 @@ export class IntegrationTestHarness {
     }
     this._conversation.cancelAllPendingApprovals();
     this._conversation.addCancellationMessage();
-    this._conversation.closeOpenSubThreads();
+    this._conversation.settleOpenSubThreads();
     await this._waitForCondition((items, ps) => {
       if (ps?.status !== 'idle') return false;
       if (hasIncompleteApprovedTools(items)) return false;
-      // Every sub-thread must be closed (non-empty result).
-      const openThread = findItemRecursive(items, (/** @type {*} */ item) => {
-        if (item.get('type') !== 'thread') return false;
-        const res = item.get('result');
-        return typeof res !== 'string' || res.length === 0;
-      });
-      return !openThread;
+      // Every sub-thread's run must have settled.
+      const runningThread = findItemRecursive(items, (/** @type {*} */ item) =>
+        item.get('type') === 'thread' && !threadRunSettled(item));
+      return !runningThread;
     }, { timeoutMs, label: 'idle after root-vantage cancel' });
   }
 

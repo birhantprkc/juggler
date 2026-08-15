@@ -41,7 +41,7 @@ export const MAX_CONVERSATION_NAME_LENGTH = 48;
 // ===== User-facing notices =====
 
 /**
- * Notice shown when a user action (new thread, /compact, close thread, …)
+ * Notice shown when a user action (new thread, /compact, …)
  * preempts a live LLM turn by cancelling it first. Surfacing this keeps the
  * cancellation from being silent.
  */

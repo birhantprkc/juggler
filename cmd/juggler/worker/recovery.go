@@ -297,11 +297,21 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	fingerprint := compactionSourceFingerprint(records)
 
 	units := recoveryAtomicUnits(items)
+	// A delegated thread's most recent invocation message is pinned on top of
+	// the per-item rules: it is where the run in flight will stamp its outcome,
+	// and where the thread's liveness is read from (lastInvocationIndex). Every
+	// earlier one folds with the run bodies around it, its record preserved on
+	// the fold, so a long-lived session folds every completed run in one stretch.
+	pinnedInvocation := lastInvocationIndex(items)
+	foldable := func(u recoveryUnit) bool {
+		return u.start != pinnedInvocation && recoveryUnitFoldable(items[u.start])
+	}
+
 	// Leading non-conversational items (rules, plans, other standing context)
 	// are pinned: they render through the system prompt (already inside the
 	// envelope) and must never be folded. The summary is inserted after them.
 	skip := 0
-	for skip < len(units) && !recoveryUnitFoldable(items[units[skip].start]) {
+	for skip < len(units) && !foldable(units[skip]) {
 		skip++
 	}
 
@@ -312,7 +322,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	var suffixEst int64
 	for k > skip {
 		unit := units[k-1]
-		if !recoveryUnitFoldable(items[unit.start]) {
+		if !foldable(unit) {
 			break
 		}
 		if window-envelope-(suffixEst+unit.est) < reserve+recoverySummaryFloorTokens {
@@ -333,7 +343,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	// prior summary (and everything after it) untouched — later passes fold the
 	// runs beyond it. units[skip] is foldable by construction, so k stays > skip.
 	for p := skip; p < k; p++ {
-		if !recoveryUnitFoldable(items[units[p].start]) {
+		if !foldable(units[p]) {
 			k = p
 			break
 		}
@@ -407,6 +417,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		CompactionPromptItemID: promptID,
 		Items:                  nestedJSON,
 		Result:                 resultJSON,
+		FoldedRuns:             foldedRunsIn(items[prefixStart:prefixEnd]),
 	}
 	// Persist the operation's accounting durably on the thread item itself — the
 	// doc is the inspectable record of what the fold cost.
@@ -531,6 +542,9 @@ func (w *ConversationWorker) shrinkOversizedTrailingToolResults(limitErr *provid
 // each recovery pass deeper and more expensive than the last. Recovery folds
 // only fresh, never-summarized history; a prior summary renders on the wire as
 // its compact result text and stays put.
+//
+// The caller applies one further pin this cannot see, because it is positional:
+// the thread's most recent invocation message (lastInvocationIndex).
 func recoveryUnitFoldable(item ConversationItem) bool {
 	if item.Type == ItemTypeThread && item.BoundedCompaction {
 		return false
@@ -552,7 +566,7 @@ func recoveryAtomicUnits(items []ConversationItem) []recoveryUnit {
 				end++
 			}
 		}
-		units = append(units, recoveryUnit{start: i, end: end, est: estimateItemsWireTokens(items[i:end])})
+		units = append(units, recoveryUnit{start: i, end: end, est: estimateItemsWireTokens(items[i:end], items)})
 		i = end
 	}
 	return units
@@ -565,7 +579,11 @@ func recoveryAtomicUnits(items []ConversationItem) []recoveryUnit {
 // identically. Estimation is side-effect free: an unfinished tool result uses
 // the same placeholder text appendToolActionResult would emit, without its
 // resultFedTurn doc stamp.
-func estimateItemsWireTokens(items []ConversationItem) int64 {
+//
+// siblings is the whole array the unit was cut from: a thread alias reads its
+// run's record off the canonical thread item standing there, which is usually
+// outside the unit itself.
+func estimateItemsWireTokens(items, siblings []ConversationItem) int64 {
 	messages := make([]map[string]any, 0, len(items)*2)
 	for _, item := range items {
 		switch item.Type {
@@ -597,7 +615,7 @@ func estimateItemsWireTokens(items []ConversationItem) int64 {
 				})
 			}
 		case ItemTypeThread:
-			messages = appendThreadMessages(messages, item)
+			messages = appendThreadMessages(messages, item, siblings)
 		case ItemTypeMetaToolResult:
 			if item.ToolName != "" {
 				messages = append(messages, buildToolUseMap(item))

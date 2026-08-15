@@ -162,13 +162,6 @@ class WorkerManager {
     this._onSubthreadSpecRequest = null;
 
     /**
-     * Callback for subthread-error fallback requests (onSubthreadError)
-     * @type {((request: object, conversationId: string) => void)|null}
-     * @private
-     */
-    this._onSubthreadErrorRequest = null;
-
-    /**
      * In-flight auto-load promises for unknown conversations (conversationId -> Promise).
      * Prevents duplicate loads and queues yjs-sync bytes until load completes.
      * @type {Map<string, {promise: Promise<void>, queuedBytes: string[]}>}
@@ -300,15 +293,6 @@ class WorkerManager {
    */
   setOnSubthreadSpecRequest(callback) {
     this._onSubthreadSpecRequest = callback;
-  }
-
-
-  /**
-   * Set callback for subthread-error fallback requests from workers (engine-only).
-   * @param {(request: object, conversationId: string) => void} callback
-   */
-  setOnSubthreadErrorRequest(callback) {
-    this._onSubthreadErrorRequest = callback;
   }
 
 
@@ -480,17 +464,6 @@ class WorkerManager {
 
 
   /**
-   * Send an onSubthreadError fallback result back to the worker.
-   * @param {string} conversationId - Conversation ID
-   * @param {string} requestId - Request ID
-   * @param {string} result - Fallback tool_result text ('' → use default)
-   */
-  sendSubthreadErrorResponse(conversationId, requestId, result) {
-    protocols.sendSubthreadErrorResponse(this, conversationId, requestId, result);
-  }
-
-
-  /**
    * Request user message send
    * @param {string} conversationId - Conversation ID
    * @param {string} text - Message text
@@ -499,12 +472,8 @@ class WorkerManager {
    *   Content-addressed asset references (uploaded images) to store on the user item.
    * @param {string[]} [skills] - Agent Skill names the user explicitly chose to load
    *   before this turn; the worker injects each as a visible `skill` tool-action.
-   * @param {{closeRequest?: boolean}} [options] - `closeRequest` marks this send
-   *   as a thread close (/close, the footer's summarise action): the worker
-   *   forces return_result for that one turn and promotes its trailing text as
-   *   the result if the provider ignored the force.
    */
-  sendMessage(conversationId, text, threadItemId, attachments, skills, options = {}) {
+  sendMessage(conversationId, text, threadItemId, attachments, skills) {
     // Store only the reference fields on the doc item — never raw bytes / data
     // URLs. Omit the key entirely when there are no attachments so the worker
     // writes a byte-identical user item to a plain text message.
@@ -524,8 +493,7 @@ class WorkerManager {
       text,
       threadItemId: threadItemId || undefined,
       attachments: refs,
-      skills: skillNames,
-      closeRequest: options.closeRequest || undefined
+      skills: skillNames
     });
   }
 
@@ -946,14 +914,6 @@ class WorkerManager {
         });
         break;
 
-      case 'subthread-error':
-        // Worker asks the engine to run a delegating tool's onSubthreadError
-        // fallback for an open-ended delegated child (engine-only).
-        protocols.handleSubthreadError(this, conversationId, data).catch((err) => {
-          console.error('[WorkerManager] subthread-error failed:', err);
-        });
-        break;
-
       case 'approval-request':
         protocols.handleApprovalRequest(this, conversationId, data);
         break;
@@ -1123,17 +1083,6 @@ class WorkerManager {
   }
 
   /**
-   * Reopen a completed thread by clearing its result field.
-   * The operation is performed Go-side with authorID origin so it is undoable.
-   * @param {string} conversationId - Conversation ID
-   * @param {string} threadItemId - Thread item ID
-   * @returns {Promise<boolean>} True if the thread was reopened
-   */
-  async reopenThread(conversationId, threadItemId) {
-    return await this._sendWithAck(conversationId, { type: 'reopen-thread', threadItemId });
-  }
-
-  /**
    * Re-run the folded-compaction summariser over a compaction (/compact or
    * /handoff) thread: the worker clears the committed summary and re-arms the
    * thread's run trigger, so the summary is regenerated from the same source
@@ -1145,18 +1094,6 @@ class WorkerManager {
    */
   async resummarizeCompactionThread(conversationId, threadItemId) {
     return await this._sendWithAck(conversationId, { type: 'resummarize-compaction-thread', threadItemId });
-  }
-
-  /**
-   * Close an open thread by promoting its trailing assistant message as the
-   * result — the cheap, no-LLM-turn close. Performed Go-side with authorID
-   * origin so it is undoable.
-   * @param {string} conversationId - Conversation ID
-   * @param {string} threadItemId - Thread item ID
-   * @returns {Promise<boolean>} True if the thread was closed
-   */
-  async closeThreadWithLastMessage(conversationId, threadItemId) {
-    return await this._sendWithAck(conversationId, { type: 'close-thread-with-last-message', threadItemId });
   }
 
   /**

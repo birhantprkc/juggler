@@ -17,12 +17,12 @@ func TestConvertToolChoiceChat(t *testing.T) {
 		t.Error("nil → auto (ok=false)")
 	}
 
-	tc, ok := convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"}, false)
+	tc, ok := convertToolChoiceChat(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "submit_answer"}, false)
 	if !ok {
 		t.Fatal("tool mode must be ok")
 	}
 	js := mustJSON(t, tc)
-	if !strings.Contains(js, `"type":"function"`) || !strings.Contains(js, `"name":"return_result"`) {
+	if !strings.Contains(js, `"type":"function"`) || !strings.Contains(js, `"name":"submit_answer"`) {
 		t.Errorf("chat forced-tool JSON = %s", js)
 	}
 
@@ -46,7 +46,7 @@ func TestConvertToolChoiceChat(t *testing.T) {
 // required and none are left intact, so only the forced-single-tool case a
 // non-supporting upstream rejects is relaxed.
 func TestConvertToolChoiceChatDowngradesForcedTool(t *testing.T) {
-	forced := &provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"}
+	forced := &provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "submit_answer"}
 
 	if _, ok := convertToolChoiceChat(forced, false); !ok {
 		t.Fatal("forced tool must stay forced when the vendor supports it")
@@ -69,12 +69,12 @@ func TestConvertToolChoiceResponses(t *testing.T) {
 		t.Error("nil → auto (ok=false)")
 	}
 
-	tc, ok := convertToolChoiceResponses(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"}, false)
+	tc, ok := convertToolChoiceResponses(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "submit_answer"}, false)
 	if !ok {
 		t.Fatal("tool mode must be ok")
 	}
 	js := mustJSON(t, tc)
-	if !strings.Contains(js, `"type":"function"`) || !strings.Contains(js, `"name":"return_result"`) {
+	if !strings.Contains(js, `"type":"function"`) || !strings.Contains(js, `"name":"submit_answer"`) {
 		t.Errorf("responses forced-tool JSON = %s", js)
 	}
 
@@ -96,7 +96,7 @@ func TestConvertToolChoiceResponses(t *testing.T) {
 // under the fail-safe default a named single-tool force is relaxed to auto
 // (ok=false) on the Responses wire, while required and none stay intact.
 func TestConvertToolChoiceResponsesDowngradesForcedTool(t *testing.T) {
-	forced := &provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"}
+	forced := &provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "submit_answer"}
 
 	if _, ok := convertToolChoiceResponses(forced, false); !ok {
 		t.Fatal("forced tool must stay forced when the provider supports it")

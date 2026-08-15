@@ -41,12 +41,9 @@ const (
 	pendingRequestsKey  = "pendingRequests"
 	pendingRequestsGCMs = 30000
 
-	// cancelledThreadResult is the shared sentinel a cancelled sub-thread
-	// carries as its result. It must match what the JS cancel path writes
-	// (conversation.js cancelThread), so a sub-thread cancelled by either writer
-	// (worker orchestrator or viewer/engine) is recognised as cancelled here —
-	// making the pending-request outcome (and a plan driver's per-step result)
-	// deterministic rather than racing two writers that disagree on the string.
+	// cancelledThreadResult is the outcome text a pending request reports for a
+	// sub-thread whose run was cancelled — what a plan driver reads as the
+	// step's result.
 	cancelledThreadResult = "Cancelled"
 )
 
@@ -297,8 +294,8 @@ func (w *ConversationWorker) dispatchPendingContinue(e pendingEntrySnapshot) {
 }
 
 // advanceClaimedPendingEntry drives a claimed entry toward completion by
-// inspecting its underlying side effect: for createThread, look at the
-// thread Y.Map's result field; for continue, watch the items length.
+// inspecting its underlying side effect: for createThread, look at how the
+// thread's run settled; for continue, watch the items length.
 func (w *ConversationWorker) advanceClaimedPendingEntry(e pendingEntrySnapshot) {
 	switch e.kind {
 	case "createThread":
@@ -311,16 +308,24 @@ func (w *ConversationWorker) advanceClaimedPendingEntry(e pendingEntrySnapshot) 
 			ycrdtMu.Unlock()
 			return
 		}
-		result, _ := threadYMap.Get("result").(string)
+		settled := threadRunSettledLocked(threadYMap)
+		status, runResult := latestRunOutcomeLocked(threadYMap)
+		summary, _ := threadYMap.Get("result").(string)
 		ycrdtMu.Unlock()
-		if result == "" || result == "null" {
+		if !settled {
 			return
 		}
-		if result == cancelledThreadResult {
-			w.writePendingEntryCancelled(e.ownerThreadID, e.id, result)
-		} else {
-			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, e.threadItemID, result)
+		if status == runStatusCancelled {
+			w.writePendingEntryCancelled(e.ownerThreadID, e.id, cancelledThreadResult)
+			return
 		}
+		// The run's own result is what this request asked for; a thread with no
+		// run record at all (nothing stamped it) reports its summary instead.
+		result := runResult
+		if result == "" {
+			result = summary
+		}
+		w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, e.threadItemID, result)
 	case "continue":
 		curLen := w.getTargetItemsLength()
 		if curLen > e.itemsBefore {
@@ -367,9 +372,8 @@ func (w *ConversationWorker) deliveryIsForeign(e pendingEntrySnapshot) bool {
 }
 
 // cancelPendingEntry transitions a requested/claimed entry to cancelled
-// when its cancelRequested flag flips. For createThread, also writes
-// 'Cancelled by user' to the thread Y.Map if one exists and hasn't been
-// resolved.
+// when its cancelRequested flag flips. For createThread, also settles the
+// sub-thread's open run as cancelled, so nothing parked on it keeps waiting.
 func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
 	if e.kind == "deliverTaskOutput" {
 		// Stop the pump and kill the task; do NOT forward to handleCancel (a
@@ -379,16 +383,7 @@ func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
 		return
 	}
 	if e.kind == "createThread" && e.threadItemID != "" {
-		ycrdtMu.Lock()
-		threadYMap := findThreadYMap(w.doc.getItems(), e.threadItemID)
-		if threadYMap != nil {
-			if r, _ := threadYMap.Get("result").(string); r == "" || r == "null" {
-				w.doc.doc.Transact(func(t *ycrdt.Transaction) {
-					threadYMap.Set("result", cancelledThreadResult)
-				}, w.doc.authorID)
-			}
-		}
-		ycrdtMu.Unlock()
+		w.settleThreadRun(e.threadItemID, true)
 	}
 	// Forward to the worker's cancel path so any in-flight LLM call stops.
 	if w.loadState() == StateProcessing {

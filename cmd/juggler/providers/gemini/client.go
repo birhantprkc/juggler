@@ -150,7 +150,7 @@ func (c *Client) prepareRequest(req provider.MessageRequest) (*genai.GenerateCon
 
 // buildGeminiConfig builds a GenerateContentConfig with tools and safety settings.
 // toolChoice (nil = auto) maps onto Gemini's functionCallingConfig so a plugin
-// can force a tool (e.g. /compact forcing return_result).
+// can force a tool.
 func buildGeminiConfig(tools []provider.ToolDefinition, toolChoice *provider.ToolChoice) *genai.GenerateContentConfig {
 	config := &genai.GenerateContentConfig{
 		SafetySettings: []*genai.SafetySetting{

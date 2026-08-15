@@ -154,7 +154,7 @@ export const yoloReevaluatesPendingOnSwitchTest = {
  * Mock responses:
  *   1. Root (YOLO): create_thread
  *   2. Thread: bash `env echo subyolo` — normally gated, must auto-approve
- *   3. Thread: return_result "sub done"
+ *   3. Thread: text "sub done"
  *   4. Root (auto-resumed): text "All done."
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
@@ -169,7 +169,7 @@ export const yoloInheritedBySubThreadTest = {
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Do sub task', prompt: 'Run it' }),
     toolUseResponse('call_2', 'bash', { command: 'env echo subyolo' }, 'Running in thread.'),
-    toolUseResponse('call_3', 'return_result', { result: 'sub done' }),
+    textResponse('sub done'),
     textResponse('All done.')
   ],
 

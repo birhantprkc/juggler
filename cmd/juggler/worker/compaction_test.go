@@ -29,7 +29,6 @@ func insertBoundedCompactionThread(t *testing.T, w *ConversationWorker, content 
 			BoundedCompaction: true, CompactionPromptItemID: promptID,
 		})
 		thread.Set("noAutoSelect", true)
-		thread.Set("forceTool", "return_result")
 		items := ycrdt.NewYArray()
 		items.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: generateItemID(), Content: content})})
 		items.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: promptID, Content: "orchestration prompt"})})
@@ -39,6 +38,189 @@ func insertBoundedCompactionThread(t *testing.T, w *ConversationWorker, content 
 	w.thread.itemID = threadID
 	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	return threadID
+}
+
+// TestCompactionFoldKeepsDelegatedRunRecords holds the /compact fold to the same
+// contract the recovery fold keeps (see
+// TestContextRecoveryKeepsDelegatedRunRecords): a session thread's history folds
+// whole, invocation messages included, and the fold carries their run records —
+// so the caller still gets one tool_use/tool_result pair per call it made, and
+// the session still knows which tool owns it.
+func TestCompactionFoldKeepsDelegatedRunRecords(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+
+	_, arr := sessionThreadForTest(t, w, "explore-1", "tu-1", "tu-2")
+	wireBefore, err := json.Marshal(appendThreadMessages(nil, w.doc.GetItems()[0], w.doc.GetItems()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foldID, folded, err := w.foldConversationForCompaction(false)
+	if err != nil || !folded {
+		t.Fatalf("foldConversationForCompaction = (%q, %v, %v), want a fold", foldID, folded, err)
+	}
+
+	items := w.doc.GetItemsFromArray(arr)
+	// [rule, fold(invoc-tu-1, body-tu-1), invoc-tu-2, body-tu-2]
+	if len(items) != 4 {
+		t.Fatalf("nested items after fold = %s", itemIDs(items))
+	}
+	if items[0].ItemID != "seeded-rule" {
+		t.Fatalf("the fold took the standing context: %s", itemIDs(items))
+	}
+	if items[1].ItemID != foldID || !items[1].BoundedCompaction {
+		t.Fatalf("items[1] = %q, want the new fold thread", items[1].ItemID)
+	}
+	if items[2].ItemID != "invoc-tu-2" {
+		t.Fatalf("the thread's most recent invocation message was folded away: %s", itemIDs(items))
+	}
+	if len(items[1].FoldedRuns) != 1 || items[1].FoldedRuns[0].ToolUseID != "tu-1" {
+		t.Fatalf("the fold dropped the record of the call it swallowed: %+v", items[1].FoldedRuns)
+	}
+
+	child := w.doc.GetItems()[0]
+	runs := threadRunRecords(child)
+	if len(runs) != 2 || runs[0].call.ToolUseID != "tu-1" || runs[1].call.ToolUseID != "tu-2" {
+		t.Fatalf("run records after the fold = %+v, want tu-1 then tu-2", runs)
+	}
+	wireAfter, err := json.Marshal(appendThreadMessages(nil, child, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(wireAfter) != string(wireBefore) {
+		t.Errorf("the fold rewrote the caller's transcript:\n before %s\n after  %s", wireBefore, wireAfter)
+	}
+	if tool := sessionToolOf(child); tool != "Explore" {
+		t.Errorf("session tool after the fold = %q, want Explore — a resume would create instead", tool)
+	}
+}
+
+// sessionThreadForTest builds a delegated session thread carrying a standing
+// rule and one settled run per toolUseID: an invocation message and the body of
+// work that run produced.
+func sessionThreadForTest(t *testing.T, w *ConversationWorker, name string, toolUseIDs ...string) (string, *ycrdt.YArray) {
+	t.Helper()
+	threadID := generateItemID()
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		thread := conversationItemToYMap(ConversationItem{
+			Type: ItemTypeThread, ItemID: threadID, Goal: "Research", SessionName: name,
+		})
+		thread.Set("items", ycrdt.NewYArray())
+		w.doc.ensureItems().Push(ycrdt.ArrayAny{thread})
+	}, w.doc.authorID)
+	arr := w.doc.GetThreadItemsArray(threadID)
+	items := []ConversationItem{{Type: "rule", ItemID: "seeded-rule", Content: "a standing rule"}}
+	for _, id := range toolUseIDs {
+		items = append(items,
+			invocationItemForTest("invoc-"+id, id, "answer for "+id),
+			ConversationItem{Type: ItemTypeAssistant, ItemID: "body-" + id, Content: "the work behind " + id},
+		)
+	}
+	w.doc.InsertMessageIntoArray(arr, 0, items...)
+	w.thread.itemID = threadID
+	w.thread.itemsArray = arr
+	return threadID, arr
+}
+
+// commitFoldSummaryForTest writes a fold's summary the way the summarizer's
+// commit does, so a later pass sees a fold that has come to rest rather than
+// one still owed a result.
+func commitFoldSummaryForTest(t *testing.T, w *ConversationWorker, foldID, summary string) {
+	t.Helper()
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	m := findThreadYMap(w.doc.getItems(), foldID)
+	if m == nil {
+		t.Fatalf("fold %s not found", foldID)
+	}
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) { m.Set("result", summary) }, w.doc.authorID)
+}
+
+// boundedFoldsIn counts the compaction folds among a thread's items.
+func boundedFoldsIn(items []ConversationItem) int {
+	n := 0
+	for _, it := range items {
+		if it.Type == ItemTypeThread && it.BoundedCompaction {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSessionFoldsConvergeToOneSummary is the convergence guard for a long-lived
+// session. Every other transcript folds to [standing context][one summary]
+// [recent tail]; a session must too, however many times it has been called. Two
+// passes here, with a fresh run between them: the second swallows the first's
+// summary rather than settling beside it.
+//
+// The two properties that make that safe are asserted alongside it, because a
+// fold that converges by losing them is worse than one that does not converge.
+// The caller keeps one tool_use/tool_result pair per call it made, in call
+// order, and the pairs for calls that have already returned come back byte for
+// byte — everything in an earlier result is frozen at the moment that run
+// settled, so a later call cannot slide the committed prefix out from under a
+// warm prompt cache.
+func TestSessionFoldsConvergeToOneSummary(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+
+	_, arr := sessionThreadForTest(t, w, "explore-1", "tu-1", "tu-2", "tu-3")
+	wireBefore, err := json.Marshal(appendThreadMessages(nil, w.doc.GetItems()[0], w.doc.GetItems()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foldID, folded, err := w.foldConversationForCompaction(false)
+	if err != nil || !folded {
+		t.Fatalf("first fold = (%q, %v, %v), want a fold", foldID, folded, err)
+	}
+	commitFoldSummaryForTest(t, w, foldID, "what the first two runs found")
+
+	// A fourth call lands, and the thread busts its window again.
+	w.doc.InsertMessageIntoArray(arr, w.doc.GetItemsLengthFromArray(arr),
+		invocationItemForTest("invoc-tu-4", "tu-4", "answer for tu-4"),
+		ConversationItem{Type: ItemTypeAssistant, ItemID: "body-tu-4", Content: "the work behind tu-4"},
+	)
+	secondFoldID, folded, err := w.foldConversationForCompaction(false)
+	if err != nil || !folded {
+		t.Fatalf("second fold = (%q, %v, %v), want a fold", secondFoldID, folded, err)
+	}
+	commitFoldSummaryForTest(t, w, secondFoldID, "what the first three runs found")
+
+	items := w.doc.GetItemsFromArray(arr)
+	if n := boundedFoldsIn(items); n != 1 {
+		t.Fatalf("summaries after two passes = %d, want one: %s", n, itemIDs(items))
+	}
+	if items[0].ItemID != "seeded-rule" {
+		t.Errorf("the standing context moved: %s", itemIDs(items))
+	}
+
+	child := w.doc.GetItems()[0]
+	runs := threadRunRecords(child)
+	if len(runs) != 4 {
+		t.Fatalf("run records after two folds = %d, want one per call: %+v", len(runs), runs)
+	}
+	for i, want := range []string{"tu-1", "tu-2", "tu-3", "tu-4"} {
+		if runs[i].call.ToolUseID != want {
+			t.Errorf("run %d paired against %q, want %q", i+1, runs[i].call.ToolUseID, want)
+		}
+	}
+	if tool := sessionToolOf(child); tool != "Explore" {
+		t.Errorf("session tool after two folds = %q, want Explore — a resume would create instead", tool)
+	}
+
+	wireAfter, err := json.Marshal(appendThreadMessages(nil, child, nil)[:6])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(wireAfter) != string(wireBefore) {
+		t.Errorf("the folds rewrote already-returned results:\n before %s\n after  %s", wireBefore, wireAfter)
+	}
 }
 
 // TestCompactRefusesWhileLLMClaimHeld pins the busy guard against the reported
@@ -115,9 +297,9 @@ func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
 // TestResummarizeCompactionThreadRerunsSummarizer pins the Re-summarise route
 // for a /compact (or /handoff) fold: the folded summarizer is re-run over the
 // SAME source — the committed summary is replaced and nothing is appended to the
-// thread. Routing a re-summarise through the ordinary close turn instead would
-// inject a "call return_result" instruction into the very transcript being
-// summarized, which the tool-free summarizer then feeds back to the model.
+// thread. Routing a re-summarise through the ordinary summarise turn instead
+// would inject a "summarise this thread" instruction into the very transcript
+// being summarized, which the summarizer then feeds back to the model.
 func TestResummarizeCompactionThreadRerunsSummarizer(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
@@ -450,15 +632,11 @@ func TestCanonicalCompactionRecordsFailClosedOnMarshalError(t *testing.T) {
 	}
 }
 
-// TestSummarizationPromptAsksForOneDeliverable pins the prompt's contract: every
-// summarization call is tool-free, so the prompt must never ask for a
-// return_result call (a second deliverable the model pays for and nothing
-// reads), and it must tell the model the <analysis> scratchpad is discarded —
-// otherwise it is asked to both write the block and not return it.
-func TestSummarizationPromptAsksForOneDeliverable(t *testing.T) {
-	if strings.Contains(DefaultSummarizationPrompt, "return_result") {
-		t.Fatalf("summarization prompt instructs a return_result call, but every summarization call is tool-free:\n%s", DefaultSummarizationPrompt)
-	}
+// TestSummarizationPromptDeclaresScratchpadStripped pins the prompt's contract:
+// the summary IS the response text, so the prompt must tell the model its
+// <analysis> scratchpad is discarded — otherwise it is asked to both write the
+// block and not return it.
+func TestSummarizationPromptDeclaresScratchpadStripped(t *testing.T) {
 	if !strings.Contains(DefaultSummarizationPrompt, "it is stripped from the stored summary") {
 		t.Fatalf("summarization prompt does not tell the model its <analysis> scratchpad is stripped:\n%s", DefaultSummarizationPrompt)
 	}
@@ -669,7 +847,7 @@ func TestHiddenCompactionUsesRegistryAdmissionAndDiscardsAllStreamChunks(t *test
 			return nil, err
 		}
 		if len(hidden.Tools) > 0 {
-			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"admitted final"}`)}}}, nil
+			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeToolUse, Name: "submit_summary", Input: json.RawMessage(`{"summary":"admitted final"}`)}}}, nil
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
 	}
@@ -727,7 +905,7 @@ func TestCompactionResponseTextJoinsTextBlocks(t *testing.T) {
 		// The summary is the response text: a tool_use block is never the
 		// deliverable, since no compaction call offers a tool to call.
 		{name: "tool call contributes nothing", blocks: []LLMResponseBlock{
-			{Type: provider.ContentBlockTypeToolUse, Name: "return_result", Input: json.RawMessage(`{"result":"tool result"}`)},
+			{Type: provider.ContentBlockTypeToolUse, Name: "submit_summary", Input: json.RawMessage(`{"summary":"tool result"}`)},
 			{Type: provider.ContentBlockTypeText, Content: "the summary"},
 		}, want: "the summary"},
 	}

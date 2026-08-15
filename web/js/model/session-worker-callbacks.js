@@ -401,48 +401,6 @@ export function setupWorkerCallbacks(session) {
     }
   });
 
-  // Handle subthread-error fallback requests from workers (engine-only). When a
-  // delegated child ended without a result, give the owning tool a chance to
-  // degrade gracefully via onSubthreadError; reply with the fallback text (or
-  // '' → the worker writes a default error result).
-  workerManager.setOnSubthreadErrorRequest(async (request, conversationId) => {
-    /** @type {{requestId: string, toolName: string, toolInput?: Record<string, unknown>, reason?: string}} */
-    const req = /** @type {*} */ (request);
-    const conv = session.conversations.get(conversationId);
-    if (!conv) {
-      workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, '');
-      return;
-    }
-    try {
-      const ItemClass = contextItemRegistry.getByToolName(req.toolName);
-      if (!ItemClass) {
-        workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, '');
-        return;
-      }
-      /** @type {import('juggler/context-item').ItemContext} */
-      const itemContext = {
-        id: req.requestId,
-        session,
-        conversation: conv,
-        messageThread: conv.rootMessageThread,
-        // Lets a multi-tool class route onSubthreadError to the invoked tool.
-        toolName: resolveToolName(req.toolName)
-      };
-      const item = new (/** @type {any} */ (ItemClass))(itemContext);
-      if (typeof item.onSubthreadError !== 'function') {
-        workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, '');
-        return;
-      }
-      const error = new Error(req.reason || 'the delegated sub-agent failed');
-      const fallback = await item.onSubthreadError(error, /** @type {Record<string, unknown>} */ (req.toolInput || {}));
-      const result = fallback && typeof fallback.result === 'string' ? fallback.result : '';
-      workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, result);
-    } catch (error) {
-      console.error(`[Session] Error running onSubthreadError for ${req.toolName}:`, extractErrorMessage(error));
-      workerManager.sendSubthreadErrorResponse(conversationId, req.requestId, '');
-    }
-  });
-
   // Handle approval requests from workers (shared engine/viewer logic).
   // Worker needs approval options from action plugins (which run on main thread).
   workerManager.setOnApprovalRequest((request, conversationId) =>

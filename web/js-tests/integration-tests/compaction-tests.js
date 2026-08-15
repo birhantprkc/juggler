@@ -30,17 +30,6 @@ function summaryResponse(result) {
 }
 
 /**
- * Mock the summarisation call for `compactUpTo` — the context-menu partial
- * compaction, whose fold is NOT a bounded-compaction thread and so is closed by
- * an ordinary forced-`return_result` turn rather than the folded summariser.
- * @param {string} result
- * @returns {import('../utilities/integration-test-runner.js').MockResponse} A return_result tool response.
- */
-function returnResultResponse(result) {
-  return toolUseResponse('tu-summary', 'return_result', { result }, undefined);
-}
-
-/**
  * Basic compaction — every content item is moved into the thread and the
  * worker writes a summary. The parent ends with exactly one thread tile.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
@@ -102,7 +91,7 @@ export const compactionUpToTest = {
     textResponse('Response 3.'),
     textResponse('Response 4.'),
     textResponse('Response 5.'),
-    returnResultResponse(COMPACT_UP_TO_SUMMARY)
+    summaryResponse(COMPACT_UP_TO_SUMMARY)
   ],
 
   operations: [
@@ -879,98 +868,44 @@ export const compactionSummaryMessageSelectableTest = {
 };
 
 /**
- * The user's report: the model "always replies with the summary in an assistant
- * message" instead of calling return_result. Compaction must STILL produce a
- * clean single thread tile whose `result` is that summary — the writeThreadResult
- * fallback turns the trailing assistant text into the thread result.
+ * A fold's summary is the one summary a run will never rewrite, so it is the
+ * one that keeps a Re-summarise button. The fold holds frozen transcript that
+ * the folded-compaction summariser summarised once with its own prompt; asking
+ * again re-runs THAT summariser over the same source rather than appending a
+ * "summarise this" instruction into the transcript being summarised.
  *
- * Models frequently treat "summarize, then call return_result" as a plain
- * answer-in-text request and never emit the tool call. The compaction outcome
- * must not depend on the model's cooperation.
+ * An ordinary thread's Result block carries no such button: its summary is
+ * whatever its last run rested on, so a different one is a message away.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
-export const compactionViaPlainTextReplyTest = {
-  name: 'compaction-plain-text-reply',
-  description: 'Compaction still yields a single summary thread when the model replies in text instead of return_result',
+export const compactionResummariseTest = {
+  name: 'compaction-resummarise',
+  description: 'A compaction fold can be summarised again from its Result block',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
     textResponse('Response 1.'),
-    textResponse('Response 2.'),
-    // Summarization turn: model answers in plain text, NEVER calls return_result.
-    textResponse('Summary: discussed messages one and two.')
+    summaryResponse(SUMMARY_TEXT),
+    summaryResponse('Summary: a second look at the same conversation.')
   ],
 
   operations: [
     { type: 'send-message', message: 'Message 1' },
-    { type: 'send-message', message: 'Message 2' },
     { type: 'run-command', command: 'compact' },
-    { type: 'wait-for-state', condition: { hasCompactionBarrier: true } }
-  ],
-
-  // Parent collapses to exactly one thread tile, result taken from the text reply.
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'thread', result: 'Summary: discussed messages one and two.', itemId: '$ITEM_2' }
-    ]
-  }
-};
-
-/**
- * A /compact fold must carry the `forceTool: 'return_result'` marker on its
- * summary thread. The summariser does not honour it as a directive — it runs
- * tool-free — but the marker, paired with `noAutoSelect`, is how the worker
- * still recognises a fold made before the `boundedCompaction` flag existed
- * (`isBoundedCompactionThread`). Drop it and those legacy folds stop being
- * summarised at all.
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const compactionMarksFoldIdentityTest = {
-  name: 'compaction-marks-fold-identity',
-  description: 'A compaction fold carries the forceTool=return_result identity marker legacy recognition needs',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    textResponse('Response 1.'),
-    textResponse('Response 2.'),
-    summaryResponse('Summary of two turns.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Message 1' },
-    { type: 'send-message', message: 'Message 2' },
-    { type: 'run-command', command: 'compact' },
-    { type: 'wait-for-state', condition: { hasCompactionBarrier: true } }
-  ],
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'thread', result: 'Summary of two turns.', itemId: '$ITEM_2' }
-    ]
-  },
-
-  customAssertions: (conversation) => {
-    const root = conversation.rootMessageThread.items;
-    const threadItem = root.find((/** @type {any} */ it) => it.get('type') === 'thread');
-    if (!threadItem) {
-      throw new Error('compaction-marks-fold-identity: no thread item at parent');
+    { type: 'wait-for-state', condition: { hasCompactionBarrier: true } },
+    // Drill into the fold; only a fold's Result block offers Re-summarise.
+    { type: 'click-dom', selector: 'thread-message' },
+    { type: 'assert-dom', global: true, selector: '.thread-result-resummarise-btn' },
+    { type: 'click-dom', global: true, selector: '.thread-result-resummarise-btn' },
+    {
+      type: 'wait-for-state',
+      condition: { anyThreadResultIncludes: 'a second look at the same conversation.' }
     }
-    const forceTool = threadItem.get('forceTool');
-    if (forceTool !== 'return_result') {
-      throw new Error(
-        `compaction-marks-fold-identity: thread.forceTool = ${JSON.stringify(forceTool)}, ` +
-				'want "return_result" — the fold must carry the marker legacy recognition depends on'
-      );
-    }
-  }
+  ]
 };
 
 export const tests = [
   compactionBasicTest,
-  compactionViaPlainTextReplyTest,
-  compactionMarksFoldIdentityTest,
   compactionSummaryMessageSelectableTest,
   compactionUpToTest,
   compactionSweepsThinkingTest,
@@ -982,5 +917,6 @@ export const tests = [
   compactionPreservesMemoryTest,
   newConversationTest,
   duplicateConversationTest,
-  compactionCancelsRunningTurnTest
+  compactionCancelsRunningTurnTest,
+  compactionResummariseTest
 ];

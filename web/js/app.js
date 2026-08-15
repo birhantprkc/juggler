@@ -989,9 +989,9 @@ class JugglerApp {
       conversation.stopProcessing();
     }
 
-    // Root/parent vantage: close any open sub-threads so the composer returns
-    // to the root column (their worker turn was just preempted above).
-    conversation.closeOpenSubThreads();
+    // Root/parent vantage: settle every sub-thread run still open, so nothing
+    // parked on one keeps waiting (their worker turn was preempted above).
+    conversation.settleOpenSubThreads();
 
     // Always ensure clean LLM state - stop() is idempotent
     // This resets the UI even if we weren't officially "processing"

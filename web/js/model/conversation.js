@@ -15,6 +15,7 @@ import toolExecutor from '../services/tool-executor.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import MessageThread from './message-thread.js';
 import { plainToYMap, plain } from './item-accessor.js';
+import { settleRunCancelled } from './run-records.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { TURN_CANCELLED_NOTICE } from '../utils/constants.js';
@@ -952,9 +953,8 @@ class Conversation {
 
   /**
    * Stop a single thread's subtree — the one primitive behind every "stop a
-   * thread" affordance (parent tile button, an in-thread footer Stop). Settles
-   * the thread closed the way MessageThread.close() does:
-   * worker truth first, then a result stamp.
+   * thread" affordance (parent tile button, an in-thread footer Stop): worker
+   * truth first, then settle the run.
    *
    * Crucially, the worker-cancel SCOPE equals the settle TARGET. We preempt the
    * single conversation worker only when this thread's subtree is what it is
@@ -962,42 +962,38 @@ class Conversation {
    * descendants, or a tool-action in the subtree is awaiting approval
    * (`_threadOwnsActiveWork`). A dormant/queued thread owns no in-flight work,
    * so stopping it must NOT kill whatever unrelated thread the worker is running
-   * — we just stamp it closed. (Today only one thread runs at a time; this
+   * — we just settle its run. (Today only one thread runs at a time; this
    * scoping is also what makes the model correct once threads run in parallel.)
    *
    * When we do preempt: cancelAllPendingApprovals() rejects any browser-side
    * approval dialogs in the subtree, then cancelAndSettle() cancels the in-flight
    * turn (the worker cancels its tools, writing state='cancelled') and waits for
    * the worker to go idle, so a live tool can no longer keep the subtree "busy".
-   * Only then do we stamp result='Cancelled' — and only if the thread is still
-   * resultless, so an existing real summary is never clobbered. The result makes
-   * the thread isThreadClosed (result set AND nothing live), returning the
-   * parent's composer.
+   * The worker settles the run it was driving on its way out, so the settle here
+   * only bites for a thread it never started — one spawned and left queued,
+   * whose caller would otherwise wait forever. The thread itself stays perfectly
+   * able to run again.
    * @param {*} threadYMap - The Yjs Y.Map for the thread item
    * @returns {Promise<void>}
    */
   async cancelThread(threadYMap) {
     await this.interruptThread(threadYMap);
     this.atomicUpdate(() => {
-      const existing = threadYMap.get('result');
-      if (typeof existing !== 'string' || existing.length === 0) {
-        threadYMap.set('result', 'Cancelled');
-      }
+      settleRunCancelled(threadYMap);
     });
   }
 
   /**
-   * Interrupt a thread's in-flight work WITHOUT closing it: cancel any pending
-   * approvals in its subtree and preempt the worker turn it owns, but leave the
-   * thread resultless (open). Because an open sub-thread keeps `hasBusyItems`
-   * true, its column keeps the composer — so the user can keep interacting with
-   * the thread after stopping it.
+   * Interrupt a thread's in-flight work and leave its run OPEN: cancel any
+   * pending approvals in its subtree and preempt the worker turn it owns, but
+   * record no outcome. The thread reads as still working, so its column keeps
+   * the composer and the user can carry on with it.
    *
    * This is the "stop from the thread's own vantage" action: Escape while
-   * focused in the sub-thread and the sub-thread's footer Stop both route
-   * here. Closing a thread (stamping a
-   * 'Cancelled' summary) only happens when it is stopped from its PARENT's
-   * vantage — `cancelThread` (the parent tile's Stop) or `closeOpenSubThreads`
+   * focused in the sub-thread, and the sub-thread's footer Stop, both route
+   * here. Settling the run as cancelled — which is what a parked caller reads
+   * to stop waiting — happens only when the thread is stopped from its PARENT's
+   * vantage: `cancelThread` (the parent tile's Stop) or `settleOpenSubThreads`
    * (a root/parent Escape).
    * @param {*} threadYMap - The thread Y.Map.
    * @returns {Promise<void>}
@@ -1010,37 +1006,30 @@ class Conversation {
   }
 
   /**
-   * Close every open (resultless) sub-thread, stamping each with a 'Cancelled'
-   * summary. This is the thread-closing half of a root/parent-vantage stop
-   * (Escape while focused on the root, the root footer Stop): the caller has
-   * already preempted the worker turn; this settles the sub-threads so they go
-   * `isThreadClosed` and the composer returns to the root column. An
-   * already-closed thread (non-empty result) is left untouched. Threads at
-   * every nesting depth are walked.
+   * Settle every sub-thread's open run as cancelled. This is the settling half
+   * of a root/parent-vantage stop (Escape while focused on the root, the root
+   * footer Stop): the caller has already preempted the worker turn; this marks
+   * the runs as no longer in flight, which is what a parked parent reads to stop
+   * waiting. A run that already settled is left as it is, and no summary is
+   * written. Threads at every nesting depth are walked.
    * @returns {void}
    */
-  closeOpenSubThreads() {
+  settleOpenSubThreads() {
     /** @type {any[]} */
     const open = [];
     walkThreads(this._rootMessageThread.items, (threadYMap) => {
-      const res = threadYMap.get('result');
-      if (typeof res !== 'string' || res.length === 0) open.push(threadYMap);
+      open.push(threadYMap);
     });
     if (open.length === 0) return;
     this.atomicUpdate(() => {
-      for (const t of open) {
-        const res = t.get('result');
-        if (typeof res !== 'string' || res.length === 0) {
-          t.set('result', 'Cancelled');
-        }
-      }
+      for (const t of open) settleRunCancelled(t);
     });
   }
 
   /**
    * Whether the conversation worker's current activity belongs to this thread's
    * subtree — i.e. stopping this thread should preempt the worker rather than
-   * just stamp it closed. True when (a) a tool-action anywhere in the subtree is
+   * only settle its run. True when (a) a tool-action anywhere in the subtree is
    * awaiting approval, or (b) the live processing column is this thread itself
    * or one of its descendants. False for a dormant/queued thread while an
    * unrelated sibling is the live column: that thread owns no in-flight work.
@@ -1223,8 +1212,7 @@ class Conversation {
     // Flatten the thread's items into the parent. Drop the thread's own
     // SYSTEM_1 placeholder: every container (root or a parent thread) already
     // owns exactly one, so carrying the child's up would duplicate it. Only the
-    // placeholder is stripped — a nested `return_result` stays valid when the
-    // parent is itself a sub-thread.
+    // placeholder is stripped; every other item moves up unchanged.
     const nested = threadYMap.get('items');
     const snapshots = (nested?.toArray?.() || [])
       .map((/** @type {any} */ it) => it.toJSON())
@@ -1259,15 +1247,10 @@ class Conversation {
 
   /**
    * Whether a plain item snapshot may live at the TOP LEVEL of a conversation
-   * root. Two kinds of item are thread-specific and must be dropped when
-   * flattening a sub-thread into a new root:
-   *   - The `SYSTEM_1` / `system-prompt` placeholder: the destination root seeds
-   *     its own, so a copied one would duplicate the system prompt.
-   *   - A `return_result` tool-action: that is how a sub-thread reports back to
-   *     its parent; a root has no parent to return to, so it is meaningless (and
-   *     would be a dangling tool-use) at the top level.
-   * Applied only to the top level — nested threads keep their own `return_result`
-   * calls, which are valid inside their sub-conversation.
+   * root. The `SYSTEM_1` / `system-prompt` placeholder is the one thread-specific
+   * item that must be dropped when flattening a sub-thread into a new root: the
+   * destination root seeds its own, so a copied one would duplicate the system
+   * prompt.
    * @param {any} plain - Plain snapshot from a Y.Map's toJSON().
    * @returns {boolean} True if the item belongs at a conversation root top level.
    * @private
@@ -1275,7 +1258,6 @@ class Conversation {
   _isRootTopLevelItem(plain) {
     if (!plain) return false;
     if (plain.itemId === 'SYSTEM_1' || plain.type === 'system-prompt') return false;
-    if (plain.type === 'tool-action' && plain.toolName === 'return_result') return false;
     return true;
   }
 
@@ -1360,8 +1342,7 @@ class Conversation {
    *   - Items: copied into the new root, fresh itemIds recursively. Every thread
    *     is isolated and carries everything it needs in its own items.
    *   - SYSTEM_1: new conversation owns its root context; promoted SYSTEM_1
-   *     placeholders (and `return_result` tool-actions, meaningless at a root)
-   *     are dropped — the new root seeds its own system prompt.
+   *     placeholders are dropped — the new root seeds its own system prompt.
    *   - modelConfig: source thread's effective modelConfig becomes new root config.
    *   - permissionRules/allowedPaths: conversation-scoped metadata is copied.
    *     Session-scoped permissions already belong to the project and remain shared.
@@ -1403,17 +1384,6 @@ class Conversation {
     return newId;
   }
 
-  /**
-   * Complete a thread with a result
-   * @param {*} threadYMap - The Yjs Y.Map for the thread item
-   * @param {string} result - The thread result text
-   */
-  completeThread(threadYMap, result) {
-    this.atomicUpdate(() => {
-      threadYMap.set('result', result);
-    });
-  }
-
   // =========================================================================
   // Status Message API (delegates to _llmState)
   // =========================================================================
@@ -1437,14 +1407,13 @@ class Conversation {
    * @param {string} userMessage - User's message content
    * @param {string|null} [threadItemId] - Thread item ID if sending from a thread column
    * @param {import('./message-thread.js').MessageThread} [messageThread] - Column-scoped message thread
-   * @param {{preemptProcessing?: boolean, attachments?: Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>, skills?: string[], closeRequest?: boolean}} [options] -
+   * @param {{preemptProcessing?: boolean, attachments?: Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>, skills?: string[]}} [options] -
    *   When `preemptProcessing` is set, an in-flight turn is cancelled-and-settled
    *   (worker truth) before this message is delivered, instead of the message
    *   being silently dropped by the "already processing" guard. A visible notice
    *   is shown if a live turn was actually cancelled. `attachments` carries
    *   content-addressed asset references (uploaded images) to store on the user
-   *   item. `closeRequest` marks the send as a thread close, forcing
-   *   return_result for that turn (see MessageThread.close).
+   *   item.
    * @returns {Promise<string|null>} null when the message was delivered (or a
    *   slash command was handled); otherwise a short reason describing which
    *   guard dropped it. The drop is silent for users (the UI guard normally
@@ -1594,7 +1563,7 @@ class Conversation {
     // Route to worker - the worker owns the strategy loop. Turns are driven
     // exclusively by the Go worker; there is no viewer-side fallback loop.
     if (workerManager.isWorkerReady(this.id)) {
-      workerManager.sendMessage(this.id, userMessage, messageThread?.threadItemId || threadItemId, options.attachments, options.skills, { closeRequest: options.closeRequest });
+      workerManager.sendMessage(this.id, userMessage, messageThread?.threadItemId || threadItemId, options.attachments, options.skills);
       const acceptedConfig = messageThread?.modelConfig || this.modelConfig;
       if (acceptedConfig?.provider && acceptedConfig?.model) {
         recentModels.record(acceptedConfig.provider, acceptedConfig.model, acceptedConfig.thinking);
@@ -1995,8 +1964,8 @@ class Conversation {
     if (settled()) return;
 
     // Something is in flight and we're about to cancel it. Surface that so
-    // the preemption is never silent — every caller (new-thread button,
-    // slash menu, close-thread) reaches the user through this one notice.
+    // the preemption is never silent — every caller (the new-thread button, the
+    // slash menu) reaches the user through this one notice.
     this.showWarning(TURN_CANCELLED_NOTICE, 5000);
 
     this.stopProcessing();

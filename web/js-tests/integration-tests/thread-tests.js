@@ -78,8 +78,8 @@ export const threadCreateToolTest = {
   llmResponses: [
     // Mock 1: Root LLM calls create_thread
     toolUseResponse('call_1', 'create_thread', { goal: 'Analyze code', prompt: 'Review the auth module' }),
-    // Mock 2: Thread LLM calls return_result (consumed by nested loop)
-    toolUseResponse('call_2', 'return_result', { result: 'Analysis complete' }),
+    // Mock 2: Thread LLM replies; the run rests on it (consumed by nested loop)
+    textResponse('Analysis complete'),
     // Mock 3: Root LLM continues after thread completes
     textResponse("I've created a thread to analyze the code.")
   ],
@@ -100,7 +100,7 @@ export const threadCreateToolTest = {
 
 /**
  * create_thread's optional `resultSpec` is the caller's return contract: what
- * the thread's summary must contain. It is structural, not advisory — stored on
+ * the thread's last message must contain. It is structural, not advisory — stored on
  * the thread Y.Map at creation, appended to the thread's seed message so the
  * child acts on it, and surfaced as a read-only block at the top of the thread
  * column (under the context toggle). Omitting it is tolerated (other tests cover
@@ -118,7 +118,7 @@ export const threadResultSpecTest = {
       prompt: 'Locate every call site',
       resultSpec: 'each call site as file:line - caller'
     }),
-    toolUseResponse('call_2', 'return_result', { result: 'Found 3 call sites' }),
+    textResponse('Found 3 call sites'),
     textResponse('Done locating call sites.')
   ],
 
@@ -130,7 +130,7 @@ export const threadResultSpecTest = {
       threadIndex: 0,
       expectedMessages: [
         { role: 'user', contentIncludes: 'Locate every call site' },
-        { role: 'user', contentIncludes: 'call return_result with: each call site as file:line - caller' }
+        { role: 'user', contentIncludes: 'Your last message is what the caller receives. It must contain: each call site as file:line - caller' }
       ]
     },
     // Drilling into the thread surfaces the contract block in its column.
@@ -312,11 +312,11 @@ export const threadDeleteClearsBusyStateTest = {
 };
 
 /**
- * Single thread: create_thread → thread LLM runs → return_result → parent continues.
+ * Single thread: create_thread → thread LLM runs → comes to rest → parent continues.
  *
  * Mock response order (FIFO, consumed by recursive runStrategyLoop):
  *   1. Root: create_thread tool call
- *   2. Thread: return_result with "Task done"
+ *   2. Thread: text "Task done" — the run rests on it and returns it
  *   3. Root: text continuation after thread completes
  *
  * Verifies:
@@ -329,12 +329,12 @@ export const threadDeleteClearsBusyStateTest = {
  */
 export const singleThreadLifecycleTest = {
   name: 'thread-lifecycle-single',
-  description: 'Single thread: create, run, return_result, parent continues with result in context',
+  description: 'Single thread: create, run, come to rest, parent continues with result in context',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute the task' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Task done' }),
+    textResponse('Task done'),
     textResponse('Thread finished, moving on.')
   ],
 
@@ -359,13 +359,13 @@ export const singleThreadLifecycleTest = {
 
 /**
  * Two-level nested threads:
- *   Root → create_thread("L1") → L1 → create_thread("L2") → L2 → return_result → L1 → return_result → Root
+ *   Root → create_thread("L1") → L1 → create_thread("L2") → L2 rests → L1 rests → Root
  *
  * Mock response order:
  *   1. Root: create_thread L1
  *   2. L1: create_thread L2
- *   3. L2: return_result "L2 result"
- *   4. L1: return_result "L1 result"
+ *   3. L2: text "L2 result"
+ *   4. L1: text "L1 result"
  *   5. Root: text "All done"
  *
  * Verifies both threads have results and proper nesting.
@@ -379,8 +379,8 @@ export const nestedThreadLifecycleTest = {
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Level 1', prompt: 'Start L1' }),
     toolUseResponse('call_2', 'create_thread', { goal: 'Level 2', prompt: 'Start L2' }),
-    toolUseResponse('call_3', 'return_result', { result: 'L2 result' }),
-    toolUseResponse('call_4', 'return_result', { result: 'L1 result' }),
+    textResponse('L2 result'),
+    textResponse('L1 result'),
     textResponse('All done.')
   ],
 
@@ -410,19 +410,18 @@ export const nestedThreadLifecycleTest = {
 };
 
 /**
- * A thread whose turn ends on a plain assistant message — with NO return_result
- * call — stays OPEN. It does not auto-close on the trailing text (a thread
- * closes only on an explicit return_result call or a hard error), so the tile
- * is not closed and the composer stays in the thread for continued interaction.
+ * A thread whose turn ends on a plain assistant message settles its run on that
+ * reply and writes it as the thread's summary — the answer is the message the
+ * run came to rest on, with no tool involved.
  *
- * Uses a user-created /thread (the interactive case): after the thread replies
- * in text, the thread column must remain open and the thread must carry no
- * result.
+ * Writing a summary ends nothing. Uses a user-created /thread (the interactive
+ * case): the thread column stays, with its composer, ready for the next thing
+ * the user types.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
-export const threadStaysOpenWithoutReturnResultTest = {
-  name: 'thread-stays-open-without-return-result',
-  description: 'A thread ending in assistant text (no return_result) stays open, not auto-closed',
+export const threadSettlesOnTrailingTextTest = {
+  name: 'thread-settles-on-trailing-text',
+  description: 'A thread ending in assistant text summarises with that reply and stays usable',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -435,25 +434,24 @@ export const threadStaysOpenWithoutReturnResultTest = {
     { type: 'run-command', command: 'thread', args: 'Interactive' },
     { type: 'wait-for-state', condition: { hasThreadItem: true } },
     { type: 'send-thread-message', message: 'Do work' },
-    // The thread ended its turn on assistant text with no return_result.
-    // It must NOT close: assert no thread acquires a result in this window.
-    { type: 'wait-for-state', condition: { maxCompletedThreadCount: 0 }, timeoutMs: 500 }
+    { type: 'wait-for-state', condition: { anyThreadResultIncludes: 'I did the work.' } }
   ],
 
   customAssertions: (conversation) => {
     const thread = conversation.rootMessageThread.items.find(
       (/** @type {any} */ it) => it.get?.('type') === 'thread'
     );
-    if (!thread) throw new Error('thread-stays-open: thread item missing');
-    if (thread.get('result')) {
-      throw new Error(`thread-stays-open: thread should stay OPEN, got result ${JSON.stringify(thread.get('result'))}`);
+    if (!thread) throw new Error('thread-settles-on-trailing-text: thread item missing');
+    if (thread.get('result') !== 'I did the work.') {
+      throw new Error(
+        `thread-settles-on-trailing-text: summary should be the reply the run rested on, got ${JSON.stringify(thread.get('result'))}`
+      );
     }
-    // The thread column stays open (composer stays in the thread) — it must
-    // not snap back to the parent.
+    // A summary is not an ending: the thread column stays, composer and all.
     const tab = conversation.getTabElement?.();
     const cols = Array.from(tab?.querySelectorAll('conversation-area.thread-column') || []);
     if (cols.length === 0) {
-      throw new Error('thread-stays-open: thread column closed — the composer did not stay in the thread');
+      throw new Error('thread-settles-on-trailing-text: thread column gone — a summary must not end the thread');
     }
   },
 
@@ -468,186 +466,35 @@ export const threadStaysOpenWithoutReturnResultTest = {
 };
 
 /**
- * The footer's "Close with last message" closes an open thread by promoting its
- * trailing assistant reply as the result — with NO extra LLM turn. Only two mock
- * responses are provided (the root turn and the thread turn); if the close
- * triggered a summarisation turn it would exhaust the mocks and fail.
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const threadCloseWithLastMessageTest = {
-  name: 'thread-close-with-last-message',
-  description: 'Close with last message stamps the trailing assistant reply as the result, no extra LLM turn',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    textResponse('Hi.'),
-    textResponse('Here is my final answer.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Hello' },
-    { type: 'run-command', command: 'thread', args: 'Interactive' },
-    { type: 'wait-for-state', condition: { hasThreadItem: true } },
-    { type: 'send-thread-message', message: 'Do work' },
-    // Open thread, last item is an assistant reply → the footer offers the
-    // cheap close. Click it; the thread closes with that exact text.
-    { type: 'wait-for-state', condition: { maxCompletedThreadCount: 0 }, timeoutMs: 300 },
-    // Scope to the thread column's footer — the root footer also contains a
-    // (hidden) close button, and a bare global selector would match it first.
-    { type: 'click-dom', global: true, selector: 'conversation-area.thread-column .close-thread-last-btn' },
-    { type: 'wait-for-state', condition: { completedThreadCount: 1 } }
-  ],
-
-  customAssertions: (conversation) => {
-    const thread = conversation.rootMessageThread.items.find(
-      (/** @type {any} */ it) => it.get?.('type') === 'thread'
-    );
-    if (!thread) throw new Error('thread-close-with-last-message: thread item missing');
-    if (thread.get('result') !== 'Here is my final answer.') {
-      throw new Error(`thread-close-with-last-message: expected result 'Here is my final answer.', got ${JSON.stringify(thread.get('result'))}`);
-    }
-  },
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Hello' },
-      { type: 'assistant', content: 'Hi.' },
-      { type: 'thread', itemId: '$ITEM_4', result: 'Here is my final answer.' }
-    ]
-  }
-};
-
-/**
- * return_result called with a MIS-NAMED argument (`summary` instead of the
- * schema's `result`) must still close the thread with that text as the result —
- * NOT discard the work and fabricate "No result provided".
- *
- * Observed in the wild: a close/compaction summary the model emitted under
- * `summary` produced a thread tile reading "Thread result: No result provided"
- * and the real summary was lost. Models mis-name this argument often enough that
- * the worker tolerates common aliases rather than rejecting the call.
- *
- * Mock response order:
- *   1. Root: create_thread
- *   2. Thread: return_result {summary: ...} — alias key, recovered → thread closes
- *   3. Root: text continuation (sees the recovered result in context)
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const threadReturnResultAliasArgTest = {
-  name: 'thread-return-result-alias-arg',
-  description: 'return_result with a mis-named arg (summary) still closes the thread with that text',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute the task' }),
-    toolUseResponse('call_2', 'return_result', { summary: 'Summary under the wrong key' }),
-    textResponse('Thread finished, moving on.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Start work' },
-    // Root's continuation must carry the recovered thread result, never the
-    // fabricated fallback that the old swallow-the-malformed-call path emitted.
-    {
-      type: 'validate-context-snapshot',
-      expectedContent: ['Summary under the wrong key'],
-      unexpectedContent: ['No result provided']
-    }
-  ],
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Start work' },
-      { type: 'thread', itemId: '$ITEM_3', result: 'Summary under the wrong key' },
-      { type: 'assistant', content: 'Thread finished, moving on.' }
-    ]
-  }
-};
-
-/**
- * return_result called with an EMPTY argument object but the summary in an
- * accompanying assistant text block (the model "answered, then called the tool")
- * must close the thread with that text — not "No result provided".
- *
- * This is the second wild shape: the model writes its summary as prose and calls
- * return_result with nothing useful in the args. The worker falls back to the
- * turn's assistant text so the summary is never lost.
- *
- * Mock response order:
- *   1. Root: create_thread
- *   2. Thread: text "Completed the analysis: all green." + return_result {}
- *   3. Root: text continuation
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const threadReturnResultTextFallbackTest = {
-  name: 'thread-return-result-text-fallback',
-  description: 'return_result with empty args falls back to the turn\'s assistant text as the result',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute the task' }),
-    toolUseResponse('call_2', 'return_result', {}, 'Completed the analysis: all green.'),
-    textResponse('Thread finished, moving on.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Start work' },
-    {
-      type: 'validate-context-snapshot',
-      expectedContent: ['Completed the analysis: all green.'],
-      unexpectedContent: ['No result provided']
-    }
-  ],
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Start work' },
-      { type: 'thread', itemId: '$ITEM_3', result: 'Completed the analysis: all green.' },
-      { type: 'assistant', content: 'Thread finished, moving on.' }
-    ]
-  }
-};
-
-/**
  * A completed thread must surface its result as a VISIBLE terminal element in
  * its own transcript (the open thread column) — not only on the parent tile.
  *
- * The result lives on the thread Y.Map's `result` field (source of truth, also
- * rendered by the tile), NOT as an item in the thread's items array. So the
- * open-thread view synthesizes a terminal "Result" element from that field at
- * the end of the transcript. This is the elegant alternative to making the
- * meta-tool-result visible: one source of truth, uniform across every way a
- * thread concludes (explicit return_result, alias recovery, text fallback,
- * error placeholder).
- *
- * The element must be correctly typed — a distinct `.thread-result-final`
- * terminal marker, NOT a `thinking-message` (the original WTF) and NOT a plain
- * assistant bubble.
+ * The summary IS the reply the run came to rest on, so the message standing at
+ * the bottom of the column is the whole of it. The column must therefore show
+ * that text exactly once: no synthesized `.thread-result-final` block repeating
+ * the message immediately above it, and no `thinking-message` (the original WTF)
+ * either.
  *
  * Mock response order:
  *   1. Root: create_thread (sub-thread carries no system-prompt of its own)
- *   2. Thread: return_result {result: ...}
+ *   2. Thread: text — the run rests on it and it becomes the summary
  *   3. Root: text continuation
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const threadResultVisibleInTranscriptTest = {
   name: 'thread-result-visible-in-transcript',
-  description: 'Completed thread shows its result as a visible terminal element in the open thread column',
+  description: 'Completed thread shows its result once in the open thread column, as the message it rested on',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute the task' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Final summary of the work.' }),
+    textResponse('Final summary of the work.'),
     textResponse('Thread finished, moving on.')
   ],
 
   operations: [
     { type: 'send-message', message: 'Start work' },
-    // Drill into the completed thread so its transcript (including the
-    // synthesized terminal Result element) renders in a thread column.
+    // Drill into the completed thread so its transcript renders in a column.
     { type: 'click-dom', selector: 'thread-message' }
   ],
 
@@ -658,14 +505,14 @@ export const threadResultVisibleInTranscriptTest = {
     if (cols.length === 0) {
       throw new Error('thread-result-visible: no open thread column after drilling into the thread');
     }
-    const resultEls = cols.flatMap((/** @type {Element} */ c) =>
-      Array.from(c.querySelectorAll('.thread-result-final')));
-    if (resultEls.length === 0) {
-      throw new Error('thread-result-visible: open thread column has no .thread-result-final terminal element');
-    }
-    const text = resultEls.map((/** @type {Element} */ e) => e.textContent || '').join('\n');
+    const text = cols.map((/** @type {Element} */ c) => c.textContent || '').join('\n');
     if (!text.includes('Final summary of the work.')) {
-      throw new Error(`thread-result-visible: terminal element missing summary text; got "${text.slice(0, 200)}"`);
+      throw new Error(`thread-result-visible: open thread column missing the run's reply; got "${text.slice(0, 200)}"`);
+    }
+    const blocks = cols.flatMap((/** @type {Element} */ c) =>
+      Array.from(c.querySelectorAll('.thread-result-final')));
+    if (blocks.length > 0) {
+      throw new Error('thread-result-visible: a Summary block repeats the message it sits under');
     }
     // Regression: the result must NOT render as a thinking bubble.
     const thinking = cols.flatMap((/** @type {Element} */ c) =>
@@ -677,114 +524,51 @@ export const threadResultVisibleInTranscriptTest = {
 };
 
 /**
- * Reopening a completed thread (clearing its `result`) must remove the terminal
- * Result block from the open thread column — because the block is DERIVED from
- * the `result` field at render time, not stored as an item. This is the payoff
- * of approach (b): no cached state to leave stale; reopen/undo/redo/peer-sync
- * all just re-derive from `result`.
+ * A thread invoked again must never sit under a block presenting the PREVIOUS
+ * run's answer as this run's conclusion. The block is derived at render time,
+ * never stored as an item, so there is no cached state to leave stale — and a
+ * thread that records runs answers its callers through those records, so it
+ * renders no block at all.
  *
- * Flow: thread completes → drill in (block visible, covered by the sibling
- * test) → reopen (result cleared) → block must be gone while the column stays
- * open.
+ * Flow: thread rests (summary written) → drill in → send it another message →
+ * nothing claiming to be a conclusion while the column stays open.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
-export const threadResultBlockClearedOnReopenTest = {
-  name: 'thread-result-block-cleared-on-reopen',
-  description: 'Reopening a thread removes the synthesized terminal Result block from the open column',
+export const threadResultBlockFollowsTheRunTest = {
+  name: 'thread-result-block-follows-the-run',
+  description: 'A resumed run never sits under a block presenting the previous run\'s answer',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Quick task', prompt: 'Do it' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Done working.' }),
-    textResponse('All done.')
+    textResponse('Done working.'),
+    textResponse('All done.'),
+    // The resumed run: held at the mock barrier so the assertion runs while it
+    // is genuinely in flight.
+    textResponse('Second pass done.', { pauseBeforeReturn: true })
   ],
 
   operations: [
     { type: 'send-message', message: 'Go' },
     { type: 'wait-for-state', condition: { completedThreadCount: 1 } },
-    // Drill into the completed thread so its column (with the terminal Result
-    // block) is rendered and stays open.
+    // Drill into the settled thread so its column is rendered and stays open.
     { type: 'click-dom', selector: 'thread-message' },
-    // Reopen clears the thread's `result`.
-    { type: 'reopen-thread' },
-    // Same guard as thread-reopen: the reducer must NOT re-write a result.
-    { type: 'wait-for-state', condition: { maxCompletedThreadCount: 0 }, timeoutMs: 500 }
+    { type: 'send-thread-message-no-wait', message: 'one more thing' },
+    { type: 'wait-for-mock-paused' }
   ],
 
   customAssertions: (conversation) => {
     const tab = conversation.getTabElement?.();
-    if (!tab) throw new Error('thread-result-reopen: no tab element');
+    if (!tab) throw new Error('thread-result-block-follows-the-run: no tab element');
     const cols = Array.from(tab.querySelectorAll('conversation-area.thread-column'));
     if (cols.length === 0) {
-      throw new Error('thread-result-reopen: thread column closed on reopen — cannot prove the block was removed while open');
+      throw new Error('thread-result-block-follows-the-run: thread column closed — cannot prove the block was removed while open');
     }
     const stale = cols.flatMap((/** @type {Element} */ c) =>
       Array.from(c.querySelectorAll('.thread-result-final')));
     if (stale.length > 0) {
-      throw new Error(`thread-result-reopen: ${stale.length} stale .thread-result-final block(s) remain after reopen (result cleared but block not removed)`);
+      throw new Error(`thread-result-block-follows-the-run: ${stale.length} .thread-result-final block(s) still present while the thread is running`);
     }
-  },
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Go' },
-      { type: 'thread', itemId: '$ITEM_3' },
-      { type: 'assistant', content: 'All done.' }
-    ]
-  }
-};
-
-/**
- * return_result must NOT emit a redundant `thinking` item echoing the summary.
- *
- * The thread's result is surfaced through the thread tile (Y.Map `result`) — the
- * same path every thread uses. The worker used to ALSO call addThinkingMessage
- * with the full "Thread result: <summary>" text, which rendered the entire
- * summary as a mis-typed yellow "Thinking" bubble inside the thread (reported in
- * the wild three separate times, including for perfectly-formed calls). The only
- * item return_result should leave behind in the thread is the meta-tool-result
- * (needed for LLM context reconstruction) — never a thinking item.
- *
- * Mock response order:
- *   1. Root: create_thread (prompt becomes the thread's user message)
- *   2. Thread: return_result {result: ...}
- *   3. Root: text continuation
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const threadReturnResultNoThinkingItemTest = {
-  name: 'thread-return-result-no-thinking-item',
-  description: 'return_result leaves only a meta-tool-result in the thread, never a thinking echo of the summary',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute the task' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Task done summary text' }),
-    textResponse('Thread finished, moving on.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Start work' }
-  ],
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Start work' },
-      {
-        type: 'thread',
-        itemId: '$ITEM_3',
-        result: 'Task done summary text',
-        items: [
-          // The sub-thread is seeded with a cloned system prompt (fresh id) at
-          // its head, then its own message, then the return_result marker.
-          { type: 'system-prompt' },
-          { type: 'user', content: 'Execute the task' },
-          { type: 'meta-tool-result' }
-        ]
-      },
-      { type: 'assistant', content: 'Thread finished, moving on.' }
-    ]
   }
 };
 
@@ -798,11 +582,11 @@ export const threadReturnResultNoThinkingItemTest = {
  * Sub-thread turn content is tracked on the undo stack per turn, so a completed
  * thread peels apart in three undo groups (most-recent first):
  *   1. the root assistant continuation
- *   2. the sub-thread's return_result turn (clears the thread's result field,
- *      leaving the thread container in place)
+ *   2. the sub-thread's own turn (clears the thread's result field, leaving the
+ *      thread container in place)
  *   3. the thread creation (removes the thread entirely)
  *
- * The critical assertion is the redo that restores the return_result turn — the
+ * The critical assertion is the redo that restores the sub-thread's turn — the
  * thread must come back with result='Task done', not as a running thread.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
@@ -813,7 +597,7 @@ export const threadUndoRedoPreservesResultTest = {
 
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute the task' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Task done' }),
+    textResponse('Task done'),
     textResponse('Thread finished.')
   ],
 
@@ -844,8 +628,8 @@ export const threadUndoRedoPreservesResultTest = {
         ]
       }
     },
-    // Undo 2: reverts the sub-thread's return_result turn — the thread's result
-    // is cleared but the thread container remains in place.
+    // Undo 2: reverts the sub-thread's turn — the thread's result is cleared
+    // but the thread container remains in place.
     { type: 'undo' },
     { type: 'wait-for-state', condition: { completedThreadCount: 0, hasThreadItem: true } },
     {
@@ -883,7 +667,7 @@ export const threadUndoRedoPreservesResultTest = {
         ]
       }
     },
-    // Redo 2: restores the return_result turn — result MUST be preserved (regression)
+    // Redo 2: restores the sub-thread's turn — result MUST be preserved (regression)
     { type: 'redo' },
     { type: 'wait-for-state', condition: { completedThreadCount: 1 } },
     {
@@ -927,7 +711,7 @@ export const threadUndoRedoDeleteInterleaveTest = {
 
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute the task' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Task done' }),
+    textResponse('Task done'),
     textResponse('Thread finished.')
   ],
 
@@ -935,7 +719,7 @@ export const threadUndoRedoDeleteInterleaveTest = {
     { type: 'send-message', message: 'Start' },
     // send-message calls waitForTurnComplete — conversation is fully settled here.
     // Three undos peel a completed thread: assistant continuation, the
-    // return_result turn (clears the result), then the thread creation itself.
+    // sub-thread's turn (clears the result), then the thread creation itself.
     { type: 'undo' },
     { type: 'undo' },
     { type: 'undo' },
@@ -1312,128 +1096,6 @@ export const threadContextItemUndoDeleteNoDuplicateTest = {
   ]
 };
 
-// Export all tests
-/**
- * Reopening a closed thread must NOT snap back to closed.
- *
- * Bug: after reopen() clears the result field, tryReconcile() walks into the
- * child thread, sees the old assistant message, and calls writeThreadResult()
- * again — re-closing the thread within the same event loop cycle.
- *
- * Fix: decideNextAction() returns ActionNone (not ActionCompleteThread) when
- * activity="" — the strategy loop defer already wrote the result before
- * clearing activity, so ActionCompleteThread with idle activity only fires
- * spuriously after reopen.
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-/**
- * After reopening a closed thread, undo must restore the closed state.
- *
- * Bug: reopen() called transact() without authorId, so the UndoManager
- * (which only tracks transactions with authorId as origin) never recorded
- * the change. Pressing undo appeared clickable (old entries on the stack)
- * but did nothing visible because reopen's transaction was untracked.
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const threadReopenUndoTest = {
-  name: 'thread-reopen-undo',
-  description: 'Undoing a reopen restores the closed thread state',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    toolUseResponse('call_1', 'create_thread', { goal: 'Quick task', prompt: 'Do it' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Done working.' }),
-    textResponse('All done.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Go' },
-    { type: 'wait-for-state', condition: { completedThreadCount: 1 } },
-    {
-      type: 'assert-document',
-      expected: {
-        items: [
-          { type: 'system-prompt', itemId: '$ITEM_1' },
-          { type: 'user', content: 'Go' },
-          { type: 'thread', itemId: '$ITEM_3', result: 'Done working.' },
-          { type: 'assistant', content: 'All done.' }
-        ]
-      }
-    },
-    { type: 'reopen-thread' },
-    { type: 'wait-for-state', condition: { maxCompletedThreadCount: 0 }, timeoutMs: 500 },
-    {
-      type: 'assert-document',
-      expected: {
-        items: [
-          { type: 'system-prompt', itemId: '$ITEM_1' },
-          { type: 'user', content: 'Go' },
-          { type: 'thread', itemId: '$ITEM_3' },
-          { type: 'assistant', content: 'All done.' }
-        ]
-      }
-    },
-    // Undo must restore the thread result (re-close the thread)
-    { type: 'undo' },
-    { type: 'wait-for-state', condition: { completedThreadCount: 1 } },
-    {
-      type: 'assert-document',
-      expected: {
-        items: [
-          { type: 'system-prompt', itemId: '$ITEM_1' },
-          { type: 'user', content: 'Go' },
-          { type: 'thread', itemId: '$ITEM_3', result: 'Done working.' },
-          { type: 'assistant', content: 'All done.' }
-        ]
-      }
-    }
-  ],
-
-};
-
-/** @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition} */
-export const threadReopenTest = {
-  name: 'thread-reopen',
-  description: 'Reopened closed thread stays open, does not snap back',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    toolUseResponse('call_1', 'create_thread', { goal: 'Quick task', prompt: 'Do it' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Done working.' }),
-    textResponse('All done.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Go' },
-    { type: 'wait-for-state', condition: { completedThreadCount: 1 } },
-    {
-      type: 'assert-document',
-      expected: {
-        items: [
-          { type: 'system-prompt', itemId: '$ITEM_1' },
-          { type: 'user', content: 'Go' },
-          { type: 'thread', itemId: '$ITEM_3', result: 'Done working.' },
-          { type: 'assistant', content: 'All done.' }
-        ]
-      }
-    },
-    { type: 'reopen-thread' },
-    // Constraint: the thread must NOT get a result back during this 500ms window.
-    // In the broken state the reducer immediately re-writes the result and the
-    // constraint throws, failing the test.
-    { type: 'wait-for-state', condition: { maxCompletedThreadCount: 0 }, timeoutMs: 500 }
-  ],
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Go' },
-      { type: 'thread', itemId: '$ITEM_3' },
-      { type: 'assistant', content: 'All done.' }
-    ]
-  }
-};
-
 // ============================================================================
 // Sibling sub-threads — multiple incomplete child threads under one parent.
 // ============================================================================
@@ -1489,8 +1151,8 @@ function assertChildResult(conversation, parentId, goal, expectedResult) {
  *
  * Mock FIFO order (assumes fix-in-place: spawn-order dispatch of siblings):
  *   1. root: multi-tool [create_thread A, create_thread B]
- *   2. A's LLM call: return_result "A done"
- *   3. B's LLM call: return_result "B done"
+ *   2. A's LLM call: text "A done"
+ *   3. B's LLM call: text "B done"
  *   4. root continuation: text "All complete"
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
@@ -1504,8 +1166,8 @@ export const siblingThreadsLifecycleTest = {
       { toolUseId: 'call_root_1', toolName: 'create_thread', toolInput: { goal: 'Task A', prompt: 'Do A' } },
       { toolUseId: 'call_root_2', toolName: 'create_thread', toolInput: { goal: 'Task B', prompt: 'Do B' } }
     ]),
-    toolUseResponse('call_a', 'return_result', { result: 'A done' }),
-    toolUseResponse('call_b', 'return_result', { result: 'B done' }),
+    textResponse('A done'),
+    textResponse('B done'),
     textResponse('All complete.')
   ],
 
@@ -1549,10 +1211,10 @@ export const siblingThreadsLifecycleTest = {
  * Mock FIFO order (assumes fix: spawn-order dispatch):
  *   1. root: multi-tool [create_thread A, create_thread B]
  *   2. A: multi-tool [create_thread A1, create_thread A2]
- *   3. A1: return_result "leaf"
- *   4. A2: return_result "leaf"
- *   5. A wrap-up: return_result "A done"
- *   6. B: return_result "B done"
+ *   3. A1: text "leaf"
+ *   4. A2: text "leaf"
+ *   5. A wrap-up: text "A done"
+ *   6. B: text "B done"
  *   7. root continuation: text "all complete"
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
@@ -1570,10 +1232,10 @@ export const siblingThreadsAtMultipleDepthsTest = {
       { toolUseId: 'a1c', toolName: 'create_thread', toolInput: { goal: 'A1', prompt: 'Do A1' } },
       { toolUseId: 'a2c', toolName: 'create_thread', toolInput: { goal: 'A2', prompt: 'Do A2' } }
     ]),
-    toolUseResponse('a1r', 'return_result', { result: 'leaf' }),
-    toolUseResponse('a2r', 'return_result', { result: 'leaf' }),
-    toolUseResponse('aw', 'return_result', { result: 'A done' }),
-    toolUseResponse('br', 'return_result', { result: 'B done' }),
+    textResponse('leaf'),
+    textResponse('leaf'),
+    textResponse('A done'),
+    textResponse('B done'),
     textResponse('All complete.')
   ],
 
@@ -1605,42 +1267,37 @@ export const siblingThreadsAtMultipleDepthsTest = {
 };
 
 /**
- * Continue button on a stalled (reopened) sub-thread restarts its LLM loop.
+ * Continue button on a stopped sub-thread restarts its LLM loop.
  *
- * Bug: when a sub-thread is reopened (result cleared, no items appended), the
- * worker does not auto-redispatch (correct: threadReopenTest verifies this).
- * Clicking Continue inside the sub-thread should explicitly dispatch its LLM,
- * but in production the dispatch never reaches the reducer for sub-threads.
+ * Bug: a sub-thread whose run has settled is not re-dispatched on its own
+ * (correctly — the run is over). Clicking Continue inside the sub-thread should
+ * explicitly dispatch its LLM, but in production the dispatch never reached the
+ * reducer for sub-threads.
  *
  * Mock FIFO order:
  *   1. root: create_thread
- *   2. sub-thread's first LLM call: return_result "v1"
+ *   2. sub-thread's first LLM call: text "v1"
  *   3. root continuation: text
  *   4. (consumed by continue-sub-thread) sub-thread's resumed LLM call: text "v2"
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const continueStalledSubThreadTest = {
   name: 'thread-continue-stalled-sub-thread',
-  description: 'Continue button on a reopened sub-thread restarts its LLM loop',
+  description: 'Continue button on a stalled sub-thread restarts its LLM loop',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
     toolUseResponse('c1', 'create_thread', { goal: 'Task', prompt: 'Do it' }),
-    toolUseResponse('c2', 'return_result', { result: 'v1' }),
+    textResponse('v1'),
     textResponse('First pass done.'),
-    // Consumed after the user clicks Continue on the reopened sub-thread.
-    // The continued turn closes the thread via return_result (a thread no
-    // longer auto-closes on a plain text reply).
-    toolUseResponse('cv2', 'return_result', { result: 'v2' })
+    // Consumed after the user clicks Continue on the stalled sub-thread. The
+    // continued run comes to rest on this reply, which becomes the new summary.
+    textResponse('v2')
   ],
 
   operations: [
     { type: 'send-message', message: 'Go' },
     { type: 'wait-for-state', condition: { completedThreadCount: 1 } },
-    { type: 'reopen-thread' },
-    // After reopen the thread has no result; constraint = thread must NOT
-    // auto-complete in this window (otherwise our continue click is moot).
-    { type: 'wait-for-state', condition: { maxCompletedThreadCount: 0 }, timeoutMs: 500 },
     // Click the in-thread Continue button on the (only) sub-thread.
     { type: 'continue-sub-thread', threadIndex: 0 },
     { type: 'wait-for-state', condition: { completedThreadCount: 1 } }
@@ -1697,110 +1354,21 @@ export const nestedApprovalBubblesToAncestorTileTest = {
 };
 
 /**
- * The terminal Result block in an open thread column is editable: clicking Edit
- * turns the summary into a textarea; Save writes the new text via
- * conversation.completeThread, and the parent tile reflects it. The summary is
- * an explicit authored artifact, so a manual edit simply replaces it.
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const threadSummaryEditableTest = {
-  name: 'thread-summary-editable',
-  description: 'Editing the terminal Result block updates the thread result and the parent tile',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Original summary.' }),
-    textResponse('Moving on.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Start work' },
-    { type: 'wait-for-state', condition: { completedThreadCount: 1 } },
-    // Drill into the completed thread so its terminal Result block renders.
-    { type: 'click-dom', selector: 'thread-message' },
-    // The block exposes an Edit affordance (RED until implemented).
-    { type: 'assert-dom', global: true, selector: '.thread-result-final .thread-result-edit-btn' },
-    { type: 'click-dom', global: true, selector: '.thread-result-edit-btn' },
-    { type: 'set-dom-value', global: true, selector: '.thread-result-textarea', value: 'Edited summary.' },
-    { type: 'click-dom', global: true, selector: '.thread-result-save-btn' }
-  ],
-
-  customAssertions: (conversation) => {
-    const thread = conversation.rootMessageThread.items.find(
-      (/** @type {any} */ it) => it.get?.('type') === 'thread'
-    );
-    if (!thread) throw new Error('thread-summary-editable: thread item missing');
-    const result = thread.get('result');
-    if (result !== 'Edited summary.') {
-      throw new Error(`thread-summary-editable: expected result 'Edited summary.', got ${JSON.stringify(result)}`);
-    }
-    // Parent tile reflects the edited summary.
-    const tab = conversation.getTabElement?.();
-    const rootArea = tab?.querySelector('conversation-area:not(.thread-column)');
-    const tileSummary = rootArea?.querySelector('thread-message .thread-summary');
-    const tileText = tileSummary?.textContent || '';
-    if (!tileText.includes('Edited summary.')) {
-      throw new Error(`thread-summary-editable: parent tile did not reflect edit; got "${tileText.slice(0, 120)}"`);
-    }
-  }
-};
-
-/**
- * Promote a chosen assistant message inside a thread to be the thread's summary.
- * Selecting the message shows its properties panel; "Use as thread summary"
- * copies its content into the thread's result via completeThread.
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const threadUseMessageAsSummaryTest = {
-  name: 'thread-use-message-as-summary',
-  description: 'A chosen assistant message inside a thread can be promoted to the thread summary',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute' }),
-    toolUseResponse('call_2', 'return_result', { result: 'auto summary' }, 'Key finding: the bug is X.'),
-    textResponse('Moving on.')
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'Start work' },
-    { type: 'wait-for-state', condition: { completedThreadCount: 1 } },
-    // Drill into the thread, select the assistant message.
-    { type: 'click-dom', selector: 'thread-message' },
-    { type: 'click-dom', global: true, selector: 'assistant-message', text: 'Key finding' },
-    // Properties panel content is debounced ~150ms.
-    { type: 'wait-ms', ms: 300 },
-    { type: 'assert-dom', global: true, selector: '.use-as-summary-btn' },
-    { type: 'click-dom', global: true, selector: '.use-as-summary-btn' }
-  ],
-
-  customAssertions: (conversation) => {
-    const thread = conversation.rootMessageThread.items.find(
-      (/** @type {any} */ it) => it.get?.('type') === 'thread'
-    );
-    if (!thread) throw new Error('thread-use-message-as-summary: thread item missing');
-    const result = thread.get('result');
-    if (result !== 'Key finding: the bug is X.') {
-      throw new Error(`thread-use-message-as-summary: expected promoted content as result, got ${JSON.stringify(result)}`);
-    }
-  }
-};
-
-/**
- * Policy: the summary is an explicit authored artifact. Editing thread contents
- * (here, deleting an item) never auto-changes the result; only reopen() clears
- * it. Guards against any future "auto-derive summary from items" regression.
+ * Policy: the summary is written once, by the run that came to rest on it, and
+ * is never re-derived. Editing thread contents (here, deleting an item) leaves
+ * it exactly as the run left it — only a later run replaces it. Guards against
+ * any future "recompute the summary from the items" regression, which would
+ * make the field disagree with the run record the caller was answered from.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const threadSummaryNotAutoChangedTest = {
   name: 'thread-summary-not-auto-changed-by-edits',
-  description: 'Deleting thread items does not auto-change the summary (explicit-artifact policy)',
+  description: 'Deleting thread items does not auto-change the summary (the run wrote it, nothing re-derives it)',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Execute' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Locked summary.' }, 'Some assistant content.'),
+    textResponse('Locked summary.'),
     textResponse('Moving on.')
   ],
 
@@ -1819,43 +1387,9 @@ export const threadSummaryNotAutoChangedTest = {
     if (thread.get('result') !== 'Locked summary.') {
       throw new Error(
         `thread-summary-not-auto-changed: summary changed on item edit — got ${JSON.stringify(thread.get('result'))}; ` +
-				'the summary must be an explicit artifact, never auto-derived'
+				'the summary is what the run rested on, never re-derived from the items'
       );
     }
-  }
-};
-
-/**
- * Re-summarise regenerates the summary by re-running the return_result strategy
- * over the thread's current items (reopen + summarise turn).
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const threadResummariseTest = {
-  name: 'thread-resummarise',
-  description: 'Re-summarise regenerates the thread summary via a fresh return_result turn',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    toolUseResponse('call_1', 'return_result', { result: 'Original summary.' }),
-    toolUseResponse('call_2', 'return_result', { result: 'Regenerated summary.' })
-  ],
-
-  operations: [
-    { type: 'run-command', command: 'thread' },
-    { type: 'wait-for-state', condition: { hasThreadItem: true } },
-    { type: 'send-thread-message', message: 'Do work' },
-    // Drill into the completed thread; its Result block exposes Re-summarise.
-    { type: 'click-dom', selector: 'thread-message' },
-    { type: 'assert-dom', global: true, selector: '.thread-result-resummarise-btn' },
-    { type: 'click-dom', global: true, selector: '.thread-result-resummarise-btn' },
-    { type: 'wait-for-state', condition: { anyThreadResultIncludes: 'Regenerated summary.' } }
-  ],
-
-  expectedDocument: {
-    items: [
-      { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'thread', itemId: '$ITEM_2', result: 'Regenerated summary.' }
-    ]
   }
 };
 
@@ -1870,8 +1404,8 @@ export const threadResummariseTest = {
  * metadata field rendered on every column, so a long sub-thread plan got stuck
  * on the root footer until the next root turn overwrote it.
  *
- * Flow: root spawns a sub-thread; the sub-thread streams a `<plan>` then closes
- * via return_result; the root continuation pauses mid-stream — the only state
+ * Flow: root spawns a sub-thread; the sub-thread streams a `<plan>` and comes to
+ * rest; the root continuation pauses mid-stream — the only state
  * in which the footer renders the indicator. At that frozen point the root
  * column footer must show NO next-steps indicator.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
@@ -1883,9 +1417,8 @@ export const threadPlanIndicatorScopedTest = {
 
   llmResponses: [
     toolUseResponse('call_1', 'create_thread', { goal: 'Sub', prompt: 'Work' }),
-    // Sub-thread turn: stream a long rambling <plan>, then close via return_result.
-    toolUseResponse('call_2', 'return_result', { result: 'sub done' },
-      '<plan>Sub-thread plan: first do A, then B, then a great deal of rambling about C, D and E.</plan>'),
+    // Sub-thread turn: stream a long rambling <plan>, then come to rest.
+    textResponse('<plan>Sub-thread plan: first do A, then B, then a great deal of rambling about C, D and E.</plan>'),
     // Root continuation: pause mid-stream so the root column is processing
     // (the indicator only renders while processing) at the assertion point.
     textResponse('Root continues after the sub-thread.', { pauseBeforeReturn: true })
@@ -1930,13 +1463,91 @@ export const threadPlanIndicatorScopedTest = {
   }
 };
 
+/**
+ * A session called twice reads as two results down the parent transcript.
+ *
+ * The first call inserts the thread; the second inserts an ALIAS — a tile owning
+ * no transcript, pointing at the first, and standing where the second call was
+ * made. Each tile shows the result of its OWN run, frozen when that run settled,
+ * so the first tile keeps saying what the first call was told. Both open the
+ * same column, because both are views of one transcript.
+ *
+ * Without aliases the parent had one tile whose text was overwritten by every
+ * later call, and the wire put the second call's answer back at the first call's
+ * position — in the middle of the turn's own history.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const threadSessionAliasTilesTest = {
+  name: 'thread-session-alias-tiles',
+  description: 'A resumed session adds a second tile carrying its own result; both open one column',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'create_thread',
+      { goal: 'Find the auth code', prompt: 'Where is auth?', session: 'hunt' }),
+    textResponse('Auth lives in auth.go.'),
+    toolUseResponse('call_2', 'create_thread',
+      { goal: 'Find the auth code', prompt: 'Who calls it?', session: 'hunt' }),
+    textResponse('The server calls it.'),
+    textResponse('Thanks.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Investigate auth' },
+    // Drill in through the SECOND tile: an alias opens the thread it is a view
+    // of, so the column must carry both runs.
+    { type: 'click-dom', selector: 'thread-message', index: 1 }
+  ],
+
+  customAssertions: (conversation) => {
+    const items = conversation.rootMessageThread.items;
+    const threads = items.filter((/** @type {any} */ it) => it.get?.('type') === 'thread');
+    if (threads.length !== 2) {
+      throw new Error(`thread-session-alias-tiles: expected 2 thread items (the thread and one alias), got ${threads.length}`);
+    }
+    const [canonical, alias] = threads;
+    if (canonical.get('aliasOf')) {
+      throw new Error('thread-session-alias-tiles: the first call must insert the thread itself, not an alias');
+    }
+    if (alias.get('aliasOf') !== canonical.get('itemId')) {
+      throw new Error(`thread-session-alias-tiles: the second tile must point at the first; got ${JSON.stringify(alias.get('aliasOf'))}`);
+    }
+    if (alias.get('items')) {
+      throw new Error('thread-session-alias-tiles: an alias owns no transcript');
+    }
+
+    const tab = conversation.getTabElement?.();
+    if (!tab) throw new Error('thread-session-alias-tiles: no tab element');
+    const root = Array.from(tab.querySelectorAll('conversation-area'))
+      .find((/** @type {Element} */ a) => !a.classList.contains('thread-column'));
+    const tiles = Array.from(root?.querySelectorAll('thread-message') || []);
+    if (tiles.length !== 2) {
+      throw new Error(`thread-session-alias-tiles: expected 2 tiles in the root column, got ${tiles.length}`);
+    }
+    const first = tiles[0]?.textContent || '';
+    const second = tiles[1]?.textContent || '';
+    if (!first.includes('Auth lives in auth.go.') || first.includes('The server calls it.')) {
+      throw new Error(`thread-session-alias-tiles: the first tile must keep its own run's result; got "${first.slice(0, 200)}"`);
+    }
+    if (!second.includes('The server calls it.')) {
+      throw new Error(`thread-session-alias-tiles: the second tile must carry its own run's result; got "${second.slice(0, 200)}"`);
+    }
+
+    const cols = Array.from(tab.querySelectorAll('conversation-area.thread-column'));
+    if (cols.length === 0) {
+      throw new Error('thread-session-alias-tiles: clicking an alias must open the thread it is a view of');
+    }
+    const colText = cols.map((/** @type {Element} */ c) => c.textContent || '').join('\n');
+    if (!colText.includes('Where is auth?') || !colText.includes('Who calls it?')) {
+      throw new Error(`thread-session-alias-tiles: the column must show the whole transcript; got "${colText.slice(0, 300)}"`);
+    }
+  }
+};
+
 export const tests = [
   threadCommandBasicTest,
   threadPlanIndicatorScopedTest,
-  threadSummaryEditableTest,
-  threadUseMessageAsSummaryTest,
   threadSummaryNotAutoChangedTest,
-  threadResummariseTest,
   threadCreateToolTest,
   threadResultSpecTest,
   threadDefaultGoalTest,
@@ -1945,13 +1556,10 @@ export const tests = [
   threadDeleteClearsBusyStateTest,
   singleThreadLifecycleTest,
   nestedThreadLifecycleTest,
-  threadStaysOpenWithoutReturnResultTest,
-  threadCloseWithLastMessageTest,
-  threadReturnResultAliasArgTest,
-  threadReturnResultTextFallbackTest,
-  threadReturnResultNoThinkingItemTest,
+  threadSettlesOnTrailingTextTest,
   threadResultVisibleInTranscriptTest,
-  threadResultBlockClearedOnReopenTest,
+  threadResultBlockFollowsTheRunTest,
+  threadSessionAliasTilesTest,
   threadUndoRedoPreservesResultTest,
   threadUndoRedoDeleteInterleaveTest,
   threadDeleteLastItemUndoRedoTest,
@@ -1962,8 +1570,6 @@ export const tests = [
   threadAIFilesToSubThreadTest,
   threadContextItemRemoveFromSubThreadTest,
   threadContextItemUndoDeleteNoDuplicateTest,
-  threadReopenTest,
-  threadReopenUndoTest,
   siblingThreadsLifecycleTest,
   siblingThreadsAtMultipleDepthsTest,
   nestedApprovalBubblesToAncestorTileTest,

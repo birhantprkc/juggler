@@ -256,17 +256,16 @@ func TestPendingRequests_AdvanceClaimedCreateThreadCompletes(t *testing.T) {
 	}
 }
 
-// TestPendingRequests_CancelClaimedWritesThreadResult verifies that when
-// cancelRequested fires on a 'claimed' createThread whose thread Y.Map
-// has no result yet, the orchestrator writes the cancelled-thread sentinel
-// onto the thread.
-func TestPendingRequests_CancelClaimedWritesThreadResult(t *testing.T) {
+// TestPendingRequests_CancelClaimedSettlesThreadRun verifies that when
+// cancelRequested fires on a 'claimed' createThread, the orchestrator settles
+// the sub-thread's open run as cancelled — so nothing parked on that thread
+// keeps waiting for a run that is never going to finish — without inventing a
+// summary for it.
+func TestPendingRequests_CancelClaimedSettlesThreadRun(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 
-	w.doc.InsertThread(0, "Goal Y")
-	items := w.doc.GetItems()
-	threadItemID := items[0].ItemID
+	threadItemID := insertThreadWithOpts(w, threadOpts{goal: "Goal Y", userMessage: "do the thing"})
 
 	ycrdtMu.Lock()
 	arr := w.ensurePendingRequestsArrayLocked("")
@@ -288,13 +287,21 @@ func TestPendingRequests_CancelClaimedWritesThreadResult(t *testing.T) {
 	if s := findEntryStatus(w, "r-cancel-claimed"); s != "cancelled" {
 		t.Errorf("status = %q, want 'cancelled'", s)
 	}
-	// Thread Y.Map should now carry the cancel result.
+	// The thread's run is settled as cancelled, and carries no summary.
 	ycrdtMu.Lock()
 	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
+	status, _ := latestRunOutcomeLocked(threadYMap)
+	settled := threadRunSettledLocked(threadYMap)
 	r, _ := threadYMap.Get("result").(string)
 	ycrdtMu.Unlock()
-	if r != cancelledThreadResult {
-		t.Errorf("thread result = %q, want %q", r, cancelledThreadResult)
+	if status != runStatusCancelled {
+		t.Errorf("run status = %q, want %q", status, runStatusCancelled)
+	}
+	if !settled {
+		t.Errorf("a cancelled run must leave the thread settled")
+	}
+	if r != "" {
+		t.Errorf("thread result = %q, want no summary for a cancelled run", r)
 	}
 }
 
@@ -423,13 +430,13 @@ func TestPendingRequests_SubmitToTerminalRoundtrip(t *testing.T) {
 	// nested strategy loop transitions through StateProcessing during the
 	// LLM call and back to StateIdle on completion.
 	w.setMockResponses([]MockResponse{
-		// Thread LLM: close via return_result (threads no longer auto-close on a
-		// plain text reply) — its argument becomes the thread/pending result.
+		// Thread LLM: its trailing text is what the run returns, and so becomes
+		// the thread/pending result.
 		{
 			Blocks: []LLMResponseBlock{
-				{Type: "tool_use", ID: "tu-ret-1", Name: "return_result", Input: json.RawMessage(`{"result":"Sub-thread done."}`)},
+				{Type: "text", Content: "Sub-thread done."},
 			},
-			StopReason: "tool_use",
+			StopReason: "end_turn",
 		},
 	})
 

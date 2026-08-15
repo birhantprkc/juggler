@@ -17,7 +17,7 @@ import {
   assertContextSnapshot,
   assertThreadContext,
 } from './test-assertions.js';
-import workerManager from '../../js/services/worker-manager.js';
+import { threadRunSettled } from '../../js/model/run-records.js';
 import { SecondViewer } from './second-viewer.js';
 
 /**
@@ -263,7 +263,8 @@ export async function executeUIOperation(harness, op) {
 
     case 'cancel-from-root': {
       // Root/parent vantage stop: Escape while focused on the root, or the root
-      // footer Stop. Stops the in-flight turn AND closes every open sub-thread.
+      // footer Stop. Stops the in-flight turn AND settles every sub-thread run
+      // still open under it.
       await harness.cancelFromRoot(op.timeoutMs);
       break;
     }
@@ -273,7 +274,7 @@ export async function executeUIOperation(harness, op) {
       // entry the footer Pause button and shift+Escape use (requestPoliteStop) —
       // it only sends the `pause` message and flips the optimistic local cue. The
       // worker latches it and rests at idle at the next boundary; nothing is
-      // cancelled, no approval is rejected, no thread is closed.
+      // cancelled, no approval is rejected, no run is settled.
       harness.conversation.requestPoliteStop();
       break;
     }
@@ -307,23 +308,6 @@ export async function executeUIOperation(harness, op) {
     // Thread operations — UI for approval, model-level for messages
     // =========================================================================
 
-    case 'reopen-thread': {
-      const conversation = harness.conversation;
-      const rootItems = harness.rootThread.items || [];
-      let threadItemId = null;
-      for (const item of rootItems) {
-        if (item.get && item.get('type') === 'thread' && item.get('result')) {
-          threadItemId = item.get('itemId');
-        }
-      }
-      if (!threadItemId) throw new Error('reopen-thread: no completed thread found in root items');
-      await workerManager.reopenThread(conversation.id, threadItemId);
-      // The yjs-sync from Go is batched by DocumentSyncManager; flush before
-      // any immediate state checks so observers see the cleared result.
-      conversation._doc.flushPendingUpdates();
-      break;
-    }
-
     case 'send-thread-message': {
       if (!op.message) {
         throw new Error('send-thread-message operation requires message');
@@ -339,47 +323,27 @@ export async function executeUIOperation(harness, op) {
         throw new Error('send-thread-message-no-wait operation requires message');
       }
       // Like send-thread-message but does NOT wait for the turn to complete —
-      // the caller expects to interrupt it (e.g. pause at a mock barrier then
-      // preempt via close-thread).
+      // the caller expects to act while it is still in flight (e.g. pause at a
+      // mock barrier, then assert what the column renders mid-run).
       await harness.sendThreadMessageNoWait(op.message);
       break;
     }
 
-    case 'close-thread': {
-      // Mirror the composer-box "Close thread" button: resolve the open thread's
-      // MessageThread and call close(summaryText). close() preempts any live
-      // turn (worker-truth cancel) and delivers the summary prompt.
-      const conversation = harness.conversation;
-      const rootItems = harness.rootThread.items || [];
-      let threadItemId = null;
-      for (const item of rootItems) {
-        if (item.get && item.get('type') === 'thread' && !item.get('result')) {
-          threadItemId = item.get('itemId');
-        }
-      }
-      if (!threadItemId) {
-        throw new Error('close-thread: no open thread found in root items');
-      }
-      const messageThread = conversation.resolveMessageThread(threadItemId);
-      await messageThread.close(op.message);
-      break;
-    }
-
     case 'cancel-thread': {
-      // Mirror the parent tile's Stop button (the parent-vantage close): resolve
-      // the open thread's Y.Map and call conversation.cancelThread, which cancels
-      // the in-flight worker turn (worker truth) and settles the thread closed
-      // with a 'Cancelled' summary.
+      // Mirror the parent tile's Stop button (the parent-vantage stop): resolve
+      // the running thread's Y.Map and call conversation.cancelThread, which
+      // cancels the in-flight worker turn (worker truth) and settles the
+      // thread's run as cancelled.
       const conversation = harness.conversation;
       const rootItems = harness.rootThread.items || [];
       let threadYMap = null;
       for (const item of rootItems) {
-        if (item.get && item.get('type') === 'thread' && !item.get('result')) {
+        if (item.get && item.get('type') === 'thread' && !threadRunSettled(item)) {
           threadYMap = item;
         }
       }
       if (!threadYMap) {
-        throw new Error('cancel-thread: no open thread found in root items');
+        throw new Error('cancel-thread: no running thread found in root items');
       }
       await conversation.cancelThread(threadYMap);
       break;

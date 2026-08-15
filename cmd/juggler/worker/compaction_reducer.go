@@ -480,7 +480,7 @@ func canonicalCompactionRecords(items []ConversationItem, promptID string) ([]st
 		if item.ItemID == promptID {
 			continue
 		}
-		encoded, err := json.Marshal(canonicalCompactionRecord{Index: i, Messages: itemWireMessages(item)})
+		encoded, err := json.Marshal(canonicalCompactionRecord{Index: i, Messages: itemWireMessages(item, items)})
 		if err != nil {
 			return nil, fmt.Errorf("item %d (%q): %w", i, item.ItemID, err)
 		}

@@ -18,12 +18,12 @@ func TestGeminiFunctionCallingConfig(t *testing.T) {
 	}
 
 	// tool → ANY restricted to the forced function name.
-	c := geminiFunctionCallingConfig(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "return_result"})
+	c := geminiFunctionCallingConfig(&provider.ToolChoice{Mode: provider.ToolChoiceTool, Name: "submit_answer"})
 	if c.Mode != genai.FunctionCallingConfigModeAny {
 		t.Errorf("tool mode = %v, want ANY", c.Mode)
 	}
-	if len(c.AllowedFunctionNames) != 1 || c.AllowedFunctionNames[0] != "return_result" {
-		t.Errorf("tool mode allowed names = %v, want [return_result]", c.AllowedFunctionNames)
+	if len(c.AllowedFunctionNames) != 1 || c.AllowedFunctionNames[0] != "submit_answer" {
+		t.Errorf("tool mode allowed names = %v, want [submit_answer]", c.AllowedFunctionNames)
 	}
 
 	// tool without a name falls back to AUTO (never send a broken restriction).

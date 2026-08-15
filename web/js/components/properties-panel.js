@@ -931,24 +931,6 @@ class PropertiesPanel extends HTMLElement {
           controls.appendChild(branchBtn);
         }
 
-        // Promote an assistant message to the thread's summary. Only
-        // inside a sub-thread (root has no result); writes the message
-        // content via completeThread, prefilling the editable summary.
-        if (message.get('type') === 'assistant' && this._messageThread.threadItemId) {
-          const content = message.get('content') || '';
-          if (content) {
-            const useAsSummaryBtn = document.createElement('button');
-            useAsSummaryBtn.className = 'properties-panel-btn use-as-summary-btn';
-            useAsSummaryBtn.type = 'button';
-            useAsSummaryBtn.textContent = 'Use as thread summary';
-            useAsSummaryBtn.addEventListener('click', () => {
-              const mt = this._messageThread;
-              if (mt) mt.conversation.completeThread(mt.container, content);
-            });
-            controls.appendChild(useAsSummaryBtn);
-          }
-        }
-
         appendDeleteControls(controls, this._messageThread, itemIndex,
           () => this._deleteItem(itemIndex));
       }

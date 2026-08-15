@@ -7,7 +7,6 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 
 	ycrdt "github.com/skyterra/y-crdt"
 )
@@ -22,27 +21,39 @@ type CreateThreadOptions struct {
 	Goal   string
 	Prompt string
 
-	// ResultSpec, when set, is the caller's contract for what the child's
-	// return_result summary must contain. It is stored on the thread Y.Map
-	// (surfaced in the column header) and appended to the child's seed message
-	// so the child acts on it. Optional: an empty spec changes nothing.
+	// ResultSpec, when set, is the caller's contract for what the child's last
+	// message must contain — the run's last message is what the caller
+	// receives. It is stored on the thread Y.Map (surfaced in the column
+	// header) and appended to the invocation message so the child acts on it.
+	// Optional: an empty spec changes nothing.
 	ResultSpec string
 
 	IsContinuation bool
 
-	// Tool-use coordinates: when set, the toolUseId/toolName/toolInput are
-	// stamped on the new thread's Y.Map so the parent's buildMessages can
-	// reconstruct the tool_use/tool_result pair the LLM expects to see.
+	// Tool-use coordinates: when set, these are stamped as a run record on the
+	// invocation message this creation appends, so the parent's buildMessages can
+	// reconstruct the tool_use/tool_result pair the LLM expects to see. Holding
+	// them per-message rather than on the thread is what lets the thread be
+	// invoked more than once — each call appends its own stamped message.
+	// A creation with no invocation message (a continuation, or an empty prompt)
+	// falls back to stamping the thread Y.Map, the scalar shape every document
+	// written before run records existed uses.
 	ToolUseID string
 	ToolName  string
 	ToolInput json.RawMessage
 
+	// SessionName is the handle this thread answers to within the thread that
+	// called it: a later call naming it invokes THIS thread again instead of
+	// spawning a fresh one (see sessions.go). Set for every tool-spawned child;
+	// empty for a user- or orchestrator-created thread, which nothing calls
+	// into. Stamped on the thread Y.Map, where resolveSession reads it back.
+	SessionName string
+
 	// Delegated marks a thread spawned by a delegatesToSubthread tool (not the
-	// create_thread meta-tool). It is stamped onto the thread Y.Map so the
-	// strategy-loop defer can guarantee an open-ended delegated child still
-	// resolves a result (resolveDelegatedThreadResult) — the parent's stamped
-	// tool_use must always be paired with a tool_result. Tool-use coordinates
-	// (ToolUseID/ToolName/ToolInput) are set exactly as for create_thread.
+	// create_thread meta-tool). It is stamped onto the thread Y.Map, where
+	// withinDelegatedThread reads it to keep a delegated child from starting a
+	// further delegation. Tool-use coordinates (ToolUseID/ToolName/ToolInput)
+	// are set exactly as for create_thread.
 	Delegated bool
 
 	// ParentThreadItemID, if non-empty, switches w.thread to that parent
@@ -67,6 +78,26 @@ type CreateThreadOptions struct {
 	// false) is marked llmCreated and leaves dispatch to the strategy loop's
 	// hasIncompleteThreads check.
 	ExternalDispatch bool
+}
+
+// structuredToolInput converts a tool input's raw JSON to the structured value a
+// thread Y.Map stores it as, the way conversationItemToYMap stores every other
+// json.RawMessage field. Returns nil for empty or non-object input, which the
+// caller stamps as absent.
+//
+// Storing the raw bytes as a Go string would round-trip through yMapRawJSON as a
+// JSON-encoded *string literal*, which buildToolUseMap then fails to unmarshal
+// into map[string]any — the wire payload reaches the provider with "input": null
+// and the model rejects/ignores the tool_use block.
+func structuredToolInput(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil
+	}
+	return convertToYcrdt(parsed)
 }
 
 // createThread is the single thread-creation entry point. The three public
@@ -124,6 +155,14 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	w.tracker.StopCapturing()
 	createMergeFrom := w.tracker.UndoStackLen()
 
+	// Whether this creation appends an invocation message to carry the run
+	// record. It normally does — every tool-driven creation supplies a prompt —
+	// and then the tool-use coordinates live there, one set per run, so the
+	// thread can be invoked again later. A continuation or an empty prompt has no
+	// message to stamp, so those fall back to the scalar thread-level fields and
+	// describe the single invocation they always did.
+	stampsInvocation := !opts.IsContinuation && opts.Prompt != ""
+
 	// Create thread item with nested Y.Array (in the current target array).
 	// Use the tracker (authorID origin) so the insertion is tracked by the
 	// UndoManager and can be undone independently.
@@ -143,6 +182,9 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 			if opts.ResultSpec != "" {
 				m.Set("resultSpec", opts.ResultSpec)
+			}
+			if opts.SessionName != "" {
+				m.Set("sessionName", opts.SessionName)
 			}
 			if opts.ExternalDispatch {
 				m.Set("strategyCreated", true)
@@ -165,19 +207,25 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 				m.Set("delegated", true)
 			}
 			if opts.ToolUseID != "" {
-				m.Set("toolUseId", opts.ToolUseID)
-				m.Set("toolName", opts.ToolName)
-				if len(opts.ToolInput) > 0 {
-					// Persist as a structured object the way conversationItemToYMap
-					// stores every other json.RawMessage field. Storing the raw
-					// bytes as a Go string would round-trip through yMapRawJSON
-					// as a JSON-encoded *string literal*, which buildToolUseMap
-					// then fails to unmarshal into map[string]any — the wire
-					// payload reaches the provider with "input": null and the
-					// model rejects/ignores the tool_use block.
-					var parsed map[string]any
-					if err := json.Unmarshal(opts.ToolInput, &parsed); err == nil {
-						m.Set("toolInput", convertToYcrdt(parsed))
+				if stampsInvocation {
+					// The run selector: this item is the parent's view of the run
+					// the invocation message below starts. A later call into the
+					// same session appends its own alias item carrying its own
+					// selector, so each parent item answers for one run and the
+					// wire emits each call's pair where the call was made.
+					m.Set("runToolUseId", opts.ToolUseID)
+					m.Set("runToolName", opts.ToolName)
+					if input := structuredToolInput(opts.ToolInput); input != nil {
+						m.Set("runToolInput", input)
+					}
+				} else {
+					// No invocation message to select: the coordinates live on the
+					// thread itself and describe the single invocation they always
+					// did.
+					m.Set("toolUseId", opts.ToolUseID)
+					m.Set("toolName", opts.ToolName)
+					if input := structuredToolInput(opts.ToolInput); input != nil {
+						m.Set("toolInput", input)
 					}
 				}
 			}
@@ -193,23 +241,20 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 		w.tracker.SeedThreadFromParent(targetArr, nestedItems, threadYMap)
 	}
 
-	// Insert user message into the child thread's items array, AFTER the seeds
-	// so the starting context reads top-to-bottom and stays the leading run at
-	// this depth. When a resultSpec is set, append it as an explicit return
-	// contract at the point of action (the child's own first message),
-	// mirroring the close-thread path's return_result instruction.
-	if !opts.IsContinuation && opts.Prompt != "" {
-		content := opts.Prompt
-		if opts.ResultSpec != "" {
-			content += "\n\n---\nWhen you finish, call return_result with: " + opts.ResultSpec
-		}
-		msg := ConversationItem{
-			Type:      ItemTypeUser,
-			ItemID:    generateItemID(),
-			Content:   content,
-			Timestamp: time.Now().Format(time.RFC3339),
-		}
-		w.tracker.InsertMessageIntoArray(nestedItems, w.doc.GetItemsLengthFromArray(nestedItems), msg)
+	// Insert the invocation message into the child thread's items array, AFTER
+	// the seeds so the starting context reads top-to-bottom and stays the leading
+	// run at this depth. When a resultSpec is set, append it as an explicit
+	// return contract at the point of action (the child's own first message):
+	// the run's last message is what the caller receives, so the contract is a
+	// contract on that message.
+	//
+	// The tool-use coordinates ride on THIS message rather than the thread Y.Map,
+	// so the pairing belongs to the run this message starts rather than to the
+	// thread for all time — which is what lets the thread be invoked again later,
+	// each invocation appending its own stamped message (resumeSession appends
+	// the identical shape).
+	if stampsInvocation {
+		w.tracker.InsertMessageIntoArray(nestedItems, w.doc.GetItemsLengthFromArray(nestedItems), invocationMessage(opts))
 	}
 
 	// Collapse the container insert, field stamps, seeds, and seed prompt into one
@@ -240,9 +285,9 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 //
 // No-ops that must never promote:
 //   - Root ("") already has the full tool list; nothing to stamp.
-//   - Delegated subthreads (delegated=true) are tool-result-bound — their return
-//     flows back as a tool_result via resolveDelegatedThreadResult — so making
-//     one spawn-capable would be a nonsensical state; leave the withinDelegatedThread
+//   - Delegated subthreads (delegated=true) are tool-result-bound — each run
+//     settles into the caller's tool_result — so making one spawn-capable would
+//     be a nonsensical state; leave the withinDelegatedThread
 //     guard as the sole authority there (decision #3).
 //
 // Called from handleSendMessage on the genuine-user-message path only (never the
@@ -290,24 +335,49 @@ const maxThreadDepth = 3
 // without ever deepening the chain stays within the depth cap but explodes in
 // breadth (N children per level ≈ N^depth threads). This is the backstop the
 // depth cap misses. It counts only in-flight threads, so it self-heals as
-// children return_result — legitimate sequential delegation never approaches it,
+// children settle — legitimate sequential delegation never approaches it,
 // while a runaway fan-out trips it fast. Guards only the LLM tool path.
 const maxLiveThreads = 16
 
 // executeCreateThread handles the create_thread tool: parses tool input and
-// dispatches via createThread. Called from processLLMResponse when the LLM
-// emits a create_thread block.
+// either continues the session it names or dispatches a new thread via
+// createThread. Called from processLLMResponse when the LLM emits a
+// create_thread block.
 func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, toolInput json.RawMessage) error {
 	var input struct {
 		Goal       string `json:"goal"`
 		Prompt     string `json:"prompt"`
 		ResultSpec string `json:"resultSpec"`
+		Session    string `json:"session"`
 	}
 	if err := json.Unmarshal(toolInput, &input); err != nil {
 		return fmt.Errorf("failed to parse create_thread input: %w", err)
 	}
 	if input.Prompt == "" {
 		return fmt.Errorf("create_thread: prompt is required")
+	}
+
+	// A named session that already exists is invoked again rather than
+	// respawned: this call's prompt becomes the next message in the transcript
+	// that thread already has. Resolved before the guards below because
+	// continuing a thread creates nothing — it neither deepens the tree nor
+	// widens it, so neither cap has anything to say about it.
+	session := w.resolveSession(toolName, input.Session)
+	opts := CreateThreadOptions{
+		Goal:        input.Goal,
+		Prompt:      input.Prompt,
+		ResultSpec:  input.ResultSpec,
+		ToolUseID:   toolUseID,
+		ToolName:    toolName,
+		ToolInput:   toolInput,
+		SessionName: session.name,
+	}
+	if session.busy {
+		w.addMetaToolResult(toolUseID, toolName, toolInput, sessionBusyMessage(session.name), true)
+		return nil
+	}
+	if session.resumeThreadID != "" {
+		return w.resumeSession(session.resumeThreadID, opts)
 	}
 
 	// Runaway-recursion guard. The would-be child sits one level below the
@@ -328,7 +398,7 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 	// subthreads stays shallow yet explodes in count. Refuse once too many
 	// create_thread children are already in flight, using the same paired
 	// meta-tool-result so the parent turn isn't stranded. Self-heals: the count
-	// drops as children return_result, so this throttles a runaway without
+	// drops as children settle, so this throttles a runaway without
 	// permanently disabling the tool.
 	if live := w.doc.liveThreadCount(); live >= maxLiveThreads {
 		msg := fmt.Sprintf("create_thread refused: too many threads (%d) are already in progress. "+
@@ -338,14 +408,7 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 		return nil
 	}
 
-	_, err := w.createThread(CreateThreadOptions{
-		Goal:       input.Goal,
-		Prompt:     input.Prompt,
-		ResultSpec: input.ResultSpec,
-		ToolUseID:  toolUseID,
-		ToolName:   toolName,
-		ToolInput:  toolInput,
-	})
+	_, err := w.createThread(opts)
 	return err
 }
 

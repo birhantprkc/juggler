@@ -23,7 +23,7 @@ import { textResponse, toolUseResponse } from '../utilities/integration-test-run
  *
  * Mock response order (single send-message, like thread-lifecycle-single):
  *   1. Root: create_thread
- *   2. Thread: return_result
+ *   2. Thread: text reply
  *   3. Root: text continuation
  *
  * Asserts:
@@ -41,7 +41,7 @@ export const threadIsolatedContextTest = {
       goal: 'Do task',
       prompt: 'Execute the task'
     }),
-    toolUseResponse('call_2', 'return_result', { result: 'Task done' }),
+    textResponse('Task done'),
     textResponse('Thread finished, moving on.')
   ],
 
@@ -85,14 +85,13 @@ export const threadLocalContextItemRenderedTest = {
       goal: 'Work in a thread',
       prompt: 'Do initial work'
     }),
-    toolUseResponse('call_2', 'return_result', { result: 'Initial work done' }),
+    textResponse('Initial work done'),
     textResponse('Thread finished.'),
     textResponse('Saw the fixture readme.')
   ],
 
   operations: [
     { type: 'send-message', message: 'Start work' },
-    { type: 'reopen-thread' },
     { type: 'add-context-item-to-sub-thread' },
     { type: 'send-thread-message', message: 'Check the readme' },
     {
@@ -142,7 +141,7 @@ export const threadDoesNotInheritRootContextTest = {
       goal: 'Do task',
       prompt: 'Do the sub task'
     }),
-    toolUseResponse('call_2', 'return_result', { result: 'Sub done' }),
+    textResponse('Sub done'),
     textResponse('Thread finished.')
   ],
 
@@ -213,7 +212,7 @@ export const threadInheritsFoundationalContextTest = {
       name: 'FoundCtx',
       llmResponses: [
         toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Do the sub task' }),
-        toolUseResponse('call_2', 'return_result', { result: 'Sub done' }),
+        textResponse('Sub done'),
         textResponse('Thread finished.')
       ]
     },
@@ -275,7 +274,7 @@ export const threadInheritsStandingContextAfterMemoryTest = {
       name: 'AfterMem',
       llmResponses: [
         toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Do the sub task' }),
-        toolUseResponse('call_2', 'return_result', { result: 'Sub done' }),
+        textResponse('Sub done'),
         textResponse('Thread finished.')
       ]
     },

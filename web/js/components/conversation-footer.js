@@ -9,9 +9,6 @@
  * @property {string} [statusMessage] - Optional status message when processing
  * @property {boolean} [showSpinner] - Whether to show the spinner animation (default true)
  * @property {string} [nextSteps] - Optional next steps guidance
- * @property {boolean} [showAddContextItem] - Whether to show the Add Context Item button
- * @property {boolean} [showCloseThread] - Whether to show the "Close with generated summary" button (open thread with content, idle only)
- * @property {boolean} [showCloseWithLastMessage] - Whether to show the "Close with last message" button (open thread whose last message is an assistant reply, idle only)
  * @property {boolean} [showDuplicateTab] - Whether to show the duplicate tab button (root thread only)
  * @property {string} [busyItemMessageId] - message-id of the busy thread item, enables clicking footer to select it
  * @property {boolean} [politePending] - A polite stop (Pause) is in progress: render the Pause button active until the worker rests
@@ -191,8 +188,8 @@ class ConversationFooter extends HTMLElement {
    *
    * Set by a column that displays a folded tool run: the run's rows belong to
    * the thread one column to the left, which this column shares, so Continue,
-   * Close, Duplicate and Add Context Item would all act on that thread from
-   * inside a lens on five of its rows, and the token meter would report the
+   * Duplicate and Add Context Item would all act on that thread from inside a
+   * lens on five of its rows, and the token meter would report the
    * thread's context for a handful of tool calls. Only the status line survives,
    * because the owner scopes it to the run (conversation-area.updateFooter).
    * @param {boolean} on - True for status-only, false for the full footer.
@@ -485,16 +482,6 @@ class ConversationFooter extends HTMLElement {
                         </button>
                     </div>
                 </div>
-                <div class="footer-idle-row footer-idle-secondary">
-                    <button class="message-action-btn close-thread-last-btn hidden">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z"/></svg>
-                        Close with last message
-                    </button>
-                    <button class="message-action-btn close-thread-summary-btn hidden">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M320-240h320v-80H320v80Zm0-160h320v-80H320v80ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Z"/></svg>
-                        Close with generated summary
-                    </button>
-                </div>
             </footer-idle>
         `;
 
@@ -514,20 +501,6 @@ class ConversationFooter extends HTMLElement {
           bubbles: true,
           composed: true
         }));
-      });
-    }
-
-    const closeThreadLastBtn = this.querySelector('.close-thread-last-btn');
-    if (closeThreadLastBtn) {
-      closeThreadLastBtn.addEventListener('click', () => {
-        this._messageThread.closeWithLastMessage();
-      });
-    }
-
-    const closeThreadSummaryBtn = this.querySelector('.close-thread-summary-btn');
-    if (closeThreadSummaryBtn) {
-      closeThreadSummaryBtn.addEventListener('click', () => {
-        this._messageThread.close();
       });
     }
 
@@ -593,9 +566,10 @@ class ConversationFooter extends HTMLElement {
    * Stop the thread this footer belongs to, from THIS column's vantage. The
    * footer-processing block (and so this button) is shown only on a column that
    * is actually processing. A sub-thread column INTERRUPTS that thread (stops
-   * the work, leaves it open) — the same own-vantage stop as Escape inside the
-   * thread. The root column (threadItemId null) stops everything and closes the
-   * open sub-threads. Both route through the vantage-aware cancelLLMOperation.
+   * the work and leaves its run open) — the same own-vantage stop as Escape
+   * inside the thread. The root column (threadItemId null) stops everything and
+   * settles every sub-thread run still open under it. Both route through the
+   * vantage-aware cancelLLMOperation.
    * @private
    */
   _stopOwnColumn() {
@@ -611,7 +585,7 @@ class ConversationFooter extends HTMLElement {
    * Request a polite stop (Pause) for this conversation. Unlike Stop this is
    * non-destructive and vantage-uniform: the current step finishes and records
    * its result, then the worker rests at idle before the next LLM turn — nothing
-   * is cancelled and no thread is closed. Routes through the same
+   * is cancelled and no run is settled. Routes through the same
    * cancelLLMOperation entry with the polite flag. Passes `toggle: true` so a
    * second click while the Pause is still pending turns it back off — the button
    * is a toggle, unlike the shift+Escape shortcut which only ever requests a pause.
@@ -654,8 +628,6 @@ class ConversationFooter extends HTMLElement {
     const nextSteps = /** @type {HTMLElement|null} */ (this.querySelector('.llm-next-steps'));
     const continueBtn = /** @type {HTMLElement|null} */ (this.querySelector('.continue-btn'));
     const duplicateTabBtn = /** @type {HTMLElement|null} */ (this.querySelector('.duplicate-to-tab-btn'));
-    const closeThreadLastBtn = /** @type {HTMLElement|null} */ (this.querySelector('.close-thread-last-btn'));
-    const closeThreadSummaryBtn = /** @type {HTMLElement|null} */ (this.querySelector('.close-thread-summary-btn'));
     const addCIBtn = /** @type {HTMLElement|null} */ (this.querySelector('.add-context-item-btn'));
 
     const hide = (/** @type {Element|null} */ el) => el?.classList.add('hidden');
@@ -739,37 +711,16 @@ class ConversationFooter extends HTMLElement {
       // Status-only stops here: the idle row is entirely thread-level controls.
       if (this._statusOnly) { hide(idle); return; }
 
-      // A closed thread reopens via the box-shaped affordance in the column's
-      // input slot (conversation-area's reopen-box), not a footer button — so
-      // a closed thread contributes nothing to the footer's idle row.
-      const isClosed = !!this._messageThread.isClosed;
-      const showIdle = state.canContinue
-                || !!state.showAddContextItem || !!state.showCloseThread
-                || !!state.showCloseWithLastMessage || !!state.showDuplicateTab;
-      toggle(idle, showIdle);
+      // Add Context Item is offered on every idle column, so the row is always
+      // worth showing; the other two controls decide what else sits in it.
+      toggle(idle, true);
 
-      const canContinue = !isClosed && state.canContinue;
-      toggle(continueBtn, canContinue);
+      toggle(continueBtn, !!state.canContinue);
       // Duplicate tab is offered only on a conversation's root thread
       // (the owner sets showDuplicateTab), never on sub-threads.
       toggle(duplicateTabBtn, !!state.showDuplicateTab);
 
-      // Close thread — two explicit closes on an open thread (computed by the
-      // owner); the idle/processing split keeps them idle-only. "Last message"
-      // only when there's a trailing assistant reply to promote; "generated
-      // summary" whenever the thread has content to summarise.
-      const showCloseSummary = !isClosed && !!state.showCloseThread;
-      const showCloseLast = !isClosed && !!state.showCloseWithLastMessage;
-      toggle(closeThreadSummaryBtn, showCloseSummary);
-      toggle(closeThreadLastBtn, showCloseLast);
-
-      // Collapse the secondary row when none of its buttons is shown,
-      // so the column gap doesn't leave dead space below the main row.
-      const secondaryRow = /** @type {HTMLElement|null} */ (this.querySelector('.footer-idle-secondary'));
-      toggle(secondaryRow, showCloseSummary || showCloseLast);
-
-      // Add Context Item — visible when thread is open (or main conversation)
-      toggle(addCIBtn, !!state.showAddContextItem);
+      show(addCIBtn);
     }
   }
 }

@@ -25,10 +25,9 @@ import { buildDisplayItems, isGroupEntry } from '../utils/item-grouping.js';
 import { isToolGroupingEnabled } from '../utils/tool-grouping-pref.js';
 import { createIconBadge, createTypeBadge } from '../utils/icon-message-renderer.js';
 import { badgeForItem } from '../utils/item-badge.js';
-import { SCROLL_TOP_SVG, SCROLL_BOTTOM_SVG, REOPEN_THREAD_SVG } from '../utils/icons.js';
+import { SCROLL_TOP_SVG, SCROLL_BOTTOM_SVG } from '../utils/icons.js';
 import { setupColumnResize } from '../utils/column-resize.js';
 import {
-  isThreadClosed,
   hasPendingApprovalInTree,
   hasUnsettledToolInTree,
   runningToolsInTree,
@@ -260,7 +259,7 @@ class ConversationArea extends HTMLElement {
       // Observe thread Y.Map for header button visibility AND this thread's own
       // `nextSteps` (<plan>) — both are per-thread state on this Y.Map.
       this._threadStatusObserver = () => {
-        this._updateThreadHeaderStatus(threadYMap);
+        this._refreshThreadFooter(threadYMap);
         this._refreshNextStepsIndicator();
       };
       threadYMap.observe(this._threadStatusObserver);
@@ -591,6 +590,10 @@ class ConversationArea extends HTMLElement {
             <h3 class="properties-panel-title thread-column-goal"></h3>
           </header>
           <thread-column-actions>
+            <button class="properties-panel-btn thread-expand-btn" title="Expand this thread back into the parent">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M120-120v-320h80v184l504-504H520v-80h320v320h-80v-184L256-200h184v80H120Z"/></svg>
+              Expand into parent
+            </button>
             <button class="properties-panel-btn thread-copy-tab-btn" title="Copy this thread (with inherited context) to a new conversation">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-160v-326L336-382l-56-58 200-200 200 200-56 58-104-104v326h-80ZM160-600v-120q0-33 23.5-56.5T240-800h480q33 0 56.5 23.5T800-720v120h-80v-120H240v120h-80Z"/></svg>
               Copy thread to new conversation
@@ -610,12 +613,6 @@ class ConversationArea extends HTMLElement {
         </div>
       </conversation-message-list-wrapper>
       <composer-box id="composer-box"></composer-box>
-      <reopen-box id="reopen-box" role="button" tabindex="0" aria-label="Reopen closed thread">
-        <reopen-box-bubble>
-          <span class="reopen-box-icon">${REOPEN_THREAD_SVG}</span>
-          <span class="reopen-box-label">Reopen closed thread</span>
-        </reopen-box-bubble>
-      </reopen-box>
       <col-resize-handle></col-resize-handle>
     `;
 
@@ -649,11 +646,29 @@ class ConversationArea extends HTMLElement {
     }
 
     // Update status badge
-    this._updateThreadHeaderStatus(threadYMap);
+    this._refreshThreadFooter(threadYMap);
 
-    // Wire up Copy to new conversation — reuses the same promote-thread-requested event
-    // as the thread-result tile's Promote button (conversation-tab handles it
-    // via promoteThreadToNewTab). Clone to clear listeners from a prior show.
+    // Expand: splice this thread's items back into the parent and drop the tile.
+    // Clone to clear listeners from a prior show.
+    const expandBtn = header.querySelector('.thread-expand-btn');
+    if (expandBtn) {
+      const newExpandBtn = expandBtn.cloneNode(true);
+      expandBtn.parentNode?.replaceChild(newExpandBtn, expandBtn);
+      const tid = threadYMap.get('itemId');
+      newExpandBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!tid) return;
+        this.dispatchEvent(new CustomEvent('expand-thread-requested', {
+          detail: { threadItemId: tid },
+          bubbles: true,
+          composed: true
+        }));
+      });
+    }
+
+    // Wire up Copy to new conversation — the promote-thread-requested event
+    // (conversation-tab handles it via promoteThreadToNewTab). Clone to clear
+    // listeners from a prior show.
     const copyTabBtn = header.querySelector('.thread-copy-tab-btn');
     if (copyTabBtn) {
       const newCopyTabBtn = copyTabBtn.cloneNode(true);
@@ -700,34 +715,18 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Update the thread header composer-box visibility based on whether the thread is
-   * finished (derived state).
+   * Refresh this thread column's footer after a change to its thread Y.Map.
    *
-   * "Finished" is isThreadClosed (result set AND nothing in the subtree awaiting
-   * approval), NOT raw `result` — the same canonical predicate the tile colour
-   * and the tab's composer-box placement use. A sub-thread parked on your approval
-   * is still active even when a stale "Thread was interrupted" result sits on it
-   * from a reload, so it must keep its composer.
-   *
-   * For the composer we set display to '' (not a forced value) when active, so
-   * we DEFER to the CSS `conversation-area[data-hide-input] composer-box` rule that
-   * the tab toggles per-column — the tab is the single authority on which
-   * column shows the box (it alone knows the full column chain / open child to
-   * the right). Forcing 'none' here on a non-empty raw result is precisely what
-   * hid the waiting sub-thread's box while the tab wanted to show it.
+   * The composer is deliberately untouched: a thread is running or stopped, and
+   * a stopped thread accepts a message either way. Whether a column shows a box
+   * at all is the tab's business (it alone knows the full column chain),
+   * expressed through the CSS `conversation-area[data-hide-input] composer-box`
+   * rule, so nothing here may force an inline display value that would fight it.
    * @param {*} threadYMap
    * @private
    */
-  _updateThreadHeaderStatus(threadYMap) {
-    const header = this.querySelector('.thread-column-header');
-    if (!header || !threadYMap) return;
-
-    const isFinished = isThreadClosed(threadYMap);
-
-    // Hide when finished; otherwise defer to CSS (data-hide-input) by clearing
-    // the inline style rather than forcing visibility.
-    const composer = this.composer;
-    if (composer) /** @type {HTMLElement} */ (composer).style.display = isFinished ? 'none' : '';
+  _refreshThreadFooter(threadYMap) {
+    if (!threadYMap) return;
     this.updateFooter();
   }
 
@@ -865,23 +864,6 @@ class ConversationArea extends HTMLElement {
       const { messageId } = /** @type {CustomEvent} */ (e).detail;
       if (messageId) this._selectItem(messageId, 'user');
     });
-
-    // Reopen affordance — shown (via the data-hide-input CSS rule) in the
-    // composer-box's slot on a closed thread column. The whole box is clickable
-    // (and Enter/Space-activatable, since it's role="button"); activating it
-    // reopens the thread, after which the column shows its real composer again.
-    const reopenBox = this.querySelector('#reopen-box');
-    if (reopenBox) {
-      const reopen = () => this._messageThread?.reopen();
-      reopenBox.addEventListener('click', reopen);
-      reopenBox.addEventListener('keydown', (e) => {
-        const key = /** @type {KeyboardEvent} */ (e).key;
-        if (key === 'Enter' || key === ' ') {
-          e.preventDefault();
-          reopen();
-        }
-      });
-    }
 
     this._setupScrollControls();
   }
@@ -1355,8 +1337,8 @@ class ConversationArea extends HTMLElement {
       if (isAssistantMessage(item)) continue;
 
       // Only items that render a selectable row are valid fallbacks. Internal
-      // payload items (e.g. meta-tool-result, the closing-payload of a meta-tool
-      // like return_result) have no selectable element, so picking one would
+      // payload items (e.g. the meta-tool-result a sync meta tool such as
+      // drop_context_items leaves behind) have no selectable element, so picking one would
       // silently fail _selectItem's visibility check and leave the column with
       // no selection. When a whole turn arrives in one coalesced sync, such an
       // item can be the last in the batch and would otherwise shadow the real
@@ -2319,11 +2301,8 @@ class ConversationArea extends HTMLElement {
     if (mt.isProcessing) return false;
     const hasEffective = mt.getMessages().some(m => isUserMessage(m) || isAssistantMessage(m) || isToolActionMessage(m) || isThreadMessage(m));
     if (!hasEffective) return false;
-    // Completed/cancelled threads cannot be continued (use "Reopen" instead)
-    if (mt.threadItemId) {
-      const result = mt.container.get('result');
-      if (result !== null && result !== undefined && result !== '') return false;
-    }
+    // A summary does not bar continuing: a thread carrying one has come to rest,
+    // which is exactly the state Continue drives it out of.
     // Don't show Continue while items are busy (tool running, thread pending)
     if (mt.hasBusyItems()) return false;
     return true;
@@ -2432,16 +2411,6 @@ class ConversationArea extends HTMLElement {
 
     const canContinue = this._canContinue();
 
-    // Close thread is viable only on a sub-thread (root can't be closed) that is
-    // open and has content to summarise — same gate as Continue, plus "is a
-    // thread". The footer's idle/processing split keeps the button idle-only.
-    const showCloseThread = !!this._messageThread?.threadItemId && canContinue;
-    // The cheap "Close with last message" close is offered only when the
-    // thread's trailing reply is an assistant message (nothing to promote
-    // otherwise) — mirrors the worker's selectThreadFallbackResult.
-    const showCloseWithLastMessage = showCloseThread
-      && !!this._messageThread?.canCloseWithLastMessage;
-
     // Duplicate tab button lives only on the conversation's root thread
     // (threadItemId null), and only when there's content worth cloning.
     const isRootThread = !this._messageThread?.threadItemId;
@@ -2453,9 +2422,6 @@ class ConversationArea extends HTMLElement {
       statusMessage,
       showSpinner,
       nextSteps: this._nextSteps,
-      showAddContextItem: !this._messageThread?.isClosed,
-      showCloseThread,
-      showCloseWithLastMessage,
       showDuplicateTab,
       busyItemMessageId: itemBusy?.messageId,
       politePending: !!this._conversation?.isPolitePending?.(),

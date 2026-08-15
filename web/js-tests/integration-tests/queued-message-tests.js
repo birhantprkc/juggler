@@ -50,15 +50,6 @@
 
 import { textResponse, toolUseResponse } from '../utilities/integration-test-runner.js';
 
-/**
- * A return_result tool response — how a sub-thread reports its result and closes.
- * @param {string} result
- * @returns {import('../utilities/integration-test-runner.js').MockResponse} A return_result tool response.
- */
-function returnResultResponse(result) {
-  return toolUseResponse('tu-summary', 'return_result', { result }, undefined);
-}
-
 // README.md content as returned by the read tool (cat -n style), matching the
 // unit-test-fixture used across the approval suite.
 const README_MD = '<file path="README.md">\n' +
@@ -578,8 +569,8 @@ export const queueDrainsIntoSubThreadTest = {
   llmResponses: [
     // Sub-thread turn 1: read (auto-approved), paused at the barrier.
     toolUseResponse('call_1', 'read', { file_path: 'README.md' }, 'Reading in thread.', { pauseBeforeReturn: true }),
-    // Sub-thread turn 2 (after the queued message drains): close the thread.
-    returnResultResponse('Thread done.')
+    // Sub-thread turn 2 (after the queued message drains): the run comes to rest.
+    textResponse('Thread done.')
   ],
 
   operations: [

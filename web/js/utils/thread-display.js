@@ -5,27 +5,36 @@
 import { renderAssistantContentWrapped, renderMarkdownWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
 import { stripLLMTags } from './content-utils.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
-import { hasPendingApprovalInTree, isThreadClosed } from '../model/thread-navigation.js';
+import { hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
+import { canonicalThread, itemGoal, itemRunRecord } from '../model/thread-alias.js';
 
 /**
- * A thread is "closed" when it has a non-empty `result`; until then it has
- * no summary worth showing on the parent tile. Whatever live work is going
- * on inside (streaming an assistant message, awaiting tool approval, etc.)
- * is visible to the user only when they drill into the sub-thread itself —
- * the parent tile face just shows a status block.
- * @param {any} threadYMap - The thread Y.Map.
- * @returns {{ text: string, isFinal: boolean }} The final summary if any.
+ * What a thread tile shows: the result of the ONE run that item stands for.
+ *
+ * A thread called more than once has one parent item per call (see
+ * model/thread-alias.js), and each shows its own run's result, frozen when that
+ * run settled — so a later call can never rewrite what an earlier tile says.
+ * An item with no run selector falls back to the thread's `result`, its current
+ * summary: a user-created thread, a fold, and every document written before
+ * aliases record completion only there.
+ *
+ * Until the run has come to rest there is nothing worth showing on the tile.
+ * Whatever live work is going on inside (streaming an assistant message,
+ * awaiting tool approval) is visible only when the user drills into the
+ * sub-thread itself — the tile face just shows a status block.
+ * @param {any} threadYMap - The thread item Y.Map (canonical or alias).
+ * @param {any} [siblingArray] - The array the item stands in.
+ * @returns {{ text: string }} The summary, or '' when there is none.
  */
-export function getThreadDisplayContent(threadYMap) {
+export function getThreadDisplayContent(threadYMap, siblingArray) {
+  const record = itemRunRecord(threadYMap, siblingArray);
+  if (record) return { text: record.result };
   const result = threadYMap.get('result');
-  if (typeof result === 'string' && result.length > 0) {
-    return { text: result, isFinal: true };
-  }
-  return { text: '', isFinal: false };
+  return { text: (typeof result === 'string') ? result : '' };
 }
 
 /**
- * @typedef {'closed'|'running'|'pending'|'paused'|'queued'|'errored'|'idle'} ThreadStatusKind
+ * @typedef {'running'|'pending'|'paused'|'queued'|'errored'|'idle'} ThreadStatusKind
  */
 
 /**
@@ -34,6 +43,9 @@ export function getThreadDisplayContent(threadYMap) {
  * @property {string} goal - The thread's user-facing goal ("" if unset).
  * @property {string} message - Status line to render under the goal.
  * @property {boolean} spinner - Whether the status block should show a spinner.
+ * @property {boolean} [showSummary] - Paint the thread's summary instead of a
+ *   status block. Set only when the thread is genuinely at rest, so the several
+ *   surfaces that render a tile never re-derive "is it resting" and disagree.
  */
 
 /**
@@ -49,22 +61,31 @@ export function getThreadDisplayContent(threadYMap) {
  *
  * States enumerated (in precedence order):
  *   paused   — a tool-action anywhere in the subtree is pending approval.
- *   closed   — `result` set; show the summary instead.
  *   running  — worker is actively driving this thread.
  *   pending  — `needsStrategyRun` set but the worker hasn't picked it up yet.
  *   errored  — a nested item is an error message.
  *   queued   — the conversation is still processing (a sibling is the live
  *              thread) but this one hasn't run yet: it's waiting its turn.
- *   idle     — none of the above: the conversation is idle and this thread is
- *              not running and has no result (never started, or its turn ended
- *              without completing). Nothing is actively driving it.
- * @param {any} threadYMap - The thread Y.Map.
+ *   idle     — none of the above: nothing is actively driving this thread. It
+ *              is stopped, which is a resting state, not a terminal one — it
+ *              may never have started, or it may have run and come to rest
+ *              carrying a summary. Either way it accepts a message and runs
+ *              again; the tile face shows the summary when there is one.
+ * @param {any} threadYMap - The thread item Y.Map (canonical or alias).
  * @param {ThreadLiveStatus|null} [live] - Live LLM status snapshot from llmState.
+ * @param {any} [siblingArray] - The array the item stands in.
  * @returns {ThreadStatus} Classification + display fields.
  */
-export function getThreadStatus(threadYMap, live) {
-  const goal = (threadYMap.get('goal') || '');
-  const items = threadYMap.get('items');
+export function getThreadStatus(threadYMap, live, siblingArray) {
+  // The transcript hangs off the canonical: an alias asks every subtree question
+  // of the thread it is a view of.
+  const thread = canonicalThread(threadYMap, siblingArray);
+  // The goal THIS item's call named, not the session's current one: a tile
+  // describes the call it was made by, and the thread's `goal` moves with the
+  // latest call (see itemGoal in model/thread-alias.js).
+  const goal = itemGoal(threadYMap, siblingArray);
+
+  const items = thread.get('items');
 
   // Awaiting approval is a PURE FUNCTION of the current subtree and trumps
   // everything else — checked FIRST, before `result` and before the live
@@ -72,22 +93,31 @@ export function getThreadStatus(threadYMap, live) {
   // child or buried in a nested sub-thread) parks the whole branch: surface it
   // as 'paused' so this tile AND every ancestor tile turn orange, keeping the
   // visual route from the tab to the action unbroken regardless of nesting
-  // depth. This must beat the `result` check below: a thread can legitimately
-  // carry a result (e.g. the "interrupted" sentinel written on reload) while a
-  // descendant still holds a live pending approval — the dynamic signal wins,
-  // we never bake "has a pending child" into the data model. Mirrors the tab's
-  // awaiting-trumps-everything rule in conversation-bar._refreshTabStatus.
+  // depth. A thread can legitimately carry a summary while a descendant still
+  // holds a live pending approval — the dynamic signal wins, we never bake
+  // "has a pending child" into the data model. It trumps a settled run too: an
+  // approval is a request for the user, and which call it arose under is no
+  // reason to hide the route to it. Mirrors the tab's awaiting-trumps-everything
+  // rule in conversation-bar._refreshTabStatus.
   if (hasPendingApprovalInTree(items)) {
     return { kind: 'paused', goal, message: 'Waiting for approval', spinner: false };
   }
 
-  // Genuinely finished (result set, nothing awaiting) — same canonical
-  // predicate the composer-box placement uses, so colour and input never disagree.
-  if (isThreadClosed(threadYMap)) {
-    return { kind: 'closed', goal, message: '', spinner: false };
+  // An item stamped with a run selector answers for THAT run alone. Once it has
+  // settled the tile is frozen: what a later call into the same thread does is
+  // another item's business, and a historic tile that started spinning again
+  // would be reporting work its own call never asked for.
+  const record = itemRunRecord(threadYMap, siblingArray);
+  if (record?.status) {
+    return record.result
+      ? { kind: 'idle', goal, message: '', spinner: false, showSummary: true }
+      : { kind: 'idle', goal, message: 'Idle', spinner: false };
   }
 
-  const itemId = threadYMap.get('itemId');
+  // Keyed on the canonical, because that is the thread the worker names when it
+  // reports what it is driving. Only an item whose own run is still open reaches
+  // here, so the spinner lands on the call being answered and nowhere else.
+  const itemId = thread.get('itemId');
   if (live && live.threadId === itemId && live.message) {
     return {
       kind: 'running',
@@ -97,8 +127,26 @@ export function getThreadStatus(threadYMap, live) {
     };
   }
 
-  if (threadYMap.get('needsStrategyRun')) {
+  if (thread.get('needsStrategyRun')) {
     return { kind: 'pending', goal, message: 'Waiting to start…', spinner: false };
+  }
+
+  // At rest carrying a summary from an earlier run: nothing is driving it, so
+  // the tile shows that summary instead of a status line. This sits BELOW the
+  // live check — a thread being driven again reports 'running', so a resumed
+  // thread shows its spinner rather than a stale summary — and ABOVE the error
+  // and queued fall-throughs, which describe threads that never came to rest.
+  //
+  // "At rest" still has to be derived, never taken from the summary alone: a
+  // thread mid-tool-use is working regardless of what text sits on it, so an
+  // unsettled tool anywhere below keeps it out of this branch.
+  //
+  // Only threads with no run selector get here: an item that stands for one run
+  // was answered above, and borrowing the thread's current summary for a run
+  // still in flight would show it the previous call's reply.
+  const result = !record ? thread.get('result') : '';
+  if (typeof result === 'string' && result.length > 0 && !hasUnsettledToolInTree(items)) {
+    return { kind: 'idle', goal, message: '', spinner: false, showSummary: true };
   }
 
   if (items && typeof items.length === 'number') {
@@ -131,16 +179,16 @@ export function getThreadStatus(threadYMap, live) {
 
 /**
  * Paint a thread tile / properties-panel summary surface. Renders the
- * markdown summary when closed; otherwise renders a structured status block
- * (goal line + optional spinner + status line). Shared so the
- * in-conversation tile and the panel stay visually identical.
+ * markdown summary when the thread is at rest and has one; otherwise renders a
+ * structured status block (goal line + optional spinner + status line). Shared
+ * so the in-conversation tile and the panel stay visually identical.
  * @param {HTMLElement} el - Element to populate.
- * @param {string} text - Summary text (only used when status.kind === 'closed').
+ * @param {string} text - Summary text (only used when status.showSummary).
  * @param {{status?: ThreadStatus}} [opts]
  */
 export function paintThreadSummary(el, text, opts) {
   const status = opts?.status;
-  const showSummary = status ? status.kind === 'closed' : !!text;
+  const showSummary = status ? !!status.showSummary : !!text;
   if (showSummary) {
     el.className = 'thread-summary';
     el.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
@@ -203,9 +251,10 @@ function renderGoalInto(goalEl, goalSrc) {
  * message). Leaves the `<juggler-spinner>` element and the surrounding
  * structure untouched so CSS animations (spinner rotation, parent icon-box
  * pulse) don't restart. Caller must ensure the block was previously painted
- * by `paintThreadSummary` with a non-closed `status` of the same shape — a
- * status whose message or spinner appears or disappears changes which elements
- * exist, so it needs a fresh `paintThreadSummary` instead.
+ * by `paintThreadSummary` with a status of the same shape — one that painted a
+ * status block rather than a summary, and whose message and spinner presence
+ * are unchanged. Anything else changes which elements exist, so it needs a
+ * fresh `paintThreadSummary` instead.
  * @param {HTMLElement} el - The `.thread-summary.thread-status` element.
  * @param {ThreadStatus} status - Current status.
  */

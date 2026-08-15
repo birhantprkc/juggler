@@ -28,10 +28,9 @@ func (w *ConversationWorker) beginCompactionStatus(message string) {
 	w.batcher.Flush()
 }
 
-// tryBoundedCompaction handles only browser-folded summary threads. Legacy
-// folded documents are recognized by their noAutoSelect/forceTool markers. It
-// is the folded-thread orchestrator for the pure bounded reducer: snapshot the
-// thread's Yjs state, canonicalize it, run the reducer, commit the summary.
+// tryBoundedCompaction handles only browser-folded summary threads. It is the
+// folded-thread orchestrator for the pure bounded reducer: snapshot the thread's
+// Yjs state, canonicalize it, run the reducer, commit the summary.
 func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (bool, error) {
 	threadID := w.thread.itemID
 	if threadID == "" || !w.isBoundedCompactionThread(threadID) {
@@ -96,7 +95,7 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 
 // runFoldedThreadCompaction summarizes a browser-folded /compact (or /handoff)
 // thread with a single probe-then-reduce pass, and is the folded thread's sole
-// summarizer — it replaces the return_result strategy turn. It dispatches the
+// summarizer — it replaces the ordinary strategy turn. It dispatches the
 // whole canonical transcript as one final-summary request; if the provider
 // accepts it, that one-pass summary is committed. If the provider rejects it as
 // too large, the reported context window seeds the bounded reducer
@@ -327,10 +326,10 @@ func (w *ConversationWorker) runReducer(kind string, pinnedModel ModelConfig, bu
 }
 
 // isBoundedCompactionThread recognizes a fold thread the summarizer still owes a
-// result. The boundedCompaction flag is authoritative; the noAutoSelect +
-// forceTool=="return_result" pair is a legacy-recognition fallback for threads
-// folded before the flag existed. forceTool is only an identity signal here — the
-// summarizer runs tool-free and never honors it as a directive.
+// result. The boundedCompaction flag is the sole authority: it is stamped on
+// every fold the browser and the auto-compaction path produce, and the
+// summarizer runs tool-free, so nothing about a fold's identity is carried by a
+// tool name.
 func (w *ConversationWorker) isBoundedCompactionThread(threadID string) bool {
 	m := w.doc.GetThreadYMap(threadID)
 	if m == nil {
@@ -339,9 +338,7 @@ func (w *ConversationWorker) isBoundedCompactionThread(threadID string) bool {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
 	marked, _ := m.Get("boundedCompaction").(bool)
-	noAutoSelect, _ := m.Get("noAutoSelect").(bool)
-	forceTool, _ := m.Get("forceTool").(string)
-	return marked || (noAutoSelect && forceTool == "return_result")
+	return marked
 }
 
 func (w *ConversationWorker) compactionPromptItemID(threadID string) string {
@@ -482,6 +479,12 @@ func summarizedCompactionThread(it ConversationItem) bool {
 // transcripts recursively and the reducer's source sees the prior summary
 // exactly as the live conversation rendered it. Every other item nests
 // verbatim.
+//
+// The run records the prior fold swallowed (FoldedRuns) survive the
+// condensation, alone among the fields dropped here. They are not transcript:
+// they are the caller's pairing for calls that have already returned, and the
+// condensed form is the only copy of them left inside the new fold once Items
+// goes.
 func condenseForRefold(it ConversationItem) ConversationItem {
 	if !summarizedCompactionThread(it) {
 		return it
@@ -493,6 +496,7 @@ func condenseForRefold(it ConversationItem) ConversationItem {
 		Goal:              it.Goal,
 		Result:            it.Result,
 		BoundedCompaction: true,
+		FoldedRuns:        it.FoldedRuns,
 	}
 }
 
@@ -512,9 +516,12 @@ func condenseForRefold(it ConversationItem) ConversationItem {
 // threads (nested in their condensed goal+result form, see condenseForRefold),
 // so the conversation always converges to [standing context][one summary
 // thread][recent tail] — summaries never accumulate, and each new summary
-// carries the prior one's content forward as part of its source. Only an
-// in-flight fold that has not yet committed its summary is pinned
-// (pendingCompactionFold), along with sticky preventUserDeletion items.
+// carries the prior one's content forward as part of its source. A session
+// thread converges the same way: earlier invocation messages fold like any
+// other content, with their run records preserved on the fold (foldedRunsIn).
+// Only an in-flight fold that has not yet committed its summary is pinned
+// (pendingCompactionFold), along with sticky preventUserDeletion items and the
+// thread's most recent invocation message (lastInvocationIndex).
 //
 // handoffPromote tags the thread so the browser promotes its summary into the
 // continued tab's parked first message. Returns the new thread's item id and
@@ -530,12 +537,23 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 	// the thread, including mid-conversation context/file items the model produced
 	// (those are standing context only while leading). foldStart is the first item
 	// we fold.
+	// The thread's most recent invocation message is the one item a fold may not
+	// take (lastInvocationIndex): the open run's outcome is stamped there, and
+	// the thread's liveness is read off it.
+	pinnedInvocation := lastInvocationIndex(items)
+
 	foldStart := -1
 	inLeading := true
 	for i := range items {
 		it := items[i]
 		if it.PreventUserDeletion {
 			continue // sticky — stays at parent, transparent to the leading run
+		}
+		if i == pinnedInvocation {
+			// Pinned, but conversational, so it still ends the leading
+			// standing-context run.
+			inLeading = false
+			continue
 		}
 		if inLeading {
 			if isConversationalItemType(it.Type) {
@@ -563,7 +581,7 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 	prefixEnd := foldStart + 1
 	for prefixEnd < len(items) {
 		it := items[prefixEnd]
-		if it.PreventUserDeletion || pendingCompactionFold(it) {
+		if it.PreventUserDeletion || pendingCompactionFold(it) || prefixEnd == pinnedInvocation {
 			break
 		}
 		prefixEnd++
@@ -624,13 +642,9 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 		NeedsStrategyRun:       true,
 		NoAutoSelect:           true,
 		NoContextSeed:          true,
-		// ForceTool is an identity marker (with noAutoSelect it lets
-		// isBoundedCompactionThread recognize a legacy fold), NOT an honored
-		// directive: runFoldedThreadCompaction summarizes tool-free (ToolChoiceNone,
-		// plain text), so no return_result call is ever forced on this thread.
-		ForceTool:      "return_result",
-		HandoffPromote: handoffPromote,
-		Items:          nestedJSON,
+		HandoffPromote:         handoffPromote,
+		Items:                  nestedJSON,
+		FoldedRuns:             foldedRunsIn(items[prefixStart:prefixEnd]),
 	}
 
 	if !w.foldPrefixIntoSummaryTracked(w.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {

@@ -8,9 +8,6 @@ export const THREAD_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="
 // Material Symbols "u_turn_right" — branch-off arrow shown on the New Thread button.
 export const THREAD_ARROW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="currentColor"><path d="m600-200-56-57 143-143H300q-75 0-127.5-52.5T120-580q0-75 52.5-127.5T300-760h20v80h-20q-42 0-71 29t-29 71q0 42 29 71t71 29h387L544-624l56-56 240 240-240 240Z"/></svg>';
 
-// Material Symbols "refresh"/"restart" — the reopen-closed-thread affordance.
-export const REOPEN_THREAD_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="16" width="16" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M440-122q-121-15-200.5-105.5T160-440q0-66 26-126.5T260-672l57 57q-38 34-57.5 79T240-440q0 88 56 155.5T440-202v80Zm80 0v-80q87-16 143.5-83T720-440q0-100-70-170t-170-70h-3l44 44-56 56-140-140 140-140 56 56-44 44h3q134 0 227 93t93 227q0 121-79.5 211.5T520-122Z"/></svg>';
-
 // Material Symbols "arrow_drop_down" — the dropdown chevron for combo-box controls
 // (project-path chip, strategy selector). One shape everywhere for consistency.
 export const DROPDOWN_ARROW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M480-360 280-560h400L480-360Z"/></svg>';

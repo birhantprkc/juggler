@@ -10,7 +10,7 @@ import (
 )
 
 // Engine round-trip helpers. Several worker→engine requests (run-strategy-hook,
-// build-subthread-spec, subthread-error) share the same shape: drain any stale
+// build-subthread-spec) share the same shape: drain any stale
 // reply, send a targeted request stamped with a fresh request ID, then block on
 // a dedicated 1-buffered reply channel while still servicing inbound messages
 // and doc/batcher signals so the single run goroutine never deadlocks. This file

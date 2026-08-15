@@ -54,13 +54,6 @@ export async function continueThread(conversation, messageThread) {
     return;
   }
 
-  if (messageThread.threadItemId) {
-    const result = messageThread.container.get('result');
-    if (result !== null && result !== undefined && result !== '') {
-      return;
-    }
-  }
-
   messageThread.cancelPendingApprovals();
 
   if (conversation._conversationArea) {

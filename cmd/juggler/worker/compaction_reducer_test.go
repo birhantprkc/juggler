@@ -640,11 +640,11 @@ func TestBoundedReducerSeededSpendNeverGatesDispatch(t *testing.T) {
 }
 
 // TestBoundedReducerFinalIsToolFree pins the single final-call shape: no tools,
-// no tool choice, the plain-text final prompt, and exactly one call. A forced
-// return_result tool bought only "clean structured output" while costing a
-// second full-transcript retry whenever the model answered it with nothing —
-// the failure "bounded compaction final call returned empty output" on models
-// that accept a tool they cannot call. The response text is the deliverable.
+// no tool choice, the plain-text final prompt, and exactly one call. Offering a
+// tool here buys "clean structured output" at the price of a second
+// full-transcript retry whenever the model answers it with nothing — the failure
+// "bounded compaction final call returned empty output" on models that accept a
+// tool they cannot call. The response text is the deliverable.
 func TestBoundedReducerFinalIsToolFree(t *testing.T) {
 	records := reducerTestRecords(t, strings.Repeat("history ", 200))
 	stub := &stubCompactionDispatcher{}

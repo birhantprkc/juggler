@@ -6,35 +6,31 @@ package worker
 
 import (
 	"encoding/json"
-	"fmt"
 	"time"
-
-	ycrdt "github.com/skyterra/y-crdt"
 )
 
 // Subthread delegation lets a context-item tool (delegatesToSubthread in its
 // MANIFEST) run one invocation as a child agent turn instead of a client-side
 // tool-action. When the LLM calls such a tool, the worker asks the engine to
 // build a SubthreadSpec (validate + buildSubthreadSpec, browser-side); a spec
-// spawns a delegated child thread stamped with the tool_use coordinates (so the
-// child's return_result flows back as THIS tool's tool_result via the existing
-// create_thread machinery), while a null spec falls back to the ordinary
-// tool-action. The child's working context never costs the parent a token.
+// spawns a delegated child thread whose invocation message carries the tool_use
+// coordinates (so the run's outcome flows back as THIS tool's tool_result via
+// the existing create_thread machinery), while a null spec falls back to the
+// ordinary tool-action. The child's working context never costs the parent a
+// token.
 //
-// Nearly everything reuses create_thread: tool-use stamping, hasIncompleteThreads
-// parking, signalParentThread resume, return_result, resultSpec, maxThreadDepth.
-// The only genuinely new wiring is the build-spec round-trip (here) and the
-// open-end resolution (resolveDelegatedThreadResult) that guarantees a delegated
-// child ALWAYS yields a tool_result so the parent turn is never stranded.
+// Nearly everything reuses create_thread: run records, hasIncompleteThreads
+// parking, signalParentThread resume, resultSpec, maxThreadDepth, and sessions
+// (a spec may name one, and then the call continues that child rather than
+// spawning a sibling — see sessions.go). The only genuinely new wiring is the
+// build-spec round-trip (here). A delegated child needs no open-end handling of
+// its own: every run settles into a result, so the parent's stamped tool_use is
+// never stranded.
 
 // SubthreadSpecTimeout bounds the build-spec round-trip. On timeout the worker
 // falls back to the ordinary client-side tool-action, so a slow/absent engine
 // degrades to normal execution rather than wedging the turn.
 var SubthreadSpecTimeout = 10 * time.Second
-
-// SubthreadErrorTimeout bounds the onSubthreadError fallback round-trip. On
-// timeout the worker writes the default error result.
-var SubthreadErrorTimeout = 8 * time.Second
 
 // collectDelegatingToolNames returns the set of tool names in tools whose
 // definition carries DelegatesToSubthread. Rebuilt each turn from the tools the
@@ -104,15 +100,48 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 		return false // null spec / error / timeout → ordinary tool-action
 	}
 
-	if _, err := w.createThread(CreateThreadOptions{
-		Goal:       spec.Goal,
-		Prompt:     spec.Prompt,
-		ResultSpec: spec.ResultSpec,
-		ToolUseID:  toolUseID,
-		ToolName:   toolName,
-		ToolInput:  toolInput,
-		Delegated:  true,
-	}); err != nil {
+	// A spec with nothing to ask is not a delegation: it would spawn a child
+	// with no invocation message, so the run it starts has no record to stamp
+	// and reports only through the thread's summary. Degrade to running the tool
+	// inline, exactly as a null spec does.
+	if spec.Prompt == "" {
+		w.log.Info("[worker] %s built a spec with no prompt — running inline", toolName)
+		return false
+	}
+
+	// A spec naming a session this tool already ran in the calling thread
+	// invokes that child again instead of spawning a sibling; anything else
+	// starts a new session under a name the result reports back.
+	session := w.resolveSession(toolName, spec.SessionName)
+	opts := CreateThreadOptions{
+		Goal:        spec.Goal,
+		Prompt:      spec.Prompt,
+		ResultSpec:  spec.ResultSpec,
+		ToolUseID:   toolUseID,
+		ToolName:    toolName,
+		ToolInput:   toolInput,
+		SessionName: session.name,
+		Delegated:   true,
+	}
+
+	// A busy session is answered, not queued or silently redirected. The
+	// refusal is a paired tool_result rather than an inline fallback: running
+	// the tool for real would answer a question the caller asked of a
+	// conversation, from outside that conversation.
+	if session.busy {
+		w.addMetaToolResult(toolUseID, toolName, toolInput, sessionBusyMessage(session.name), true)
+		return true
+	}
+
+	if session.resumeThreadID != "" {
+		if err := w.resumeSession(session.resumeThreadID, opts); err != nil {
+			w.log.Error("[worker] resuming session %s for %s failed: %v", session.name, toolName, err)
+			return false
+		}
+		return true
+	}
+
+	if _, err := w.createThread(opts); err != nil {
 		w.log.Error("[worker] delegated thread creation failed for %s: %v", toolName, err)
 		return false
 	}
@@ -165,124 +194,4 @@ func (w *ConversationWorker) waitForSubthreadSpec(requestID string, timeout time
 		w.tape.Record("build-subthread-spec-timeout", map[string]any{"req": requestID})
 	}
 	return waitForEngineReply(w, w.subthreadSpecResultChan, timeout, match, onTimeout)
-}
-
-// resolveDelegatedThreadResult guarantees a delegated child that ended WITHOUT
-// calling return_result still yields a tool_result, so the parent's stamped
-// tool_use is never stranded (an unpaired tool_use is rejected by the provider).
-// A child that closed via return_result already has a result and is skipped.
-//
-// Resolution order (spec §4.4): promote the child's clean trailing assistant
-// text; else run the tool's onSubthreadError fallback (engine round-trip); else
-// write a default message. Whatever it resolves is written as the thread result,
-// which appendThreadMessages then emits as the paired tool_result and
-// signalParentThread delivers to the parent.
-func (w *ConversationWorker) resolveDelegatedThreadResult(threadItemID string) {
-	if threadItemID == "" {
-		return
-	}
-
-	// One lock window to read the thread's state AND its trailing text (a
-	// concurrent sync could tombstone the YMap between separate windows).
-	ycrdtMu.Lock()
-	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
-	if threadYMap == nil {
-		ycrdtMu.Unlock()
-		return
-	}
-	result, _ := threadYMap.Get("result").(string)
-	delegated, _ := threadYMap.Get("delegated").(bool)
-	toolName, _ := threadYMap.Get("toolName").(string)
-	toolInput := yMapRawJSON(threadYMap, "toolInput")
-	var trailing string
-	if arr := findThreadItemsArray(w.doc.getItems(), threadItemID); arr != nil {
-		trailing = selectThreadFallbackResult(w.doc.getItemsFromArrayLocked(arr))
-	}
-	ycrdtMu.Unlock()
-
-	if !delegated || result != "" {
-		return // not a delegated thread, or return_result already closed it
-	}
-
-	resolved := trailing
-	if resolved == "" {
-		// No clean trailing text (errored or barren end): give the tool a chance
-		// to degrade gracefully via onSubthreadError. Round-trip runs WITHOUT the
-		// lock held (it blocks servicing inbound).
-		resolved = w.requestSubthreadErrorFallback(toolName, toolInput)
-	}
-	if resolved == "" {
-		resolved = fmt.Sprintf("The delegated %s sub-agent ended without returning a result.", displayToolName(toolName))
-	}
-
-	// Write under the lock, re-resolving the pointer and re-checking the result
-	// (a return_result could have landed via a serviced inbound message during
-	// the fallback round-trip).
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	ym := findThreadYMap(w.doc.getItems(), threadItemID)
-	if ym == nil {
-		return
-	}
-	if existing, _ := ym.Get("result").(string); existing != "" {
-		return
-	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		ym.Set("result", resolved)
-	}, w.doc.authorID)
-	w.log.Info("[worker] resolved delegated thread %s result (%d chars)", threadItemID, len(resolved))
-}
-
-// requestSubthreadErrorFallback runs the delegating tool's onSubthreadError hook
-// on the engine and returns the fallback tool_result text, or "" if the tool
-// provides none (or the round-trip fails/times out).
-func (w *ConversationWorker) requestSubthreadErrorFallback(toolName string, toolInput json.RawMessage) string {
-	if toolName == "" {
-		return ""
-	}
-	if !w.ensureEngineReady() {
-		return ""
-	}
-	drainStaleReply(w.subthreadErrorResultChan)
-	requestID := generateRequestID()
-	reason := "the sub-agent ended without returning a result"
-	data, err := json.Marshal(SubthreadErrorRequest{
-		Type:      "subthread-error",
-		RequestID: requestID,
-		ToolName:  toolName,
-		ToolInput: toolInput,
-		Reason:    reason,
-	})
-	if err != nil {
-		return ""
-	}
-	w.tape.Record("subthread-error-dispatch", map[string]any{"tool": toolName, "req": requestID})
-	w.callbacks.sendToEngine(data)
-	return w.waitForSubthreadError(requestID, SubthreadErrorTimeout)
-}
-
-// waitForSubthreadError blocks until the engine answers requestID with the
-// fallback text, or the timeout elapses. Returns "" on no-fallback/timeout.
-func (w *ConversationWorker) waitForSubthreadError(requestID string, timeout time.Duration) string {
-	match := func(raw json.RawMessage) (string, bool) {
-		var resp SubthreadErrorResponse
-		if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
-			return resp.Result, true
-		}
-		return "", false
-	}
-	onTimeout := func() {
-		w.tape.Record("subthread-error-timeout", map[string]any{"req": requestID})
-	}
-	result, _ := waitForEngineReply(w, w.subthreadErrorResultChan, timeout, match, onTimeout)
-	return result
-}
-
-// displayToolName returns a human-friendly tool name for the default result
-// message, falling back to a generic label for an empty name.
-func displayToolName(toolName string) string {
-	if toolName == "" {
-		return "delegated tool"
-	}
-	return toolName
 }

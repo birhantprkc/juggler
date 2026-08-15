@@ -118,9 +118,9 @@ func TestBuildMessageParamsThinkingOffAbsent(t *testing.T) {
 // thinking param is dropped for that turn.
 func TestBuildMessageParamsThinkingForcedToolDrops(t *testing.T) {
 	c := &Client{model: "claude-sonnet-4-5-20250929"}
-	tools := []provider.ToolDefinition{{Name: "return_result", InputSchema: []byte(`{"type":"object"}`)}}
+	tools := []provider.ToolDefinition{{Name: "submit_answer", InputSchema: []byte(`{"type":"object"}`)}}
 	for _, tc := range []*provider.ToolChoice{
-		{Mode: provider.ToolChoiceTool, Name: "return_result"},
+		{Mode: provider.ToolChoiceTool, Name: "submit_answer"},
 		{Mode: provider.ToolChoiceAny},
 	} {
 		params := c.buildMessageParams(provider.MessageRequest{

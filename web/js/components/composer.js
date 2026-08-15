@@ -1523,7 +1523,7 @@ class Composer extends HTMLElement {
     // Switching away from a previously-bound thread: flush its live draft first,
     // so in-flight typing isn't stranded by the keystroke debounce (which may
     // not have fired). Guarded — the outgoing thread's container may already be
-    // gone (a closed/deleted sub-thread), and losing the flush there is benign.
+    // gone (a deleted sub-thread), and losing the flush there is benign.
     if (isNewThread && this._messageThread && this._restoredThreadKey !== null) {
       try {
         this.flushDraft();

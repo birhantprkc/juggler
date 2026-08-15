@@ -280,10 +280,10 @@
  *   the capability to the worker; the per-call decision is
  *   `buildSubthreadSpec(toolInput, ctx)` — returning a spec delegates, returning
  *   `null` runs the ordinary `execute()`. When the tool delegates, the LLM's
- *   `tool_use` is answered by a child agent turn's `return_result`; the child's
+ *   `tool_use` is answered by the child agent run's outcome, whatever it is —
+ *   the reply it came to rest on, or the error it stopped on. The child's
  *   working context (large fetches, intermediate tool calls) never enters the
- *   parent. Optionally pair with `onSubthreadError(error, toolInput)` to degrade
- *   gracefully when the child fails. Default: false
+ *   parent. Default: false
  * @property {boolean} [workerManaged] - **@internal** (outside the engineApi compat promise). If true, execution is handled by the Go worker
  *   server-side instead of the engine browser. The plugin still provides
  *   `getToolDefinitions()`, `getStatusUI()`, and `getBadgeOptions()`, but
@@ -309,8 +309,16 @@
  * @typedef {object} SubthreadSpec
  * @property {string} goal - Child thread label / column header.
  * @property {string} prompt - The child's seed user message (task + any inlined data).
- * @property {string} [resultSpec] - Contract for what the child's `return_result`
+ * @property {string} [resultSpec] - Contract for what the child's last message
  *   must contain; appended to the seed and shown in the thread header.
+ * @property {string} [sessionName] - Handle for the child, so a later call can
+ *   continue it. A name matching a session THIS tool already ran in the calling
+ *   thread invokes that child again — the prompt arrives as the next message in
+ *   the transcript it already has, with nothing re-seeded or replayed. A name
+ *   matching nothing (or none at all) starts a new session, auto-named from the
+ *   tool. Every result opens with the name that was used, so a caller that did
+ *   not plan ahead can still follow up. Expose it as an optional argument on
+ *   your own tool schema and pass it through.
  */
 
 /**
@@ -320,14 +328,6 @@
  * @property {any} conversation - The conversation the tool was called in.
  * @property {any} session - The owning session.
  * @property {AbortSignal} [signal] - Abort signal for any local pre-work.
- */
-
-/**
- * The optional fallback a delegating tool returns from `onSubthreadError` when
- * its child ends without a result.
- * @typedef {object} SubthreadErrorFallback
- * @property {string} result - The tool_result text delivered in place of the
- *   failed child's result.
  */
 
 /**

@@ -14,10 +14,9 @@ import (
 
 // TestModernFoldRecognizedWithoutPromptMarker pins the Phase-2 invariant that a
 // modern browser fold no longer depends on the prompt-prefix scan: a thread
-// carrying only boundedCompaction + compactionPromptItemId (no legacy
-// noAutoSelect/forceTool markers, and a prompt whose content does NOT match
-// defaultSummarizationPromptMarker) is still recognized as a bounded-compaction
-// thread and resolves its prompt via the explicit id.
+// carrying only boundedCompaction + compactionPromptItemId (and a prompt whose
+// content does NOT match defaultSummarizationPromptMarker) is still recognized
+// as a bounded-compaction thread and resolves its prompt via the explicit id.
 func TestModernFoldRecognizedWithoutPromptMarker(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()

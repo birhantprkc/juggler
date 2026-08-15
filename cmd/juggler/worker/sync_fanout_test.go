@@ -19,7 +19,7 @@ package worker
 //     callbacks.broadcast), so concurrent requests with unique ackIds are each
 //     delivered and none are dropped — the server-side counterpart to the
 //     browser ackId namespacing that fixed the ack-correlation race;
-//   - a request-scoped production ack (undo/redo/reopen/duplicate → w.reply →
+//   - a request-scoped production ack (undo/redo/duplicate → w.reply →
 //     callbacks.sendTo) reaches ONLY the client that issued it, not every
 //     connected client — the bandwidth fix that keeps a remote tunnel viewer
 //     from receiving acks meant for the engine or other viewers;

@@ -122,9 +122,8 @@ class WebFetchContextItem extends ContextItem {
   }
 
   /**
-   * Fetch the raw page once, here on the engine side. Isolated as its own method
-   * so buildSubthreadSpec and onSubthreadError share it and tests can stub the
-   * network.
+   * Fetch the raw page once, here on the engine side. Its own method so tests
+   * can stub the network.
    * @param {string} url - The URL to fetch
    * @returns {Promise<WebFetchResult>} Raw fetch result
    */
@@ -172,24 +171,6 @@ class WebFetchContextItem extends ContextItem {
         `# Page: ${url}\n${page.content}`,
       resultSpec: 'the answer in markdown, quoting the page where relevant, or "not found in page" if the content does not answer the request'
     };
-  }
-
-  /**
-   * If the sub-agent errored or ended without a result, degrade to returning
-   * the raw fetched content rather than failing the call.
-   * @override
-   * @param {Error} error - Why the child ended open
-   * @param {Record<string, unknown>} toolInput - The original validated input
-   * @returns {Promise<import('juggler/context-item').SubthreadErrorFallback | null>} Raw-content fallback, or null to accept the default error
-   */
-  async onSubthreadError(error, toolInput) {
-    try {
-      const raw = await this.fetchRaw(String(toolInput.url || ''));
-      const content = raw && raw.content ? raw.content : '';
-      return { result: `(extraction failed: ${error.message}); raw content follows:\n\n${content}` };
-    } catch {
-      return null;
-    }
   }
 
   /**

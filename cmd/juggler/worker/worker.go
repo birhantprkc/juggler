@@ -95,11 +95,9 @@ type ConversationWorker struct {
 	contextResultChan      chan json.RawMessage
 	toolsResultChan        chan json.RawMessage
 	strategyHookResultChan chan json.RawMessage
-	// Subthread-delegation round-trips (engine-targeted): the worker asks the
-	// engine to build a SubthreadSpec for a delegating tool, and to run the
-	// tool's onSubthreadError fallback when a delegated child ends open.
-	subthreadSpecResultChan  chan json.RawMessage
-	subthreadErrorResultChan chan json.RawMessage
+	// Subthread-delegation round-trip (engine-targeted): the worker asks the
+	// engine to build a SubthreadSpec for a delegating tool.
+	subthreadSpecResultChan chan json.RawMessage
 	// turnDelegatingTools is the set of tool names offered this turn whose item
 	// declared delegatesToSubthread. Rebuilt each iteration from the tools list
 	// and read by processLLMResponse to route a call to the delegation path.
@@ -195,16 +193,6 @@ type ConversationWorker struct {
 
 	// Thread execution context — set when running inside a child thread; zero value = root conversation.
 	thread threadContext
-
-	// closeRequestThreadID names the thread whose CURRENT turn was started by a
-	// close request (/close, the footer's summarise action). It forces
-	// return_result for that turn (resolveForcedToolChoice) and lets the
-	// turn-end salvage promote trailing text as the result
-	// (writeThreadResultLocked) when the provider ignored the force. Turn-scoped
-	// and never persisted: set when the send is accepted, cleared when the
-	// strategy loop ends. Compared against the running thread's id so it can
-	// never leak onto another thread's turn.
-	closeRequestThreadID string
 
 	// Per-conversation transaction blob store (input/output context for each
 	// LLM round-trip). Initialized in handleInit once projectPath is known.
@@ -469,7 +457,6 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 		toolsResultChan:           make(chan json.RawMessage, 1),
 		strategyHookResultChan:    make(chan json.RawMessage, 1),
 		subthreadSpecResultChan:   make(chan json.RawMessage, 1),
-		subthreadErrorResultChan:  make(chan json.RawMessage, 1),
 		tools:                     newToolCommandTracker(),
 		redriveInterval:           defaultRedriveInterval,
 		deliveryPumps:             make(map[string]*taskDeliveryPump),
@@ -926,20 +913,11 @@ func (w *ConversationWorker) recoverWorkerPanic(msgType string) {
 	}
 	w.log.Error("Panic handling message %s: %v", msgType, r)
 
-	// If panic occurred while in a thread context, mark the thread as failed
-	// so the frontend doesn't get stuck in "active" limbo.
+	// If the panic occurred while in a thread context, settle that thread's open
+	// run as failed so the frontend doesn't get stuck in "active" limbo and
+	// anything parked on the thread stops waiting.
 	if w.thread.itemID != "" {
-		threadYMap := w.doc.GetThreadYMap(w.thread.itemID)
-		if threadYMap != nil {
-			ycrdtMu.Lock()
-			existingResult, _ := threadYMap.Get("result").(string)
-			if existingResult == "" {
-				w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-					threadYMap.Set("result", fmt.Sprintf("Thread failed: %v", r))
-				}, w.doc.authorID)
-			}
-			ycrdtMu.Unlock()
-		}
+		w.stampRunOutcome(w.thread.itemID, runStatusError, fmt.Sprintf("Thread failed: %v", r))
 	}
 
 	// Reset thread context so the error appears in the root conversation,
@@ -1076,9 +1054,6 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 	case "build-subthread-spec-response":
 		w.handleBuildSubthreadSpecResponse(msg.Payload)
 
-	case "subthread-error-response":
-		w.handleSubthreadErrorResponse(msg.Payload)
-
 	case "yjs-sync":
 		w.handleYjsSync(msg.Payload)
 
@@ -1128,14 +1103,8 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 	case "create-thread":
 		w.handleCreateThread(msg.Payload)
 
-	case "reopen-thread":
-		w.handleReopenThread(msg.Payload)
-
 	case "resummarize-compaction-thread":
 		w.handleResummarizeCompactionThread(msg.Payload)
-
-	case "close-thread-with-last-message":
-		w.handleCloseThreadWithLastMessage(msg.Payload)
 
 	case "request-full-state":
 		w.broadcastFullState()
@@ -1570,16 +1539,13 @@ func (w *ConversationWorker) checkForNewThreads() bool {
 		ycrdtMu.Lock()
 		needsStrategyRun, _ := threadYMap.Get("needsStrategyRun").(bool)
 		noAutoSelect, _ := threadYMap.Get("noAutoSelect").(bool)
-		hasResult := false
-		if result, _ := threadYMap.Get("result").(string); result != "" {
-			hasResult = true
-		}
+		settled := threadRunSettledLocked(threadYMap)
 		ycrdtMu.Unlock()
 
 		if !needsStrategyRun {
 			continue
 		}
-		if hasResult {
+		if settled {
 			continue
 		}
 
@@ -1678,10 +1644,15 @@ func (w *ConversationWorker) clearThreadNeedsStrategyRun(threadItemID string) {
 }
 
 // hasIncompleteThreads returns true if any thread item in the current target
-// has no result yet (child thread still in progress or not yet started).
+// has a run still going (child thread in progress, or not yet started).
+//
+// Asked per ITEM, not per thread: a call into a session that has already been
+// called before stands as its own alias item, and each item is parked on the one
+// run it made rather than on whatever that thread most recently did.
 func (w *ConversationWorker) hasIncompleteThreads() bool {
-	for _, item := range w.getTargetItems() {
-		if item.Type == ItemTypeThread && !hasThreadResult(item) {
+	items := w.getTargetItems()
+	for _, item := range items {
+		if item.Type == ItemTypeThread && !itemRunSettled(items, item) {
 			return true
 		}
 	}

@@ -124,11 +124,11 @@ func (w *ConversationWorker) buildLLMRequest(ctxResult *ContextResult, tools []T
 		request["bypassContextGuard"] = true
 	}
 
-	// A plugin may force a specific tool for this thread's turns (e.g. /compact
-	// forces return_result). Honour it generically: translate the thread's
-	// forceTool field into a provider-agnostic toolChoice that the server hands
-	// to the provider. Only emitted when the forced tool is actually offered
-	// this turn, so we never send an API-invalid choice.
+	// A plugin may force a specific tool for this thread's turns. Honour it
+	// generically: translate the thread's forceTool field into a
+	// provider-agnostic toolChoice that the server hands to the provider. Only
+	// emitted when the forced tool is actually offered this turn, so we never
+	// send an API-invalid choice.
 	if tc := w.resolveForcedToolChoice(tools); tc != nil {
 		request["toolChoice"] = tc
 	}
@@ -177,11 +177,8 @@ func (w *ConversationWorker) filterToolsForThreadID(tools []ToolDefinition, thre
 // resolveForcedToolChoice reads the current thread's `forceTool` Yjs field (set
 // by a plugin) and, when present AND the named tool is among this turn's tools,
 // returns the provider-agnostic toolChoice the server forwards to the provider.
-// A close request (/close, the footer's summarise action) forces return_result
-// for that one turn without touching the sticky field, so the close is a
-// mechanism rather than a request the model may decline. Returns nil for the
-// normal case (no force, or the forced tool isn't offered), leaving tool
-// selection to the model.
+// Returns nil for the normal case (no force, or the forced tool isn't offered),
+// leaving tool selection to the model.
 func (w *ConversationWorker) resolveForcedToolChoice(tools []ToolDefinition) map[string]any {
 	if w.thread.itemID == "" {
 		return nil
@@ -193,9 +190,6 @@ func (w *ConversationWorker) resolveForcedToolChoice(tools []ToolDefinition) map
 	ycrdtMu.Lock()
 	forceTool, _ := threadYMap.Get("forceTool").(string)
 	ycrdtMu.Unlock()
-	if forceTool == "" && w.closeRequested(w.thread.itemID) {
-		forceTool = "return_result"
-	}
 	if forceTool == "" {
 		return nil
 	}
@@ -213,8 +207,7 @@ func (w *ConversationWorker) resolveForcedToolChoice(tools []ToolDefinition) map
 	// Sending a forced choice to a provider that cannot honour it buys nothing
 	// and costs a turn: the model answers with literal JSON text, or nothing at
 	// all. Let those providers run the turn unforced — the prompt still asks for
-	// the call, and a close's trailing text is promoted as the result anyway
-	// (writeThreadResultLocked).
+	// the call.
 	if cfg := w.resolveModelConfig(); cfg != nil && !providerHonorsForcedTools(cfg.Provider) {
 		w.log.Info("[worker] provider %q cannot honour a forced tool choice — running the turn unforced", cfg.Provider)
 		return nil
@@ -368,7 +361,12 @@ func toolResultWire(item ConversationItem) map[string]any {
 // and the compaction canonicalizer (canonicalCompactionRecords emits one record
 // per item, so the projection must stay per-item — the live turn layers
 // tool-action batching on top). Returns nil for items that contribute no message.
-func itemWireMessages(item ConversationItem) []map[string]any {
+//
+// siblings is the array the item stands in, needed only by a thread alias, which
+// reads its run's record off the canonical thread item standing there
+// (ConversationItem.AliasOf). Every other projection is a pure function of the
+// item.
+func itemWireMessages(item ConversationItem, siblings []ConversationItem) []map[string]any {
 	switch item.Type {
 	case ItemTypeUser:
 		return []map[string]any{buildUserMessageMap(item)}
@@ -398,7 +396,7 @@ func itemWireMessages(item ConversationItem) []map[string]any {
 		return []map[string]any{buildToolUseMap(item), toolResultWire(item)}
 
 	case ItemTypeThread:
-		return appendThreadMessages(nil, item)
+		return appendThreadMessages(nil, item, siblings)
 
 	case ItemTypeMetaToolResult:
 		var out []map[string]any
@@ -466,22 +464,78 @@ func buildThreadToolResultMap(item ConversationItem) map[string]any {
 	return map[string]any{
 		"type":      "tool-result",
 		"toolUseId": item.ToolUseID,
-		"content":   fmt.Sprintf("[Completed Thread: %s]\n%s", item.Goal, result),
+		"content":   fmt.Sprintf("[Completed Thread: %s]\n%s", callGoal(item.ToolInput, item.Goal), result),
 		"isError":   false,
 	}
 }
 
-// appendThreadMessages emits messages for a thread item. For LLM-spawned
-// threads with a fully-recorded tool call (ToolUseID + ToolName + ToolInput)
-// it emits the assistant tool_use + user tool_result pair so the parent LLM
-// sees its own create_thread call — ALWAYS both blocks, a placeholder result
-// while the sub-thread runs (see buildThreadToolResultMap), so the wire shape
-// never changes length when the result lands and the prompt cache stays warm.
-// For user/strategy-created threads, or thread items lacking ToolInput on the
-// Y.Map, it emits an assistant summary instead — an Anthropic tool_use with
+// callGoal is the goal ONE call named, read back off the tool input recorded
+// with it. A thread's own Goal is its header and moves with the latest call, so
+// it stands in only where the call recorded no goal of its own — a thread the
+// user, a strategy or the orchestrator created, or a document written before
+// the coordinates were kept.
+func callGoal(input json.RawMessage, fallback string) string {
+	if len(input) > 0 {
+		var call struct {
+			Goal string `json:"goal"`
+		}
+		if err := json.Unmarshal(input, &call); err == nil && call.Goal != "" {
+			return call.Goal
+		}
+	}
+	return fallback
+}
+
+// appendThreadMessages emits messages for a thread item, resolving aliases
+// against the array the item stands in.
+//
+// A thread item carrying a RUN SELECTOR emits exactly ONE assistant tool_use +
+// user tool_result pair: the run that item is the parent's view of. That is what
+// puts each call's result where the call was made — the first call's on the
+// canonical item, every later call's on the alias appended by the turn that made
+// it (ConversationItem.AliasOf) — so a resume appends to the parent's history
+// instead of inserting into the middle of it, and no committed prefix ever
+// moves. An alias resolves to the canonical standing earlier in the same array
+// and reads the record there; one whose canonical is gone gets a paired error,
+// because a dangling tool_use is wire-invalid.
+//
+// A thread with no selector emits one pair per RUN, in order, sourced from its
+// run records whether they are still on its invocation messages or carried by a
+// fold that swallowed one (threadRunRecords). That is every thread created
+// before selectors existed, where the parent has a single item for all its calls
+// and this is the only way it sees them.
+//
+// Either way it is ALWAYS both blocks per run, with a placeholder result while
+// that run is still going (see buildRunToolResultMap), so the wire shape never
+// changes length when a result lands and the prompt cache stays warm.
+//
+// Documents written before run records existed carry the coordinates on the
+// thread Y.Map itself, which is scalar and so describes exactly one invocation;
+// those fall back to the thread-level fields and emit the single pair they
+// always did.
+//
+// For user/strategy-created threads, or thread items lacking ToolInput
+// entirely, it emits an assistant summary instead — an Anthropic tool_use with
 // null input is silently dropped by the provider, so the summary is the safer
 // wire shape when input wasn't recorded.
-func appendThreadMessages(messages []map[string]any, item ConversationItem) []map[string]any {
+func appendThreadMessages(messages []map[string]any, item ConversationItem, siblings []ConversationItem) []map[string]any {
+	if item.RunToolUseID != "" {
+		canonical, run, call, ok := itemThreadRun(siblings, item)
+		if ok {
+			messages = append(messages, buildToolUseMap(run.call))
+			return append(messages, buildRunToolResultMap(canonical, run, call))
+		}
+		messages = append(messages, buildToolUseMap(itemRunCall(item)))
+		return append(messages, missingRunToolResultMap(item))
+	}
+	if runs := threadRunRecords(item); len(runs) > 0 {
+		for i, run := range runs {
+			messages = append(messages, buildToolUseMap(run.call))
+			messages = append(messages, buildRunToolResultMap(item, run, i+1))
+		}
+		return messages
+	}
+	// Legacy shape: coordinates on the thread item, one invocation for all time.
 	if item.ToolUseID != "" && item.ToolName != "" && len(item.ToolInput) > 0 {
 		messages = append(messages, buildToolUseMap(item))
 		messages = append(messages, buildThreadToolResultMap(item))
@@ -491,6 +545,112 @@ func appendThreadMessages(messages []map[string]any, item ConversationItem) []ma
 		messages = append(messages, m)
 	}
 	return messages
+}
+
+// missingRunToolResultMap is the tool_result for a call whose run can no longer
+// be read: the thread it ran in was deleted, or its record was edited out of the
+// transcript. The call still has to be answered — an unpaired tool_use is
+// wire-invalid — so it is answered honestly rather than with a placeholder the
+// model would wait on forever.
+func missingRunToolResultMap(item ConversationItem) map[string]any {
+	return map[string]any{
+		"type":      "tool-result",
+		"toolUseId": item.RunToolUseID,
+		"content":   "The thread this call ran in is no longer in the conversation, so its result is gone.",
+		"isError":   true,
+	}
+}
+
+// threadRun is one invocation of a thread: the parent's call that started it,
+// and how that run settled.
+type threadRun struct {
+	// call carries the run's tool-use coordinates in the fields buildToolUseMap
+	// reads, so the parent sees the call it actually made.
+	call ConversationItem
+	// result is the run's stored outcome, empty while the run is still going.
+	result string
+	// status is how the run ended (see the runStatus constants), empty while
+	// the run is still going.
+	status string
+}
+
+// buildRunToolResultMap renders the tool_result for ONE run of a thread, paired
+// with the tool_use buildToolUseMap emits from the same run.
+//
+// The result is the run's OWN stored outcome. A run still in flight has none
+// and gets the pending placeholder — the thread's summary belongs to whichever
+// run last came to rest, so borrowing it here would answer this call with the
+// previous one's reply.
+//
+// A session-backed thread opens with its preamble instead of the thread
+// header: the handle is what the caller needs to follow up, and "[Completed
+// Thread]" would be twice wrong — a resting session is neither completed nor
+// the only run in the transcript. Everything about that line is frozen at the
+// time the run settled (name, call number, status, and the goal this call named
+// — the thread's own goal moves with the latest call), so a later call cannot
+// rewrite an earlier result and slide the committed prefix out from under a
+// warm prompt cache.
+func buildRunToolResultMap(thread ConversationItem, run threadRun, call int) map[string]any {
+	if run.result == "" {
+		return map[string]any{
+			"type":      "tool-result",
+			"toolUseId": run.call.ToolUseID,
+			"content":   pendingToolResultPlaceholder,
+			"isError":   true,
+		}
+	}
+	content := fmt.Sprintf("[Completed Thread: %s]\n%s", callGoal(run.call.ToolInput, thread.Goal), run.result)
+	if thread.SessionName != "" {
+		content = sessionPreamble(thread.SessionName, call, run.status) + "\n\n" + run.result
+	}
+	return map[string]any{
+		"type":      "tool-result",
+		"toolUseId": run.call.ToolUseID,
+		"content":   content,
+		"isError":   false,
+	}
+}
+
+// threadRunRecords extracts a thread's run records, in transcript order, from
+// its nested items: the invocation messages still standing there, plus the
+// records carried by any compaction fold occupying the position of the ones it
+// swallowed (FoldedRuns). Returns nil for a thread with none — a user-created
+// thread, or one written before run records existed.
+//
+// A compaction fold has no runs of its own. It is a container of somebody
+// else's transcript, and the records inside it describe calls made into the
+// thread that folded it, not calls made into the fold — emitting them here
+// would put the caller's tool_use blocks inside the child's own history.
+func threadRunRecords(item ConversationItem) []threadRun {
+	if item.BoundedCompaction {
+		return nil
+	}
+	var runs []threadRun
+	appendRun := func(toolUseID, toolName string, toolInput json.RawMessage, status, result string) []threadRun {
+		if toolUseID == "" || toolName == "" || len(toolInput) == 0 {
+			return runs
+		}
+		return append(runs, threadRun{
+			call:   ConversationItem{ToolUseID: toolUseID, ToolName: toolName, ToolInput: toolInput},
+			result: result,
+			status: status,
+		})
+	}
+	for _, it := range threadNestedItems(item) {
+		if it.Type == ItemTypeThread {
+			if it.BoundedCompaction {
+				for _, folded := range it.FoldedRuns {
+					runs = appendRun(folded.ToolUseID, folded.ToolName, folded.ToolInput, folded.Status, folded.Result)
+				}
+			}
+			// A child thread standing in this transcript carries the same
+			// coordinates to name its OWN run (ConversationItem.AliasOf), which is
+			// a call made out of this thread, not into it.
+			continue
+		}
+		runs = appendRun(it.RunToolUseID, it.RunToolName, it.RunToolInput, it.RunStatus, it.RunResult)
+	}
+	return runs
 }
 
 // appendToolActionResult appends the tool-result message for one tool-action:
@@ -562,7 +722,7 @@ func (w *ConversationWorker) buildMessagesFromItems(items []ConversationItem, st
 	for i := 0; i < len(items); i++ {
 		item := items[i]
 		if item.Type != ItemTypeToolAction {
-			messages = append(messages, itemWireMessages(item)...)
+			messages = append(messages, itemWireMessages(item, items)...)
 			continue
 		}
 

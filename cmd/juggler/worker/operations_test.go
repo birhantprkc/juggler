@@ -263,7 +263,7 @@ func TestThreadResultPreservedOnUndoRedo(t *testing.T) {
 		t.Fatalf("Expected 1 item, got %d", len(items))
 	}
 
-	// Set the result key on the thread Y.Map (simulates return_result completing the thread)
+	// Set the result key on the thread Y.Map (simulates a settled run summarising it)
 	threadYMap := findThreadYMap(doc.getItems(), threadItemID)
 	if threadYMap == nil {
 		t.Fatal("Thread Y.Map not found")

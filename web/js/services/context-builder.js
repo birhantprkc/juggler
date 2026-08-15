@@ -19,6 +19,7 @@ import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 import { assembleSystemPrompt } from './system-prompt-builder.js';
 import { buildExtensionSystemPromptContributions } from './extensions.js';
 import { yGet } from '../model/item-accessor.js';
+import { canonicalThread, itemGoal, itemRunRecord, threadRunRecords } from '../model/thread-alias.js';
 import {
   createSystemReminderMessage,
   MESSAGE_TYPES,
@@ -41,6 +42,68 @@ import {
  * @property {string|null} systemPrompt - System prompt extracted from system-prompt context item
  * @property {any[]} messages - Messages with context items rendered (plain objects for LLM)
  */
+
+/**
+ * One run's text as the parent sees it: under the session preamble naming the
+ * handle and the call, or under the thread header when the thread has no
+ * handle. A resting session is neither completed nor the only run in the
+ * transcript, so "[Completed Thread]" would be twice wrong for it.
+ * @param {string} goal - The thread's goal.
+ * @param {string} sessionName - Its session handle, or ''.
+ * @param {{status: string, result: string, call: number}} record - The run's record.
+ * @returns {string} The entry text.
+ */
+function runContextEntry(goal, sessionName, record) {
+  if (!sessionName) return `[Completed Thread: ${goal}]\n${record.result}`;
+  let head = record.call > 1
+    ? `${sessionName} · resumed, call ${record.call}`
+    : `${sessionName} · new`;
+  if (record.status && record.status !== 'rest') head += ` · ${record.status}`;
+  return `${head}\n\n${record.result}`;
+}
+
+/**
+ * What a thread item contributes to the context its parent sees.
+ *
+ * Mirrors appendThreadMessages / buildRunToolResultMap in
+ * `cmd/juggler/worker/llm_request.go`, which is what actually reaches the model
+ * — this list is read by the context preview, so it has to agree. An item
+ * carrying a run selector contributes ONE entry, the run it stands for: a thread
+ * called more than once has one parent item per call (model/thread-alias.js), so
+ * the calls are read down the parent transcript rather than piled onto the item
+ * that made the first one. A thread with no selector contributes one entry per
+ * run, and one with no run records at all — user-created, or a document written
+ * before run records existed — contributes its summary under the thread header.
+ * @param {Message} msg - The thread Y.Map.
+ * @returns {string[]} One entry per run this item stands for, in call order.
+ */
+function threadContextEntries(msg) {
+  const thread = canonicalThread(msg);
+  const goal = thread.get('goal') || msg.get('goal');
+  const sessionName = thread.get('sessionName') || msg.get('sessionName');
+
+  // An entry describes ONE call, so it names the goal that call gave — the
+  // thread's own `goal` moves with the latest one and would caption every
+  // earlier run with work it never did.
+  if (msg.get('runToolUseId')) {
+    const record = itemRunRecord(msg);
+    return (record && record.result) ? [runContextEntry(itemGoal(msg), sessionName, record)] : [];
+  }
+
+  /** @type {string[]} */
+  const entries = [];
+  const runs = threadRunRecords(thread);
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    if (!run?.result) continue;
+    entries.push(runContextEntry(run.goal || goal, sessionName, { status: run.status, result: run.result, call: i + 1 }));
+  }
+  if (entries.length) return entries;
+
+  const threadResult = thread.get('result');
+  if (!threadResult) return [];
+  return [`[Completed Thread: ${goal}]\nThis work has been completed by a sub-thread — do not repeat it:\n\n${threadResult}`];
+}
 
 export class ContextBuilder {
   /**
@@ -105,14 +168,11 @@ export class ContextBuilder {
         continue;
       }
 
-      // Handle thread messages - completed threads with results appear as condensed context
+      // Handle thread messages — each of the thread's runs appears as condensed
+      // context, mirroring what appendThreadMessages puts on the wire.
       if (isThreadMessage(msg)) {
-        const threadResult = msg.get('result');
-        if (threadResult) {
-          result.messages.push(createSystemReminderMessage({
-            content: `[Completed Thread: ${msg.get('goal')}]\nThis work has been completed by a sub-thread — do not repeat it:\n\n${threadResult}`,
-            source: 'thread'
-          }));
+        for (const content of threadContextEntries(msg)) {
+          result.messages.push(createSystemReminderMessage({ content, source: 'thread' }));
         }
         continue;
       }

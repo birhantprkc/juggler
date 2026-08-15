@@ -16,15 +16,41 @@
 
 import { textResponse, toolUseResponse } from '../utilities/integration-test-runner.js';
 
+/**
+ * Assert a thread's open run was settled as cancelled — the signal a parked
+ * parent reads to stop waiting. A stop writes no summary, so this is the only
+ * record that the run is over.
+ * @param {any} conversation - The conversation under test.
+ * @param {string} label - Test name, for the failure message.
+ * @returns {void}
+ */
+function assertRunCancelled(conversation, label) {
+  const thread = conversation.rootMessageThread.items.find(
+    (/** @type {any} */ it) => it.get?.('type') === 'thread'
+  );
+  if (!thread) throw new Error(`${label}: thread item missing`);
+  const sub = thread.get('items');
+  const arr = sub && typeof sub.toArray === 'function' ? sub.toArray() : [];
+  const statuses = arr
+    .filter((/** @type {any} */ it) => it.get?.('type') === 'user')
+    .map((/** @type {any} */ it) => it.get('runStatus'));
+  if (!statuses.includes('cancelled')) {
+    throw new Error(`${label}: expected a run settled as 'cancelled', got runStatus values [${statuses}]`);
+  }
+  if (thread.get('result')) {
+    throw new Error(`${label}: a stop must not write a summary, got '${thread.get('result')}'`);
+  }
+}
+
 // ============================================================================
 // TEST 1: Cancel during thread stops all loops
 // ============================================================================
 
 /**
  * Root creates thread → thread runs bash → user hits Escape while focused IN the
- * sub-thread → the worker turn is interrupted but the thread stays OPEN (no
- * result). Interrupting from the thread's own vantage never closes it, so the
- * composer stays in the child column and the user can keep interacting with it.
+ * sub-thread → the worker turn is interrupted but the thread's run stays OPEN
+ * (unsettled, no summary). An own-vantage interrupt never settles the run, so
+ * the composer stays in the child column and the user can carry on with it.
  * No further LLM responses are consumed (the worker is idle; nothing re-drives).
  *
  * Mock responses:
@@ -76,8 +102,8 @@ export const cancelDuringThreadTest = {
     const result = thread.get('result');
     if (typeof result === 'string' && result.length > 0) {
       throw new Error(
-        `interrupt-during-thread-keeps-open: thread was closed (result='${result}') — ` +
-				'an own-vantage interrupt must leave the thread open'
+        `interrupt-during-thread-keeps-open: a summary was written (result='${result}') — ` +
+				'an own-vantage interrupt must leave the run open and write nothing'
       );
     }
     // The running tool was cancelled (worker-truth interrupt).
@@ -208,7 +234,7 @@ export const cancelDuringThreadApprovalTest = {
     const result = thread.get('result');
     if (typeof result === 'string' && result.length > 0) {
       throw new Error(
-        `interrupt-during-thread-approval-keeps-open: thread was closed (result='${result}') — ` +
+        `interrupt-during-thread-approval-keeps-open: a summary was written (result='${result}') — ` +
 				'an own-vantage interrupt must leave the thread open'
       );
     }
@@ -221,7 +247,7 @@ export const cancelDuringThreadApprovalTest = {
 
 /**
  * Root creates thread → thread is interrupted (Escape inside it leaves it OPEN)
- * → user continues it directly (no reopen needed, because interrupt never closes
+ * → user continues it directly (interrupt leaves no summary behind
  * the thread) → thread completes → parent auto-resumes and continues. This is
  * the improved UX: interrupting a sub-thread leaves you in it, ready to type the
  * next message.
@@ -229,7 +255,7 @@ export const cancelDuringThreadApprovalTest = {
  * Mock responses:
  *   1. Root: create_thread
  *   2. Thread (first run): bash tool (will be interrupted)
- *   3. Thread (resumed): return_result "Task done"
+ *   3. Thread (resumed): text "Task done"
  *   4. Root (auto-resumed): text "All finished."
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
@@ -245,7 +271,7 @@ export const threadAutoResumeParentTest = {
       'Running.'
     ),
     // After interrupt + continue, thread gets this:
-    toolUseResponse('call_3', 'return_result', { result: 'Task done' }),
+    textResponse('Task done'),
     // Parent auto-resumes and gets this:
     textResponse('All finished.')
   ],
@@ -256,9 +282,10 @@ export const threadAutoResumeParentTest = {
     { type: 'start-capture-progress', toolUseId: 'call_2' },
     { type: 'approve-thread-tool-no-wait', toolUseId: 'call_2' },
     { type: 'wait-for-progress', toolUseId: 'call_2', minEvents: 1 },
-    // Interrupt during thread execution — leaves the thread OPEN.
+    // Interrupt during thread execution — the thread stops, and a stopped
+    // thread still takes work.
     { type: 'cancel' },
-    // Continue the still-open thread directly (no reopen needed).
+    // Continue the stopped thread directly.
     { type: 'send-thread-message', message: 'Continue please' }
   ],
 
@@ -273,15 +300,15 @@ export const threadAutoResumeParentTest = {
 };
 
 // ============================================================================
-// TEST 4b: Root-vantage stop closes the sub-thread
+// TEST 4b: Root-vantage stop settles the sub-thread's run
 // ============================================================================
 
 /**
  * Same setup as the interrupt test, but the user stops from the ROOT/parent
  * vantage (Escape while focused on the root, or the root footer Stop). From the
- * parent's vantage the running sub-thread is "below" and is CLOSED: the worker
- * turn is preempted, the tool is cancelled, and the sub-thread settles with
- * result='Cancelled' so the composer returns to the root column.
+ * parent's vantage the running sub-thread is "below" and is stopped with it:
+ * the worker turn is preempted, the tool is cancelled, and the sub-thread's run
+ * settles as cancelled so the composer returns to the root column.
  *
  * Mock responses:
  *   1. Root: create_thread
@@ -290,9 +317,9 @@ export const threadAutoResumeParentTest = {
  *   4. Root: should NOT be consumed
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
-export const cancelFromRootClosesThreadTest = {
-  name: 'root-vantage-stop-closes-subthread',
-  description: 'Stopping from the root vantage closes the running sub-thread (Cancelled)',
+export const cancelFromRootSettlesThreadTest = {
+  name: 'root-vantage-stop-settles-subthread',
+  description: 'Stopping from the root vantage settles the running sub-thread\'s run as cancelled',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -318,17 +345,19 @@ export const cancelFromRootClosesThreadTest = {
     items: [
       { type: 'system-prompt', itemId: '$ITEM_1' },
       { type: 'user', content: 'Start task' },
-      // Closed from the root vantage.
-      { type: 'thread', itemId: '$ITEM_3', result: 'Cancelled' }
+      // Stopped from the root vantage: the run is settled, and no summary was
+      // invented for it.
+      { type: 'thread', itemId: '$ITEM_3' }
     ]
   },
 
   customAssertions: (conversation) => {
-    // Closed thread → root no longer busy → composer returns to root column.
+    assertRunCancelled(conversation, 'root-vantage-stop-settles-subthread');
+    // Settled run → root no longer busy → composer returns to root column.
     if (conversation.rootMessageThread.hasBusyItems()) {
       throw new Error(
-        'root-vantage-stop-closes-subthread: root still busy after root-vantage stop — ' +
-				'the sub-thread did not close'
+        'root-vantage-stop-settles-subthread: root still busy after root-vantage stop — ' +
+				'the sub-thread run did not settle'
       );
     }
   }
@@ -386,7 +415,7 @@ export const denyInThreadNoAutoResumeTest = {
 };
 
 // ============================================================================
-// TEST 6: Explicit cancel-thread settles the thread closed (worker-truth)
+// TEST 6: Explicit cancel-thread settles the thread's run (worker-truth)
 // ============================================================================
 
 /**
@@ -395,17 +424,17 @@ export const denyInThreadNoAutoResumeTest = {
  *   1. The in-flight worker turn is cancelled and the worker goes idle —
  *      cancelThread is worker-truth, not a bare result write.
  *   2. The running tool settles to state='cancelled' (no orphaned running).
- *   3. The thread settles CLOSED with result='Cancelled' so the parent's input
- *      box returns (isThreadClosed becomes true).
+ *   3. The thread's run settles as cancelled — the signal a parked parent reads
+ *      to stop waiting — with no summary invented for it.
  *
- * RED before the fix: the old cancelThread only wrote result='Cancelled by user'
- * and never stopped the worker, so the sleep-10 bash kept running and the
- * processing status never reached 'idle' within the test window.
+ * RED before the fix: the old cancelThread only wrote a result and never stopped
+ * the worker, so the sleep-10 bash kept running and the processing status never
+ * reached 'idle' within the test window.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
-export const cancelThreadSettlesClosedTest = {
-  name: 'cancel-thread-settles-closed',
-  description: 'Explicit cancelThread stops the worker and settles the thread closed with a Cancelled summary',
+export const cancelThreadSettlesRunTest = {
+  name: 'cancel-thread-settles-run',
+  description: 'Explicit cancelThread stops the worker and settles the thread\'s run as cancelled',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -435,23 +464,24 @@ export const cancelThreadSettlesClosedTest = {
   expectedDocument: {
     items: [
       { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'thread', itemId: '$ITEM_2', result: 'Cancelled' }
+      { type: 'thread', itemId: '$ITEM_2' }
     ]
   },
 
   customAssertions: (conversation) => {
+    assertRunCancelled(conversation, 'cancel-thread-settles-run');
     const thread = conversation.rootMessageThread.items.find(
       (/** @type {any} */ it) => it.get?.('type') === 'thread'
     );
-    if (!thread) throw new Error('cancel-thread-settles-closed: thread item missing');
+    if (!thread) throw new Error('cancel-thread-settles-run: thread item missing');
     const sub = thread.get('items');
     const arr = sub && typeof sub.toArray === 'function' ? sub.toArray() : [];
     const tool = arr.find((/** @type {any} */ it) => it.get?.('type') === 'tool-action');
-    if (!tool) throw new Error('cancel-thread-settles-closed: tool-action missing in thread');
+    if (!tool) throw new Error('cancel-thread-settles-run: tool-action missing in thread');
     const state = tool.get('state');
     if (state !== 'cancelled') {
       throw new Error(
-        `cancel-thread-settles-closed: expected tool state 'cancelled', got '${state}' ` +
+        `cancel-thread-settles-run: expected tool state 'cancelled', got '${state}' ` +
 				'(worker turn was not cancelled)'
       );
     }
@@ -466,7 +496,7 @@ export const cancelThreadSettlesClosedTest = {
  * While a sub-thread is running, its PARENT tile (in the root column) must
  * expose a stop button — not only the drilled-in column header. Clicking it
  * routes to the unified cancel (cancel-thread-requested → conversation.cancelThread),
- * settling the thread closed with result='Cancelled'.
+ * settling the thread's run as cancelled.
  *
  * RED before the fix: no `.thread-stop-btn` is rendered on the tile.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
@@ -503,8 +533,12 @@ export const threadTileStopButtonTest = {
     items: [
       { type: 'system-prompt', itemId: '$ITEM_1' },
       { type: 'user', content: 'Start task' },
-      { type: 'thread', itemId: '$ITEM_3', result: 'Cancelled' }
+      { type: 'thread', itemId: '$ITEM_3' }
     ]
+  },
+
+  customAssertions: (conversation) => {
+    assertRunCancelled(conversation, 'thread-tile-stop-button');
   }
 };
 
@@ -514,8 +548,8 @@ export const tests = [
   denyToolInThreadTest,
   cancelDuringThreadApprovalTest,
   threadAutoResumeParentTest,
-  cancelFromRootClosesThreadTest,
+  cancelFromRootSettlesThreadTest,
   denyInThreadNoAutoResumeTest,
-  cancelThreadSettlesClosedTest,
+  cancelThreadSettlesRunTest,
   threadTileStopButtonTest
 ];

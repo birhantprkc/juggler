@@ -14,9 +14,8 @@
 // Messages TO worker:
 //   - lifecycle: init, send-message, cancel
 //   - turns/context: provider-turn, render-context-items-response, tools-result,
-//     strategy-hook-response, build-subthread-spec-response, subthread-error-response
+//     strategy-hook-response, build-subthread-spec-response
 //   - threads: inject-thread-message, delivery-ended, create-thread,
-//     reopen-thread, close-thread-with-last-message,
 //     resummarize-compaction-thread
 //   - tool retry: retry-tool-approval, retry-tool-action, update-tool-action-for-retry
 //   - context-item items: move-context-item-message-to-end,
@@ -214,13 +213,6 @@ type SendMessageMessage struct {
 	// in context first. A skills-only send (empty Text) is a preload: the skills
 	// load and the worker rests without starting an LLM turn.
 	Skills []string `json:"skills,omitempty"`
-	// CloseRequest marks this send as a request to close the target thread with
-	// a summary (/close, the footer's summarise action). The turn it starts is
-	// forced onto return_result, and its trailing text is promoted as the result
-	// if the provider could not honour that force — so a close is a mechanism,
-	// not a request the model may answer with prose. One-shot: it applies to
-	// this turn only and is never written to the thread.
-	CloseRequest bool `json:"closeRequest,omitempty"`
 }
 
 // UserInput returns the send's payload as the single inseparable submission
@@ -406,33 +398,15 @@ type ResyncRequestMessage struct {
 	StateVector []byte `json:"stateVector"`
 }
 
-// ReopenThreadMessage requests that a completed thread's result be cleared,
-// reopening it for continued work. The operation is performed Go-side with
-// authorID origin so it is tracked by the UndoManager and can be undone.
-type ReopenThreadMessage struct {
-	Type         string `json:"type"` // "reopen-thread"
-	ThreadItemID string `json:"threadItemId"`
-	AckID        string `json:"ackId,omitempty"`
-}
-
 // ResummarizeCompactionThreadMessage requests a fresh summary for a compaction
 // (/compact or /handoff) fold: clear its committed summary and re-arm the
 // one-shot needsStrategyRun trigger so the folded-compaction summarizer runs
 // again over the same source. It exists because that summarizer supplies its own
 // prompt and reads the thread's items as inert data — routing a re-summarise
-// through the ordinary close turn would append a "call return_result"
+// through the ordinary close turn would append a "summarise this thread"
 // instruction into the very transcript being summarized.
 type ResummarizeCompactionThreadMessage struct {
 	Type         string `json:"type"` // "resummarize-compaction-thread"
-	ThreadItemID string `json:"threadItemId"`
-	AckID        string `json:"ackId,omitempty"`
-}
-
-// CloseThreadWithLastMessageMessage requests the cheap, no-LLM-turn close of an
-// open thread: promote its trailing assistant message as the thread result.
-// Performed Go-side with authorID origin so it is undoable like reopen.
-type CloseThreadWithLastMessageMessage struct {
-	Type         string `json:"type"` // "close-thread-with-last-message"
 	ThreadItemID string `json:"threadItemId"`
 	AckID        string `json:"ackId,omitempty"`
 }
@@ -501,10 +475,19 @@ type RunContextHookRequest struct {
 // SubthreadSpec is the seed for a delegated child thread, produced by the
 // engine's buildSubthreadSpec for a delegatesToSubthread tool. Goal/Prompt/
 // ResultSpec map directly onto CreateThreadOptions.
+//
+// SessionName is the caller's handle for the child: a name matching a session
+// this tool already started in the calling thread invokes THAT thread again
+// (the prompt arrives as the next message in the transcript it already has)
+// rather than spawning a fresh one. Empty, or matching nothing, starts a new
+// session — which is the safe direction to fail in, since an unwanted create
+// only costs a slower correct answer. A tool that wants this exposes it as an
+// optional argument on its own schema and passes it through here.
 type SubthreadSpec struct {
-	Goal       string `json:"goal"`
-	Prompt     string `json:"prompt"`
-	ResultSpec string `json:"resultSpec,omitempty"`
+	Goal        string `json:"goal"`
+	Prompt      string `json:"prompt"`
+	ResultSpec  string `json:"resultSpec,omitempty"`
+	SessionName string `json:"sessionName,omitempty"`
 }
 
 // BuildSubthreadSpecRequest asks the engine to run a delegating tool's
@@ -527,25 +510,6 @@ type BuildSubthreadSpecResponse struct {
 	RequestID string         `json:"requestId"`
 	Spec      *SubthreadSpec `json:"spec"`
 	Error     string         `json:"error,omitempty"`
-}
-
-// SubthreadErrorRequest asks the engine to run a delegating tool's optional
-// onSubthreadError hook when its child ended without a result, so the tool can
-// degrade gracefully (e.g. return raw content) instead of a default error.
-type SubthreadErrorRequest struct {
-	Type      string          `json:"type"` // "subthread-error"
-	RequestID string          `json:"requestId"`
-	ToolName  string          `json:"toolName"`
-	ToolInput json.RawMessage `json:"toolInput"`
-	Reason    string          `json:"reason"`
-}
-
-// SubthreadErrorResponse returns the fallback tool_result text. Result == ""
-// means "no fallback — use the default error result".
-type SubthreadErrorResponse struct {
-	Type      string `json:"type"` // "subthread-error-response"
-	RequestID string `json:"requestId"`
-	Result    string `json:"result"`
 }
 
 // ErrorMessage reports an unhandled exception
@@ -766,13 +730,34 @@ type ConversationItem struct {
 	// serialization round-trip (undo/redo, fold) is not seeded a second time.
 	ContextSeeded bool `json:"contextSeeded,omitempty"`
 
+	// SessionName is a tool-spawned thread's handle within the thread that
+	// called it: the name a later call passes to invoke this thread again
+	// instead of spawning a fresh one. Stamped at creation, unique in the
+	// calling thread, and reported at the head of every result the thread
+	// returns — so a caller that never planned to follow up can still do so.
+	SessionName string `json:"sessionName,omitempty"`
+
+	// AliasOf names the thread this item is a second view of: an alias holds no
+	// transcript, and the transcript it shows belongs to the canonical thread
+	// item with this id, standing earlier in the same array. One parent item per
+	// call into a thread is what keeps the parent's wire history in call order —
+	// an alias is appended where the call was made, so a later call can never
+	// slide an earlier one's tool_result out from under a warm prompt cache.
+	//
+	// Its presence is what makes an item an alias. An alias carries a run
+	// selector (the Run* fields below) naming which single run of the canonical
+	// transcript it stands for, plus frozen display copies of `goal` and
+	// `sessionName` that are read by the tile alone and never as truth.
+	AliasOf string `json:"aliasOf,omitempty"`
+
 	// Thread-run control fields, set by a fold that produces an UNSUMMARIZED
 	// bounded-compaction thread (the /compact shape the browser fold also
 	// builds). checkForNewThreads picks up NeedsStrategyRun and runs the thread
 	// through the folded-compaction summarizer; NoAutoSelect keeps the fold off
 	// the active tab and marks it for one-undo-group merge; NoContextSeed stops
 	// starting-context re-injection into a thread already populated by
-	// relocation; ForceTool pins the summarization turn to return_result.
+	// relocation; ForceTool names a tool the model must call on every turn of
+	// this thread, a seam any plugin may set and nothing in the core does.
 	// HandoffPromote tags a /handoff fold so the browser promotes its result into
 	// the parked first message of the continued tab. All omitempty so ordinary
 	// items and already-summarized recovery folds stay byte-identical.
@@ -782,10 +767,55 @@ type ConversationItem struct {
 	ForceTool        string `json:"forceTool,omitempty"`
 	HandoffPromote   bool   `json:"handoffPromote,omitempty"`
 
+	// FoldedRuns carries the run records of the invocation messages a
+	// bounded-compaction fold swallowed, in the order they stood in the
+	// transcript the fold replaced. A fold takes the place of the messages it
+	// folded, so a thread's calls are still read in call order from its own
+	// items — some live, some carried by the fold sitting where they used to be
+	// (threadRunRecords). Set only on fold threads.
+	FoldedRuns []FoldedRun `json:"foldedRuns,omitempty"`
+
 	// Context-item specific fields
 	PreventUserDeletion bool   `json:"preventUserDeletion,omitempty"` // Whether context item cannot be deleted by user
 	IsNew               bool   `json:"isNew,omitempty"`               // Whether context item is newly created
 	Error               string `json:"error,omitempty"`               // Error message for context items
+
+	// Run record — carried by a user item that STARTED a run (an "invocation
+	// message"). RunToolUseID/RunToolName/RunToolInput name the parent's tool
+	// call that appended this message; RunStatus/RunResult record how the run it
+	// began settled.
+	//
+	// On a THREAD item the same three coordinates mean something adjacent: they
+	// are that item's RUN SELECTOR — which single run of the transcript this
+	// item is the parent's view of. Same run, same identity, read from both
+	// ends: the child stamps the message that started the run, the parent stamps
+	// the item that called it. A thread item never carries RunStatus/RunResult —
+	// the outcome lives on the run's own record, in the canonical's transcript.
+	// Readers that mean "invocation message" therefore test the item type too
+	// (isInvocationMessage), because a thread item standing in a transcript is a
+	// child, not a call into the thread that holds it.
+	//
+	// This is what makes a subthread resumable. The coordinates used to live on
+	// the thread Y.Map, which is scalar — one pairing per thread for all time, so
+	// a thread could only ever be invoked once. Held per-message instead, N
+	// invocations are N stamped user items in order down the child's transcript,
+	// each paired against the run it began.
+	//
+	// They are deliberately NOT called toolUseId/toolName/toolInput: those keys
+	// mean "this item IS a tool call", and a good deal of code keys off their
+	// mere presence (the compaction leading-run classifier at document.go, the
+	// browser's context-item scans) or looks them up across all item types with
+	// no type guard. A separate namespace keeps a user item a user item.
+	//
+	// The outcome is stored rather than re-derived because a run's trailing items
+	// are user-editable and deletable: buildMessages must still reconstruct a
+	// stable tool_use/tool_result pair for a run whose transcript has since been
+	// edited.
+	RunToolUseID string          `json:"runToolUseId,omitempty"`
+	RunToolName  string          `json:"runToolName,omitempty"`
+	RunToolInput json.RawMessage `json:"runToolInput,omitempty"`
+	RunStatus    string          `json:"runStatus,omitempty"`
+	RunResult    string          `json:"runResult,omitempty"`
 
 	// TransactionID identifies the LLM round-trip that produced this item.
 	// All items inserted/stamped during one round-trip share the same id;
@@ -813,6 +843,25 @@ type ConversationItem struct {
 	// monitor's own tool-action shows. A pointer so an ordinary user message
 	// omits the key entirely and stays byte-identical to the legacy shape.
 	TaskSource *TaskSourceRef `json:"taskSource,omitempty"`
+}
+
+// FoldedRun is one delegated run's record, preserved on the compaction fold
+// that swallowed the invocation message carrying it (ConversationItem.
+// FoldedRuns). The fields mirror the message's own run fields exactly, because
+// this is a verbatim copy: the caller's tool_result for a run that has already
+// returned is frozen at the moment that run settled, and a fold must not
+// disturb a single byte of it.
+//
+// Preserving the record is what lets a fold swallow an invocation message at
+// all. The message itself is small — the fold is after the run bodies between
+// them — but the record is the only copy of the pairing between the caller's
+// tool_use and what the run returned, and of which tool owns the session.
+type FoldedRun struct {
+	ToolUseID string          `json:"runToolUseId,omitempty"`
+	ToolName  string          `json:"runToolName,omitempty"`
+	ToolInput json.RawMessage `json:"runToolInput,omitempty"`
+	Status    string          `json:"runStatus,omitempty"`
+	Result    string          `json:"runResult,omitempty"`
 }
 
 // TaskSourceRef identifies the background task whose output produced an injected

@@ -141,9 +141,6 @@ export async function generateToolDefinitions() {
   );
 
   // Strategies filter tools inline via runLoop({ tools: filteredTools })
-  // The return_result tool is NOT added here: the Go worker appends it to the
-  // tool list for every turn that runs inside a thread (strategy.go), so it is
-  // offered exactly when w.thread.itemID != "" — the single source of truth.
   _blockedToolsMap = new Map();
   return tools;
 }

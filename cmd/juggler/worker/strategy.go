@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -84,33 +83,20 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 		wasCancelled := w.loadState() == StateCancelling
 		completedThreadID := w.thread.itemID // capture before clearing
 
-		// Promote a close's text result if its mandated return_result turn
-		// degraded to plain text — writeThreadResult is a no-op for every other
-		// ending. A turn that ended on plain text, or on an error, leaves the
-		// thread OPEN (no result). Run BEFORE clearing state so the Y.Map read
-		// can find the items, and before the close request is cleared below.
-		if completedThreadID != "" && !wasCancelled {
-			w.writeThreadResult(completedThreadID)
-			// A delegated child (spawned by a delegatesToSubthread tool) whose
-			// turn ended without return_result would leave its parent's stamped
-			// tool_use unpaired. Resolve a result so the parent is never stranded:
-			// trailing text, else the tool's onSubthreadError fallback, else a
-			// default. No-op for non-delegated threads and for ones already closed
-			// via return_result. Runs BEFORE state is cleared so the Y.Map read
-			// finds the child's items, and BEFORE signalParentThread so the parent
-			// sees the just-written result and resumes.
-			w.resolveDelegatedThreadResult(completedThreadID)
+		// The run this loop just ran is over: record how it came out. This is
+		// the completion signal a parked caller waits on, and the source of the
+		// tool_result a delegating call is owed, so it runs at EVERY ending —
+		// rest, error and cancellation alike — and never leaves a stamped
+		// tool_use unpaired. Run BEFORE clearing state so the Y.Map read can
+		// find the items.
+		if completedThreadID != "" {
+			w.settleThreadRun(completedThreadID, wasCancelled)
 		}
 
 		w.storeState(StateIdle)
 		w.processingStartedAt = 0
 		w.approvalWaitStartedAt = 0
 		w.lastProgressWriteMs = 0
-		// The close request is turn-scoped: the turn is over, so a later turn on
-		// this thread (a reopen, a follow-up message) is never silently forced.
-		// The awaiting_llm early return above deliberately keeps it — that turn
-		// is still in flight and still owes its close.
-		w.closeRequestThreadID = ""
 		w.resetThreadContext()
 
 		if wasCancelled {
@@ -118,12 +104,10 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 			return
 		}
 
-		// signalParentThread only fires for a child that actually closed (wrote
-		// a result). A child that ended openly — including one that stopped on
-		// an error — has no result, so this no-ops and the conversation rests at
-		// idle. An errored sub-thread therefore never auto-resumes its parent:
-		// the user reviews the error (visible as an error item in the thread) and
-		// resumes the thread or the parent explicitly, which the reducer honours.
+		// signalParentThread fires for a child whose run has settled, whatever it
+		// settled as: the parent asked a question and is owed the answer, and
+		// "the run errored" is an answer it can act on. The child stays exactly
+		// as it is — stopped, summarised or not, and free to run again.
 		if !w.signalParentThread(completedThreadID) {
 			w.sendStatus("idle", "")
 			w.CancelStaleToolActions()
@@ -212,7 +196,7 @@ strategyLoop:
 		}
 
 		// A browser-folded /compact (or /handoff) thread is summarized by the
-		// bounded reducer, not a return_result strategy turn: probe the whole
+		// bounded reducer, not an ordinary strategy turn: probe the whole
 		// transcript once and, on a provider overflow, map/reduce it. This is the
 		// single summarizer, committing through writeBoundedCompactionResult. The
 		// turn ends here; the deferred cleanup drives idle, which collapses the
@@ -291,16 +275,6 @@ strategyLoop:
 			}
 			w.sendError(fmt.Sprintf("Failed to get context/tools: %v", err), "")
 			return
-		}
-
-		// Add return_result tool when running inside a thread
-		if w.thread.itemID != "" {
-			tools = append(tools, ToolDefinition{
-				Name:        "return_result",
-				Category:    "meta",
-				Description: `Return your result to the parent conversation when this thread's task is complete. Put the full summary in the required "result" argument (not "summary" or a plain text reply) — that string is exactly what the parent receives. Make this call your whole response: any text you write alongside it is discarded, so writing the summary twice only costs tokens.`,
-				InputSchema: json.RawMessage(`{"type":"object","properties":{"result":{"type":"string","description":"The summary of what this thread accomplished, returned verbatim to the parent conversation."}},"required":["result"]}`),
-			})
 		}
 
 		// Remember which of this turn's tools may delegate to a subthread, so
@@ -545,7 +519,7 @@ strategyLoop:
 
 // turnProducedAction reports whether the LLM took any concrete step on
 // this turn — emitted assistant text, or called any tool (including sync
-// meta tools like return_result). Pure thinking or a literally empty
+// meta tools like drop_context_items). Pure thinking or a literally empty
 // stream do NOT count; those mark a barren turn.
 func (w *ConversationWorker) turnProducedAction(response *LLMResponse) bool {
 	if hasAssistantText(response) {
@@ -688,7 +662,8 @@ func (w *ConversationWorker) finalizeCancellation(completedThreadID string) {
 	w.sendStatus("idle", "")
 }
 
-// signalParentThread notifies a completed child thread's parent to continue its LLM loop.
+// signalParentThread notifies a child thread's parent that the run it called
+// for has settled, so the parent's LLM loop continues.
 // Returns true if the parent was signaled, false if no signal was needed.
 // Only signals for LLM-created threads (via create_thread tool, llmCreated=true);
 // strategy-created threads are observed directly by the browser.
@@ -701,11 +676,11 @@ func (w *ConversationWorker) signalParentThread(completedThreadID string) bool {
 		return false
 	}
 	ycrdtMu.Lock()
-	result, _ := threadYMap.Get("result").(string)
+	settled := threadRunSettledLocked(threadYMap)
 	llmCreated, _ := threadYMap.Get("llmCreated").(bool)
 	ycrdtMu.Unlock()
 
-	if result == "" || !llmCreated {
+	if !settled || !llmCreated {
 		return false
 	}
 	parentThreadID := w.doc.findParentThreadID(completedThreadID)
@@ -869,18 +844,13 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 	}
 
 	// Categorize and execute tools:
-	//   Meta tools    → no tool-action, execute in worker (return_result, drop_context_items)
+	//   Meta tools    → no tool-action, execute in worker (drop_context_items)
 	//   create_thread → creates thread item, returns immediately (reducer dispatches child)
 	//   Async tools   → tool-action created, browser executes (bash, glob, etc.)
-	// Assistant prose emitted on this same turn — the fallback source for a
-	// return_result call whose argument is empty or mis-named (the model wrote
-	// its summary as text and called the tool with nothing useful).
-	turnText := assistantResponseText(response)
-
 	hasAsyncTools := false
 	for _, block := range toolUseBlocks {
 		if isMetaTool(block.Name) {
-			if err := w.executeMetaTool(block.ID, block.Name, block.Input, turnText); err != nil {
+			if err := w.executeMetaTool(block.ID, block.Name, block.Input); err != nil {
 				w.log.Error("Meta tool execution failed: %v", err)
 			}
 			continue
@@ -900,9 +870,9 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 		}
 
 		// Delegating tool: ask the engine to build a subthread spec. A spec
-		// spawns a delegated child (parked like create_thread — its
-		// return_result becomes this tool_use's result); a null/timeout falls
-		// through to the ordinary client-side tool-action below.
+		// spawns a delegated child (parked like create_thread — the run it
+		// starts becomes this tool_use's result); a null/timeout falls through
+		// to the ordinary client-side tool-action below.
 		if w.tryDelegateTool(block.ID, block.Name, block.Input) {
 			continue
 		}
@@ -918,18 +888,6 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 		// tool-action, rather than relying on the engine to auto-load on an
 		// incidental sync (racy → the "tools stuck" wedge).
 		w.driveToolActions()
-	}
-
-	if !hasAsyncTools {
-		// If return_result was called in a thread, stop the loop.
-		if w.thread.itemID != "" {
-			if ymap := w.doc.GetThreadYMap(w.thread.itemID); ymap != nil {
-				if result, _ := ymap.Get("result").(string); result != "" {
-					return false, nil
-				}
-			}
-		}
-		return true, nil
 	}
 
 	return true, nil
@@ -949,22 +907,6 @@ func (w *ConversationWorker) addToolAction(toolUseID, toolName string, toolInput
 		ProviderData: metadata,
 	}
 	w.insertTargetMessage(w.getTargetItemsLength(), msg)
-}
-
-// assistantResponseText concatenates the text blocks of a response into a
-// single string (blocks joined by newlines), skipping empties. Used as the
-// fallback result for a return_result call that carried no usable argument.
-func assistantResponseText(response *LLMResponse) string {
-	var b strings.Builder
-	for _, block := range response.Blocks {
-		if block.Type == provider.ContentBlockTypeText && block.Content != "" {
-			if b.Len() > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(block.Content)
-		}
-	}
-	return b.String()
 }
 
 // hasAssistantText reports whether the response carries any non-empty text

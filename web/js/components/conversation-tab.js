@@ -9,7 +9,6 @@
 
 import { isThreadMessage } from '../../sdk/lib/message.js';
 import { createMessageThread } from '../model/message-thread.js';
-import { isThreadClosed } from '../model/thread-navigation.js';
 import { ColumnSelectionState } from '../utils/column-selection.js';
 import { isToolGroupingEnabled, TOOL_GROUPING_EVENT } from '../utils/tool-grouping-pref.js';
 import { buildDisplayItems, isGroupId, groupMemberIndices } from '../utils/item-grouping.js';
@@ -437,8 +436,8 @@ class ConversationTab extends HTMLElement {
   //  14. Arrow keys (navigating) → stay navigating
   //  15. Input column changes (not during keyboard navigation)
   //      → focus new input column's textarea.
-  //      Covers thread created, thread closed, and thread deleted —
-  //      all cases where the user's typing target moves.
+  //      Covers a thread being created and a thread being deleted —
+  //      the cases where the user's typing target moves.
   //      Suppressed when _isKeyboardNavigating is true, so arrow-key
   //      navigation through threads never steals focus to a message
   //      box.  The flag is set by _setupKeyboardNavigation around
@@ -1499,7 +1498,7 @@ class ConversationTab extends HTMLElement {
 
       // Rule 15: input column changed → focus new input column's textarea,
       // UNLESS we're inside keyboard navigation (arrow keys selecting items).
-      // Covers thread created, closed (LLM exit / result set), and deleted.
+      // Covers a thread being created and a thread being deleted.
       // Suppressed during keyboard nav so arrow-keying onto a sub-thread
       // doesn't steal focus from item navigation.
       const newInputCol = this._deepestInputColumn();
@@ -1730,49 +1729,33 @@ class ConversationTab extends HTMLElement {
    * @private
    */
   _applyInputVisibility(chain, newColumns) {
-    // Hide the composer-box on closed sub-thread columns and on group columns;
-    // every open thread (root included) keeps its own box. A closed column shows
-    // a "reopen closed thread" affordance in the box's slot instead — driven off
-    // this same attribute (see the `conversation-area[data-hide-input]
-    // :not([data-group-column]) reopen-box` rule), so data-hide-input means
-    // "this column has no composer" and data-group-column distinguishes the two
-    // reasons.
-    //
-    // "Closed" is isThreadClosed (result set AND nothing awaiting approval),
-    // NOT just "has a result" — a sub-thread parked on your approval is still
-    // active even when a stale "interrupted" result sits on it from a reload,
-    // so its column must keep the composer. Same rule the tile-status colour
-    // uses; both go through the one predicate so the composer and the orange
-    // highlight never disagree.
+    // Every thread column keeps its composer; only a group column hides one, so
+    // data-hide-input and data-group-column always agree. A thread is running
+    // or it is stopped, and a stopped thread — including one carrying a summary
+    // from an earlier run — accepts a message and runs again, so there is no
+    // thread state in which a column should refuse input.
     for (let i = chain.length - 1; i >= 0; i--) {
       const col = newColumns[i];
       if (!col || col.tagName !== 'CONVERSATION-AREA') continue;
       // A group column is a lens on the column to its left, not a place to
-      // type: the parent keeps the one composer for that thread. It's marked
-      // separately from a closed thread so it gets no reopen affordance either
-      // (see the `[data-hide-input]:not([data-group-column])` CSS rule).
+      // type: the parent keeps the one composer for that thread.
       if (chain[i].groupId) {
         col.setAttribute('data-group-column', '');
         col.setAttribute('data-hide-input', '');
         continue;
       }
       col.removeAttribute('data-group-column');
-      const isClosed = i > 0 && isThreadClosed(chain[i].threadYMap);
-      if (isClosed) {
-        col.setAttribute('data-hide-input', '');
-      } else {
-        // Re-measure the textarea ONLY on the hidden→visible transition: a
-        // textarea inside a display:none box reads scrollHeight 0, so it must
-        // be re-sized once revealed. Gated to the actual transition because a
-        // visible box is already correctly sized, and re-running on every
-        // rebuild (e.g. arrow-key item navigation) is wasted work.
-        const wasHidden = col.hasAttribute('data-hide-input');
-        col.removeAttribute('data-hide-input');
-        if (wasHidden) {
-          const composer = col.querySelector('composer-box');
-          const textarea = composer?.querySelector('textarea');
-          if (textarea) /** @type {any} */ (composer).autoResize(textarea);
-        }
+      // Re-measure the textarea ONLY on the hidden→visible transition: a
+      // textarea inside a display:none box reads scrollHeight 0, so it must
+      // be re-sized once revealed. Gated to the actual transition because a
+      // visible box is already correctly sized, and re-running on every
+      // rebuild (e.g. arrow-key item navigation) is wasted work.
+      const wasHidden = col.hasAttribute('data-hide-input');
+      col.removeAttribute('data-hide-input');
+      if (wasHidden) {
+        const composer = col.querySelector('composer-box');
+        const textarea = composer?.querySelector('textarea');
+        if (textarea) /** @type {any} */ (composer).autoResize(textarea);
       }
     }
   }

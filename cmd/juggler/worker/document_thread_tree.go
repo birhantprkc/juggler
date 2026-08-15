@@ -8,10 +8,18 @@ import (
 	ycrdt "github.com/skyterra/y-crdt"
 )
 
-// walkThreads visits every thread Y.Map in arr, depth-first. The visitor receives
-// the thread Y.Map, its nested "items" Y.Array (may be nil), and the itemId of
-// the enclosing parent thread ("" at root level). Return true to stop early.
-// walkThreads itself returns true if walking was stopped early by the visitor.
+// walkThreads visits every thread CONTAINER Y.Map in arr, depth-first. The
+// visitor receives the thread Y.Map, its nested "items" Y.Array (may be nil),
+// and the itemId of the enclosing parent thread ("" at root level). Return true
+// to stop early. walkThreads itself returns true if walking was stopped early by
+// the visitor.
+//
+// An alias item is skipped: it is a second view of a thread standing earlier in
+// the same array, not a container of its own. Every question this walk answers —
+// which array holds a thread, how deep it is nested, how many are in flight — is
+// a question about containers, and an alias holds no transcript to answer with.
+// walkAllItems still visits aliases; they are items, and id lookups must find
+// them.
 func walkThreads(arr *ycrdt.YArray, visit func(m *ycrdt.YMap, nested *ycrdt.YArray, parentThreadID string) bool) bool {
 	return walkThreadsWithParent(arr, "", visit)
 }
@@ -26,6 +34,9 @@ func walkThreadsWithParent(arr *ycrdt.YArray, parentID string, visit func(m *ycr
 			continue
 		}
 		if itemType, _ := m.Get("type").(string); itemType != ItemTypeThread {
+			continue
+		}
+		if aliasOf, _ := m.Get("aliasOf").(string); aliasOf != "" {
 			continue
 		}
 		nested, _ := m.Get("items").(*ycrdt.YArray)
@@ -137,12 +148,12 @@ func (cd *ConversationDocument) threadDepth(threadItemID string) int {
 }
 
 // liveThreadCount returns how many create_thread-spawned threads anywhere in the
-// document are still in flight — llmCreated and not yet carrying a result. Walks
-// the whole tree under one lock (mirrors threadDepth). Where threadDepth bounds
-// nesting along a single chain, this counts fan-out across the whole tree, so
-// executeCreateThread can stop a model that keeps decomposing work into fresh
-// subthreads without ever deepening the chain. Counts only in-flight children,
-// so it self-heals as they return_result — it never permanently disables
+// document are still in flight — llmCreated, with a run that has not settled.
+// Walks the whole tree under one lock (mirrors threadDepth). Where threadDepth
+// bounds nesting along a single chain, this counts fan-out across the whole
+// tree, so executeCreateThread can stop a model that keeps decomposing work into
+// fresh subthreads without ever deepening the chain. Counts only in-flight
+// children, so it self-heals as they settle — it never permanently disables
 // create_thread the way a monotonic lifetime counter would.
 func (cd *ConversationDocument) liveThreadCount() int {
 	ycrdtMu.Lock()
@@ -150,8 +161,7 @@ func (cd *ConversationDocument) liveThreadCount() int {
 	n := 0
 	walkThreads(cd.getItems(), func(m *ycrdt.YMap, _ *ycrdt.YArray, _ string) bool {
 		llmCreated, _ := m.Get("llmCreated").(bool)
-		result, _ := m.Get("result").(string)
-		if llmCreated && result == "" {
+		if llmCreated && !threadRunSettledLocked(m) {
 			n++
 		}
 		return false

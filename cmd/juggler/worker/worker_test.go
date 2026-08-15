@@ -1122,18 +1122,18 @@ func TestInitPreservesAwaitingLLMForPendingTool(t *testing.T) {
 	w.doc.Destroy()
 }
 
-// TestInitLeavesResultlessThreadOpen verifies that a thread with no result
-// survives a reload / server restart as OPEN. Under the new model a resultless
-// thread is the normal open resting state (a thread closes only on an explicit
-// return_result call or a hard error), so the load path must NOT stamp any
-// result on it — the old "Thread was interrupted" crash-repair is gone.
-func TestInitLeavesResultlessThreadOpen(t *testing.T) {
+// TestInitLeavesUnsummarisedThreadAlone verifies that a thread carrying no
+// summary survives a reload / server restart untouched. A thread with no
+// summary is an ordinary resting state — a thread is running or stopped — so
+// the load path must NOT stamp a result on it, as the old "Thread was
+// interrupted" crash-repair did.
+func TestInitLeavesUnsummarisedThreadAlone(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 
 	w.doc.AppendMessage(ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "Hello"})
 	threadArr := w.doc.InsertThread(1, "Open thread")
-	// A thread that ended its turn on plain assistant text — open, no result,
-	// no live tool. This is exactly the state the old repair used to "close".
+	// A thread that ended its turn on plain assistant text: stopped, carrying no
+	// summary, with no live tool. This is the state the old repair stamped.
 	w.doc.InsertMessageIntoArray(threadArr, 0, ConversationItem{
 		Type:    ItemTypeAssistant,
 		ItemID:  "a-1",
@@ -1178,7 +1178,7 @@ func TestInitLeavesResultlessThreadOpen(t *testing.T) {
 		t.Fatal("thread Y.Map not found after init")
 	}
 	if result, _ := threadYMap.Get("result").(string); result != "" {
-		t.Errorf("resultless thread was closed on reload (result=%q) — an open thread must survive a restart as open", result)
+		t.Errorf("a summary was stamped on reload (result=%q) — a stopped thread must survive a restart unchanged", result)
 	}
 
 	w.doc.Destroy()
@@ -1941,21 +1941,20 @@ func TestStrategyLoopExitCleansUpToolActions(t *testing.T) {
 	w.doc.Destroy()
 }
 
-// TestThreadWithoutReturnResultStaysOpen verifies that when a thread's LLM
-// responds with text and end_turn WITHOUT calling return_result, the thread
-// stays OPEN (no result on its Y.Map) rather than auto-closing on the trailing
-// assistant text. A thread closes only on an explicit return_result call (or a
-// hard error). Exercises the full production path: LLM calls create_thread →
-// executeCreateThread → nested strategy loop → loop ends → thread left open.
-func TestThreadWithoutReturnResultStaysOpen(t *testing.T) {
+// TestThreadRunSettlesOnTrailingText verifies the return contract: a run's
+// answer is the assistant message it comes to rest on. The child here replies
+// and calls nothing; that reply settles the run, becomes the thread's summary,
+// and returns to the parent, which carries on. Exercises the full production
+// path: LLM calls create_thread → executeCreateThread → nested strategy loop →
+// loop ends → settle → parent resumes.
+func TestThreadRunSettlesOnTrailingText(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	w.storeState(StateProcessing)
 
 	// Mock responses:
 	// 1. Parent LLM calls create_thread tool
-	// 2. Thread LLM responds with text + end_turn (no return_result) → open
-	// The parent is NOT resumed (the open child never signals it), so no
-	// parent-turn-2 mock is needed.
+	// 2. Thread LLM responds with text + end_turn — the run's answer
+	// 3. Parent continuation, which only runs because the child returned
 	w.setMockResponses([]MockResponse{
 		// Parent turn 1: calls create_thread
 		{
@@ -1964,17 +1963,24 @@ func TestThreadWithoutReturnResultStaysOpen(t *testing.T) {
 			},
 			StopReason: "tool_use",
 		},
-		// Thread turn: responds with text, no return_result → thread stays open
+		// Thread turn: plain text, no tool call.
 		{
 			Blocks: []LLMResponseBlock{
 				{Type: "text", Content: "I completed the task successfully."},
 			},
 			StopReason: "end_turn",
 		},
+		// Parent turn 2: runs once the child's run settles.
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: "text", Content: "Thanks, noted."},
+			},
+			StopReason: "end_turn",
+		},
 	})
 
-	// Feed context and tools results for the two LLM iterations:
-	// parent turn 1 and the thread turn.
+	// Feed context and tools results for the three LLM iterations:
+	// parent turn 1, the thread turn, and the parent's continuation.
 	go func() {
 		ctxResponse, _ := json.Marshal(map[string]any{
 			"type":         "render-context-items-result",
@@ -1986,7 +1992,7 @@ func TestThreadWithoutReturnResultStaysOpen(t *testing.T) {
 			"tools": []any{},
 		})
 
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 3; i++ {
 			w.contextResultChan <- ctxResponse
 			w.toolsResultChan <- toolsResponse
 		}
@@ -1995,26 +2001,34 @@ func TestThreadWithoutReturnResultStaysOpen(t *testing.T) {
 	// Run the strategy loop as production does — starts from a user message
 	w.runStrategyLoop("Hello", false)
 
-	// Find the thread item and verify it has NO result (stays open).
 	items := w.doc.GetItems()
-	threadFound := false
-	var threadResult string
+	var threadItem ConversationItem
 	for _, item := range items {
 		if item.Type == ItemTypeThread {
-			threadFound = true
-			threadYMap := w.doc.GetThreadYMap(item.ItemID)
-			if threadYMap != nil {
-				threadResult, _ = threadYMap.Get("result").(string)
-			}
+			threadItem = item
 			break
 		}
 	}
-
-	if !threadFound {
+	if threadItem.ItemID == "" {
 		t.Fatal("no thread item found — create_thread did not insert a thread")
 	}
-	if threadResult != "" {
-		t.Errorf("thread result = %q, want empty — a thread ending in plain assistant text must stay OPEN, not auto-close", threadResult)
+	if !threadRunSettled(threadItem) {
+		t.Errorf("a run that ended on assistant text must be settled")
+	}
+	threadResult, _ := w.doc.GetThreadYMap(threadItem.ItemID).Get("result").(string)
+	if threadResult != "I completed the task successfully." {
+		t.Errorf("thread result = %q, want the reply the run rested on", threadResult)
+	}
+
+	// The parent got its answer back and carried on.
+	var continued bool
+	for _, item := range items {
+		if item.Type == ItemTypeAssistant && strings.Contains(item.Content, "Thanks, noted.") {
+			continued = true
+		}
+	}
+	if !continued {
+		t.Errorf("parent must resume once the child's run settles; items=%+v", items)
 	}
 
 	w.doc.Destroy()
@@ -2037,12 +2051,12 @@ func TestCreateThreadInjectsToolUseInParentMessages(t *testing.T) {
 			},
 			StopReason: "tool_use",
 		},
-		// Child thread: closes via return_result (threads no longer auto-close on text)
+		// Child thread: its trailing assistant text is what the run returns.
 		{
 			Blocks: []LLMResponseBlock{
-				{Type: "tool_use", ID: "tu-ret-1", Name: "return_result", Input: json.RawMessage(`{"result":"Task completed successfully."}`)},
+				{Type: "text", Content: "Task completed successfully."},
 			},
-			StopReason: "tool_use",
+			StopReason: "end_turn",
 		},
 		// Parent continuation
 		{
@@ -2590,14 +2604,12 @@ func TestBrowserCreateThreadUsesRequestedParentThread(t *testing.T) {
 	})
 
 	w.setMockResponses([]MockResponse{
-		// Continuation child: emits its assistant output AND closes via
-		// return_result in the same turn (threads no longer auto-close on text).
+		// Continuation child: the run settles on its trailing assistant text.
 		{
 			Blocks: []LLMResponseBlock{
 				{Type: "text", Content: "Child completed."},
-				{Type: "tool_use", ID: "tu-ret-1", Name: "return_result", Input: json.RawMessage(`{"result":"Child completed."}`)},
 			},
-			StopReason: "tool_use",
+			StopReason: "end_turn",
 		},
 	})
 
@@ -2674,15 +2686,13 @@ func TestBrowserCreateThreadUsesRequestedParentThread(t *testing.T) {
 	w.doc.Destroy()
 }
 
-// TestThreadErrorLeavesThreadOpenNotResumeParent pins the contract that a
-// sub-thread which stops on an error stays OPEN and resumable — the worker
-// never fabricates a failure result on the thread's behalf. An error is just
-// an item in the thread's history, identical to a turn that ended on plain
-// assistant text: the thread carries no result, the conversation goes idle,
-// and the parent is NOT auto-resumed. The user reviews the error (visible as
-// an error item) and resumes the thread or closes it explicitly; the thread
-// itself may later call return_result to report the error as its result.
-func TestThreadErrorLeavesThreadOpenNotResumeParent(t *testing.T) {
+// TestThreadErrorReturnsToParent pins what an errored run owes its caller. The
+// parent asked a question and is owed an answer; "the run stopped on this
+// error" is an answer it can act on, so the run settles as an error carrying
+// that text and the parent resumes. Nothing is fabricated on the thread's
+// behalf: the error is an item in its history, it carries no summary, and it
+// stays exactly as resumable as any other stopped thread.
+func TestThreadErrorReturnsToParent(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	w.storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
@@ -2695,10 +2705,8 @@ func TestThreadErrorLeavesThreadOpenNotResumeParent(t *testing.T) {
 	})
 
 	// Mock: parent calls create_thread, the thread's LLM call fails (simulated
-	// transient network error). A THIRD response is supplied to prove the parent
-	// is NOT auto-resumed: if the broken behaviour returns (the defer signals the
-	// parent after an errored child), the parent would consume this turn and emit
-	// "Continuing after thread." — which the assertions below forbid.
+	// dropped connection), and the parent's continuation turn runs on the error
+	// it gets back.
 	w.setMockResponses([]MockResponse{
 		// Parent turn 1: calls create_thread
 		{
@@ -2711,7 +2719,7 @@ func TestThreadErrorLeavesThreadOpenNotResumeParent(t *testing.T) {
 		{
 			Error: "connection reset by peer",
 		},
-		// Parent turn 2: must NEVER run — an errored child does not resume parent.
+		// Parent turn 2: runs on the error the child returned.
 		{
 			Blocks: []LLMResponseBlock{
 				{Type: "text", Content: "Continuing after thread."},
@@ -2749,9 +2757,8 @@ func TestThreadErrorLeavesThreadOpenNotResumeParent(t *testing.T) {
 		t.Error("thread.itemsArray should be nil after thread error")
 	}
 
-	// 2. The thread must stay OPEN — no result was fabricated. The worker
-	//    never stamps an error as the thread's result; the thread closes only
-	//    via return_result or the user's explicit footer close.
+	// 2. No summary was fabricated. A failure is not a result: the worker never
+	//    passes one off as the thread's summary.
 	items := w.doc.GetItems()
 	var threadItemID string
 	for _, item := range items {
@@ -2768,12 +2775,11 @@ func TestThreadErrorLeavesThreadOpenNotResumeParent(t *testing.T) {
 		t.Fatal("expected thread Y.Map")
 	}
 	if result, _ := threadYMap.Get("result").(string); result != "" {
-		t.Errorf("errored thread must stay open (no result), but result was stamped: %q", result)
+		t.Errorf("an errored run must not summarise the thread, but result was stamped: %q", result)
 	}
 
-	// 3. The error must be visible in the thread's history as an error item —
-	//    not hidden inside a fabricated result string. This is exactly the
-	//    state the user can review and resume from.
+	// 3. The error must be visible in the thread's history as an error item.
+	//    This is exactly the state the user can review and resume from.
 	threadArr := w.doc.GetThreadItemsArray(threadItemID)
 	if threadArr == nil {
 		t.Fatal("expected thread items array")
@@ -2800,15 +2806,27 @@ func TestThreadErrorLeavesThreadOpenNotResumeParent(t *testing.T) {
 		t.Errorf("activity should be cleared (idle) after a child thread error, got %q", act)
 	}
 
-	// 6. The PARENT must NOT have auto-resumed. An errored sub-thread stops the
-	//    whole conversation; bubbling the error up and silently continuing the
-	//    parent is the bug this test guards against. The root thread therefore
-	//    has no assistant turn after the thread item, and the parent-turn-2 mock
-	//    was never consumed.
-	for _, item := range items {
+	// 6. The run settled as an error carrying the provider's own words, and the
+	//    parent resumed on them. A run that never settles is a parent parked
+	//    forever on a child that has already stopped.
+	var status, runResult string
+	ycrdtMu.Lock()
+	status, runResult = latestRunOutcomeLocked(findThreadYMap(w.doc.getItems(), threadItemID))
+	ycrdtMu.Unlock()
+	if status != runStatusError {
+		t.Errorf("run status = %q, want %q", status, runStatusError)
+	}
+	if !strings.Contains(runResult, "connection reset by peer") {
+		t.Errorf("run result = %q, want the provider error text", runResult)
+	}
+	var resumed bool
+	for _, item := range w.doc.GetItems() {
 		if item.Type == ItemTypeAssistant && strings.Contains(item.Content, "Continuing after thread.") {
-			t.Errorf("parent auto-resumed after a child thread error — found assistant continuation %q; the conversation should have stopped", item.Content)
+			resumed = true
 		}
+	}
+	if !resumed {
+		t.Errorf("parent must resume on the error its child returned; items=%+v", w.doc.GetItems())
 	}
 
 	w.doc.Destroy()
@@ -2835,7 +2853,7 @@ type threadOpts struct {
 	// boundedCompaction, if set, marks the thread as a browser /compact fold: it
 	// carries the boundedCompaction flag and a compactionPromptItemId pointing at
 	// an appended summarization-prompt item, so the worker summarizes it with the
-	// bounded reducer instead of a return_result strategy turn.
+	// bounded reducer instead of an ordinary strategy turn.
 	boundedCompaction bool
 }
 
@@ -2902,12 +2920,13 @@ func insertThreadWithOpts(w *ConversationWorker, opts threadOpts) string {
 
 // TestBuildLLMRequest_ForcedToolChoice verifies the generic forced-tool
 // mechanism at the worker boundary: a thread carrying a `forceTool` Yjs field
-// (set by a plugin, e.g. /compact forcing return_result) makes buildLLMRequest
-// emit a provider-agnostic toolChoice on the request. A thread WITHOUT the
-// field emits no toolChoice (the model decides — the normal case).
+// (set by a plugin) makes buildLLMRequest emit a provider-agnostic toolChoice on
+// the request. A thread WITHOUT the field emits no toolChoice (the model
+// decides — the normal case), and neither does a close request: a summarise turn
+// is an ordinary turn whose trailing text becomes the summary.
 func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 	tools := []ToolDefinition{
-		{Name: "return_result", Description: "Return result", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "submit_answer", Description: "Submit the answer", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	ctxResult := &ContextResult{SystemPrompt: "sys"}
 
@@ -2915,7 +2934,7 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		w := NewConversationWorker("test-conv", "user:test")
 		defer w.doc.Destroy()
 		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-		threadID := insertThreadWithOpts(w, threadOpts{goal: "Compact", forceTool: "return_result"})
+		threadID := insertThreadWithOpts(w, threadOpts{goal: "Forced", forceTool: "submit_answer"})
 		w.thread.itemID = threadID
 
 		raw := w.buildLLMRequest(ctxResult, tools, "txn-1", false)
@@ -2927,8 +2946,8 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected toolChoice object on forced request, got %v (keys: %v)", req["toolChoice"], req)
 		}
-		if tc["mode"] != "tool" || tc["name"] != "return_result" {
-			t.Errorf("toolChoice = %v, want {mode:tool, name:return_result}", tc)
+		if tc["mode"] != "tool" || tc["name"] != "submit_answer" {
+			t.Errorf("toolChoice = %v, want {mode:tool, name:submit_answer}", tc)
 		}
 	})
 
@@ -2949,96 +2968,54 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		}
 	})
 
-	// A close (/close, the footer's summarise action) forces return_result for
-	// that ONE turn without writing the sticky field, so the close is a
-	// mechanism rather than a request the model may answer with prose.
-	t.Run("close request forces without the sticky field", func(t *testing.T) {
-		w := NewConversationWorker("test-conv", "user:test")
-		defer w.doc.Destroy()
-		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-		threadID := insertThreadWithOpts(w, threadOpts{goal: "Work"})
-		w.thread.itemID = threadID
-		w.closeRequestThreadID = threadID
-
-		raw := w.buildLLMRequest(ctxResult, tools, "txn-3", false)
-		var req map[string]any
-		if err := json.Unmarshal(raw, &req); err != nil {
-			t.Fatalf("unmarshal request: %v", err)
-		}
-		tc, ok := req["toolChoice"].(map[string]any)
-		if !ok || tc["mode"] != "tool" || tc["name"] != "return_result" {
-			t.Fatalf("close-request toolChoice = %v, want {mode:tool, name:return_result}", req["toolChoice"])
-		}
-		if ymap := w.doc.GetThreadYMap(threadID); ymap != nil {
-			if ft, _ := ymap.Get("forceTool").(string); ft != "" {
-				t.Fatalf("close request wrote forceTool=%q; it must stay turn-scoped", ft)
-			}
-		}
-	})
-
-	// The arming is scoped to the thread that asked to close: a close request on
-	// one thread must never force another thread's turn.
-	t.Run("close request does not leak to another thread", func(t *testing.T) {
-		w := NewConversationWorker("test-conv", "user:test")
-		defer w.doc.Destroy()
-		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-		closing := insertThreadWithOpts(w, threadOpts{goal: "Closing"})
-		other := insertThreadWithOpts(w, threadOpts{goal: "Other"})
-		w.thread.itemID = other
-		w.closeRequestThreadID = closing
-
-		raw := w.buildLLMRequest(ctxResult, tools, "txn-4", false)
-		var req map[string]any
-		if err := json.Unmarshal(raw, &req); err != nil {
-			t.Fatalf("unmarshal request: %v", err)
-		}
-		if _, present := req["toolChoice"]; present {
-			t.Errorf("another thread's turn was forced by a close request: %v", req["toolChoice"])
-		}
-	})
 }
 
-// TestCloseRequestPromotesTrailingTextResult pins the other half of the close
-// mechanism: a provider that ignores the forced tool_choice answers the close in
-// plain text, and that trailing text is promoted as the thread result. Without
-// it the close silently does nothing — the thread stays open with a summary
-// sitting in the transcript. An identical turn WITHOUT a close request leaves
-// the thread open, which is its normal resting state.
-func TestCloseRequestPromotesTrailingTextResult(t *testing.T) {
-	newThreadWithReply := func(t *testing.T, w *ConversationWorker) string {
-		t.Helper()
-		threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", userMessage: "do it"})
-		w.thread.itemID = threadID
-		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+// TestSettledRunSummarisesThread pins who owns the thread's summary: the run
+// that comes to rest, and nothing else. The summary is the last thing the
+// thread said, so it needs no author and no protection — a later run simply
+// says something later.
+func TestSettledRunSummarisesThread(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", userMessage: "do it"})
+	w.thread.itemID = threadID
+	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	reply := func(text string) {
 		w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
-			Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "Did the work, here is the summary.",
+			Type: ItemTypeAssistant, ItemID: generateItemID(), Content: text,
 		})
-		return threadID
 	}
 
-	t.Run("close request promotes", func(t *testing.T) {
-		w := NewConversationWorker("test-conv", "user:test")
-		defer w.doc.Destroy()
-		threadID := newThreadWithReply(t, w)
-		w.closeRequestThreadID = threadID
+	reply("Did the work, here is the summary.")
+	w.settleThreadRun(threadID, false)
+	ymap := w.doc.GetThreadYMap(threadID)
+	if result, _ := ymap.Get("result").(string); result != "Did the work, here is the summary." {
+		t.Fatalf("thread result = %q, want the trailing reply", result)
+	}
 
-		w.writeThreadResult(threadID)
-		result, _ := w.doc.GetThreadYMap(threadID).Get("result").(string)
-		if result != "Did the work, here is the summary." {
-			t.Fatalf("thread result = %q, want the trailing reply promoted", result)
-		}
+	// Run again: the newer reply is the summary.
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type: ItemTypeUser, ItemID: generateItemID(), Content: "one more thing",
 	})
+	reply("Did the extra thing.")
+	w.settleThreadRun(threadID, false)
+	if result, _ := ymap.Get("result").(string); result != "Did the extra thing." {
+		t.Fatalf("thread result = %q, want the latest run's reply", result)
+	}
 
-	t.Run("ordinary turn leaves the thread open", func(t *testing.T) {
-		w := NewConversationWorker("test-conv", "user:test")
-		defer w.doc.Destroy()
-		threadID := newThreadWithReply(t, w)
-
-		w.writeThreadResult(threadID)
-		if result, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); result != "" {
-			t.Fatalf("thread result = %q, want an open thread", result)
-		}
+	// A run that did not come to rest returns its outcome to the caller and
+	// leaves the summary standing rather than passing failure off as a result.
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type: ItemTypeUser, ItemID: generateItemID(), Content: "and again",
 	})
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type: ItemTypeError, ItemID: generateItemID(), Content: "invalid request: bad model",
+	})
+	w.settleThreadRun(threadID, false)
+	if result, _ := ymap.Get("result").(string); result != "Did the extra thing." {
+		t.Fatalf("thread result = %q, want the last real answer left alone", result)
+	}
 }
 
 // TestFilterToolsForThread verifies the per-thread canSpawnThreads capability
@@ -3198,9 +3175,9 @@ func TestCheckForNewThreads_ProcessesNeedsStrategyRun(t *testing.T) {
 	w.setMockResponses([]MockResponse{
 		{
 			Blocks: []LLMResponseBlock{
-				{Type: "tool_use", ID: "tu-compact", Name: "return_result", Input: json.RawMessage(`{"result":"Summary of conversation"}`)},
+				{Type: "text", Content: "Summary of conversation"},
 			},
-			StopReason: "tool_use",
+			StopReason: "end_turn",
 		},
 	})
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
@@ -3250,7 +3227,7 @@ func TestCheckForNewThreads_ProcessesNeedsStrategyRun(t *testing.T) {
 
 // TestCompactionSubthread_DrainsRootQueueOnCompletion reproduces the /compact
 // orphaned-queue bug: a needsStrategyRun sub-thread (exactly what /compact
-// inserts — noAutoSelect + forceTool return_result) runs to completion while the
+// inserts, noAutoSelect and all) runs to completion while the
 // user has queued a follow-up at the ROOT. Because the sub-thread's loop is
 // scoped to its own thread, its end-of-run drain only ever checks the sub-
 // thread's own queue, and signalParentThread declines to re-drive the parent
@@ -3446,9 +3423,9 @@ func TestCheckForNewThreads_SkipsCompletedThreads(t *testing.T) {
 	w.setMockResponses([]MockResponse{
 		{
 			Blocks: []LLMResponseBlock{
-				{Type: "tool_use", ID: "tu-compact", Name: "return_result", Input: json.RawMessage(`{"result":"First run"}`)},
+				{Type: "text", Content: "First run"},
 			},
-			StopReason: "tool_use",
+			StopReason: "end_turn",
 		},
 	})
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})

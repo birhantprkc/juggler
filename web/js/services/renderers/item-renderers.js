@@ -36,6 +36,7 @@ import { createImageThumb } from '../../utils/image-lightbox.js';
 import { renderTaskDeliveryControl } from '../../../sdk/lib/task-delivery-control.js';
 import apiService from '../../services/api.js';
 import { plain, yGet } from '../../model/item-accessor.js';
+import { itemGoal } from '../../model/thread-alias.js';
 
 /**
  * Normalise a Yjs Y.Map result (or already-plain object) to a plain JS object.
@@ -648,13 +649,15 @@ export function renderThread(host, container, message) {
     message.get('timestamp') || undefined
   );
 
-  const goal = message.get('goal') || '';
+  // The goal this item's own call named — the panel describes the call it was
+  // opened from, like the tile does.
+  const goal = itemGoal(message);
   if (goal) panelHelpers.addSubsection(wrapper, 'Goal', goal, 'properties-panel-text');
 
   const body = document.createElement('properties-panel-body');
   // Wrap the summary so the standard hover-reveal copy button can float over it.
-  // The button is only meaningful once the thread is closed and an actual
-  // summary is shown (not a live status block), so paint() toggles its header.
+  // The button is only meaningful once an actual summary is shown (not a live
+  // status block), so paint() toggles its header.
   const copyable = document.createElement('div');
   copyable.className = 'properties-panel-copyable';
   const copyHeader = document.createElement('div');
@@ -677,7 +680,9 @@ export function renderThread(host, container, message) {
     }
     const status = getThreadStatus(message, live);
     paintThreadSummary(summary, text, { status });
-    copyHeader.style.display = status.kind === 'closed' ? '' : 'none';
+    // The copy affordance belongs to the summary surface, so it appears exactly
+    // when paintThreadSummary paints one.
+    copyHeader.style.display = status.showSummary ? '' : 'none';
   };
   paint();
   host._liveUpdater = () => { paint(); return true; };

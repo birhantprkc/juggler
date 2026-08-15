@@ -237,33 +237,6 @@ export function runningToolsInTree(items) {
 }
 
 /**
- * Whether a thread is "closed" (genuinely finished) for navigation/display.
- *
- * A thread is closed when it has a non-empty `result` AND nothing in its
- * subtree is still live (no non-terminal tool-action). The live signal
- * overrides the result: a thread mid-tool-use — pending approval, approved, or
- * running — is still active, even if a stale `result` sits on it (e.g. the
- * "Thread was interrupted" sentinel the crash-repair stamps on every resultless
- * thread on reload, including ones that are in fact just waiting/working).
- * Deriving "closed" from live tool state, never from the persisted `result`
- * alone, keeps the composer from bouncing parent↔child as the tool cycles
- * pending→running.
- *
- * This is the single source of truth for "is this thread done" — every consumer
- * that treats `result` as "finished" (tile status, composer-box placement, footer
- * Reopen/Continue, …) goes through here so they agree. The "still has live work
- * inside" property is derived at point of use, never written into the model.
- * @param {any} threadYMap - The thread Y.Map.
- * @returns {boolean} True if the thread is genuinely finished.
- */
-export function isThreadClosed(threadYMap) {
-  if (!threadYMap || typeof threadYMap.get !== 'function') return false;
-  const result = threadYMap.get('result');
-  if (typeof result !== 'string' || result.length === 0) return false;
-  return !hasUnsettledToolInTree(threadYMap.get('items'));
-}
-
-/**
  * Find an item by itemId, searching recursively through nested threads.
  * @param {Array<*>} items - Items to search
  * @param {string} id - Item ID to find

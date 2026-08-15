@@ -322,6 +322,13 @@ func yMapToConversationItem(m *ycrdt.YMap) ConversationItem {
 		BoundedCompaction:      yMapBool(m, "boundedCompaction"),
 		CompactionPromptItemID: yMapString(m, "compactionPromptItemId"),
 		ContextSeeded:          yMapBool(m, "contextSeeded"),
+		SessionName:            yMapString(m, "sessionName"),
+		AliasOf:                yMapString(m, "aliasOf"),
+		RunToolUseID:           yMapString(m, "runToolUseId"),
+		RunToolName:            yMapString(m, "runToolName"),
+		RunToolInput:           yMapRawJSON(m, "runToolInput"),
+		RunStatus:              yMapString(m, "runStatus"),
+		RunResult:              yMapString(m, "runResult"),
 
 		PreventUserDeletion: yMapBool(m, "preventUserDeletion"),
 		IsNew:               yMapBool(m, "isNew"),
@@ -345,6 +352,13 @@ func yMapToConversationItem(m *ycrdt.YMap) ConversationItem {
 		var atts []AssetRef
 		if json.Unmarshal(raw, &atts) == nil {
 			item.Attachments = atts
+		}
+	}
+
+	if raw := yMapRawJSON(m, "foldedRuns"); raw != nil {
+		var runs []FoldedRun
+		if json.Unmarshal(raw, &runs) == nil {
+			item.FoldedRuns = runs
 		}
 	}
 

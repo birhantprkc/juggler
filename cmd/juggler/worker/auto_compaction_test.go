@@ -256,12 +256,14 @@ func TestFoldConversationForCompactionBuildsUnsummarizedThread(t *testing.T) {
 	needsRun, _ := ymap.Get("needsStrategyRun").(bool)
 	noAutoSelect, _ := ymap.Get("noAutoSelect").(bool)
 	noContextSeed, _ := ymap.Get("noContextSeed").(bool)
-	forceTool, _ := ymap.Get("forceTool").(string)
+	bounded, _ := ymap.Get("boundedCompaction").(bool)
 	result, _ := ymap.Get("result").(string)
 	ycrdtMu.Unlock()
-	if !needsRun || !noAutoSelect || !noContextSeed || forceTool != "return_result" {
-		t.Fatalf("fold thread control flags wrong: needsRun=%v noAutoSelect=%v noContextSeed=%v forceTool=%q",
-			needsRun, noAutoSelect, noContextSeed, forceTool)
+	// boundedCompaction is the sole signal isBoundedCompactionThread reads, so
+	// it is asserted on the Y.Map and not just on the serialised item.
+	if !needsRun || !noAutoSelect || !noContextSeed || !bounded {
+		t.Fatalf("fold thread control flags wrong: needsRun=%v noAutoSelect=%v noContextSeed=%v boundedCompaction=%v",
+			needsRun, noAutoSelect, noContextSeed, bounded)
 	}
 	if result != "" {
 		t.Fatalf("fold thread should be UNSUMMARIZED (no result), got %q", result)

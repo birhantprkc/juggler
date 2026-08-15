@@ -81,6 +81,28 @@ All items may optionally carry:
 | Key | Type | Notes |
 |---|---|---|
 | `content` | string | The user's typed text. |
+| `runToolUseId` | string | Optional. Present on an **invocation message**: a user item appended by a parent's tool call (`create_thread`, or a `delegatesToSubthread` tool) to start one run of this thread. The parent's tool-use id, which `buildMessages` pairs its `tool_result` against. |
+| `runToolName` | string | The tool the parent called. |
+| `runToolInput` | object | That call's input, replayed verbatim in the parent's `tool_use` block. |
+| `runStatus` | `'rest' \| 'error' \| 'cancelled' \| 'barren'` | How the run this message belongs to settled; absent while it is still going. This is the completion signal every decider reads — a parent parked on a child, the reducer's next action, the tile's busy state. A thread whose transcript carries no run record at all falls back to `result`, which is all a document written before run records recorded. Stamped on every user item the run gathered, not only the one that started it: a message typed while the run is in flight is absorbed into it, and liveness is read off the thread's TRAILING user item while the caller's pairing is read off the invocation message. |
+| `runResult` | string | What that run returned to the parent. Stored rather than re-derived, because the run's trailing items are user-editable: the pair must stay reconstructable after an edit. |
+
+A thread accumulates one invocation message per call, in transcript order, so N
+invocations produce N `tool_use`/`tool_result` pairs on the parent — one per
+parent item, because the parent carries one item per call too (see `aliasOf`).
+They are deliberately **not** named `toolUseId`/`toolName`/`toolInput`: those
+keys mean "this item *is* a tool call", and both the compaction leading-run
+classifier and the browser's context-item scans treat their mere presence as
+exactly that. The item type is part of every read: a **thread** item carries the
+same three keys to mean its run *selector* (below), and a child thread standing
+in a transcript is not a call made into the thread holding it.
+
+A compaction fold takes invocation messages like any other content and carries
+their run records forward on itself (`foldedRuns`), so a thread that folds its
+own history converges to one summary without losing a call. The single
+exception is the thread's **most recent** invocation message, which is pinned:
+the settling run stamps its outcome there, and a thread's liveness is read by
+walking back to it.
 
 ### `type: 'assistant'` — `AssistantMessage`
 | Key | Type | Notes |
@@ -124,17 +146,22 @@ A nested sub-conversation.
 | Key | Type | Notes |
 |---|---|---|
 | `itemId` | string | **Required.** Format: `thread_<ts>_<rand>`. |
-| `goal` | string | Human description of what the thread is for. |
-| `result` | string \| null | Set by `return_result`. Null while in flight. |
+| `goal` | string | Human description of what the thread is for: its **column header**, which moves with the latest call — a resume naming a new goal rewrites it, so the header describes the session as it stands. It is therefore NOT what any per-call surface shows. The goal one call named is read off that item's own `runToolInput` (`itemGoal` in `model/thread-alias.js`, `callGoal` in `worker/llm_request.go`), so each tile, panel and context entry states the intention its own call was made with. This field stands in only where no call recorded one: a user-, strategy- or orchestrator-created thread, a fold, and documents written before the coordinates were kept. |
+| `result` | string \| null | The thread's current summary: the reply the last run to come to rest ended on, written by that run and by nothing else. A run that errored, was cancelled or ended barren returns its outcome to its caller but leaves this standing. Null until a run has rested. There is no way to pin different words — a different summary is a message away — and a fold is the one exception, its summary written by the folded-compaction summariser. It is **not** a terminal state, and **not** the completion signal — that is the latest run's `runStatus` (see `UserMessage`): a thread is running or stopped, there is no closed/open flag, and a stopped thread carrying a summary still accepts messages and runs again. |
 | `items` | `Y.Array<Y.Map>` | The nested conversation. Every thread is isolated. A sub-thread is born empty (no `SYSTEM_1`); its system prompt is sourced from the root thread at LLM-call time. |
-| `resultSpec` | string | Optional. The caller's contract (from `create_thread`) for what the thread's `return_result` summary must contain. Stored at creation, surfaced at the top of the thread column, and appended to the thread's seed message. Absent when the caller omitted it. |
+| `resultSpec` | string | Optional. The caller's contract (from `create_thread`) for what the thread's returned summary must contain. Stored at creation, surfaced at the top of the thread column, and appended to the thread's seed message. Absent when the caller omitted it. |
+| `sessionName` | string | Optional. The thread's handle within the thread that called it — a later call naming it appends one more invocation message here and runs, instead of spawning a sibling. Stamped at creation on every tool-spawned thread (auto-named from the tool: `explore-1`, `thread-2`, or the caller's own word), unique among its siblings, and reported at the head of every result the thread returns. Which tool owns the session is read back off the run records, so one tool can never resume another's. Absent on user-, strategy- and orchestrator-created threads: nothing calls into those. |
 | `modelConfig` | object | Per-thread override of the root model. May carry an optional `thinking` level (`'off'\|'low'\|'medium'\|'high'\|'max'`) that overrides atomically with the model. |
 | `draft` | `Y.Map` \| object | Per-thread unsent input draft as one record: `{text, attachments}`. |
 | `needsStrategyRun` | boolean | One-shot flag: the worker auto-runs the strategy loop for this thread, then clears it. Set by plugins that create a self-driving thread (e.g. `/compact`). |
 | `noAutoSelect` | boolean | The UI must not auto-select into this thread on creation (e.g. `/compact` folds in place). |
 | `canSpawnThreads` | boolean | Optional. Marks a **human-steered** thread whose LLM may itself call `create_thread`. Set up front by `/thread` (user-created), or stamped when a human sends a genuine message into any non-delegated thread (`promoteThreadSpawnCapable`, called from the worker's send handler). Absent on threads born from LLM `create_thread`, delegated subthreads, strategies, orchestrator, or compaction/handoff until a human engages them ⇒ the worker withholds `create_thread` from that thread's tool list (see `filterToolsForThread` in `llm_request.go`). Delegated threads are never promoted. |
-| `forceTool` | string | Tool name the model **must** call on every strategy turn of this thread. The worker translates it into a provider `tool_choice`, withheld from providers that cannot honour one (`ForcedToolChoiceUnsupported`, and claudecode degrades to text) — for those a mandated close falls back to promoting the turn's trailing text as the result. A `/compact` fold carries `'return_result'` as an identity marker for legacy folds only; its summary is produced by the worker's tool-free folded-compaction summariser, not by this directive. Generic — any plugin may set it. |
+| `forceTool` | string | Tool name the model **must** call on every strategy turn of this thread. The worker translates it into a provider `tool_choice`, withheld from providers that cannot honour one (`ForcedToolChoiceUnsupported`, and claudecode degrades to text) — those turns run unforced. Generic: any plugin may set it, and nothing in the core does. |
 | `boundedCompaction` | boolean | Marks a `/compact` (or `/handoff`) fold: the worker summarises it with the folded-compaction summariser — one tool-free probe of the whole transcript, map/reduced only if the provider rejects it as too large — and commits the result here. |
+| `foldedRuns` | array | Present only on a fold. The run records of the invocation messages this fold swallowed, each a verbatim copy of that message's `runToolUseId`/`runToolName`/`runToolInput`/`runStatus`/`runResult`, in the order they stood in the transcript. A fold stands where those messages did, so a thread's calls are still read in call order from its own items — some live, some carried here. Survives being condensed into a later fold, which is what lets repeated folds converge to one summary. A fold has no runs of its own: these describe calls made into the thread that folded them. |
+| `runToolUseId` | string | Optional. This item's **run selector**: which single run of the transcript this item is the parent's view of. Stamped at creation on a tool-spawned thread, and on every alias. The wire emits exactly one `tool_use`/`tool_result` pair for such an item — the run it names — and the tile shows that run's result, frozen when it settled. A thread item without one (user-, strategy- or orchestrator-created, a fold, every document written before aliases) emits one pair per run of the whole transcript, as it always did. |
+| `runToolName` / `runToolInput` | string / object | The rest of that call's coordinates, replayed verbatim in the `tool_use` block. `runToolInput` is also where the item's displayed `goal` comes from — the one this call named, stamped when it was made and never rewritten. |
+| `aliasOf` | string | Optional. The `itemId` of the thread this item is a second view of. Its presence *is* what makes an item an **alias**: a thread item owning no `items`, no `result` and no `llmCreated`, inserted by a later call into a session so the parent carries one item per call. Selecting it opens the canonical's column — they are views of one transcript — but it answers for its own run alone, so five calls read as five results down the parent rather than one tile whose text keeps being overwritten. An alias and its canonical are always **siblings**: a session is scoped to the thread that called it, so a resume can only be issued from the array the thread already sits in. Deleting the canonical deletes them with it. The `goal`/`sessionName` an alias carries are frozen display copies, never read back as truth — and its displayed goal comes from its own `runToolInput` before either. |
 
 ### `type: 'guidance'` — `GuidanceMessage`
 | Key | Type | Notes |

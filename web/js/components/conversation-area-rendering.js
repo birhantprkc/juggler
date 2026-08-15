@@ -41,7 +41,7 @@ import { wrapWithIcon } from '../utils/icon-message-renderer.js';
 import { normalizeAttachments } from '../utils/attachments.js';
 import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
 import { stripLLMTags } from '../utils/content-utils.js';
-import { createCopyButton } from '../../sdk/lib/copy-button.js';
+import { itemGoal } from '../model/thread-alias.js';
 
 /** @typedef {import('../../sdk/lib/message.js').Message} Message */
 
@@ -66,7 +66,7 @@ const THREAD_RESULTSPEC_CLASS = 'thread-result-spec';
 // treats them as first-class (select, properties panel, delete).
 const PENDING_ZONE_CLASS = 'pending-messages';
 
-// Corner-up-left "return" arrow — semantically "returned to parent".
+// Corner-up-left "return" arrow — the summary is what the thread came back with.
 const RESULT_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M280-200v-80h360q33 0 56.5-23.5T720-360q0-33-23.5-56.5T640-440H300l84 84-56 56-180-180 180-180 56 56-84 84h340q66 0 113 47t47 113q0 66-47 113t-113 47H280Z"/></svg>';
 
 /**
@@ -303,15 +303,19 @@ export function removeAllElements(messageList) {
 }
 
 /**
- * Ensure the terminal thread-result block reflects the open thread's `result`.
+ * Ensure the terminal thread-result block reflects a compaction fold's `result`.
  *
- * A completed thread's conclusion is the single most important line in its
- * transcript, yet `result` is a field on the thread Y.Map — not an item — so
- * the item list never renders it. We synthesize a terminal block from that
- * field (the same source of truth the parent tile reads) and keep it pinned
- * just before the footer. Idempotent: updates in place, repositions, or removes
- * when the thread is reopened (`result` cleared). Renders only inside a thread
- * column (`area._threadYMap` set); the root column has no thread result.
+ * `result` is a field on the thread Y.Map, not an item, so the item list never
+ * renders it. This synthesizes a terminal block from that field and keeps it
+ * pinned just before the footer. Idempotent: updates in place, repositions, or
+ * removes.
+ *
+ * A compaction fold alone renders it. The fold's transcript is folded away and
+ * the summariser's text is all that stands for it, so the block IS the column —
+ * and it carries the Re-summarise button, the only way to write that text again.
+ * Every other thread answers its caller through its runs and ends on the reply
+ * its last run came to rest on, so a block underneath that message would say the
+ * same thing twice.
  * @param {any} area - ConversationArea instance (provides `_threadYMap`).
  * @param {HTMLElement} messageList
  * @param {HTMLElement} footer
@@ -320,8 +324,10 @@ export function ensureThreadResult(area, messageList, footer) {
   const existing = /** @type {HTMLElement|null} */ (
     messageList.querySelector(`.${THREAD_RESULT_CLASS}`));
 
-  const result = area?._threadYMap?.get?.('result');
-  const text = (typeof result === 'string') ? result : '';
+  const threadYMap = area?._threadYMap;
+  const isFold = threadYMap?.get?.('boundedCompaction') === true;
+  const result = threadYMap?.get?.('result');
+  const text = (isFold && typeof result === 'string') ? result : '';
 
   if (!text) {
     if (existing) existing.remove();
@@ -357,85 +363,32 @@ export function ensureThreadResult(area, messageList, footer) {
   header.className = 'thread-result-header';
   const label = document.createElement('div');
   label.className = 'thread-result-label';
-  label.textContent = 'Result returned to parent';
+  label.textContent = 'Summary';
   header.appendChild(label);
 
   const headerActions = document.createElement('div');
   headerActions.className = 'thread-result-header-actions';
   header.appendChild(headerActions);
 
-  // Copy: the standard copy-to-clipboard button, copying the current result
-  // text (resolved at click time so a later edit/re-summarise copies fresh).
-  headerActions.appendChild(createCopyButton(() => {
-    const r = area?._threadYMap?.get?.('result');
-    return (typeof r === 'string') ? r : '';
-  }, 'thread-result-copy-btn'));
-
-  // Edit affordance: the summary is an explicit authored artifact, so the user
-  // can rewrite it by hand. Save routes through conversation.completeThread; the
-  // result change re-renders the body (and the parent tile) reactively.
-  const editBtn = document.createElement('button');
-  editBtn.type = 'button';
-  editBtn.className = 'thread-result-edit-btn';
-  editBtn.title = 'Edit summary';
-  editBtn.setAttribute('aria-label', 'Edit summary');
-  editBtn.textContent = 'Edit';
-  headerActions.appendChild(editBtn);
-
-  // Re-summarise: regenerate the summary by re-running the return_result
-  // strategy over the thread's current items (reopen + summarise turn).
+  // A fold is frozen transcript whose summary the folded-compaction summariser
+  // wrote once; nothing else will ever refresh it, so Re-summarise is the only
+  // route to a different one.
   const resummariseBtn = document.createElement('button');
   resummariseBtn.type = 'button';
   resummariseBtn.className = 'thread-result-resummarise-btn';
-  resummariseBtn.title = 'Re-summarise this thread';
-  resummariseBtn.setAttribute('aria-label', 'Re-summarise this thread');
+  resummariseBtn.title = 'Summarise this fold again';
+  resummariseBtn.setAttribute('aria-label', 'Summarise this fold again');
   resummariseBtn.textContent = 'Re-summarise';
   resummariseBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    const tid = area?._threadYMap?.get?.('itemId');
+    const tid = threadYMap?.get?.('itemId');
     if (!tid || !area?._conversation) return;
-    void area._conversation.resolveMessageThread(tid).resummarize();
+    void area._conversation.resolveMessageThread(tid).resummariseFold();
   });
   headerActions.appendChild(resummariseBtn);
 
-  // Expand: splice this thread's items back into the parent and drop the tile.
-  const expandBtn = document.createElement('button');
-  expandBtn.type = 'button';
-  expandBtn.className = 'thread-result-expand-btn';
-  expandBtn.title = 'Expand this thread back into the parent';
-  expandBtn.setAttribute('aria-label', 'Expand this thread into the parent');
-  expandBtn.textContent = 'Expand';
-  expandBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const tid = area?._threadYMap?.get?.('itemId');
-    if (!tid) return;
-    expandBtn.dispatchEvent(new CustomEvent('expand-thread-requested', {
-      detail: { threadItemId: tid },
-      bubbles: true,
-      composed: true
-    }));
-  });
-  headerActions.appendChild(expandBtn);
-
-  // Promote: copy this thread into a new top-level tab. Cross-doc promote is
-  // intentionally copy-style (original remains) because undo cannot cross docs.
-  const promoteBtn = document.createElement('button');
-  promoteBtn.type = 'button';
-  promoteBtn.className = 'thread-result-promote-btn';
-  promoteBtn.title = 'Promote this thread to a new conversation';
-  promoteBtn.setAttribute('aria-label', 'Promote this thread to a new conversation');
-  promoteBtn.textContent = 'Promote';
-  promoteBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const tid = area?._threadYMap?.get?.('itemId');
-    if (!tid) return;
-    promoteBtn.dispatchEvent(new CustomEvent('promote-thread-requested', {
-      detail: { threadItemId: tid },
-      bubbles: true,
-      composed: true
-    }));
-  });
-  headerActions.appendChild(promoteBtn);
+  // Expand and Promote live in the column header (thread-column-actions), which
+  // is on screen whether this block renders or not.
 
   const body = document.createElement('div');
   body.className = 'thread-result-body markdown';
@@ -443,46 +396,6 @@ export function ensureThreadResult(area, messageList, footer) {
   decorateCodeBlocks(body);
   content.appendChild(header);
   content.appendChild(body);
-
-  editBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (content.querySelector('.thread-result-editor')) return; // already editing
-    const cur = area?._threadYMap?.get?.('result');
-    const editor = document.createElement('div');
-    editor.className = 'thread-result-editor';
-    const ta = document.createElement('textarea');
-    ta.className = 'thread-result-textarea';
-    ta.value = (typeof cur === 'string') ? cur : '';
-    const actions = document.createElement('div');
-    actions.className = 'thread-result-editor-actions';
-    const saveBtn = document.createElement('button');
-    saveBtn.type = 'button';
-    saveBtn.className = 'thread-result-save-btn';
-    saveBtn.textContent = 'Save';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'thread-result-cancel-btn';
-    cancelBtn.textContent = 'Cancel';
-    actions.append(saveBtn, cancelBtn);
-    editor.append(ta, actions);
-    body.style.display = 'none';
-    editBtn.style.display = 'none';
-    content.appendChild(editor);
-    ta.focus();
-
-    const exit = () => {
-      editor.remove();
-      body.style.display = '';
-      editBtn.style.display = '';
-    };
-    cancelBtn.addEventListener('click', (ev) => { ev.stopPropagation(); exit(); });
-    saveBtn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const v = ta.value;
-      exit();
-      if (area?._threadYMap) area._conversation?.completeThread?.(area._threadYMap, v);
-    });
-  });
 
   block.appendChild(wrapWithIcon(content, { color: 'purple', iconSvg: RESULT_ICON_SVG }));
   messageList.insertBefore(block, footer);
@@ -826,7 +739,7 @@ function createThreadBubble(message, itemIndex, live) {
 
   /** @type {Record<string, string>} */
   const attributes = {
-    goal: msg.get('goal') || '',
+    goal: itemGoal(msg),
     'child-count': childCount.toString()
   };
 

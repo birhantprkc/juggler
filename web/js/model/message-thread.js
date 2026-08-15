@@ -11,6 +11,7 @@
  */
 import * as Y from '../vendor/yjs.mjs';
 import { plainToYMap, convertToYType } from './item-accessor.js';
+import { threadRunSettled } from './run-records.js';
 import {
   createToolActionMessage,
   createErrorMessage,
@@ -21,7 +22,6 @@ import {
   ACTION_STATES,
   isToolActionMessage,
   isAssistantMessage,
-  isUserMessage,
   isThreadMessage
 } from '../../sdk/lib/message.js';
 import strategyRegistry from '../registries/strategy-registry.js';
@@ -30,7 +30,6 @@ import workerManager from '../services/worker-manager.js';
 import { submitPendingRequest } from '../services/thread-orchestrator.js';
 import * as permissionsHelpers from './message-thread-permissions.js';
 import * as contextItemHelpers from './message-thread-context-items.js';
-import { isThreadClosed } from './thread-navigation.js';
 import { recordTape } from '../utils/event-tape.js';
 import { normalizeDraft, normalizeAttachments, normalizeTextFiles, normalizePasteBlobs } from '../utils/attachments.js';
 
@@ -92,18 +91,6 @@ export default class MessageThread {
 
   /** @returns {boolean} Whether conversation is currently processing */
   get isProcessing() { return this.conversation.isProcessing; }
-
-  /**
-   * Whether this thread is closed (genuinely finished). Derived via the shared
-   * isThreadClosed predicate — a non-empty `result` AND no live (non-terminal)
-   * tool anywhere in the subtree — so the footer's Reopen/Continue agrees with
-   * the tile colour and composer-box placement. Root is never closed.
-   * @returns {boolean} Whether this thread is closed
-   */
-  get isClosed() {
-    if (!this.threadItemId) return false;
-    return isThreadClosed(this.container);
-  }
 
   /**
    * Get the effective model config, walking up the parent chain.
@@ -403,12 +390,11 @@ export default class MessageThread {
           return true;
         }
       }
-      // Thread: result=null means sub-thread not done
-      if (isThreadMessage(/** @type {Message} */ (m))) {
-        const result = m.get('result');
-        if (result === null || result === undefined || result === '') {
-          return true;
-        }
+      // Thread: a run that has not settled is a sub-thread still working.
+      // Asked of the run, not of `result` — a summary outlives the run that
+      // wrote it, so a thread carrying one may well be running again.
+      if (isThreadMessage(/** @type {Message} */ (m)) && !threadRunSettled(m)) {
+        return true;
       }
     }
     return false;
@@ -513,6 +499,11 @@ export default class MessageThread {
 
   /**
    * Find an item by its itemId and delete it.
+   *
+   * Deleting a thread takes its aliases with it, in one transaction. An alias is
+   * the parent's view of one call into that thread and holds no transcript of
+   * its own (see model/thread-alias.js), so one left behind is a tile with
+   * nothing to show and a call the wire can only answer with an error.
    * @plugin-api
    * @param {string} id
    * @returns {boolean} true if the item was found and deleted
@@ -520,7 +511,19 @@ export default class MessageThread {
   deleteItemById(id) {
     const index = this.findIndexByItemId(id);
     if (index < 0) return false;
-    this.deleteAt(index);
+    const items = this.items;
+    const target = items[index];
+    const indices = [index];
+    if (target?.get?.('type') === 'thread' && !target.get('aliasOf')) {
+      for (let i = 0; i < items.length; i++) {
+        if (i !== index && items[i]?.get?.('aliasOf') === id) indices.push(i);
+      }
+    }
+    if (indices.length === 1) {
+      this.deleteAt(index);
+      return true;
+    }
+    this.transact(() => this.removeItemsAt(indices));
     return true;
   }
 
@@ -1167,101 +1170,23 @@ export default class MessageThread {
   }
 
   /**
-   * Whether this open thread can be closed by promoting its last message as
-   * the result — i.e. the last effective item (user / assistant / tool-action
-   * / nested thread) is a non-empty assistant message. Mirrors the worker's
-   * selectThreadFallbackResult so the "Close with last message" footer button
-   * appears only when that cheap, no-LLM-turn close will actually succeed.
-   * @returns {boolean} True if the thread can be closed with its last message
-   */
-  get canCloseWithLastMessage() {
-    if (!this.threadItemId) return false;
-    const items = this.items;
-    for (let i = items.length - 1; i >= 0; i--) {
-      const m = /** @type {Message} */ (items[i]);
-      if (isAssistantMessage(m)) return !!m.get('content');
-      if (isUserMessage(m) || isToolActionMessage(m) || isThreadMessage(m)) return false;
-      // thinking / context items don't encode the resting state — keep scanning.
-    }
-    return false;
-  }
-
-  /**
-   * Close this thread immediately by promoting its trailing assistant message
-   * as the result — the cheap, no-LLM-turn close. The worker stamps that text
-   * as the thread result, making isClosed true so the composer returns to the
-   * parent. No-op if there is no clean trailing assistant reply to promote.
-   * @returns {Promise<boolean>} True if the thread was closed
-   */
-  async closeWithLastMessage() {
-    if (!this.threadItemId) return false;
-    return await workerManager.closeThreadWithLastMessage(this.conversation.id, this.threadItemId);
-  }
-
-  /**
-   * Close this thread by asking the LLM to summarise it via return_result.
+   * Summarise a compaction (/compact or /handoff) fold again.
    *
-   * The prompt names ONE deliverable — the call — because a reply written
-   * alongside it is discarded (the parent only ever receives the `result`
-   * string), so prose costs tokens and buys nothing. The send is marked
-   * `closeRequest`, which forces return_result for that turn and, on providers
-   * that cannot honour a forced tool choice, promotes the reply text as the
-   * result instead: the close lands either way.
+   * Only a fold has a summary worth regenerating. An ordinary thread's summary
+   * is whatever its last run came to rest on, so a different summary is a
+   * message away — ask, and the reply becomes the summary. A fold has no runs:
+   * it is frozen transcript that the folded-compaction summariser summarised
+   * once, with its own prompt, reading the thread's items as inert data.
    *
-   * Preempts any in-flight turn first (worker-truth cancel+settle) so the
-   * summary prompt is never silently dropped by sendMessage's "already
-   * processing" guard.
-   * @param {string} [summaryText] - Optional user-supplied summary context. When
-   *   present it is woven into the prompt; otherwise the LLM auto-summarises.
+   * Routed straight to that summariser rather than through an ordinary turn,
+   * which would append a "summarise this" instruction into the very transcript
+   * being summarised. No-op on root and on anything that is not a fold.
    * @returns {Promise<void>}
    */
-  async close(summaryText) {
+  async resummariseFold() {
     if (!this.threadItemId) return;
-    const userText = (summaryText || '').trim();
-    const instruction = 'Close this thread: your entire response must be a single return_result call whose "result" argument is a concise summary of what was accomplished. Do not also reply in the chat — text written alongside the call is discarded and never reaches the parent.';
-    const message = userText ? `${userText}\n\n${instruction}` : instruction;
-    await this.conversation.sendMessage(message, this.threadItemId, this, {
-      preemptProcessing: true,
-      closeRequest: true
-    });
-  }
-
-  /**
-   * Re-generate this thread's summary: clear the existing result, then re-run
-   * the return_result strategy over the thread's current items.
-   *
-   * The summary is an explicit authored artifact — item edits never change it
-   * automatically (only reopen() clears it). This is the explicit "regenerate"
-   * lever, alongside hand-editing the Result block and promoting a message via
-   * "Use as thread summary". No-op on root.
-   * @returns {Promise<void>}
-   */
-  async resummarize() {
-    if (!this.threadItemId) return;
-    // A /compact (or /handoff) fold is summarised by the worker's folded
-    // compaction summariser, which supplies its own prompt and treats the
-    // thread's items as inert source. Re-run that directly: going through
-    // close() would append a "call return_result" instruction into the very
-    // transcript being summarised, and the summariser ignores it as a directive
-    // anyway.
-    if (this.container?.get?.('boundedCompaction') === true) {
-      await workerManager.resummarizeCompactionThread(this.conversation.id, this.threadItemId);
-      return;
-    }
-    // Clear the result first (worker-authored so it stays undoable), then ask
-    // the LLM to summarise afresh. close() preempts/settles before sending.
-    await workerManager.reopenThread(this.conversation.id, this.threadItemId);
-    await this.close();
-  }
-
-  /**
-   * Reopen a closed thread by clearing its result.
-   * Routed through Go so the null item has Go's clientID, which is required
-   * for the UndoManager's RedoItem to succeed when undoing the clear.
-   */
-  reopen() {
-    if (!this.threadItemId) return;
-    workerManager.reopenThread(this.conversation.id, this.threadItemId);
+    if (this.container?.get?.('boundedCompaction') !== true) return;
+    await workerManager.resummarizeCompactionThread(this.conversation.id, this.threadItemId);
   }
 
   /**
