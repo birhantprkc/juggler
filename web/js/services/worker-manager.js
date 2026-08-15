@@ -1388,11 +1388,21 @@ class WorkerManager {
   async createNewConversation(id, name, session) {
     const Conversation = (await import('../model/conversation.js')).default;
 
-    // Check if already creating (lock via in-flight promise)
+    // Check if already creating (lock via in-flight promise). In the ENGINE this
+    // is the normal path, not a rarity: the worker the server spawns for the new
+    // conversation flushes its first yjs-sync before the create's HTTP response
+    // gets back here, and a sync for an unknown conversation makes the engine
+    // auto-load it (_autoLoadConversation → loadExistingConversation, which
+    // registers here). So the create joins a LOAD, which — reading a
+    // conversation that already exists — seeds no built-in items. Finish the
+    // creation contract explicitly, or the conversation is born without its
+    // system prompt: no editable prompt in the panel, and every sub-thread
+    // clones a starting context that has none.
     const existingPromise = this._creating.get(id);
     if (existingPromise) {
-      console.warn(`[WorkerManager] Duplicate create for ${id} - waiting for in-flight`);
-      return await existingPromise;
+      const conversation = await existingPromise;
+      await this._ensureNewConversationSystemPrompt(conversation);
+      return conversation;
     }
 
     // Start creation (atomic)
@@ -1405,6 +1415,21 @@ class WorkerManager {
     } finally {
       this._creating.delete(id);
     }
+  }
+
+  /**
+   * Give a brand-new conversation the root system-prompt placeholder, once its
+   * worker's items array is in the browser doc. Seeding before the array lands
+   * builds a rival root["items"] that Yjs conflict resolution then discards,
+   * taking SYSTEM_1 with it — see {@link _waitForItemsArray}. Idempotent, so it
+   * is safe on a conversation that already has one.
+   * @param {import('../model/conversation.js').default} conversation - The new conversation
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _ensureNewConversationSystemPrompt(conversation) {
+    await this._waitForItemsArray(conversation);
+    conversation.rootMessageThread.ensureSystemPromptPlaceholder();
   }
 
   /**
@@ -1485,7 +1510,7 @@ class WorkerManager {
       // 5. Insert the system-prompt placeholder into the (now-present) items
       // array. ensureSystemPromptPlaceholder() is a no-op if SYSTEM_1 already
       // exists — safe to call regardless of whether worker pre-loaded items.
-      conversation.rootMessageThread.ensureSystemPromptPlaceholder();
+      await this._ensureNewConversationSystemPrompt(conversation);
 
       return conversation;
     } catch (error) {

@@ -273,13 +273,14 @@ func (t *OperationTracker) InsertMessageIntoArray(arr *ycrdt.YArray, index int, 
 // (callers collapse the whole creation into one group via MergeFromIndex). No
 // StopCapturing: the seed attaches to the surrounding creation group rather than
 // forming its own. No-op when the parent has no seed items (an empty transaction
-// records no undo entry).
-func (t *OperationTracker) SeedThreadFromParent(parentArr, childArr *ycrdt.YArray) {
+// records no undo entry). threadYMap is the child's container, marked seeded
+// alongside the clone so an undo of the creation reverses both.
+func (t *OperationTracker) SeedThreadFromParent(parentArr, childArr *ycrdt.YArray, threadYMap *ycrdt.YMap) {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
 	t.ensureUndoManager()
 	ycrdt.Transact(t.doc.doc, func(_ *ycrdt.Transaction) {
-		t.doc.seedThreadFromParentInTx(parentArr, childArr)
+		t.doc.seedThreadFromParentInTx(parentArr, childArr, threadYMap)
 	}, t.doc.authorID, true)
 }
 

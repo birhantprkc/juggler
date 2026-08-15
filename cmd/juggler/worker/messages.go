@@ -760,6 +760,11 @@ type ConversationItem struct {
 	Items                  json.RawMessage `json:"items,omitempty"`                  // Nested items for thread messages (preserved for undo/redo)
 	BoundedCompaction      bool            `json:"boundedCompaction,omitempty"`      // Enables bounded fallback after registry context rejection
 	CompactionPromptItemID string          `json:"compactionPromptItemId,omitempty"` // Orchestration prompt excluded from canonical source history
+	// ContextSeeded records that this thread's starting context has been cloned
+	// from its parent, so the per-turn backstop (SeedThreadIfUnseeded) leaves it
+	// alone. Carried on the item, not just the Y.Map, so a thread that survives a
+	// serialization round-trip (undo/redo, fold) is not seeded a second time.
+	ContextSeeded bool `json:"contextSeeded,omitempty"`
 
 	// Thread-run control fields, set by a fold that produces an UNSUMMARIZED
 	// bounded-compaction thread (the /compact shape the browser fold also

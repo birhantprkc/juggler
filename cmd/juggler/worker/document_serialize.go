@@ -321,6 +321,7 @@ func yMapToConversationItem(m *ycrdt.YMap) ConversationItem {
 		Items:                  yMapRawJSON(m, "items"),
 		BoundedCompaction:      yMapBool(m, "boundedCompaction"),
 		CompactionPromptItemID: yMapString(m, "compactionPromptItemId"),
+		ContextSeeded:          yMapBool(m, "contextSeeded"),
 
 		PreventUserDeletion: yMapBool(m, "preventUserDeletion"),
 		IsNew:               yMapBool(m, "isNew"),

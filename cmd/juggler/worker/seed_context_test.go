@@ -58,7 +58,7 @@ func TestSeedThreadFromParentClonesStartingContext(t *testing.T) {
 	seedableRoot(doc, "custom identity")
 
 	childArr := doc.InsertThreadIntoArray(root, doc.GetItemsLengthFromArray(root), "child")
-	doc.SeedThreadFromParent(root, childArr)
+	doc.SeedThreadFromParent(root, childArr, nil)
 
 	items := doc.GetItemsFromArray(childArr)
 	if len(items) != 3 {
@@ -109,7 +109,7 @@ func TestSeedThreadFromParentNoSeedItems(t *testing.T) {
 	doc.AppendMessage(ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "hi"})
 
 	childArr := doc.InsertThreadIntoArray(root, doc.GetItemsLengthFromArray(root), "child")
-	doc.SeedThreadFromParent(root, childArr)
+	doc.SeedThreadFromParent(root, childArr, nil)
 
 	if got := doc.GetItemsLengthFromArray(childArr); got != 0 {
 		t.Fatalf("expected no seeded items, got %d", got)
@@ -123,7 +123,7 @@ func TestGetContextItemIDsForThreadOwnItemsOnly(t *testing.T) {
 	seedableRoot(doc, "identity")
 
 	childArr := doc.InsertThreadIntoArray(root, doc.GetItemsLengthFromArray(root), "child")
-	doc.SeedThreadFromParent(root, childArr)
+	doc.SeedThreadFromParent(root, childArr, nil)
 	// A context item produced by a tool running inside the child.
 	doc.InsertMessageIntoArray(childArr, doc.GetItemsLengthFromArray(childArr),
 		ConversationItem{Type: "file-content", ItemID: "child-ctx-1", Content: "child read this"})
@@ -247,6 +247,96 @@ func TestSeedThreadIfUnseededLazyAndIdempotent(t *testing.T) {
 	doc.SeedThreadIfUnseeded(childID)
 	if got := doc.GetItemsLengthFromArray(childArr); got != lenAfterFirst {
 		t.Fatalf("re-seeding duplicated items: %d -> %d", lenAfterFirst, got)
+	}
+}
+
+// TestSeedThreadIfUnseededParentWithoutSystemPrompt pins the idempotency of the
+// per-turn backstop against a parent that owns NO system-prompt item — the shape
+// of a conversation whose root never received the canonical SYSTEM_1. The seed
+// set is then agents file + memory and nothing else, so seeding can never make a
+// system-prompt item appear in the child: any idempotency key read off the
+// child's items answers "unseeded" forever and every turn prepends another copy
+// of the parent's starting context.
+func TestSeedThreadIfUnseededParentWithoutSystemPrompt(t *testing.T) {
+	doc := NewConversationDocument("test-conv", "user:test")
+	defer doc.Destroy()
+	root := doc.ensureItems()
+	doc.AppendMessage(
+		ConversationItem{Type: "file-content", ItemID: "agents-1", Content: "CLAUDE.md"},
+		ConversationItem{Type: "memory", ItemID: "mem-1", Content: "remembered fact"},
+		ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "hello"},
+	)
+
+	childArr := doc.InsertThreadIntoArray(root, doc.GetItemsLengthFromArray(root), "child")
+	doc.InsertMessageIntoArray(childArr, 0, ConversationItem{Type: ItemTypeUser, ItemID: "cu-1", Content: "task"})
+	childID := doc.GetItemsFromArray(root)[3].ItemID
+
+	// One seed, then two more turns' worth of backstop calls.
+	for turn := 1; turn <= 3; turn++ {
+		doc.SeedThreadIfUnseeded(childID)
+		items := doc.GetItemsFromArray(childArr)
+		if len(items) != 3 {
+			t.Fatalf("turn %d: expected 2 seeds + the thread's own message, got %d: %+v", turn, len(items), items)
+		}
+		if items[0].Content != "CLAUDE.md" || items[1].Type != "memory" || items[2].ItemID != "cu-1" {
+			t.Fatalf("turn %d: unexpected item order: %+v", turn, items)
+		}
+	}
+}
+
+// TestSeedThreadIfUnseededSkipsRunningThread pins the upgrade path: a thread
+// already part-way through its work is never seeded, whatever its items look
+// like. Threads left mid-conversation in existing documents reach the backstop
+// with turns behind them and no mark, and cloning the parent's standing context
+// into them at that point would drop a system prompt and an agents file into the
+// middle of a conversation that has been running without them.
+func TestSeedThreadIfUnseededSkipsRunningThread(t *testing.T) {
+	doc := NewConversationDocument("test-conv", "user:test")
+	defer doc.Destroy()
+	root := doc.ensureItems()
+	doc.AppendMessage(
+		ConversationItem{Type: "file-content", ItemID: "agents-1", Content: "CLAUDE.md"},
+		ConversationItem{Type: "memory", ItemID: "mem-1", Content: "remembered fact"},
+		ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "hello"},
+	)
+
+	childArr := doc.InsertThreadIntoArray(root, doc.GetItemsLengthFromArray(root), "child")
+	doc.InsertMessageIntoArray(childArr, 0,
+		ConversationItem{Type: ItemTypeUser, ItemID: "cu-1", Content: "task"},
+		ConversationItem{Type: ItemTypeAssistant, ItemID: "ca-1", Content: "on it"},
+		ConversationItem{Type: ItemTypeToolAction, ItemID: "ct-1", ToolName: "read"})
+	childID := doc.GetItemsFromArray(root)[3].ItemID
+
+	before := doc.GetItemsLengthFromArray(childArr)
+	doc.SeedThreadIfUnseeded(childID)
+	if got := doc.GetItemsLengthFromArray(childArr); got != before {
+		t.Fatalf("a thread with turns behind it must not be seeded: %d -> %d", before, got)
+	}
+	// And it is marked, so the check is paid for once rather than every turn.
+	if seeded, _ := doc.GetThreadYMap(childID).Get(threadContextSeededField).(bool); !seeded {
+		t.Errorf("a skipped thread should still be marked seeded")
+	}
+}
+
+// TestCreateThreadEagerSeedSurvivesBackstop pins the other half: a thread seeded
+// eagerly at creation is left alone by the per-turn backstop, so the two seeding
+// paths cannot both fire on one thread.
+func TestCreateThreadEagerSeedSurvivesBackstop(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.storeState(StateProcessing)
+	seedableRoot(w.doc, "identity")
+
+	threadID, err := w.createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	childArr := w.doc.GetThreadItemsArray(threadID)
+	before := w.doc.GetItemsLengthFromArray(childArr)
+
+	w.doc.SeedThreadIfUnseeded(threadID)
+	if got := w.doc.GetItemsLengthFromArray(childArr); got != before {
+		t.Fatalf("backstop re-seeded an eagerly seeded thread: %d -> %d", before, got)
 	}
 }
 

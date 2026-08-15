@@ -836,9 +836,31 @@ func collectSeedItemMaps(arr *ycrdt.YArray) []*ycrdt.YMap {
 	return maps
 }
 
+// threadContextSeededField marks a thread whose starting context has been
+// cloned from its parent. It is the idempotency key for seeding, and it is a
+// field on the thread rather than a property of its items because the seed set
+// is only ever as complete as the parent: a conversation whose root owns no
+// system-prompt item seeds its children without one, so item-shape evidence
+// answers "has this thread been seeded" with a permanent no, and the lazy
+// backstop re-clones the whole starting context on every turn.
+const threadContextSeededField = "contextSeeded"
+
+// markThreadSeededInTx stamps threadContextSeededField on a thread container,
+// tolerating a nil container so callers that seed a bare array (tests, callers
+// with no handle on the thread Y.Map) need no special case. Callers MUST hold
+// ycrdtMu and be inside a Transact, so the mark commits with the clone it
+// describes — a seed that is undone takes its mark with it.
+func markThreadSeededInTx(threadYMap *ycrdt.YMap) {
+	if threadYMap != nil {
+		threadYMap.Set(threadContextSeededField, true)
+	}
+}
+
 // threadArrayHasSystemPromptItem reports whether arr already contains a
-// system-prompt-typed context item — the idempotency key for seeding (a seeded
-// thread always has its cloned system prompt). Callers MUST hold ycrdtMu.
+// system-prompt-typed context item. This is the evidence of seeding for threads
+// written before threadContextSeededField existed: they carry a cloned system
+// prompt but no mark, so SeedThreadIfUnseeded stamps them instead of re-seeding.
+// Callers MUST hold ycrdtMu.
 func threadArrayHasSystemPromptItem(arr *ycrdt.YArray) bool {
 	if arr == nil {
 		return false
@@ -853,52 +875,90 @@ func threadArrayHasSystemPromptItem(arr *ycrdt.YArray) bool {
 	return false
 }
 
+// threadArrayHasRunTurns reports whether arr holds the output of a turn that has
+// already run: an assistant message, a tool call, a nested thread, or a fold. A
+// thread showing any of those is mid-conversation, and its starting context —
+// whatever it began with — is settled; seeding it now would splice standing
+// context into the middle of it. A thread that has yet to run holds at most the
+// message it was opened with, which is why the seeding backstop keys on this
+// rather than on emptiness. Callers MUST hold ycrdtMu.
+func threadArrayHasRunTurns(arr *ycrdt.YArray) bool {
+	if arr == nil {
+		return false
+	}
+	for _, raw := range arr.ToArray() {
+		m, ok := raw.(*ycrdt.YMap)
+		if !ok {
+			continue
+		}
+		switch t, _ := m.Get("type").(string); t {
+		case ItemTypeAssistant, ItemTypeThinking, ItemTypeToolAction,
+			ItemTypeMetaToolResult, ItemTypeThread, ItemTypeCompactionSummary:
+			return true
+		}
+	}
+	return false
+}
+
 // seedThreadFromParentLocked clones parentArr's starting-context items
 // (collectSeedItemMaps) into the head (index 0..) of childArr, each with a fresh
-// itemId, preserving order. No-op when the parent has no seed items. Callers
-// MUST hold ycrdtMu.
-func (cd *ConversationDocument) seedThreadFromParentLocked(parentArr, childArr *ycrdt.YArray) {
+// itemId, preserving order, and marks threadYMap seeded. No-op when the parent
+// has no seed items — nothing was cloned, so there is nothing to mark and a
+// later turn may still seed the thread once the parent has standing context.
+// Callers MUST hold ycrdtMu.
+func (cd *ConversationDocument) seedThreadFromParentLocked(parentArr, childArr *ycrdt.YArray, threadYMap *ycrdt.YMap) {
 	if parentArr == nil || childArr == nil || len(collectSeedItemMaps(parentArr)) == 0 {
 		return
 	}
 	cd.doc.Transact(func(_ *ycrdt.Transaction) {
-		cd.seedThreadFromParentInTx(parentArr, childArr)
+		cd.seedThreadFromParentInTx(parentArr, childArr, threadYMap)
 	}, cd.txOrigin())
 }
 
 // seedThreadFromParentInTx performs the seed-clone inserts within the caller's
 // active transaction, taking the origin the caller established (untracked for
 // seedThreadFromParentLocked, authorID for the tracked create-thread path). Each
-// clone gets a fresh itemId; order is preserved. Callers MUST hold ycrdtMu and
-// be inside a Transact.
-func (cd *ConversationDocument) seedThreadFromParentInTx(parentArr, childArr *ycrdt.YArray) {
+// clone gets a fresh itemId; order is preserved. threadYMap is the container
+// being seeded (nil when the caller holds only the array) and is marked seeded
+// in the same transaction as the clone it describes, so the mark can never
+// outlive or precede the items. Callers MUST hold ycrdtMu and be inside a
+// Transact.
+func (cd *ConversationDocument) seedThreadFromParentInTx(parentArr, childArr *ycrdt.YArray, threadYMap *ycrdt.YMap) {
 	if parentArr == nil || childArr == nil {
 		return
 	}
-	for i, src := range collectSeedItemMaps(parentArr) {
+	seeds := collectSeedItemMaps(parentArr)
+	if len(seeds) == 0 {
+		return
+	}
+	for i, src := range seeds {
 		clone := cloneContextItemYMap(src, generateItemID())
 		childArr.Insert(ycrdt.Number(i), ycrdt.ArrayAny{clone})
 	}
+	markThreadSeededInTx(threadYMap)
 }
 
 // SeedThreadFromParent clones parentArr's starting-context items into the head
-// of childArr, each with a fresh itemId (see seedThreadFromParentLocked). Called
-// at thread creation (threads.go) so a new sub-thread visibly owns the system
-// prompt, agents files, and memory its parent had. No-op when there are no seed
-// items. Callers must NOT hold ycrdtMu.
-func (cd *ConversationDocument) SeedThreadFromParent(parentArr, childArr *ycrdt.YArray) {
+// of childArr, each with a fresh itemId, and marks threadYMap seeded (see
+// seedThreadFromParentLocked). Called at thread creation (threads.go) so a new
+// sub-thread visibly owns the system prompt, agents files, and memory its parent
+// had. No-op when there are no seed items. Callers must NOT hold ycrdtMu.
+func (cd *ConversationDocument) SeedThreadFromParent(parentArr, childArr *ycrdt.YArray, threadYMap *ycrdt.YMap) {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
-	cd.seedThreadFromParentLocked(parentArr, childArr)
+	cd.seedThreadFromParentLocked(parentArr, childArr, threadYMap)
 }
 
-// SeedThreadIfUnseeded lazily seeds threadItemID from its parent when it owns no
-// system-prompt-typed item yet — the backstop for sub-threads that never passed
-// through createThread's eager seeding: client-created ones (createSubThread —
-// the /thread command, plugin API) and legacy docs from before seeds were
-// copied at creation. Idempotent (keyed on the system-prompt item), so a seeded
-// thread is never re-seeded. No-op at root, or when the thread/parent array is
-// missing. Callers must NOT hold ycrdtMu.
+// SeedThreadIfUnseeded lazily seeds threadItemID from its parent when it has
+// not been seeded yet — the backstop for sub-threads that never passed through
+// createThread's eager seeding: client-created ones (createSubThread — the
+// /thread command, plugin API) and legacy docs from before seeds were copied at
+// creation. Runs on every turn (llm_request.go), so its idempotency is what
+// stands between a sub-thread and a fresh copy of its starting context per turn:
+// it is keyed on threadContextSeededField, with a cloned system prompt accepted
+// as the legacy evidence of seeding and stamped so the mark answers thereafter.
+// No-op at root, or when the thread/parent array is missing. Callers must NOT
+// hold ycrdtMu.
 func (cd *ConversationDocument) SeedThreadIfUnseeded(threadItemID string) {
 	if threadItemID == "" {
 		return
@@ -911,6 +971,9 @@ func (cd *ConversationDocument) SeedThreadIfUnseeded(threadItemID string) {
 	}
 	threadYMap := findThreadYMap(root, threadItemID)
 	if threadYMap == nil {
+		return
+	}
+	if seeded, _ := threadYMap.Get(threadContextSeededField).(bool); seeded {
 		return
 	}
 	// Threads populated by RELOCATING a parent's existing items into them opt
@@ -927,14 +990,23 @@ func (cd *ConversationDocument) SeedThreadIfUnseeded(threadItemID string) {
 		return
 	}
 	childArr, _ := threadYMap.Get("items").(*ycrdt.YArray)
-	if childArr == nil || threadArrayHasSystemPromptItem(childArr) {
+	if childArr == nil {
+		return
+	}
+	if threadArrayHasSystemPromptItem(childArr) || threadArrayHasRunTurns(childArr) {
+		// Seeded before the mark existed, or already running: either way the
+		// thread's starting context is settled, and cloning it in now would
+		// duplicate it or splice it into the middle of a live conversation.
+		cd.doc.Transact(func(_ *ycrdt.Transaction) {
+			markThreadSeededInTx(threadYMap)
+		}, cd.txOrigin())
 		return
 	}
 	parentArr := root
 	if parentID := cd.findParentThreadID(threadItemID); parentID != "" {
 		parentArr = findThreadItemsArray(root, parentID)
 	}
-	cd.seedThreadFromParentLocked(parentArr, childArr)
+	cd.seedThreadFromParentLocked(parentArr, childArr, threadYMap)
 }
 
 // GetItemsLength returns the number of items.

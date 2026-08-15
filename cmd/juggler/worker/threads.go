@@ -134,9 +134,11 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	// Get the thread's itemId and store tool_use coordinates (for LLM-created
 	// threads) on the thread Y.Map.
 	var threadItemID string
+	var threadYMap *ycrdt.YMap
 	ycrdtMu.Lock()
 	raw := targetArr.Get(ycrdt.Number(insertIdx))
 	if m, ok := raw.(*ycrdt.YMap); ok {
+		threadYMap = m
 		threadItemID, _ = m.Get("itemId").(string)
 		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 			if opts.ResultSpec != "" {
@@ -188,7 +190,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	// array, each with a fresh id. targetArr is the parent array (root array
 	// when creating at root scope). Continuations already carry their seeds.
 	if !opts.IsContinuation {
-		w.tracker.SeedThreadFromParent(targetArr, nestedItems)
+		w.tracker.SeedThreadFromParent(targetArr, nestedItems, threadYMap)
 	}
 
 	// Insert user message into the child thread's items array, AFTER the seeds
