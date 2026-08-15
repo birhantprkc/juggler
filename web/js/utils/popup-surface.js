@@ -35,7 +35,7 @@ import { registerOpenPopup } from './popup-manager.js';
 /**
  * Viewport width at or below which popups present as bottom sheets. Matches the
  * phone breakpoint used by the rest of the app (see styles.css responsive
- * section) and the `.popup-sheet` CSS block in components.css.
+ * section) and the `.popup-sheet` CSS block in styles.css.
  * @type {string}
  */
 const SHEET_QUERY = '(width <= 36rem)';

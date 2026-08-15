@@ -635,12 +635,12 @@ class ModelSelector extends HTMLElement {
     let actions = this._actionItem({
       id: 'open-settings-item',
       iconClass: 'menu-settings-icon',
-      label: 'Manage LLM providers...',
+      label: 'Manage LLM providers…',
     });
     actions += this._actionItem({
       id: 'set-default-model-item',
       iconClass: 'menu-settings-icon',
-      label: 'Set default model...',
+      label: 'Set default model…',
     });
     // Show "Reset to inherited" when thread has its own override
     if (this._messageThread && this._messageThread.threadItemId && this._messageThread.ownModelConfig) {
@@ -795,7 +795,7 @@ class ModelSelector extends HTMLElement {
       content += `
                 <li class="menu-divider"></li>
                 <li class="menu-item menu-item-hint">
-                    <span class="menu-hint-text">No providers yet.<br/>Click "Manage LLM providers…" above to add credentials.</span>
+                    <span class="menu-hint-text">No providers yet.<br/>Click "Manage LLM providers…" to add credentials.</span>
                 </li>
             `;
     }

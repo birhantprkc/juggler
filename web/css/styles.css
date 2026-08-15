@@ -2102,13 +2102,41 @@ a:hover {
         flex-direction: column;
     }
 
+    /* `display: contents` dissolves the info column so its sections become
+       children of the sheet itself, siblings of the model list and orderable
+       against it. Stacked as one column the desktop split — a pinned info
+       column beside an independently scrolling list — has nothing left to
+       divide. */
     .popup-sheet .model-menu-info {
-        flex: 0 0 auto;
+        display: contents;
     }
 
+    /* The SHEET is the single scroll container: every section takes its natural
+       height and none scrolls on its own. A list with its own `flex: 1 1 auto`
+       scroller gets no height here — the info sections alone (actions, current
+       model, usage bars, recent) already meet the 85vh cap, so a shrinkable
+       list is squeezed to nothing and the sheet offers only the recent models.
+
+       Order sorts by what the sheet is for: recent models, then the full list —
+       both on the first screen — then the current-model card, its usage bars
+       and the two "…" actions, which are read rather than tapped. */
+    .popup-sheet .info-recent { order: 1; }
+    .popup-sheet .info-divider { order: 4; }
+    .popup-sheet .info-actions { order: 5; }
+
+    .popup-sheet .info-current {
+        flex: 0 0 auto;
+        overflow: visible;
+        order: 3;
+    }
+
+    /* Stacked, so the column divider runs across the sheet, not down it. */
     .popup-sheet .model-menu-list {
-        flex: 1 1 auto;
-        overflow-y: auto;
+        flex: 0 0 auto;
+        overflow: visible;
+        order: 2;
+        border-left: none;
+        border-top: 0.0625rem solid var(--border-divider);
     }
 
     /* Dimmed backdrop behind modal sheets; tap to dismiss (wired in JS). */
