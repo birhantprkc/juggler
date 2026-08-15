@@ -160,7 +160,7 @@ export async function runTests(_ctx) {
   });
 
   // ========================================================================
-  // ReadOnlyFileSystem.readFile — raw reads for the explore_code sandbox.
+  // ReadOnlyFileSystem.readFile — raw reads for the query_code sandbox.
   // Sandboxed code processes files programmatically (JSON.parse, hashing,
   // counting), so it must get the exact bytes, NOT the LLM-context view that
   // truncates long lines at MaxLineLength (appending a "[line truncated: ...]"

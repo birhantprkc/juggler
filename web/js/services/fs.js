@@ -84,7 +84,7 @@ export class FileSystem {
     /**
      * Files successfully read through this instance: path → the backend's
      * contentHash of the raw on-disk bytes (null when the backend reported
-     * none). The explore_code tool records this in its tool-action result so
+     * none). The query_code tool records this in its tool-action result so
      * the read-before-mutate freshness guard (read-history.js) can credit a
      * sandbox script's reads. Capped so a sweep over thousands of files can't
      * bloat the transcript — files beyond the cap simply earn no credit.
@@ -185,12 +185,12 @@ export class FileSystem {
 }
 
 /**
- * Read-only filesystem for sandboxed code execution (e.g. explore_code).
+ * Read-only filesystem for sandboxed code execution (e.g. query_code).
  * Throws on any write operation.
  */
 export class ReadOnlyFileSystem extends FileSystem {
   /**
-   * Read a file's exact on-disk content. Sandboxed exploration code (explore_code)
+   * Read a file's exact on-disk content. Sandboxed exploration code (query_code)
    * processes files programmatically — JSON.parse, hashing, counting lines — so it
    * needs the real bytes, never the LLM-context view that truncates long lines at
    * MaxLineLength (injecting "...") or caps the file at DefaultMaxLines. Reading a

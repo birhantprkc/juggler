@@ -143,7 +143,7 @@ export function normalizeHistoryEntry(entry) {
 }
 
 /**
- * Forward-slash a project root for the explore_code sandbox.
+ * Forward-slash a project root for the query_code sandbox.
  *
  * `session.projectPath` is the OS-native path (backslash-separated on Windows),
  * because the rest of the client compares it against other native paths. The
@@ -755,7 +755,7 @@ class Session {
       this._projectChangedHandler = (/** @type {unknown} */ data) => {
         // The engine is persistent across a runtime project switch and, unlike
         // viewers, never reloads (it has no page to reload). It must still
-        // repoint its project root: otherwise the explore_code sandbox keeps
+        // repoint its project root: otherwise the query_code sandbox keeps
         // exposing the PREVIOUS project's root to the model, which then reads /
         // globs the old tree while the header bar shows the new project.
         if (isEngine()) {
@@ -797,7 +797,7 @@ class Session {
    * JUGGLER_PROJECT_ROOT env var; webview: the sandbox HTML template) and,
    * being persistent across SwitchProject, never reloads to pick up a new one.
    * This updates both `session.projectPath` and the live
-   * `globalThis.__jugglerProjectRoot` that the explore_code sandbox delegates
+   * `globalThis.__jugglerProjectRoot` that the query_code sandbox delegates
    * read per run, so a switched project stops leaking the previous root to the
    * model. No-op-safe for viewers (they hard-reload instead); only the engine
    * realm calls this.
@@ -1264,7 +1264,7 @@ class Session {
       // suggestion engine offers to add the very rule the user already has.
       if (data.projectPath) {
         this.projectPath = data.projectPath;
-        // Seed the live project root the explore_code sandbox delegates read.
+        // Seed the live project root the query_code sandbox delegates read.
         // The engine's boot-time root (env / sandbox template) is authoritative
         // until this point; keeping the global in step here means a later
         // project switch (_applyEngineProjectRoot) is the only thing that moves

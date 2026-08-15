@@ -4,6 +4,7 @@
 
 import BaseRegistry from './base-registry.js';
 import { getExtensionCapabilities } from '../services/extensions.js';
+import { resolveToolName } from '../services/tool-generator.js';
 
 /**
  * ContextItemRegistry - JavaScript-based context item registry system
@@ -66,6 +67,12 @@ class ContextItemRegistry extends BaseRegistry {
    *
    * Looks up an item by the tool name the LLM uses (e.g., 'write_file')
    * rather than the internal item ID (e.g., 'write-file').
+   *
+   * Callers pass names from two sources: live tool calls, and the `toolName`
+   * persisted on a stored tool-action. A stored name is whatever was
+   * advertised when the action ran, so resolving aliases here — rather than at
+   * each call site — is what keeps a reloaded conversation's tiles bound to
+   * their renderer after a tool is renamed.
    * @param {string} toolName - Tool name from LLM (e.g., 'write_file')
    * @returns {typeof import('juggler/context-item').default|undefined} Item class or undefined if not found
    */
@@ -83,8 +90,12 @@ class ContextItemRegistry extends BaseRegistry {
         }
       }
     }
-    // Try exact match first, then case-insensitive fallback
+    // Exact match first, then the alias map, then a case-insensitive sweep.
     let result = this._toolNameCache.get(toolName);
+    if (!result) {
+      const resolved = resolveToolName(toolName);
+      if (resolved !== toolName) result = this._toolNameCache.get(resolved);
+    }
     if (!result) {
       const lowerName = toolName.toLowerCase();
       for (const [name, ItemClass] of this._toolNameCache) {

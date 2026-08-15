@@ -255,19 +255,19 @@ export default [
         // matching `/toolName/i` avoids false positives on unrelated string
         // comparisons (e.g. `category === 'read'`, `status === 'plan...'`).
         {
-          selector: "BinaryExpression[operator=/^(===|==|!==|!=)$/][left.type='Identifier'][left.name=/[Tt]oolName/][right.type='Literal'][right.value=/^(bash|read|read_file|write|write_file|edit|replace_text|grep|search|glob|batch_read|batch_grep|websearch|webfetch|explore_code|askuserquestion|plan)$/]",
+          selector: "BinaryExpression[operator=/^(===|==|!==|!=)$/][left.type='Identifier'][left.name=/[Tt]oolName/][right.type='Literal'][right.value=/^(bash|read|read_file|write|write_file|edit|replace_text|grep|search|glob|batch_read|batch_grep|websearch|webfetch|query_code|askuserquestion|plan)$/]",
           message: 'FORBIDDEN: Hardcoded plugin tool-name comparison. Add behavior to the ContextItem plugin class (renderToolActionDetails, getResultSectionLabel, getStatusUI, etc.) instead of branching in general code. See web/sdk/context-item.js.'
         },
         {
-          selector: "BinaryExpression[operator=/^(===|==|!==|!=)$/][left.type='MemberExpression'][left.property.name=/[Tt]oolName/][right.type='Literal'][right.value=/^(bash|read|read_file|write|write_file|edit|replace_text|grep|search|glob|batch_read|batch_grep|websearch|webfetch|explore_code|askuserquestion|plan)$/]",
+          selector: "BinaryExpression[operator=/^(===|==|!==|!=)$/][left.type='MemberExpression'][left.property.name=/[Tt]oolName/][right.type='Literal'][right.value=/^(bash|read|read_file|write|write_file|edit|replace_text|grep|search|glob|batch_read|batch_grep|websearch|webfetch|query_code|askuserquestion|plan)$/]",
           message: 'FORBIDDEN: Hardcoded plugin tool-name comparison. Add behavior to the ContextItem plugin class instead. See web/sdk/context-item.js.'
         },
         {
-          selector: "BinaryExpression[operator=/^(===|==|!==|!=)$/][right.type='Identifier'][right.name=/[Tt]oolName/][left.type='Literal'][left.value=/^(bash|read|read_file|write|write_file|edit|replace_text|grep|search|glob|batch_read|batch_grep|websearch|webfetch|explore_code|askuserquestion|plan)$/]",
+          selector: "BinaryExpression[operator=/^(===|==|!==|!=)$/][right.type='Identifier'][right.name=/[Tt]oolName/][left.type='Literal'][left.value=/^(bash|read|read_file|write|write_file|edit|replace_text|grep|search|glob|batch_read|batch_grep|websearch|webfetch|query_code|askuserquestion|plan)$/]",
           message: 'FORBIDDEN: Hardcoded plugin tool-name comparison. Add behavior to the ContextItem plugin class instead. See web/sdk/context-item.js.'
         },
         {
-          selector: "BinaryExpression[operator=/^(===|==|!==|!=)$/][right.type='MemberExpression'][right.property.name=/[Tt]oolName/][left.type='Literal'][left.value=/^(bash|read|read_file|write|write_file|edit|replace_text|grep|search|glob|batch_read|batch_grep|websearch|webfetch|explore_code|askuserquestion|plan)$/]",
+          selector: "BinaryExpression[operator=/^(===|==|!==|!=)$/][right.type='MemberExpression'][right.property.name=/[Tt]oolName/][left.type='Literal'][left.value=/^(bash|read|read_file|write|write_file|edit|replace_text|grep|search|glob|batch_read|batch_grep|websearch|webfetch|query_code|askuserquestion|plan)$/]",
           message: 'FORBIDDEN: Hardcoded plugin tool-name comparison. Add behavior to the ContextItem plugin class instead. See web/sdk/context-item.js.'
         }
       ],

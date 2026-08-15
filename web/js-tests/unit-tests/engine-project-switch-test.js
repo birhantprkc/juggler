@@ -8,7 +8,7 @@
  *
  * The server broadcasts `project-changed` on a runtime switch, but the engine is
  * persistent across it and — unlike viewers — never reloads. It therefore kept
- * its boot-time project root, so `explore_code`'s `projectRoot` binding (and the
+ * its boot-time project root, so `query_code`'s `projectRoot` binding (and the
  * root the LLM reads and globs against) stayed pointed at the PREVIOUS project
  * after a switch: the model saw e.g. "/home/crem/tmp/codex" while the header bar
  * showed "/home/crem/dev/tmp/lc0-eval".
@@ -186,7 +186,7 @@ export async function runTests() {
       const newPath = NEW_PROJECT;
 
       // Core contract: applying an engine project switch repoints BOTH the
-      // session path and the live root the explore_code sandbox exposes. This
+      // session path and the live root the query_code sandbox exposes. This
       // runs FIRST — in the unfixed build the method is absent and throws here,
       // so the reload-capable handler exercised below is never reached.
       await session._applyEngineProjectRoot(newPath);

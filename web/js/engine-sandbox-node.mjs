@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Node engine host's explore_code sandbox delegate — the main-thread half of the
+ * Node engine host's query_code sandbox delegate — the main-thread half of the
  * worker_threads sandbox.
  *
  * sandbox-runner.js (web/sdk/lib) calls `globalThis.__hostSandboxDelegate(code,
@@ -16,7 +16,7 @@
  */
 
 /**
- * Install the Node explore_code sandbox delegate on globalThis, replacing the
+ * Install the Node query_code sandbox delegate on globalThis, replacing the
  * boot-time "not supported" rejection.
  * @param {{ origin: string, token: string, projectRoot: string }} opts
  */
@@ -32,7 +32,7 @@ export function installNodeSandboxDelegate({ origin, token, projectRoot }) {
 }
 
 /**
- * Run one explore_code script in an isolated worker_threads Worker.
+ * Run one query_code script in an isolated worker_threads Worker.
  * @param {string} code
  * @param {Record<string, any>} capabilities
  * @param {number} timeoutMs
@@ -116,7 +116,7 @@ async function runInWorkerSandbox(code, capabilities, timeoutMs, env) {
       if (settled) return;
       settled = true;
       clearTimeout(killTimer);
-      reject(new Error(`explore_code sandbox worker exited (${exitCode}) before returning a result`));
+      reject(new Error(`query_code sandbox worker exited (${exitCode}) before returning a result`));
     });
   });
 }

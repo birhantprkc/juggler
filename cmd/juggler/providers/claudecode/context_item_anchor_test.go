@@ -122,7 +122,7 @@ func TestDiagnoseDivergence_DistinguishesShiftFromEdit(t *testing.T) {
 	sys := "sys"
 	base := []provider.Message{
 		userMsg("a"),
-		toolUseMsg("call_1", "explore_code"), // thread tool_use, result pending
+		toolUseMsg("call_1", "query_code"), // thread tool_use, result pending
 		assistantMsg("b"),
 		userMsg("c"),
 	}
@@ -133,8 +133,8 @@ func TestDiagnoseDivergence_DistinguishesShiftFromEdit(t *testing.T) {
 	// sliding assistantMsg("b") and everything after it down one slot.
 	shifted := []provider.Message{
 		userMsg("a"),
-		toolUseMsg("call_1", "explore_code"),
-		toolResultMsg("call_1", "explored"), // <-- newly rendered
+		toolUseMsg("call_1", "query_code"),
+		toolResultMsg("call_1", "queried"), // <-- newly rendered
 		assistantMsg("b"),
 		userMsg("c"),
 	}

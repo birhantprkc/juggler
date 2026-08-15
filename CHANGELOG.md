@@ -12,6 +12,7 @@ of changes; this project follows semantic versioning.
 - Big revamp of the transaction panel
 - Each item's properties header shows its token cost, exact when that info is available
 - The transaction view stays open as you browse, following whichever item is selected
+- The explore_code tool is now query_code, shown as "Script"; existing conversations keep working
 
 ## [0.5.6] - 2026-08-14
 

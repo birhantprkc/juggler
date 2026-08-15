@@ -13,37 +13,42 @@ import { createLlmDescription } from 'juggler/ui';
 import { gitignoreDisabled } from './path-approval.js';
 
 /**
- * ExploreCodeContextItem - Execute JavaScript against a read-only filesystem SDK
+ * QueryCodeContextItem - Run JavaScript against a read-only filesystem SDK
  *
- * Collapses multi-step exploration into a single tool call. Only the return
+ * Collapses a multi-step query into a single tool call. Only the return
  * value enters context — intermediate reads, greps, and globs are discarded.
  * @class
  * @augments ContextItem
  */
-class ExploreCodeContextItem extends ContextItem {
+class QueryCodeContextItem extends ContextItem {
   /** @returns {{color: string, icon?: string}} Badge options */
   static getBadgeOptions() {
-    return { color: 'search', icon: 'icon-search' };
+    return { color: 'search', icon: 'icon-play' };
   }
 
   static MANIFEST = {
+    // Fixed, and deliberately unrelated to both the file name and the tool
+    // name. This id is persisted in every user's enabled-plugin list, and is
+    // the key `system-prompt-contribution.js` gates this tool's guidance on.
+    // Changing it flips the plugin's enabled state for anyone whose plugin set
+    // is not the default, and silently drops the tool's system-prompt section.
     id: 'explore-code',
-    name: 'Explore Code',
+    name: 'Query Code',
     version: '1.0.0',
-    description: 'Execute JavaScript against a read-only filesystem SDK for efficient exploration',
+    description: 'Run JavaScript against a read-only filesystem SDK to compute an answer in one call',
     author: 'Juggler Team',
     requiresApproval: false
   };
 
   /**
-   * Get tool definitions for explore_code
+   * Get tool definitions for query_code
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
    */
   static getToolDefinitions() {
     return [{
-      name: 'explore_code',
+      name: 'query_code',
       category: 'read',
-      description: 'Execute JavaScript for read-only filesystem exploration. Collapses multi-step exploration into one call — only the return value enters context.',
+      description: 'Run JavaScript against a read-only view of the codebase. Collapses many reads, greps and globs into one call — only the value you return enters context.',
       input_schema: {
         type: 'object',
         properties: {
@@ -53,7 +58,7 @@ class ExploreCodeContextItem extends ContextItem {
           },
           description: {
             type: 'string',
-            description: 'Short human-readable description of what this exploration does (e.g. "find all files importing auth module"). Shown to the user in the conversation.'
+            description: 'Short human-readable description of what this query does (e.g. "find all files importing auth module"). Shown to the user in the conversation.'
           },
           timeout: {
             type: 'number',
@@ -88,7 +93,7 @@ class ExploreCodeContextItem extends ContextItem {
   }
 
   /**
-   * Execute the exploration script via the host sandbox (juggler/sandbox),
+   * Execute the query script via the host sandbox (juggler/sandbox),
    * exposing a read-only filesystem plus grep/glob search to the code. The
    * sandbox also injects `path` and `projectRoot`. Only the script's return
    * value enters context.
@@ -135,7 +140,7 @@ class ExploreCodeContextItem extends ContextItem {
     // Capture the action's abort signal in the closure: these helpers are
     // destructured off the returned object, so `this` is not the plugin when
     // they run. Forwarding the signal makes the sandbox's grep/glob calls
-    // cancellable along with the rest of the explore_code action.
+    // cancellable along with the rest of the query_code action.
     const signal = this.signal;
     const allowedPaths = this.getToolAllowedRoots();
     // The conversation's "search all files" toggle applies to the sandbox's
@@ -196,7 +201,7 @@ class ExploreCodeContextItem extends ContextItem {
    */
   getSummary(outcome) {
     if (!outcome.success) {
-      return this.failureSummary(outcome.error || 'explore_code execution failed');
+      return this.failureSummary(outcome.error || 'query_code execution failed');
     }
 
     const result = /** @type {Record<string, unknown>} */ (outcome.result);
@@ -226,8 +231,8 @@ class ExploreCodeContextItem extends ContextItem {
       : '';
 
     return this.buildStatusUI(actionStatus, {
-      typeName: 'Explore',
-      pending: () => (desc ? createLlmDescription(desc) : 'Exploring...'),
+      typeName: 'Script',
+      pending: () => (desc ? createLlmDescription(desc) : 'Running…'),
       success: () => (desc ? createLlmDescription(desc) : ''),
       failurePrefix: 'failed'
     });
@@ -243,7 +248,7 @@ class ExploreCodeContextItem extends ContextItem {
   }
 
   /**
-   * explore_code returns a JSON-serialised value (the script's return), so the
+   * query_code returns a JSON-serialised value (the script's return), so the
    * Output section is highlighted as JSON.
    * @override
    * @param {string} _toolName
@@ -265,12 +270,12 @@ class ExploreCodeContextItem extends ContextItem {
       helpers.addLlmDescription(wrapper, 'Description', String(input.description));
     }
     const rawCode = input.code !== null && input.code !== undefined ? String(input.code) : '';
-    const code = ExploreCodeContextItem._prettyPrintCode(rawCode);
+    const code = QueryCodeContextItem._prettyPrintCode(rawCode);
     helpers.addSubsection(wrapper, 'Code', code, 'properties-panel-code', { language: 'javascript' });
   }
 
   /**
-   * Best-effort pretty-print for display of a crammed, single-line explore_code
+   * Best-effort pretty-print for display of a crammed, single-line query_code
    * script. This is deliberately NOT a real formatter — no parser, no
    * dependency. It only engages when the script has no line structure of its
    * own (already-multi-line scripts are returned untouched), inserts newlines
@@ -283,7 +288,7 @@ class ExploreCodeContextItem extends ContextItem {
    * @returns {string} Reformatted text, or the original when already multi-line or on failure
    */
   static _prettyPrintCode(src) {
-    return prettyPrintExploreScript(src);
+    return prettyPrintQueryScript(src);
   }
 }
 
@@ -299,11 +304,11 @@ const CLOSE_CONTINUATIONS = ')];,.';
 const CLOSE_KEYWORD_RE = /^(else|catch|finally|while)\b/;
 
 /**
- * @see ExploreCodeContextItem._prettyPrintCode
+ * @see QueryCodeContextItem._prettyPrintCode
  * @param {string} src - Raw script text
  * @returns {string} Reformatted text, or the original when already multi-line or on failure
  */
-function prettyPrintExploreScript(src) {
+function prettyPrintQueryScript(src) {
   if (typeof src !== 'string' || src === '') return src;
   // Already multi-line → the model laid it out; leave it exactly as-is.
   if (src.split('\n').filter((l) => l.trim() !== '').length !== 1) return src;
@@ -463,4 +468,4 @@ function prettyPrintExploreScript(src) {
   }
 }
 
-export default ExploreCodeContextItem;
+export default QueryCodeContextItem;

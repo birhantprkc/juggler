@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * ESM loader hooks for the explore_code sandbox worker (engine-sandbox-worker.mjs).
+ * ESM loader hooks for the query_code sandbox worker (engine-sandbox-worker.mjs).
  *
  * User code in the sandbox may `import('<projectRoot>/rel/path')` to load a
  * project module. In the browser iframe those resolve against the server's http
@@ -42,7 +42,7 @@ export async function resolve(specifier, context, nextResolve) {
   if (origin && url.startsWith(origin + '/')) {
     return { url, shortCircuit: true };
   }
-  throw new Error(`import of "${specifier}" is not allowed in the explore_code sandbox`);
+  throw new Error(`import of "${specifier}" is not allowed in the query_code sandbox`);
 }
 
 /**
@@ -56,7 +56,7 @@ export async function load(url, context, nextLoad) {
   if (origin && url.startsWith(origin + '/')) {
     const res = await fetch(url, token ? { headers: { 'X-Juggler-Token': token } } : undefined);
     if (!res.ok) {
-      throw new Error(`explore_code import failed (${res.status}) for ${url}`);
+      throw new Error(`query_code import failed (${res.status}) for ${url}`);
     }
     const source = await res.text();
     const format = url.split('?')[0].endsWith('.json') ? 'json' : 'module';

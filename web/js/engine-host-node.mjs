@@ -41,7 +41,7 @@ function readServerAddr(argv) {
 globalThis.JUGGLER_ENGINE = true;
 globalThis.__assetPrefix = '';
 globalThis.__jugglerToken = apiToken;
-// Seed the live project root the explore_code sandbox delegate reads per run.
+// Seed the live project root the query_code sandbox delegate reads per run.
 // The engine session keeps it current across a runtime project switch (see
 // session.js _applyEngineProjectRoot); this boot value covers the window before
 // the session loads.
@@ -143,16 +143,16 @@ function installAPITokenFetchShim(token) {
   };
 }
 
-// explore_code delegates its untrusted-script iframe to a host with a document
+// query_code delegates its untrusted-script iframe to a host with a document
 // (engine-worker-main.js in the webview case). The Node host's equivalent is a
 // worker_threads sandbox (engine-sandbox-node.mjs): untrusted code runs in an
 // isolated worker with every Node built-in locked out, capability calls RPC back
 // here, and the worker is terminated on timeout. Installed synchronously below
-// so the delegate exists before the engine registers the explore_code tool.
+// so the delegate exists before the engine registers the query_code tool.
 await installSandboxDelegate(origin, apiToken, projectRoot);
 
 /**
- * Install the worker_threads explore_code sandbox delegate on globalThis. Kept
+ * Install the worker_threads query_code sandbox delegate on globalThis. Kept
  * as a dynamic import so this entry has no static engine imports.
  * @param {string} serverOrigin
  * @param {string} token

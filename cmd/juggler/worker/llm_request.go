@@ -267,6 +267,31 @@ func buildUserMessageMap(item ConversationItem) map[string]any {
 	return m
 }
 
+// wireToolNames maps a tool name a conversation may have recorded onto the name
+// the tools array currently advertises. Only the wire is normalised — the
+// document keeps the name its action actually ran under, so history stays
+// truthful and no stored state is rewritten.
+//
+// The claudecode provider is what requires this. prefixJugglerToolUses re-adds
+// the mcp__juggler__ prefix to a historical tool_use only when the bare name is
+// in the tool set handed to the CLI; a name missing from that set is written
+// bare into the synthetic session file. On resume the model imitates the bare
+// name, the CLI rejects it as unavailable, and the model re-issues the call —
+// re-running a tool whose side effects already landed. Other providers echo the
+// name verbatim and tolerate it, but they still steer better when the name in
+// the history is one they can actually call.
+var wireToolNames = map[string]string{
+	"explore_code": "query_code",
+}
+
+// wireToolName returns the name to put on the wire for a recorded tool name.
+func wireToolName(name string) string {
+	if current, ok := wireToolNames[name]; ok {
+		return current
+	}
+	return name
+}
+
 // buildToolUseMap returns a tool-use message map from the item's tool fields.
 func buildToolUseMap(item ConversationItem) map[string]any {
 	var toolInput map[string]any
@@ -276,7 +301,7 @@ func buildToolUseMap(item ConversationItem) map[string]any {
 	m := map[string]any{
 		"type":      "tool-use",
 		"toolUseId": item.ToolUseID,
-		"toolName":  item.ToolName,
+		"toolName":  wireToolName(item.ToolName),
 		"toolInput": toolInput,
 	}
 	if len(item.ProviderData) > 0 {

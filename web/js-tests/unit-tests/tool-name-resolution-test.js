@@ -18,11 +18,16 @@
  *      `mcp__juggler__BatchGrep` must canonicalise all the way to
  *      `batch_grep`.
  *   4. Be a no-op on names that are already canonical.
+ *
+ * It also pins the registry lookup that depends on all of the above: a
+ * tool-action stores the tool name it ran under, so every stored name a tool
+ * has been advertised under must still resolve to that tool's class.
  * @module unit-tests/tool-name-resolution-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
+import { assert, initializeRegistries } from '../utilities/test-helpers.js';
 import { resolveToolName } from '../../js/services/tool-generator.js';
+import contextItemRegistry from '../../js/registries/context-item-registry.js';
 
 /**
  * @typedef {object} TestResult
@@ -103,6 +108,32 @@ export async function runTests(_ctx) {
     // rather than reporting "Unknown tool" for `mcp__juggler__bash`.
     assert(resolveToolName('mcp__juggler__mcp__juggler__bash') === 'bash',
       `expected bash, got ${resolveToolName('mcp__juggler__mcp__juggler__bash')}`);
+  });
+
+  // The registry lookup is the load-bearing half of the alias map. Roughly a
+  // dozen render sites call getByToolName with the toolName read straight off a
+  // stored tool-action, never passing it through resolveToolName first. A stored
+  // name is whatever the tool was advertised as when the action ran, so unless
+  // the registry resolves aliases itself, reopening a conversation strands every
+  // one of those tiles without a renderer — no icon, no type name, no details.
+  // Deliberately asserted through getByToolName rather than resolveToolName: it
+  // is the lookup, not the mapping, that the render sites depend on.
+  await initializeRegistries();
+
+  run('a superseded tool name resolves to the same class as the current one', () => {
+    const current = contextItemRegistry.getByToolName('query_code');
+    assert(current !== undefined, 'query_code must be registered');
+    assert(contextItemRegistry.getByToolName('explore_code') === current,
+      'a tool-action stored as explore_code must still resolve to the query_code item');
+    assert(contextItemRegistry.getByToolName('ExploreCode') === current,
+      'the capitalised form must resolve to the same item');
+  });
+
+  run('an unknown tool name still resolves to nothing', () => {
+    // The alias fallback must stay additive: it may rescue a superseded name,
+    // never invent a class for a name no plugin claims.
+    assert(contextItemRegistry.getByToolName('no_such_tool_at_all') === undefined,
+      'an unclaimed tool name must not resolve');
   });
 
   return { passed, failed, errors };

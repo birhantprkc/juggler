@@ -46,7 +46,7 @@ func (h *nodeHost) Start(addr string) error {
 	cmd := exec.Command(h.nodePath, spec.Entry, "--server", spec.Addr)
 	// The token goes via env, never argv: argv is world-readable in the process
 	// table, and the token gates the sensitive /api surface. The project root is
-	// passed alongside it so the explore_code sandbox can expose `projectRoot`.
+	// passed alongside it so the query_code sandbox can expose `projectRoot`.
 	cmd.Env = append(os.Environ(),
 		"JUGGLER_TOKEN="+spec.Token,
 		"JUGGLER_PROJECT_ROOT="+spec.ProjectRoot,

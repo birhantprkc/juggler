@@ -18,6 +18,7 @@
  */
 
 import systemPromptContribution from '../system-prompt-contribution.js';
+import QueryCodeContextItem from '../context-items/query-code-context-item.js';
 import { buildExtensionSystemPromptContributions } from '../../../js/services/extensions.js';
 import {
   initializeRegistries,
@@ -34,7 +35,11 @@ import {
  * @property {string[]} errors Collected error messages.
  */
 
-const EXPLORE_MARKER = 'prefer explore_code';
+const EXPLORE_MARKER = 'prefer query_code';
+// The plugin id the query_code tool ships under. Pinned as a literal on
+// purpose: it is persisted in users' enabled-plugin lists, so it is a
+// compatibility constant, not a name that may follow the tool or the file.
+const QUERY_CODE_PLUGIN_ID = 'explore-code';
 const THREAD_MARKER = 'use create_thread';
 const NEW_CONV_MARKER = 'use new_conversation';
 
@@ -63,23 +68,46 @@ export async function runTests(_ctx) {
     }
   }
 
+  // ---- Layer 0: the plugin id is a compatibility constant ----
+
+  // The item's file, class, tool name and display name all say "query code";
+  // its plugin id still says "explore-code", and must. The id is persisted in
+  // users' enabled-plugin lists, so renaming it to match its neighbours flips
+  // the plugin's enabled state for anyone whose plugin set is not the default.
+  // Nothing else fails when it drifts — the gating tests below all pass their
+  // own literals — so this is the only assertion standing between a tidy-up
+  // rename and silently disabling a tool on upgrade.
+  await test('the query_code plugin id is unchanged', () => {
+    assert(QueryCodeContextItem.MANIFEST.id === QUERY_CODE_PLUGIN_ID,
+      `the plugin id is persisted in users' enabled-plugin lists and must stay ${QUERY_CODE_PLUGIN_ID}, got ${QueryCodeContextItem.MANIFEST.id}`);
+  });
+
+  // ...and the section gates on THAT id. Pinning both ends together means a
+  // coordinated rename of id + gate still trips the assertion above, while a
+  // one-sided rename trips this one.
+  await test('the query_code section gates on the plugin id the item declares', () => {
+    const out = systemPromptContribution({ enabledPluginIds: [QueryCodeContextItem.MANIFEST.id] });
+    assert(out.includes(EXPLORE_MARKER),
+      'the system-prompt section must gate on the id the item actually declares');
+  });
+
   // ---- Layer 1: gating purity (pure function, no session) ----
 
   await test('both sections present when both plugins enabled', () => {
     const out = systemPromptContribution({ enabledPluginIds: ['explore-code', 'thread', 'read-file'] });
-    assert(out.includes(EXPLORE_MARKER), 'explore_code section should be present');
+    assert(out.includes(EXPLORE_MARKER), 'query_code section should be present');
     assert(out.includes(THREAD_MARKER), 'create_thread section should be present');
   });
 
-  await test('explore_code section absent when explore-code disabled', () => {
+  await test('query_code section absent when explore-code disabled', () => {
     const out = systemPromptContribution({ enabledPluginIds: ['thread'] });
-    assert(!out.includes(EXPLORE_MARKER), 'explore_code section must be gated out');
+    assert(!out.includes(EXPLORE_MARKER), 'query_code section must be gated out');
     assert(out.includes(THREAD_MARKER), 'create_thread section should remain');
   });
 
   await test('thread section absent when thread disabled', () => {
     const out = systemPromptContribution({ enabledPluginIds: ['explore-code'] });
-    assert(out.includes(EXPLORE_MARKER), 'explore_code section should remain');
+    assert(out.includes(EXPLORE_MARKER), 'query_code section should remain');
     assert(!out.includes(THREAD_MARKER), 'create_thread section must be gated out');
   });
 
@@ -140,7 +168,7 @@ export async function runTests(_ctx) {
   await test('aggregator includes core contribution when its plugins enabled', async () => {
     await initializeRegistries();
     const contrib = await buildExtensionSystemPromptContributions();
-    assert(contrib.includes(EXPLORE_MARKER), 'aggregator should include explore_code guidance');
+    assert(contrib.includes(EXPLORE_MARKER), 'aggregator should include query_code guidance');
     assert(contrib.includes(THREAD_MARKER), 'aggregator should include create_thread guidance');
   });
 
@@ -152,7 +180,7 @@ export async function runTests(_ctx) {
     const sysPrompt = /** @type {string} */ (context.systemPrompt || '');
     // explore-code and thread are enabled by default, so both markers must
     // be present — proving the extension hook → aggregator → builder path.
-    assert(sysPrompt.includes(EXPLORE_MARKER), `system prompt should include explore_code guidance; got head: ${sysPrompt.slice(0, 200)}`);
+    assert(sysPrompt.includes(EXPLORE_MARKER), `system prompt should include query_code guidance; got head: ${sysPrompt.slice(0, 200)}`);
     assert(sysPrompt.includes(THREAD_MARKER), 'system prompt should include create_thread guidance');
   });
 

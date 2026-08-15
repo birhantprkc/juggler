@@ -450,7 +450,7 @@ class SystemPromptContextItem extends ContextItem {
     }
 
     // Section 4: Extension guidance — the enabled extensions' aggregated
-    // system-prompt contributions (tone, tool-preference, explore_code, etc.).
+    // system-prompt contributions (tone, tool-preference, query_code, etc.).
     // Aggregation is async; fill the section once it resolves, or drop it.
     // Strategies contribute no system-prompt text (they inject messages), so
     // there is no strategy section here.

@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-// The explore_code sandbox filesystem reads files to process them
+// The query_code sandbox filesystem reads files to process them
 // programmatically (JSON.parse, hashing, line counting). It must therefore get
 // the exact bytes on disk, NOT the LLM-context view that truncates long lines
 // at MaxLineLength (appending a "[line truncated: ...]" marker) and caps files

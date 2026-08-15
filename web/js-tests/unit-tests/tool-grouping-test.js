@@ -223,7 +223,7 @@ export async function runTests() {
       ...Array.from({ length: 3 }, () => tool('read')),
       // All groupable: a row that declares itself ungroupable (`todo`, `plan`)
       // would break this run rather than join it — that is case 3b's business.
-      tool('bash'), tool('glob'), tool('grep'), tool('write'), tool('explore_code'),
+      tool('bash'), tool('glob'), tool('grep'), tool('write'), tool('query_code'),
     ]).items;
     const capped = summarizeGroup(fold(many)[0].members);
     const total = [...capped.matchAll(/(\d+)(?:×|\u00A0more)/g)].reduce((n, m) => n + Number(m[1]), 0);

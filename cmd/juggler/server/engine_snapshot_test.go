@@ -35,8 +35,8 @@ func TestSnapshotEngineGraph(t *testing.T) {
 
 	// The sibling glue modules are copied beside the entry at the snapshot root:
 	// the extension loader hooks (glue registers ./engine-loader-hooks.mjs) and
-	// the explore_code worker_threads sandbox (delegate + worker + its loader
-	// hooks). Missing any of them breaks node mode — extensions or explore_code.
+	// the query_code worker_threads sandbox (delegate + worker + its loader
+	// hooks). Missing any of them breaks node mode — extensions or query_code.
 	for _, name := range []string{
 		engineLoaderHooksName,
 		"engine-sandbox-node.mjs",

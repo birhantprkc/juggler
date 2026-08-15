@@ -15,7 +15,7 @@
  * document:
  *
  *  - successful `read`/`write`/`edit`/`batch_read` tool-actions for the path
- *    (the model read, created, or already mutated it), and `explore_code`
+ *    (the model read, created, or already mutated it), and `query_code`
  *    actions whose sandbox script `fs.readFile`-ed it. Their recorded results
  *    carry `contentHash` — the SHA-256 of the file's raw on-disk bytes that the
  *    backend echoes from every read and mutation — which is compared against
@@ -208,13 +208,21 @@ export async function acquirePathLock(session, path) {
 }
 
 /**
- * Tools whose successful completion means the model has seen the file's bytes.
- * `batch_read` is matched via its per-file results (which carry per-file
- * success and hash) rather than its input list, and `explore_code` via the
- * `filesRead` map its result records for every `fs.readFile` its script made.
+ * Every tool name a stored sandbox-script action may carry. A tool-action
+ * persists the tool name that was advertised when it ran, so a transcript scan
+ * has to recognise each name the script tool has been offered under.
  * @type {Set<string>}
  */
-const SEEN_TOOLS = new Set(['read', 'write', 'edit', 'batch_read', 'explore_code']);
+const QUERY_CODE_TOOLS = new Set(['query_code', 'explore_code']);
+
+/**
+ * Tools whose successful completion means the model has seen the file's bytes.
+ * `batch_read` is matched via its per-file results (which carry per-file
+ * success and hash) rather than its input list, and the sandbox-script tool via
+ * the `filesRead` map its result records for every `fs.readFile` its script made.
+ * @type {Set<string>}
+ */
+const SEEN_TOOLS = new Set(['read', 'write', 'edit', 'batch_read', ...QUERY_CODE_TOOLS]);
 
 /**
  * Read a property from either a Y.Map or a plain object. Transcript values are
@@ -307,8 +315,8 @@ function seenState(conversation, session, path) {
         collectBatchRead(state, session, target, toolInput, ymap);
         continue;
       }
-      if (toolName === 'explore_code') {
-        collectExploreCode(state, session, target, ymap);
+      if (QUERY_CODE_TOOLS.has(toolName)) {
+        collectQueryCode(state, session, target, ymap);
         continue;
       }
 
@@ -393,9 +401,9 @@ function yentries(obj) {
 }
 
 /**
- * Fold a completed explore_code action's recorded reads into `state`. The
+ * Fold a completed query_code action's recorded reads into `state`. The
  * tool's result carries `filesRead` — path → contentHash for every file the
- * sandbox script's `fs.readFile` pulled — recorded by the explore-code item at
+ * sandbox script's `fs.readFile` pulled — recorded by the query-code item at
  * execute time. The model's own script chose those reads, so they earn full
  * hash credit; grep/glob results are deliberately absent (fragments and names
  * don't show the model the file).
@@ -405,7 +413,7 @@ function yentries(obj) {
  * @param {any} ymap - The tool-action Y.Map
  * @returns {void}
  */
-function collectExploreCode(state, session, target, ymap) {
+function collectQueryCode(state, session, target, ymap) {
   const result = ymap.get('result');
   if (!result || yget(result, 'isError') === true) return;
   for (const [file, hash] of yentries(yget(opsPayload(result), 'filesRead'))) {

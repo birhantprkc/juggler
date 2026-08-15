@@ -272,7 +272,7 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 	totalLines := len(lines)
 
 	// Raw mode returns the exact on-disk bytes: no per-line truncation and no
-	// DefaultMaxLines cap. Sandboxed exploration code (explore_code's read-only
+	// DefaultMaxLines cap. Sandboxed exploration code (query_code's read-only
 	// filesystem) processes files programmatically — JSON.parse, hashing, line
 	// counting — so the context-trimming that keeps minified files out of the
 	// LLM prompt would instead corrupt the data (a truncated line + an injected

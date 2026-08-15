@@ -3,10 +3,10 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * explore_code sandbox worker for the Node engine host — the worker_threads twin
+ * query_code sandbox worker for the Node engine host — the worker_threads twin
  * of sandbox.html's nested worker.
  *
- * The engine's explore_code tool runs untrusted, LLM-authored JavaScript with NO
+ * The engine's query_code tool runs untrusted, LLM-authored JavaScript with NO
  * approval gate, so it must be a hard read-only boundary: it may search and read
  * through the injected capabilities (fs/grep/glob, which the main thread
  * services against the read-only, allowed-paths-enforcing filesystem) but must
@@ -83,7 +83,7 @@ function rpc(name, method, args) {
 function sandboxImport(spec) {
   if (typeof spec !== 'string') return Promise.reject(new Error('import specifier must be a string'));
   if (/^node:/.test(spec) || isBuiltinName(spec)) {
-    return Promise.reject(new Error(`import of "${spec}" is not allowed in the explore_code sandbox`));
+    return Promise.reject(new Error(`import of "${spec}" is not allowed in the query_code sandbox`));
   }
   let url;
   if (/^[a-zA-Z]:[\\/]/.test(spec)) {
@@ -131,7 +131,7 @@ const code = rewriteDynamicImports(String(rawCode));
 // complete. If the global `process` cannot be removed, fail closed rather than
 // run porously.
 if (!neuterEscapeHatches()) {
-  post({ kind: 'result', ok: false, error: 'explore_code sandbox could not be hardened (process global is not removable)' });
+  post({ kind: 'result', ok: false, error: 'query_code sandbox could not be hardened (process global is not removable)' });
 } else {
   runUserCode();
 }

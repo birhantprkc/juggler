@@ -24,7 +24,7 @@ import { tests as streamingTests } from '../integration-tests/streaming-tests.js
 import { tests as cancellationTests } from '../integration-tests/cancellation-tests.js';
 import { tests as politeStopTests } from '../integration-tests/polite-stop-tests.js';
 import { tests as askUserQuestionTests } from '../integration-tests/ask-user-question-tests.js';
-import { tests as exploreCodeTests } from '../integration-tests/explore-code-tests.js';
+import { tests as queryCodeTests } from '../integration-tests/query-code-tests.js';
 import { tests as threadTests } from '../integration-tests/thread-tests.js';
 import { tests as threadContextModeTests } from '../integration-tests/thread-context-mode-tests.js';
 import { tests as threadCancellationTests } from '../integration-tests/thread-cancellation-tests.js';
@@ -202,7 +202,7 @@ __apChan.onmessage = (/** @type {MessageEvent} */ e) => {
 const ALL_TESTS = [
   ...globTests,
   ...readFileTests,
-  ...exploreCodeTests,
+  ...queryCodeTests,
   ...writeFileTests,
   ...approvalFlowTests,
   ...approvalWaitTests,

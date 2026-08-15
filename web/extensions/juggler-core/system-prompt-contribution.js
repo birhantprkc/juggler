@@ -67,14 +67,14 @@ export default function systemPromptContribution({ enabledPluginIds }) {
 
   if (has('explore-code')) {
     toolUsage.push(
-      '### Exploring across files — prefer explore_code\n' +
+      '### Querying across files — prefer query_code\n' +
 			'When you need to understand something that spans several files — trace a call chain, find ' +
-			'every usage of a symbol, map how a module fits together — reach for `explore_code` instead of a ' +
+			'every usage of a symbol, map how a module fits together — reach for `query_code` instead of a ' +
 			'sequence of individual read/grep/glob calls. It runs all of your reads, greps, and globs together ' +
 			'inside one sandboxed JavaScript call and returns only the value you compute. The dozen ' +
 			'intermediate file dumps never enter the conversation, so you stay oriented and your context stays ' +
-			'clean. Rule of thumb: if exploring would otherwise take three or more separate read-only calls, ' +
-			'write one `explore_code` script instead.'
+			'clean. Rule of thumb: if answering would otherwise take three or more separate read-only calls, ' +
+			'write one `query_code` script instead.'
     );
   }
 

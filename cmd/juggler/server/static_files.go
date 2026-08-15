@@ -148,7 +148,7 @@ func setSandboxSecurityHeaders(w http.ResponseWriter, nonce, selfOrigin string) 
 }
 
 // corsMiddleware adds CORS headers. Cross-Origin-Resource-Policy is set
-// to cross-origin so the explore_code sandbox iframe — which runs with an
+// to cross-origin so the query_code sandbox iframe — which runs with an
 // opaque/null origin (no allow-same-origin) — can fetch and `import()`
 // static assets served by this handler. ACAO=* alone permits the load
 // against the CORS check; CORP is a separate, stricter gate WebKit
@@ -156,7 +156,7 @@ func setSandboxSecurityHeaders(w http.ResponseWriter, nonce, selfOrigin string) 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The permissive ACAO:* + CORP:cross-origin exists ONLY so the
-		// explore_code sandbox iframe (opaque/null origin) can fetch and
+		// query_code sandbox iframe (opaque/null origin) can fetch and
 		// import() static module assets. The /api surface is same-origin — a
 		// wildcard ACAO there would let any website read tool/provider/session
 		// responses, so scope the permissive headers to non-/api (static asset)

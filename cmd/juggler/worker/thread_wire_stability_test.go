@@ -10,7 +10,7 @@ import (
 )
 
 // TestAppendThreadMessages_StableWireShapeAcrossCompletion is the guard for the
-// claudecode cache-miss regression: a delegated-tool thread (e.g. explore_code)
+// claudecode cache-miss regression: a delegated-tool thread (e.g. query_code)
 // must render the SAME wire shape — a tool_use + tool_result pair — whether its
 // sub-thread result has landed yet or not.
 //
@@ -25,7 +25,7 @@ func TestAppendThreadMessages_StableWireShapeAcrossCompletion(t *testing.T) {
 		Type:      ItemTypeThread,
 		ItemID:    "thread_1",
 		ToolUseID: "call_1",
-		ToolName:  "explore_code",
+		ToolName:  "query_code",
 		ToolInput: json.RawMessage(`{"goal":"map the auth flow"}`),
 		Goal:      "map the auth flow",
 	}

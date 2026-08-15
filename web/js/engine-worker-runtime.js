@@ -71,8 +71,8 @@ function installAPITokenFetchShim(token) {
   };
 }
 
-// ── Host-delegated sandbox (explore_code) ──────────────────────────────────
-// explore_code runs untrusted JS in an opaque-origin iframe, which needs a
+// ── Host-delegated sandbox (query_code) ──────────────────────────────────
+// query_code runs untrusted JS in an opaque-origin iframe, which needs a
 // `document` the worker doesn't have. We delegate the iframe to the main-thread
 // host (engine-worker-main) and service the script's capability calls (fs/grep/
 // glob) back here, where their closures live. The untrusted code never runs in

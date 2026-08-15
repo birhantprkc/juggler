@@ -7,7 +7,7 @@
  * sync, tool execution — runs in the module worker spawned below
  * (engine-worker-runtime.js, which boots the real EngineApp). This host exists
  * only to own that worker, mirror its readiness onto window.__engineReady, and
- * run the explore_code sandbox iframe on the worker's behalf (a worker has no
+ * run the query_code sandbox iframe on the worker's behalf (a worker has no
  * document, so it delegates the iframe here).
  */
 
@@ -18,7 +18,7 @@ console.info('[EngineWorkerHost] Starting worker-backed engine');
 const worker = new Worker(`${/** @type {any} */ (window).__assetPrefix || ''}/js/engine-worker-runtime.js`, { type: 'module' });
 
 // ── Sandbox bridge ─────────────────────────────────────────────────────────
-// The worker can't create the explore_code isolation iframe (no document), so
+// The worker can't create the query_code isolation iframe (no document), so
 // it asks us to run it here. We run the real iframe sandbox and forward each of
 // the script's capability calls back to the worker (where fs/grep/glob live).
 let capCallSeq = 0;

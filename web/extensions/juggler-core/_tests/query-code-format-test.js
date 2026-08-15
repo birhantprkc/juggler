@@ -4,15 +4,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Tests for ExploreCodeContextItem._prettyPrintCode — the best-effort,
- * dependency-free display formatter for crammed single-line explore_code
+ * Tests for QueryCodeContextItem._prettyPrintCode — the best-effort,
+ * dependency-free display formatter for crammed single-line query_code
  * scripts. It must: leave already-multi-line scripts untouched, break a
  * single-line script into indented statements, keep object-literal args and
  * string/regex content intact, and fall back to the original on anything odd.
- * @module unit-tests/explore-code-format-test
+ * @module unit-tests/query-code-format-test
  */
 
-import ExploreCodeContextItem from '../context-items/explore-code-context-item.js';
+import QueryCodeContextItem from '../context-items/query-code-context-item.js';
 
 /**
  * @typedef {object} TestResult
@@ -26,7 +26,7 @@ import ExploreCodeContextItem from '../context-items/explore-code-context-item.j
  */
 export async function runTests() {
   let passed = 0, failed = 0; const errors = [];
-  const fmt = (s) => ExploreCodeContextItem._prettyPrintCode(s);
+  const fmt = (s) => QueryCodeContextItem._prettyPrintCode(s);
   const check = (label, fn) => {
     try { fn(); passed++; } catch (e) { failed++; errors.push(`${label}: ${e.message}`); }
   };

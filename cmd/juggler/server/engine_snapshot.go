@@ -38,7 +38,7 @@ const engineLoaderHooksName = "engine-loader-hooks.mjs"
 // nodeRootModules are the checked-in glue modules copied verbatim to the
 // snapshot root beside engine-host.mjs. They have no static engine imports (only
 // node built-ins and each other, resolved relative to the root), so they need no
-// rewriting: the entry glue and the explore_code worker_threads sandbox
+// rewriting: the entry glue and the query_code worker_threads sandbox
 // (delegate + worker entry + its loader hooks) all sit here and reference each
 // other by relative path.
 var nodeRootModules = []string{
@@ -56,7 +56,7 @@ type EngineHostSpec struct {
 	Entry       string // absolute path to the snapshot entry (engine-host.mjs)
 	Addr        string // server address the engine dials (host:port)
 	Token       string // per-instance API token, passed to node via JUGGLER_TOKEN
-	ProjectRoot string // project root, exposed to the explore_code sandbox as projectRoot
+	ProjectRoot string // project root, exposed to the query_code sandbox as projectRoot
 	Cleanup     func() // removes the per-boot snapshot once the Node host exits
 }
 
@@ -137,7 +137,7 @@ func (s *Server) snapshotEngineGraph(destDir string) (string, error) {
 		return "", fmt.Errorf("write engine host entry: %w", err)
 	}
 
-	// Copy the sibling glue modules (loader hooks + explore_code sandbox) beside
+	// Copy the sibling glue modules (loader hooks + query_code sandbox) beside
 	// the entry at the snapshot root, each under its own basename. They are
 	// copied verbatim — they import only node built-ins and each other by
 	// relative path, so nothing to rewrite.

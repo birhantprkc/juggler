@@ -289,33 +289,50 @@ export async function runTests(_ctx) {
   });
 
   // =========================================================================
-  // explore_code: files the sandbox script fs.readFile-ed are recorded in the
+  // query_code: files the sandbox script fs.readFile-ed are recorded in the
   // result's filesRead map and earn full hash credit. As with any edit, a stale
   // recorded hash no longer blocks a targeted replace whose old_str matches the
   // current bytes.
   // =========================================================================
-  await test('explore_code read allows edit', async () => {
+  await test('query_code read allows edit', async () => {
     const conversation = await createTestConversation(session);
     const writeRes = await writeFileOp({ path: 'guard-explore.txt', content: 'hello world\n' });
-    seedAction(conversation, 'explore_code',
+    seedAction(conversation, 'query_code',
       { code: 'return (await fs.readFile("guard-explore.txt")).length' },
       { result: 12, filesRead: { 'guard-explore.txt': writeRes.contentHash } });
 
     const edit = mkItem(EditClass, conversation);
     const res = await edit.validate({ file_path: 'guard-explore.txt', old_string: 'world', new_string: 'there' });
-    assert(res.valid === true, `explore_code-then-edit must be allowed, got ${JSON.stringify(res)}`);
+    assert(res.valid === true, `query_code-then-edit must be allowed, got ${JSON.stringify(res)}`);
   });
 
-  await test('stale explore_code read still allows a matching edit', async () => {
+  await test('stale query_code read still allows a matching edit', async () => {
     const conversation = await createTestConversation(session);
     await writeFileOp({ path: 'guard-explore-stale.txt', content: 'hello world\n' });
-    seedAction(conversation, 'explore_code',
+    seedAction(conversation, 'query_code',
       { code: 'return null' },
       { result: null, filesRead: { 'guard-explore-stale.txt': BOGUS_HASH } });
 
     const edit = mkItem(EditClass, conversation);
     const res = await edit.validate({ file_path: 'guard-explore-stale.txt', old_string: 'world', new_string: 'there' });
-    assert(res.valid === true, `explore_code-seen + matching edit must be allowed, got ${JSON.stringify(res)}`);
+    assert(res.valid === true, `query_code-seen + matching edit must be allowed, got ${JSON.stringify(res)}`);
+  });
+
+  // A tool-action persists the name it ran under, so a conversation recorded
+  // before the script tool was advertised as `query_code` still holds
+  // `explore_code`. The freshness scan reads that stored name straight off the
+  // document, so it must credit both — otherwise reopening an old conversation
+  // silently loses every read its scripts made.
+  await test('read stored under the legacy script tool name still credits an edit', async () => {
+    const conversation = await createTestConversation(session);
+    const writeRes = await writeFileOp({ path: 'guard-explore-legacy.txt', content: 'hello world\n' });
+    seedAction(conversation, 'explore_code',
+      { code: 'return (await fs.readFile("guard-explore-legacy.txt")).length' },
+      { result: 12, filesRead: { 'guard-explore-legacy.txt': writeRes.contentHash } });
+
+    const edit = mkItem(EditClass, conversation);
+    const res = await edit.validate({ file_path: 'guard-explore-legacy.txt', old_string: 'world', new_string: 'there' });
+    assert(res.valid === true, `a legacy-named script read must still count as seen, got ${JSON.stringify(res)}`);
   });
 
   await test('stripped batch_read results fall back to input list', async () => {

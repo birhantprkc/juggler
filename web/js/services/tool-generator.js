@@ -18,7 +18,13 @@
 
 /**
  * Alias map for tool name normalization.
- * Maps capitalized names to canonical lowercase names.
+ *
+ * Two kinds of entry, both permanent:
+ *   - Capitalised native names → their canonical lowercase Juggler key.
+ *   - Superseded tool names → the name currently advertised. Conversations
+ *     persist the tool name they were recorded with, so a model replaying its
+ *     own history keeps emitting the older name for the lifetime of that
+ *     document; the entry is what makes that call still execute.
  * @type {Record<string, string>}
  */
 const TOOL_ALIASES = {
@@ -30,7 +36,8 @@ const TOOL_ALIASES = {
   'Glob': 'glob',
   'BatchRead': 'batch_read',
   'BatchGrep': 'batch_grep',
-  'ExploreCode': 'explore_code'
+  'ExploreCode': 'query_code',
+  'explore_code': 'query_code'
 };
 
 /**

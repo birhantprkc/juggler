@@ -3,17 +3,17 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Integration Tests: explore_code Tool
+ * Integration Tests: query_code Tool
  *
- * Tests explore_code through the full pipeline: sendMessage → worker → mock LLM → tool execution → Yjs sync.
+ * Tests query_code through the full pipeline: sendMessage → worker → mock LLM → tool execution → Yjs sync.
  * Verifies that fs, path, grep, glob all work, and that errors are correctly reported.
- * @module integration-tests/explore-code-tests
+ * @module integration-tests/query-code-tests
  */
 
 import { textResponse, toolUseResponse, testDirFor } from '../utilities/integration-test-runner.js';
 
 /**
- * Helper to build a standard explore_code test definition.
+ * Helper to build a standard query_code test definition.
  * @param {string} name - Test name
  * @param {string} description - Test description
  * @param {string} code - JavaScript code to execute
@@ -21,13 +21,13 @@ import { textResponse, toolUseResponse, testDirFor } from '../utilities/integrat
  * @param {boolean} isError - Whether the result should be an error
  * @returns {import('../utilities/integration-test-runner.js').IntegrationTestDefinition} Test definition
  */
-function exploreTest(name, description, code, expectedContent, isError = false) {
+function queryTest(name, description, code, expectedContent, isError = false) {
   return {
     name,
     description,
     fixture: 'unit-test-fixture',
     llmResponses: [
-      toolUseResponse('call_1', 'explore_code', { code }, 'Running code.'),
+      toolUseResponse('call_1', 'query_code', { code }, 'Running code.'),
       textResponse('Done.')
     ],
     operations: [
@@ -41,7 +41,7 @@ function exploreTest(name, description, code, expectedContent, isError = false) 
         {
           type: 'tool-action',
           toolUseId: '$TOOL_1',
-          toolName: 'explore_code',
+          toolName: 'query_code',
           toolInput: { code },
           state: 'completed',
           result: { content: expectedContent, isError }
@@ -58,17 +58,17 @@ function exploreTest(name, description, code, expectedContent, isError = false) 
 
 export const tests = [
   // fs.readFile — representative of all fs read helpers
-  exploreTest(
-    'explore-readFile',
-    'explore_code: fs.readFile returns file content',
+  queryTest(
+    'query-readFile',
+    'query_code: fs.readFile returns file content',
     'const c = await fs.readFile("src/main.go");\nreturn c.includes("Hello, World!") ? "found" : "not found";',
     'found'
   ),
 
   // grep + glob — search helpers
-  exploreTest(
-    'explore-grep',
-    'explore_code: grep finds matches',
+  queryTest(
+    'query-grep',
+    'query_code: grep finds matches',
     'const r = await grep("func main");\nreturn r.length > 0 ? "matches found" : "no matches";',
     'matches found'
   ),
@@ -76,26 +76,26 @@ export const tests = [
   // glob({ cwd }) should match Node-style fs.glob semantics: returned paths
   // are relative to cwd, so joining them back onto cwd must not duplicate the
   // absolute project root.
-  exploreTest(
-    'explore-glob-cwd-relative',
-    'explore_code: glob with absolute cwd returns relative paths',
+  queryTest(
+    'query-glob-cwd-relative',
+    'query_code: glob with absolute cwd returns relative paths',
     'const files = await glob("src/*.go", { cwd: projectRoot });\nconst f = files.find((x) => x === "src/main.go");\nif (!f) return JSON.stringify(files);\nconst c = await fs.readFile(path.join(projectRoot, f));\nreturn c.includes("Hello, World!") ? "relative" : "bad read";',
     'relative'
   ),
 
   // Read-only: writeFile blocked
-  exploreTest(
-    'explore-write-blocked',
-    'explore_code: fs.writeFile throws EROFS',
+  queryTest(
+    'query-write-blocked',
+    'query_code: fs.writeFile throws EROFS',
     'await fs.writeFile("hack.txt", "pwned");',
     'EROFS: read-only filesystem',
     true
   ),
 
   // Runtime error: ENOENT
-  exploreTest(
-    'explore-runtime-enoent',
-    'explore_code: ENOENT error reported',
+  queryTest(
+    'query-runtime-enoent',
+    'query_code: ENOENT error reported',
     'return await fs.readFile("nonexistent-file.txt");',
     'ENOENT: no such file or directory: nonexistent-file.txt',
     true
@@ -104,9 +104,9 @@ export const tests = [
   // Parse-time errors in user code should report the real syntax error, not
   // hang until the sandbox timeout fires. This mirrors an LLM mistake where it
   // redeclares an injected binding (`fs`) with `const fs = require(...)`.
-  exploreTest(
-    'explore-parse-error',
-    'explore_code: parse error reported without timeout',
+  queryTest(
+    'query-parse-error',
+    'query_code: parse error reported without timeout',
     'const fs = require("fs/promises");\nreturn "unreachable";',
     'Cannot declare a const variable twice: \'fs\'.',
     true
@@ -117,9 +117,9 @@ export const tests = [
   // That must be caught and reported (naming the offending path), NOT left to
   // hang until the sandbox timeout — the same "report, don't hang" contract as
   // the parse-error case above.
-  exploreTest(
-    'explore-unawaited-promise',
-    'explore_code: un-awaited Promise in return reported without timeout',
+  queryTest(
+    'query-unawaited-promise',
+    'query_code: un-awaited Promise in return reported without timeout',
     'return { hits: grep("func main") };',
     'Return value .hits is a Promise that was never awaited. grep(), glob(), fs.*, and import() are async; await them before returning, e.g. return { x: await grep(...) } or await Promise.all([...]).',
     true
@@ -129,9 +129,9 @@ export const tests = [
   // must resolve. The sandbox's import map rewrites the project-root
   // prefix to /v<ver>/, served same-origin with ACAO=*. Without the
   // rewrite this throws "Cross-origin script load denied".
-  exploreTest(
-    'explore-absolute-path-import',
-    'explore_code: can import() absolute project paths',
+  queryTest(
+    'query-absolute-path-import',
+    'query_code: can import() absolute project paths',
     'const m = await import(`${projectRoot}/web/js/model/model-config.js`);\nreturn typeof m.resolveConfig === "function" ? "ok" : "missing-export";',
     'ok'
   ),
@@ -139,9 +139,9 @@ export const tests = [
   // On-disk project module import: a real JavaScript file anywhere in the user's
   // project (not just under web/) resolves from disk, so the model can load and
   // call the project's own code. src/greeter.js ships in unit-test-fixture.
-  exploreTest(
-    'explore-project-file-import',
-    'explore_code: can import() a project source module from disk',
+  queryTest(
+    'query-project-file-import',
+    'query_code: can import() a project source module from disk',
     'const m = await import(`${projectRoot}/src/greeter.js`);\nreturn m.greet("World") === "Hello, World!" && m.ANSWER === 42 ? "ok" : "bad";',
     'ok'
   ),
@@ -154,9 +154,9 @@ export const tests = [
   // engine worker instead, self.location.origin would be the real http origin
   // (and the fetch would reach the backend); if it ran in the main page,
   // `window` would be defined. Either fallback fails this assertion loudly.
-  exploreTest(
-    'explore-sandbox-isolation',
-    'explore_code: runs in an opaque-origin worker with no backend access',
+  queryTest(
+    'query-sandbox-isolation',
+    'query_code: runs in an opaque-origin worker with no backend access',
     'const origin = (self.location && self.location.origin) || "none";\nlet net;\ntry { await fetch(origin + "/api/health"); net = "reached"; } catch (_) { net = "blocked"; }\nreturn `origin=${origin};window=${typeof window};document=${typeof document};net=${net}`;',
     'origin=null;window=undefined;document=undefined;net=blocked'
   ),
@@ -166,38 +166,38 @@ export const tests = [
   // returns real content, but a direct fetch of that same file off the backend
   // is blocked by the worker's opaque origin. Proves the only way out is the
   // mediated channel.
-  exploreTest(
-    'explore-capability-vs-direct',
-    'explore_code: capability works, direct backend access blocked',
+  queryTest(
+    'query-capability-vs-direct',
+    'query_code: capability works, direct backend access blocked',
     'const c = await fs.readFile("src/main.go");\nconst cap = c.includes("Hello, World!") ? "ok" : "no";\nlet direct;\ntry { await fetch("/api/completions/files?q=main"); direct = "reached"; } catch (_) { direct = "blocked"; }\nreturn `cap=${cap};direct=${direct}`;',
     'cap=ok;direct=blocked'
   ),
 
-  // Read-credit for the freshness guard: an explore_code script's fs.readFile
+  // Read-credit for the freshness guard: an query_code script's fs.readFile
   // records the file in the action's filesRead map, which satisfies the edit
   // tool's read-before-edit guard (read-history.js). The target is seeded via
   // setupFiles — on disk but with NO transcript record — so only the sandbox
   // read can make the follow-up edit admissible.
-  exploreReadThenEditTest(),
+  queryReadThenEditTest(),
 ];
 
 /**
- * Build the explore-read-then-edit test definition.
+ * Build the query-read-then-edit test definition.
  * @returns {import('../utilities/integration-test-runner.js').IntegrationTestDefinition} Test definition
  */
-function exploreReadThenEditTest() {
-  const TD = testDirFor('explore-read-then-edit');
-  const target = `${TD}/explored.txt`;
+function queryReadThenEditTest() {
+  const TD = testDirFor('query-read-then-edit');
+  const target = `${TD}/queried.txt`;
   const code = `const c = await fs.readFile(${JSON.stringify(target)});\nreturn c.trim();`;
   return {
-    name: 'explore-read-then-edit',
-    description: 'explore_code read satisfies the edit freshness guard',
+    name: 'query-read-then-edit',
+    description: 'query_code read satisfies the edit freshness guard',
     fixture: 'unit-test-fixture',
     setupFiles: {
       [target]: 'greeting: hello\n'
     },
     llmResponses: [
-      toolUseResponse('call_1', 'explore_code', { code }, 'Exploring.'),
+      toolUseResponse('call_1', 'query_code', { code }, 'Querying.'),
       toolUseResponse(
         'call_2',
         'edit',
@@ -207,17 +207,17 @@ function exploreReadThenEditTest() {
       textResponse('Done.')
     ],
     operations: [
-      { type: 'send-message', message: 'Explore then edit the greeting' }
+      { type: 'send-message', message: 'Query then edit the greeting' }
     ],
     expectedDocument: {
       items: [
         { type: 'system-prompt', itemId: '$ITEM_1' },
-        { type: 'user', content: 'Explore then edit the greeting' },
-        { type: 'assistant', content: 'Exploring.' },
+        { type: 'user', content: 'Query then edit the greeting' },
+        { type: 'assistant', content: 'Querying.' },
         {
           type: 'tool-action',
           toolUseId: '$TOOL_1',
-          toolName: 'explore_code',
+          toolName: 'query_code',
           toolInput: { code },
           state: 'completed',
           result: { content: 'greeting: hello', isError: false }

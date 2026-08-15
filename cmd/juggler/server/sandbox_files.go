@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// sandboxImportRoot normalises the project path for the explore_code sandbox's
+// sandboxImportRoot normalises the project path for the query_code sandbox's
 // absolute-path module loader: forward slashes so it matches the worker's
 // origin-resolved import URLs on every OS (a Windows ProjectPath uses
 // backslashes, but the sandbox and its URLs are POSIX-style throughout).
@@ -32,7 +32,7 @@ func sandboxImportPath(urlPath, root string) string {
 	return urlPath
 }
 
-// sandboxProjectFile maps an explore_code sandbox import URL to a real file on
+// sandboxProjectFile maps an query_code sandbox import URL to a real file on
 // disk inside the project root, or reports ok=false. The sandbox worker resolves
 // user code's `import('<projectRoot>/rel/path')` against its http origin, so the
 // request path is the absolute project path. We serve it only when it (a) stays

@@ -501,12 +501,12 @@ func (s *Server) setupRoutes() {
 		s.serveEmbeddedTestAssets(vPrefix)
 	}
 
-	// Project-file module loader for the explore_code sandbox worker. The worker
+	// Project-file module loader for the query_code sandbox worker. The worker
 	// (opaque origin, no import map) resolves user code's
 	// `import('<projectRoot>/...')` against its own http origin, so it arrives
 	// here as a request for the absolute project path. We serve the real file
 	// straight off disk when it exists inside the project root and is an
-	// importable module — this is what lets explore_code load and test ANY
+	// importable module — this is what lets query_code load and test ANY
 	// JavaScript module in the user's own project, not just the app's own web/
 	// assets. Registered before the web-root fallback below so a real on-disk
 	// file wins; when no such file exists the matcher declines and the request

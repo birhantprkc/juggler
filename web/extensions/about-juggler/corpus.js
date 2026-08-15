@@ -85,7 +85,7 @@ core provides:
 - **grep** — content search built on ripgrep (regex, globs, file-type filters).
 - **glob** — find files by name pattern.
 - **bash** — run a shell command; supports long-running background processes.
-- **explore_code** — run reads/greps/globs inside one sandboxed JavaScript call
+- **query_code** — run reads/greps/globs inside one sandboxed JavaScript call
   and return only the computed value, keeping intermediate output out of context.
 - **batch_read / batch_grep** — read or search several files in one call.
 - **WebFetch** — fetch a URL and convert it to markdown (with a short cache).
