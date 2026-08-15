@@ -2408,48 +2408,147 @@ properties-panel-section properties-panel-subsection + properties-panel-subsecti
     padding-top: 1rem;
 }
 
-/* Transaction 3-pane layout — equal thirds, each pane scrolls independently */
+/* Transaction detail — one scroller for the whole panel (the enclosing
+   properties-panel-section), so each section is as tall as its content instead
+   of being penned into a fixed share of the panel's height. Output is usually
+   short and the input is a list of collapsed rows, so both fit; opening a long
+   message simply scrolls. */
 properties-panel-tx-sections {
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 0;
 }
 
 properties-panel-tx-sections > properties-panel-subsection {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
     padding: 0.75rem 0;
-}
-
-properties-panel-tx-sections > properties-panel-subsection > .properties-panel-subtitle {
-    flex-shrink: 0;
-}
-
-properties-panel-tx-sections > properties-panel-subsection > :not(.properties-panel-subtitle) {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
 }
 
 properties-panel-tx-sections > properties-panel-subsection + properties-panel-subsection {
     border-top: 1px solid var(--border-divider);
 }
 
-/* Suppress section-level scroll when the tx pane layout is active;
-   stretch the body to fill the section so tx-sections can flex into it */
-properties-panel-section:has(properties-panel-tx-sections) {
-    overflow: hidden;
+/* Section header: title, then the size line and copy-all button at the right */
+.tx-section-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
-properties-panel-section:has(properties-panel-tx-sections) properties-panel-body {
-    flex: 1;
-    min-height: 0;
+.tx-section-head .properties-panel-subtitle {
+    margin: 0;
+}
+
+.tx-section-summary {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+}
+
+.tx-section-head .properties-panel-header-icon-btn {
+    flex-shrink: 0;
+}
+
+/* Input rows — one per message, collapsed until asked for */
+.tx-rows {
     display: flex;
     flex-direction: column;
+}
+
+.tx-row {
+    border-bottom: 1px solid var(--border-divider);
+}
+
+.tx-row-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.25rem;
+    cursor: pointer;
+    list-style: none;
+    font-size: 0.75rem;
+}
+
+.tx-row-summary::-webkit-details-marker {
+    display: none;
+}
+
+.tx-row-summary:hover {
+    background: var(--bg-raised);
+}
+
+.tx-row-kind {
+    flex-shrink: 0;
+    min-width: 6.5rem;
+    font-family: var(--font-mono);
+    color: var(--text-tertiary);
+}
+
+.tx-row-label {
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.tx-row-size {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    color: var(--text-tertiary);
+}
+
+/* The per-row copy button appears on hover/focus only — a column of buttons
+   down every row would drown out the sizes, which are what the list is for. */
+.tx-row-copy {
+    flex-shrink: 0;
+    opacity: 0;
+}
+
+.tx-row-summary:hover .tx-row-copy,
+.tx-row-copy:focus-visible,
+.tx-row-copy.copied {
+    opacity: 1;
+}
+
+@media (hover: none) {
+    .tx-row-copy {
+        opacity: 1;
+    }
+}
+
+.tx-row-body,
+.tx-out-block {
+    padding: 0.25rem 0 0.75rem;
+}
+
+.tx-field {
+    margin-top: 0.5rem;
+}
+
+.tx-field-key,
+.tx-out-kind {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-tertiary);
+    margin-bottom: 0.25rem;
+}
+
+/* Text rendered as text: a system prompt or a file body keeps its line breaks
+   instead of arriving as one enormous JSON-escaped line. */
+.tx-text {
+    max-height: 30rem;
+    overflow: auto;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+/* JSON inside a row sits tight against its key label rather than carrying the
+   standalone block's vertical margin. */
+.tx-row-body .properties-panel-json-display,
+.tx-out-block .properties-panel-json-display {
+    margin: 0;
 }
 
 /* Transaction metadata bar in properties panel */

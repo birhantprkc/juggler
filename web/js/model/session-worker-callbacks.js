@@ -38,6 +38,7 @@ import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { buildApprovalButtons } from '../services/approval-options.js';
 import { assembleSystemPrompt, systemPositionItems as systemPositionItemsOf, contextPositionOf } from '../services/system-prompt-builder.js';
 import { buildExtensionSystemPromptContributions } from '../services/extensions.js';
+import { estimateTokens } from '../utils/token-estimate.js';
 
 /**
  * Format tool input for display in approval dialog.
@@ -307,8 +308,7 @@ export function setupWorkerCallbacks(session) {
           if (contextPositionOf(item) === 'none') continue;
           // getContextText is async
           const text = await item.getContextText(contextParams);
-          // Estimate tokens (rough: 4 chars per token)
-          const tokens = Math.ceil((text || '').length / 4);
+          const tokens = estimateTokens(text);
           contexts.push({ itemId, content: text || '', tokens });
         }
       }

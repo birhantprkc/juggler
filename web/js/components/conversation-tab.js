@@ -280,7 +280,7 @@ class ConversationTab extends HTMLElement {
       this.addEventListener('expand-thread-requested', /** @type {EventListener} */ (this._onExpandThreadRequested.bind(this)));
       this.addEventListener('promote-thread-requested', /** @type {EventListener} */ (this._onPromoteThreadRequested.bind(this)));
       this.addEventListener('request-item-selection', /** @type {EventListener} */ (this._onRequestItemSelection.bind(this)));
-      this.addEventListener('properties-panel:open-transaction', /** @type {EventListener} */ (this._onOpenTransaction.bind(this)));
+      this.addEventListener('properties-panel:toggle-transaction', /** @type {EventListener} */ (this._onToggleTransaction.bind(this)));
       this.addEventListener('restore-input-focus', /** @type {EventListener} */ (this._onRestoreInputFocus.bind(this)));
       this._itemSelectedListenerAttached = true;
     }
@@ -1372,38 +1372,26 @@ class ConversationTab extends HTMLElement {
   }
 
   /**
-   * Handle "View Transaction" click in any properties panel.
-   * Records the open transaction tied to the originating column + selection;
-   * the next rebuild appends a transaction-mode panel column at the right.
-   * Clicking the same button again while that transaction is open toggles it
-   * closed. Subsequent selection changes invalidate the anchor and the panel drops.
+   * Handle a "View Transaction" click in any properties panel.
+   *
+   * A plain toggle: the transaction column is a lens on the properties column
+   * beside it, so the panel this opens always shows the very item whose header
+   * carries the button. The next rebuild appends or drops the column; later
+   * selection changes re-target it rather than closing it.
    * @param {CustomEvent} e
    * @private
    */
-  _onOpenTransaction(e) {
-    const { transactionId } = e.detail || {};
-    if (!transactionId) return;
-
+  _onToggleTransaction(e) {
     const target = /** @type {HTMLElement} */ (e.target);
     const panel = target.closest('properties-panel');
     if (!panel) return;
     const columnIndex = this._columns.indexOf(/** @type {HTMLElement} */ (panel));
     if (columnIndex < 0) return;
 
-    // The originating panel always corresponds to selections[columnIndex - 1]
-    // — properties panels live one column to the right of the conversation-area
-    // they describe.
-    const itemId = this._selection.selections[columnIndex - 1];
-    if (!itemId) return;
-
-    // Toggle: clicking the button for the transaction that's already open
-    // closes it, rather than reopening the same panel.
-    const open = this._selection.openTxn;
-    if (open && open.columnIndex === columnIndex &&
-        open.itemId === itemId && open.transactionId === transactionId) {
-      this._selection.closeTransaction();
+    if (this._selection.txnOpen) {
+      this._selection.closeTransaction(columnIndex);
     } else {
-      this._selection.openTransaction(columnIndex, itemId, transactionId);
+      this._selection.openTransaction(columnIndex);
     }
     this._selection.markManualInteraction();
     this._rebuildColumns(true);

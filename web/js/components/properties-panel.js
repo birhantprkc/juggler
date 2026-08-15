@@ -22,8 +22,10 @@ import { renderTransactionDetail } from './transaction-detail-renderer.js';
 import { dispatchItemRenderer, renderContextItem } from '../services/renderers/item-renderers.js';
 import workerManager from '../services/worker-manager.js';
 import { setupColumnResize } from '../utils/column-resize.js';
-import { formatDuration, formatRelativeDateTime } from '../utils/format.js';
+import { formatDuration, formatRelativeDateTime, formatTokens } from '../utils/format.js';
 import { plain } from '../model/item-accessor.js';
+import { estimateTokens, llmTextForItem } from '../utils/token-estimate.js';
+import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
 
 /**
  * @typedef {import('../model/conversation.js').default} Conversation
@@ -35,6 +37,79 @@ import { plain } from '../model/item-accessor.js';
 // AND as the header icon of the transaction-mode panel itself, so the user
 // recognises the same affordance opening the same view.
 const TRANSACTION_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor"><path d="M824-120 636-308q-41 32-90.5 50T440-240q-90 0-162.5-44T163-400h98q34 37 79.5 58.5T440-320q100 0 170-70t70-170q0-100-70-170t-170-70q-94 0-162.5 63.5T201-580h-80q8-127 99.5-213.5T440-880q134 0 227 93t93 227q0 56-18 105.5T692-364l188 188-56 56ZM397-400l-63-208-52 148H80v-60h160l66-190h60l61 204 43-134h60l60 120h30v60h-67l-47-94-50 154h-59Z"/></svg>';
+
+// Colour preset for the transaction panel's own header. A round-trip is not an
+// item type, so it takes the neutral default rather than borrowing a family's
+// hue — but it must be a real preset: the `.color-*` blocks are what define
+// --preset-bg / --preset-badge-bg, and a name with no block leaves the icon box
+// and the lozenge with no background at all while the light theme still forces
+// their glyph and label white.
+const TRANSACTION_HEADER_COLOR = 'slate';
+
+// An item big enough to be worth noticing, and one big enough to be worth
+// worrying about, in estimated tokens. Below the first the chip stays neutral:
+// a colour on every row would be decoration, not information.
+const TOKEN_CHIP_HIGH = 10_000;
+const TOKEN_CHIP_CRITICAL = 25_000;
+
+// The item types a round-trip's reported output tokens can describe. The
+// provider reports one output total covering every block it emitted, so that
+// total belongs to a single item only when the turn produced exactly one of
+// these. The originating user message carries the same transactionId but sits
+// on the input side, so it never counts here.
+const OUTPUT_ITEM_TYPES = new Set(['assistant', 'thinking', 'tool-action']);
+
+// Of those, the ones whose entire LLM contribution IS that output: an assistant
+// message is its text, a thinking block is its reasoning. A tool-action is not
+// — most of what it costs the context is the result that comes back on the NEXT
+// turn's input, which no provider reports separately, so swapping the round-trip
+// figure in for a lone tool-action would understate it.
+const REPORTED_OUTPUT_TYPES = new Set(['assistant', 'thinking']);
+
+/**
+ * Paint a token count onto a header chip, colouring it by magnitude.
+ * @param {HTMLElement} chip - The chip element.
+ * @param {number} tokens - The count the colour is chosen from.
+ * @param {string} label - Chip text.
+ * @param {string} title - Tooltip text.
+ */
+function paintChip(chip, tokens, label, title) {
+  chip.hidden = false;
+  chip.textContent = label;
+  chip.title = title;
+  chip.classList.toggle('token-critical', tokens >= TOKEN_CHIP_CRITICAL);
+  chip.classList.toggle('token-high', tokens >= TOKEN_CHIP_HIGH && tokens < TOKEN_CHIP_CRITICAL);
+}
+
+/**
+ * Paint an estimated token count onto a header chip, leaving it hidden when
+ * the item contributes no text at all.
+ * @param {HTMLElement} chip - The chip element.
+ * @param {string} text - The item's LLM-facing text.
+ */
+function paintTokenChip(chip, text) {
+  const tokens = estimateTokens(text);
+  if (tokens <= 0) {
+    chip.hidden = true;
+    return;
+  }
+  paintChip(chip, tokens, `~${formatTokens(tokens)}`,
+    `Estimated ${tokens.toLocaleString()} tokens from ${text.length.toLocaleString()} characters `
+    + '(~4 characters per token). Provider-reported counts cover a whole round-trip \u2014 open the '
+    + 'transaction to see those.');
+}
+
+/**
+ * Paint a provider-reported output count. Shown without a `~`, because it is
+ * the number the provider billed rather than one we worked out.
+ * @param {HTMLElement} chip - The chip element.
+ * @param {number} tokens - Reported output tokens for the round-trip.
+ */
+function paintReportedChip(chip, tokens) {
+  paintChip(chip, tokens, formatTokens(tokens),
+    `${tokens.toLocaleString()} output tokens, reported by the provider. This round-trip `
+    + "produced nothing else, so the count is this item's alone.");
+}
 
 class PropertiesPanel extends HTMLElement {
   constructor() {
@@ -76,6 +151,18 @@ class PropertiesPanel extends HTMLElement {
     this._transactionMode = null;
 
     /**
+     * Provider-reported output tokens per round-trip, keyed by transactionId.
+     * Arrow-keying through a turn's items asks about the same round-trip for
+     * each of them, and every fetch is a disk read in the worker. Only positive
+     * results land here: the worker stamps the id onto the streaming item
+     * before it saves the blob, so an early fetch can legitimately find nothing
+     * and has to stay free to retry.
+     * @type {Map<string, number>}
+     * @private
+     */
+    this._blobOutputTokens = new Map();
+
+    /**
      * 1Hz ticker that refreshes elements bearing `data-elapsed-since`
      * (currently the "Running…" status text on in-flight tool actions).
      * Started by _refreshElapsedTicker() when any such element is present
@@ -110,6 +197,9 @@ class PropertiesPanel extends HTMLElement {
     this._renderedItemId = null;
     this._liveUpdater = null;
     this._lastSnapshot = null;
+    // Transaction ids are per conversation; nothing cached for the old one can
+    // answer a question about the new one.
+    this._blobOutputTokens.clear();
 
     if (conversation) {
       this._setupObservers();
@@ -329,13 +419,21 @@ class PropertiesPanel extends HTMLElement {
     contentArea.appendChild(section);
 
     const header = this._createHeader('LLM Transaction', {
-      color: 'transparent',
+      color: TRANSACTION_HEADER_COLOR,
       iconSvg: TRANSACTION_ICON_SVG
     });
     section.appendChild(header);
 
     const body = document.createElement('properties-panel-body');
     section.appendChild(body);
+
+    // The panel follows the selected item, and plenty of items — context items,
+    // queued messages — were never part of a round-trip. That is a fact about
+    // the item, not a missing blob, so say so and skip the fetch.
+    if (!mode.transactionId) {
+      renderTransactionDetail(body, null, 'Not part of a round-trip.');
+      return;
+    }
 
     let blob = null;
     try {
@@ -607,8 +705,8 @@ class PropertiesPanel extends HTMLElement {
   _createSectionWithControls(title, iconOptions, controls = null, statusText = undefined, transactionId = undefined, timestamp = undefined) {
     const wrapper = document.createElement('properties-panel-section');
 
-    const txnBtn = transactionId ? this._buildViewTransactionButton(transactionId) : undefined;
-    wrapper.appendChild(this._createHeader(title, iconOptions, undefined, statusText, txnBtn, timestamp));
+    const txnBtn = transactionId ? this._buildViewTransactionButton() : undefined;
+    wrapper.appendChild(this._createHeader(title, iconOptions, this._buildTokenChip(), statusText, txnBtn, timestamp));
     if (controls) {
       wrapper.appendChild(controls);
     }
@@ -616,15 +714,136 @@ class PropertiesPanel extends HTMLElement {
   }
 
   /**
+   * Build the header's token chip for the selected item: how much of the
+   * context this one item costs, in the same standard slot for every item
+   * type, so the answer doesn't require a trip to the transaction view.
+   *
+   * The number is an estimate, marked `~`, unless the provider's own figure can
+   * only mean this item. A provider reports one output total per round-trip,
+   * and a round-trip usually produces a thinking block, a reply and every tool
+   * call it made — stamping that total onto each of them would say each one
+   * cost the whole turn. So the reported count replaces the estimate only where
+   * it is unambiguous: an assistant or thinking item that was its round-trip's
+   * sole output.
+   * @returns {HTMLElement|undefined} The chip, or undefined when the item contributes no text.
+   * @private
+   */
+  _buildTokenChip() {
+    const id = this._selectedItemId;
+    if (!id) return undefined;
+
+    const chip = document.createElement('span');
+    chip.className = 'properties-panel-token-chip';
+    chip.hidden = true;
+
+    const { msg } = this._resolveItem(id);
+    const text = msg ? llmTextForItem(msg) : '';
+    if (text) {
+      paintTokenChip(chip, text);
+      if (chip.hidden) return undefined;
+      const txnId = this._soleOutputTransactionId(msg);
+      if (txnId) this._paintReportedOutput(chip, txnId, id);
+      return chip;
+    }
+
+    // A standing context item holds no plain content field — it renders its
+    // contribution on demand, and that render is async, so the chip fills in
+    // when it lands.
+    const contextItem = this._messageThread?.getContextItem(id);
+    if (!contextItem || typeof contextItem.getContextText !== 'function') return undefined;
+    this._paintContextItemChip(chip, contextItem, id);
+    return chip;
+  }
+
+  /**
+   * The round-trip whose reported output tokens describe `msg` and nothing
+   * else, or '' when no such attribution is safe.
+   *
+   * The worker stamps one transactionId onto every item a round-trip produces,
+   * so the reported output total is this item's own only when it is the single
+   * output-producing item carrying that id.
+   * @param {any} msg - The selected item's Y.Map.
+   * @returns {string} The transactionId, or '' when the count would be shared.
+   * @private
+   */
+  _soleOutputTransactionId(msg) {
+    if (!REPORTED_OUTPUT_TYPES.has(msg.get('type'))) return '';
+    const txnId = String(msg.get('transactionId') || '');
+    if (!txnId) return '';
+
+    let outputs = 0;
+    for (const item of (this._messageThread?.items || [])) {
+      if (String(item.get?.('transactionId') || '') !== txnId) continue;
+      if (!OUTPUT_ITEM_TYPES.has(item.get('type'))) continue;
+      if (++outputs > 1) return '';
+    }
+    return outputs === 1 ? txnId : '';
+  }
+
+  /**
+   * Replace `chip`'s estimate with the round-trip's reported output tokens.
+   * A cached count paints straight away, before the chip is even in the header;
+   * a fetch has to check that the selection hasn't moved on underneath it.
+   * @param {HTMLElement} chip - Chip element already carrying the estimate.
+   * @param {string} txnId - Round-trip this item was the sole output of.
+   * @param {string} itemId - Selection this chip was built for.
+   * @private
+   */
+  async _paintReportedOutput(chip, txnId, itemId) {
+    const cached = this._blobOutputTokens.get(txnId);
+    if (cached !== undefined) {
+      paintReportedChip(chip, cached);
+      return;
+    }
+
+    const conversationId = this._conversation?.id;
+    if (!conversationId) return;
+    try {
+      const blob = /** @type {any} */ (await workerManager.getTransaction(conversationId, txnId));
+      const tokens = Number(blob?.outputTokens) || 0;
+      if (tokens <= 0) return;
+      this._blobOutputTokens.set(txnId, tokens);
+      if (!chip.isConnected || this._selectedItemId !== itemId) return;
+      paintReportedChip(chip, tokens);
+    } catch {
+      // No blob to read; the estimate already on the chip stands.
+    }
+  }
+
+  /**
+   * Render a context item's LLM text and paint its size onto `chip`. Bails if
+   * the selection moved on while the render was in flight, or if the item
+   * can't render outside a turn — a missing chip is the right outcome there,
+   * not an error the user has to read.
+   * @param {HTMLElement} chip - Chip element already in the header.
+   * @param {any} contextItem - The registered context-item instance.
+   * @param {string} itemId - Selection this chip was built for.
+   * @private
+   */
+  async _paintContextItemChip(chip, contextItem, itemId) {
+    try {
+      const text = await contextItem.getContextText({
+        contextWindowSize: this._conversation?.contextWindow || 0,
+        modelConfig: this._conversation?.modelConfig || null,
+        helpers: FormattingHelpers,
+      });
+      if (!chip.isConnected || this._selectedItemId !== itemId) return;
+      paintTokenChip(chip, text || '');
+    } catch {
+      // Item couldn't render its context text here; it simply shows no size.
+    }
+  }
+
+  /**
    * Build the small icon-only "View Transaction" button shown at the right
    * edge of an item's properties-panel header. Click dispatches a bubbling
-   * event that conversation-tab handles to open a nested transaction-mode
-   * panel to the right of this column.
-   * @param {string} transactionId
+   * event that conversation-tab handles by showing or hiding the
+   * transaction-mode panel to the right of this column. The event carries no
+   * round-trip id: that panel reads whichever item this column is showing.
    * @returns {HTMLButtonElement} The button element ready to insert into the header.
    * @private
    */
-  _buildViewTransactionButton(transactionId) {
+  _buildViewTransactionButton() {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'properties-panel-header-icon-btn';
@@ -633,10 +852,9 @@ class PropertiesPanel extends HTMLElement {
     btn.innerHTML = TRANSACTION_ICON_SVG;
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.dispatchEvent(new CustomEvent('properties-panel:open-transaction', {
+      this.dispatchEvent(new CustomEvent('properties-panel:toggle-transaction', {
         bubbles: true,
-        composed: true,
-        detail: { transactionId, originPanel: this }
+        composed: true
       }));
     });
     return btn;

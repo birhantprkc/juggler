@@ -9,6 +9,9 @@ of changes; this project follows semantic versioning.
 - The busy spinner juggles a club per parallel tool call, at the speed the work is moving
 - The spinner tires gradually through a long tool call, and picks up when the next one starts
 - New settings stop tabs highlighting, or floating to the top, when a conversation wants you
+- Big revamp of the transaction panel
+- Each item's properties header shows its token cost, exact when that info is available
+- The transaction view stays open as you browse, following whichever item is selected
 
 ## [0.5.6] - 2026-08-14
 

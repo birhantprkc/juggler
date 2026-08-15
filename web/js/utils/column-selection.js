@@ -19,7 +19,8 @@ import { findGroup, isGroupId } from './item-grouping.js';
  * @property {string|undefined} [threadItemId] - Thread item ID (for thread conversation columns)
  * @property {any} [threadYMap] - The thread Y.Map (for thread conversation columns)
  * @property {string} [selectedItemId] - Selected item ID (for properties columns)
- * @property {string} [transactionId] - Round-trip id (for transaction columns)
+ * @property {string} [transactionId] - Round-trip id: the one the selected item
+ *   belongs to (properties columns), or the one being shown (transaction columns)
  * @property {string} [groupId] - Display id of the folded tool run this column shows
  * @property {any[]} [groupItems] - The run's items (for group conversation columns)
  */
@@ -43,18 +44,21 @@ class ColumnSelectionState {
     this._lastStatusThreadId = undefined;
 
     /**
-     * Open transaction-detail panel, if any. Tied to the (columnIndex, itemId)
-     * pair that opened it; any selection change that invalidates that pair
-     * silently drops the panel during chain resolution.
-     * @type {{columnIndex: number, itemId: string, transactionId: string}|null}
+     * Whether the transaction-detail panel is open. It is a lens on the
+     * properties column beside it rather than a pinned view of one round-trip:
+     * it re-targets to whatever that column is showing, so browsing items
+     * leaves it up. Its own index is never stored — a properties column is
+     * always the tail of the chain, so the transaction column is always the
+     * one appended after it.
+     * @type {boolean}
      */
-    this.openTxn = null;
+    this.txnOpen = false;
   }
 
   /** Reset selections (e.g. when switching conversations) */
   resetSelections() {
     this.selections = [];
-    this.openTxn = null;
+    this.txnOpen = false;
   }
 
   /** Record that the user manually interacted (click, keyboard) */
@@ -71,7 +75,6 @@ class ColumnSelectionState {
     this.activeColumnIndex = columnIndex;
     this.selections[columnIndex] = itemId;
     this.selections.length = columnIndex + 1;
-    this.openTxn = null;
   }
 
   /**
@@ -80,37 +83,31 @@ class ColumnSelectionState {
    */
   clearSelection(columnIndex) {
     this.selections.length = columnIndex;
-    this.openTxn = null;
   }
 
   /**
-   * Open a transaction-detail panel anchored to the (columnIndex, itemId) pair
-   * that owns it. The panel auto-closes when that pair is invalidated by any
-   * future selection change.
-   *
-   * Also moves focus onto the new transaction column so the existing
+   * Open the transaction-detail panel beside the properties column at
+   * `columnIndex`, and move focus onto it so the existing
    * scroll-to-active-column rule (clampActiveIndex + _scrollToActiveColumn)
    * brings it into view — the same path that handles arrow-right navigation.
-   * @param {number} columnIndex
-   * @param {string} itemId
-   * @param {string} transactionId
+   * @param {number} columnIndex - Index of the properties column it opens beside.
    */
-  openTransaction(columnIndex, itemId, transactionId) {
-    this.openTxn = { columnIndex, itemId, transactionId };
+  openTransaction(columnIndex) {
+    this.txnOpen = true;
     // Transaction column is appended right after the originating properties
     // panel, so its index is columnIndex + 1.
     this.activeColumnIndex = columnIndex + 1;
   }
 
   /**
-   * Close the open transaction-detail panel, if any. Focus returns to the
-   * properties panel that owns the toggle button so the just-closed column
-   * doesn't leave the active index dangling past the shortened chain.
+   * Close the transaction-detail panel. Focus returns to the properties panel
+   * that owns the toggle button so the just-closed column doesn't leave the
+   * active index dangling past the shortened chain.
+   * @param {number} columnIndex - Index of the properties column that owns the toggle.
    */
-  closeTransaction() {
-    if (!this.openTxn) return;
-    this.activeColumnIndex = this.openTxn.columnIndex;
-    this.openTxn = null;
+  closeTransaction(columnIndex) {
+    this.txnOpen = false;
+    this.activeColumnIndex = columnIndex;
   }
 
   /**
@@ -164,7 +161,7 @@ class ColumnSelectionState {
       this.activeColumnIndex = columns.length - 1;
     }
     const lastIdx = columns.length - 1;
-    if (this.openTxn &&
+    if (this.txnOpen &&
         this.activeColumnIndex === lastIdx &&
         columns[lastIdx]?.tagName === 'PROPERTIES-PANEL') {
       return;
@@ -257,27 +254,28 @@ class ColumnSelectionState {
         chain.push({
           type: /** @type {const} */ ('properties'),
           selectedItemId: selectedId,
-          container: chain[i]?.container
+          container: chain[i]?.container,
+          transactionId: String(selectedItem.get('transactionId') || '')
         });
         break;
       }
     }
 
-    // Append the open transaction-detail panel (if any), but only when its
-    // anchor pair (columnIndex, itemId) still matches the resolved chain.
-    // Any selection change that drops or replaces the anchor invalidates it.
-    if (this.openTxn) {
-      const anchor = chain[this.openTxn.columnIndex];
-      const anchorMatches = anchor &&
-        anchor.type === 'properties' &&
-        anchor.selectedItemId === this.openTxn.itemId;
-      if (anchorMatches) {
+    // Append the open transaction-detail panel, if any. It shows the round-trip
+    // of whatever the properties column is showing, so it follows the selection
+    // rather than pinning one blob — an item belonging to no round-trip simply
+    // leaves it empty. A properties column is always the tail of the chain, so
+    // the chain no longer ending in one is the single condition that closes the
+    // panel.
+    if (this.txnOpen) {
+      const anchor = chain[chain.length - 1];
+      if (anchor?.type === 'properties') {
         chain.push({
           type: /** @type {const} */ ('transaction'),
-          transactionId: this.openTxn.transactionId
+          transactionId: anchor.transactionId || ''
         });
       } else {
-        this.openTxn = null;
+        this.txnOpen = false;
       }
     }
 
