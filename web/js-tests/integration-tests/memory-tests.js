@@ -89,11 +89,17 @@ export const memorySeededWhenFileExistsTest = {
 
 /**
  * The assembled system prompt is a pure function of conversation-document state
- * across a mid-conversation `memory remember` round-trip: after the tool writes
- * a new fact, the live memory block appears EXACTLY ONCE and carries both the
- * pre-existing and the newly-remembered entry — not duplicated. A duplicated
- * block would change the cached system-prefix bytes for the same meaningful
- * state and spuriously cold-start the warm claudecode CLI resume.
+ * across a mid-conversation `memory remember` round-trip: the memory block
+ * appears EXACTLY ONCE and carries both the pre-existing and the newly-
+ * remembered entry — not duplicated. A duplicated block would change the cached
+ * system-prefix bytes for the same meaningful state and spuriously cold-start
+ * the warm claudecode CLI resume.
+ *
+ * Both facts are present here because this conversation carries no memory item
+ * until the tool's own `_ensureSeeded` creates one, DURING the round-trip and
+ * after the write — so the snapshot frozen at that moment already includes the
+ * new fact. A conversation seeded earlier would keep its own snapshot instead;
+ * that freeze is pinned by the unit tests in `_tests/memory-item-test.js`.
  *
  * This guards against the hypothesised double-render vector — `getContextItems`
  * materialising a system-position item from BOTH the standing item AND a
@@ -115,7 +121,7 @@ export const memorySystemPromptStableAcrossRememberTest = {
   fixture: 'unit-test-fixture',
   pollutesFixtureRoot: true,
 
-  // Seed the project memory file so the live memory block has prior content.
+  // Seed the project memory file so the memory block has prior content.
   // The default harness conversation was created BEFORE this write, so it
   // carries NO standing memory item yet — the memory tool's own _ensureSeeded
   // is what instantiates the single standing item, in the engine, during the

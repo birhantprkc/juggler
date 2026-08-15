@@ -7,11 +7,13 @@
  * Memory context-item tests.
  *
  * Exercises the `memory` context item against the REAL backend filesystem: the
- * `memory` tool's remember/forget actions mutate an on-disk MEMORY.md, the
- * file is the single source of truth (never round-tripped through Yjs), and
- * `createContextText` reads it live at send time. Each sub-test points the item
- * at its own isolated path under the fixture so sibling pool lanes never
- * collide (the production path is the fixed `.juggler/MEMORY.md`).
+ * `memory` tool's remember/forget actions mutate an on-disk MEMORY.md, that file
+ * is the single source of truth for the STORE, and the block a conversation
+ * injects is the snapshot frozen into the doc at seed time — so a write made
+ * anywhere else can never move an existing conversation's cached system prefix.
+ * Each sub-test points the item at its own isolated path under the fixture so
+ * sibling pool lanes never collide (the production path is the fixed
+ * `.juggler/MEMORY.md`).
  * @module unit-tests/memory-item-test
  */
 
@@ -147,9 +149,67 @@ export async function runTests(ctx) {
   await test('createContextText renders a labeled block with entries', async () => {
     const { item } = makeItem();
     await item.execute({ action: 'remember', fact: 'Build is `make build`' });
+    await item.onToolCall('memory', {});
     const text = await item.createContextText({ helpers: {} });
     assert(text.includes('=== Project Memory ==='), `should carry the labeled header, got:\n${text}`);
     assert(text.includes('Build is `make build`'), `should include the entry, got:\n${text}`);
+  });
+
+  await test('createContextText falls back to a live read when never seeded', async () => {
+    const { item } = makeItem();
+    await item.execute({ action: 'remember', fact: 'unseeded fallback' });
+    assert(!Array.isArray(item.data.entries), 'this item must be unseeded for the fallback to be under test');
+    const text = await item.createContextText({ helpers: {} });
+    assert(text.includes('unseeded fallback'), `unseeded item should read the file live, got:\n${text}`);
+  });
+
+  // ---- the freeze (cache contract) ----
+
+  await test('onToolCall freezes the current entries into the doc data', async () => {
+    const { item } = makeItem();
+    await item.execute({ action: 'remember', fact: 'frozen fact' });
+    await item.onToolCall('memory', {});
+    assert(Array.isArray(item.data.entries), `seeding should record a snapshot array, got: ${JSON.stringify(item.data.entries)}`);
+    assert(item.data.entries.length === 1, `snapshot should hold 1 entry, got ${item.data.entries.length}`);
+    assert(item.data.entries[0].text === 'frozen fact', `snapshot text: ${JSON.stringify(item.data.entries[0])}`);
+    assert(item.data.entries[0].date === TODAY, `snapshot date should be stamped: ${JSON.stringify(item.data.entries[0])}`);
+  });
+
+  await test('onToolCall is write-once — re-seeding keeps the original snapshot', async () => {
+    const { item } = makeItem();
+    await item.execute({ action: 'remember', fact: 'original' });
+    await item.onToolCall('memory', {});
+    await item.execute({ action: 'remember', fact: 'added later' });
+    await item.onToolCall('memory', {});
+    assert(item.data.entries.length === 1, `re-seeding must not re-snapshot, got ${item.data.entries.length} entries`);
+    assert(item.data.entries[0].text === 'original', `snapshot should still be the original: ${JSON.stringify(item.data.entries)}`);
+  });
+
+  await test('a write made elsewhere leaves the injected block byte-identical', async () => {
+    const { item, path } = makeItem();
+    await item.execute({ action: 'remember', fact: 'known at start' });
+    await item.onToolCall('memory', {});
+    const before = await item.createContextText({ helpers: {} });
+
+    // Another conversation (or a hand edit) rewrites the store underneath us.
+    await item._write(path, `# Memory\n\n- [${TODAY}] known at start\n- [${TODAY}] added by someone else\n`);
+
+    const after = await item.createContextText({ helpers: {} });
+    assert(after === before, `an external write must not move this conversation's block:\n--- before ---\n${before}\n--- after ---\n${after}`);
+    assert(!after.includes('added by someone else'), `the later fact must not leak into this conversation:\n${after}`);
+  });
+
+  await test('a forget elsewhere does not retract the block mid-conversation', async () => {
+    const { item, path } = makeItem();
+    await item.execute({ action: 'remember', fact: 'fact one' });
+    await item.execute({ action: 'remember', fact: 'fact two' });
+    await item.onToolCall('memory', {});
+    const before = await item.createContextText({ helpers: {} });
+
+    await item._write(path, `# Memory\n\n- [${TODAY}] fact one\n`);
+
+    const after = await item.createContextText({ helpers: {} });
+    assert(after === before, `an external forget must not move this conversation's block:\n--- before ---\n${before}\n--- after ---\n${after}`);
   });
 
   // ---- transient-read resilience (last-known-good) ----
@@ -176,7 +236,9 @@ export async function runTests(ctx) {
     assert(second === 'FACT', `transient read failure on an existing file must serve last-known-good, got: ${JSON.stringify(second)}`);
   });
 
-  await test('memory block survives a transient read blip via createContextText', async () => {
+  await test('unseeded memory block survives a transient read blip via createContextText', async () => {
+    // A seeded item never reads during assembly, so this covers the unseeded
+    // fallback path — the one place a read blip could still drop the block.
     const { item } = makeItem();
     await item.execute({ action: 'remember', fact: 'Build is `make build`' });
     const before = await item.createContextText({ helpers: {} });

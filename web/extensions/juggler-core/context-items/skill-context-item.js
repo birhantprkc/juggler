@@ -142,9 +142,9 @@ class SkillContextItem extends ContextItem {
    * life of the conversation — deliberately NOT live, so editing or deleting a
    * skill on disk never mutates an existing conversation's context or busts its
    * prompt cache. Write-once: a later reuse (mergeOrReplace) that re-enters here
-   * keeps the original snapshot. Unlike memory (which stores only a path pointer
-   * and reads the file live), skills persist the content itself, because the set
-   * of installed skills is not conversation-scoped state the user edits in place.
+   * keeps the original snapshot. Memory freezes the same way, for the same
+   * reason: both ride the cached system prefix, so both must be immune to a
+   * change made outside this conversation.
    * @param {string} _toolName - Tool name (unused)
    * @param {Record<string, any>} _params - Tool parameters (unused)
    * @returns {Promise<void>}

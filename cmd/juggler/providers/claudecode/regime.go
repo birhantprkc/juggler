@@ -249,29 +249,24 @@ func pairedResultResumeSplit(messages []provider.Message, deltaStart, deltaEnd i
 }
 
 // isVolatileContextMessage reports whether a message is one of the standing
-// context items (todo list, pinned/@-mentioned file contents, plan, …) that the
-// worker re-renders live and appends at the tail of every turn (see
-// worker.appendContextItemMessages). Their content is volatile turn-to-turn, so
-// they must not anchor the resume prefix — the exact analogue of the
-// FromContextItem marking the Anthropic client uses to keep its rolling cache
-// breakpoint before the same trailing run.
+// context items (pinned/@-mentioned file contents, memory, …) the worker
+// re-renders every turn. Their content can change turn-to-turn, so they must not
+// anchor the resume prefix.
 func isVolatileContextMessage(msgType string) bool {
 	return msgType == "context-item" || msgType == "context-item-updated"
 }
 
 // stablePrefixCount returns the length of the stable, cache-committed message
-// prefix: everything except the trailing run of volatile standing-context
-// messages the worker appends AFTER all conversation history each turn.
+// prefix: everything except a trailing run of volatile standing-context
+// messages.
 //
-// Anchoring the resume prefix on len(messages) — as we did before — forces a
-// "diverged" cold start on EVERY turn: the context items re-render live (so
-// their bytes change turn-to-turn) AND the conversation grows beneath them (so
-// the positions they occupied last turn now hold real history), either of which
-// flips hashRequestPrefix over the anchored range. Excluding the trailing
-// context run keeps the real history's prefix hash stable, so the CLI resumes
-// warm; the current context items fall into the per-turn delta and ride to the
-// model on stdin instead — mirroring how the Anthropic path re-reads only the
-// short context tail while the cached prefix rolls forward.
+// The worker places standing context items at the HEAD of the request
+// (prependContextItemMessages), so in practice no such trailing run exists and
+// this returns len(messages). The strip is kept as a guard: anchoring the resume
+// prefix on a volatile message forces a "diverged" cold start on every turn,
+// because its bytes change turn-to-turn and flip hashRequestPrefix over the
+// anchored range. Anything that ever lands a context render at the tail is
+// excluded here rather than silently wrecking the CLI's warm resume.
 func stablePrefixCount(messages []provider.Message) int {
 	n := len(messages)
 	for n > 0 && isVolatileContextMessage(messages[n-1].Type) {
@@ -290,9 +285,9 @@ func stablePrefixCount(messages []provider.Message) int {
 // a privileged input, it's just one more thing in the request body.
 //
 // sentCount is the STABLE prefix length captured last turn (see
-// captureSentPrefix / stablePrefixCount): it deliberately excludes the trailing
-// standing-context run, so the returned delta re-sends the current context items
-// to the model every turn while the committed history stays cache-warm.
+// captureSentPrefix / stablePrefixCount): it excludes any trailing
+// standing-context run, so such a render would fall into the per-turn delta
+// rather than anchoring the prefix and cold-starting the resume.
 func canResumeWithDelta(sess *activeSession, systemPrompt string, messages []provider.Message) (int, int, bool, string) {
 	if sess == nil || sess.sessionUUID == "" {
 		return 0, 0, false, "no-uuid"

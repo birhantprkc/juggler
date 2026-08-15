@@ -10,9 +10,11 @@ import { parseMemory, appendEntry, removeMatching } from './memory/memory-format
 
 /**
  * Last-known-good memory content per path. A transient read failure on an
- * existing file serves this instead of '', so the cached system prefix stays
- * byte-stable (see `_read`). Keyed by path because a global memory instance can
- * point at an alternate file.
+ * existing file serves this instead of '' (see `_read`), which is what stops a
+ * blip from destroying the store: every write is a read-modify-write that
+ * reserializes the WHOLE file, so a read that wrongly reported '' would make the
+ * next `remember` overwrite every existing fact with a single bullet. Keyed by
+ * path because a global memory instance can point at an alternate file.
  * @type {Map<string, string>}
  */
 const lastGoodMemory = new Map();
@@ -20,15 +22,23 @@ const lastGoodMemory = new Map();
 /**
  * Project memory — agent-writable, user-visible durable facts.
  *
- * SEMANTICS (mirrors `file-content`: the FILE is the source of truth):
+ * SEMANTICS (the FILE is the store; the injected block is a per-conversation snapshot):
  *  - Persisted to `.juggler/MEMORY.md` (private, gitignored, hand-editable).
- *  - The item stores only a path pointer in Yjs; entries are read live at send
- *    time (`createContextText`) and in the panel — never round-tripped through
- *    the conversation document (which would bust the prompt cache across conversations).
- *  - Injected at the `system` position, so it rides the cached system prefix and
- *    is cache-stable by construction: the file changes only when the model (or
- *    user) remembers/forgets something — a rare, config-frequency event — never
- *    per turn.
+ *  - The block this conversation injects is FROZEN at seed time: when the item
+ *    auto-instantiates, `onToolCall` snapshots the parsed entries into
+ *    `this.data.entries` (persisted in the shared conversation doc), and
+ *    `createContextText` renders that snapshot for the life of the conversation.
+ *  - Injected at the `system` position, so it rides the cached system prefix.
+ *    Freezing is what makes that safe. A live read would put every
+ *    remember/forget — from another conversation, another tab, or a hand edit on
+ *    disk — into the system block of EVERY open conversation at once, and each
+ *    would then re-read its entire context at the uncached rate on its next
+ *    turn. One edit, N cold conversations. A snapshot costs a running
+ *    conversation nothing; the new fact reaches new conversations instead.
+ *  - The properties panel reads the file LIVE. It is the curation UI: it must
+ *    show what is actually stored, not what this conversation happens to inject.
+ *
+ * Skills freeze the same way, for the same reason — see `skill-context-item.js`.
  *
  * The single `memory` tool exposes two actions, `remember` and `forget`
  * (revise = forget + remember). Following the `plan` plugin's idiom, the
@@ -102,7 +112,8 @@ class MemoryContextItem extends ContextItem {
         category: 'meta', // internal durable state, not a project-source mutation
         description:
 					'Record or remove a durable project fact in long-term memory. Memory persists across ' +
-					'all conversations and is injected into every future turn. Use action "remember" to ' +
+					'all conversations; what you record now is injected at the start of every future one. ' +
+					'Use action "remember" to ' +
 					'store a concise, durable fact (a build/test command, a convention, a correction the user ' +
 					'made); use action "forget" to remove a fact that is now stale or wrong. Do NOT use memory ' +
 					'for ephemeral within-task state.',
@@ -186,9 +197,12 @@ class MemoryContextItem extends ContextItem {
 
   /**
    * Read the memory file, treating a genuinely absent file as empty. A
-   * transient IO failure on an EXISTING file is not a state change: serving the
-   * cached last-known-good content keeps the cached system prefix byte-stable
-   * (a dropped memory block would diverge the prompt and cold-start the cache).
+   * transient IO failure on an EXISTING file is not a state change, and must
+   * never be reported as one: `execute` feeds this straight into `appendEntry` /
+   * `removeMatching`, which reserialize the entire file from what they are
+   * given, so returning '' for a file that does exist would silently delete
+   * every stored fact on the next write. Serving the last-known-good content
+   * keeps the read-modify-write honest.
    * @param {string} path - File path
    * @returns {Promise<string>} File content, last-known-good, or ''
    * @private
@@ -247,14 +261,52 @@ class MemoryContextItem extends ContextItem {
   }
 
   /**
-   * No-op: creating a memory item needs no parameters — the file is the source
-   * of truth, so the auto-instantiate / seeding path just adds the item. The
-   * remember/forget tool runs through `execute()`, not this path.
+   * Seed the memory item by FREEZING the stored entries into the conversation
+   * doc. Runs when the item auto-instantiates at the start of a conversation
+   * (via executeContextItem → handleToolCall), or when a first `remember` seeds
+   * the item into a conversation that began before the file existed
+   * (`_ensureSeeded`). Write-once: a later reuse (mergeOrReplace) that re-enters
+   * here keeps the original snapshot, so the injected block — and the cached
+   * system prefix it rides — never moves under a running conversation.
    * @param {string} _toolName - Tool name (unused)
    * @param {Record<string, any>} _params - Tool parameters (unused)
    * @returns {Promise<void>}
    */
-  async onToolCall(_toolName, _params) {}
+  async onToolCall(_toolName, _params) {
+    if (!Array.isArray(this.data.entries)) {
+      this.data.entries = await this._snapshotEntries();
+    }
+  }
+
+  /**
+   * Project the stored file to the minimal record frozen into the doc: one
+   * `{date, text}` row per entry, exactly what the block renders. Kept small so
+   * the persisted snapshot stays compact and its serialization stable — an
+   * absent date is stored as `''` rather than null to keep the round-trip
+   * through the doc plain-JSON.
+   * @returns {Promise<Array<{date: string, text: string}>>} Snapshot rows
+   * @private
+   */
+  async _snapshotEntries() {
+    const { entries } = parseMemory(await this._read(this._memoryPath()));
+    return entries.map((e) => ({ date: e.date || '', text: e.text }));
+  }
+
+  /**
+   * The entries this conversation advertises: the FROZEN snapshot captured at
+   * seed time (`this.data.entries`). Falls back to a live read only when no
+   * snapshot was recorded (a direct call that skipped seeding, e.g. a unit
+   * test), so those paths still work without a doc round-trip.
+   * @returns {Promise<Array<{date: string|null, text: string}>>} Advertised entries
+   * @private
+   */
+  async _effectiveEntries() {
+    if (Array.isArray(this.data.entries)) {
+      return /** @type {any} */ (this.data.entries);
+    }
+    const { entries } = parseMemory(await this._read(this._memoryPath()));
+    return entries;
+  }
 
   /**
    * Ensure a persistent memory item exists on this thread so memory injects
@@ -358,16 +410,17 @@ class MemoryContextItem extends ContextItem {
   }
 
   /**
-   * Render the live memory block for the system prompt. Empty/absent memory
-   * contributes nothing. Read live so a remember in any conversation is
-   * reflected on the next send everywhere.
+   * Render the memory block for the system prompt from the FROZEN snapshot
+   * captured at seed time, so the block is byte-stable across every turn,
+   * reload, and viewer of this conversation and rides the prompt cache. It
+   * reflects what memory held when this conversation started; later writes
+   * anywhere reach NEW conversations. Empty/absent memory contributes nothing.
    * @override
    * @param {object} _contextParams - Runtime execution context (unused)
    * @returns {Promise<string>} Context text, or '' when there are no entries
    */
   async createContextText(_contextParams) {
-    const content = await this._read(this._memoryPath());
-    const { entries } = parseMemory(content);
+    const entries = await this._effectiveEntries();
     if (entries.length === 0) {
       return '';
     }
@@ -390,7 +443,7 @@ class MemoryContextItem extends ContextItem {
     // Standing store card: state, not an event. Names what it is and that it
     // reaches the model, so it never reads as a duplicate of the action below.
     if (!actionStatus) {
-      return { typeName: 'Project Memory', summary: 'Durable facts — injected into every turn' };
+      return { typeName: 'Project Memory', summary: 'Durable facts — in context since this conversation began' };
     }
     // Tool-action row: the write event. A verb typeName ('Remember'/'Forget')
     // plus the edit badge distinguishes it from the 'Project Memory' store.
@@ -483,8 +536,8 @@ class MemoryContextItem extends ContextItem {
 
     const entryCount = typeof data.entryCount === 'number' ? data.entryCount : null;
     const note = entryCount === null
-      ? 'Project memory is injected into every future turn.'
-      : `Project memory now holds ${entryCount} ${entryCount === 1 ? 'fact' : 'facts'}, injected into every future turn.`;
+      ? 'Project memory is carried into every new conversation.'
+      : `Project memory now holds ${entryCount} ${entryCount === 1 ? 'fact' : 'facts'}. New conversations start with all of them.`;
     panel.appendChild(createElement('div', 'memory-action-note', note));
 
     wrapper.appendChild(panel);
@@ -516,7 +569,7 @@ class MemoryContextItem extends ContextItem {
     container.textContent = '';
 
     container.appendChild(
-      createElement('div', 'memory-panel-note', 'Durable facts the assistant maintains across conversations. Injected into the system prompt of every turn. Edit by deleting entries here, or by hand in .juggler/MEMORY.md.')
+      createElement('div', 'memory-panel-note', 'Durable facts the assistant maintains across conversations. Shown live from .juggler/MEMORY.md; each conversation is given the list as it stood when that conversation began, so changes here reach new conversations. Delete entries here, or edit the file by hand.')
     );
 
     if (entries.length === 0) {
@@ -553,8 +606,12 @@ class MemoryContextItem extends ContextItem {
   }
 
   /**
-   * React to an external change of the memory file (e.g. a remember in another
-   * tab, or a hand edit) by asking the host to re-render this item.
+   * Nudge the host to re-render this item's UI when the memory file changes
+   * externally (a remember in another tab, or a hand edit). The INJECTED block
+   * is deliberately unaffected — it is the snapshot frozen at seed time, and
+   * moving it here is precisely the cross-conversation cache bust the freeze
+   * exists to prevent. Only the panel, which reads the file live, shows the
+   * change.
    * @param {string} changedPath - Path that changed
    */
   onFileChange(changedPath) {

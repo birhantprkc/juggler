@@ -477,9 +477,19 @@ lands in the request, which governs whether it is cached:
 
 | Value | Placement | Cached? | Built-in users |
 |-------|-----------|---------|----------------|
-| `system` | folded into the system prompt | yes; busts when it changes | memory, skills, system-prompt |
+| `system` | folded into the system prompt | yes; a change re-bills the whole request | memory, skills, system-prompt |
 | `prefix` (default) | leading messages, **before** history | yes; unchanged render caches, a real change busts once | file-content, dropped-file |
 | `none` | not injected at all | n/a — state lives in tool_use history | todo, plan |
+
+**Freeze anything at the `system` position that is sourced from outside the
+conversation.** Both built-in examples read from somewhere shared — memory from
+`.juggler/MEMORY.md`, skills from the skills directories — so both snapshot into
+`this.data` in `onToolCall` (write-once) and render that snapshot in
+`createContextText`. Reading live there is the most expensive mistake in this
+table: the system block is the head of the cached prefix, so a single edit
+doesn't just bust the current turn, it forces **every open conversation** to
+re-read its entire context at the uncached rate. Freezing costs those
+conversations nothing and lets the change reach new ones instead.
 
 There is deliberately **no trailing/tail position**. Standing content is either
 cacheable (`system`/`prefix`) or lives in the model's own tool history (`none`);

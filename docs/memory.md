@@ -64,8 +64,26 @@ to curate it:
 2. Ask the assistant to `remember` or `forget` something in chat.
 3. Open `.juggler/MEMORY.md` in your editor and change it by hand.
 
-All three stay in sync: a change made in one conversation (or by hand on disk)
-is picked up by every open conversation.
+All three write the same file, and the panel always shows what it currently
+holds.
+
+## When a change takes effect
+
+Each conversation is given the facts **as they stood when that conversation
+began**, and keeps that list for its lifetime. A `remember` or `forget` — from
+any conversation, or by hand on disk — lands in the file immediately and is
+picked up by every conversation started afterwards. Conversations already
+running are left alone.
+
+That is deliberate. Memory sits in the system prompt, which is the part of the
+request the model provider caches; changing it means the whole conversation has
+to be re-read at full price on the next turn. If memory were live, one
+`remember` would do that to every open conversation at once — so a fact learned
+in a throwaway side chat would silently bill your long-running one. Freezing the
+list per conversation keeps a write cheap no matter how many are open.
+
+In practice the running conversation loses nothing: it was the one that just
+learned the fact, so the fact is already in its transcript.
 
 ## Turning it off
 

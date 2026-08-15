@@ -13,7 +13,12 @@
  *  - empty/absent memory contributes nothing (no block, no cache churn);
  *  - the assembled prefix is byte-stable across repeated assembly and across a
  *    strategy change (the builder takes no strategy, so strategy cannot affect
- *    it) — it changes ONLY after a remember/forget actually mutates the file.
+ *    it);
+ *  - and once the item is seeded, NOTHING moves it for the life of the
+ *    conversation — not a remember, not a forget, not a hand edit on disk.
+ *    That is the whole point of the freeze: a memory write is a project-wide
+ *    event, and a live block would cold-start the prompt cache of every open
+ *    conversation at once.
  * @module unit-tests/memory-system-prompt-test
  */
 
@@ -104,6 +109,7 @@ export async function runTests(ctx) {
   await test('memory entries appear after identity at the system position', async () => {
     const mem = makeMemory();
     await mem.execute({ action: 'remember', fact: 'Build is `make build`' });
+    await mem.onToolCall('memory', {});
     const out = await assembleSystemPrompt({ contextItems: [fakeSystemPrompt(), mem], contextParams: CONTEXT_PARAMS });
     assert(out.startsWith('IDENTITY'), `identity should lead the prefix; got:\n${out}`);
     assert(out.includes('=== Project Memory ==='), `memory block should be present; got:\n${out}`);
@@ -111,24 +117,34 @@ export async function runTests(ctx) {
     assert(out.indexOf('IDENTITY') < out.indexOf('=== Project Memory ==='), 'memory must follow identity, not precede it');
   });
 
-  await test('assembled prefix is byte-stable across repeated assembly and changes only after a write', async () => {
+  await test('assembled prefix is byte-stable and a later write never moves it', async () => {
     const mem = makeMemory();
     await mem.execute({ action: 'remember', fact: 'first fact' });
+    await mem.onToolCall('memory', {});
 
     const a = await assembleSystemPrompt({ contextItems: [fakeSystemPrompt(), mem], contextParams: CONTEXT_PARAMS });
     const b = await assembleSystemPrompt({ contextItems: [fakeSystemPrompt(), mem], contextParams: CONTEXT_PARAMS });
     assert(a === b, `unchanged memory must yield a byte-identical prefix (cache-stable):\n--- a ---\n${a}\n--- b ---\n${b}`);
 
-    // A genuine change (remember) is the ONLY thing that moves the prefix.
+    // A remember lands in the store for future conversations, but must NOT
+    // move this conversation's prefix — that is the cache bust being avoided.
     await mem.execute({ action: 'remember', fact: 'second fact' });
     const c = await assembleSystemPrompt({ contextItems: [fakeSystemPrompt(), mem], contextParams: CONTEXT_PARAMS });
-    assert(c !== a, 'a remember must change the prefix');
-    assert(c.includes('second fact'), 'the new fact must be in the changed prefix');
+    assert(c === a, `a remember must not move a seeded prefix:\n--- c ---\n${c}\n--- a ---\n${a}`);
+    assert(!c.includes('second fact'), `the new fact belongs to future conversations, not this one:\n${c}`);
 
-    // And forgetting it returns to a stable, smaller prefix.
-    await mem.execute({ action: 'forget', match: 'second fact' });
+    // Nor does a forget.
+    await mem.execute({ action: 'forget', match: 'first fact' });
     const d = await assembleSystemPrompt({ contextItems: [fakeSystemPrompt(), mem], contextParams: CONTEXT_PARAMS });
-    assert(d === a, `forgetting the added fact should restore the earlier prefix exactly:\n--- d ---\n${d}\n--- a ---\n${a}`);
+    assert(d === a, `a forget must not move a seeded prefix either:\n--- d ---\n${d}\n--- a ---\n${a}`);
+
+    // A conversation seeded AFTER those writes sees the updated store.
+    const fresh = makeMemory();
+    fresh.data.path = mem.data.path;
+    await fresh.onToolCall('memory', {});
+    const e = await assembleSystemPrompt({ contextItems: [fakeSystemPrompt(), fresh], contextParams: CONTEXT_PARAMS });
+    assert(e.includes('second fact'), `a new conversation must pick up the later fact:\n${e}`);
+    assert(!e.includes('first fact'), `a new conversation must honour the forget:\n${e}`);
   });
 
   return { passed, failed, errors };

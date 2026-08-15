@@ -147,7 +147,8 @@ export default function systemPromptContribution({ enabledPluginIds }) {
     sections.push(
       '## Memory\n' +
 				'The `memory` tool keeps durable project facts in `.juggler/MEMORY.md`, already shown at the top ' +
-				'of your context every turn (never re-read it).\n' +
+				'of your context every turn (never re-read it). The block is fixed for this conversation — a ' +
+				'fact you record now reaches future ones.\n' +
 				'- `remember` a durable, cross-session fact worth recalling — a build/test command, a convention, ' +
 				'a user correction, a non-obvious constraint. One concise fact per call.\n' +
 				'- `forget` (substring match) to drop a stale fact; to revise, forget then remember.\n' +
