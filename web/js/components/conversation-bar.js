@@ -46,6 +46,19 @@ const NEW_CONVERSATION_DEBOUNCE_MS = 500;
 // Material "delete" (trash can) icon — the per-tab "move to bin" affordance.
 const BIN_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="1rem" viewBox="0 -960 960 960" width="1rem" fill="currentColor" aria-hidden="true"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>`;
 
+// Material "undo" icon — the arrow on the bin toast's Undo button, matching the
+// column-footer undo offer.
+const UNDO_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M280-200v-80h284q63 0 109.5-40T720-420q0-60-46.5-100T564-560H312l104 104-56 56-200-200 200-200 56 56-104 104h252q97 0 166.5 63T800-420q0 94-69.5 157T564-200H280Z"/></svg>`;
+
+// Keys in `_cachedElements` that name the bar's own furniture rather than a
+// conversation tab, so render()'s cleanup pass leaves them alone.
+const CHROME_ELEMENT_KEYS = new Set(['nav', 'tabs-menu', 'add-button', 'bin-button', 'bin-undo', 'info-rail']);
+
+// How long the Undo button rests above the Bin. Long enough to catch the click
+// you regret, short enough that it never becomes furniture — the Bin itself is
+// the unhurried way back.
+const BIN_UNDO_TIMEOUT_MS = 5000;
+
 /**
  * ConversationBar - Vertical sidebar of conversation tabs.
  *
@@ -124,6 +137,12 @@ class ConversationBar extends HTMLElement {
 
     /** @type {number} @private Timestamp (ms) of the last accepted new-conversation create, for leading-edge debounce */
     this._lastCreateAt = 0;
+
+    /** @type {number|null} @private Timer retiring the bin Undo toast */
+    this._binUndoTimer = null;
+
+    /** @type {string|null} @private Conversation the visible bin Undo toast would restore */
+    this._binUndoId = null;
   }
 
   connectedCallback() {
@@ -179,6 +198,7 @@ class ConversationBar extends HTMLElement {
       window.removeEventListener(ATTENTION_PREFS_EVENT, this._attentionPrefsHandler);
       this._attentionPrefsHandler = null;
     }
+    this._hideBinUndo();
   }
 
   /**
@@ -631,6 +651,26 @@ class ConversationBar extends HTMLElement {
     }
     infoRail.setSession(this._session);
 
+    // Undo button, docked directly above the Bin — the thing it undoes went in
+    // there, so that's where the way back belongs. It names nothing: it appears
+    // the instant a tab flies into the Bin and only ever means "put that back",
+    // so a name would be one truncated line of sidebar to read for nothing.
+    // Created once and cached, hidden except for the few seconds after a bin
+    // (see _showBinUndo).
+    let undoToast = /** @type {HTMLButtonElement|null} */ (this._cachedElements.get('bin-undo'));
+    if (!undoToast) {
+      undoToast = document.createElement('button');
+      undoToast.className = 'conversation-bin-undo';
+      undoToast.type = 'button';
+      undoToast.title = 'Put the conversation you just binned back';
+      undoToast.setAttribute('aria-label', 'Undo moving the conversation to the bin');
+      undoToast.hidden = true;
+      undoToast.innerHTML = `${UNDO_ICON_SVG}<span>Undo deletion</span>`;
+      undoToast.addEventListener('click', () => this._undoBin());
+      this._cachedElements.set('bin-undo', undoToast);
+      nav.appendChild(undoToast);
+    }
+
     // Bottom-of-bar "Bin" button — opens the bin modal.
     let binBtn = /** @type {HTMLButtonElement|null} */ (this._cachedElements.get('bin-button'));
     if (!binBtn) {
@@ -727,7 +767,7 @@ class ConversationBar extends HTMLElement {
 
     // Remove tabs for deleted conversations
     for (const [id, element] of this._cachedElements) {
-      if (id !== 'nav' && id !== 'tabs-menu' && id !== 'add-button' && id !== 'bin-button' && id !== 'info-rail' && !currentConversationIds.has(id)) {
+      if (!CHROME_ELEMENT_KEYS.has(id) && !currentConversationIds.has(id)) {
         element.remove();
         this._cachedElements.delete(id);
       }
@@ -978,7 +1018,8 @@ class ConversationBar extends HTMLElement {
    * Move a conversation to the bin (.juggler/bin/). No confirmation:
    * binning is reversible from the Bin modal at any time. Plays a
    * brief fly-into-Bin animation in parallel with the backend call,
-   * honoring prefers-reduced-motion.
+   * honoring prefers-reduced-motion, and offers a few seconds of Undo
+   * above the Bin for the click the user regrets immediately.
    * @param {string} conversationId
    * @private
    * @async
@@ -999,7 +1040,76 @@ class ConversationBar extends HTMLElement {
       return;
     }
     this._flyTabToBin(conversationId);
-    await this._session.binConversation(conversationId);
+    const binned = await this._session.binConversation(conversationId);
+    if (binned) {
+      this._showBinUndo(conversationId);
+    }
+  }
+
+  /**
+   * Show the transient Undo button above the Bin.
+   *
+   * One button, always about the most recent bin: a second bin retargets it and
+   * restarts the clock rather than stacking, so it can only ever undo the thing
+   * the user just did. When it times out nothing is lost — the Bin below it
+   * holds the conversation until the user empties it.
+   * @param {string} conversationId - Conversation the Undo would restore
+   * @private
+   */
+  _showBinUndo(conversationId) {
+    const toast = this._cachedElements.get('bin-undo');
+    if (!toast) return;
+    this._binUndoId = conversationId;
+
+    // Hide-reflow-show restarts the entrance animation from scratch. It matters
+    // on the retarget path: the button is already on screen pointing at the
+    // previous bin, and silently repurposing it would let a second bin look
+    // like nothing happened.
+    toast.hidden = true;
+    void toast.offsetWidth;
+    toast.hidden = false;
+
+    if (this._binUndoTimer !== null) window.clearTimeout(this._binUndoTimer);
+    this._binUndoTimer = window.setTimeout(() => {
+      this._binUndoTimer = null;
+      this._hideBinUndo();
+    }, BIN_UNDO_TIMEOUT_MS);
+  }
+
+  /**
+   * Retire the bin Undo toast. Safe to call when none is showing.
+   * @private
+   */
+  _hideBinUndo() {
+    if (this._binUndoTimer !== null) {
+      window.clearTimeout(this._binUndoTimer);
+      this._binUndoTimer = null;
+    }
+    this._binUndoId = null;
+    const toast = this._cachedElements.get('bin-undo');
+    if (toast) toast.hidden = true;
+  }
+
+  /**
+   * Restore the conversation the visible toast refers to. The tab comes back
+   * via the server's `conversations-changed` op="restored" broadcast, the same
+   * path the Bin modal's Restore uses.
+   * @private
+   * @async
+   */
+  async _undoBin() {
+    const id = this._binUndoId;
+    this._hideBinUndo();
+    if (!id || !this._session) return;
+    try {
+      await this._session.restoreConversation(id);
+    } catch (e) {
+      console.error('[ConversationBar] restore from bin failed:', e);
+      await /** @type {WindowWithModals} */ (/** @type {any} */ (window)).showAlert(
+        `Couldn’t restore it from the bin: ${/** @type {any} */ (e)?.message || e}`,
+        'Restore failed'
+      );
+    }
   }
 
   /**

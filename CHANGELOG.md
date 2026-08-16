@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Binning a conversation offers a few seconds of Undo above the Bin
 - Refactored to simplify sub-threads and to make them resumable sessions. An LLM can now append to an existing subthread and get subsequent results from it. Removed the concept of summarising threads or marking them closed.
 - Big revamp of the transaction panel
 - Each item's properties header shows its token cost, exact when that info is available

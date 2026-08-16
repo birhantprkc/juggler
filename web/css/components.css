@@ -763,6 +763,103 @@ conversation-bar .conversation-bin-count {
     line-height: 1.1;
 }
 
+/* Transient Undo button, docked directly above the Bin entry for a few seconds
+   after a conversation is binned (see conversation-bar _showBinUndo). Carries
+   the accent colour rather than the sidebar's muted chrome — it is the one
+   control here that is only worth showing because something just disappeared,
+   and it is worth nothing if it isn't seen before it goes. It rises out of the
+   Bin as it appears, so the eye is already on the right part of the sidebar.
+   Then it pulses twice over about a second, because a single 260ms arrival in
+   the corner of the eye is genuinely easy to miss. Two pulses, not three: the
+   flash-threshold guidance draws its line at three in one second, and this must
+   never be the reason someone has a bad day. Hidden by the `hidden` attribute
+   the rest of the time. */
+conversation-bar .conversation-bin-undo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    margin: 0.25rem 0.5rem;
+    padding: 0.3125rem 1rem;
+    border: 0.0625rem solid var(--accent-blue, #58a6ff);
+    border-radius: 1rem;
+    background: rgb(88 166 255 / 15%);
+    color: var(--accent-blue, #58a6ff);
+    font-family: var(--font-ui);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    flex-shrink: 0;
+
+    /* Rise, then pulse. Split across two animations so the flash owns the fill
+       and the rise owns the movement — reduced motion keeps only the flash. */
+    animation:
+        bin-undo-in 260ms cubic-bezier(0.2, 0.8, 0.3, 1.15),
+        bin-undo-flash 480ms ease-in-out 2;
+}
+
+conversation-bar .conversation-bin-undo[hidden] {
+    display: none;
+}
+
+conversation-bar .conversation-bin-undo:hover {
+    background: rgb(88 166 255 / 28%);
+}
+
+conversation-bar .conversation-bin-undo:active {
+    transform: scale(0.97);
+}
+
+conversation-bar .conversation-bin-undo svg {
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+}
+
+/* The arrival: rises from the Bin below and settles. Movement only — the fill
+   belongs to the flash below, so the two never fight over `background`. */
+@keyframes bin-undo-in {
+    from {
+        opacity: 0;
+        transform: translateY(0.75rem) scale(0.94);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* The flash: fill and border brighten and a soft halo swells, then both fall
+   back to the resting tint. Two passes of this is the whole attention budget —
+   after that the button just sits there being a button. */
+@keyframes bin-undo-flash {
+    0%,
+    100% {
+        background: rgb(88 166 255 / 15%);
+        border-color: var(--accent-blue, #58a6ff);
+        box-shadow: 0 0 0 0 rgb(88 166 255 / 0%);
+    }
+
+    50% {
+        background: rgb(88 166 255 / 45%);
+        border-color: rgb(139 195 255);
+        box-shadow: 0 0 0.5rem 0.0625rem rgb(88 166 255 / 40%);
+    }
+}
+
+/* Reduced motion keeps the arrival legible without the movement: the button
+   still flashes where it is, nothing travels. */
+@media (prefers-reduced-motion: reduce) {
+    conversation-bar .conversation-bin-undo {
+        animation: bin-undo-flash 480ms ease-in-out 2;
+    }
+
+    conversation-bar .conversation-bin-undo:active {
+        transform: none;
+    }
+}
+
 /* ----------------------------------------------------------------------------
    Info-cards "i" menu (web/js/components/info-cards-button.js) — a small
    affordance heading the info rail that re-shows cards hidden via their ×. It is
