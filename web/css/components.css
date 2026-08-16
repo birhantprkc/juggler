@@ -7160,6 +7160,16 @@ action-confirmation:focus {
     overflow: hidden;
 }
 
+/* A plugin's own form (the AskUserQuestion questions) sits below the status row
+   as a sibling of `.message-with-icon`, not inside its content box, so it uses
+   the item's whole width. The margin restores the gap the content box's flow
+   used to give it. */
+.action-custom-form {
+    max-width: 100%;
+    min-width: 0;
+    margin-top: 0.5rem;
+}
+
 /* Pre-formatted message for actions without diff (e.g., execute command) */
 .action-approval-message {
     background: var(--bg-secondary);

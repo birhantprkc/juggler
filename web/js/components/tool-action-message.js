@@ -432,12 +432,8 @@ class ToolActionMessage extends HTMLElement {
         if (statusConfig) {
           const customElement = renderResultStatusMessage(statusConfig);
           if (statusConfig.customFormElement) {
-            // Multi-question: append form after status message, skip action-confirmation buttons
-            const wrapper = document.createElement('div');
-            wrapper.className = 'action-approval-container';
-            wrapper.appendChild(customElement);
-            wrapper.appendChild(statusConfig.customFormElement);
-            article.appendChild(this._wrapWithIcon(wrapper));
+            // Multi-question: form below the status row, no action-confirmation buttons
+            this._appendCustomForm(article, customElement, statusConfig.customFormElement);
           } else {
             const container = this._createApprovalContainer(customElement, item);
             article.appendChild(this._wrapWithIcon(container));
@@ -693,11 +689,7 @@ class ToolActionMessage extends HTMLElement {
           // For approval state: wrap content and add approval buttons
           if (isApproval) {
             if (statusConfig.customFormElement) {
-              const wrapper = document.createElement('div');
-              wrapper.className = 'action-approval-container';
-              wrapper.appendChild(customElement);
-              wrapper.appendChild(statusConfig.customFormElement);
-              article.appendChild(this._wrapWithIcon(wrapper, statusColor));
+              this._appendCustomForm(article, customElement, statusConfig.customFormElement, statusColor);
             } else {
               const container = this._createApprovalContainer(customElement, item, result?.approvalOptions);
               article.appendChild(this._wrapWithIcon(container, statusColor));
@@ -750,6 +742,28 @@ class ToolActionMessage extends HTMLElement {
     if (article.children.length > 0) {
       this.appendChild(article);
     }
+  }
+
+  /**
+   * Lay out a plugin-supplied form (an elicitation surface such as
+   * AskUserQuestion's questions) under the item's status row. The status line
+   * keeps the icon-row layout, but the form is appended as a sibling of that
+   * row rather than inside its content box, so it spans the item's full width:
+   * the badge gutter costs a third of a phone screen, and the form's option
+   * text is the content that most needs the room.
+   * @param {HTMLElement} article - The item's article element
+   * @param {HTMLElement} statusElement - The rendered status line
+   * @param {HTMLElement} formElement - The plugin's form element
+   * @param {string} [colorOverride] - Optional color override for the icon badge
+   * @private
+   */
+  _appendCustomForm(article, statusElement, formElement, colorOverride = undefined) {
+    const container = document.createElement('div');
+    container.className = 'action-approval-container';
+    container.appendChild(statusElement);
+    article.appendChild(this._wrapWithIcon(container, colorOverride));
+    formElement.classList.add('action-custom-form');
+    article.appendChild(formElement);
   }
 
   /**

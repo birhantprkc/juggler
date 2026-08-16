@@ -130,7 +130,7 @@
  * @property {string} [typeName] - Type label rendered as a lozenge badge (e.g., "Read", "Question")
  * @property {string|HTMLElement} summary - Status line content (string or custom element, will be truncated)
  * @property {ResultStatus} [status] - Semantic status for styling (success, error, cancelled, running)
- * @property {HTMLElement} [customFormElement] - Custom form element rendered inline instead of the default status layout
+ * @property {HTMLElement} [customFormElement] - Custom form element rendered at the item's full width below the status row, in place of the default approval buttons
  */
 
 /**
