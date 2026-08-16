@@ -5,12 +5,15 @@
 package server
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/mcp"
+	"juggler/cmd/juggler/server/handlers"
 	"juggler/internal/jlog"
 
 	"github.com/fsnotify/fsnotify"
@@ -20,6 +23,12 @@ import (
 // extension tree, a cheap guard against a pathological symlink cycle that
 // EvalSymlinks deduplication didn't already break.
 const maxPluginWatchDepth = 12
+
+// pluginReloadDebounce is how long the watcher waits for the filesystem to go
+// quiet before broadcasting. An editor save is several events (and a multi-file
+// save several more), and each rebuild tears down and re-imports every
+// capability, so the burst is collapsed into one reload.
+const pluginReloadDebounce = 300 * time.Millisecond
 
 // StartBackgroundServices constructs and starts the filesystem watcher (which
 // walks the project tree and registers fsnotify watches), kicks off the
@@ -51,8 +60,10 @@ func (s *Server) StartBackgroundServices() {
 	// When the MCP tool snapshot changes (a server became ready, crashed, or
 	// sent tools/list_changed), reuse the extension hot-reload broadcast so
 	// connected engines reload registries and pick up the new tool set.
+	// The tool set changed, not any extension file, so the module cache is left
+	// alone: the reload re-reads the snapshot from the server.
 	mcp.SetChangeHook(func() {
-		s.broadcastToAll(map[string]any{"type": "plugin-changed", "path": "config/mcp"})
+		s.broadcastPluginChanged("config/mcp", false)
 	})
 	s.RefreshProviders()
 	s.startUpdateChecker()
@@ -96,13 +107,21 @@ func (s *Server) startPluginWatcher() {
 	}
 
 	// Resolved-path set shared across all roots and later Create events, so a dir
-	// reachable via two paths (e.g. a symlink) is only watched once.
+	// reachable via two paths (e.g. a symlink) is only watched once. extDirs is
+	// the subset belonging to the extension container: an event there carries new
+	// capability CODE and so must bust the module cache, while an event in the
+	// user-command dirs does not.
 	watched := map[string]bool{}
+	extDirs := map[string]bool{}
 	total := 0
 	for _, dir := range dirs {
-		n := addPluginTree(watcher, dir, watched)
+		var ext map[string]bool
+		if dir.isExtension {
+			ext = extDirs
+		}
+		n := addPluginTree(watcher, dir.path, watched, ext)
 		if n > 0 {
-			jlog.Info("[PluginWatcher] Watching %d dir(s) under: %s", n, dir)
+			jlog.Info("[PluginWatcher] Watching %d dir(s) under: %s", n, dir.path)
 		}
 		total += n
 	}
@@ -114,6 +133,17 @@ func (s *Server) startPluginWatcher() {
 
 	go func() {
 		defer watcher.Close()
+		// Editors write a file in several steps and a multi-file save fires an
+		// event per file, so events are coalesced into one broadcast: pending*
+		// accumulates what arrived, and each new event restarts the timer. A fresh
+		// timer per event (rather than Reset) keeps the fired-but-undrained case
+		// from delivering a stale tick.
+		var (
+			debounce    <-chan time.Time
+			timer       *time.Timer
+			pendingPath string
+			pendingExt  bool
+		)
 		for {
 			select {
 			case event, ok := <-watcher.Events:
@@ -125,18 +155,31 @@ func (s *Server) startPluginWatcher() {
 					isDir = fi.IsDir()
 				}
 				action := classifyPluginEvent(event.Name, event.Op, isDir)
+				isExt := isExtensionEvent(event.Name, extDirs)
 				// A freshly linked/added extension dir's files already exist, so
 				// start watching its subtree for subsequent edits.
 				if action.watchTree {
-					addPluginTree(watcher, event.Name, watched)
+					var ext map[string]bool
+					if isExt {
+						ext = extDirs
+					}
+					addPluginTree(watcher, event.Name, watched, ext)
 				}
 				if action.broadcast {
-					jlog.Info("[PluginWatcher] Plugin changed: %s", event.Name)
-					s.broadcastToAll(map[string]any{
-						"type": "plugin-changed",
-						"path": event.Name,
-					})
+					pendingPath = event.Name
+					pendingExt = pendingExt || isExt
+					if timer != nil {
+						timer.Stop()
+					}
+					timer = time.NewTimer(pluginReloadDebounce)
+					debounce = timer.C
 				}
+
+			case <-debounce:
+				debounce, timer = nil, nil
+				jlog.Info("[PluginWatcher] Plugin changed: %s", pendingPath)
+				s.broadcastPluginChanged(pendingPath, pendingExt)
+				pendingPath, pendingExt = "", false
 
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -151,6 +194,42 @@ func (s *Server) startPluginWatcher() {
 	}()
 }
 
+// broadcastPluginChanged tells every connected client to reload its capability
+// registries. bustCache advances the extension URL epoch first, so the catalog
+// the clients refetch hands out URLs the JS module cache has never seen and the
+// edited file is actually re-imported — without it a reload re-runs the stale
+// module records and appears to do nothing.
+func (s *Server) broadcastPluginChanged(path string, bustCache bool) {
+	if bustCache && s.extensionsAPI != nil {
+		s.extensionsAPI.BumpEpoch()
+	}
+	s.broadcastToAll(map[string]any{
+		"type": "plugin-changed",
+		"path": path,
+	})
+}
+
+// handleReloadExtensions serves POST /api/extensions/reload — the Extensions
+// page's explicit Reload. It routes through the server rather than reloading in
+// the clicking viewer alone because the engine worker, where tools actually run,
+// holds its own copy of every capability module: a local-only reload would leave
+// it running the old code. Broadcasting also keeps every connected client on one
+// epoch, so no two of them load the same file under different URLs.
+func (s *Server) handleReloadExtensions(w http.ResponseWriter, r *http.Request) {
+	jlog.Info("[PluginWatcher] Reload requested")
+	s.broadcastPluginChanged("api/extensions/reload", true)
+	handlers.WriteJSON(w, r, 0, map[string]any{"success": true})
+}
+
+// isExtensionEvent reports whether a filesystem event happened inside the
+// extension tree, as opposed to the user-command directories the same watcher
+// covers. Membership is by watched directory rather than a path prefix: `juggler
+// ext link` puts an extension's real files anywhere on disk, so the container
+// path is no guide.
+func isExtensionEvent(name string, extDirs map[string]bool) bool {
+	return extDirs[name] || extDirs[filepath.Dir(name)]
+}
+
 // pluginWatchDirs returns the directory trees the watcher should register: the
 // extension container (owned by the ExtensionsAPI) plus the user- and
 // project-scope user-command directories. Each is created if absent so a `juggler
@@ -158,19 +237,27 @@ func (s *Server) startPluginWatcher() {
 // is caught by the watch on the container. An external edit to a command file
 // broadcasts plugin-changed (see isPluginFile), reusing the extension hot-reload
 // path with no new client plumbing.
-func (s *Server) pluginWatchDirs() []string {
-	var dirs []string
-	watch := func(dir string) {
+func (s *Server) pluginWatchDirs() []pluginWatchDir {
+	var dirs []pluginWatchDir
+	watch := func(dir string, isExtension bool) {
 		if dir == "" {
 			return
 		}
 		_ = os.MkdirAll(dir, 0o755)
-		dirs = append(dirs, dir)
+		dirs = append(dirs, pluginWatchDir{path: dir, isExtension: isExtension})
 	}
-	watch(s.extensionsAPI.UserExtensionDir())
-	watch(s.userCommandsAPI.UserCommandDir())
-	watch(s.userCommandsAPI.ProjectCommandDir())
+	watch(s.extensionsAPI.UserExtensionDir(), true)
+	watch(s.userCommandsAPI.UserCommandDir(), false)
+	watch(s.userCommandsAPI.ProjectCommandDir(), false)
 	return dirs
+}
+
+// pluginWatchDir is one root the plugin watcher registers, tagged with whether
+// it holds extension code (whose reload must bust the module cache) or user
+// commands (which are re-read from the server on every reload).
+type pluginWatchDir struct {
+	path        string
+	isExtension bool
 }
 
 // isPluginFile reports whether a changed path is one a hot reload cares about:
@@ -211,20 +298,22 @@ func classifyPluginEvent(name string, op fsnotify.Op, isDir bool) pluginEventAct
 
 // addPluginTree registers watches on dir and every subdirectory beneath it,
 // resolving symlinks (so a `juggler ext link` target dir is watched at its real
-// location) and de-duplicating via the shared watched set. It returns the number
-// of directories newly added. A missing dir contributes nothing.
-func addPluginTree(watcher *fsnotify.Watcher, dir string, watched map[string]bool) int {
+// location) and de-duplicating via the shared watched set. Every directory added
+// is also recorded in extDirs when that map is non-nil, marking the subtree as
+// extension code. It returns the number of directories newly added. A missing
+// dir contributes nothing.
+func addPluginTree(watcher *fsnotify.Watcher, dir string, watched, extDirs map[string]bool) int {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return 0 // absent or dangling — nothing to watch
 	}
-	return addDirRecursive(watcher, resolved, watched, 0)
+	return addDirRecursive(watcher, resolved, watched, extDirs, 0)
 }
 
 // addDirRecursive adds a single resolved directory and recurses into its
 // subdirectories, following symlinked children (each extension under a container
 // may itself be a symlink). depth is bounded by maxPluginWatchDepth.
-func addDirRecursive(watcher *fsnotify.Watcher, dir string, watched map[string]bool, depth int) int {
+func addDirRecursive(watcher *fsnotify.Watcher, dir string, watched, extDirs map[string]bool, depth int) int {
 	if depth > maxPluginWatchDepth || watched[dir] {
 		return 0
 	}
@@ -236,6 +325,9 @@ func addDirRecursive(watcher *fsnotify.Watcher, dir string, watched map[string]b
 		return 0
 	}
 	watched[dir] = true
+	if extDirs != nil {
+		extDirs[dir] = true
+	}
 	count := 1
 
 	entries, err := os.ReadDir(dir)
@@ -254,7 +346,7 @@ func addDirRecursive(watcher *fsnotify.Watcher, dir string, watched map[string]b
 		if err != nil || !fi.IsDir() {
 			continue
 		}
-		count += addDirRecursive(watcher, childResolved, watched, depth+1)
+		count += addDirRecursive(watcher, childResolved, watched, extDirs, depth+1)
 	}
 	return count
 }

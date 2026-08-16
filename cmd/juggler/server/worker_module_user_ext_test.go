@@ -83,6 +83,56 @@ func TestReadWorkerModuleLinkedExtension(t *testing.T) {
 	}
 }
 
+// TestTrimUserExtEpoch pins the epoch-stripping rule both user-extension
+// loaders share: a leading "e<digits>/" segment is removed, once, and anything
+// that is not one is left alone (an extension directory named "epic" or "e2x"
+// must survive intact).
+func TestTrimUserExtEpoch(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"e0/my-ext/a.js", "my-ext/a.js"},
+		{"e12/my-ext/a.js", "my-ext/a.js"},
+		{"my-ext/a.js", "my-ext/a.js"},
+		{"epic/a.js", "epic/a.js"},
+		{"e2x/a.js", "e2x/a.js"},
+		{"e/a.js", "e/a.js"},
+		// Only the leading segment is an epoch; a nested one is a real directory.
+		{"e1/e2/a.js", "e2/a.js"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := trimUserExtEpoch(c.in); got != c.want {
+			t.Errorf("trimUserExtEpoch(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestReadWorkerModuleUserExtensionEpoch checks the loader accepts the
+// epoch-prefixed URLs the catalog actually mints after a reload. The epoch is a
+// cache-busting fiction with no directory behind it, so a loader that did not
+// strip it would 404 every capability in the engine the moment the epoch moved
+// off zero.
+func TestReadWorkerModuleUserExtensionEpoch(t *testing.T) {
+	userDir := t.TempDir()
+	rel := "my-ext/context-items/example-context-item.js"
+	full := filepath.Join(userDir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const body = "export default { epoch: true };\n"
+	if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := serverWithUserExt(userDir)
+	got, err := s.readWorkerModule("/user-extensions/e7/" + rel)
+	if err != nil {
+		t.Fatalf("readWorkerModule (epoch-prefixed): %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+}
+
 // TestReadWorkerModuleUserExtensionRejectsTraversal keeps readWorkerModule
 // self-defensive: it is also called directly from engine_snapshot.go, not only
 // behind serveWorkerModule's own ".." guard. A ".." segment must never escape
@@ -100,5 +150,10 @@ func TestReadWorkerModuleUserExtensionRejectsTraversal(t *testing.T) {
 	s := serverWithUserExt(userDir)
 	if _, err := s.readWorkerModule("/user-extensions/my-ext/../../secret.js"); err == nil {
 		t.Fatal("expected traversal outside the container to be rejected")
+	}
+	// The epoch strip runs before the ".." check, so it cannot be used to slip a
+	// traversal past it.
+	if _, err := s.readWorkerModule("/user-extensions/e3/my-ext/../../secret.js"); err == nil {
+		t.Fatal("expected traversal behind an epoch segment to be rejected")
 	}
 }

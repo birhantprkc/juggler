@@ -420,6 +420,7 @@ func (s *Server) setupRoutes() {
 
 	api.HandleFunc("/extensions", s.extensionsAPI.HandleListExtensions).Methods("GET")
 	api.HandleFunc("/extensions/locations", s.extensionsAPI.HandleListLocations).Methods("GET")
+	api.HandleFunc("/extensions/reload", s.handleReloadExtensions).Methods("POST")
 
 	api.HandleFunc("/user-commands", s.userCommandsAPI.HandleList).Methods("GET")
 	api.HandleFunc("/user-commands/{scope}/{name}", s.userCommandsAPI.HandlePut).Methods("PUT")
@@ -453,8 +454,9 @@ func (s *Server) setupRoutes() {
 	// Serve extension containers straight off disk. ExtensionsAPI owns these
 	// paths; a "" path (e.g. no-project mode) simply registers no route.
 	if userDir := s.extensionsAPI.UserExtensionDir(); userDir != "" {
-		s.router.PathPrefix("/user-extensions/").Handler(
-			http.StripPrefix("/user-extensions/", http.FileServer(http.Dir(userDir))),
+		s.router.PathPrefix(handlers.UserExtensionURLBase).Handler(
+			http.StripPrefix(handlers.UserExtensionURLBase,
+				stripUserExtEpoch(http.FileServer(http.Dir(userDir)))),
 		)
 	}
 

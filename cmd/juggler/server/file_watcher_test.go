@@ -5,11 +5,18 @@
 package server
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/gorilla/mux"
+
+	"juggler/cmd/juggler/server/handlers"
 )
 
 func TestIsPluginFile(t *testing.T) {
@@ -91,7 +98,8 @@ func TestAddPluginTreeRecursiveAndSymlinks(t *testing.T) {
 	}
 
 	watched := map[string]bool{}
-	n := addPluginTree(watcher, container, watched)
+	extDirs := map[string]bool{}
+	n := addPluginTree(watcher, container, watched, extDirs)
 	if n == 0 {
 		t.Fatal("addPluginTree watched no directories")
 	}
@@ -105,11 +113,17 @@ func TestAddPluginTreeRecursiveAndSymlinks(t *testing.T) {
 		if !watched[resolved] {
 			t.Errorf("expected %s (resolved %s) to be watched", dir, resolved)
 		}
+		// The epoch bump is gated on this set, so a linked extension's real
+		// location must be marked too — its edits are the whole point of the
+		// dev workflow.
+		if !extDirs[resolved] {
+			t.Errorf("expected %s (resolved %s) to be marked as extension code", dir, resolved)
+		}
 	}
 
 	// Idempotence: a second pass over an already-watched tree adds nothing new.
 	before := len(watched)
-	if extra := addPluginTree(watcher, container, watched); extra != 0 {
+	if extra := addPluginTree(watcher, container, watched, extDirs); extra != 0 {
 		t.Errorf("second addPluginTree added %d dirs, want 0", extra)
 	}
 	if len(watched) != before {
@@ -126,7 +140,76 @@ func TestAddPluginTreeMissingDir(t *testing.T) {
 	defer watcher.Close()
 
 	watched := map[string]bool{}
-	if n := addPluginTree(watcher, filepath.Join(t.TempDir(), "nope"), watched); n != 0 {
+	if n := addPluginTree(watcher, filepath.Join(t.TempDir(), "nope"), watched, nil); n != 0 {
 		t.Errorf("addPluginTree on missing dir = %d, want 0", n)
+	}
+}
+
+// TestIsExtensionEvent covers the gate that decides whether a watcher event
+// busts the extension URL epoch. Only the extension tree does: a user-command
+// edit shares the same broadcast but carries no new capability code, and
+// bumping the epoch for it would pointlessly re-import every extension.
+func TestIsExtensionEvent(t *testing.T) {
+	extDirs := map[string]bool{
+		filepath.FromSlash("/ext/my-ext"):               true,
+		filepath.FromSlash("/ext/my-ext/context-items"): true,
+	}
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"file in extension dir", filepath.FromSlash("/ext/my-ext/context-items/a.js"), true},
+		{"the extension dir itself", filepath.FromSlash("/ext/my-ext"), true},
+		{"user command file", filepath.FromSlash("/commands/review.md"), false},
+		{"unwatched sibling", filepath.FromSlash("/ext/other/a.js"), false},
+	}
+	for _, c := range cases {
+		if got := isExtensionEvent(c.path, extDirs); got != c.want {
+			t.Errorf("%s: isExtensionEvent(%q) = %v, want %v", c.name, c.path, got, c.want)
+		}
+	}
+}
+
+// TestHandleReloadExtensions covers POST /api/extensions/reload: it must both
+// advance the URL epoch (so the reload actually re-imports edited files instead
+// of replaying cached modules) and broadcast plugin-changed (so the engine
+// worker reloads too, not just the viewer that clicked).
+func TestHandleReloadExtensions(t *testing.T) {
+	s := &Server{
+		router:        mux.NewRouter(),
+		staticVersion: "test",
+		extensionsAPI: handlers.NewExtensionsAPI(fstest.MapFS{}, "", t.TempDir()),
+		hub:           newClientHub(),
+	}
+	s.setupRoutes()
+
+	client := testRoleClient("v1", ClientRoleViewer, "local")
+	s.hub.register(client)
+	nextClientsCount(t, client) // drain the join notification
+
+	before := s.extensionsAPI.UserExtensionURLPrefix()
+
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, httptest.NewRequest("POST", "/api/extensions/reload", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/extensions/reload = %d, want 200", rec.Code)
+	}
+
+	if after := s.extensionsAPI.UserExtensionURLPrefix(); after == before {
+		t.Errorf("URL prefix still %q after a reload — the module cache would replay stale code", after)
+	}
+
+	select {
+	case msg := <-client.send:
+		m, ok := msg.json.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map message, got %T", msg.json)
+		}
+		if m["type"] != "plugin-changed" {
+			t.Errorf("broadcast type = %v, want plugin-changed", m["type"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no plugin-changed broadcast after reload")
 	}
 }

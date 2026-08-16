@@ -87,7 +87,7 @@ func (s *Server) readWorkerModule(moduleURL string) ([]byte, error) {
 		if userDir == "" {
 			return nil, fmt.Errorf("user extension directory is unavailable")
 		}
-		rel := strings.TrimPrefix(path, userExtPrefix)
+		rel := trimUserExtEpoch(strings.TrimPrefix(path, userExtPrefix))
 		if rel == "" || hasDotDotSegment(rel) {
 			return nil, fmt.Errorf("invalid user extension module path: %q", rel)
 		}
@@ -102,6 +102,40 @@ func (s *Server) readWorkerModule(moduleURL string) ([]byte, error) {
 		}
 	}
 	return web.Files.ReadFile(path)
+}
+
+// userExtEpochRe matches the leading reload-epoch segment ("e12/") of a
+// container-relative user-extension path.
+var userExtEpochRe = regexp.MustCompile(`^e\d+/`)
+
+// trimUserExtEpoch removes the leading reload-epoch segment from a
+// container-relative user-extension path. Served URLs carry the epoch (minted by
+// handlers.ExtensionsAPI.UserExtensionURLPrefix) purely to give the browser's
+// URL-keyed ES module cache a new key after an edit; no such directory exists on
+// disk, so both the static route and this loader strip it before resolving
+// against the container. A path with no epoch segment is returned unchanged —
+// the one consequence being that a user extension directory literally named
+// "e<digits>" at the container root is unreachable without one.
+func trimUserExtEpoch(rel string) string {
+	return userExtEpochRe.ReplaceAllString(rel, "")
+}
+
+// stripUserExtEpoch wraps h so the reload-epoch segment is removed from the
+// request path first. It sits between the /user-extensions/ prefix strip and the
+// file server, which resolves what is left against the container on disk. The
+// request is copied rather than mutated in place, as net/http's own
+// StripPrefix does.
+func stripUserExtEpoch(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r2 := *r
+		u := *r.URL
+		u.Path = trimUserExtEpoch(u.Path)
+		if u.RawPath != "" {
+			u.RawPath = trimUserExtEpoch(u.RawPath)
+		}
+		r2.URL = &u
+		h.ServeHTTP(w, &r2)
+	})
 }
 
 // hasDotDotSegment reports whether a slash-separated path contains a ".."

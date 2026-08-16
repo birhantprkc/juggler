@@ -288,7 +288,7 @@ func TestExtensionsUserExtensionDiscovered(t *testing.T) {
 	if ext.Error != "" {
 		t.Fatalf("unexpected error: %s", ext.Error)
 	}
-	want := "/user-extensions/code-review/context-items/lint-context-item.js"
+	want := api.UserExtensionURLPrefix() + "code-review/context-items/lint-context-item.js"
 	if len(ext.Capabilities.ContextItems) != 1 || ext.Capabilities.ContextItems[0] != want {
 		t.Errorf("contextItems = %v, want [%s]", ext.Capabilities.ContextItems, want)
 	}
@@ -351,7 +351,7 @@ func TestExtensionsSymlinkedExtensionDiscovered(t *testing.T) {
 	if ext.Source != "user" {
 		t.Errorf("source = %q, want user", ext.Source)
 	}
-	want := "/user-extensions/dev-ext/context-items/word-count-context-item.js"
+	want := api.UserExtensionURLPrefix() + "dev-ext/context-items/word-count-context-item.js"
 	if len(ext.Capabilities.ContextItems) != 1 || ext.Capabilities.ContextItems[0] != want {
 		t.Errorf("contextItems = %v, want [%s]", ext.Capabilities.ContextItems, want)
 	}
@@ -382,10 +382,54 @@ func TestExtensionsFilePathsForOnDiskExtension(t *testing.T) {
 	if ext.ManifestPath != wantManifest {
 		t.Errorf("ManifestPath = %q, want %q", ext.ManifestPath, wantManifest)
 	}
-	url := "/user-extensions/pack/context-items/word-count-context-item.js"
+	url := api.UserExtensionURLPrefix() + "pack/context-items/word-count-context-item.js"
 	wantFile := filepath.Join(userExtDir, "pack", "context-items", "word-count-context-item.js")
 	if got := ext.Files[url]; got != wantFile {
 		t.Errorf("Files[%q] = %q, want %q", url, got, wantFile)
+	}
+}
+
+func TestUserExtensionURLPrefixEpoch(t *testing.T) {
+	// Served capability URLs carry a reload epoch, and BumpEpoch must move it:
+	// ES module identity is keyed by URL, so a reload that re-imported the same
+	// URL would replay the cached module and the user's edit would never run.
+	// Builtin extension URLs are unaffected — they cache-bust on staticVersion.
+	userExtDir := t.TempDir()
+	writeFileTree(t, userExtDir, map[string]string{
+		"pack/juggler.extension.json": `{
+			"id": "@jules/pack", "name": "Pack", "version": "1.0.0",
+			"engineApi": "^1.0.0",
+			"provides": {"contextItems": ["context-items/*-context-item.js"]}
+		}`,
+		"pack/context-items/word-count-context-item.js": "//",
+	})
+
+	api := NewExtensionsAPI(builtinOnlyFS(), "", userExtDir)
+	if got := api.UserExtensionURLPrefix(); got != UserExtensionURLBase+"e0/" {
+		t.Errorf("initial prefix = %q, want %q", got, UserExtensionURLBase+"e0/")
+	}
+
+	before := findExt(runHandler(t, api), "@jules/pack")
+	if before == nil {
+		t.Fatal("pack extension not discovered")
+	}
+
+	api.BumpEpoch()
+
+	after := findExt(runHandler(t, api), "@jules/pack")
+	if after == nil {
+		t.Fatal("pack extension not discovered after bump")
+	}
+	if len(after.Capabilities.ContextItems) != 1 {
+		t.Fatalf("contextItems = %v, want one entry", after.Capabilities.ContextItems)
+	}
+	if after.Capabilities.ContextItems[0] == before.Capabilities.ContextItems[0] {
+		t.Errorf("capability URL unchanged after BumpEpoch: %q", after.Capabilities.ContextItems[0])
+	}
+	// The reveal map is keyed by served URL, so it must follow the epoch too or
+	// the catalog loses the on-disk path for every capability after a reload.
+	if _, ok := after.Files[after.Capabilities.ContextItems[0]]; !ok {
+		t.Errorf("Files has no entry for %q", after.Capabilities.ContextItems[0])
 	}
 }
 

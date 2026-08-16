@@ -97,6 +97,50 @@ export async function initAllRegistries() {
   }
 }
 
+/**
+ * Snapshot every capability module that failed to import, across the registries,
+ * keyed by served URL. A capability that throws on import is dropped silently —
+ * it simply isn't in the registry afterwards — so this is the only way to see
+ * that a reload half-worked.
+ * @returns {Map<string, string>} Load error keyed by served module URL
+ */
+export function collectFailedModules() {
+  /** @type {Map<string, string>} */
+  const failed = new Map();
+  const registries = [
+    strategyRegistry,
+    contextItemRegistry,
+    commandRegistry,
+    fileViewerRegistry,
+    infoCardRegistry,
+  ];
+  for (const reg of registries) {
+    for (const { path, error } of reg.getFailedModules()) {
+      failed.set(path, error);
+    }
+  }
+  return failed;
+}
+
+/**
+ * Diff two failure snapshots, returning only what is newly broken. A module that
+ * failed the same way before is NOT included: an extension the user has left
+ * broken must not re-announce itself every time something unrelated reloads.
+ * A different error message for the same module counts as new — the file was
+ * edited and still doesn't load, which is worth saying again.
+ * @param {Map<string, string>} previous - Snapshot from the last reload
+ * @param {Map<string, string>} current - Snapshot from this reload
+ * @returns {Array<{path: string, error: string}>} Newly failed modules, in registry order
+ */
+export function newlyFailedModules(previous, current) {
+  /** @type {Array<{path: string, error: string}>} */
+  const fresh = [];
+  for (const [path, error] of current) {
+    if (previous.get(path) !== error) fresh.push({ path, error });
+  }
+  return fresh;
+}
+
 /** @returns {Promise<void>} */
 async function rebuildRegistriesNow() {
   resetExtensionsCache();

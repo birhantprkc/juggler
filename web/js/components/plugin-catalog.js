@@ -7,9 +7,10 @@ import strategyRegistry from '../registries/strategy-registry.js';
 import commandRegistry from '../registries/command-registry.js';
 import infoCardRegistry from '../registries/info-card-registry.js';
 import fileViewerRegistry from '../registries/file-viewer-registry.js';
-import { reloadRegistries } from '../registries/reload-registries.js';
+import { reloadRegistries, REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import { fetchExtensions, fetchExtensionLocations } from '../services/extensions.js';
-import { fetchJson } from '../services/http.js';
+import { fetchJson, httpErrorText } from '../services/http.js';
+import { showNotice } from './modal-dialog.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
 import { renderMarkdown, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
 import { ExtensionSettingsEditor } from './settings/extensions-settings.js';
@@ -229,12 +230,37 @@ class PluginCatalog extends HTMLElement {
      * @type {Set<string>|null}
      */
     this._expanded = null;
+
+    /**
+     * Re-reads the catalog after any registry rebuild — a watched file changed,
+     * another client toggled a capability, or Reload was pressed. Without it an
+     * open catalog keeps showing the pre-reload cards.
+     * @type {(() => void)|null}
+     */
+    this._onRegistriesReloaded = null;
   }
 
   /** Called when the component is inserted into the DOM. */
   connectedCallback() {
     this.classList.add('plugin-catalog');
     this._ready = this._init();
+    this._onRegistriesReloaded = () => {
+      // A reload triggered by this catalog's own toggle already refreshes the
+      // cards; _busy marks that window, so skip the duplicate pass.
+      if (this._busy) return;
+      this._loadData().then(() => this.render()).catch((err) => {
+        console.warn('[PluginCatalog] Could not refresh after reload:', err);
+      });
+    };
+    document.addEventListener(REGISTRIES_RELOADED, this._onRegistriesReloaded);
+  }
+
+  /** Called when the component is removed from the DOM: drop the reload subscription. */
+  disconnectedCallback() {
+    if (this._onRegistriesReloaded) {
+      document.removeEventListener(REGISTRIES_RELOADED, this._onRegistriesReloaded);
+      this._onRegistriesReloaded = null;
+    }
   }
 
   /**
@@ -511,8 +537,54 @@ class PluginCatalog extends HTMLElement {
     const right = this._createElement('div', 'catalog-header-right');
     right.appendChild(this._createElement('p', 'catalog-explanation',
       'A Juggler extension is a bundle of strategies, context items, and commands.'));
+    right.appendChild(this._renderReloadButton());
     header.appendChild(right);
     return header;
+  }
+
+  /**
+   * Build the explicit Reload control. Edited extensions reload on their own
+   * when the watcher sees the write; this is the deterministic version for
+   * anything it can't see (a change behind a symlink it never registered, a
+   * file restored from outside the tree).
+   * @returns {HTMLElement} The reload button
+   * @private
+   */
+  _renderReloadButton() {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'u-btn-ghost catalog-reload';
+    button.textContent = 'Reload extensions';
+    button.title = 'Re-import every extension from disk';
+    button.disabled = this._busy;
+    button.addEventListener('click', () => { void this._requestReload(button); });
+    return button;
+  }
+
+  /**
+   * Ask the SERVER to reload extensions, rather than calling reloadRegistries()
+   * here. The engine worker keeps its own copy of every capability module, so a
+   * viewer-local reload would leave tools running the previous code; the
+   * server's plugin-changed broadcast reaches both realms, and its epoch bump is
+   * what actually forces the edited files to be re-imported. Everything after
+   * the POST therefore happens on the broadcast path, not here.
+   * @param {HTMLButtonElement} button - The clicked button, held disabled for the round trip
+   * @private
+   * @returns {Promise<void>}
+   */
+  async _requestReload(button) {
+    if (this._busy) return;
+    // Only the button is held, not `_busy`: that flag suppresses the catalog's
+    // reload listener (a toggle refreshes its own cards), and setting it here
+    // would race the broadcast and swallow the very refresh this asked for.
+    button.disabled = true;
+    try {
+      await fetchJson('/api/extensions/reload', { method: 'POST' });
+    } catch (err) {
+      showNotice(`Couldn't reload extensions. ${httpErrorText(err)}`);
+    } finally {
+      button.disabled = false;
+    }
   }
 
   /**

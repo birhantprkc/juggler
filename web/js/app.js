@@ -15,7 +15,12 @@ import StrategySwitcher from './services/strategy-switcher.js';
 import { ModelCycler, ThinkingCycler } from './services/model-cycler.js';
 import wsService from './services/websocket.js';
 import { fetchJson } from './services/http.js';
-import { reloadRegistries, initAllRegistries } from './registries/reload-registries.js';
+import {
+  reloadRegistries,
+  initAllRegistries,
+  collectFailedModules,
+  newlyFailedModules,
+} from './registries/reload-registries.js';
 import actionExecutor from './services/action-executor.js';
 import workerManager from './services/worker-manager.js';
 import providersCache from './services/providers-cache.js';
@@ -34,6 +39,38 @@ import { normalizeAttachments } from './utils/attachments.js';
 import { showNotice } from './components/modal-dialog.js';
 
 
+
+/**
+ * Failure snapshot from the last registry reload. Held at module scope so the
+ * hot-reload notice can announce only what has newly broken.
+ * @type {Map<string, string>}
+ */
+let lastFailedModules = new Map();
+
+/** How long a failed-reload notice stays up: longer than the default, since it carries an error to read. */
+const RELOAD_FAILURE_NOTICE_MS = 10000;
+
+/**
+ * Announce capability modules that failed to load in the reload just finished.
+ * A failed import leaves no other trace in the UI — the capability is simply
+ * absent from the registry — so without this an extension being edited can stop
+ * working with nothing said. Only NEW failures are shown: a reload that changed
+ * nothing about an already-broken extension stays quiet.
+ */
+function reportNewlyFailedModules() {
+  const current = collectFailedModules();
+  const fresh = newlyFailedModules(lastFailedModules, current);
+  lastFailedModules = current;
+  if (fresh.length === 0) return;
+
+  const detail = fresh
+    .map(({ path, error }) => `${path.split('/').pop() || path} — ${error}`)
+    .join('\n');
+  const message = fresh.length === 1
+    ? `Couldn't load ${detail}`
+    : `Couldn't load ${fresh.length} capability modules\n${detail}`;
+  showNotice(message, { duration: RELOAD_FAILURE_NOTICE_MS });
+}
 
 /**
  * Main Juggler Application
@@ -129,6 +166,9 @@ class JugglerApp {
     // registries-ready once the attempt settles — even on failure, so the
     // system-prompt gate can never permanently hang a turn.
     await initAllRegistries();
+    // Baseline for the reload notices below: whatever is already broken at boot
+    // is the user's status quo, not news.
+    lastFailedModules = collectFailedModules();
 
     // Initialize strategy switcher (Shift+Tab keyboard shortcut)
     this._strategySwitcher = new StrategySwitcher();
@@ -141,11 +181,14 @@ class JugglerApp {
     this._thinkingCycler = new ThinkingCycler();
     this._thinkingCycler.init();
 
-    // Listen for plugin file changes (hot reload)
+    // Listen for plugin file changes (hot reload). The reload itself is silent:
+    // the user edited the file, so being told it changed is no news. Only a
+    // capability that would not load is worth interrupting for.
     wsService.on('plugin-changed', async () => {
       console.info('[Juggler] Plugin changed — reloading registries');
       await reloadRegistries();
       console.info('[Juggler] Plugin registries reloaded');
+      reportNewlyFailedModules();
     });
 
     // Initialize services

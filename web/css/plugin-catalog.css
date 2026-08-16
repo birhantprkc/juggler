@@ -75,6 +75,20 @@ plugin-catalog {
   font-style: italic;
 }
 
+/* Explicit reload, under the explanation at the right edge of the header. The
+   chrome comes from .u-btn-ghost (utilities.css); this owns size and placement. */
+.catalog-reload {
+  margin-top: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.catalog-reload:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* ==========================================================================
    Main Two-Column Layout
    ========================================================================== */

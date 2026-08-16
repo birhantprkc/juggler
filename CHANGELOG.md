@@ -5,16 +5,15 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- llama.cpp models report the context window the server really serves, multi-model setups included
-- The busy spinner juggles a club per parallel tool call, at the speed the work is moving
-- The spinner tires gradually through a long tool call, and picks up when the next one starts
-- New settings stop tabs highlighting, or floating to the top, when a conversation wants you
+- Refactored to simplify sub-threads and to make them resumable sessions. An LLM can now append to an existing subthread and get subsequent results from it. Removed the concept of summarising threads or marking them closed.
 - Big revamp of the transaction panel
 - Each item's properties header shows its token cost, exact when that info is available
+- New settings stop tabs highlighting, or floating to the top, when a conversation wants you
+- llama.cpp models report the context window the server really serves, multi-model setups included
 - The transaction view stays open as you browse, following whichever item is selected
 - The explore_code tool is now query_code, shown as "Script"; existing conversations keep working
-- Sub-threads are resumable sessions the agent can ask again, keeping everything they already worked out
-- Each call into a sub-thread gets its own tile, holding the answer that call was given
+- Edited extensions now hot-reload for real, with a Reload button on the Extensions page
+- An extension that fails to reload now says so instead of quietly vanishing
 
 ## [0.5.6] - 2026-08-14
 

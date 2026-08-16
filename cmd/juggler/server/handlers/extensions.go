@@ -11,7 +11,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"juggler/cmd/juggler/extmanifest"
 )
@@ -84,6 +86,11 @@ type ExtensionsAPI struct {
 	builtinDir       string // absolute on-disk path of the builtin web/ root in dev mode, "" when embedded
 	userExtensionDir string // ~/.juggler/extensions (container of extension subdirs)
 	engineVersion    string
+	// reloadEpoch is the cache-busting counter embedded in every served
+	// user-extension URL (see UserExtensionURLPrefix). Bumped on each reload so
+	// the catalog hands out fresh URLs and the JS module cache, which is keyed by
+	// URL, is forced to re-fetch the edited file from disk.
+	reloadEpoch atomic.Uint64
 }
 
 // NewExtensionsAPI creates an ExtensionsAPI. The host SDK version is read from
@@ -104,6 +111,26 @@ func NewExtensionsAPI(builtinFS fs.FS, builtinDir, userExtensionDir string) *Ext
 // UserExtensionDir returns the global extension container (~/.juggler/extensions),
 // or "" if unset.
 func (api *ExtensionsAPI) UserExtensionDir() string { return api.userExtensionDir }
+
+// UserExtensionURLBase is the route prefix the on-disk user extension container
+// is served under. Everything after it is an epoch segment (see
+// UserExtensionURLPrefix) followed by the container-relative file path.
+const UserExtensionURLBase = "/user-extensions/"
+
+// UserExtensionURLPrefix is the prefix served user-extension URLs carry right
+// now: the container route plus the current reload epoch, e.g.
+// "/user-extensions/e3/". The epoch lives in the PATH rather than a query string
+// so that relative imports inside a multi-file extension inherit it — a
+// "?v=" URL would reload an entry module but rebind it to its stale siblings.
+func (api *ExtensionsAPI) UserExtensionURLPrefix() string {
+	return UserExtensionURLBase + "e" + strconv.FormatUint(api.reloadEpoch.Load(), 10) + "/"
+}
+
+// BumpEpoch advances the reload epoch, so capability URLs minted from here on
+// differ from the ones already in the JS module cache. Callers bump BEFORE
+// broadcasting plugin-changed, so the catalog refetch that the broadcast
+// triggers already sees the new URLs.
+func (api *ExtensionsAPI) BumpEpoch() { api.reloadEpoch.Add(1) }
 
 // ExtensionLocations reports the on-disk directories Juggler scans for
 // extensions, so the catalog can show a developer exactly where to install new
@@ -129,7 +156,7 @@ func (api *ExtensionsAPI) HandleListExtensions(w http.ResponseWriter, r *http.Re
 	extensions = append(extensions, api.discoverEmbeddedContainer("extensions", "/extensions/")...)
 
 	// 2. User extensions (~/.juggler/extensions/*).
-	extensions = append(extensions, api.discoverContainer(api.userExtensionDir, "/user-extensions/", "user")...)
+	extensions = append(extensions, api.discoverContainer(api.userExtensionDir, api.UserExtensionURLPrefix(), "user")...)
 
 	WriteJSON(w, r, 0, extensions)
 }
