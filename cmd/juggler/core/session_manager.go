@@ -513,14 +513,16 @@ func (m *SessionManager) BinConversation(convID string) error {
 }
 
 // RestoreConversation moves a conversation's folder back from .juggler/bin/
-// to .juggler/ and appends it to the active conversation order.
+// to .juggler/ and prepends it to the active conversation order, matching
+// CreateConversation: a restore is a deliberate act on one conversation, so it
+// belongs at the head of the bar rather than the tail of a long tab list.
 func (m *SessionManager) RestoreConversation(convID string) error {
 	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
 		if err := s.store.RestoreConversation(convID); err != nil {
 			return struct{}{}, err
 		}
 		if !slices.Contains(s.session.ConversationOrder, convID) {
-			s.session.ConversationOrder = append(s.session.ConversationOrder, convID)
+			s.session.ConversationOrder = append([]string{convID}, s.session.ConversationOrder...)
 		}
 		if err := s.store.Save(s.session); err != nil {
 			return struct{}{}, fmt.Errorf("failed to save session after restoring conversation: %w", err)

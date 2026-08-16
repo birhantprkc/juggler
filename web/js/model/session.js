@@ -547,6 +547,11 @@ class Session {
   /**
    * Apply a `conversations-changed` op="restored" event. Loads the conversation back
    * into the active map and decrements the bin count.
+   *
+   * Restored conversations go to the head of the bar, alongside freshly created
+   * ones: pulling something out of the bin is a deliberate act, and whatever it
+   * was wanted for happens next — so it belongs where the user is looking, not
+   * at the end of a long tab list.
    * @param {string} id
    * @param {string} name - Canonical folder name
    * @returns {Promise<void>}
@@ -554,7 +559,7 @@ class Session {
   async applyConversationRestored(id, name) {
     this.setConversationName(id, name);
     if (this.conversations.has(id)) return;
-    const conv = await this._loadAndInsertConversation(id, { prepend: false });
+    const conv = await this._loadAndInsertConversation(id, { prepend: true });
     if (!conv) return;
     if (this.binnedCount > 0) this.binnedCount -= 1;
     this._notify('conversation:created', conv);
@@ -629,6 +634,30 @@ class Session {
    * @returns {Promise<object|null>} Loaded conv, or null if load failed.
    */
   async _loadAndInsertConversation(id, { prepend }) {
+    // Claim the head slot BEFORE the load, not after it. loadExistingConversation
+    // seeds its own entry via Map.set (worker-manager._doLoadExisting) and then
+    // awaits a worker spawn that can take seconds — so ordering the map only on
+    // completion leaves the tab parked at the END of the bar for the whole load
+    // and then jumps it to the top. An unloaded stub here is the same entry
+    // _doLoadExisting reuses, so every render in between paints the tab in its
+    // final position. Mirrors the local-create path (_doCreateNew).
+    let stubbed = false;
+    if (prepend && !this.conversations.has(id)) {
+      const services = this.getServices();
+      if (services) {
+        const stub = new Conversation(
+          id,
+          this._conversationNames[id] || UNTITLED_BASE,
+          this,
+          services,
+          { skipBuiltInContextItems: true, loadState: 'unloaded' }
+        );
+        recordTape('session-mut', id, { op: 'set', from: '_loadAndInsertConversation-stub' });
+        this._setConversationOrder([id], new Map([[id, stub]]));
+        stubbed = true;
+      }
+    }
+
     try {
       const conv = await workerManager.loadExistingConversation(id, this);
       if (prepend) {
@@ -640,6 +669,12 @@ class Session {
       return conv;
     } catch (error) {
       console.error(`[Session] load failed for ${id}:`, error);
+      // Drop the placeholder we put at the head — a conversation that never
+      // loaded must not leave a permanent dead tab at the top of the bar.
+      if (stubbed && this.conversations.get(id)?.loadState === 'unloaded') {
+        recordTape('session-mut', id, { op: 'delete', from: '_loadAndInsertConversation-stub-failed' });
+        this.conversations.delete(id);
+      }
       return null;
     }
   }
