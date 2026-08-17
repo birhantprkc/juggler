@@ -256,9 +256,8 @@ func isVolatileContextMessage(msgType string) bool {
 	return msgType == "context-item" || msgType == "context-item-updated"
 }
 
-// stablePrefixCount returns the length of the stable, cache-committed message
-// prefix: everything except a trailing run of volatile standing-context
-// messages.
+// stablePrefixCount returns the length of the stable decision prefix: everything
+// except a trailing run of volatile standing-context messages.
 //
 // The worker places standing context items at the HEAD of the request
 // (prependContextItemMessages), so in practice no such trailing run exists and
@@ -275,35 +274,50 @@ func stablePrefixCount(messages []provider.Message) int {
 	return n
 }
 
-// canResumeWithDelta reports whether a stored sessionUUID can be reused for
-// the new request: the new (systemPrompt, messages[:sentCount]) prefix must
-// match the prefix the CLI was last fed. This is what enables prompt cache
-// reuse across juggler turns. Returns the (deltaStart, deltaEnd) range in
-// messages on success. On failure, returns ok=false plus a short reason
-// string for cold-start telemetry: "no-uuid", "shrunk", "diverged",
-// "no-new-msgs". The system prompt participates in "diverged" — it's not
-// a privileged input, it's just one more thing in the request body.
+// canResumeWithDelta reports whether Juggler's projection of the CLI transcript
+// is compatible with a new request. heldCount records the full request extent
+// accepted by stdin and rejects rollback. sentCount and its element hashes cover
+// the stable decision prefix, so trailing volatile context remains eligible for
+// replacement and the next delta starts at sentCount.
 //
-// sentCount is the STABLE prefix length captured last turn (see
-// captureSentPrefix / stablePrefixCount): it excludes any trailing
-// standing-context run, so such a render would fall into the per-turn delta
-// rather than anchoring the prefix and cold-starting the resume.
+// Returns the (deltaStart, deltaEnd) range on success. On failure, returns a
+// short cold-start reason: "no-uuid", "shrunk", "diverged", or "no-new-msgs".
 func canResumeWithDelta(sess *activeSession, systemPrompt string, messages []provider.Message) (int, int, bool, string) {
 	if sess == nil || sess.sessionUUID == "" {
 		return 0, 0, false, "no-uuid"
 	}
-	if sess.sentCount > len(messages) {
-		// Conversation shrunk — must be a divergent history (branch switch / undo).
+	heldCount := sess.heldCount
+	if heldCount < sess.sentCount {
+		heldCount = sess.sentCount
+	}
+	if heldCount > len(messages) {
 		return 0, 0, false, "shrunk"
 	}
-	if hashRequestPrefix(systemPrompt, messages, sess.sentCount) != sess.sentHash {
+	if !decisionPrefixMatches(sess, systemPrompt, messages) {
 		return 0, 0, false, "diverged"
 	}
 	if sess.sentCount == len(messages) {
-		// No new messages to send; treat as divergent so caller starts fresh.
 		return 0, 0, false, "no-new-msgs"
 	}
 	return sess.sentCount, len(messages), true, ""
+}
+
+func decisionPrefixMatches(sess *activeSession, systemPrompt string, messages []provider.Message) bool {
+	if sess.sentCount > len(messages) {
+		return false
+	}
+	if sess.sentSystemHash != 0 || len(sess.sentMsgHashes) > 0 {
+		if sess.sentSystemHash == 0 || hashSystemPrompt(systemPrompt) != sess.sentSystemHash || len(sess.sentMsgHashes) != sess.sentCount {
+			return false
+		}
+		for i := 0; i < sess.sentCount; i++ {
+			if hashMessage(&messages[i]) != sess.sentMsgHashes[i] {
+				return false
+			}
+		}
+		return true
+	}
+	return hashRequestPrefix(systemPrompt, messages, sess.sentCount) == sess.sentHash
 }
 
 // diagnoseDivergence returns a short, human-readable description of the FIRST
@@ -321,8 +335,8 @@ func diagnoseDivergence(sess *activeSession, systemPrompt string, messages []pro
 	if sess.sentSystemHash != 0 && hashSystemPrompt(systemPrompt) != sess.sentSystemHash {
 		return "system prompt changed (a context item or the env block rendered differently)"
 	}
-	if sess.sentCount > len(messages) {
-		return fmt.Sprintf("history shrank from %d to %d messages", sess.sentCount, len(messages))
+	if sess.heldCount > len(messages) {
+		return fmt.Sprintf("history shrank from %d to %d messages", sess.heldCount, len(messages))
 	}
 	limit := len(sess.sentMsgHashes)
 	if limit > len(messages) {

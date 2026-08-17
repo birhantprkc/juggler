@@ -174,17 +174,10 @@ func (cv *conversation) Close() error {
 // token, then (2) takes the token itself before tearing down. With no turn in
 // flight the token is already free and step 2 is immediate.
 //
-// The teardown keeps the resume anchor (sessionUUID/sentCount/sentHash and the
-// on-disk sidecar) — a cancel is an interrupt, not a session drop. The anchor is
-// already honest at this point: a parked turn advanced it to the committed
-// prefix when it emitted tool_use, and a mid-stream cancel advances it in
-// finalizeTurn (which owns the in-flight session) before releasing the token to
-// us. So cancel just drops the live CLI and clears pendingTools; the next turn
-// resumes warm if history extends the committed prefix, or starts fresh if it
-// diverged (canResumeWithDelta decides). tearDownLiveCLI is a no-op if the
-// interrupted turn already tore the live CLI down. Dropping a session is
-// reserved for the provider's own detect-corruption paths (dropSession), never
-// for a cancel.
+// The teardown keeps the persisted request projection. It is already honest at
+// this point because every real request path advances it immediately after the
+// complete stdin write; synthetic continuation nudges never claim messages.
+// The next turn resumes only when canResumeWithDelta finds compatible history.
 func (c *Client) cancelSession() {
 	if f := c.turnInterrupt.Load(); f != nil {
 		(*f)() // make the owning turn unwind and release `own`

@@ -499,7 +499,7 @@ func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, 
 		// typed it. Falls through to cold-start if the session can't be
 		// resumed.
 		if dec.NoNewMsgs && c.activeSession != nil && c.activeSession.sessionUUID != "" {
-			return c.runResumeNudge(ctx, req, callback)
+			return c.runResumeNudge(ctx, req, callback, false)
 		}
 		reason := "no prior Claude Code session"
 		if c.activeSession != nil {

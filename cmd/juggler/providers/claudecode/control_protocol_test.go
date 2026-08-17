@@ -7,6 +7,8 @@ package claudecode
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -18,6 +20,18 @@ import (
 func captureStdin() (*bytes.Buffer, *controlProtocol) {
 	buf := &bytes.Buffer{}
 	return buf, newControlProtocol(buf)
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+func TestControlProtocolRejectsShortStdinWrite(t *testing.T) {
+	cp := newControlProtocol(shortWriter{})
+	defer cp.teardown()
+	if err := cp.writeUserDelta([]byte("{}\n")); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("writeUserDelta error = %v, want io.ErrShortWrite", err)
+	}
 }
 
 // readLines pops every JSON object the dispatcher has emitted to its

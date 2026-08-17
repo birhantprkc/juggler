@@ -73,10 +73,8 @@ func TestClose_PreservesSidecar(t *testing.T) {
 // TestFinalizeTurn_ErrorPreservesSidecar guards the same warm-cache
 // property for the turn-error path. A stream-time failure (rate-limit
 // exhaustion, a sleep/wake connection drop, an API 400/529) must NOT wipe
-// the sidecar: the upstream session is still at the last good end_turn, so
-// the user's retry should --resume warm rather than re-send the entire
-// history uncached. Only the deliberate fresh-start paths (dropSession on a
-// malformed/unresumable session) delete it.
+// the sidecar: a complete stdin write has already advanced the persisted
+// projection, so the user's retry must resume without feeding that request twice.
 func TestFinalizeTurn_ErrorPreservesSidecar(t *testing.T) {
 	c, convID, sidecar := runOneTurnWithSidecar(t, "uuid-err")
 

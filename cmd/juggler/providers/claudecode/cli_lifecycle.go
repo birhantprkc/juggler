@@ -246,9 +246,9 @@ func detectClaudeCLI() bool {
 //
 // Two distinct lifetimes are mixed in here:
 //
-//  1. Persistent fields (sessionUUID, sentCount, sentHash) live for the entire
-//     juggler conversation. They allow us to spawn or respawn a CLI invocation
-//     with `--resume <sessionUUID>` so the prompt cache stays warm.
+//  1. Persistent fields (sessionUUID, heldCount, sentCount, sentHash) live for
+//     the entire juggler conversation. They allow us to spawn or respawn a CLI
+//     invocation with `--resume <sessionUUID>` so the prompt cache stays warm.
 //
 //  2. Live-CLI fields (grouped in the nilable live *liveCLI sub-struct) hold
 //     the running `claude` process and its stdio plumbing. The CLI is always
@@ -271,17 +271,18 @@ type pendingToolMeta struct {
 }
 
 type activeSession struct {
-	// Persistent across CLI invocations
+	// Persistent across CLI invocations. heldCount is the full extent of the
+	// latest req.Messages accepted by stdin. sentCount is the stable decision
+	// prefix: it deliberately excludes trailing volatile context, and therefore
+	// governs prefix matching and where the next delta starts.
 	sessionUUID string // claude session id captured from system/init; "" until first turn completes
-	sentCount   int    // number of req.Messages whose content claude already has
-	sentHash    uint64 // fingerprint of the first sentCount messages (delta detection)
+	heldCount   int
+	sentCount   int
+	sentHash    uint64 // backward-compatible aggregate fingerprint of the decision prefix
 
-	// Per-element fingerprints of the same prefix sentHash covers, captured at
-	// the last finalizeTurn alongside sentHash. Diagnostic only — not consulted
-	// by the resume decision (sentHash remains the single decision fingerprint).
-	// They let diagnoseDivergence attribute a "diverged" cache miss to the
-	// system prompt vs a specific message in the cold-start log. Empty on a
-	// session restored from a pre-upgrade sidecar.
+	// Per-element fingerprints are authoritative for resume decisions. They cover
+	// the system prompt and the same decision prefix as sentCount. Empty hashes on
+	// an old sidecar fall back to sentHash for backward compatibility.
 	sentSystemHash uint64
 	sentMsgHashes  []uint64
 
@@ -444,7 +445,8 @@ const teardownGracePeriod = 500 * time.Millisecond
 
 // tearDownLiveCLI terminates the live CLI process and its MCP server and
 // clears all live-CLI fields, leaving the persistent fields (sessionUUID,
-// sentCount, sentHash, lastUsedAt) intact so future turns can still resume.
+// heldCount, sentCount, sentHash, and lastUsedAt) intact so future turns can
+// still resume.
 //
 // Teardown order matters:
 //  1. Release any parked control-protocol callers (outbound requests
@@ -813,8 +815,14 @@ func (c *Client) writeStdinDelta(payload []byte) error {
 	if c.activeSession.live.control != nil {
 		return c.activeSession.live.control.writeUserDelta(payload)
 	}
-	_, err := c.activeSession.live.stdin.Write(payload)
-	return err
+	n, err := c.activeSession.live.stdin.Write(payload)
+	if err != nil {
+		return err
+	}
+	if n != len(payload) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 // Session-lifecycle verbs, by what they touch. Every row kills the live CLI

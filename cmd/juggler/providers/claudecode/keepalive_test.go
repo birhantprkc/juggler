@@ -38,6 +38,7 @@ const (
 	fakeModeToolUse    = "tool_use"    // emit assistant tool_use, then hold open until killed
 	fakeModeNoResult   = "no_result"   // emit nothing past init; hold stdin open (used to test cancel)
 	fakeModeFailFirst  = "fail_first"  // emit error result on the first turn (for error-recovery shape)
+	fakeModeFailSecond = "fail_second" // complete one turn, then fail after consuming the next request
 	fakeModeUntilClose = "until_close" // text turn per stdin line, persistent
 	fakeModeAutonomous = "autonomous"  // like until_close, but emits one UNSOLICITED turn after the first reply
 	fakeModeUsage      = "usage"       // emit a workspace-trust warning on stderr and /usage JSON on stdout
@@ -186,6 +187,22 @@ func runFakeClaude() {
 			"result":  "synthetic failure",
 		})
 		return
+	case fakeModeFailSecond:
+		emitInit()
+		turn := 0
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			if !fakeStdinIsUserTurn(scanner.Bytes()) {
+				continue
+			}
+			turn++
+			if turn == 1 {
+				emitTextTurn(out, "turn 1", 2000)
+				continue
+			}
+			emit(out, map[string]any{"type": "result", "subtype": "error", "result": "invalid request"})
+			return
+		}
 	case fakeModeText, fakeModeUntilClose:
 		// Real claude CLI behavior:
 		//   -p <JSON>             one-shot: emit one turn for the inline JSON, exit

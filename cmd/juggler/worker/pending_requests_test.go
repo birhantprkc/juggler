@@ -5,6 +5,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -57,6 +58,25 @@ func findEntryStatus(w *ConversationWorker, id string) string {
 		}
 	}
 	return ""
+}
+
+func pushCancelledClaimedCreateThread(t *testing.T, w *ConversationWorker, id, threadItemID string) {
+	t.Helper()
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	arr := w.ensurePendingRequestsArrayLocked("")
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		entry := ycrdt.NewYMap(nil)
+		entry.Set("id", id)
+		entry.Set("kind", "createThread")
+		entry.Set("status", "claimed")
+		entry.Set("claimedBy", "worker")
+		entry.Set("threadItemId", threadItemID)
+		entry.Set("cancelRequested", true)
+		entry.Set("createdAt", ycrdt.Number(time.Now().UnixMilli()))
+		entry.Set("request", ycrdt.NewYMap(nil))
+		arr.Push(ycrdt.ArrayAny{entry})
+	}, w.doc.authorID)
 }
 
 // TestPendingRequests_SnapshotEmpty confirms an empty / missing
@@ -256,52 +276,106 @@ func TestPendingRequests_AdvanceClaimedCreateThreadCompletes(t *testing.T) {
 	}
 }
 
-// TestPendingRequests_CancelClaimedSettlesThreadRun verifies that when
-// cancelRequested fires on a 'claimed' createThread, the orchestrator settles
-// the sub-thread's open run as cancelled — so nothing parked on that thread
-// keeps waiting for a run that is never going to finish — without inventing a
-// summary for it.
-func TestPendingRequests_CancelClaimedSettlesThreadRun(t *testing.T) {
+// TestPendingRequests_CancelClaimedAwaitingLLMCleansUpBeforeSettlement verifies
+// cancellation of a claimed createThread whose active descendant is parked on a
+// running tool. Full worker cleanup must finish before the run and request settle.
+func TestPendingRequests_CancelClaimedAwaitingLLMCleansUpBeforeSettlement(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 
 	threadItemID := insertThreadWithOpts(w, threadOpts{goal: "Goal Y", userMessage: "do the thing"})
+	threadItems := w.doc.GetThreadItemsArray(threadItemID)
+	descendantItems := w.doc.InsertThreadIntoArray(threadItems, w.doc.GetItemsLengthFromArray(threadItems), "Nested work")
+	descendant := w.doc.GetItemsFromArray(threadItems)[1]
+	w.doc.InsertMessageIntoArray(descendantItems, 0,
+		ConversationItem{Type: ItemTypeUser, ItemID: "nested-user", Content: "run it"},
+		ConversationItem{
+			Type: ItemTypeToolAction, ItemID: "nested-tool", ToolUseID: "nested-tool-use",
+			ToolName: "bash", State: StateRunning,
+		},
+	)
+	pushCancelledClaimedCreateThread(t, w, "r-cancel-claimed", threadItemID)
 
-	ycrdtMu.Lock()
-	arr := w.ensurePendingRequestsArrayLocked("")
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		entry := ycrdt.NewYMap(nil)
-		entry.Set("id", "r-cancel-claimed")
-		entry.Set("kind", "createThread")
-		entry.Set("status", "claimed")
-		entry.Set("claimedBy", "worker")
-		entry.Set("threadItemId", threadItemID)
-		entry.Set("cancelRequested", true)
-		entry.Set("createdAt", ycrdt.Number(time.Now().UnixMilli()))
-		entry.Set("request", ycrdt.NewYMap(nil))
-		arr.Insert(ycrdt.Number(0), ycrdt.ArrayAny{entry})
-	}, w.doc.authorID)
-	ycrdtMu.Unlock()
+	var released bool
+	w.SetCancelLLMSession(func(_ string) { released = true })
+	w.doc.SetMetadata("processingState", map[string]any{
+		"activity":     ActivityAwaitingLLM,
+		"threadItemId": descendant.ItemID,
+		"status":       "processing_tools",
+	})
+	w.storeState(StateIdle)
 
 	w.scanPendingRequests()
-	if s := findEntryStatus(w, "r-cancel-claimed"); s != "cancelled" {
-		t.Errorf("status = %q, want 'cancelled'", s)
+
+	if !released {
+		t.Error("expected cancellation to release the provider session")
 	}
-	// The thread's run is settled as cancelled, and carries no summary.
+	if got := w.getActivity(); got != ActivityNone {
+		t.Errorf("activity = %q, want %q after cancellation cleanup", got, ActivityNone)
+	}
+	descendantAfter := w.doc.GetItemsFromArray(descendantItems)
+	tool, ok := findToolItem(descendantAfter, "nested-tool-use")
+	if !ok {
+		t.Fatal("running descendant tool disappeared")
+	}
+	if tool.State != StateCancelled {
+		t.Errorf("descendant tool state = %q, want %q", tool.State, StateCancelled)
+	}
+	if s := findEntryStatus(w, "r-cancel-claimed"); s != "cancelled" {
+		t.Errorf("request status = %q, want cancelled", s)
+	}
 	ycrdtMu.Lock()
 	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
 	status, _ := latestRunOutcomeLocked(threadYMap)
 	settled := threadRunSettledLocked(threadYMap)
-	r, _ := threadYMap.Get("result").(string)
+	result, _ := threadYMap.Get("result").(string)
 	ycrdtMu.Unlock()
-	if status != runStatusCancelled {
-		t.Errorf("run status = %q, want %q", status, runStatusCancelled)
+	if status != runStatusCancelled || !settled {
+		t.Errorf("run = (%q, settled=%v), want (%q, true)", status, settled, runStatusCancelled)
 	}
-	if !settled {
-		t.Errorf("a cancelled run must leave the thread settled")
+	if result != "" {
+		t.Errorf("thread result = %q, want no summary for a cancelled run", result)
 	}
-	if r != "" {
-		t.Errorf("thread result = %q, want no summary for a cancelled run", r)
+}
+
+// TestPendingRequests_CancelClaimedDoesNotCancelUnrelatedProcessing verifies a
+// pending request can only cancel work in its own thread subtree.
+func TestPendingRequests_CancelClaimedDoesNotCancelUnrelatedProcessing(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	cancelledThreadID := insertThreadWithOpts(w, threadOpts{goal: "Cancel me", userMessage: "first"})
+	activeThreadID := insertThreadWithOpts(w, threadOpts{goal: "Keep working", userMessage: "second"})
+	pushCancelledClaimedCreateThread(t, w, "r-unrelated", cancelledThreadID)
+
+	llmCancelled := false
+	var cancel context.CancelFunc = func() { llmCancelled = true }
+	w.llmCancelFunc.Store(&cancel)
+	providerReleased := false
+	w.SetCancelLLMSession(func(_ string) { providerReleased = true })
+	w.doc.SetMetadata("processingState", map[string]any{
+		"activity":     ActivityCallingLLM,
+		"threadItemId": activeThreadID,
+		"status":       "calling_llm",
+	})
+	w.storeState(StateProcessing)
+
+	w.scanPendingRequests()
+
+	if llmCancelled {
+		t.Error("unrelated active LLM was cancelled")
+	}
+	if providerReleased {
+		t.Error("unrelated provider session was released")
+	}
+	if got := w.loadState(); got != StateProcessing {
+		t.Errorf("worker state = %v, want StateProcessing", got)
+	}
+	if got := w.getProcessingThreadItemID(); got != activeThreadID {
+		t.Errorf("processing thread = %q, want unrelated active thread %q", got, activeThreadID)
+	}
+	if s := findEntryStatus(w, "r-unrelated"); s != "cancelled" {
+		t.Errorf("request status = %q, want cancelled", s)
 	}
 }
 

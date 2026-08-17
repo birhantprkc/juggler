@@ -99,6 +99,7 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("warm-append-stdin-failed: %v", err))
 		}
 	}
+	c.recordConsumedRequest(req)
 
 	jlog.Debug("=== CLAUDECODE WARM-APPEND RESUME (uuid=%s, %d paired result(s), %d tail msg(s)) ===",
 		c.activeSession.sessionUUID, len(pairedResults), len(tail))

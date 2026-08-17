@@ -424,8 +424,12 @@ func (cp *controlProtocol) writeLine(v any) error {
 // through here so one owner serialises all stdin traffic and keeps JSON-lines
 // whole. payload must already be newline-terminated.
 func (cp *controlProtocol) writeRaw(payload []byte) error {
-	if _, err := cp.stdin.Write(payload); err != nil {
+	n, err := cp.stdin.Write(payload)
+	if err != nil {
 		return fmt.Errorf("write stdin: %w", err)
+	}
+	if n != len(payload) {
+		return fmt.Errorf("write stdin: %w", io.ErrShortWrite)
 	}
 	return nil
 }

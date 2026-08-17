@@ -195,32 +195,32 @@
 //     turn; passed as --resume <uuid> on every subsequent turn so the
 //     CLI loads its on-disk transcript and the upstream prompt-cache
 //     stays warm.
-//   - sentCount / sentHash: a fingerprint of (system-prompt + first N
-//     messages) we last fed the CLI. canResumeWithDelta in regime.go
-//     compares the incoming request's prefix against this hash to
-//     decide warm-resume vs cold-start.
+//   - heldCount: the full req.Messages extent accepted by a complete stdin
+//     write. Any later request shorter than this projection must cold-start.
+//   - sentCount / sentHash / element hashes: the stable decision prefix. The
+//     element hashes are authoritative for compatibility; sentHash remains for
+//     old sidecars and telemetry. The decision prefix excludes only trailing
+//     volatile context, and is where the next warm delta begins.
 //   - pendingTools: tool_use blocks the LLM has emitted but the worker
 //     hasn't delivered results for yet. continueSession reconciles these
 //     against tool-result messages in req.Messages.
 //   - control: the stdio control protocol dispatcher (see above).
 //
 // session_persistence.go writes a per-conversation sidecar
-// (`.juggler/<conv>/claude_session.json`) at end_turn carrying the
-// resumable bits (sessionUUID / sentCount / sentHash / model /
-// lastCacheRead / lastTurnAt). Loaded eagerly on cold start so a juggler
-// restart can pick up an existing conversation warm.
+// (`.juggler/<conv>/claude_session.json`) as soon as a complete request write
+// is consumed when a UUID is known, and refreshes response metadata at pause or
+// end_turn. Old sidecars without heldCount or element hashes load conservatively
+// through sentCount / sentHash.
 //
 // # Cancellation
 //
 // session_manager.go registers CancelConversation as the registry-side
 // canceller; the worker invokes it on every user-initiated cancel (Escape) —
 // mid-stream, parked on approvals, or with tools genuinely in flight. Cancel
-// is always warm-preserving: kill the live CLI subprocess but keep sessionUUID
-// / sentCount / sentHash and the on-disk sidecar, so the next turn takes
-// regimeResumeDelta and the cache stays warm. A cancel is an interrupt, not a
-// session invalidation — the worker's parking logic, not a session drop, is
-// what stops the abandoned work from being re-driven. See
-// ../../worker/message_handlers.go and worker.go.
+// is always warm-preserving: kill the live CLI subprocess but keep the persisted
+// projection, which was advanced when the complete request write succeeded, so
+// the next turn resumes only when its history is compatible. A cancel is an
+// interrupt, not a session invalidation.
 //
 // Dropping a session (dropSession: delete UUID + sidecar, next turn cold-starts)
 // is reserved for the provider's own detect-corruption paths — a malformed

@@ -371,9 +371,10 @@ func (w *ConversationWorker) deliveryIsForeign(e pendingEntrySnapshot) bool {
 	return e.deliverConvID != "" && e.deliverConvID != w.conversationID
 }
 
-// cancelPendingEntry transitions a requested/claimed entry to cancelled
-// when its cancelRequested flag flips. For createThread, also settles the
-// sub-thread's open run as cancelled, so nothing parked on it keeps waiting.
+// cancelPendingEntry transitions a requested/claimed entry to cancelled when its
+// cancelRequested flag flips. An active createThread is cancelled through the
+// worker's normal cancellation path; its pending result remains claimed until
+// that path has made the thread quiescent and settled its run.
 func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
 	if e.kind == "deliverTaskOutput" {
 		// Stop the pump and kill the task; do NOT forward to handleCancel (a
@@ -382,14 +383,48 @@ func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
 		w.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
 		return
 	}
-	if e.kind == "createThread" && e.threadItemID != "" {
-		w.settleThreadRun(e.threadItemID, true)
+	if e.kind != "createThread" || e.threadItemID == "" {
+		w.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
+		return
 	}
-	// Forward to the worker's cancel path so any in-flight LLM call stops.
-	if w.loadState() == StateProcessing {
-		w.handleCancel()
+
+	if w.pendingThreadOwnsActiveWork(e.threadItemID) {
+		switch w.loadState() {
+		case StateProcessing:
+			// finishStrategyRun settles the active run and finalizeCancellation
+			// completes cleanup. A later scan publishes the pending result.
+			w.handleCancel()
+			return
+		case StateCancelling:
+			return
+		}
+		if w.getActivity() == ActivityAwaitingLLM {
+			// The parked-tool branch completes synchronously: tools are cancelled,
+			// the provider session is released, and activity is cleared first.
+			w.handleCancel()
+		}
 	}
-	w.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
+
+	w.settleThreadRun(e.threadItemID, true)
+	w.writePendingEntryCancelled(e.ownerThreadID, e.id, cancelledThreadResult)
+}
+
+// pendingThreadOwnsActiveWork reports whether the worker's active thread is the
+// pending request's thread or one of its descendants. The ownership check gates
+// conversation-wide cancellation, so one request cannot stop an unrelated turn.
+func (w *ConversationWorker) pendingThreadOwnsActiveWork(pendingThreadID string) bool {
+	activeThreadID := w.getProcessingThreadItemID()
+	if pendingThreadID == "" || activeThreadID == "" {
+		return false
+	}
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	for threadID := activeThreadID; threadID != ""; threadID = w.doc.findParentThreadID(threadID) {
+		if threadID == pendingThreadID {
+			return true
+		}
+	}
+	return false
 }
 
 // updatePendingEntry locks the CRDT, resolves the pending entry by id, and runs

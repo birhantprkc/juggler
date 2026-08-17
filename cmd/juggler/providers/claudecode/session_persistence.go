@@ -20,8 +20,9 @@ import (
 // session via --resume <uuid> instead of cold-starting from full history.
 type diskSessionState struct {
 	SessionUUID      string   `json:"sessionUUID"`
+	HeldCount        *int     `json:"heldCount,omitempty"`
 	SentCount        int      `json:"sentCount"`
-	SentHash         uint64   `json:"sentHash"` // covers system prompt + first SentCount messages
+	SentHash         uint64   `json:"sentHash"` // legacy aggregate; covers system prompt + first SentCount messages
 	SentSystemHash   uint64   `json:"sentSystemHash,omitempty"`
 	SentMsgHashes    []uint64 `json:"sentMsgHashes,omitempty"`
 	Model            string   `json:"model,omitempty"`
@@ -82,9 +83,14 @@ func loadDiskSession(workingDir, convID string) *activeSession {
 	if d.SessionUUID == "" {
 		return nil
 	}
-	jlog.Debug("loadDiskSession: restored uuid=%s sentCount=%d for %s", d.SessionUUID, d.SentCount, convID)
+	heldCount := d.SentCount
+	if d.HeldCount != nil {
+		heldCount = *d.HeldCount
+	}
+	jlog.Debug("loadDiskSession: restored uuid=%s heldCount=%d sentCount=%d for %s", d.SessionUUID, heldCount, d.SentCount, convID)
 	s := &activeSession{
 		sessionUUID:    d.SessionUUID,
+		heldCount:      heldCount,
 		sentCount:      d.SentCount,
 		sentHash:       d.SentHash,
 		sentSystemHash: d.SentSystemHash,
@@ -107,8 +113,10 @@ func saveDiskSession(workingDir, convID string, sess *activeSession) {
 	if p == "" || sess == nil || sess.sessionUUID == "" {
 		return
 	}
+	heldCount := sess.heldCount
 	d := diskSessionState{
 		SessionUUID:    sess.sessionUUID,
+		HeldCount:      &heldCount,
 		SentCount:      sess.sentCount,
 		SentHash:       sess.sentHash,
 		SentSystemHash: sess.sentSystemHash,

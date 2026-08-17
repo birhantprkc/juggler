@@ -12,7 +12,6 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -128,6 +127,7 @@ func (c *Client) startFreshSession(ctx context.Context, req provider.MessageRequ
 			return nil, fmt.Errorf("write fresh-session user messages: %w", err)
 		}
 	}
+	c.recordConsumedRequest(req)
 
 	turn, _, err := c.readUntilPauseOrComplete(ctx, callback)
 	return c.finalizeTurn(req, turn, err)
@@ -197,7 +197,7 @@ func (c *Client) runPersistentResumeTurn(ctx context.Context, req provider.Messa
 		// content could enter the delta (compaction, an in-place edit, a model
 		// change) diverges the prefix and cold-starts before reaching here.
 		jlog.Debug("Delta is assistant-only (%d msgs, already in the CLI's session) — nudging warm session", len(delta))
-		return c.runResumeNudge(ctx, req, callback)
+		return c.runResumeNudge(ctx, req, callback, true)
 	}
 
 	stdinPayload := []byte(strings.Join(deltaLines, "\n") + "\n")
@@ -228,6 +228,7 @@ func (c *Client) runPersistentResumeTurn(ctx context.Context, req provider.Messa
 			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("resume-stdin-failed: %v", err))
 		}
 	}
+	c.recordConsumedRequest(req)
 
 	jlog.Debug("=== CLAUDECODE RESUME TURN (uuid=%s, %d delta lines) ===",
 		c.activeSession.sessionUUID, len(deltaLines))
@@ -239,14 +240,13 @@ func (c *Client) runPersistentResumeTurn(ctx context.Context, req provider.Messa
 // runResumeNudge pipes a synthetic user message (continuationNudge) into the
 // live --resume session when the worker has nothing new to send (typically:
 // previous turn returned only thinking, or the user clicked Continue with no
-// edits). The nudge is intentionally NOT added to req.Messages so the
-// worker-side sentCount / sentHash bookkeeping stays aligned with what the
-// worker thinks the conversation contains; the CLI's own --resume history
+// edits). The nudge is intentionally NOT added to req.Messages and does not
+// advance heldCount or the decision prefix; the CLI's own --resume history
 // silently absorbs the extra round-trip on its end. Cache stays warm.
 //
 // Falls back to a fresh start on any spawn/stdin failure — same shape as
 // runPersistentResumeTurn's error handling.
-func (c *Client) runResumeNudge(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+func (c *Client) runResumeNudge(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback, claimsRequest bool) (*provider.StreamResult, error) {
 	nudge := []provider.Message{{Type: "user", Content: continuationNudge}}
 	nudgeLines, err := c.formatMessagesAsStreamJSONLines(nudge, c.activeSession.sessionUUID)
 	if err != nil || len(nudgeLines) == 0 {
@@ -272,6 +272,11 @@ func (c *Client) runResumeNudge(ctx context.Context, req provider.MessageRequest
 		if err := c.writeStdinDelta(payload); err != nil {
 			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("nudge-stdin-failed: %v", err))
 		}
+	}
+	if claimsRequest {
+		// Assistant messages are part of Juggler's projection even though resumed
+		// stdin formatting drops their content: the CLI generated and retained them.
+		c.recordConsumedRequest(req)
 	}
 
 	jlog.Debug("=== CLAUDECODE NUDGE TURN (uuid=%s) === (no-new-msgs; piped continuationNudge)",
@@ -329,6 +334,7 @@ func (c *Client) continueSession(ctx context.Context, req provider.MessageReques
 		}
 		c.activeSession.fedResultIDs[result.ToolUseID] = true
 	}
+	c.recordConsumedRequest(req)
 
 	// Tool results are fed; the model now resumes the paused turn. Surface the
 	// wait so the spinner isn't a static "Receiving..." while it thinks.
@@ -368,30 +374,31 @@ func (c *Client) extractToolResults(messages []provider.Message) []*provider.Too
 	return results
 }
 
-// captureSentPrefix records the fingerprints of the STABLE (systemPrompt,
-// messages) prefix the CLI now holds. sentCount/sentHash drive the next turn's
-// canResumeWithDelta delta detection; sentSystemHash/sentMsgHashes are the
-// per-element fingerprints diagnoseDivergence uses to localise a cache miss.
-//
-// The anchor deliberately covers only stablePrefixCount(messages) — it excludes
-// the trailing run of volatile standing-context messages the worker appends
-// each turn. Those re-render live and get displaced as the conversation grows,
-// so anchoring on len(messages) would flag every turn as "diverged" and
-// cold-start the whole history (the cache-busting regression this repairs). The
-// CLI still physically holds the context tail we fed it; we simply don't let it
-// participate in the resume decision, so the current context rides in each
-// turn's delta while the committed history resumes warm.
 func (s *activeSession) captureSentPrefix(systemPrompt string, messages []provider.Message) {
 	stable := stablePrefixCount(messages)
+	s.heldCount = len(messages)
 	s.sentCount = stable
 	s.sentHash = hashRequestPrefix(systemPrompt, messages, stable)
 	s.sentSystemHash = hashSystemPrompt(systemPrompt)
 	s.sentMsgHashes = hashMessages(messages, stable)
 }
 
-// finalizeTurn handles bookkeeping common to fresh and resume turns: error
-// cleanup, session-uuid capture, sentCount/sentHash update on success, and
-// sidecar persistence.
+// recordConsumedRequest advances Juggler's projection immediately after the CLI
+// accepts a complete request write. heldCount guards rollback across everything
+// consumed; sentCount and the element hashes retain the stable-prefix decision
+// boundary so volatile trailing context can be replaced on the next turn.
+func (c *Client) recordConsumedRequest(req provider.MessageRequest) {
+	if c.activeSession == nil {
+		return
+	}
+	c.activeSession.captureSentPrefix(req.SystemPrompt, req.Messages)
+	if c.activeSession.sessionUUID != "" {
+		c.saveSidecar(req.ConversationID, c.activeSession)
+	}
+}
+
+// finalizeTurn handles response bookkeeping common to fresh and resume turns:
+// error cleanup, session-uuid capture, usage metadata, and sidecar persistence.
 //
 // Provider-boundary normalisation: the claude CLI reports input_tokens as
 // the *fresh-only* portion of the prompt (everything that wasn't a cache
@@ -402,17 +409,14 @@ func (s *activeSession) captureSentPrefix(systemPrompt string, messages []provid
 // and report that as StreamResult.InputTokens. CachedTokens stays the
 // cache-read subset; CacheWriteTokens stays the cache-creation subset.
 func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err error) (*provider.StreamResult, error) {
+	if turn != nil && turn.SessionID != "" && c.activeSession != nil && c.activeSession.sessionUUID == "" {
+		c.activeSession.sessionUUID = turn.SessionID
+		c.saveSidecar(req.ConversationID, c.activeSession)
+	}
 	if err != nil {
-		// Turn-execution failure (stream stall on sleep/wake, rate-limit
-		// exhaustion, API 400/529, cancel). The error only reaches here after
-		// the CLI was successfully spawned/resumed and the input written —
-		// the genuinely-unresumable cases (resume/spawn/stdin failure) fall
-		// back to startFreshSession upstream and never get here. So the
-		// upstream session is still intact on disk, sitting at the last good
-		// end_turn the sidecar already points at: tear down the live CLI and
-		// drop the in-memory session, but KEEP the sidecar so the user's
-		// retry --resumes warm instead of cold-starting the whole history.
-		// Surface whatever usage we managed to collect before the failure.
+		// The write-time projection already records the consumed request for every
+		// error shape. Tear down the process, preserve that sidecar, and surface
+		// whatever usage arrived before the failure.
 		var inTok, outTok int
 		var cacheR, cacheW *int
 		if turn != nil {
@@ -426,21 +430,6 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		c.activeSession.tearDownLiveCLI()
 		if c.activeSession != nil {
 			err = annotateExit(err, c.activeSession.exitDiag)
-			// A user cancel interrupts mid-stream after we'd already fed the
-			// new user message to the CLI (advancing its on-disk transcript)
-			// but before end_turn could advance the anchor. Advance it now to
-			// the committed prefix so the next turn resumes with only the
-			// genuinely-new tail, and a rollback past this point trips
-			// canResumeWithDelta's shrunk/diverged check into a clean fresh
-			// start (the reported "responds to my deleted message" bug). A
-			// non-cancel error (stall/rate-limit) leaves the anchor alone: the
-			// user retries the SAME request, which must re-feed the same delta.
-			if errors.Is(err, context.Canceled) {
-				c.activeSession.captureSentPrefix(req.SystemPrompt, req.Messages)
-				if c.activeSession.sessionUUID != "" {
-					c.saveSidecar(req.ConversationID, c.activeSession)
-				}
-			}
 		}
 		c.activeSession = nil
 		return &provider.StreamResult{
@@ -452,10 +441,6 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		}, err
 	}
 
-	// Capture session_id learned from the stream so future turns can --resume.
-	if turn.SessionID != "" && c.activeSession.sessionUUID == "" {
-		c.activeSession.sessionUUID = turn.SessionID
-	}
 	// Refresh lastUsedAt so the sweeper sees recent activity even on
 	// freshly-spawned sessions that hadn't been touched at StreamMessage entry.
 	c.activeSession.lastUsedAt = time.Now()
@@ -522,15 +507,6 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		c.activeSession.outputTokens = turn.OutputTokens
 		c.activeSession.cacheReadTokens = turn.CacheReadTokens
 		c.activeSession.cacheWriteTokens = turn.CacheWriteTokens
-		// Advance the resume anchor to the prefix the CLI has now durably
-		// committed: it consumed every fed user message through req.Messages
-		// and emitted its tool_use. Capturing here (not only at end_turn)
-		// keeps the anchor honest while the turn is parked, so a cancel,
-		// interjection, or reopen resumes with a delta of just the tail
-		// (tool_results + any new message) instead of re-feeding the
-		// already-committed user turn — and a rollback past this point trips
-		// canResumeWithDelta's shrunk/diverged check into a clean fresh start.
-		c.activeSession.captureSentPrefix(req.SystemPrompt, req.Messages)
 		c.activeSession.model = c.model
 		c.activeSession.lastCacheRead = turn.CacheReadTokens
 		c.activeSession.lastTurnAt = time.Now()
@@ -589,7 +565,6 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 	c.activeSession.outputTokens = 0
 	c.activeSession.cacheReadTokens = 0
 	c.activeSession.cacheWriteTokens = 0
-	c.activeSession.captureSentPrefix(req.SystemPrompt, req.Messages)
 	c.activeSession.model = c.model
 	c.activeSession.lastCacheRead = cacheR
 	c.activeSession.lastTurnAt = time.Now()
