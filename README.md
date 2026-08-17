@@ -161,7 +161,28 @@ That leaves everything in `bin/`:
 
 To build the same installers and archives the official downloads use: `make mac-dmg` (needs `brew install create-dmg`), `make win-installer` (needs Inno Setup, run on Windows), `make linux-tarball`. These are unsigned — a macOS bundle built here is ad-hoc signed, so other machines' Gatekeeper will object to it.
 
-Windows binaries cross-compile from any host with `make build-windows`; the Linux desktop app must be built natively. If you want to build for a `x86/amd64` Intel Mac, you can build that locally. For a Linux host with no display, see [`docs/headless-linux.md`](docs/headless-linux.md).
+The Linux desktop app must be built natively on Linux. If you want to build for a `x86/amd64` Intel Mac, you can build that locally. For a Linux host with no display, see [`docs/headless-linux.md`](docs/headless-linux.md).
+
+#### Building on Windows
+
+Windows doesn't ship `make`, and this repo's recipes need a POSIX shell, so the supported setup is Git Bash plus a GNU make:
+
+```bash
+winget install Git.Git
+winget install ezwinports.make
+```
+
+That combination is what CI uses on its Windows runner, so the targets above are proven to work there. Avoid GnuWin32's make — it's version 3.81 from 2006. One adjustment: `make test` needs `RACE=` (the default `-race` requires a C compiler, which Windows usually lacks).
+
+If you'd rather not install make at all, a quick build is just `go build`:
+
+```bash
+mkdir -p bin
+go build -o bin/juggler.exe ./cmd/juggler
+go build -o bin/juggler-app.exe ./cmd/juggler-app
+```
+
+WSL2 works too, but builds the Linux binaries — the Linux backend links GTK/WebKitGTK, not a native `.exe`.
 
 CI on this repo is a sanity gate — lint, build, test — and deliberately publishes no artifacts, so there are no per-commit builds to download. The official signed builds come from a separate release pipeline.
 
