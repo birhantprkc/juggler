@@ -69,11 +69,22 @@ class ColumnSelectionState {
 
   /**
    * Select an item in a column. Truncates all selections after this column (Finder behavior).
+   *
+   * `focus` decides whether the keyboard target moves to this column too. A
+   * selection the user drives (click, arrow key) belongs in the column they are
+   * working in, so it takes focus. A selection the system makes for them — a
+   * child column auto-selecting a tool action as it arrives, while the user
+   * reads further up — must not, or the next arrow key navigates a column they
+   * never asked for. Truncation happens either way: the chain past this column
+   * is stale whoever selected it, and clampActiveIndex pulls a focus left
+   * dangling past the shortened chain back into range.
    * @param {number} columnIndex
    * @param {string} itemId
+   * @param {{focus?: boolean}} [opts] - `focus` (default true): make this the active column.
    */
-  selectItem(columnIndex, itemId) {
-    this.activeColumnIndex = columnIndex;
+  selectItem(columnIndex, itemId, opts = {}) {
+    const { focus = true } = opts;
+    if (focus) this.activeColumnIndex = columnIndex;
     this.selections[columnIndex] = itemId;
     this.selections.length = columnIndex + 1;
   }

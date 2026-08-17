@@ -434,6 +434,12 @@ class ConversationTab extends HTMLElement {
   //  12. Click item              → blur textarea (enter navigating mode)
   //  13. Click empty / textarea  → focus textarea (enter typing mode)
   //  14. Arrow keys (navigating) → stay navigating
+  //  14b. Auto-selection in another column → the active column doesn't move.
+  //      Which column the arrow keys drive is the user's choice; a column
+  //      picking up an item that just arrived applies the selection to itself
+  //      and leaves the keyboard alone (ColumnSelectionState.selectItem's
+  //      `focus` option). Moving the selection also leaves the row's
+  //      horizontal scroll alone — see _scrollToActiveColumn.
   //  15. Input column changes (not during keyboard navigation)
   //      → focus new input column's textarea.
   //      Covers a thread being created and a thread being deleted —
@@ -1086,8 +1092,24 @@ class ConversationTab extends HTMLElement {
   }
 
   /**
-   * Scroll the column container so the active column is fully visible.
-   * Only explicit user navigation (arrow keys, clicking a column) triggers this.
+   * Bring the active column fully into view with the smallest horizontal
+   * movement that does it — and nothing at all when it is already fully visible.
+   *
+   * One rule for every column, whatever the chain holds. Aligning the active
+   * column to the left edge shows it, but it also re-anchors the whole row from
+   * a position the user chose by dragging, and it did so only when a properties
+   * panel happened to be in the chain — so the same keystroke moved the view or
+   * left it alone depending on which kind of item the selection had landed on.
+   * Minimal movement removes both the re-anchoring and the split.
+   *
+   * The delta is computed against the container's own scrollLeft and applied by
+   * assignment, which clamps to [0, scrollWidth - clientWidth]: it can neither
+   * overshoot nor scroll an ancestor, unlike Element.scrollIntoView's
+   * ancestor-walking and nearest-edge guesswork. A column too wide to fit lands
+   * on its left edge, where its content starts.
+   *
+   * Called only for explicit column-level navigation: arrow-left/right, clicking
+   * a column, opening a thread, following a thread the LLM has started.
    * @private
    */
   _scrollToActiveColumn() {
@@ -1096,17 +1118,19 @@ class ConversationTab extends HTMLElement {
     const containerRef = this._columnContainer;
     requestAnimationFrame(() => {
       const container = containerRef;
-      const panel = container.querySelector('properties-panel');
-      if (!panel) {
-        col.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-        return;
+      // A rebuild between the frames can drop the column we measured for.
+      if (!col.isConnected || !container.isConnected) return;
+      const containerRect = container.getBoundingClientRect();
+      const colRect = col.getBoundingClientRect();
+      let delta = 0;
+      if (colRect.left < containerRect.left) {
+        delta = colRect.left - containerRect.left;
+      } else if (colRect.right > containerRect.right) {
+        // Never drive the left edge out of view chasing the right one.
+        delta = Math.min(colRect.right - containerRect.right, colRect.left - containerRect.left);
       }
-      // Left-align the active column so the properties panel fills remaining space.
-      // This shows the full column and maximises panel visibility.
-      const targetScrollLeft = col.offsetLeft;
-      if (Math.abs(container.scrollLeft - targetScrollLeft) > 1) {
-        container.scrollTo({ left: targetScrollLeft, behavior: 'smooth' });
-      }
+      if (delta === 0) return;
+      container.scrollTo({ left: container.scrollLeft + delta, behavior: 'smooth' });
     });
   }
 
@@ -1179,16 +1203,29 @@ class ConversationTab extends HTMLElement {
       return;
     }
 
+    const prevActiveColumn = this._selection.activeColumnIndex;
+
     if (!itemId) {
       this._selection.clearSelection(columnIndex);
     } else {
       if (origin === 'user') {
         this._selection.markManualInteraction();
       }
-      this._selection.selectItem(columnIndex, itemId);
+      // Only the user's own selection moves the keyboard target onto this
+      // column: an auto-selection landing in a column the user isn't in (a
+      // child column picking up an arriving tool action) leaves the arrow keys
+      // where they were.
+      this._selection.selectItem(columnIndex, itemId, { focus: origin === 'user' });
     }
 
-    this._rebuildColumns(origin === 'user');
+    // Moving the selection does not move the columns. The horizontal scroll is
+    // the user's — they set it by dragging — and an arrow key walking this
+    // column's items is asking for nothing to its left or right, so re-anchoring
+    // the row on every keypress only throws that choice away. A selection that
+    // lands the keyboard in a DIFFERENT column (clicking into one that is partly
+    // off-screen) IS a request to see that column, so that case still scrolls.
+    const enteredAnotherColumn = this._selection.activeColumnIndex !== prevActiveColumn;
+    this._rebuildColumns(origin === 'user' && enteredAnotherColumn);
 
     // On a narrow viewport the columns are full-width and paged, so the child
     // column that just appeared for the tapped item sits off-screen to the
@@ -1467,14 +1504,14 @@ class ConversationTab extends HTMLElement {
 
       this._columns = newColumns;
 
-      // Tripwire: the column-sizing CSS, the active-column scroll, and (until
-      // this was made explicit) the resize-handle visibility all assume the
-      // column-container's element children appear in the SAME order as
-      // this._columns. New columns are appended to the end and reused ones kept
-      // in place, so this should always hold — log loudly with a stack if it
-      // ever doesn't, to capture the path that breaks it. Resize-handle
-      // visibility is now driven from the logical order (_updateColumnLayout)
-      // so it survives a divergence, but a divergence is still a real bug.
+      // Tripwire: the column-sizing CSS and (until this was made explicit) the
+      // resize-handle visibility assume the column-container's element children
+      // appear in the SAME order as this._columns. New columns are appended to
+      // the end and reused ones kept in place, so this should always hold — log
+      // loudly with a stack if it ever doesn't, to capture the path that breaks
+      // it. Resize-handle visibility is driven from the logical order
+      // (_updateColumnLayout) so it survives a divergence, but a divergence is
+      // still a real bug.
       const domColumns = Array.from(this._columnContainer.children).filter(
         (el) => el.tagName === 'CONVERSATION-AREA' || el.tagName === 'PROPERTIES-PANEL'
       );

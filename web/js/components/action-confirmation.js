@@ -515,7 +515,13 @@ class ActionConfirmation extends HTMLElement {
   }
 
   /**
-   * Handle keyboard navigation
+   * Handle keyboard navigation.
+   *
+   * Only the bare keys belong to this widget. A modified chord (⌥⌘↑/↓ to switch
+   * conversation, say) is an app command: this listener sits on the element, so
+   * claiming it would stopPropagation() it before the document-level dispatcher
+   * ever sees it, and the shortcut would silently do nothing whenever an
+   * approval had focus.
    * @param {KeyboardEvent} event
    * @private
    */
@@ -526,6 +532,10 @@ class ActionConfirmation extends HTMLElement {
 
     const buttons = this.querySelectorAll('.action-confirmation-button');
     if (buttons.length === 0) {
+      return;
+    }
+
+    if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
 
@@ -567,7 +577,9 @@ class ActionConfirmation extends HTMLElement {
    *     enabled); if the edit is invalid the button is disabled and nothing
    *     happens, mirroring a click.
    *   - ↑/↓ → caret movement; stop propagation so the widget's button
-   *     navigation doesn't hijack the keystroke.
+   *     navigation doesn't hijack the keystroke. Modified chords are left alone
+   *     for the same reason as in {@link _handleKeyDown} — ⌥⌘↑/↓ is a
+   *     conversation switch, not caret movement.
    *   - Escape → cancel the edit in place: restore the button to its pre-edit
    *     grant and refocus it. Propagation is stopped so the widget-level Escape
    *     does NOT also disengage the whole approval — cancelling an edit and
@@ -589,7 +601,8 @@ class ActionConfirmation extends HTMLElement {
       event.stopPropagation();
       const button = this._exitEditMode(index, { revert: true });
       if (button) button.focus();
-    } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    } else if ((event.key === 'ArrowUp' || event.key === 'ArrowDown')
+      && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.stopPropagation();
     }
   }

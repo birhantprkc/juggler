@@ -115,6 +115,7 @@ import { runTests as runSlashCompletionTests } from '../unit-tests/slash-complet
 import { runTests as runSkillCompletionTests } from '../unit-tests/skill-completion-test.js';
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
+import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
 import { runTests as runNewThreadFocusTests } from '../unit-tests/new-thread-focus-test.js';
 import { runTests as runApprovalFocusReturnTests } from '../unit-tests/approval-focus-return-test.js';
@@ -335,6 +336,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:conversation-focus-policy', run: runConversationFocusPolicyTests },
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
+  { name: 'unit:column-navigation', run: runColumnNavigationTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
   { name: 'unit:new-thread-focus', run: runNewThreadFocusTests, needsExclusiveRun: true },
   { name: 'unit:approval-focus-return', run: runApprovalFocusReturnTests, needsExclusiveRun: true },
