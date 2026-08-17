@@ -11,7 +11,8 @@ import { canonicalThread } from '../model/thread-alias.js';
 /**
  * Character count above which a thread's markdown summary is clamped
  * behind a Show more toggle. Tuned to the narrow thread-tile width, where ~600
- * chars fills the collapsible's 18rem clamp height.
+ * chars comfortably overflows the collapsible's clamp height, so a summary that
+ * earns the toggle has real content hidden behind it.
  */
 const THREAD_SUMMARY_MAX_CHARS = 600;
 

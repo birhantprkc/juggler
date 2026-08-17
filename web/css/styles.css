@@ -2158,9 +2158,14 @@ user-message .user-message-text.plain {
    character-count threshold, so ordinary items never carry these classes. The clamped
    block fades to transparent over its last stretch via a mask (background-
    agnostic, so it works on the user bubble and the thread tile alike), and a
-   subtle full-width toggle is inserted directly below it. */
+   subtle full-width toggle is inserted directly below it.
+
+   The clamp sits comfortably below the height the character thresholds imply,
+   so anything that earns a toggle is visibly cut: an item barely over its
+   threshold still has real content hidden, rather than a couple of pixels that
+   make the toggle pointless. */
 .collapsible.is-collapsed {
-    max-height: 18rem;
+    max-height: 15rem;
     overflow: hidden;
     mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
 }
