@@ -12,15 +12,24 @@
  * with a RUN SELECTOR (`runToolUseId`) naming the single run it stands for.
  *
  * Selecting either tile opens the same column — they are two views of one body
- * of content. But each tile carries its own result, frozen at the moment its own
- * run settled, so five calls into one session read as five results down the
- * parent transcript rather than one tile whose text keeps being overwritten.
+ * of content. But each tile carries a single run's result, so five calls into
+ * one session read as five results down the parent transcript rather than one
+ * tile whose text keeps being overwritten.
+ *
+ * WHICH run depends on where the item stands. The LAST item referring to a
+ * session is its live view: it shows the run the transcript is on now, whoever
+ * started it — including a run a human started by typing into a stopped child,
+ * which no call named and which nothing else in the parent stands for. Every
+ * earlier item is a receipt for the one call it was made by, frozen where that
+ * run settled, so a later result can never rewrite a tile further up.
  *
  * An alias and its canonical are always siblings: a session is scoped to the
  * thread that called it, so a resume can only be issued from the array the
  * thread already sits in. Mirrors worker/run_records.go (resolveAliasTarget,
  * runByToolUseID, itemRunSettled).
  */
+
+import { threadRunSettled } from './run-records.js';
 
 /**
  * Read a Y.Array, plain array, or nullish as a plain array.
@@ -57,6 +66,56 @@ export function resolveAliasTarget(itemYMap, siblingArray) {
     if (typeof item?.get !== 'function') continue;
     if (item.get('type') !== 'thread' || item.get('aliasOf')) continue;
     if (item.get('itemId') === targetId) return item;
+  }
+  return null;
+}
+
+/**
+ * Whether this item is the LAST of the parent's items referring to a session —
+ * the canonical and its aliases are the whole set, and they always stand in one
+ * array.
+ *
+ * That item is the session's live view: it shows the run the transcript is on
+ * now, whoever started it. Every earlier item is a receipt for the one call it
+ * was made by. Mirrors isTrailingViewOf in worker/run_records.go.
+ * @param {any} itemYMap - The item Y.Map (canonical or alias).
+ * @param {any} canonical - The canonical thread Y.Map it refers to.
+ * @param {any} [siblingArray] - The array the item stands in.
+ * @returns {boolean} True when no later item refers to the same session.
+ */
+function isTrailingViewOf(itemYMap, canonical, siblingArray) {
+  const canonicalId = canonical?.get?.('itemId');
+  if (!canonicalId) return false;
+  const siblings = asArray(siblingArray || itemYMap?.parent);
+  for (let i = siblings.length - 1; i >= 0; i--) {
+    const sibling = siblings[i];
+    if (typeof sibling?.get !== 'function' || sibling.get('type') !== 'thread') continue;
+    const id = sibling.get('itemId');
+    if (id !== canonicalId && sibling.get('aliasOf') !== canonicalId) continue;
+    return id === itemYMap?.get?.('itemId');
+  }
+  return false;
+}
+
+/**
+ * The outcome of the run a thread's transcript is currently on, or null when it
+ * records none. An empty status means that run is still going.
+ *
+ * Reads the LAST user item rather than the run's invocation message: the worker
+ * stamps the same outcome onto every message the run gathered, so the trailing
+ * one always carries it, and it is the item threadRunSettled asks about. It
+ * requires no run selector, which is the point — a run a human started by typing
+ * into the thread is recorded on a plain user message, so threadRunRecords does
+ * not see it. Mirrors trailingRunOutcome in worker/run_records.go.
+ * @param {any} threadYMap - The canonical thread Y.Map.
+ * @returns {{status: string, result: string}|null} That run's outcome, or null.
+ */
+function trailingRunOutcome(threadYMap) {
+  const items = asArray(threadYMap?.get?.('items'));
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (typeof item?.get !== 'function' || item.get('type') !== 'user') continue;
+    return { status: item.get('runStatus') || '', result: item.get('runResult') || '' };
   }
   return null;
 }
@@ -160,10 +219,20 @@ export function itemGoal(itemYMap, siblingArray) {
  */
 
 /**
- * The record of the one run THIS item stands for, read off the transcript
- * wherever it now is. Null for an item with no run selector — a user- or
+ * The record of the run THIS item stands for, read off the transcript wherever
+ * it now is. Null for an item with no run selector — a user- or
  * strategy-created thread, a fold, every document written before aliases — and
  * for a selector naming a run the transcript no longer holds.
+ *
+ * Which run that is depends on where the item stands. The LAST item referring to
+ * a session is its live view and answers for the run the transcript is on now
+ * (isTrailingViewOf); every earlier item answers for the one run its selector
+ * names, frozen where that run settled. So a session resumed by a later call
+ * reports to the item that call appended, and a session resumed by a human —
+ * whose run no call named at all — reports to the item still waiting on it.
+ * The live view borrows the OUTCOME only: its call number stays its own, because
+ * it is still the parent's view of the call it made. Mirrors itemThreadRun in
+ * worker/run_records.go.
  * @param {any} itemYMap - The thread item Y.Map (canonical or alias).
  * @param {any} [siblingArray] - The array the item stands in.
  * @returns {ItemRunRecord|null} That run's record, or null.
@@ -174,10 +243,54 @@ export function itemRunRecord(itemYMap, siblingArray) {
   const canonical = isAlias(itemYMap) ? resolveAliasTarget(itemYMap, siblingArray) : itemYMap;
   if (!canonical) return null;
   const runs = threadRunRecords(canonical);
+  let call = 0;
+  let matched = null;
   for (let i = 0; i < runs.length; i++) {
-    const run = runs[i];
-    if (!run || run.toolUseId !== selector) continue;
-    return { status: run.status, result: run.result, call: i + 1 };
+    if (runs[i]?.toolUseId === selector) {
+      call = i + 1;
+      matched = runs[i];
+      break;
+    }
   }
-  return null;
+  if (isTrailingViewOf(itemYMap, canonical, siblingArray)) {
+    const trailing = trailingRunOutcome(canonical);
+    // A selector no record answers still stands for a call that was made, so it
+    // is numbered after the ones that are recorded.
+    if (trailing) return { ...trailing, call: call || runs.length + 1 };
+  }
+  if (!matched) return null;
+  return { status: matched.status, result: matched.result, call };
+}
+
+/**
+ * Whether the run THIS item stands for is over — the "is this child finished?"
+ * question, asked of one item rather than of the thread.
+ *
+ * An item carrying a run selector answers for its own run, so a caller waits on
+ * the call it made rather than on whatever the thread most recently did. A
+ * selector that resolves to nothing is over: the thread was deleted, or the run's
+ * record was edited away, and there is nothing left to wait for. The exception is
+ * a thread recording no run at all, which is one mid-creation.
+ *
+ * An item with no selector — a user-, strategy- or orchestrator-created thread, a
+ * fold, every document written before aliases — answers from the thread itself.
+ * An ALIAS with no selector stands for no run and is over: it owns no transcript
+ * and no summary, so asking the thread question of it would answer "still
+ * working" for as long as it exists. Mirrors itemRunSettled in
+ * worker/run_records.go.
+ * @param {any} itemYMap - The item Y.Map (canonical, alias, or anything else).
+ * @param {any} [siblingArray] - The array the item stands in.
+ * @returns {boolean} True when this item's run is over.
+ */
+export function itemRunSettled(itemYMap, siblingArray) {
+  if (itemYMap?.get?.('type') === 'thread' && itemYMap.get('runToolUseId')) {
+    const record = itemRunRecord(itemYMap, siblingArray);
+    if (record) return !!record.status;
+    const canonical = isAlias(itemYMap) ? resolveAliasTarget(itemYMap, siblingArray) : itemYMap;
+    if (!canonical) return true; // the alias names a thread that is gone
+    if (threadRunRecords(canonical).length > 0) return true; // the selector names a run the transcript no longer holds
+    return threadRunSettled(canonical);
+  }
+  if (isAlias(itemYMap)) return true; // an alias with no selector stands for no run
+  return threadRunSettled(itemYMap);
 }

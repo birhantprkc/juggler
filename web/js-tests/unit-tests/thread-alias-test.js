@@ -15,7 +15,7 @@
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import { isAlias, canonicalThread, itemGoal, itemRunRecord, threadRunRecords }
+import { isAlias, canonicalThread, itemGoal, itemRunRecord, itemRunSettled, threadRunRecords }
   from '../../js/model/thread-alias.js';
 import { getThreadDisplayContent, getThreadStatus } from '../../js/utils/thread-display.js';
 
@@ -200,6 +200,81 @@ export async function runTests() {
       `a thread with no selector reads its goal field; got ${itemGoal(plain)}`);
     passed++;
   } catch (e) { failed++; errors.push(`goal fallback: ${msg(e)}`); }
+
+  // --- 7: the trailing item tracks the session, earlier items do not ---
+  // A human can pick a stopped child back up, and the run that starts is one no
+  // call named — recorded on a plain user message carrying no coordinates at
+  // all. The last item referring to the session reports it, because nothing else
+  // in the parent stands for that work; every earlier item stays the receipt for
+  // the call it was made by.
+  try {
+    const { root, canonical, aliases } = session([
+      { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
+      { toolUseId: 'tu-2', prompt: 'who calls it?', status: 'cancelled', result: '[The run was cancelled before it finished.]' }
+    ]);
+    const nested = canonical.get('items');
+    nested.push([item({ type: 'user', itemId: 'human-1', content: 'keep going' })]);
+    const resumed = nested.get(nested.length - 1);
+
+    // While that run is in flight the tile follows the session back into work.
+    const live = { message: 'Streaming…', threadId: 'T1' };
+    const running = getThreadStatus(aliases[0], live, root);
+    assert(running.kind === 'running' && running.spinner === true,
+      `the item waiting on the session must follow it back into work; got ${JSON.stringify(running)}`);
+    assert(getThreadStatus(canonical, live, root).showSummary === true,
+      'the earlier call keeps showing its own answer while the session works');
+
+    // And when it rests, that is what the call reports.
+    resumed.set('runStatus', 'rest');
+    resumed.set('runResult', 'The server calls it.');
+    const record = itemRunRecord(aliases[0], root);
+    assert(record?.result === 'The server calls it.',
+      `the trailing item reports the session's current run; got ${JSON.stringify(record)}`);
+    assert(record?.call === 2,
+      `and stays the view of its own call; got call ${record?.call}`);
+    assert(itemRunRecord(canonical, root)?.result === 'Auth lives in auth.go.',
+      'the first call still answers with the run it started');
+    assert(getThreadDisplayContent(aliases[0], root).text === 'The server calls it.',
+      'and the tile shows the answer rather than the stop it has moved past');
+    passed++;
+  } catch (e) { failed++; errors.push(`resumed session: ${msg(e)}`); }
+
+  // --- 8: an alias is not mistaken for a thread that never finishes ---
+  // An alias owns no transcript and no summary, so the thread-level question
+  // ("does it record a settled run, or carry a result?") answers "still working"
+  // for as long as it stands there. Everything that asks whether a column is
+  // busy walks these items — hasBusyItems, which decides whether Continue is
+  // offered at all — so one resumed session would retire the button for good.
+  try {
+    const { root, canonical, aliases } = session([
+      { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
+      { toolUseId: 'tu-2', prompt: 'who calls it?', status: 'rest', result: 'The server calls it.' }
+    ]);
+    assert(itemRunSettled(canonical, root) === true,
+      'the thread whose runs have all settled is finished');
+    assert(itemRunSettled(aliases[0], root) === true,
+      'and so is the alias standing for the second of them');
+
+    // The alias still reports the session honestly while it works.
+    const nested = canonical.get('items');
+    nested.push([item({ type: 'user', itemId: 'human-1', content: 'keep going' })]);
+    assert(itemRunSettled(aliases[0], root) === false,
+      'an alias whose session is working again reads as working');
+    passed++;
+  } catch (e) { failed++; errors.push(`alias settlement: ${msg(e)}`); }
+
+  // --- 9: an alias with no run selector stands for no run ---
+  // Its Go twin returns true here for the same reason: there is no run to wait
+  // on, and answering from the thread it points at would report somebody else's.
+  try {
+    const doc = new Y.Doc();
+    const root = doc.getArray('items');
+    const orphan = item({ type: 'thread', itemId: 'A9', aliasOf: 'gone' });
+    doc.transact(() => { root.push([orphan]); });
+    assert(itemRunSettled(orphan, root) === true,
+      'an alias carrying no selector has no run to wait on');
+    passed++;
+  } catch (e) { failed++; errors.push(`selectorless alias: ${msg(e)}`); }
 
   return { passed, failed, errors };
 }

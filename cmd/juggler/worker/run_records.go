@@ -28,6 +28,13 @@ import (
 // run it means with a selector on its own item — the same coordinates, read from
 // the other end (ConversationItem.AliasOf).
 //
+// The LAST of the parent's items referring to a session is the exception, and
+// tracks the session rather than one run of it (isTrailingViewOf). Nothing else
+// stands for a run a human started by typing into a stopped child: that run has
+// no invocation message and no call behind it, so the item still waiting on the
+// thread is the only place it can report. Everything above it stays frozen,
+// which is what keeps the committed wire from moving.
+//
 // The outcome is stored rather than re-derived because a run's trailing items
 // are user-editable and deletable: the wire must still reconstruct a stable
 // tool_use/tool_result pair for a run whose transcript has since been edited.
@@ -178,6 +185,51 @@ func resolveAliasTarget(siblings []ConversationItem, item ConversationItem) (Con
 	return ConversationItem{}, false
 }
 
+// isTrailingViewOf reports whether item is the LAST of the parent's items
+// referring to a session — the canonical thread and its aliases are the whole
+// set, and they always stand in one array (resolveAliasTarget).
+//
+// That item is the session's live view: it shows the run the transcript is on
+// now, whoever started it. Every earlier item is a receipt for the one call it
+// was made by, frozen when that run settled. The split is what lets a human
+// resume a stopped child and have the answer reach the call that is waiting for
+// it, without a later result ever rewriting a tile further up the transcript.
+func isTrailingViewOf(siblings []ConversationItem, item ConversationItem, canonicalID string) bool {
+	for i := len(siblings) - 1; i >= 0; i-- {
+		s := siblings[i]
+		if s.Type != ItemTypeThread {
+			continue
+		}
+		if s.ItemID != canonicalID && s.AliasOf != canonicalID {
+			continue
+		}
+		return s.ItemID == item.ItemID
+	}
+	return false
+}
+
+// trailingRunOutcome returns the outcome of the run a transcript is currently
+// on, and whether it records one at all. Empty status means that run is still
+// going.
+//
+// It reads the LAST user item rather than the run's invocation message because
+// settleThreadRun stamps the same outcome onto every message the run gathered
+// (openRunMessagesLocked), so the trailing one always carries it — and it is
+// the item runSettlement asks about, which keeps the two answers in step.
+//
+// It requires no run selector, which is the point: a run a human started by
+// typing into the thread is recorded on a plain user message, so threadRunRecords
+// does not see it. Reading the message rather than the record is what lets the
+// live view show work no call asked for.
+func trailingRunOutcome(items []ConversationItem) (status, result string, ok bool) {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Type == ItemTypeUser {
+			return items[i].RunStatus, items[i].RunResult, true
+		}
+	}
+	return "", "", false
+}
+
 // itemRunCall builds the tool-use coordinates a thread item's run selector
 // names, in the fields buildToolUseMap reads.
 func itemRunCall(item ConversationItem) ConversationItem {
@@ -188,10 +240,23 @@ func itemRunCall(item ConversationItem) ConversationItem {
 	}
 }
 
-// itemThreadRun resolves the one run a thread item stands for: the canonical
-// thread holding the transcript, that run's record, and its 1-based call number.
+// itemThreadRun resolves the run a thread item stands for: the canonical thread
+// holding the transcript, that run's outcome, and its 1-based call number.
 // Reports false for an item with no run selector, for an alias whose canonical
 // is gone, and for a selector naming a run the transcript no longer records.
+//
+// Which run that is depends on where the item stands. The LAST of the parent's
+// items referring to a session is its live view and answers for the run the
+// transcript is on now (isTrailingViewOf); every earlier item answers for the
+// one run its selector names, frozen where that run settled. So a session
+// resumed by a later call reports to the item that call appended, and a session
+// resumed by a human — whose run no call named at all — reports to the item
+// still waiting on it, rather than to nobody.
+//
+// The live view borrows the OUTCOME only. Its tool-use coordinates, its goal and
+// its call number stay its own, because it is still the parent's view of the
+// call it made: the emitted tool_use id must keep matching the one already
+// committed to the parent's history.
 func itemThreadRun(siblings []ConversationItem, item ConversationItem) (canonical ConversationItem, run threadRun, call int, ok bool) {
 	if item.Type != ItemTypeThread || item.RunToolUseID == "" {
 		return ConversationItem{}, threadRun{}, 0, false
@@ -203,6 +268,16 @@ func itemThreadRun(siblings []ConversationItem, item ConversationItem) (canonica
 		}
 	}
 	run, call, ok = runByToolUseID(canonical, item.RunToolUseID)
+	if isTrailingViewOf(siblings, item, canonical.ItemID) {
+		if status, result, recorded := trailingRunOutcome(threadNestedItems(canonical)); recorded {
+			if !ok {
+				// A selector no record answers still stands for a call that was
+				// made, so it is numbered after the ones that are recorded.
+				call = len(threadRunRecords(canonical)) + 1
+			}
+			return canonical, threadRun{call: itemRunCall(item), status: status, result: result}, call, true
+		}
+	}
 	if !ok {
 		return canonical, threadRun{}, 0, false
 	}
@@ -225,11 +300,14 @@ func runByToolUseID(canonical ConversationItem, toolUseID string) (threadRun, in
 
 // itemRunSettled reports whether the run THIS item stands for has settled.
 //
-// A thread item stamped with a run selector answers for that one run, wherever
-// the transcript now is: an alias resolves to the canonical item standing
-// earlier in the same array and reads the record there. A caller parks on the
-// call it made, not on whatever the thread most recently did — a session resumed
-// by a later call is finished as far as the earlier call is concerned.
+// A thread item stamped with a run selector answers for the run it stands for,
+// wherever the transcript now is: an alias resolves to the canonical item
+// standing earlier in the same array and reads the record there. A caller parks
+// on the call it made, not on whatever the thread most recently did — a session
+// resumed by a LATER CALL is finished as far as the earlier call is concerned,
+// because that call has an item of its own to wait on it. The last item
+// referring to the thread has no such successor, so it follows the session back
+// into work when a human resumes it (itemThreadRun).
 //
 // A selector that resolves to nothing — the canonical deleted, or the run's
 // record edited away — is settled: the wire answers such a call with an error

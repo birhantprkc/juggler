@@ -426,3 +426,206 @@ func TestSettledRunPairsTheWire(t *testing.T) {
 		t.Errorf("tool_result = %q, want the pending placeholder", content)
 	}
 }
+
+// TestTrailingItemShowsTheResumedRun covers a human picking a stopped child back
+// up. The run its call started has already settled as cancelled, so the resume
+// starts a run no call named — recorded on a plain user message that carries no
+// tool-use coordinates at all.
+//
+// Nothing else in the parent stands for that work, so the item that made the
+// call has to report it: otherwise the tile is frozen on the cancelled note for
+// good, and the parent is handed "[The run was cancelled before it finished.]"
+// as the answer to a question the child has since answered properly.
+func TestTrailingItemShowsTheResumedRun(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.ensureItems()
+	w.storeState(StateProcessing)
+
+	threadID, err := w.createThread(CreateThreadOptions{
+		Goal:      "map auth",
+		Prompt:    "find the auth flow",
+		ToolUseID: "tu-1",
+		ToolName:  "Explore",
+		ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`),
+		Delegated: true,
+	})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	w.thread.itemID = threadID
+	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	appendItem := func(item ConversationItem) {
+		w.insertTargetMessage(w.getTargetItemsLength(), item)
+	}
+
+	// The call is stopped partway.
+	appendItem(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "Got partway."})
+	w.settleThreadRun(threadID, true)
+
+	callWire := func() (settled bool, toolUseID, content string) {
+		w.resetThreadContext()
+		items := w.doc.GetItems()
+		var thread ConversationItem
+		for _, it := range items {
+			if it.ItemID == threadID {
+				thread = it
+			}
+		}
+		if thread.ItemID == "" {
+			t.Fatalf("thread item %s is not in the parent", threadID)
+		}
+		msgs := appendThreadMessages(nil, thread, items)
+		if len(msgs) != 2 {
+			t.Fatalf("expected one tool_use/tool_result pair, got %+v", msgs)
+		}
+		id, _ := msgs[1]["toolUseId"].(string)
+		text, _ := msgs[1]["content"].(string)
+		return itemRunSettled(items, thread), id, text
+	}
+
+	settled, _, content := callWire()
+	if !settled || !strings.Contains(content, runCancelledNote) {
+		t.Fatalf("a stopped call must report the stop: settled=%v content=%q", settled, content)
+	}
+
+	// A human types into the child. The work is under way again, so the call
+	// waits on it rather than standing on the answer it already gave.
+	w.thread.itemID = threadID
+	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	appendItem(ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "keep going"})
+
+	settled, _, content = callWire()
+	if settled {
+		t.Error("the call reads as answered while the thread is working — its parent would run on stale news")
+	}
+	if content != pendingToolResultPlaceholder {
+		t.Errorf("tool_result = %q, want the pending placeholder while the run is in flight", content)
+	}
+
+	// And when that run rests, its reply is what the call returns.
+	w.thread.itemID = threadID
+	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	appendItem(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "It is in the token refresh."})
+	w.settleThreadRun(threadID, false)
+
+	settled, toolUseID, content := callWire()
+	if !settled {
+		t.Error("the resumed run settled but the call still reads as waiting")
+	}
+	if toolUseID != "tu-1" {
+		t.Errorf("tool_result answers %q, want tu-1 — the call the parent committed to its history", toolUseID)
+	}
+	if !strings.Contains(content, "It is in the token refresh.") {
+		t.Errorf("tool_result = %q, want the resumed run's reply", content)
+	}
+	if strings.Contains(content, runCancelledNote) {
+		t.Errorf("tool_result still reports the stop the thread has moved past: %q", content)
+	}
+}
+
+// TestEarlierItemKeepsItsOwnResult is the other half of the rule, and the one
+// that keeps the wire stable: only the LAST item referring to a session tracks
+// it. A session called twice has two items, and the first is a receipt for the
+// first call — a resume that rewrote it would slide every message after it and
+// throw away the parent's prompt cache on work the parent did not even ask for.
+func TestEarlierItemKeepsItsOwnResult(t *testing.T) {
+	run1 := invocation("call_1", "Explore", `{"prompt":"where is auth?"}`, "auth lives in auth.go")
+	run1.RunStatus = runStatusRest
+	run2 := invocation("call_2", "Explore", `{"prompt":"who calls it?"}`, "the server does")
+	run2.RunStatus = runStatusRest
+
+	canonical := withSelector(threadWithRuns("map the auth flow", run1, run2),
+		"call_1", "Explore", `{"prompt":"where is auth?"}`)
+	alias := aliasOf(canonical, "call_2", "Explore", `{"prompt":"who calls it?"}`)
+
+	before, err := json.Marshal(appendThreadMessages(nil, canonical, []ConversationItem{canonical, alias}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// A human resumes the session: a third run, started by no call at all.
+	resumed := ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "keep going",
+		RunStatus: runStatusRest, RunResult: "and the tests are in auth_test.go"}
+	canonical = withSelector(threadWithRuns("map the auth flow", run1, run2, resumed),
+		"call_1", "Explore", `{"prompt":"where is auth?"}`)
+	alias = aliasOf(canonical, "call_2", "Explore", `{"prompt":"who calls it?"}`)
+	siblings := []ConversationItem{canonical, alias}
+
+	after, err := json.Marshal(appendThreadMessages(nil, canonical, siblings))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("the first call's pair moved:\nbefore %s\nafter  %s", before, after)
+	}
+
+	// The trailing item is the one that tracks the session.
+	got := appendThreadMessages(nil, alias, siblings)
+	if len(got) != 2 {
+		t.Fatalf("expected one pair for the alias, got %+v", got)
+	}
+	if c, _ := got[1]["content"].(string); !strings.Contains(c, "and the tests are in auth_test.go") {
+		t.Errorf("the trailing item must carry the session's current run, got %q", c)
+	}
+}
+
+// TestTrailingViewKeepsItsOwnCallIdentity pins what the live view borrows and
+// what it does not. The outcome comes from the run the transcript is on; the
+// tool-use id, the goal and the call number stay the item's own, because it is
+// still the parent's view of the call it made — an id that moved would leave the
+// model an answer to a question it never asked.
+func TestTrailingViewKeepsItsOwnCallIdentity(t *testing.T) {
+	run1 := invocation("call_1", "create_thread", `{"prompt":"where is auth?"}`, "auth lives in auth.go")
+	run1.RunStatus = runStatusRest
+	run2 := invocation("call_2", "create_thread", `{"prompt":"who calls it?"}`, "the server does")
+	run2.RunStatus = runStatusRest
+	resumed := ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "keep going",
+		RunStatus: runStatusRest, RunResult: "the router does, in serve.go"}
+
+	canonical := withSelector(threadWithRuns("map the auth flow", run1, run2, resumed),
+		"call_1", "create_thread", `{"prompt":"where is auth?"}`)
+	canonical.SessionName = "hunt"
+	alias := aliasOf(canonical, "call_2", "create_thread", `{"prompt":"who calls it?"}`)
+
+	got := appendThreadMessages(nil, alias, []ConversationItem{canonical, alias})
+	if len(got) != 2 {
+		t.Fatalf("expected one pair, got %+v", got)
+	}
+	if got[0]["toolUseId"] != "call_2" || got[1]["toolUseId"] != "call_2" {
+		t.Fatalf("the pair must close the call the item stands for, got %v", got)
+	}
+	content, _ := got[1]["content"].(string)
+	if !strings.HasPrefix(content, sessionPreamble("hunt", 2, runStatusRest)) {
+		t.Errorf("the preamble must still describe call 2, got %q", content)
+	}
+	if !strings.Contains(content, "the router does, in serve.go") {
+		t.Errorf("tool_result = %q, want the session's current run", content)
+	}
+}
+
+// TestTrailingViewWithNoRecordedRun covers a call whose run is recorded nowhere:
+// a creation that appended no invocation message (settleThreadRun's orphan run).
+// The call still has to be answered, and the thread's own last outcome is a
+// better answer than an error about a thread that is standing right there.
+func TestTrailingViewWithNoRecordedRun(t *testing.T) {
+	run1 := invocation("call_1", "Explore", `{"prompt":"where is auth?"}`, "auth lives in auth.go")
+	run1.RunStatus = runStatusRest
+	item := withSelector(threadWithRuns("map the auth flow", run1),
+		"call_2", "Explore", `{"prompt":"who calls it?"}`)
+	siblings := []ConversationItem{item}
+
+	if !itemRunSettled(siblings, item) {
+		t.Error("a call standing on a settled transcript reads as waiting — its parent would park forever")
+	}
+	got := appendThreadMessages(nil, item, siblings)
+	if len(got) != 2 || got[0]["toolUseId"] != "call_2" || got[1]["toolUseId"] != "call_2" {
+		t.Fatalf("the pair must close the call the item stands for, got %v", got)
+	}
+	if got[1]["isError"] == true {
+		t.Errorf("a thread that is still in the conversation must not be answered as gone: %v", got[1])
+	}
+	if c, _ := got[1]["content"].(string); !strings.Contains(c, "auth lives in auth.go") {
+		t.Errorf("tool_result = %q, want the thread's own last outcome", c)
+	}
+}

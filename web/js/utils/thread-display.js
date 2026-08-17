@@ -12,8 +12,9 @@ import { canonicalThread, itemGoal, itemRunRecord } from '../model/thread-alias.
  * What a thread tile shows: the result of the ONE run that item stands for.
  *
  * A thread called more than once has one parent item per call (see
- * model/thread-alias.js), and each shows its own run's result, frozen when that
- * run settled — so a later call can never rewrite what an earlier tile says.
+ * model/thread-alias.js), and each shows a single run's result: its own, frozen
+ * when that run settled, so a later call can never rewrite what an earlier tile
+ * says — or, for the last of them, whatever the session is doing now.
  * An item with no run selector falls back to the thread's `result`, its current
  * summary: a user-created thread, a fold, and every document written before
  * aliases record completion only there.
@@ -103,10 +104,16 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
     return { kind: 'paused', goal, message: 'Waiting for approval', spinner: false };
   }
 
-  // An item stamped with a run selector answers for THAT run alone. Once it has
+  // An item stamped with a run selector answers for ONE run. Once that run has
   // settled the tile is frozen: what a later call into the same thread does is
   // another item's business, and a historic tile that started spinning again
   // would be reporting work its own call never asked for.
+  //
+  // The tile at the end of the session is the one exception, and reads the run
+  // the transcript is on rather than the one its call started (itemRunRecord).
+  // Nothing stands behind it, so a child picked back up by hand spins here and
+  // reports its answer here — which is the tile the person resuming is looking
+  // at.
   const record = itemRunRecord(threadYMap, siblingArray);
   if (record?.status) {
     return record.result

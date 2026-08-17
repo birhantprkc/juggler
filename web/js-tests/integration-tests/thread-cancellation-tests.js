@@ -15,6 +15,8 @@
  */
 
 import { textResponse, toolUseResponse } from '../utilities/integration-test-runner.js';
+import { itemRunRecord } from '../../js/model/thread-alias.js';
+import { getThreadStatus } from '../../js/utils/thread-display.js';
 
 /**
  * Assert a thread's open run was settled as cancelled — the signal a parked
@@ -542,6 +544,87 @@ export const threadTileStopButtonTest = {
   }
 };
 
+// ============================================================================
+// TEST 8: Resuming a thread whose run was cancelled reports to its caller
+// ============================================================================
+
+/**
+ * Root creates a thread → the thread is stopped from the root vantage, which
+ * SETTLES its run as cancelled → the user picks it back up by typing into it →
+ * the thread finishes → the call that started it reports that answer, and the
+ * parent resumes on it.
+ *
+ * The run the resume starts is one no call named: it is recorded on a plain user
+ * message with no tool-use coordinates, so nothing in the parent stands for it
+ * except the item still waiting on the thread. Left to the cancelled record, the
+ * tile shows "[The run was cancelled before it finished.]" for good and the
+ * parent is answered with it while the thread sits there holding the real reply.
+ *
+ * The sibling case is thread-auto-resume-parent, where the stop came from inside
+ * the thread and left the run OPEN — there the resume is absorbed into the run
+ * that was already going.
+ *
+ * Mock responses:
+ *   1. Root: create_thread
+ *   2. Thread: bash tool call (will be cancelled)
+ *   3. Thread (resumed by hand): text "Task done"
+ *   4. Root (auto-resumed): text "All finished."
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const resumeAfterCancelReportsToCallerTest = {
+  name: 'thread-resume-after-cancel-parent',
+  description: 'Resuming a thread whose run settled as cancelled reports the new answer to the call that made it',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Run it' }),
+    toolUseResponse('call_2', 'bash',
+      { command: 'env echo "started"; sleep 10' },
+      'Running.'
+    ),
+    textResponse('Task done'),
+    textResponse('All finished.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Begin' },
+    { type: 'wait-for-thread-approval', toolUseId: 'call_2' },
+    { type: 'start-capture-progress', toolUseId: 'call_2' },
+    { type: 'approve-thread-tool-no-wait', toolUseId: 'call_2' },
+    { type: 'wait-for-progress', toolUseId: 'call_2', minEvents: 1 },
+    // Stopped from the root vantage: unlike an interrupt from inside the
+    // thread, this settles the run as cancelled.
+    { type: 'cancel-from-root' },
+    // The user picks it back up.
+    { type: 'send-thread-message', message: 'Keep going' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Begin' },
+      { type: 'thread', itemId: '$ITEM_3', result: 'Task done' },
+      { type: 'assistant', content: 'All finished.' }
+    ]
+  },
+
+  customAssertions: (conversation) => {
+    const items = conversation.rootMessageThread.items;
+    const thread = items.find((/** @type {any} */ it) => it.get?.('type') === 'thread');
+    if (!thread) throw new Error('thread-resume-after-cancel-parent: thread item missing');
+    const record = itemRunRecord(thread, items);
+    if (record?.result !== 'Task done') {
+      throw new Error(
+        'thread-resume-after-cancel-parent: the call that started the thread reports ' +
+				`${JSON.stringify(record)}, want the resumed run's reply`
+      );
+    }
+    if (getThreadStatus(thread, null, items).showSummary !== true) {
+      throw new Error('thread-resume-after-cancel-parent: the tile does not show the thread\'s answer');
+    }
+  }
+};
+
 // Export all tests
 export const tests = [
   cancelDuringThreadTest,
@@ -551,5 +634,6 @@ export const tests = [
   cancelFromRootSettlesThreadTest,
   denyInThreadNoAutoResumeTest,
   cancelThreadSettlesRunTest,
-  threadTileStopButtonTest
+  threadTileStopButtonTest,
+  resumeAfterCancelReportsToCallerTest
 ];

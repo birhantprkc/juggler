@@ -1541,6 +1541,14 @@ export const threadSessionAliasTilesTest = {
     if (!colText.includes('Where is auth?') || !colText.includes('Who calls it?')) {
       throw new Error(`thread-session-alias-tiles: the column must show the whole transcript; got "${colText.slice(0, 300)}"`);
     }
+
+    // Both runs have settled, so nothing in the root is working. An alias owns
+    // no transcript and no summary, so a busy check that asked the THREAD
+    // question of it would read it as a child that never finishes — and the
+    // root column would stop offering Continue from the first resume onwards.
+    if (conversation.rootMessageThread.hasBusyItems()) {
+      throw new Error('thread-session-alias-tiles: the root reads as busy with both runs settled — an alias is being taken for a working thread');
+    }
   }
 };
 

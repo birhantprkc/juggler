@@ -11,7 +11,7 @@
  */
 import * as Y from '../vendor/yjs.mjs';
 import { plainToYMap, convertToYType } from './item-accessor.js';
-import { threadRunSettled } from './run-records.js';
+import { itemRunSettled } from './thread-alias.js';
 import {
   createToolActionMessage,
   createErrorMessage,
@@ -397,7 +397,10 @@ export default class MessageThread {
    * @returns {boolean} True if any items are busy
    */
   hasBusyItems() {
-    for (const m of this.items) {
+    // Read once: the getter rebuilds and re-filters the array, and an alias
+    // resolves against the siblings it stands among.
+    const items = this.items;
+    for (const m of items) {
       // Tool-action: APPROVED (ready to claim) or RUNNING (claimed,
       // executing) means work is in flight.
       if (isToolActionMessage(/** @type {Message} */ (m))) {
@@ -408,8 +411,11 @@ export default class MessageThread {
       }
       // Thread: a run that has not settled is a sub-thread still working.
       // Asked of the run, not of `result` — a summary outlives the run that
-      // wrote it, so a thread carrying one may well be running again.
-      if (isThreadMessage(/** @type {Message} */ (m)) && !threadRunSettled(m)) {
+      // wrote it, so a thread carrying one may well be running again. Asked of
+      // the ITEM, so an alias answers for the call it stands for: it owns no
+      // transcript and no summary of its own, and the thread question would read
+      // it as working for as long as it sits here.
+      if (isThreadMessage(/** @type {Message} */ (m)) && !itemRunSettled(m, items)) {
         return true;
       }
     }

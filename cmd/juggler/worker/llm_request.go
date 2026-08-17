@@ -503,6 +503,12 @@ func callGoal(input json.RawMessage, fallback string) string {
 // and reads the record there; one whose canonical is gone gets a paired error,
 // because a dangling tool_use is wire-invalid.
 //
+// The one pair that may still change is the LAST, which tracks the session
+// rather than a single run of it (itemThreadRun): a child resumed by hand
+// answers the call still waiting on it. Confining that to the last pair is the
+// whole of the stability argument — every pair above it is settled for good, so
+// the committed prefix and the warm prompt cache survive a resume either way.
+//
 // A thread with no selector emits one pair per RUN, in order, sourced from its
 // run records whether they are still on its invocation messages or carried by a
 // fold that swallowed one (threadRunRecords). That is every thread created
@@ -581,10 +587,12 @@ type threadRun struct {
 // buildRunToolResultMap renders the tool_result for ONE run of a thread, paired
 // with the tool_use buildToolUseMap emits from the same run.
 //
-// The result is the run's OWN stored outcome. A run still in flight has none
-// and gets the pending placeholder — the thread's summary belongs to whichever
-// run last came to rest, so borrowing it here would answer this call with the
-// previous one's reply.
+// The result is the stored outcome of the run this item stands for — its own,
+// or, for the item that tracks the session, the run the transcript is on
+// (itemThreadRun). A run still in flight has none and gets the pending
+// placeholder, which is what parks the caller until there is a real answer; the
+// thread's summary belongs to whichever run last came to rest, so borrowing it
+// here would answer this call with the previous one's reply.
 //
 // A session-backed thread opens with its preamble instead of the thread
 // header: the handle is what the caller needs to follow up, and "[Completed
