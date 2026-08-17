@@ -32,12 +32,12 @@ import {
   hasUnsettledToolInTree,
   runningToolsInTree,
 } from '../model/thread-navigation.js';
+import { itemGoal } from '../model/thread-alias.js';
 import { appendDeleteControls } from '../utils/panel-delete-controls.js';
 import { findNeighborItemId } from '../services/context-item-utilities.js';
 import {
   MESSAGE_TAGS,
   ensureFooterExists,
-  ensureResultSpec,
   ensureThreadResult,
   removeAllElements,
   buildElementMap,
@@ -628,13 +628,14 @@ class ConversationArea extends HTMLElement {
    */
   showThreadHeader(goal, threadYMap, parentMessageThread) {
     this._parentMessageThread = parentMessageThread || null;
+    const displayGoal = itemGoal(threadYMap) || goal;
 
     const header = this.querySelector('.thread-column-header');
     if (!header) return;
 
     header.classList.remove('hidden');
     const goalEl = header.querySelector('.thread-column-goal');
-    if (goalEl) goalEl.textContent = goal;
+    if (goalEl) goalEl.textContent = displayGoal;
 
     // Circular icon + "Thread" lozenge from the one shared badge resolver and
     // component — the identical .message-icon-badge the conversation tile and
@@ -2104,7 +2105,6 @@ class ConversationArea extends HTMLElement {
     if (!content) return;
 
     const footer = ensureFooterExists(this, content);
-    ensureResultSpec(this, content);
 
     if (!items || items.length === 0) {
       this._memberToGroup = new Map();

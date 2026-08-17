@@ -490,6 +490,13 @@ func callGoal(input json.RawMessage, fallback string) string {
 	return fallback
 }
 
+func resolvedRunGoal(call ConversationItem, fallback string) string {
+	if call.Goal != "" {
+		return call.Goal
+	}
+	return callGoal(call.ToolInput, fallback)
+}
+
 // appendThreadMessages emits messages for a thread item, resolving aliases
 // against the array the item stands in.
 //
@@ -611,7 +618,7 @@ func buildRunToolResultMap(thread ConversationItem, run threadRun, call int) map
 			"isError":   true,
 		}
 	}
-	content := fmt.Sprintf("[Completed Thread: %s]\n%s", callGoal(run.call.ToolInput, thread.Goal), run.result)
+	content := fmt.Sprintf("[Completed Thread: %s]\n%s", resolvedRunGoal(run.call, thread.Goal), run.result)
 	if thread.SessionName != "" {
 		content = sessionPreamble(thread.SessionName, call, run.status) + "\n\n" + run.result
 	}
@@ -638,12 +645,12 @@ func threadRunRecords(item ConversationItem) []threadRun {
 		return nil
 	}
 	var runs []threadRun
-	appendRun := func(toolUseID, toolName string, toolInput json.RawMessage, status, result string) []threadRun {
+	appendRun := func(toolUseID, toolName string, toolInput json.RawMessage, goal, status, result string) []threadRun {
 		if toolUseID == "" || toolName == "" || len(toolInput) == 0 {
 			return runs
 		}
 		return append(runs, threadRun{
-			call:   ConversationItem{ToolUseID: toolUseID, ToolName: toolName, ToolInput: toolInput},
+			call:   ConversationItem{ToolUseID: toolUseID, ToolName: toolName, ToolInput: toolInput, Goal: goal},
 			result: result,
 			status: status,
 		})
@@ -652,7 +659,7 @@ func threadRunRecords(item ConversationItem) []threadRun {
 		if it.Type == ItemTypeThread {
 			if it.BoundedCompaction {
 				for _, folded := range it.FoldedRuns {
-					runs = appendRun(folded.ToolUseID, folded.ToolName, folded.ToolInput, folded.Status, folded.Result)
+					runs = appendRun(folded.ToolUseID, folded.ToolName, folded.ToolInput, folded.Goal, folded.Status, folded.Result)
 				}
 			}
 			// A child thread standing in this transcript carries the same
@@ -660,7 +667,7 @@ func threadRunRecords(item ConversationItem) []threadRun {
 			// a call made out of this thread, not into it.
 			continue
 		}
-		runs = appendRun(it.RunToolUseID, it.RunToolName, it.RunToolInput, it.RunStatus, it.RunResult)
+		runs = appendRun(it.RunToolUseID, it.RunToolName, it.RunToolInput, it.RunGoal, it.RunStatus, it.RunResult)
 	}
 	return runs
 }

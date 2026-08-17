@@ -246,6 +246,7 @@ func invocationMessage(opts CreateThreadOptions) ConversationItem {
 		RunToolUseID: opts.ToolUseID,
 		RunToolName:  opts.ToolName,
 		RunToolInput: opts.ToolInput,
+		RunGoal:      opts.RunGoal,
 	}
 }
 
@@ -260,9 +261,8 @@ func invocationMessage(opts CreateThreadOptions) ConversationItem {
 // earlier pair, and the prompt cache warmed on them, untouched.
 //
 // goal and sessionName are frozen display copies for the tile alone; the thread
-// they describe is the truth, and nothing reads them back as such. The goal a
-// surface actually shows for this item comes from the run selector's ToolInput,
-// which is this call's own — the thread's goal moves with the latest call.
+// they describe is the truth. RunGoal is the per-call label surfaces show; it is
+// resolved from the spec rather than inferred from the tool's detailed input.
 func aliasItem(canonicalItemID, goal, sessionName string, opts CreateThreadOptions) ConversationItem {
 	return ConversationItem{
 		Type:         ItemTypeThread,
@@ -274,6 +274,7 @@ func aliasItem(canonicalItemID, goal, sessionName string, opts CreateThreadOptio
 		RunToolUseID: opts.ToolUseID,
 		RunToolName:  opts.ToolName,
 		RunToolInput: opts.ToolInput,
+		RunGoal:      opts.RunGoal,
 	}
 }
 
@@ -291,8 +292,7 @@ func aliasItem(canonicalItemID, goal, sessionName string, opts CreateThreadOptio
 // resultSpec: it is thread-level, so the header states the latest contract while
 // an earlier alias still shows a result shaped by an older one. That is the
 // header describing the session as it stands, which is what a header is for —
-// and it is why no tile reads it: each item names the goal its own call gave,
-// off its run selector's input (callGoal, and itemGoal in model/thread-alias.js).
+// while each item keeps its own short label in RunGoal.
 func (w *ConversationWorker) resumeSession(threadItemID string, opts CreateThreadOptions) error {
 	nested := w.doc.GetThreadItemsArray(threadItemID)
 	if nested == nil {

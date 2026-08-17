@@ -119,6 +119,7 @@ func foldedRunsIn(items []ConversationItem) []FoldedRun {
 			ToolUseID: it.RunToolUseID,
 			ToolName:  it.RunToolName,
 			ToolInput: it.RunToolInput,
+			Goal:      it.RunGoal,
 			Status:    it.RunStatus,
 			Result:    it.RunResult,
 		})
@@ -237,6 +238,7 @@ func itemRunCall(item ConversationItem) ConversationItem {
 		ToolUseID: item.RunToolUseID,
 		ToolName:  item.RunToolName,
 		ToolInput: item.RunToolInput,
+		Goal:      item.RunGoal,
 	}
 }
 

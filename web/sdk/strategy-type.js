@@ -368,7 +368,7 @@ class StrategyType {
   /**
    * Create a sub-thread that runs autonomously on the worker.
    * The thread appears in the conversation UI. Blocks until thread completes.
-   * @param {{goal: string, prompt: string, parentThreadItemId?: string|null, isContinuation?: boolean}} options
+   * @param {{goal: string, prompt: string, parentThreadItemId?: string|null, isContinuation?: boolean}} options - `goal` is a short UI label; `prompt` is the complete task.
    * @returns {Promise<{threadItemId: string, result: string}>} Thread result with item ID
    * @throws {AbortError} If cancelled
    */

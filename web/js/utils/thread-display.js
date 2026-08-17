@@ -191,14 +191,17 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
  * so the in-conversation tile and the panel stay visually identical.
  * @param {HTMLElement} el - Element to populate.
  * @param {string} text - Summary text (only used when status.showSummary).
- * @param {{status?: ThreadStatus}} [opts]
+ * @param {{status?: ThreadStatus, showGoalWithSummary?: boolean}} [opts]
  */
 export function paintThreadSummary(el, text, opts) {
   const status = opts?.status;
   const showSummary = status ? !!status.showSummary : !!text;
   if (showSummary) {
     el.className = 'thread-summary';
-    el.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
+    const goalLine = opts?.showGoalWithSummary && status?.goal
+      ? `<div class="thread-status-goal">${renderMarkdownWrapped(stripLLMTags(status.goal), { escapeXml: true })}</div>`
+      : '';
+    el.innerHTML = `${goalLine}${renderAssistantContentWrapped(stripLLMTags(text))}`;
     decorateCodeBlocks(el);
     return;
   }

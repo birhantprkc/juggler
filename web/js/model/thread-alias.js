@@ -136,7 +136,9 @@ export function canonicalThread(itemYMap, siblingArray) {
 }
 
 /**
- * The `goal` a call's recorded tool input named, from a Y.Map or a plain object.
+ * The legacy `goal` a call recorded directly in its tool input. New documents
+ * carry the resolved SubthreadSpec goal separately as `runGoal`, because a
+ * delegating extension's detailed task field need not be named `goal`.
  * @param {any} input - A run's `runToolInput`.
  * @returns {string} The goal, or '' when the call named none.
  */
@@ -164,7 +166,7 @@ export function threadRunRecords(threadYMap) {
     if (!toolUseId || !read('runToolName') || input === null || input === undefined) return;
     runs.push({
       toolUseId,
-      goal: goalOfToolInput(input),
+      goal: read('runGoal') || goalOfToolInput(input),
       status: read('runStatus') || '',
       result: read('runResult') || ''
     });
@@ -191,10 +193,9 @@ export function threadRunRecords(threadYMap) {
  *
  * A thread's `goal` field is the session's header — it moves with the latest
  * call, so it describes the session as it stands rather than the call any one
- * tile was made by. Each call's own goal is already on the item that stands for
- * it, inside the run selector's tool input, stamped when the call was made and
- * never rewritten. Reading it from there is what lets five calls into one
- * session read as five intentions down the parent transcript.
+ * tile was made by. Each call's resolved short label is on its item as
+ * `runGoal`, stamped when the call was made and never rewritten. Older
+ * create_thread records fall back to `runToolInput.goal`.
  *
  * Falls back to the item's `goal` field, then to the canonical's: a
  * user-created thread, a fold, and every document written before run selectors
@@ -205,6 +206,8 @@ export function threadRunRecords(threadYMap) {
  */
 export function itemGoal(itemYMap, siblingArray) {
   if (itemYMap?.get?.('runToolUseId')) {
+    const runGoal = itemYMap.get('runGoal');
+    if (typeof runGoal === 'string' && runGoal) return runGoal;
     const goal = goalOfToolInput(itemYMap.get('runToolInput'));
     if (goal) return goal;
   }

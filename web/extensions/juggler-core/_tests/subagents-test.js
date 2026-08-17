@@ -101,18 +101,29 @@ export async function runTests(_ctx) {
       const defs = Item.getToolDefinitions();
       assert(defs.length === 1 && defs[0].name === toolName,
         `expected one tool named ${toolName}`);
+      assert(defs[0].input_schema.required.includes('goal'),
+        `${toolName} must require a short user-facing goal separate from "${arg}"`);
       assert(defs[0].input_schema.required.includes(arg),
         `${toolName} must require "${arg}" — the child sees nothing of the caller's conversation`);
+      assert('session' in defs[0].input_schema.properties,
+        `${toolName} must expose its returned session handle for follow-up calls`);
       assert(!('resultSpec' in defs[0].input_schema.properties),
         `${toolName} must not expose resultSpec: the pre-shaped return contract is what it adds over create_thread`);
     });
 
     await run(`${label}: pins its own strategy on the delegated child`, async () => {
       const item = makeItem(Item);
-      const spec = await item.buildSubthreadSpec({ [arg]: 'where is auth handled?' });
+      const spec = await item.buildSubthreadSpec({
+        goal: 'Trace auth flow',
+        [arg]: 'where is auth handled?',
+        session: 'auth-hunt'
+      });
+      assert(spec && spec.goal === 'Trace auth flow',
+        'the short user-facing goal must stay separate from the detailed task');
       assert(spec && spec.prompt.includes('where is auth handled?'),
         'the spec must carry the caller-supplied task verbatim');
       assert(spec.resultSpec, 'a sub-agent synthesises its own resultSpec');
+      assert(spec.sessionName === 'auth-hunt', 'the public session argument must pass through');
       assert(spec.strategyId === strategyId,
         `spec.strategyId = ${spec.strategyId}, want ${strategyId}`);
     });
@@ -123,7 +134,7 @@ export async function runTests(_ctx) {
       const saved = strategyRegistry.items.get(strategyId);
       strategyRegistry.items.delete(strategyId);
       try {
-        const spec = await makeItem(Item).buildSubthreadSpec({ [arg]: 'anything' });
+        const spec = await makeItem(Item).buildSubthreadSpec({ goal: 'Anything', [arg]: 'anything' });
         assert(spec && !spec.strategyId,
           'with the strategy gone the spec must omit strategyId, not name a missing one');
       } finally {

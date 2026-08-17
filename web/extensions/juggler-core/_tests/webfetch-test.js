@@ -170,12 +170,20 @@ async function testBuildSubthreadSpecWithPrompt(session, conversation) {
   );
 
   try {
-    const spec = await action.buildSubthreadSpec({ url: 'https://example.com', prompt: 'what is the title?' });
+    const spec = await action.buildSubthreadSpec({
+      url: 'https://example.com',
+      goal: 'Find page title',
+      prompt: 'what is the title?',
+      session: 'example-page'
+    });
     if (!spec) {
       throw new Error('Expected a spec when a prompt is present, got null');
     }
-    if (!spec.goal || !spec.goal.includes('https://example.com')) {
-      throw new Error(`spec.goal should reference the URL, got ${spec.goal}`);
+    if (spec.goal !== 'Find page title') {
+      throw new Error(`spec.goal should be the short caller-supplied label, got ${spec.goal}`);
+    }
+    if (spec.sessionName !== 'example-page') {
+      throw new Error(`spec.sessionName should pass through the public session handle, got ${spec.sessionName}`);
     }
     if (!spec.prompt || !spec.prompt.includes('what is the title?')) {
       throw new Error(`spec.prompt should carry the extraction prompt, got ${spec.prompt}`);

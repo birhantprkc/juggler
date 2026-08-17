@@ -9,7 +9,9 @@ import { webFetch } from 'juggler/ops';
 /**
  * @typedef {object} WebFetchParams
  * @property {string} url - The URL to fetch content from
+ * @property {string} [goal] - Short user-facing label for extract mode
  * @property {string} [prompt] - What to extract from the page (optional; when set, the call delegates to a sub-agent)
+ * @property {string} [session] - Existing WebFetch extraction session to continue
  */
 
 /**
@@ -67,9 +69,17 @@ class WebFetchContextItem extends ContextItem {
           format: 'uri',
           description: 'The URL to fetch content from'
         },
+        goal: {
+          type: 'string',
+          description: 'Very short, single-line, user-facing label for EXTRACT mode, shown on the item card and thread header. Aim for a few words (for example, "Find release date"). Ignored in RAW mode.'
+        },
         prompt: {
           type: 'string',
           description: 'Leave UNSET to read the page/file — the raw content comes straight back to you (no sub-agent). Set this ONLY to ask a question about a large, noisy page you do NOT want in your context: a sub-agent reads the page and returns just its (lossy) answer, and you never see the page itself. To read, quote, or work with a file such as an .md, .txt, JSON, or source file, do NOT set this — a prompt here would summarise it instead of returning it.'
+        },
+        session: {
+          type: 'string',
+          description: 'Optional WebFetch session name returned by an earlier EXTRACT call. Set it to continue that same page-reading session; ignored in RAW mode.'
         }
       },
       required: ['url']
@@ -104,6 +114,12 @@ class WebFetchContextItem extends ContextItem {
     }
     if (typeof params.url !== 'string') {
       return { valid: false, error: 'Parameter "url" must be a string' };
+    }
+    if (params.goal !== undefined && params.goal !== null && typeof params.goal !== 'string') {
+      return { valid: false, error: 'Parameter "goal" must be a string' };
+    }
+    if (params.session !== undefined && params.session !== null && typeof params.session !== 'string') {
+      return { valid: false, error: 'Parameter "session" must be a string' };
     }
     // prompt is optional: with it, the call delegates to a sub-agent
     // (buildSubthreadSpec); without it, execute() returns raw content.
@@ -145,6 +161,7 @@ class WebFetchContextItem extends ContextItem {
    */
   async buildSubthreadSpec(toolInput) {
     const url = String(toolInput.url || '');
+    const goal = toolInput.goal ? String(toolInput.goal).trim() : '';
     const prompt = toolInput.prompt ? String(toolInput.prompt) : '';
     if (!prompt) return null;
 
@@ -163,13 +180,14 @@ class WebFetchContextItem extends ContextItem {
     if (!page || page.redirect || !page.content) return null;
 
     return {
-      goal: `Read ${url}`,
+      goal: goal || 'Read web page',
       prompt:
         'You have been given the full text of a web page below. Using ONLY that text, ' +
         'answer the request. Do NOT fetch anything — the page content is already here.\n\n' +
         `# Request\n${prompt}\n\n` +
         `# Page: ${url}\n${page.content}`,
-      resultSpec: 'the answer in markdown, quoting the page where relevant, or "not found in page" if the content does not answer the request'
+      resultSpec: 'the answer in markdown, quoting the page where relevant, or "not found in page" if the content does not answer the request',
+      sessionName: toolInput.session ? String(toolInput.session).trim() : undefined
     };
   }
 

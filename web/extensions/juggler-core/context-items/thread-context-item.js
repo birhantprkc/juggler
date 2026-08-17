@@ -43,25 +43,25 @@ class ThreadContextItem extends ContextItem {
       {
         name: 'create_thread',
         category: 'write',
-        description: 'Run a focused sub-task in an isolated sub-conversation. The thread cannot see this conversation, so its `prompt` must carry every fact it needs and state exactly what to return. The call returns when the thread comes to rest, and what comes back is its last message — so say what that message must contain. A thread outlives the call: every result opens with the thread\'s session name, and passing that name back as `session` puts your next prompt into the same thread, which still has everything it read and worked out. (A human may later open the thread and converse in it, but that is not a channel you take part in.) Give the thread one self-contained task: never a task list, and never tell it to spawn its own threads (run further tasks as separate threads yourself).',
+        description: 'Run one focused sub-task in an isolated sub-conversation. The child cannot see this conversation, so `prompt` must contain the complete task and all context it needs. Only its last message returns; use `resultSpec` to say what that message must contain and how it must be shaped. `goal` is only the short label shown in the UI. A thread outlives the call: every result opens with its session name, and passing that name back as `session` continues the same thread. Give each thread one self-contained task, never a task list, and never tell it to spawn its own threads.',
         input_schema: {
           type: 'object',
           properties: {
             goal: {
               type: 'string',
-              description: 'What this thread should accomplish'
+              description: 'Very short, single-line, user-facing label for the item card and thread header. Aim for a few words (for example, "Trace auth flow"). Do not put instructions, background, or output requirements here.'
             },
             prompt: {
               type: 'string',
-              description: 'Initial prompt/instruction for the sub-conversation. Only the thread\'s last message returns to you — its internal work is invisible — so state explicitly what that message must contain and in what form (which facts/paths/artifacts, and how to structure them).'
+              description: 'Complete, self-contained task and instructions for the child. Include every relevant fact, path, symbol, decision, and constraint because it cannot see this conversation. Put the required shape of the final answer in `resultSpec`, not here.'
             },
             resultSpec: {
               type: 'string',
-              description: 'The contract for what the thread must return: which facts, paths, or artifacts its last message must contain, and how to structure them (e.g. "each match as `file:line — description`", "the final diff and nothing else"). Surfaced at the top of the thread and appended to its instructions so the answer comes back in the shape you need.'
+              description: 'Optional return contract for the child\'s last message: what facts or artifacts it must contain and how to structure them (for example, "each match as `file:line — description`" or "the final diff and nothing else"). Do not repeat the task or background.'
             },
             session: {
               type: 'string',
-              description: 'Optional. The session name of a thread you already ran here: your prompt is appended to that thread and it carries on, keeping everything it has read and worked out — far cheaper than starting over, and the right way to ask a follow-up. A name that matches nothing starts a new thread under it. Omit it to start a fresh thread.'
+              description: 'Optional. The session name of a thread you already ran here: your prompt is appended to that thread and it carries on, keeping everything it has read and worked out. A name that matches nothing starts a new thread under it. Omit it to start a fresh thread.'
             }
           },
           required: ['goal', 'prompt']

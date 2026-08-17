@@ -118,7 +118,7 @@ func newDelegationHarnessSpecs(t *testing.T, specs []*SubthreadSpec, mocks []Moc
 // tool_use/tool_result pair, exactly like create_thread.
 func TestDelegatingToolDeliversChildResultToParent(t *testing.T) {
 	spec := &SubthreadSpec{
-		Goal:       "Read https://example.com",
+		Goal:       "Find page answer",
 		Prompt:     "Fetch https://example.com and answer: what is the answer?",
 		ResultSpec: "the answer in markdown",
 	}
@@ -164,6 +164,17 @@ func TestDelegatingToolDeliversChildResultToParent(t *testing.T) {
 	}
 	if !strings.Contains(toolResultContent, "The answer is 42.") {
 		t.Errorf("tool-result should carry what the child's run returned; got %q", toolResultContent)
+	}
+	thread := onlyThread(t, w)
+	items := threadItems(w, thread.ItemID)
+	var runGoal string
+	for _, item := range items {
+		if item.RunToolUseID == "tu-wf-1" {
+			runGoal = item.RunGoal
+		}
+	}
+	if runGoal != "Find page answer" {
+		t.Errorf("delegated run goal = %q, want the resolved short spec goal", runGoal)
 	}
 }
 

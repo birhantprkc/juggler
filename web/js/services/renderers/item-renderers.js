@@ -640,19 +640,15 @@ export function renderToolAction(host, container, toolAction) {
 /** @type {ItemRenderer} */
 export function renderThread(host, container, message) {
   const badge = badgeForItem(message, badgeCtx(host));
+  const goal = itemGoal(message);
   const wrapper = host._createSectionWithControls(
     badge.typeName,
     badge,
     host._renderMessageControls(message),
-    undefined,
+    goal || undefined,
     message.get('transactionId'),
     message.get('timestamp') || undefined
   );
-
-  // The goal this item's own call named — the panel describes the call it was
-  // opened from, like the tile does.
-  const goal = itemGoal(message);
-  if (goal) panelHelpers.addSubsection(wrapper, 'Goal', goal, 'properties-panel-text');
 
   const body = document.createElement('properties-panel-body');
   // Wrap the summary so the standard hover-reveal copy button can float over it.

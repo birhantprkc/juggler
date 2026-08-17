@@ -10,7 +10,9 @@ import strategyRegistry from '../../../js/registries/strategy-registry.js';
 
 /**
  * @typedef {object} ResearchParams
+ * @property {string} goal - Short user-facing label for the research
  * @property {string} question - The self-contained question to answer
+ * @property {string} [session] - Existing Research session to continue
  * @property {string} [thoroughness] - 'quick' | 'medium' | 'thorough'
  */
 
@@ -74,13 +76,21 @@ class ResearchAgentContextItem extends ContextItem {
         input_schema: {
           type: 'object',
           properties: {
+            goal: {
+              type: 'string',
+              description: 'Very short, single-line, user-facing label shown on the item card and thread header. Aim for a few words (for example, "Check React 20 changes"). Do not put the question or return requirements here.'
+            },
             question: {
               type: 'string',
               description: 'What to find out, stated in full — including the library, version, or platform it concerns. The sub-agent shares your project but none of your conversation.'
             },
+            session: {
+              type: 'string',
+              description: 'Optional Research session name returned by an earlier call. Set it to continue that same research with this question; omit it to start a fresh session.'
+            },
             thoroughness: thoroughnessSchema()
           },
-          required: ['question']
+          required: ['goal', 'question']
         }
       }
     ];
@@ -94,6 +104,9 @@ class ResearchAgentContextItem extends ContextItem {
    */
   async validate(toolInput) {
     const params = /** @type {ResearchParams} */ (toolInput);
+    if (typeof params.goal !== 'string' || !params.goal.trim()) {
+      return { valid: false, error: 'Missing required parameter: goal' };
+    }
     if (typeof params.question !== 'string' || !params.question.trim()) {
       return { valid: false, error: 'Missing required parameter: question' };
     }
@@ -113,16 +126,18 @@ class ResearchAgentContextItem extends ContextItem {
    */
   buildSubthreadSpec(toolInput) {
     const params = /** @type {ResearchParams} */ (toolInput);
+    const goal = String(params.goal).trim();
     const question = String(params.question).trim();
     const strategyId = ResearchSubagentStrategyType.MANIFEST.id;
 
     /** @type {import('juggler/context-item').SubthreadSpec} */
     const spec = {
-      goal: 'Research',
+      goal,
       prompt: `Research the following and answer it.\n\n# Question\n${question}\n\n${effortInstruction(params.thoroughness)}`,
       resultSpec:
-        'the answer, with a source URL for each claim, and a note of anything that differs from ' +
-        'the version installed in this project. Where you found nothing, say so explicitly rather than offering a plausible guess.'
+          'the answer, with a source URL for each claim, and a note of anything that differs from ' +
+          'the version installed in this project. Where you found nothing, say so explicitly rather than offering a plausible guess.',
+      sessionName: params.session ? String(params.session).trim() : undefined
     };
     if (strategyRegistry.has(strategyId)) spec.strategyId = strategyId;
     return spec;

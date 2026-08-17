@@ -185,6 +185,29 @@ export async function runTests() {
       `the second tile names its own call's goal; got ${itemGoal(aliases[0])}`);
     assert(getThreadStatus(canonical, null).goal === 'Find the auth code',
       'the tile status block shows that same per-call goal');
+
+    const delegatedDoc = new Y.Doc();
+    const delegatedItems = delegatedDoc.getArray('items');
+    const explore = item({
+      type: 'thread', itemId: 'E1', goal: 'Explore', runGoal: 'Map auth flow',
+      runToolUseId: 'tu-e', runToolName: 'Explore', runToolInput: { task: 'A deliberately very long self-contained investigation of every auth path' }
+    });
+    const research = item({
+      type: 'thread', itemId: 'R1', goal: 'Research', runGoal: 'Check v3 changes',
+      runToolUseId: 'tu-r', runToolName: 'Research', runToolInput: { question: 'A deliberately very long question with versions, platforms, and constraints' }
+    });
+    delegatedDoc.transact(() => { delegatedItems.push([explore, research]); });
+    assert(itemGoal(explore) === 'Map auth flow',
+      'an Explore tile uses the resolved short run goal, not its detailed task');
+    assert(itemGoal(research) === 'Check v3 changes',
+      'a Research tile uses the resolved short run goal, not its detailed question');
+    const legacyExplore = item({
+      type: 'thread', itemId: 'E0', goal: 'Explore',
+      runToolUseId: 'tu-old', runToolName: 'Explore', runToolInput: { task: 'A long legacy task' }
+    });
+    delegatedDoc.transact(() => { delegatedItems.push([legacyExplore]); });
+    assert(itemGoal(legacyExplore) === 'Explore',
+      'a legacy delegated thread falls back to its stored label, not its detailed task');
     passed++;
   } catch (e) { failed++; errors.push(`per-item goals: ${msg(e)}`); }
 

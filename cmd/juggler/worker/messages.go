@@ -795,9 +795,9 @@ type ConversationItem struct {
 
 	// Run record — carried by a user item that STARTED a run (an "invocation
 	// message"). RunToolUseID/RunToolName/RunToolInput name the parent's tool
-	// call that appended this message; RunStatus/RunResult record how the run it
-	// began settled.
-	//
+	// call, while RunGoal preserves the resolved short display label returned by
+	// buildSubthreadSpec. RunStatus/RunResult record how the run it began settled.
+
 	// On a THREAD item the same three coordinates mean something adjacent: they
 	// are that item's RUN SELECTOR — which single run of the transcript this
 	// item is the parent's view of. Same run, same identity, read from both
@@ -827,6 +827,7 @@ type ConversationItem struct {
 	RunToolUseID string          `json:"runToolUseId,omitempty"`
 	RunToolName  string          `json:"runToolName,omitempty"`
 	RunToolInput json.RawMessage `json:"runToolInput,omitempty"`
+	RunGoal      string          `json:"runGoal,omitempty"`
 	RunStatus    string          `json:"runStatus,omitempty"`
 	RunResult    string          `json:"runResult,omitempty"`
 
@@ -873,6 +874,7 @@ type FoldedRun struct {
 	ToolUseID string          `json:"runToolUseId,omitempty"`
 	ToolName  string          `json:"runToolName,omitempty"`
 	ToolInput json.RawMessage `json:"runToolInput,omitempty"`
+	Goal      string          `json:"runGoal,omitempty"`
 	Status    string          `json:"runStatus,omitempty"`
 	Result    string          `json:"runResult,omitempty"`
 }

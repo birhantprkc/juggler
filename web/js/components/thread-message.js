@@ -170,7 +170,7 @@ class ThreadMessage extends HTMLElement {
       if (!showsSummary) article.setAttribute('data-processing', 'true');
 
       const summaryDiv = document.createElement('div');
-      paintThreadSummary(summaryDiv, result, status ? { status } : undefined);
+      paintThreadSummary(summaryDiv, result, status ? { status, showGoalWithSummary: true } : undefined);
 
       // Icon + "Thread" lozenge come from the one shared badge resolver (same
       // code the properties-panel header uses), grouped with the icon via
@@ -212,7 +212,7 @@ class ThreadMessage extends HTMLElement {
     const summaryDiv = /** @type {HTMLElement|null} */ (this.querySelector('.thread-summary'));
     if (!summaryDiv) return;
     if (showsSummary) {
-      paintThreadSummary(summaryDiv, result, { status });
+      paintThreadSummary(summaryDiv, result, { status, showGoalWithSummary: true });
       applyCollapsible(summaryDiv, { key: this._item?.get?.('itemId') || '', maxChars: THREAD_SUMMARY_MAX_CHARS });
       return;
     }

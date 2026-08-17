@@ -10,7 +10,9 @@ import strategyRegistry from '../../../js/registries/strategy-registry.js';
 
 /**
  * @typedef {object} ExploreParams
+ * @property {string} goal - Short user-facing label for the investigation
  * @property {string} task - The self-contained investigation to carry out
+ * @property {string} [session] - Existing Explore session to continue
  * @property {string} [thoroughness] - 'quick' | 'medium' | 'thorough'
  */
 
@@ -75,13 +77,21 @@ class ExploreAgentContextItem extends ContextItem {
         input_schema: {
           type: 'object',
           properties: {
+            goal: {
+              type: 'string',
+              description: 'Very short, single-line, user-facing label shown on the item card and thread header. Aim for a few words (for example, "Trace auth flow"). Do not put the investigation or return requirements here.'
+            },
             task: {
               type: 'string',
               description: 'What to find out, stated in full. The sub-agent shares your project but none of your conversation, so name the files, symbols, or behaviour you mean rather than referring to what was said here.'
             },
+            session: {
+              type: 'string',
+              description: 'Optional Explore session name returned by an earlier call. Set it to continue that same investigation with this task; omit it to start a fresh session.'
+            },
             thoroughness: thoroughnessSchema()
           },
-          required: ['task']
+          required: ['goal', 'task']
         }
       }
     ];
@@ -95,6 +105,9 @@ class ExploreAgentContextItem extends ContextItem {
    */
   async validate(toolInput) {
     const params = /** @type {ExploreParams} */ (toolInput);
+    if (typeof params.goal !== 'string' || !params.goal.trim()) {
+      return { valid: false, error: 'Missing required parameter: goal' };
+    }
     if (typeof params.task !== 'string' || !params.task.trim()) {
       return { valid: false, error: 'Missing required parameter: task' };
     }
@@ -114,16 +127,18 @@ class ExploreAgentContextItem extends ContextItem {
    */
   buildSubthreadSpec(toolInput) {
     const params = /** @type {ExploreParams} */ (toolInput);
+    const goal = String(params.goal).trim();
     const task = String(params.task).trim();
     const strategyId = ExploreSubagentStrategyType.MANIFEST.id;
 
     /** @type {import('juggler/context-item').SubthreadSpec} */
     const spec = {
-      goal: 'Explore',
+      goal,
       prompt: `Investigate this codebase and answer the following.\n\n# Task\n${task}\n\n${effortInstruction(params.thoroughness)}`,
       resultSpec:
-        'the answer to the task; the evidence as a list of `file:line — what is there`; ' +
-        'and the paths worth reading next. Say what you looked for and did not find rather than guessing.'
+          'the answer to the task; the evidence as a list of `file:line — what is there`; ' +
+          'and the paths worth reading next. Say what you looked for and did not find rather than guessing.',
+      sessionName: params.session ? String(params.session).trim() : undefined
     };
     if (strategyRegistry.has(strategyId)) spec.strategyId = strategyId;
     return spec;

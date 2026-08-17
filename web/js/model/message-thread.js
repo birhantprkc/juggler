@@ -1069,7 +1069,7 @@ export default class MessageThread {
    * under a different strategy (e.g. read-only) or model than this thread —
    * used by user-defined subthread commands.
    * @plugin-api
-   * @param {{goal: string, prompt: string, isContinuation?: boolean, signal?: AbortSignal|null, strategyId?: string, modelConfig?: object|null}} options
+   * @param {{goal: string, prompt: string, isContinuation?: boolean, signal?: AbortSignal|null, strategyId?: string, modelConfig?: object|null}} options - `goal` is a short UI label; `prompt` is the complete task.
    * @returns {Promise<{threadItemId: string, result: string}>} Thread item ID and result
    * @throws {Error} If thread creation fails or is cancelled
    */

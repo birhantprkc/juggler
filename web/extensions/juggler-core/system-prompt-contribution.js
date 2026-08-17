@@ -82,11 +82,11 @@ export default function systemPromptContribution({ enabledPluginIds }) {
     toolUsage.push(
       '### Delegating sub-tasks — use create_thread\n' +
 				'Spawn a `create_thread` for a self-contained sub-task whose intermediate steps would only clutter ' +
-				'this conversation; it runs in isolation and only its final summary returns, keeping its tool calls ' +
-				'out of your context. Because it cannot see this conversation, the `prompt` must carry every fact it ' +
-				'needs (paths, names, decisions) and state exactly what to return and how to shape it. Give each ' +
-				'thread one task — never a task list, and never tell it to spawn further threads; run multiple tasks ' +
-				'as separate threads yourself, one at a time.'
+        'this conversation; it runs in isolation and only its final summary returns, keeping its tool calls ' +
+        'out of your context. Give `goal` only a very short user-facing label. Put the complete self-contained ' +
+        'task and context in `prompt`, and put the required contents and shape of the final answer in `resultSpec`. ' +
+        'Give each thread one task — never a task list, and never tell it to spawn further threads; run multiple tasks ' +
+        'as separate threads yourself, one at a time.'
     );
   }
 

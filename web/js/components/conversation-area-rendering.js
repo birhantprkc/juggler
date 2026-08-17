@@ -53,12 +53,6 @@ const FOOTER_TAG = 'CONVERSATION-FOOTER';
 // buildElementMap/removeAllElements so the diff never tears it down.
 const THREAD_RESULT_CLASS = 'thread-result-final';
 
-// The caller's return contract for a sub-thread (create_thread's `resultSpec`):
-// a managed non-item block pinned at the top of the column, just under the
-// context toggle. Stored on the thread Y.Map, so — like the toggle and the
-// terminal result block — it lives outside the message-id item-diff.
-const THREAD_RESULTSPEC_CLASS = 'thread-result-spec';
-
 // Queued-message zone: a managed non-item container rendered AFTER the footer,
 // holding bubbles for messages typed while a turn was in flight. Its bubbles are
 // nested (grandchildren of the message list) so the message-id item-diff never
@@ -70,15 +64,14 @@ const PENDING_ZONE_CLASS = 'pending-messages';
 const RESULT_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M280-200v-80h360q33 0 56.5-23.5T720-360q0-33-23.5-56.5T640-440H300l84 84-56 56-180-180 180-180 56 56-84 84h340q66 0 113 47t47 113q0 66-47 113t-113 47H280Z"/></svg>';
 
 /**
- * True for a child managed outside the item-diff: the footer, the return-contract
- * block, and the synthesized terminal thread-result block. These are not
- * conversation items and must not be removed by the message-id diff.
+ * True for a child managed outside the item-diff: the footer and synthesized
+ * terminal thread-result block. These are not conversation items and must not be
+ * removed by the message-id diff.
  * @param {Element} child
  * @returns {boolean} True if the element is a managed non-item.
  */
 function isManagedNonItem(child) {
   return child.tagName === FOOTER_TAG ||
-    child.classList.contains(THREAD_RESULTSPEC_CLASS) ||
     child.classList.contains(THREAD_RESULT_CLASS) ||
     child.classList.contains(PENDING_ZONE_CLASS);
 }
@@ -222,71 +215,6 @@ export function ensureFooterExists(area, messageList) {
     messageList.appendChild(footer);
   }
   return footer;
-}
-
-/**
- * Ensure the return-contract block reflects the open thread's `resultSpec`.
- *
- * `resultSpec` is the caller's stated contract for what the thread must return
- * (set via create_thread). It's a field on the thread Y.Map — not an item — so
- * we synthesize a read-only block from it and pin it at the top of the column,
- * mirroring how `ensureThreadResult` pins the
- * terminal result before the footer. Idempotent: updates text in place,
- * repositions, or removes when the spec is absent. Renders only inside a thread
- * column (`area._threadYMap` set); the root column has no resultSpec.
- * @param {any} area - ConversationArea instance (provides `_threadYMap`).
- * @param {HTMLElement} messageList
- */
-export function ensureResultSpec(area, messageList) {
-  const existing = /** @type {HTMLElement|null} */ (
-    messageList.querySelector(`.${THREAD_RESULTSPEC_CLASS}`));
-
-  const spec = area?._threadYMap?.get?.('resultSpec');
-  const text = (typeof spec === 'string') ? spec : '';
-
-  if (!text) {
-    if (existing) existing.remove();
-    return;
-  }
-
-  // Pin at the very top of the column.
-  const anchor = messageList.firstChild;
-
-  if (existing) {
-    if (existing.dataset.spec !== text) {
-      existing.dataset.spec = text;
-      const body = existing.querySelector('.result-spec-text');
-      if (body) body.textContent = text;
-    }
-    // Reposition only if it has drifted (insertBefore(node, node) is a no-op).
-    if (existing !== anchor) messageList.insertBefore(existing, anchor);
-    return;
-  }
-
-  const block = document.createElement('div');
-  block.className = `thread-result-spec conversation-item`;
-  block.dataset.spec = text;
-
-  const layout = document.createElement('div');
-  layout.className = 'message-with-icon color-purple';
-  const iconBox = document.createElement('div');
-  iconBox.className = 'message-icon-box color-purple';
-  iconBox.innerHTML = RESULT_ICON_SVG;
-  const contentBox = document.createElement('div');
-  contentBox.className = 'message-content-box';
-  const label = document.createElement('span');
-  label.className = 'result-spec-label';
-  label.textContent = 'Returns to parent';
-  const body = document.createElement('div');
-  body.className = 'result-spec-text';
-  body.textContent = text;
-  contentBox.appendChild(label);
-  contentBox.appendChild(body);
-  layout.appendChild(iconBox);
-  layout.appendChild(contentBox);
-  block.appendChild(layout);
-
-  messageList.insertBefore(block, anchor);
 }
 
 /**

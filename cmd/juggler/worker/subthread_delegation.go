@@ -115,6 +115,7 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 	session := w.resolveSession(toolName, spec.SessionName)
 	opts := CreateThreadOptions{
 		Goal:        spec.Goal,
+		RunGoal:     spec.Goal,
 		Prompt:      spec.Prompt,
 		ResultSpec:  spec.ResultSpec,
 		ToolUseID:   toolUseID,

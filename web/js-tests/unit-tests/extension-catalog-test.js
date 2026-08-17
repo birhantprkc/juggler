@@ -435,6 +435,24 @@ export async function runTests(_ctx) {
       'a plain assistant message has no owning capability');
   });
 
+  await run('delegated thread badges use the invoking tool name', () => {
+    const thread = (/** @type {string} */ runToolName) => ({
+      get: (/** @type {string} */ key) => ({ type: 'thread', runToolName })[key]
+    });
+
+    const explore = badgeForItem(thread('Explore'));
+    assert(explore.typeName === 'Explore' && explore.pluginId === 'explore-agent',
+      'an Explore thread is badged as Explore and attributed to that capability');
+
+    const research = badgeForItem(thread('Research'));
+    assert(research.typeName === 'Research' && research.pluginId === 'research-agent',
+      'a Research thread is badged as Research and attributed to that capability');
+
+    const regular = badgeForItem(thread('create_thread'));
+    assert(regular.typeName === 'Thread' && regular.pluginId === 'thread',
+      'create_thread keeps the Thread badge');
+  });
+
   await run('the panel header badge links to the owning capability', () => {
     const panel = /** @type {any} */ (document.createElement('properties-panel'));
     const header = panel._createHeader('Read', { color: 'blue', iconClass: 'icon-read', pluginId: 'read-file' });

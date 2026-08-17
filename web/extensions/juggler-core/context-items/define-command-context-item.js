@@ -108,7 +108,7 @@ class DefineCommandContextItem extends ContextItem {
             },
             goal: {
               type: 'string',
-              description: 'Optional sub-thread goal label (subthread run mode only)',
+              description: 'Optional very short, single-line, user-facing thread label (subthread run mode only). Keep the task in `template`.',
             },
             scope: {
               type: 'string',

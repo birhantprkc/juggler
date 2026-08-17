@@ -2891,30 +2891,6 @@ tool-group-message .thread-summary {
     font-size: 0.9rem;
 }
 
-.thread-result-spec {
-    margin-bottom: 0.5rem;
-}
-
-.thread-result-spec .message-content-box {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-}
-
-.thread-result-spec .result-spec-label {
-    font-weight: 600;
-    font-size: 0.6875rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-secondary, #8b949e);
-}
-
-.thread-result-spec .result-spec-text {
-    font-size: 0.8125rem;
-    color: var(--text-primary, #e6edf3);
-    white-space: pre-wrap;
-}
-
 thread-column-actions {
     display: flex;
     flex-wrap: wrap;

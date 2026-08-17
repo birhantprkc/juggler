@@ -36,7 +36,7 @@ argsHint: <pr-number>                           # optional — hint after you ac
 run: subthread                                  # send (default) | draft | subthread
 strategy: read-only                             # optional — subthread only
 model: claude-haiku-...                          # optional — subthread only
-goal: PR review                                 # optional — subthread thread label
+goal: PR review                                 # optional — short UI label, subthread only
 icon: icon-eye                                  # optional — a menu icon class
 ---
 Review PR $1. Check out the branch, read the diff, and
@@ -67,8 +67,8 @@ model can ask for what it needs.
   sending.
 - **`subthread`** — runs the expanded prompt in an isolated sub-thread and lands
   the result back in the conversation, keeping the main context clean. Only this
-  mode honours `strategy`, `model`, and `goal`, so you can, for example, run a
-  review under the read-only strategy without changing your current thread.
+  mode honours `strategy`, `model`, and `goal`. Keep `goal` to a few words: it is
+  shown in the thread UI, while the expanded template is the task itself.
 
 ## Scopes
 

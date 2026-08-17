@@ -309,10 +309,13 @@
 /**
  * The seed for a delegated subthread, returned by `buildSubthreadSpec`.
  * @typedef {object} SubthreadSpec
- * @property {string} goal - Child thread label / column header.
- * @property {string} prompt - The child's seed user message (task + any inlined data).
- * @property {string} [resultSpec] - Contract for what the child's last message
- *   must contain; appended to the seed and shown in the thread header.
+ * @property {string} goal - Very short, single-line, user-facing label for the
+ *   item card and thread header. Keep detailed instructions in `prompt`.
+ * @property {string} prompt - Complete self-contained task and instructions for
+ *   the child, including any inlined data it needs.
+ * @property {string} [resultSpec] - Return contract for the child's last message:
+ *   what it must contain and how it must be shaped. Appended to the prompt; do
+ *   not repeat the task or background here.
  * @property {string} [sessionName] - Handle for the child, so a later call can
  *   continue it. A name matching a session THIS tool already ran in the calling
  *   thread invokes that child again — the prompt arrives as the next message in

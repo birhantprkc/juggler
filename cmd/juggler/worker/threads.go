@@ -23,8 +23,7 @@ type CreateThreadOptions struct {
 
 	// ResultSpec, when set, is the caller's contract for what the child's last
 	// message must contain — the run's last message is what the caller
-	// receives. It is stored on the thread Y.Map (surfaced in the column
-	// header) and appended to the invocation message so the child acts on it.
+	// receives. It is appended to the invocation message so the child acts on it.
 	// Optional: an empty spec changes nothing.
 	ResultSpec string
 
@@ -41,6 +40,10 @@ type CreateThreadOptions struct {
 	ToolUseID string
 	ToolName  string
 	ToolInput json.RawMessage
+	// RunGoal is the resolved short label for this invocation. It is stored apart
+	// from ToolInput because delegating tools may call their detailed instruction
+	// field task, question, prompt, or anything else.
+	RunGoal string
 
 	// SessionName is the handle this thread answers to within the thread that
 	// called it: a later call naming it invokes THIS thread again instead of
@@ -104,6 +107,9 @@ func structuredToolInput(raw json.RawMessage) any {
 // wrappers below differ only in how they assemble CreateThreadOptions; the
 // mutation/dispatch policy lives here.
 func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, error) {
+	if opts.RunGoal == "" {
+		opts.RunGoal = opts.Goal
+	}
 	if opts.Goal == "" {
 		opts.Goal = "Thread"
 	}
@@ -215,6 +221,9 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 					// wire emits each call's pair where the call was made.
 					m.Set("runToolUseId", opts.ToolUseID)
 					m.Set("runToolName", opts.ToolName)
+					if opts.RunGoal != "" {
+						m.Set("runGoal", opts.RunGoal)
+					}
 					if input := structuredToolInput(opts.ToolInput); input != nil {
 						m.Set("runToolInput", input)
 					}
@@ -365,6 +374,7 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 	session := w.resolveSession(toolName, input.Session)
 	opts := CreateThreadOptions{
 		Goal:        input.Goal,
+		RunGoal:     input.Goal,
 		Prompt:      input.Prompt,
 		ResultSpec:  input.ResultSpec,
 		ToolUseID:   toolUseID,

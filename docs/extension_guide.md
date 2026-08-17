@@ -377,10 +377,11 @@ message comes back as the tool result. `Explore` and `Research` in
 Three parts:
 
 1. **The item delegates.** Set `delegatesToSubthread: true` in its MANIFEST and
-   return a spec from `buildSubthreadSpec(toolInput)` — the child's `goal`,
-   `prompt` (self-contained: the child sees nothing of the caller's
-   conversation), and `resultSpec` (the return contract, which the item
-   synthesises rather than exposing on its tool schema).
+   return a spec from `buildSubthreadSpec(toolInput)` — a very short,
+   single-line, user-facing `goal`; a complete self-contained `prompt` (the child
+   sees nothing of the caller's conversation); and `resultSpec`, containing only
+   the return contract. Keep these three jobs separate. If the tool exposes a
+   session argument, pass it through as `sessionName`.
 2. **The item owns a hidden strategy.** Return it from
    `static getStrategies()`; the framework registers it and forces
    `hidden: true`. Put the class in a module *beside* the item, not under the

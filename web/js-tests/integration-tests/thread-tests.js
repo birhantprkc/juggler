@@ -101,15 +101,14 @@ export const threadCreateToolTest = {
 /**
  * create_thread's optional `resultSpec` is the caller's return contract: what
  * the thread's last message must contain. It is structural, not advisory — stored on
- * the thread Y.Map at creation, appended to the thread's seed message so the
- * child acts on it, and surfaced as a read-only block at the top of the thread
- * column (under the context toggle). Omitting it is tolerated (other tests cover
- * the no-spec path); this asserts all three when it IS supplied.
+ * the thread Y.Map at creation and appended to the thread's seed message so the
+ * child acts on it. Omitting it is tolerated (other tests cover the no-spec
+ * path); this asserts both when it IS supplied.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const threadResultSpecTest = {
   name: 'thread-result-spec',
-  description: 'create_thread resultSpec is stored, appended to the seed message, and surfaced in the column',
+  description: 'create_thread resultSpec is stored and appended to the seed message',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -132,10 +131,7 @@ export const threadResultSpecTest = {
         { role: 'user', contentIncludes: 'Locate every call site' },
         { role: 'user', contentIncludes: 'Your last message is what the caller receives. It must contain: each call site as file:line - caller' }
       ]
-    },
-    // Drilling into the thread surfaces the contract block in its column.
-    { type: 'click-dom', selector: 'thread-message' },
-    { type: 'assert-dom', global: true, selector: '.thread-result-spec .result-spec-text' }
+    }
   ],
 
   customAssertions: (conversation) => {

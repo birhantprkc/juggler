@@ -327,6 +327,7 @@ func yMapToConversationItem(m *ycrdt.YMap) ConversationItem {
 		RunToolUseID:           yMapString(m, "runToolUseId"),
 		RunToolName:            yMapString(m, "runToolName"),
 		RunToolInput:           yMapRawJSON(m, "runToolInput"),
+		RunGoal:                yMapString(m, "runGoal"),
 		RunStatus:              yMapString(m, "runStatus"),
 		RunResult:              yMapString(m, "runResult"),
 

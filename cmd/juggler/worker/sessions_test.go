@@ -201,6 +201,9 @@ func TestCreateThreadSessionResumesSameThread(t *testing.T) {
 				continue
 			}
 			found = true
+			if it.RunGoal != "Find the auth code" {
+				t.Errorf("run %s goal = %q, want the resolved short label", want.toolUseID, it.RunGoal)
+			}
 			if it.RunStatus != runStatusRest {
 				t.Errorf("run %s status = %q, want rest", want.toolUseID, it.RunStatus)
 			}

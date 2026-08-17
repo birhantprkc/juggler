@@ -101,14 +101,15 @@ function isContextItemInstance(item) {
 }
 
 /**
- * Resolve the context-item ActionClass a Yjs item's `toolName` maps to, or null
- * when the item carries no tool name or none is registered. Shared by the icon
- * and type-name paths for both delegated threads and tool-action items.
+ * Resolve the context-item ActionClass a Yjs item's tool name maps to, or null
+ * when the item carries no tool name or none is registered. Thread items carry
+ * the invocation name in `runToolName`; tool actions and older thread documents
+ * use `toolName`.
  * @param {any} item - Yjs message item (tool-action or delegated thread).
  * @returns {typeof import('juggler/context-item').default|null} The class, or null.
  */
 function actionClassFor(item) {
-  const toolName = item?.get?.('toolName');
+  const toolName = item?.get?.('runToolName') || item?.get?.('toolName');
   return toolName ? (contextItemRegistry.getByToolName(toolName) ?? null) : null;
 }
 
@@ -129,11 +130,11 @@ export function iconOptionsForItem(item, ctx = {}) {
     case 'thinking': return { color: /** @type {string} */ (TYPE_COLORS.thinking), iconSvg: TYPE_ICONS.thinking };
     case 'assistant': return { color: 'slate', iconSvg: TYPE_ICONS.assistant };
     case 'thread': {
-      // A delegated thread carries its delegating tool's name (threads.go stamps
-      // `toolName` on the thread Y.Map). Badge it as that tool — the same lookup
-      // the tool-action case uses — so e.g. a WebFetch subthread shows the globe
-      // icon rather than the generic thread glyph. Undelegated threads have no
-      // toolName and keep the plain thread badge.
+      // A delegated thread carries its delegating tool's name in the run
+      // selector. Badge it as that tool — the same lookup the tool-action case
+      // uses — so e.g. an Explore subthread shows the Explore icon rather than
+      // the generic thread glyph. Undelegated threads keep the plain thread
+      // badge.
       const ActionClass = actionClassFor(item);
       if (ActionClass) return classIconOptions(ActionClass, TYPE_ICONS.action);
       return classIconOptions(contextItemRegistry.get('thread'), TYPE_ICONS.context);
@@ -236,7 +237,7 @@ export function typeNameForItem(item, ctx = {}) {
       // Delegated threads label as their delegating tool (e.g. "Web Fetch")
       // rather than the generic "Thread"; mirrors the tool-action label path but
       // uses the static type label (no per-call tool result to feed getStatusUI).
-      const toolName = item?.get?.('toolName');
+      const toolName = item?.get?.('runToolName') || item?.get?.('toolName');
       const ActionClass = actionClassFor(item);
       if (ActionClass) return pluginTypeName(null, ActionClass, [], toolName);
       return pluginTypeName(null, contextItemRegistry.get('thread'), [], 'Thread');
