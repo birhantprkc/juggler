@@ -106,9 +106,17 @@ func (c *Client) startFreshSession(ctx context.Context, req provider.MessageRequ
 			return nil, fmt.Errorf("write fresh-session tail message: %w", err)
 		}
 	} else {
-		// No prior history (or fallback): pipe whatever user-role messages
-		// the worker built. Assistant turns are still dropped here, but
-		// without history there are none to drop.
+		// No plan: pipe whatever user-role messages the worker built.
+		// formatMessagesAsStreamJSONLines drops assistant turns, so this is
+		// lossless ONLY for a true first turn. Reaching it with assistant
+		// history means every assistant turn and tool_use block is about to
+		// be discarded, leaving the surviving tool_results orphaned and the
+		// model amnesiac about its own tool calls — name it in the log rather
+		// than let a context wipe pass silently.
+		if hasAssistantHistory(req.Messages) {
+			jlog.Info("⚠ claudecode: no synthetic plan for %d messages — discarding assistant history and every tool_use block",
+				len(req.Messages))
+		}
 		lines, err := c.formatMessagesAsStreamJSONLines(req.Messages, "")
 		if err != nil {
 			return nil, fmt.Errorf("format stream-json messages: %w", err)
@@ -167,10 +175,29 @@ func (c *Client) attachControlProtocol(tools []provider.ToolDefinition) error {
 func (c *Client) runPersistentResumeTurn(ctx context.Context, req provider.MessageRequest, deltaStart, deltaEnd int, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	delta := req.Messages[deltaStart:deltaEnd]
 	deltaLines, err := c.formatMessagesAsStreamJSONLines(delta, c.activeSession.sessionUUID)
-	if err != nil || len(deltaLines) == 0 {
-		jlog.Debug("Delta empty or unserializable (err=%v, lines=%d) — falling back to fresh", err, len(deltaLines))
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+	if err != nil {
+		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("delta-unserializable: %v", err))
+	}
+	if len(deltaLines) == 0 {
+		// The delta serialised to nothing, which means it carries no user-role
+		// content: it is entirely assistant turns the CLI itself generated
+		// (a regenerate re-sends the previous reply). Those are already in the
+		// CLI's own --resume session — that is precisely why
+		// formatMessagesAsStreamJSONLines drops assistant content in the
+		// non-empty case too, so this is the same invariant applied to a delta
+		// that happens to be all assistant. Nothing is missing from the CLI's
+		// context and there is nothing to rebuild; cold-starting would
+		// re-ingest the entire conversation to say something the session
+		// already knows. Nudge the warm session to generate instead.
+		//
+		// The CLI's session file is the authority for its own output: if a
+		// turn was killed mid-stream before the CLI flushed it, that fragment
+		// is absent there and the model continues without it. Committed
+		// history is unaffected, and every route by which non-CLI assistant
+		// content could enter the delta (compaction, an in-place edit, a model
+		// change) diverges the prefix and cold-starts before reaching here.
+		jlog.Debug("Delta is assistant-only (%d msgs, already in the CLI's session) — nudging warm session", len(delta))
+		return c.runResumeNudge(ctx, req, callback)
 	}
 
 	stdinPayload := []byte(strings.Join(deltaLines, "\n") + "\n")
@@ -187,9 +214,7 @@ func (c *Client) runPersistentResumeTurn(ctx context.Context, req provider.Messa
 	// Ensure the persistent CLI is alive. ensurePersistentCLI is a no-op if it
 	// already is.
 	if err := c.ensurePersistentCLI(req); err != nil {
-		jlog.Debug("ensurePersistentCLI failed (%v) — falling back to fresh", err)
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("resume-spawn-failed: %v", err))
 	}
 
 	if err := c.writeStdinDelta(stdinPayload); err != nil {
@@ -197,13 +222,10 @@ func (c *Client) runPersistentResumeTurn(ctx context.Context, req provider.Messa
 		jlog.Debug("stdin write failed (%v) — respawning persistent CLI and retrying", err)
 		c.activeSession.tearDownLiveCLI()
 		if err := c.ensurePersistentCLI(req); err != nil {
-			c.dispatchFreshStart()
-			return c.startFreshSession(ctx, req, callback)
+			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("resume-respawn-failed: %v", err))
 		}
 		if err := c.writeStdinDelta(stdinPayload); err != nil {
-			jlog.Debug("retry stdin write also failed (%v) — fresh start", err)
-			c.dispatchFreshStart()
-			return c.startFreshSession(ctx, req, callback)
+			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("resume-stdin-failed: %v", err))
 		}
 	}
 
@@ -228,9 +250,7 @@ func (c *Client) runResumeNudge(ctx context.Context, req provider.MessageRequest
 	nudge := []provider.Message{{Type: "user", Content: continuationNudge}}
 	nudgeLines, err := c.formatMessagesAsStreamJSONLines(nudge, c.activeSession.sessionUUID)
 	if err != nil || len(nudgeLines) == 0 {
-		jlog.Debug("nudge serialise failed (err=%v) — falling back to fresh", err)
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("nudge-unserializable: %v", err))
 	}
 	payload := []byte(strings.Join(nudgeLines, "\n") + "\n")
 
@@ -242,18 +262,15 @@ func (c *Client) runResumeNudge(ctx context.Context, req provider.MessageRequest
 	}
 
 	if err := c.ensurePersistentCLI(req); err != nil {
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("nudge-spawn-failed: %v", err))
 	}
 	if err := c.writeStdinDelta(payload); err != nil {
 		c.activeSession.tearDownLiveCLI()
 		if err := c.ensurePersistentCLI(req); err != nil {
-			c.dispatchFreshStart()
-			return c.startFreshSession(ctx, req, callback)
+			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("nudge-respawn-failed: %v", err))
 		}
 		if err := c.writeStdinDelta(payload); err != nil {
-			c.dispatchFreshStart()
-			return c.startFreshSession(ctx, req, callback)
+			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("nudge-stdin-failed: %v", err))
 		}
 	}
 

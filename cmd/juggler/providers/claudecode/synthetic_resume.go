@@ -60,22 +60,30 @@ type syntheticSessionPlan struct {
 }
 
 // planSyntheticSession returns a plan when there is prior history worth
-// synthesising. Returns nil when:
-//   - the conversation has ≤1 API message (no history to preserve), or
-//   - the conversation ends on an assistant turn (no user turn to respond to —
-//     shouldn't happen in practice, but failing soft beats producing a file
-//     the CLI would resume to a stuck state).
+// synthesising. It returns nil ONLY for a genuine cold start: ≤1 API message,
+// so there is no history to preserve. Callers read nil as "first turn" and
+// spawn without --resume, which drops every assistant turn — so nil must never
+// mean "history I chose not to handle".
+//
+// The conversation normally ends on the user's turn, which becomes the stdin
+// tail. When it ends on an assistant turn instead — a regenerate re-sends the
+// previous reply, and an interrupted tool call leaves the assistant's message
+// last — the whole conversation goes into the file and stdin carries a
+// continuation nudge, because the CLI needs some user turn to generate from.
 func planSyntheticSession(messages []provider.Message, jugglerTools map[string]struct{}) *syntheticSessionPlan {
 	api := anthropic.TransformToAPIMessagesForCLI(messages)
 	if len(api) <= 1 {
 		return nil
 	}
-	tail := api[len(api)-1]
-	if tail.Role != "user" {
-		return nil
+	// Split file-vs-stdin. A trailing user turn is the tail; a trailing
+	// assistant turn stays in the file and the nudge stands in as the tail.
+	fileMessages, tail := api[:len(api)-1], api[len(api)-1].Content
+	if api[len(api)-1].Role != "user" {
+		fileMessages = api
+		tail = []anthropic.APIContentBlock{{Type: "text", Text: continuationNudge}}
 	}
-	history := reframeLeadingAssistant(api[:len(api)-1])
-	history, tailContent := moveTrailingToolResultsToHistory(history, tail.Content)
+	history := reframeLeadingAssistant(fileMessages)
+	history, tailContent := moveTrailingToolResultsToHistory(history, tail)
 	history = repairOrphanToolUses(history, tailContent)
 	history = prefixJugglerToolUses(history, jugglerTools)
 	return &syntheticSessionPlan{

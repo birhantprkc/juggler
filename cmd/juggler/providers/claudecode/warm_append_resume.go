@@ -49,9 +49,7 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 	tailStart, ok := pairedResultResumeSplit(req.Messages, deltaStart, deltaEnd)
 	if !ok {
 		// Classification and dispatch disagree — should be unreachable. Be safe.
-		jlog.Debug("warm-append: split no longer applies — falling back to fresh")
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback, "warm-append-split-lost")
 	}
 
 	// We are about to mutate the warm session file and re-resume it, so no live
@@ -62,9 +60,7 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 
 	pairedResults := req.Messages[deltaStart:tailStart]
 	if err := c.appendToolResultsToWarmSession(pairedResults); err != nil {
-		jlog.Debug("warm-append: %v — falling back to fresh synthetic resume", err)
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("warm-append-failed: %v", err))
 	}
 
 	// Build the stdin tail: the non-tool_result delta (typically the user's
@@ -79,9 +75,8 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 	}
 	lines, err := c.formatMessagesAsStreamJSONLines(stdinMsgs, c.activeSession.sessionUUID)
 	if err != nil || len(lines) == 0 {
-		jlog.Debug("warm-append: tail serialise failed (err=%v, lines=%d) — falling back to fresh", err, len(lines))
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback,
+			fmt.Sprintf("warm-append-tail-unserializable: err=%v lines=%d", err, len(lines)))
 	}
 	payload := []byte(strings.Join(lines, "\n") + "\n")
 
@@ -90,9 +85,7 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 	emitPhase(callback, phaseReconnecting)
 
 	if err := c.ensurePersistentCLI(req); err != nil {
-		jlog.Debug("warm-append: ensurePersistentCLI failed (%v) — falling back to fresh", err)
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("warm-append-spawn-failed: %v", err))
 	}
 	if err := c.writeStdinDelta(payload); err != nil {
 		// Stdin write failure ≈ process died between spawn and write. Recycle and
@@ -100,12 +93,10 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 		jlog.Debug("warm-append: stdin write failed (%v) — respawning and retrying", err)
 		c.activeSession.tearDownLiveCLI()
 		if err := c.ensurePersistentCLI(req); err != nil {
-			c.dispatchFreshStart()
-			return c.startFreshSession(ctx, req, callback)
+			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("warm-append-respawn-failed: %v", err))
 		}
 		if err := c.writeStdinDelta(payload); err != nil {
-			c.dispatchFreshStart()
-			return c.startFreshSession(ctx, req, callback)
+			return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("warm-append-stdin-failed: %v", err))
 		}
 	}
 

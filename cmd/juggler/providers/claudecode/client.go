@@ -462,10 +462,9 @@ func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, 
 	// cold start for a healthy session — only one that has actually stalled out.
 	if c.activeSession != nil && c.activeSession.sessionUUID != "" &&
 		c.consecutiveStalls >= maxConsecutiveStallsBeforeColdStart {
-		jlog.Info("⚠ claudecode: abandoning wedged --resume session uuid=%s after %d consecutive stalls — cold-starting fresh conv=%s",
-			shortID(c.activeSession.sessionUUID), c.consecutiveStalls, shortID(req.ConversationID))
-		c.dispatchFreshStart()
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback,
+			fmt.Sprintf("wedged-resume: uuid=%s stalled %d times consecutively",
+				shortID(c.activeSession.sessionUUID), c.consecutiveStalls))
 	}
 
 	dec := classifyRegime(c.activeSession, c.model, req.SystemPrompt, req.Messages, c.activeSession.hasLiveCLI())
@@ -502,23 +501,16 @@ func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, 
 		if dec.NoNewMsgs && c.activeSession != nil && c.activeSession.sessionUUID != "" {
 			return c.runResumeNudge(ctx, req, callback)
 		}
+		reason := "no prior Claude Code session"
 		if c.activeSession != nil {
-			reason := dec.Reason
+			reason = dec.Reason
 			if dec.Reason == "diverged" || dec.Reason == "shrunk" {
 				if detail := diagnoseDivergence(c.activeSession, req.SystemPrompt, req.Messages); detail != "" {
 					reason = dec.Reason + ": " + detail
 				}
 			}
-			jlog.Info("⚠ claudecode cache-miss: cold start (reason=%s) conv=%s msgs=%d",
-				reason, shortID(req.ConversationID), len(req.Messages))
-			emitCacheMissWarning(callback, req, c.activeSession, reason)
-			c.dispatchFreshStart()
-		} else {
-			jlog.Info("⚠ claudecode cache-miss: cold start (no prior session) conv=%s msgs=%d",
-				shortID(req.ConversationID), len(req.Messages))
-			emitCacheMissWarning(callback, req, nil, "no prior Claude Code session")
 		}
-		return c.startFreshSession(ctx, req, callback)
+		return c.coldStartFallback(ctx, req, callback, reason)
 	}
 	return nil, fmt.Errorf("claudecode: unknown regime %d", dec.Regime)
 }
@@ -553,6 +545,30 @@ func emitCacheMissWarning(callback provider.StructuredStreamCallback, req provid
 			"cacheMissReason": reason,
 		},
 	})
+}
+
+// coldStartFallback is the single funnel for every cold start: both the ones
+// classifyRegime chooses up front and the ones a warm path falls back to when
+// something fails mid-dispatch. Either way the entire conversation is
+// re-ingested, so either way it must announce itself — one greppable
+// "⚠ claudecode cache-miss" line, plus the UI status warning when the loss is
+// consequential enough to be worth interrupting for.
+//
+// Mid-dispatch fallbacks used to log at debug level and nothing more, which
+// made a full re-ingest effectively undetectable: the NEXT turn's cache hit
+// ratio reads ~99% (a small truncated context re-reads perfectly), so the only
+// symptom is absolute input tokens collapsing and the token spend climbing.
+// Every cold start goes through here so that can't recur silently.
+//
+// Order is load-bearing: emitCacheMissWarning reads the session's sentCount to
+// distinguish a real loss from a first turn, and dispatchFreshStart releases
+// the session — so the warning must be emitted first.
+func (c *Client) coldStartFallback(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback, reason string) (*provider.StreamResult, error) {
+	jlog.Info("⚠ claudecode cache-miss: cold start (reason=%s) conv=%s msgs=%d",
+		reason, shortID(req.ConversationID), len(req.Messages))
+	emitCacheMissWarning(callback, req, c.activeSession, reason)
+	c.dispatchFreshStart()
+	return c.startFreshSession(ctx, req, callback)
 }
 
 // dispatchFreshStart prepares for a replacement fresh session after a routine

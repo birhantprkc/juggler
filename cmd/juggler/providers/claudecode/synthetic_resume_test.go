@@ -16,6 +16,10 @@ import (
 	"juggler/internal/userpaths/userpathstest"
 )
 
+// TestPlanSyntheticSessionReturnsNil pins the ONLY meaning of a nil plan: a
+// genuine cold start, with no prior history to preserve. Every other shape
+// must produce a plan — see TestPlanSyntheticSessionNeverDropsAssistantHistory
+// for why nil is never an acceptable answer when history exists.
 func TestPlanSyntheticSessionReturnsNil(t *testing.T) {
 	cases := []struct {
 		name string
@@ -23,15 +27,132 @@ func TestPlanSyntheticSessionReturnsNil(t *testing.T) {
 	}{
 		{"empty", nil},
 		{"single user (no history to replay)", []provider.Message{{Type: "user", Content: "hi"}}},
-		{"ends on assistant (no user turn to respond to)", []provider.Message{
-			{Type: "user", Content: "q"},
-			{Type: "assistant", Content: "a"},
-		}},
 	}
 	for _, c := range cases {
 		if got := planSyntheticSession(c.msgs, nil); got != nil {
 			t.Errorf("%s: expected nil plan; got %+v", c.name, got)
 		}
+	}
+}
+
+// TestPlanSyntheticSessionNeverDropsAssistantHistory states the invariant the
+// caller depends on: nil means "nothing to preserve", NEVER "history I am
+// about to discard".
+//
+// startFreshSession reads a nil plan as a true first turn and spawns without
+// --resume, then pipes only user-role content (formatMessagesAsStreamJSONLines
+// drops assistant messages by design). So for any conversation that HAS
+// history, a nil plan silently deletes every assistant turn and every tool_use
+// block, leaving the tool_results orphaned — the model is handed a
+// conversation in which it apparently never called a tool, and truthfully
+// reports as much.
+func TestPlanSyntheticSessionNeverDropsAssistantHistory(t *testing.T) {
+	const openID = "toolu_open_call"
+	// Every case shares real history: a user turn and an assistant answer.
+	history := []provider.Message{
+		{Type: "user", Content: "the original question"},
+		{Type: "assistant", Content: "the original answer"},
+	}
+	cases := []struct {
+		name string
+		tail []provider.Message
+	}{
+		{"user tail (the ordinary continuation)", []provider.Message{
+			{Type: "user", Content: "a follow-up question"},
+		}},
+		{"assistant tail (regenerate: last turn re-sent)", []provider.Message{
+			{Type: "assistant", Content: "a regenerated answer"},
+		}},
+		{"assistant tail ending in an unanswered tool_use", []provider.Message{
+			{Type: "tool-use", ToolUseID: openID, ToolName: "bash", ToolInput: map[string]any{"command": "ls"}},
+		}},
+	}
+	for _, c := range cases {
+		msgs := append(append([]provider.Message(nil), history...), c.tail...)
+		plan := planSyntheticSession(msgs, jugglerToolNameSet([]provider.ToolDefinition{{Name: "bash"}}))
+		if plan == nil {
+			t.Errorf("%s: plan is nil, so %d messages of history get discarded; nil must mean cold start only",
+				c.name, len(msgs))
+			continue
+		}
+		// A preserved plan is worthless if the assistant turn didn't make it.
+		var sawAssistant bool
+		for _, m := range plan.historyToFile {
+			if m.Role == "assistant" {
+				sawAssistant = true
+			}
+		}
+		if !sawAssistant {
+			t.Errorf("%s: no assistant turn survived into history; roles: %v", c.name, roleSeq(plan.historyToFile))
+		}
+		// The CLI ignores a zero-content user message, so a plan with an empty
+		// tail would stall instead of generating.
+		if len(plan.tailContent) == 0 {
+			t.Errorf("%s: tailContent is empty; the CLI needs a user turn to respond to", c.name)
+		}
+	}
+}
+
+// TestPlanSyntheticSessionAssistantTailPreservesHistory covers the shape a
+// regenerate produces: the worker re-sends the conversation with the previous
+// assistant reply still on the end, so the last API message is assistant-role.
+// A nil plan there means startFreshSession spawns bare `-p` and falls back to
+// piping user-role content only — every assistant turn and every tool_use
+// block silently gone, the tool_results left orphaned. The model then denies
+// having made tool calls it did make.
+//
+// The plan must instead carry the WHOLE conversation into the resumed file and
+// put a nudge on stdin.
+func TestPlanSyntheticSessionAssistantTailPreservesHistory(t *testing.T) {
+	const toolUseID = "toolu_bash_start_server"
+	plan := planSyntheticSession([]provider.Message{
+		{Type: "user", Content: "check the fix end to end"},
+		{Type: "assistant", Content: "Starting a headless server:"},
+		{Type: "tool-use", ToolUseID: toolUseID, ToolName: "bash", ToolInput: map[string]any{
+			"command": "juggler --port 45999",
+		}},
+		{Type: "tool-result", ToolUseID: toolUseID, Content: "AI Code Agent • v0.5.6"},
+		{Type: "user", Content: "Suggest a short one line commit message"},
+		{Type: "assistant", Content: "Fixed ReadJugglerSource fetching unversioned asset paths"},
+	}, jugglerToolNameSet([]provider.ToolDefinition{{Name: "bash"}}))
+	if plan == nil {
+		t.Fatalf("expected non-nil plan for an assistant tail; nil discards the whole conversation")
+	}
+
+	// The assistant's tool_use must survive, under the prefixed name the CLI
+	// records in its own sessions.
+	var foundUse, foundResult, foundTailText bool
+	for _, m := range plan.historyToFile {
+		for _, b := range m.Content {
+			switch {
+			case m.Role == "assistant" && b.Type == "tool_use" && b.ID == toolUseID:
+				foundUse = true
+				if b.Name != mcpToolPrefix+"bash" {
+					t.Errorf("tool_use name = %q; want %q", b.Name, mcpToolPrefix+"bash")
+				}
+			case m.Role == "user" && b.Type == "tool_result" && b.ToolUseID == toolUseID:
+				foundResult = true
+			case m.Role == "assistant" && b.Type == "text" &&
+				strings.Contains(b.Text, "Fixed ReadJugglerSource"):
+				foundTailText = true
+			}
+		}
+	}
+	if !foundUse {
+		t.Errorf("assistant tool_use %s was dropped from history; roles: %v", toolUseID, roleSeq(plan.historyToFile))
+	}
+	if !foundResult {
+		t.Errorf("tool_result for %s was dropped from history; roles: %v", toolUseID, roleSeq(plan.historyToFile))
+	}
+	if !foundTailText {
+		t.Errorf("trailing assistant reply was dropped from history; roles: %v", roleSeq(plan.historyToFile))
+	}
+
+	// stdin can't be empty — the CLI ignores a zero-content user message — so
+	// the tail is the nudge.
+	if len(plan.tailContent) != 1 || plan.tailContent[0].Type != "text" ||
+		plan.tailContent[0].Text != continuationNudge {
+		t.Errorf("tailContent = %+v; want a single %q text block", plan.tailContent, continuationNudge)
 	}
 }
 
