@@ -343,8 +343,8 @@ class ToolExecutor {
     // Look up the plugin class that provides this tool
     const MatchedClass = contextItemRegistry.getByToolName(resolvedName);
     if (MatchedClass) {
-      // Actions override execute(); context items use handleToolCall()/onToolCall()
-      const isAction = Object.prototype.hasOwnProperty.call(MatchedClass.prototype, 'execute');
+      // Actions implement execute(); context items use handleToolCall()/onToolCall()
+      const isAction = MatchedClass.isActionItem();
 
       if (isAction) {
         // Action tool (read_file, write_file, grep, etc.) - route to execute() path

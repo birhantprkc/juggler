@@ -1208,11 +1208,32 @@ class ContextItem {
   // ============================================================================
 
   /**
+   * Whether this class is an **action**: an item that does its tool work in
+   * `execute()`, rather than one that seeds a standing context block through
+   * `onToolCall()`. The tool dispatcher routes on this.
+   *
+   * The check walks the prototype chain instead of looking for an own `execute`
+   * on the class itself, so an item that inherits its implementation from an
+   * intermediate base — a family of related tools sharing one — is an action
+   * just as much as one that spells `execute()` out. Only the abstract
+   * `execute()` on this class doesn't count, and it is recognised by being the
+   * one whose prototype inherits straight from `Object`.
+   * @returns {boolean} True when this class, or a base above it but below this one, implements execute()
+   */
+  static isActionItem() {
+    for (let proto = this.prototype; proto; proto = Object.getPrototypeOf(proto)) {
+      if (Object.getPrototypeOf(proto) === Object.prototype) return false;
+      if (Object.prototype.hasOwnProperty.call(proto, 'execute')) return true;
+    }
+    return false;
+  }
+
+  /**
    * Execute a tool call and store results in this.data.
    *
    * Action-style items do their tool work in `execute()`, which the tool
-   * dispatcher routes to directly (own `execute` on the prototype) — they never
-   * need `onToolCall()`. Seeding, however, always runs through
+   * dispatcher routes to directly (see {@link ContextItem.isActionItem}) — they
+   * never need `onToolCall()`. Seeding, however, always runs through
    * `handleToolCall()` -> `onToolCall()` before rendering the standing block, so
    * a base throw here would abort seeding for an `execute()`-only item before it
    * is registered, silently dropping its context from the system prompt. So this
@@ -1224,7 +1245,7 @@ class ContextItem {
    * @returns {Promise<void>}
    */
   async onToolCall(_toolName, _params) {
-    if (Object.prototype.hasOwnProperty.call(this.constructor.prototype, 'execute')) {
+    if (/** @type {typeof ContextItem} */ (this.constructor).isActionItem()) {
       return;
     }
     throw new Error('onToolCall() must be implemented by subclass');

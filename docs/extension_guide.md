@@ -371,8 +371,9 @@ A context item whose tool runs its invocation as a delegated child thread, under
 a strategy the item itself owns. The child's working context — its searches, its
 reads, its intermediate tool calls — never enters the caller's; only its final
 message comes back as the tool result. `Explore` and `Research` in
-`@juggler/core` are the reference implementations
-(`context-items/explore-agent-context-item.js` and its `subagents/` siblings).
+`@juggler/core` are the reference implementations: the mechanics below live once
+in `context-items/subagents/subagent-item.js`, and each tool is the descriptor
+that sits on top of it (`context-items/explore-agent-context-item.js`).
 
 Three parts:
 

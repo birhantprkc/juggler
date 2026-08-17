@@ -16,6 +16,11 @@
  * caller's tool_use forever. Every tool that survives `filterTools` must
  * therefore be either auto-approved by `getApprovalPolicy` or refused by
  * `onToolPending`. That is asserted below against the real core tool list.
+ *
+ * Both shipped sub-agents are descriptors over `SubagentContextItem`, so the
+ * cases below run against each in turn: a third sub-agent should pass them by
+ * existing, and any that starts failing marks behaviour that has drifted out of
+ * the shared base.
  * @module _tests/subagents-test
  */
 
@@ -23,9 +28,10 @@ import { initializeRegistries, assert } from '../../../js-tests/utilities/test-h
 import strategyRegistry from '../../../js/registries/strategy-registry.js';
 import { generateToolDefinitions } from '../../../js/services/tool-generator.js';
 import { APPROVAL_POLICY } from '../../../sdk/strategy-type.js';
-import { INTERACTION_KIND } from '../../../sdk/context-item.js';
+import ContextItem, { INTERACTION_KIND } from '../../../sdk/context-item.js';
 import ExploreAgentContextItem from '../context-items/explore-agent-context-item.js';
 import ResearchAgentContextItem from '../context-items/research-agent-context-item.js';
+import SubagentContextItem from '../context-items/subagents/subagent-item.js';
 
 /**
  * @typedef {object} TestResult
@@ -39,11 +45,13 @@ const FAKE_MESSAGE_THREAD = /** @type {any} */ ({ conversation: { session: {} } 
 
 /**
  * The two sub-agents, described by what each test needs to know about them.
- * @type {Array<{label: string, Item: any, strategyId: string, toolName: string, arg: string}>}
+ * Both take the same `task` argument: one concept, one name, whichever tool a
+ * caller picks.
+ * @type {Array<{label: string, Item: any, strategyId: string, toolName: string}>}
  */
 const SUBAGENTS = [
-  { label: 'Explore', Item: ExploreAgentContextItem, strategyId: 'subagent-explore', toolName: 'Explore', arg: 'task' },
-  { label: 'Research', Item: ResearchAgentContextItem, strategyId: 'subagent-research', toolName: 'Research', arg: 'question' }
+  { label: 'Explore', Item: ExploreAgentContextItem, strategyId: 'subagent-explore', toolName: 'Explore' },
+  { label: 'Research', Item: ResearchAgentContextItem, strategyId: 'subagent-research', toolName: 'Research' }
 ];
 
 /**
@@ -84,7 +92,7 @@ export async function runTests(_ctx) {
   await initializeRegistries();
   const allTools = await generateToolDefinitions();
 
-  for (const { label, Item, strategyId, toolName, arg } of SUBAGENTS) {
+  for (const { label, Item, strategyId, toolName } of SUBAGENTS) {
     await run(`${label}: owns exactly one hidden strategy`, () => {
       const classes = Item.getStrategies();
       assert(classes.length === 1, `expected 1 owned strategy, got ${classes.length}`);
@@ -102,20 +110,38 @@ export async function runTests(_ctx) {
       assert(defs.length === 1 && defs[0].name === toolName,
         `expected one tool named ${toolName}`);
       assert(defs[0].input_schema.required.includes('goal'),
-        `${toolName} must require a short user-facing goal separate from "${arg}"`);
-      assert(defs[0].input_schema.required.includes(arg),
-        `${toolName} must require "${arg}" — the child sees nothing of the caller's conversation`);
+        `${toolName} must require a short user-facing goal separate from the task`);
+      assert(defs[0].input_schema.required.includes('task'),
+        `${toolName} must require "task" — the child sees nothing of the caller's conversation`);
       assert('session' in defs[0].input_schema.properties,
         `${toolName} must expose its returned session handle for follow-up calls`);
       assert(!('resultSpec' in defs[0].input_schema.properties),
         `${toolName} must not expose resultSpec: the pre-shaped return contract is what it adds over create_thread`);
     });
 
+    await run(`${label}: routes as an action with execute() inherited`, () => {
+      // The tool dispatcher splits actions from seeding items by asking whether
+      // execute() is implemented. These items inherit theirs from the shared
+      // base, so a check for an OWN execute would route them to onToolCall
+      // instead — where the base no-ops, and the caller's tool call quietly
+      // returns nothing at all.
+      assert(Item.isActionItem(),
+        `${label} must report as an action; it implements execute() through SubagentContextItem`);
+    });
+
+    await run(`${label}: its brief carries the rules every sub-agent needs`, () => {
+      const guidance = /** @type {any} */ (strategyRegistry.get(strategyId)).GUIDANCE;
+      assert(/refused/i.test(guidance),
+        `${strategyId}'s brief must say approval-needing calls are refused — the agent cannot discover that from inside the run`);
+      assert(/could not find/i.test(guidance),
+        `${strategyId}'s brief must ask for honest gaps; the caller cannot see the evidence behind the answer`);
+    });
+
     await run(`${label}: pins its own strategy on the delegated child`, async () => {
       const item = makeItem(Item);
       const spec = await item.buildSubthreadSpec({
         goal: 'Trace auth flow',
-        [arg]: 'where is auth handled?',
+        task: 'where is auth handled?',
         session: 'auth-hunt'
       });
       assert(spec && spec.goal === 'Trace auth flow',
@@ -134,7 +160,7 @@ export async function runTests(_ctx) {
       const saved = strategyRegistry.items.get(strategyId);
       strategyRegistry.items.delete(strategyId);
       try {
-        const spec = await makeItem(Item).buildSubthreadSpec({ goal: 'Anything', [arg]: 'anything' });
+        const spec = await makeItem(Item).buildSubthreadSpec({ goal: 'Anything', task: 'anything' });
         assert(spec && !spec.strategyId,
           'with the strategy gone the spec must omit strategyId, not name a missing one');
       } finally {
@@ -199,6 +225,27 @@ export async function runTests(_ctx) {
         'a refusal must not go through resolveApproval — a cancelled call reads as a denial and stops the run');
     });
   }
+
+  await run('a sub-agent with no descriptor fails by name, not by silently misbehaving', () => {
+    class NamelessSubagent extends SubagentContextItem {}
+    let message = '';
+    try {
+      NamelessSubagent.getToolDefinitions();
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+    assert(/NamelessSubagent/.test(message) && /SUBAGENT/.test(message),
+      `a subclass without a descriptor must say which class and what is missing; got "${message}"`);
+  });
+
+  await run('isActionItem sees only an implemented execute()', () => {
+    // The negative half of the routing check above: a seeding item must NOT be
+    // dragged onto the action path by the abstract execute() every item inherits
+    // from ContextItem.
+    class SeedingItem extends ContextItem {}
+    assert(!SeedingItem.isActionItem(),
+      'an item that implements no execute() is not an action, whatever it inherits');
+  });
 
   await run('the two sub-agents withhold what the other is for', () => {
     const explore = strategyRegistry.createStrategy('subagent-explore', FAKE_MESSAGE_THREAD).filterTools(allTools).map(t => t.name);

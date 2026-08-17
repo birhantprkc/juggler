@@ -985,6 +985,9 @@ class ConversationBar extends HTMLElement {
     tab.addEventListener('pointerdown', (e) => {
       const event = /** @type {PointerEvent} */ (e);
       if (event.button !== 0) return;
+      // A macOS ctrl-click arrives as button 0; it opens the tab menu, so it
+      // must not also grab the pointer for a reorder drag.
+      if (event.ctrlKey) return;
       const target = /** @type {HTMLElement|null} */ (event.target);
       if (target?.closest('.conversation-tab-bin')) return;
       if (target?.closest('.conversation-tab-rename')) return;
