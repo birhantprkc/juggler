@@ -1090,7 +1090,7 @@ class ContextItem {
    * Get tool definitions for this item type
    * [Context: shared]
    * @static
-   * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Array of tool definitions
+   * @returns {Array<{name: string, category: string, description: string, input_schema: import('./strategy-type.js').JSONObjectSchema}>} Array of tool definitions
    */
   static getToolDefinitions() {
     return [];

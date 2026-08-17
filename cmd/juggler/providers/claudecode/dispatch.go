@@ -149,6 +149,16 @@ func (c *Client) attachControlProtocol(tools []provider.ToolDefinition) error {
 	if err != nil {
 		return fmt.Errorf("marshal tools: %w", err)
 	}
+	// The tool count is the one number that distinguishes "the model chose not
+	// to call anything" from "the model had nothing to call". Without it, an
+	// empty tool set presents as the model narrating tool calls in prose, which
+	// reads as a model fault and sends the search nowhere near the tool set.
+	if len(marshalled) != len(tools) {
+		jlog.Info("[claudecode] serving %d of %d tools on tools/list — %d withheld as malformed",
+			len(marshalled), len(tools), len(tools)-len(marshalled))
+	} else {
+		jlog.Debug("[claudecode] serving %d tools on tools/list", len(marshalled))
+	}
 	cp.tools = func() ([]json.RawMessage, error) { return marshalled, nil }
 	c.activeSession.live.control = cp
 	// Record the tool-set fingerprint this CLI is being spawned with. The CLI

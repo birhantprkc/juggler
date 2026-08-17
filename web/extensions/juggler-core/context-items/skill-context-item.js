@@ -75,7 +75,7 @@ class SkillContextItem extends ContextItem {
   /**
    * The single `skill` tool: load one skill's instructions by name. The name
    * must be one from the Skills list in the system prompt.
-   * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
+   * @returns {Array<{name: string, category: string, description: string, input_schema: import('juggler/strategy-type').JSONObjectSchema}>} Tool definitions
    */
   static getToolDefinitions() {
     return [

@@ -13,10 +13,12 @@
 package claudecode
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
 	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/internal/jlog"
 )
 
 // mcpServerName is the name we register our in-process server under in
@@ -43,9 +45,20 @@ type mcpToolDef struct {
 // based on the server name in --mcp-config. Prefixing on our side too
 // would produce names like `mcp__juggler__mcp__juggler__bash` and the
 // CLI reports "Unknown tool" when the LLM tries to call them.
+//
+// A tool whose schema fails validateToolInputSchema is dropped from the
+// payload and named in the log rather than failing the whole list. The
+// consumer of tools/list rejects a malformed payload wholesale, so one bad
+// schema would otherwise cost the model every tool it has — and it fails
+// downstream, far from the definition at fault. Dropping bounds the damage to
+// the offending tool and puts its name where the diagnosis starts.
 func toolDefsToMCPList(tools []provider.ToolDefinition) ([]json.RawMessage, error) {
 	out := make([]json.RawMessage, 0, len(tools))
 	for _, t := range tools {
+		if reason := validateToolInputSchema(t.InputSchema); reason != "" {
+			jlog.Info("[claudecode] tool %q withheld from tools/list: %s", t.Name, reason)
+			continue
+		}
 		def := mcpToolDef{
 			Name:        t.Name,
 			Description: t.Description,
@@ -58,6 +71,41 @@ func toolDefsToMCPList(tools []provider.ToolDefinition) ([]json.RawMessage, erro
 		out = append(out, raw)
 	}
 	return out, nil
+}
+
+// validateToolInputSchema reports why an inputSchema is unusable as an MCP
+// parameter schema, or "" when it is well-formed. Tool parameters are always
+// passed as a named object, so the root must be an object schema: anything
+// else is refused downstream, where the error names neither the tool nor the
+// missing keyword.
+//
+// The check is deliberately narrow — it rejects only what is unambiguously
+// broken, so a tool is never withheld over a stylistic quibble. `properties`
+// may legitimately be absent on a no-argument tool; when present it must be an
+// object. Stricter house rules (properties always declared, every `required`
+// name present in them) belong in the extension test suite, which owns every
+// definition and can fail the build instead of a live turn.
+func validateToolInputSchema(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "no inputSchema declared"
+	}
+	var schema struct {
+		Type       string          `json:"type"`
+		Properties json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return fmt.Sprintf("inputSchema is not a JSON object: %v", err)
+	}
+	if schema.Type != "object" {
+		if schema.Type == "" {
+			return `inputSchema has no "type" (want "object")`
+		}
+		return fmt.Sprintf("inputSchema type is %q, want \"object\"", schema.Type)
+	}
+	if len(schema.Properties) > 0 && !bytes.HasPrefix(bytes.TrimSpace(schema.Properties), []byte("{")) {
+		return "inputSchema properties is not a JSON object"
+	}
+	return ""
 }
 
 // mcpInitializeResult is the canonical initialize response we send back

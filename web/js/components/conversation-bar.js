@@ -957,6 +957,11 @@ class ConversationBar extends HTMLElement {
       const target = /** @type {HTMLElement|null} */ (e.target);
       if (target?.closest('.conversation-tab-bin')) return;
 
+      // macOS ctrl-click is a secondary click: WebKit fires `contextmenu` (which
+      // opens the tab menu) and a plain `click` alongside it. Ignore it here so
+      // opening the menu on the active tab doesn't also start a rename.
+      if (/** @type {MouseEvent} */ (e).ctrlKey) return;
+
       this._exitTabListFocus();
 
       // Prevent click after drag

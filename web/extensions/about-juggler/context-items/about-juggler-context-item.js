@@ -121,9 +121,10 @@ class AboutJugglerContextItem extends ContextItem {
    *
    * The description is intentionally tightly scoped so the model reaches for this
    * only when the user is asking about Juggler itself — not about their code.
-   * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
+   * @returns {Array<{name: string, category: string, description: string, input_schema: import('juggler/strategy-type').JSONObjectSchema}>} Tool definitions
    */
   static getToolDefinitions() {
+    /** @type {import('juggler/strategy-type').JSONObjectSchema} */
     const inputSchema = {
       type: 'object',
       properties: {

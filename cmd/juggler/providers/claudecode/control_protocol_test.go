@@ -165,8 +165,8 @@ func TestControlProtocol_ToolsListReturnsConfiguredTools(t *testing.T) {
 // when the LLM tries to call them.
 func TestToolDefsToMCPList_AdvertisesUnprefixedNames(t *testing.T) {
 	raws, err := toolDefsToMCPList([]provider.ToolDefinition{
-		{Name: "bash", Description: "shell", InputSchema: json.RawMessage(`{}`)},
-		{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{}`)},
+		{Name: "bash", Description: "shell", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+		{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
 	})
 	if err != nil {
 		t.Fatalf("toolDefsToMCPList: %v", err)
@@ -182,6 +182,52 @@ func TestToolDefsToMCPList_AdvertisesUnprefixedNames(t *testing.T) {
 		name, _ := def["name"].(string)
 		if strings.HasPrefix(name, mcpToolPrefix) {
 			t.Errorf("tool %q is prefixed with %q; CLI will double-prefix and reject", name, mcpToolPrefix)
+		}
+	}
+}
+
+// TestToolDefsToMCPList_WithholdsMalformedSchemas pins the blast radius of a
+// bad schema. The consumer of tools/list refuses a malformed payload as a
+// whole, so advertising one unusable schema costs the model every tool it has
+// — a failure that surfaces far downstream as the model narrating tool calls
+// in prose, naming neither the tool nor the fault. The malformed entry is
+// dropped and the rest of the list still ships.
+func TestToolDefsToMCPList_WithholdsMalformedSchemas(t *testing.T) {
+	const good = `{"type":"object","properties":{"x":{"type":"string"}}}`
+	raws, err := toolDefsToMCPList([]provider.ToolDefinition{
+		{Name: "keeper", Description: "fine", InputSchema: json.RawMessage(good)},
+		// The regression this guards: `type` dropped from an otherwise
+		// complete schema. Still valid JSON, so nothing upstream objects.
+		{Name: "no_type", Description: "bad", InputSchema: json.RawMessage(`{"properties":{"x":{"type":"string"}}}`)},
+		{Name: "wrong_type", Description: "bad", InputSchema: json.RawMessage(`{"type":"string"}`)},
+		{Name: "not_an_object", Description: "bad", InputSchema: json.RawMessage(`["nope"]`)},
+		{Name: "absent", Description: "bad", InputSchema: nil},
+	})
+	if err != nil {
+		t.Fatalf("toolDefsToMCPList: %v", err)
+	}
+	if len(raws) != 1 {
+		t.Fatalf("expected only the well-formed tool to be advertised, got %d entries", len(raws))
+	}
+	var def map[string]any
+	if err := json.Unmarshal(raws[0], &def); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if name, _ := def["name"].(string); name != "keeper" {
+		t.Errorf("advertised tool = %q, want \"keeper\"", name)
+	}
+}
+
+// TestValidateToolInputSchema_AcceptsNoArgTools guards the validator against
+// over-reach: a tool with no parameters is legitimate, and withholding one
+// would break a working tool in the name of tidiness.
+func TestValidateToolInputSchema_AcceptsNoArgTools(t *testing.T) {
+	for _, schema := range []string{
+		`{"type":"object","properties":{}}`,
+		`{"type":"object"}`,
+	} {
+		if reason := validateToolInputSchema(json.RawMessage(schema)); reason != "" {
+			t.Errorf("schema %s rejected: %s", schema, reason)
 		}
 	}
 }

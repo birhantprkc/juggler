@@ -189,12 +189,14 @@ func (c *Client) commonArgs(systemPrompt string) []string {
 	// synthetic session entries (synthetic_resume.go).
 	args = append(args, "--permission-mode", "default")
 
-	if mcpConfig, err := c.buildMCPConfig(); err == nil && mcpConfig != "" {
-		args = append(args, "--mcp-config", mcpConfig)
-		args = append(args, "--strict-mcp-config")
-		args = append(args, "--allowedTools", "mcp__juggler__*")
-		args = append(args, "--disallowedTools", strings.Join(disallowedNativeTools, ","))
-	}
+	// Unconditional: --allowedTools and --disallowedTools are what confine the
+	// CLI to juggler's own tools, so they travel with --mcp-config as one
+	// indivisible unit. Spawning with any of them missing is never a degraded
+	// mode worth having — it is a CLI running its native toolset behind our back.
+	args = append(args, "--mcp-config", c.buildMCPConfig())
+	args = append(args, "--strict-mcp-config")
+	args = append(args, "--allowedTools", "mcp__juggler__*")
+	args = append(args, "--disallowedTools", strings.Join(disallowedNativeTools, ","))
 	return args
 }
 
@@ -258,7 +260,14 @@ func (c *Client) formatMessagesAsStreamJSONLines(messages []provider.Message, se
 //
 // This shape matches the Claude Agent SDK's --mcp-config payload
 // (anthropics/claude-agent-sdk-python/_internal/transport/subprocess_cli.py:307-329).
-func (c *Client) buildMCPConfig() (string, error) {
+//
+// The payload is a fixed two-key map of string values, so marshalling it
+// cannot fail and the result is never empty. It returns a bare string to keep
+// that guarantee at the type level: an error return here would invite callers
+// to treat "no MCP config" as a tolerable outcome, and spawning without
+// --mcp-config also drops --allowedTools and --disallowedTools, leaving the
+// CLI with none of juggler's tools and all of its own native ones unblocked.
+func (c *Client) buildMCPConfig() string {
 	config := map[string]any{
 		"mcpServers": map[string]any{
 			mcpServerName: map[string]any{
@@ -267,9 +276,6 @@ func (c *Client) buildMCPConfig() (string, error) {
 			},
 		},
 	}
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal MCP config: %w", err)
-	}
-	return string(configJSON), nil
+	configJSON, _ := json.Marshal(config)
+	return string(configJSON)
 }

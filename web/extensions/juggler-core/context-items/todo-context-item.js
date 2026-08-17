@@ -86,6 +86,10 @@ class TodoContextItem extends ContextItem {
   // TOOL DEFINITIONS (action interface)
   // ============================================================================
 
+  /**
+   * Get tool definitions for the todo action
+   * @returns {Array<{name: string, category: string, description: string, input_schema: import('juggler/strategy-type').JSONObjectSchema}>} Tool definitions
+   */
   static getToolDefinitions() {
     return [
       {

@@ -59,12 +59,19 @@ export function mcpLLMName(server, tool) {
  * parallel); everything else is a mutating `write` (destructive-by-default).
  * Pure — exported for unit testing.
  * @param {McpToolInfo} t - A discovered tool
- * @returns {{name: string, category: 'read'|'write', description: string, input_schema: object}} Tool definition
+ * @returns {{name: string, category: 'read'|'write', description: string, input_schema: import('juggler/strategy-type').JSONObjectSchema}} Tool definition
  */
 export function buildToolDefinition(t) {
-  const schema = (t.inputSchema && typeof t.inputSchema === 'object')
-    ? t.inputSchema
-    : { type: 'object', properties: {} };
+  // Cast, not a guarantee: this schema is whatever a third-party MCP server
+  // published, so it is the one tool schema in the tree that no annotation can
+  // vouch for. It is checked at the provider seam before being advertised to
+  // the model, and a server that publishes a malformed one loses that tool
+  // rather than the whole tool list.
+  const schema = /** @type {import('juggler/strategy-type').JSONObjectSchema} */ (
+    (t.inputSchema && typeof t.inputSchema === 'object')
+      ? t.inputSchema
+      : { type: 'object', properties: {} }
+  );
   let description = t.description || `${t.title || t.name} (via MCP server "${t.server}")`;
   if (description.length > MAX_DESC_CHARS) {
     description = description.slice(0, MAX_DESC_CHARS) + '…';
@@ -193,7 +200,7 @@ class McpToolContextItem extends ContextItem {
    * One tool definition per discovered MCP tool. Read from the module-level
    * snapshot; empty until servers finish discovery, then a `plugin-changed`
    * reload surfaces them.
-   * @returns {Array<{name: string, category: 'read'|'write', description: string, input_schema: object}>} One tool definition per discovered MCP tool
+   * @returns {Array<{name: string, category: 'read'|'write', description: string, input_schema: import('juggler/strategy-type').JSONObjectSchema}>} One tool definition per discovered MCP tool
    */
   static getToolDefinitions() {
     return discoveredTools.map(buildToolDefinition);

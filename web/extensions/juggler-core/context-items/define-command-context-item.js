@@ -62,7 +62,7 @@ class DefineCommandContextItem extends ContextItem {
 
   /**
    * Tool definition for define_command.
-   * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Tool definitions
+   * @returns {Array<{name: string, category: string, description: string, input_schema: import('juggler/strategy-type').JSONObjectSchema}>} Tool definitions
    */
   static getToolDefinitions() {
     return [

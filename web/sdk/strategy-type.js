@@ -94,11 +94,28 @@
  */
 
 /**
+ * JSON Schema describing a tool's parameters.
+ *
+ * A tool is always called with a named parameter object, so the root schema is
+ * always an object schema and `type` is always the literal `'object'`. It is
+ * spelled out as a required property rather than left to `object` because the
+ * keyword is pure ceremony to write and invisible to omit: a schema missing it
+ * is still valid JSON, survives every boundary between here and the model, and
+ * is refused only at the far end — where the error names neither the tool nor
+ * the missing keyword. Requiring it here is what turns that into a lint error
+ * at the definition site.
+ * @typedef {object} JSONObjectSchema
+ * @property {'object'} type - Always the literal 'object'
+ * @property {Record<string, object>} properties - Parameter name → JSON Schema for that parameter
+ * @property {string[]} [required] - Names of the mandatory parameters; each must appear in `properties`
+ */
+
+/**
  * Tool definition for LLM
  * @typedef {object} ToolDefinition
  * @property {string} name - Tool name
  * @property {string} description - Human-readable description
- * @property {object} input_schema - JSON Schema for parameters
+ * @property {JSONObjectSchema} input_schema - JSON Schema for parameters
  * @property {'read'|'write'|'meta'} [category] - Tool category
  */
 
