@@ -38,7 +38,12 @@ const TEST_INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'python', 'python3', 'no
  * @property {string} command the command line being tested
  * @property {string[]} patterns glob patterns already approved
  * @property {string} [platform] platform identifier string (default 'darwin')
+ * @property {string[]} [allowedRoots] allowed roots (default [PROJECT_ROOT])
+ * @property {boolean} [writeEnabled] whether file-writing is permitted
+ * @property {string} [cwd] directory the command runs in (default PROJECT_ROOT)
  * @property {boolean} expected whether the command should auto-approve
+ * @property {boolean} [expectedNoCwd] expectation when no working directory is
+ *   known (default: same as `expected`)
  */
 
 /** @type {ApprovalCase[]} */
@@ -1117,6 +1122,65 @@ echo "=== frontend: any 'stop all' / iterate active convs ===" && grep -rn "canc
     command: 'test -Q web', patterns: [], platform: 'darwin', expected: false },
   { name: 'conservative: -o conjunction is not decomposed and prompts',
     command: 'test -f web/a -o -f web/b', patterns: [], platform: 'darwin', expected: false },
+
+  // === Working directory: `cd` moves where relative paths are judged ==========
+  // The pattern that motivates all of this: `cd` somewhere, then read a path
+  // relative to there. Judged from the project root the `../../` looks like an
+  // escape; judged from where it runs, it is an ordinary in-project read.
+  { name: 'cd deep then ../.. path back inside the project',
+    command: 'cd web/extensions/juggler-core && grep -rn "summarise-command" ../../js-tests/ ../../js/',
+    patterns: [], platform: 'darwin', expected: true },
+  { name: 'the reported command: cd, in-dir grep, comment echo, then ../.. grep with sinks',
+    command: 'cd /Users/jules/code/juggler/web/extensions/juggler-core && grep -n "summarise\\|compact-command" juggler.extension.json; echo "=== executor ref"; grep -rn "summarise-command" ../../js-tests/ ../../js/ 2>/dev/null | head',
+    patterns: [], platform: 'darwin', expected: true },
+  { name: 'cd then read a sibling directory',
+    command: 'cd web && cat ../cmd/juggler/main.go', patterns: [], platform: 'darwin', expected: true },
+  { name: 'cd tracked across a multi-step chain',
+    command: 'cd web && grep -rn X js && cd ../cmd && grep -rn Y juggler',
+    patterns: [], platform: 'darwin', expected: true },
+  { name: 'cd separated by ; still moves the directory',
+    command: 'cd web; ls js', patterns: [], platform: 'darwin', expected: true },
+  // The escapes stay escapes: following the `cd` narrows nothing away.
+  { name: 'cd then a path that escapes the project prompts',
+    command: 'cd web && cat ../../../etc/passwd', patterns: [], platform: 'darwin', expected: false },
+  { name: 'cd chain that walks out of the project prompts',
+    command: 'cd web && cd ../../.. && ls', patterns: [], platform: 'darwin', expected: false },
+  { name: 'cd deep then a ../ path that still lands outside prompts',
+    command: 'cd web/js && grep -rn X ../../../../etc', patterns: [], platform: 'darwin', expected: false },
+  // A subshell's `cd` dies with the subshell, so the command after it runs
+  // where it always did — and `../js` from the project root is outside it.
+  { name: 'subshell cd does not move the directory for later segments',
+    command: '(cd web) && cat ../js/app.js', patterns: [], platform: 'darwin', expected: false },
+  { name: 'subshell cd applies inside the subshell',
+    command: '(cd web && cat ../cmd/juggler/main.go)', patterns: [], platform: 'darwin', expected: true },
+  // A brace group runs in the current shell, so its `cd` does persist.
+  { name: 'brace group cd persists into later segments',
+    command: '{ cd web; }; cat ../cmd/juggler/main.go', patterns: [], platform: 'darwin', expected: true },
+  // A relative path that leaves the project but lands in another granted root
+  // is a read the user has already permitted — decidable only with a cwd.
+  { name: 'relative path into a second allowed root',
+    command: 'cat ../notes/todo.md', patterns: [], platform: 'darwin',
+    allowedRoots: [PROJECT_ROOT, '/Users/jules/code/notes'], expected: true, expectedNoCwd: false },
+  { name: 'relative path out of every allowed root prompts',
+    command: 'cat ../notes/todo.md', patterns: [], platform: 'darwin', expected: false },
+  { name: 'write redirect into a second allowed root via a relative path',
+    command: 'echo hi > ../notes/out.log', patterns: [], platform: 'darwin', writeEnabled: true,
+    allowedRoots: [PROJECT_ROOT, '/Users/jules/code/notes'], expected: true, expectedNoCwd: false },
+  // A user glob may not bless a read outside the allowed roots, however the
+  // path is spelled — the relative form is resolved before that rule applies.
+  { name: 'grep * does not bless an out-of-root read spelled relatively',
+    command: 'grep -rn X ../../other-repo', patterns: ['grep *'], platform: 'darwin',
+    expected: false, expectedNoCwd: true },
+  { name: 'grep * does not bless the same read spelled absolutely',
+    command: 'grep -rn X /Users/jules/other-repo', patterns: ['grep *'], platform: 'darwin', expected: false },
+  // Windows: the project path arrives OS-native (backslashes) and must fold to
+  // the same location as the forward-slash spelling the command uses.
+  { name: 'windows backslash cwd resolves a relative cd and path',
+    command: 'cd web && cat ../cmd/juggler/main.go', patterns: [], platform: 'windows',
+    allowedRoots: ['C:\\Users\\jules\\code\\juggler'], cwd: 'C:\\Users\\jules\\code\\juggler', expected: true },
+  { name: 'windows backslash cwd still refuses an escaping path',
+    command: 'cd web && cat ../../../Windows/System32/config/SAM', patterns: [], platform: 'windows',
+    allowedRoots: ['C:\\Users\\jules\\code\\juggler'], cwd: 'C:\\Users\\jules\\code\\juggler', expected: false },
 ];
 
 /**
@@ -1127,6 +1191,7 @@ echo "=== frontend: any 'stop all' / iterate active convs ===" && grep -rn "canc
  * @property {string[]} [allowedRoots] allowed roots (default [PROJECT_ROOT])
  * @property {string} [platform] platform identifier string (default 'darwin')
  * @property {boolean} [writeEnabled] whether write operations are permitted
+ * @property {string} [cwd] directory the command runs in (default PROJECT_ROOT)
  * @property {Array<string[] | {allowedPaths: string[]}>} expected ordered
  *   escalating suggestions. A `string[]` entry is that suggestion's glob-pattern
  *   list; a `{allowedPaths}` entry is a path-grant suggestion (folders to add to
@@ -1342,7 +1407,36 @@ const SUGGEST_CASES = [
   // `/Users` is an ancestor of home (contains every user) → too broad to grant.
   { name: 'du over /Users (home ancestor) → never grant /Users, no du * wildcard, exact only',
     command: 'du -sh /Users',
-    expected: [['du -sh /Users']] }
+    expected: [['du -sh /Users']] },
+
+  // === Folder grants for paths written relative to the working directory =====
+  // A relative path names a real folder once the working directory is known, so
+  // the honest remedy is that folder — not the verbatim command text, and never
+  // a `grep *` that would drop the path restriction the command just violated.
+  { name: 'relative out-of-root path → grant the folder it resolves to, no wildcard',
+    command: 'grep -rn X ../../other-repo',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo'] }] },
+  { name: 'out-of-root path relative to a cd → grant resolves from where it runs',
+    command: 'cd web && grep -rn X ../../other-repo',
+    expected: [{ allowedPaths: ['/Users/jules/code/other-repo'] }] },
+  // awk and git declare their path arguments, so an out-of-root read is
+  // recognised as the sole obstacle and the wildcard tiers are withheld.
+  { name: 'awk over an out-of-root file → grant the file, no awk * wildcard',
+    command: "awk '{print $1}' /opt/sdk/data/report.txt",
+    expected: [{ allowedPaths: ['/opt/sdk/data/report.txt'] }] },
+  { name: 'git -C an out-of-root repo → grant the repo, no git * wildcard',
+    command: 'git -C /Users/jules/other-repo log --oneline',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo'] }] },
+  { name: 'git pathspec outside the roots → grant the pathspec folder, no git * wildcard',
+    command: 'git log -- ../../other-repo/src',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo/src'] }] },
+  // A git command rejected for a non-path reason keeps its ordinary tiers: the
+  // grant probe fails, so nothing pretends a folder would fix it. The
+  // `git push *` middle tier drops out on its own — it cannot match a command
+  // that starts `git -C …`, and every tier must survive the dry-run.
+  { name: 'git write subcommand with an out-of-root -C → still the ordinary tiers',
+    command: 'git -C /Users/jules/other-repo push origin main',
+    expected: [['git -C /Users/jules/other-repo push origin main'], ['git *']] }
 ];
 
 /**
@@ -1354,13 +1448,15 @@ function runSuggestCase(c) {
   const patterns = c.patterns || [];
   const allowedRoots = c.allowedRoots || [PROJECT_ROOT];
   const writeEnabled = c.writeEnabled || false;
+  const cwd = c.cwd || PROJECT_ROOT;
   const suggestions = suggestApprovalPatterns(c.command, {
     platform,
     home: TEST_HOME,
     allowedRoots,
     patterns,
     interpreters: TEST_INTERPRETERS,
-    writeEnabled
+    writeEnabled,
+    cwd
   });
   // A path-grant suggestion serialises as {allowedPaths}; a glob suggestion as
   // its bare patterns array — matching the SuggestCase.expected shape.
@@ -1374,7 +1470,7 @@ function runSuggestCase(c) {
   for (const s of suggestions) {
     const mergedPatterns = s.allowedPaths ? patterns : [...patterns, ...s.patterns];
     const mergedRoots = s.allowedPaths ? [...allowedRoots, ...s.allowedPaths] : allowedRoots;
-    if (!isCommandAutoApproved(c.command, { platform, home: TEST_HOME, allowedRoots: mergedRoots, patterns: mergedPatterns, writeEnabled })) {
+    if (!isCommandAutoApproved(c.command, { platform, home: TEST_HOME, allowedRoots: mergedRoots, patterns: mergedPatterns, writeEnabled, cwd })) {
       return { ok: false, msg: `suggest "${c.command}": suggestion ${JSON.stringify(actual[suggestions.indexOf(s)])} did NOT make the command auto-approve` };
     }
   }
@@ -1382,19 +1478,34 @@ function runSuggestCase(c) {
 }
 
 /**
- * @param {{ command: string, patterns: string[], platform?: string, expected: boolean }} c
+ * Run one auto-approval case twice: with the working directory the server runs
+ * commands in (the project root, unless the case names another), and with none
+ * at all. The second run pins the no-cwd fallback a caller gets when it cannot
+ * supply one, where a relative path is judged solely on whether it escapes via
+ * `..` — most cases decide the same either way, and the ones that don't say so
+ * with `expectedNoCwd`.
+ * @param {ApprovalCase} c the case to run
  * @returns {{ ok: boolean, msg: string }} result object; ok is true when the auto-approval case matched its expectation, msg describes the mismatch otherwise
  */
 function runCase(c) {
-  const actual = isCommandAutoApproved(c.command, {
+  const opts = {
     platform: c.platform || 'darwin',
     home: TEST_HOME,
     allowedRoots: c.allowedRoots || [PROJECT_ROOT],
     patterns: c.patterns,
     writeEnabled: c.writeEnabled || false
-  });
-  if (actual !== c.expected) {
-    return { ok: false, msg: `expected ${c.expected} for "${c.command}" with patterns=${JSON.stringify(c.patterns)} platform=${c.platform || 'darwin'}, got ${actual}` };
+  };
+  const where = `for "${c.command}" with patterns=${JSON.stringify(c.patterns)} platform=${c.platform || 'darwin'}`;
+
+  const withCwd = isCommandAutoApproved(c.command, { ...opts, cwd: c.cwd || PROJECT_ROOT });
+  if (withCwd !== c.expected) {
+    return { ok: false, msg: `expected ${c.expected} ${where}, got ${withCwd}` };
+  }
+
+  const wantNoCwd = c.expectedNoCwd === undefined ? c.expected : c.expectedNoCwd;
+  const noCwd = isCommandAutoApproved(c.command, opts);
+  if (noCwd !== wantNoCwd) {
+    return { ok: false, msg: `expected ${wantNoCwd} with no cwd ${where}, got ${noCwd}` };
   }
   return { ok: true, msg: '' };
 }

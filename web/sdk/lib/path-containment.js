@@ -123,6 +123,35 @@ function toComparablePath(path, home = '', platform = '') {
 }
 
 /**
+ * Resolve a path against the directory a command actually runs in, so a
+ * relative argument can be judged as the concrete location it names.
+ *
+ * The shell tool's analyser knows the command's working directory (the project
+ * root, plus any `cd` it has walked through), which is what makes `../../js` a
+ * decidable path rather than a mystery. Only a genuinely relative path moves:
+ * an absolute or `~`-form path already names its location, and one carrying a
+ * shell expansion (`$`, backtick) is left alone for the containment check to
+ * refuse. With no known `cwd` the path is returned unchanged, so callers that
+ * don't track one keep the old relative-path behaviour.
+ *
+ * On Windows a drive path (`C:/proj`) names an absolute location while looking
+ * relative, so `platform` is consulted before joining — otherwise it would be
+ * glued onto the working directory and land somewhere that does not exist.
+ * @param {string} p input path
+ * @param {string} [cwd] absolute working directory, forward-slashed
+ * @param {string} [platform] conversation platform; 'windows' recognises drive paths as rooted
+ * @returns {string} `p` resolved against `cwd`, or `p` unchanged
+ */
+export function resolveAgainstCwd(p, cwd = '', platform = '') {
+  if (!p || !cwd) return p;
+  if (p.startsWith('/') || p.startsWith('~')) return p;
+  if (platform === 'windows' && /^[A-Za-z]:[\\/]/.test(p)) return p;
+  if (p.includes('$') || p.includes('`')) return p;
+  const base = cwd.endsWith('/') ? cwd.slice(0, -1) : cwd;
+  return posixNormalize(base + '/' + p);
+}
+
+/**
  * Does `p` resolve to a location inside any of `allowedRoots`?
  *
  * Static check only — no syscalls. Each root is matched independently; the

@@ -60,11 +60,12 @@
 import {
   posixNormalize,
   isPathInsideAllowedRoots,
+  resolveAgainstCwd,
   canonicalRoot,
   isGrantableRoot,
 } from 'juggler/utils/path-containment';
 import { checkedAt, tokenize, SUBST_SENTINEL, TOP_LEVEL_SPLIT_OPS } from './shell-tokenizer.js';
-import { COMMAND_HANDLERS } from './command-handlers.js';
+import { COMMAND_HANDLERS, pathAllowed } from './command-handlers.js';
 
 // The path-containment helpers used to live in this file; they now live in the
 // shared SDK module above so the file write/edit tools enforce containment with
@@ -90,6 +91,42 @@ const WINDOWS_NATIVE_TOKENS = new Set([
   'cls', 'ren', 'rename', 'where',
   'wscript', 'wscript.exe', 'cscript', 'cscript.exe'
 ]);
+
+/**
+ * Normalise the effective working directory into the one spelling the rest of
+ * the analyser resolves relative paths against: forward slashes, no trailing
+ * separator. The caller's cwd comes from `session.projectPath`, which is
+ * OS-native — backslash-separated on Windows — so it is folded there (only
+ * there: a backslash is a legal, if perverse, character in a POSIX filename).
+ * @param {string} [cwd] effective working directory, OS-native
+ * @param {string} [platform] conversation platform
+ * @returns {string} normalised cwd, or '' when unknown
+ */
+function normaliseCwd(cwd, platform = '') {
+  if (!cwd) return '';
+  const s = platform === 'windows' ? cwd.replace(/\\/g, '/') : cwd;
+  return s.length > 1 && s.endsWith('/') ? s.slice(0, -1) : s;
+}
+
+/**
+ * The working directory a `cd <target>` moves the shell to, given where it is
+ * standing now. `~`/`~/x` expands against the known home (as the shell would);
+ * everything else resolves against the current {@link ApprovalCtx.cwd}. Called
+ * only for a target that has already passed the containment check, so the
+ * result is a directory the command is allowed to be in.
+ * @param {string} target the `cd` argument
+ * @param {ApprovalCtx} ctx approval context (current cwd + home + platform)
+ * @returns {string} the new working directory
+ */
+function cdTargetCwd(target, ctx) {
+  let p = target;
+  if (ctx.home) {
+    const base = ctx.home.endsWith('/') ? ctx.home.slice(0, -1) : ctx.home;
+    if (p === '~' || p === '~/') p = base;
+    else if (p.startsWith('~/')) p = base + '/' + p.slice(2);
+  }
+  return normaliseCwd(resolveAgainstCwd(p, ctx.cwd || '', ctx.platform), ctx.platform);
+}
 
 // ============================================================================
 // Glob matching
@@ -138,7 +175,7 @@ export function matchesGlob(pattern, command) {
  */
 function isStrippableRedirectTarget(target, cfg = {}) {
   if (target === '/dev/null') return true;
-  return Boolean(cfg.writeEnabled) && isPathInsideAllowedRoots(target, cfg.allowedRoots || [], cfg.home || '', cfg.platform || '');
+  return Boolean(cfg.writeEnabled) && pathAllowed(target, cfg);
 }
 
 /**
@@ -237,10 +274,14 @@ function stripTrailingSafeSinks(tokens, cfg = {}) {
  * command separator (`&&`, `||`, or `;`, the last also covering an unquoted
  * newline, which tokenises as `;`) — so the rest of the command is judged on its
  * own. All three separators are treated identically: a leading `cd <in-root>;`
- * (or newline-joined) `cd` is no less safe than the `&&` form, since the analysis
- * is directory-agnostic and every segment is validated independently. Only `&&`
- * used to be stripped here, which spuriously rejected `cd X; make` while
- * approving `cd X && make`.
+ * (or newline-joined) `cd` is no less safe than the `&&` form, since every
+ * segment is validated independently.
+ *
+ * The directory the `cd` moves to is recorded on `ctx` before the tokens are
+ * dropped, because the segments that follow run there: `cd web/extensions &&
+ * grep -rn X ../../js` reads a path inside the project, and only a cwd-aware
+ * analysis can see that. {@link validateSegmentSequence} keeps that record up to
+ * date for any further `cd` in the sequence.
  *
  * Returns `null` when a leading `cd` IS present but is not a cleanly-strippable
  * `cd <in-root> <sep>` — a bare `cd` (→ $HOME), `cd -`, or an out-of-root target.
@@ -263,7 +304,8 @@ function stripLeadingSafeCd(tokens, ctx) {
   const t2 = checkedAt(tokens, 2);
   if (t1.type !== 'word') return null;
   if (t2.type !== 'op' || !TOP_LEVEL_SPLIT_OPS.has(t2.text)) return null;
-  if (!isPathInsideAllowedRoots(t1.text, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
+  if (!pathAllowed(t1.text, ctx)) return null;
+  ctx.cwd = cdTargetCwd(t1.text, ctx);
   return tokens.slice(3);
 }
 
@@ -587,7 +629,10 @@ function isSegmentSafe(segTokens, ctx) {
       /** @type {string[]} */
       const roots = [];
       for (const p of outOfRoot) {
-        const root = canonicalRoot(p, ctx.home);
+        // Against the working directory, so a path written `../../elsewhere`
+        // is recognised as the out-of-root read it is — the same refusal the
+        // absolute spelling of that path gets.
+        const root = canonicalRoot(resolveAgainstCwd(p, ctx.cwd || '', ctx.platform), ctx.home);
         if (root) roots.push(root);
       }
       if (outOfRoot.length > 0 && roots.length === outOfRoot.length) {
@@ -617,6 +662,7 @@ function isSegmentSafe(segTokens, ctx) {
  * @param {string} [opts.home] backend user-home dir for resolving `~/...` (default '')
  * @param {string[]} [opts.patterns] user-configured enabled glob patterns (default [])
  * @param {boolean} [opts.writeEnabled] file-writing permission is on for this conversation (default false)
+ * @param {string} [opts.cwd] absolute directory the command runs in (default '')
  * @returns {boolean} true to auto-approve
  */
 export function isCommandAutoApproved(command, opts = {}) {
@@ -632,10 +678,11 @@ export function isCommandAutoApproved(command, opts = {}) {
   const patterns = opts.patterns || [];
   const writeEnabled = Boolean(opts.writeEnabled);
   const home = opts.home || '';
+  const cwd = normaliseCwd(opts.cwd, platform);
 
   if (platform === 'windows' && !isWindowsPosixShaped(tokens)) return false;
 
-  const ctx = { platform, home, allowedRoots, patterns, writeEnabled, vars: new Map() };
+  const ctx = { platform, home, allowedRoots, patterns, writeEnabled, cwd, vars: new Map() };
 
   let working = stripTrailingSafeSinks(tokens, ctx);
   const afterCd = stripLeadingSafeCd(working, ctx);
@@ -901,11 +948,18 @@ function segmentRemedies(seg, interpreters, cfg) {
     const args = /** @type {WordToken[]} */ (seg.slice(1)).map(t => t.text);
     const candidates = handler.outOfRootPaths(args, cfg) || [];
     if (candidates.length > 0) {
-      const probe = { ...cfg, allowedRoots: [...(cfg.allowedRoots || []), ...candidates] };
+      // Resolve against the working directory before granting anything: a grant
+      // is stored as an absolute path, and `../../elsewhere` names a real folder
+      // only once you know where the command is standing. The probe grants the
+      // resolved form for the same reason — an escaping relative path can never
+      // be a root, so probing with the raw argument would always fail and the
+      // segment would be written off as unfixable by a grant.
+      const resolved = candidates.map(p => resolveAgainstCwd(p, cfg.cwd || '', cfg.platform));
+      const probe = { ...cfg, allowedRoots: [...(cfg.allowedRoots || []), ...resolved] };
       if (isSegmentSafe(seg, probe)) {
         pathIsSoleObstacle = true;
-        const roots = /** @type {string[]} */ (candidates.map(p => canonicalRoot(p, cfg.home)).filter(Boolean));
-        if (roots.length === candidates.length) paths = roots;
+        const roots = /** @type {string[]} */ (resolved.map(p => canonicalRoot(p, cfg.home)).filter(Boolean));
+        if (roots.length === resolved.length) paths = roots;
       }
     }
   }
@@ -960,6 +1014,7 @@ function segmentRemedies(seg, interpreters, cfg) {
  * @param {string[]} [opts.patterns] already-enabled glob patterns (default [])
  * @param {Set<string>|string[]} [opts.interpreters] heads that must never be wildcarded (default none)
  * @param {boolean} [opts.writeEnabled] file-writing permission is on for this conversation (default false)
+ * @param {string} [opts.cwd] absolute directory the command runs in (default '')
  * @returns {Array<{patterns?: string[], allowedPaths?: string[]}>} escalating suggestions, narrowest first
  */
 export function suggestApprovalPatterns(command, opts = {}) {
@@ -972,12 +1027,13 @@ export function suggestApprovalPatterns(command, opts = {}) {
   const patterns = opts.patterns || [];
   const writeEnabled = Boolean(opts.writeEnabled);
   const home = opts.home || '';
+  const cwd = normaliseCwd(opts.cwd, platform);
   const interpreters = opts.interpreters instanceof Set
     ? opts.interpreters
     : new Set(opts.interpreters || []);
 
   // Already approved → nothing to suggest.
-  if (isCommandAutoApproved(trimmed, { platform, home, allowedRoots, patterns, writeEnabled })) return [];
+  if (isCommandAutoApproved(trimmed, { platform, home, allowedRoots, patterns, writeEnabled, cwd })) return [];
 
   const tokens = tokenize(trimmed);
   if (!tokens || tokens.length === 0) return [];
@@ -987,7 +1043,7 @@ export function suggestApprovalPatterns(command, opts = {}) {
   // analysis time. Bail so the caller falls back to an exact whole-command rule.
   if (tokens.some(t => t.type === 'word' && /** @type {WordToken} */ (t).subst)) return [];
 
-  const ctx = { platform, home, allowedRoots, patterns, writeEnabled, vars: new Map() };
+  const ctx = { platform, home, allowedRoots, patterns, writeEnabled, cwd, vars: new Map() };
 
   let working = stripTrailingSafeSinks(tokens, ctx);
   const afterCd = stripLeadingSafeCd(working, ctx);
@@ -1036,7 +1092,7 @@ export function suggestApprovalPatterns(command, opts = {}) {
         if (!within.has(p)) { within.add(p); allowedPaths.push(p); }
       }
     }
-    if (isCommandAutoApproved(trimmed, { platform, home, allowedRoots: [...allowedRoots, ...allowedPaths], patterns, writeEnabled })) {
+    if (isCommandAutoApproved(trimmed, { platform, home, allowedRoots: [...allowedRoots, ...allowedPaths], patterns, writeEnabled, cwd })) {
       suggestions.push({ allowedPaths });
     }
   }
@@ -1063,7 +1119,7 @@ export function suggestApprovalPatterns(command, opts = {}) {
     const key = combined.join('\u0000');
     if (seen.has(key)) continue;
     seen.add(key);
-    if (!isCommandAutoApproved(trimmed, { platform, home, allowedRoots, patterns: [...patterns, ...combined], writeEnabled })) continue;
+    if (!isCommandAutoApproved(trimmed, { platform, home, allowedRoots, patterns: [...patterns, ...combined], writeEnabled, cwd })) continue;
     suggestions.push({ patterns: combined });
   }
   return suggestions;
@@ -1104,7 +1160,7 @@ function parsePureAssignment(seg) {
 function substOutputDomain(inner, ctx) {
   const innerOpts = {
     platform: ctx.platform, home: ctx.home, allowedRoots: ctx.allowedRoots,
-    patterns: ctx.patterns, writeEnabled: ctx.writeEnabled
+    patterns: ctx.patterns, writeEnabled: ctx.writeEnabled, cwd: ctx.cwd
   };
   if (!isCommandAutoApproved(inner, innerOpts)) return null;
 
@@ -1179,8 +1235,18 @@ const FLOW_BODY_INTRODUCERS = new Set(['do', 'then', 'else']);
  *
  * Any segment that doesn't open a block is validated as a normal command via
  * {@link isSegmentSafe}.
+ *
+ * A lone `cd <path>` segment moves the working directory recorded on `ctx`, so
+ * the segments after it are judged where they will actually run (see
+ * {@link applyCdSegment}). The walk assumes each `cd` it passes is reached and
+ * succeeds — a static analyser cannot know whether the directory exists, and
+ * that assumption is weaker than ones this containment check already makes: it
+ * is lexical, so a symlink inside an allowed root already points wherever it
+ * likes. A `cd` reached only through a `||` branch or a loop body is followed on
+ * the same terms. The one construct whose directory change genuinely cannot
+ * escape is a subshell, which is honoured below.
  * @param {ShellToken[][]} segments segments to validate
- * @param {{platform: string, allowedRoots: string[], patterns: string[]}} ctx context
+ * @param {ApprovalCtx} ctx context
  * @returns {boolean} true if every segment (and every body of every block) is safe
  */
 function validateSegmentSequence(segments, ctx) {
@@ -1216,14 +1282,22 @@ function validateSegmentSequence(segments, ctx) {
     // any safe trailing redirects/sinks (`( … ) >/dev/null`, `{ …; } 2>&1`),
     // then require the segment to be exactly one balanced group and validate
     // its interior as its own command sequence.
-    if (groupOpenerText(checkedAt(seg, 0))) {
+    //
+    // A subshell runs in its own process: a `cd` (or an assignment) inside it
+    // dies with the subshell, so its interior is validated against a copy of the
+    // context and the segments after `( … )` still run in the directory the
+    // group started from. A brace group runs in the current shell, where both do
+    // persist, so it shares the context.
+    const opener = groupOpenerText(checkedAt(seg, 0));
+    if (opener) {
       let g = stripInlineSafeRedirects(seg, ctx);
       g = stripTrailingSafeSinks(g, ctx);
       const inner = extractGroupInterior(g);
       if (inner === null) return false;
       const innerSegs = splitOnOps(inner, TOP_LEVEL_SPLIT_OPS).filter(s => s.length > 0);
       if (innerSegs.length === 0) return false;
-      if (!validateSegmentSequence(innerSegs, ctx)) return false;
+      const innerCtx = opener === '(' ? { ...ctx, vars: new Map(ctx.vars) } : ctx;
+      if (!validateSegmentSequence(innerSegs, innerCtx)) return false;
       i++;
       continue;
     }
@@ -1280,9 +1354,29 @@ function validateSegmentSequence(segments, ctx) {
     }
 
     if (!isSegmentSafe(seg, ctx)) return false;
+    applyCdSegment(seg, ctx);
     i++;
   }
   return true;
+}
+
+/**
+ * Follow a lone `cd <path>` segment, recording the directory it moves to so the
+ * segments after it are judged there. Called only once the segment has been
+ * accepted, so the target is already known to resolve inside an allowed root.
+ * Anything that is not exactly `cd <path>` — a bare `cd`, `cd -`, a `cd` with
+ * extra words — leaves the recorded directory alone.
+ * @param {ShellToken[]} seg accepted segment tokens
+ * @param {ApprovalCtx} ctx approval context, updated in place
+ * @returns {void}
+ */
+function applyCdSegment(seg, ctx) {
+  if (seg.length !== 2) return;
+  const head = checkedAt(seg, 0);
+  const target = checkedAt(seg, 1);
+  if (head.type !== 'word' || head.text !== 'cd') return;
+  if (target.type !== 'word') return;
+  ctx.cwd = cdTargetCwd(/** @type {WordToken} */ (target).text, ctx);
 }
 
 /**

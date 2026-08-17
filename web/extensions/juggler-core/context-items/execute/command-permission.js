@@ -36,6 +36,10 @@ export function isShellCommandPermitted(command, { messageThread, session, write
     platform: session?.platform || 'darwin',
     home: session?.home || '',
     allowedRoots: messageThread.getAllowedPaths(),
+    // The server runs every shell command at the project root (the bash op's
+    // scope root), so that is the directory a relative path — and a leading
+    // `cd` — is judged against.
+    cwd: session?.projectPath || '',
     patterns,
     writeEnabled
   });

@@ -15,6 +15,7 @@ of changes; this project follows semantic versioning.
 - The explore_code tool is now query_code, shown as "Script"; existing conversations keep working
 - Edited extensions now hot-reload for real, with a Reload button on the Extensions page
 - An extension that fails to reload now says so instead of quietly vanishing
+- Auto-approval follows `cd`, judging relative paths where the command actually runs
 
 ## [0.5.6] - 2026-08-14
 

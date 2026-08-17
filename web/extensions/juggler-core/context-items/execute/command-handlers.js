@@ -16,13 +16,39 @@
  * @module juggler-core/context-items/execute/command-handlers
  */
 
-import { isPathInsideAllowedRoots } from 'juggler/utils/path-containment';
+import { isPathInsideAllowedRoots, resolveAgainstCwd } from 'juggler/utils/path-containment';
 import { checkedAt } from './shell-tokenizer.js';
 
 /**
  * @typedef {import('./approval-types.js').ApprovalCtx} ApprovalCtx
  * @typedef {import('./approval-types.js').RedirectCfg} RedirectCfg
  */
+
+/**
+ * May this command read `p`? The one containment question every handler asks,
+ * so every handler asks it the same way.
+ *
+ * Resolves the path against the command's working directory first (see
+ * {@link resolveAgainstCwd}), which is what lets `../../js-tests` after a `cd`
+ * be judged as the place it actually names instead of being refused for looking
+ * like an escape. The working directory itself joins the allowed roots for the
+ * check: a relative path was always judged readable when it didn't escape via
+ * `..`, and that is exactly the grant the cwd-as-root carries over — nothing
+ * wider. With no known cwd the call degrades to the plain containment check.
+ * @param {string} p path argument
+ * @param {ApprovalCtx | RedirectCfg} ctx approval context (roots + cwd + home + platform)
+ * @returns {boolean} true if `p` resolves inside an allowed root
+ */
+export function pathAllowed(p, ctx) {
+  const cwd = ctx.cwd || '';
+  const roots = ctx.allowedRoots || [];
+  return isPathInsideAllowedRoots(
+    resolveAgainstCwd(p, cwd, ctx.platform || ''),
+    cwd ? [...roots, cwd] : roots,
+    ctx.home || '',
+    ctx.platform || ''
+  );
+}
 
 /**
  * Base class for a per-command safety policy.
@@ -110,7 +136,7 @@ export class CommandHandler {
   static outOfRootPaths(args, ctx) {
     const paths = this.pathArgs(args, ctx);
     if (paths === null) return [];
-    return paths.filter(p => !isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform));
+    return paths.filter(p => !pathAllowed(p, ctx));
   }
 
   /**
@@ -257,7 +283,7 @@ class CdHandler extends CommandHandler {
   static isSafe(args, ctx) {
     return args.length === 1
 			&& !checkedAt(args, 0).startsWith('-')
-			&& isPathInsideAllowedRoots(checkedAt(args, 0), ctx.allowedRoots, ctx.home, ctx.platform);
+			&& pathAllowed(checkedAt(args, 0), ctx);
   }
 }
 
@@ -315,7 +341,7 @@ class LsHandler extends CommandHandler {
     const paths = LsHandler._parsePaths(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -384,7 +410,7 @@ class DuHandler extends CommandHandler {
             val = checkedAt(args, ++i);
           }
           if ((flag === '--max-depth') && !/^\d+$/.test(val)) return null;
-          if (flag === '--exclude-from' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
+          if (flag === '--exclude-from' && !pathAllowed(val, ctx)) return null;
           continue;
         }
         return null;
@@ -402,7 +428,7 @@ class DuHandler extends CommandHandler {
             val = checkedAt(args, ++i);
           }
           if (ch === 'd' && !/^\d+$/.test(val)) return null;
-          if (ch === 'X' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
+          if (ch === 'X' && !pathAllowed(val, ctx)) return null;
           break;
         }
       }
@@ -419,7 +445,7 @@ class DuHandler extends CommandHandler {
     const paths = DuHandler._parseFlags(args, ctx);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -478,7 +504,7 @@ class FlaggedFileReader extends CommandHandler {
     const paths = this.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -625,7 +651,7 @@ class SortHandler extends CommandHandler {
     const start = SortHandler._parseFlags(args);
     if (start === -1) return false;
     for (let j = start; j < args.length; j++) {
-      if (!isPathInsideAllowedRoots(checkedAt(args, j), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(checkedAt(args, j), ctx)) return false;
     }
     return true;
   }
@@ -751,7 +777,7 @@ class UniqHandler extends CommandHandler {
     if (positionals === null) return false;
     if (positionals.length > 1) return false; // 2nd positional = output file
     for (const p of positionals) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -871,7 +897,7 @@ class CutHandler extends CommandHandler {
     const positionals = CutHandler._parseFlags(args);
     if (positionals === null) return false;
     for (const p of positionals) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -990,7 +1016,7 @@ class CatHandler extends CommandHandler {
     const paths = CatHandler.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -1051,7 +1077,7 @@ class TeeHandler extends CommandHandler {
     // — the same policy the `>`/`>>` redirect strip enforces.
     if (!ctx || !ctx.writeEnabled) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots || [], ctx.home || '', ctx.platform || '')) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -1145,11 +1171,11 @@ class GrepHandler extends CommandHandler {
           // Value is either the rest of the cluster or the next arg.
           const rest = cluster.slice(k + 1);
           if (rest.length > 0) {
-            if (ch === 'f' && !isPathInsideAllowedRoots(rest, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
+            if (ch === 'f' && !pathAllowed(rest, ctx)) return null;
           } else {
             if (i + 1 >= args.length) return null;
             const val = checkedAt(args, i + 1);
-            if (ch === 'f' && !isPathInsideAllowedRoots(val, ctx.allowedRoots, ctx.home, ctx.platform)) return null;
+            if (ch === 'f' && !pathAllowed(val, ctx)) return null;
             i++;
           }
           consumed = true;
@@ -1178,7 +1204,7 @@ class GrepHandler extends CommandHandler {
     // grep invocation (`grep /tmp/foo`). Treat it as a path obstacle for approval
     // rather than letting a broad `grep *` pattern bless it.
     if (positionals.length === 1 && (checkedAt(positionals, 0).startsWith('/') || checkedAt(positionals, 0).startsWith('~/'))) {
-      return isPathInsideAllowedRoots(checkedAt(positionals, 0), ctx.allowedRoots, ctx.home, ctx.platform);
+      return pathAllowed(checkedAt(positionals, 0), ctx);
     }
     // Drop the pattern (first positional) if present.
     const paths = positionals.slice(1);
@@ -1189,7 +1215,7 @@ class GrepHandler extends CommandHandler {
       return isRecursive;
     }
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -1319,7 +1345,7 @@ class FileHandler extends CommandHandler {
     const paths = FileHandler.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -1366,7 +1392,7 @@ class StatHandler extends CommandHandler {
     const paths = StatHandler.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -1448,7 +1474,7 @@ class TestHandler extends CommandHandler {
       const op = checkedAt(expr, 0);
       const operand = checkedAt(expr, 1);
       if (this.STRING_UNARY.has(op)) return true;
-      if (this.FILE_UNARY.has(op)) return isPathInsideAllowedRoots(operand, ctx.allowedRoots, ctx.home, ctx.platform);
+      if (this.FILE_UNARY.has(op)) return pathAllowed(operand, ctx);
       return false;
     }
     if (expr.length === 3) {
@@ -1458,8 +1484,7 @@ class TestHandler extends CommandHandler {
       if (this.STR_BINARY.has(op)) return true;
       if (this.INT_BINARY.has(op)) return /^-?\d+$/.test(a) && /^-?\d+$/.test(b);
       if (this.FILE_BINARY.has(op)) {
-        return isPathInsideAllowedRoots(a, ctx.allowedRoots, ctx.home, ctx.platform) &&
-          isPathInsideAllowedRoots(b, ctx.allowedRoots, ctx.home, ctx.platform);
+        return pathAllowed(a, ctx) && pathAllowed(b, ctx);
       }
       return false;
     }
@@ -1566,7 +1591,7 @@ class FindHandler extends CommandHandler {
 
     // Starting-point paths (zero or more). All must be in-project.
     while (i < args.length && !checkedAt(args, i).startsWith('-') && checkedAt(args, i) !== '!' && checkedAt(args, i) !== '(') {
-      if (!isPathInsideAllowedRoots(checkedAt(args, i), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(checkedAt(args, i), ctx)) return false;
       i++;
     }
 
@@ -1716,7 +1741,7 @@ class SedHandler extends CommandHandler {
     }
     // Remaining positionals are file paths — must be in-project.
     for (const p of parsed.paths) {
-      if (!isPathInsideAllowedRoots(p, ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -2003,16 +2028,28 @@ class AwkHandler extends CommandHandler {
   }
 
   /**
+   * Input files: everything after the script operand. Null when the flags or
+   * the script itself are unsafe, since no folder grant could rescue those.
+   * @param {string[]} args args
+   * @returns {string[] | null} input file paths, or null if the shape is unsafe
+   */
+  static pathArgs(args) {
+    const parsed = AwkHandler._parseFlags(args);
+    if (!parsed) return null;
+    if (!isSafeAwkScript(checkedAt(args, parsed.scriptIdx))) return null;
+    return args.slice(parsed.restStart);
+  }
+
+  /**
    * @param {string[]} args args
    * @param {ApprovalCtx} ctx ctx
    * @returns {boolean} safe
    */
   static isSafe(args, ctx) {
-    const parsed = AwkHandler._parseFlags(args);
-    if (!parsed) return false;
-    if (!isSafeAwkScript(checkedAt(args, parsed.scriptIdx))) return false;
-    for (let j = parsed.restStart; j < args.length; j++) {
-      if (!isPathInsideAllowedRoots(checkedAt(args, j), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+    const paths = AwkHandler.pathArgs(args);
+    if (paths === null) return false;
+    for (const p of paths) {
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -2150,6 +2187,49 @@ class GitHandler extends CommandHandler {
   };
 
   /**
+   * The paths git is pointed at: the repository-location options (`-C`,
+   * `--git-dir=`, `--work-tree=`) plus every positional the subcommand would
+   * treat as a pathspec rather than a ref — anything after `--`, and anything
+   * that doesn't look like a ref name ({@link REF_RE}), which is how
+   * {@link isSafePositional} classifies it.
+   *
+   * Best-effort by design: this decides which arguments a folder grant would
+   * have to cover, not whether the command is safe. A git invocation rejected
+   * for any other reason (an unknown flag, a write subcommand) fails the
+   * caller's re-check with those folders granted, so no grant is offered.
+   * @param {string[]} args args
+   * @returns {string[] | null} path arguments, or null if the shape is unsafe
+   */
+  static pathArgs(args) {
+    /** @type {string[]} */
+    const paths = [];
+    let i = 0;
+    while (i < args.length && checkedAt(args, i).startsWith('-')) {
+      const a = checkedAt(args, i);
+      if (a === '--no-pager' || a === '--paginate' || a === '--no-replace-objects' || a === '--bare') { i++; continue; }
+      if (a === '-C') {
+        if (i + 1 >= args.length) return null;
+        paths.push(checkedAt(args, i + 1));
+        i += 2;
+        continue;
+      }
+      if (a.startsWith('--git-dir=')) { paths.push(a.slice('--git-dir='.length)); i++; continue; }
+      if (a.startsWith('--work-tree=')) { paths.push(a.slice('--work-tree='.length)); i++; continue; }
+      return null;
+    }
+    if (i >= args.length) return null;
+    if (!GitHandler.READ_ONLY_SUBCOMMANDS.has(checkedAt(args, i++))) return null;
+    let pathspecs = false;
+    for (let j = i; j < args.length; j++) {
+      const a = checkedAt(args, j);
+      if (a === '--') { pathspecs = true; continue; }
+      if (!pathspecs && (a.startsWith('-') || GitHandler.REF_RE.test(a))) continue;
+      paths.push(a);
+    }
+    return paths;
+  }
+
+  /**
    * @param {string[]} args args
    * @param {ApprovalCtx} ctx ctx
    * @returns {boolean} safe
@@ -2162,17 +2242,17 @@ class GitHandler extends CommandHandler {
       if (a === '--no-pager' || a === '--paginate' || a === '--no-replace-objects' || a === '--bare') { i++; continue; }
       if (a === '-C') {
         if (i + 1 >= args.length) return false;
-        if (!isPathInsideAllowedRoots(checkedAt(args, i + 1), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+        if (!pathAllowed(checkedAt(args, i + 1), ctx)) return false;
         i += 2;
         continue;
       }
       if (a.startsWith('--git-dir=')) {
-        if (!isPathInsideAllowedRoots(a.slice('--git-dir='.length), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+        if (!pathAllowed(a.slice('--git-dir='.length), ctx)) return false;
         i++;
         continue;
       }
       if (a.startsWith('--work-tree=')) {
-        if (!isPathInsideAllowedRoots(a.slice('--work-tree='.length), ctx.allowedRoots, ctx.home, ctx.platform)) return false;
+        if (!pathAllowed(a.slice('--work-tree='.length), ctx)) return false;
         i++;
         continue;
       }
@@ -2457,7 +2537,7 @@ class GitHandler extends CommandHandler {
    * @returns {boolean} in-project path
    */
   static isPathPositional(arg, ctx) {
-    return isPathInsideAllowedRoots(arg, ctx.allowedRoots, ctx.home, ctx.platform);
+    return pathAllowed(arg, ctx);
   }
 }
 

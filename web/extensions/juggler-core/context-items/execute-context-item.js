@@ -6,6 +6,7 @@
 import ContextItem from 'juggler/context-item';
 import { shell, shellStreaming, shellBackground, MAX_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { createHighlightedCode, createSummaryWithSubtitle } from 'juggler/ui';
+import { resolveAgainstCwd } from 'juggler/utils/path-containment';
 import { isCommandAutoApproved, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
 import { isShellCommandPermitted, isShellCommandCatastrophic } from './execute/command-permission.js';
 import { renderExecutePermissionSection } from './execute/permission-section.js';
@@ -394,6 +395,7 @@ class ExecuteContextItem extends ContextItem {
     const mt = this.messageThread;
     const platform = this.conversation.session?.platform || 'darwin';
     const home = this.conversation.session?.home || '';
+    const cwd = this.conversation.session?.projectPath || '';
     const interpreters = platform === 'windows'
       ? ExecuteContextItem.WINDOWS_INTERPRETERS
       : ExecuteContextItem.UNIX_INTERPRETERS;
@@ -416,11 +418,12 @@ class ExecuteContextItem extends ContextItem {
         home,
         allowedRoots: [...allowedRoots, ...extraAllowedRoots],
         patterns: [...patterns, ...extraPatterns],
-        writeEnabled
+        writeEnabled,
+        cwd
       });
     };
 
-    const tiers = suggestApprovalPatterns(command, { platform, home, allowedRoots, patterns, interpreters, writeEnabled });
+    const tiers = suggestApprovalPatterns(command, { platform, home, allowedRoots, patterns, interpreters, writeEnabled, cwd });
     if (tiers.length > 0) {
       /** @type {import('juggler/context-item').ApprovalSuggestion[]} */
       const suggestions = [];
@@ -487,6 +490,7 @@ class ExecuteContextItem extends ContextItem {
     const mt = this.messageThread;
     const platform = this.conversation.session?.platform || 'darwin';
     const home = this.conversation.session?.home || '';
+    const cwd = this.conversation.session?.projectPath || '';
     const allowedRoots = mt?.getAllowedPaths?.() || [];
     const patterns = (mt?.getRulesFor('execute') || [])
       .filter(r => r.kind === 'glob')
@@ -505,7 +509,8 @@ class ExecuteContextItem extends ContextItem {
       home,
       allowedRoots: [...allowedRoots, ...(extras.extraAllowedRoots || [])],
       patterns: [...patterns, ...(extras.extraPatterns || [])],
-      writeEnabled
+      writeEnabled,
+      cwd
     });
 
     const text = typeof editedText === 'string' ? editedText.trim() : '';
@@ -513,7 +518,7 @@ class ExecuteContextItem extends ContextItem {
 
     const isPathGrant = Array.isArray(original?.allowedPaths) && original.allowedPaths.length > 0;
     return isPathGrant
-      ? ExecuteContextItem._reviseFolderGrant(text, home, approvesWith)
+      ? ExecuteContextItem._reviseFolderGrant(text, home, cwd, approvesWith)
       : ExecuteContextItem._reviseCommandGlob(text, approvesWith);
   }
 
@@ -541,17 +546,20 @@ class ExecuteContextItem extends ContextItem {
   }
 
   /**
-   * Re-derive a folder-grant suggestion from edited text. Un-tildeifies to an
-   * absolute path, requires a grantable root that actually covers the command,
-   * and warns (but allows) when the granted tree is broad.
-   * @param {string} text - Edited folder path (already trimmed, possibly tilde-form)
+   * Re-derive a folder-grant suggestion from edited text. Resolves to an
+   * absolute path — `~` against the home dir, a relative path against the
+   * directory the command runs in, so `web/js` means what the user expects —
+   * requires a grantable root that actually covers the command, and warns (but
+   * allows) when the granted tree is broad.
+   * @param {string} text - Edited folder path (already trimmed, possibly tilde- or relative-form)
    * @param {string} home - Backend home dir
+   * @param {string} cwd - Directory the command runs in
    * @param {(extras?: {extraAllowedRoots?: string[]}) => boolean} approvesWith - Dry-run guard
    * @returns {{allowedPaths?: string[], patterns: string[], valid: boolean, notice?: string}} Re-derived suggestion
    */
-  static _reviseFolderGrant(text, home, approvesWith) {
+  static _reviseFolderGrant(text, home, cwd, approvesWith) {
     if (!text) return { valid: false, patterns: [], notice: 'Enter a folder path' };
-    const abs = ExecuteContextItem._untildeify(text, home);
+    const abs = resolveAgainstCwd(ExecuteContextItem._untildeify(text, home), cwd);
     if (!abs || !abs.startsWith('/')) {
       return { valid: false, patterns: [text], notice: 'Not a valid folder' };
     }

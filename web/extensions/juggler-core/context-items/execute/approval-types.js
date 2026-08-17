@@ -15,9 +15,9 @@
  * @typedef {{type: 'word', text: string, raw: string, start: number, end: number, subst?: string[], unquotedVar?: boolean}} WordToken
  * @typedef {{type: 'op', text: string, start: number, end: number}} OpToken
  * @typedef {WordToken | OpToken} ShellToken
- * @typedef {{platform: string, allowedRoots: string[], home?: string, patterns?: string[], writeEnabled?: boolean, vars?: Map<string, VarProvenance>}} ApprovalCtx
+ * @typedef {{platform: string, allowedRoots: string[], home?: string, patterns?: string[], writeEnabled?: boolean, cwd?: string, vars?: Map<string, VarProvenance>}} ApprovalCtx
  * @typedef {{kind: 'literal', value: string} | {kind: 'inProjectPath'}} VarProvenance
- * @typedef {{allowedRoots?: string[], writeEnabled?: boolean, home?: string, platform?: string}} RedirectCfg
+ * @typedef {{allowedRoots?: string[], writeEnabled?: boolean, home?: string, platform?: string, cwd?: string}} RedirectCfg
  */
 
 // no runtime exports; file is imported for typedefs only
