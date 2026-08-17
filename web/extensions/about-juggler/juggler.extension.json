@@ -8,6 +8,7 @@
   "engineApi": "^1.0.0",
   "permissions": [],
   "provides": {
-    "contextItems": ["context-items/*-context-item.js"]
+    "contextItems": ["context-items/*-context-item.js"],
+    "tests": ["_tests/*-test.js"]
   }
 }

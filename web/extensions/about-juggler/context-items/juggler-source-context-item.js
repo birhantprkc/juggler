@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
+import { resolveAssetUrl } from '../../../js/utils/asset-url.js';
 
 /**
  * Normalise a caller-supplied path to a served, root-relative asset URL, or
@@ -52,12 +53,14 @@ function toAssetURL(raw) {
  * Juggler extension without the repo checked out.
  *
  * The About-Juggler manual (the AboutJuggler tool) points at these files for the
- * exact API; this tool fetches them from the running app. It executes in the
- * viewer, which is same-origin with the server, so a plain fetch() of the
- * app-served asset paths works offline and with no repo — unlike the WebFetch
- * tool, which only reaches external https URLs. Reads are restricted to the
- * sdk/ and extensions/ trees so this stays a documentation-reading tool, not an
- * arbitrary same-origin fetch.
+ * exact API; this tool fetches them from the running app. It executes
+ * same-origin with the server, so a fetch() of the app-served asset paths works
+ * offline and with no repo — unlike the WebFetch tool, which only reaches
+ * external https URLs. Those assets are mounted under the cache-busting
+ * "/v<staticVersion>" prefix and only there, so the request goes through
+ * resolveAssetUrl(); the unprefixed path is what the caller asked for and stays
+ * the reported path. Reads are restricted to the sdk/ and extensions/ trees so
+ * this stays a documentation-reading tool, not an arbitrary same-origin fetch.
  * @class
  * @augments ContextItem
  */
@@ -152,7 +155,7 @@ class JugglerSourceContextItem extends ContextItem {
     if (typeof doFetch !== 'function') {
       throw new Error('No fetch available to read Juggler source in this context');
     }
-    const res = await doFetch(url);
+    const res = await doFetch(resolveAssetUrl(url));
     if (!res.ok) {
       throw new Error('Could not read ' + url + ' (HTTP ' + res.status + ')');
     }
