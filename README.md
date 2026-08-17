@@ -132,49 +132,87 @@ Constructive feedback is welcome — come and say hello on the [Discord](https:/
 
 ## Building from source
 
-The idea with the extensions system is that most people won't need to actually build the app. If you do, there's no frontend build step and nothing to install beyond Go — the binaries are the whole thing. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full development setup.
+Most customisation can be done through extensions without rebuilding Juggler. If you do need to build it, there is no frontend build step: Go compiles the binaries and embeds the HTML and JavaScript directly. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full development setup.
 
-**You need:** Go 1.26+, and on Linux the GTK4/WebKitGTK development packages (the server runs its engine in a hidden webview):
+### Clone the repository
 
-```bash
-sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev   # Ubuntu 24.04+/Debian
-```
-
-Then:
+All platforms require Go 1.26+ and the vendored submodules:
 
 ```bash
 git clone --recurse-submodules https://github.com/juggler-ai/juggler.git
 cd juggler
+```
+
+If you already cloned without `--recurse-submodules`, run:
+
+```bash
+git submodule update --init --recursive
+```
+
+### macOS
+
+Build the app and server:
+
+```bash
 make go-build
 ```
 
-If you already cloned without `--recurse-submodules`, fetch them with `git submodule update --init --recursive`.
+This creates `bin/Juggler.app`, with both binaries inside the bundle, and `bin/juggler` and `bin/juggler-app` symlinks pointing into it. Run the desktop app or headless server with:
 
-That leaves everything in `bin/`:
+```bash
+open bin/Juggler.app
+./bin/juggler
+```
 
-| Platform | What you get | Run it |
-|---|---|---|
-| macOS | `bin/Juggler.app`, with both binaries inside the bundle, plus `bin/juggler` and `bin/juggler-app` symlinks into it | `open bin/Juggler.app`, or `./bin/juggler` for the headless server |
-| Linux, Windows | `bin/juggler` (server) and `bin/juggler-app` (desktop app), side by side | `./bin/juggler`, or run the app |
+To create the same DMG layout used for official downloads, install `create-dmg` with `brew install create-dmg`, then run `make mac-dmg`. Locally built bundles are ad-hoc signed, so Gatekeeper will object if you move them to another machine.
 
-`make go-build` just compiles. `make build` lints first, which additionally needs Node — it installs the JS/CSS toolchain into `tooling/` on first run — and is what you want before opening a PR. `make test` runs the whole suite and needs no API keys. `make help` lists every target.
+The default build uses your Mac's architecture. An `x86/amd64` build for an Intel Mac can also be built locally.
 
-To build the same installers and archives the official downloads use: `make mac-dmg` (needs `brew install create-dmg`), `make win-installer` (needs Inno Setup, run on Windows), `make linux-tarball`. These are unsigned — a macOS bundle built here is ad-hoc signed, so other machines' Gatekeeper will object to it.
+### Linux
 
-The Linux desktop app must be built natively on Linux. If you want to build for a `x86/amd64` Intel Mac, you can build that locally. For a Linux host with no display, see [`docs/headless-linux.md`](docs/headless-linux.md).
+The server runs its engine in a hidden webview, so both the server and desktop app need the GTK4 and WebKitGTK development packages at build time. On Ubuntu 24.04 or Debian:
 
-#### Building on Windows
+```bash
+sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev
+```
 
-Windows doesn't ship `make`, and this repo's recipes need a POSIX shell, so the supported setup is Git Bash plus a GNU make:
+Then build both binaries:
+
+```bash
+make go-build
+```
+
+This creates `bin/juggler` (the server) and `bin/juggler-app` (the desktop app). Run either with:
+
+```bash
+./bin/juggler
+./bin/juggler-app
+```
+
+Linux desktop builds must be made natively on Linux. Use `make linux-tarball` to package the binaries in the same archive layout as the official download. For a host with no display, see [`docs/headless-linux.md`](docs/headless-linux.md).
+
+### Windows
+
+The supported environment is Git Bash with GNU make. Install both with:
 
 ```bash
 winget install Git.Git
 winget install ezwinports.make
 ```
 
-That combination is what CI uses on its Windows runner, so the targets above are proven to work there. Avoid GnuWin32's make — it's version 3.81 from 2006. One adjustment: `make test` needs `RACE=` (the default `-race` requires a C compiler, which Windows usually lacks).
+This is the combination used by CI. Avoid GnuWin32's make, which is still version 3.81 from 2006.
 
-If you'd rather not install make at all, a quick build is just `go build`:
+From Git Bash, build the native Windows binaries with:
+
+```bash
+make go-build
+```
+
+This creates `bin/juggler.exe` (the server) and `bin/juggler-app.exe` (the desktop app). To create the same installer layout as the official download, install Inno Setup and run `make win-installer`.
+
+`make test` normally enables Go's race detector. If you do not have a C compiler installed, run it as `make test RACE=`.
+
+For a quick build without installing make:
 
 ```bash
 mkdir -p bin
@@ -182,9 +220,13 @@ go build -o bin/juggler.exe ./cmd/juggler
 go build -o bin/juggler-app.exe ./cmd/juggler-app
 ```
 
-WSL2 works too, but builds the Linux binaries — the Linux backend links GTK/WebKitGTK, not a native `.exe`.
+WSL2 also works, but it builds Linux binaries linked against GTK/WebKitGTK, not native Windows `.exe` files.
 
-CI on this repo is a sanity gate — lint, build, test — and deliberately publishes no artifacts, so there are no per-commit builds to download. The official signed builds come from a separate release pipeline.
+### Development commands
+
+`make go-build` only compiles the Go code. `make build` runs the linters first and is the target to use before opening a PR; it also requires Node and installs the JS/CSS toolchain into `tooling/` on first run. `make test` runs the entire test suite without needing API keys. Run `make help` to list every target.
+
+CI is a sanity gate for linting, builds, and tests. It deliberately publishes no artifacts, so there are no per-commit builds to download; official signed builds come from a separate release pipeline.
 
 ## Tech stack
 
