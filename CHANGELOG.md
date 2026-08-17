@@ -5,15 +5,17 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Binning a conversation offers a few seconds of Undo above the Bin
+- Extensions can ship a sub-agent: a tool running under a strategy the tool itself owns
+- New Explore and Research tools investigate in their own context, returning only the answer
 - Refactored to simplify sub-threads and to make them resumable sessions. An LLM can now append to an existing subthread and get subsequent results from it. Removed the concept of summarising threads or marking them closed.
 - Big revamp of the transaction panel
+- Binning a conversation offers a few seconds of Undo above the Bin
 - Each item's properties header shows its token cost, exact when that info is available
-- New settings stop tabs highlighting, or floating to the top, when a conversation wants you
+- Edited extensions now hot-reload for real, with a Reload button on the Extensions page
+- New settings allow you to turn off tab highlighting, or floating to the top when a conversation needs attention
 - llama.cpp models report the context window the server really serves, multi-model setups included
 - The transaction view stays open as you browse, following whichever item is selected
 - The explore_code tool is now query_code, shown as "Script"; existing conversations keep working
-- Edited extensions now hot-reload for real, with a Reload button on the Extensions page
 - An extension that fails to reload now says so instead of quietly vanishing
 - Auto-approval follows `cd`, judging relative paths where the command actually runs
 

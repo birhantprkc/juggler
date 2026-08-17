@@ -326,15 +326,25 @@ export function setupWorkerCallbacks(session) {
 
   // Handle tool definitions requests from workers
   workerManager.setOnToolsRequest(async (request, conversationId) => {
-    /** @type {{requestId: string}} */
+    /** @type {{requestId: string, threadItemId?: string}} */
     const req = /** @type {*} */ (request);
 
     try {
       let tools = await generateToolDefinitions();
 
-      // Let the active strategy filter tools (e.g., plan strategy restricts to read-only during planning)
+      // Let the strategy of the thread this turn belongs to filter the tools
+      // (e.g. plan restricts to read-only while planning; a sub-agent is offered
+      // only what its brief needs). Resolved per thread rather than from root,
+      // because a sub-thread carries its own strategy: filtering its turn
+      // through the root's would hand it tools its own strategy withholds, and
+      // the approval gate — which resolves the OWNING thread (findThreadForTool
+      // → handleNewToolAction) — would then be the only thing standing between
+      // the sub-agent and a tool it was never meant to see.
       const conv = session.conversations.get(conversationId);
-      const strategy = conv?.rootMessageThread?.strategy;
+      const thread = req.threadItemId
+        ? conv?.getAllMessageThreads?.().find((/** @type {any} */ mt) => mt.threadItemId === req.threadItemId)
+        : conv?.rootMessageThread;
+      const strategy = (thread || conv?.rootMessageThread)?.strategy;
       if (strategy?.filterTools) {
         tools = /** @type {typeof tools} */ (strategy.filterTools(tools));
       }

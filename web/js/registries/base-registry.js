@@ -317,8 +317,9 @@ class BaseRegistry {
    * A class whose id collides with an already-registered (or config-disabled)
    * capability is NOT registered — it is recorded as a failed module so the id's
    * existing owner keeps it, and the collision is surfaced in the manager UI.
-   * This enforces the rule that a user command may never shadow a
-   * built-in/extension command.
+   * This enforces the rule that a late-registered capability may never shadow a
+   * module-loaded one (a user command can't shadow a built-in command; an
+   * item-owned strategy can't shadow a file-based strategy).
    * @param {T} ItemClass - The class to register (must have a valid MANIFEST)
    * @param {{extensionId?: string|null, modulePath?: string}} [opts] - Attribution
    * @returns {{registered: boolean, id?: string, reason?: string}} Outcome
@@ -333,9 +334,7 @@ class BaseRegistry {
     }
     const id = /** @type {any} */ (ItemClass).MANIFEST.id;
     if (this.items.has(id) || this._disabledItems.has(id)) {
-      const reason =
-        `A command named /${id} already exists (built-in or from an extension), ` +
-        `so your custom /${id} was skipped. Rename your command to a name that isn't taken.`;
+      const reason = this.collisionMessage(id);
       this._failedModules.set(modulePath || id, reason);
       return { registered: false, id, reason };
     }
@@ -343,6 +342,19 @@ class BaseRegistry {
     this.modulePaths.set(id, modulePath);
     this.itemExtensions.set(id, extensionId);
     return { registered: true, id };
+  }
+
+  /**
+   * The message shown when {@link registerClass} is handed an id that is already
+   * taken. Generic by default, since every registry shares this path; a registry
+   * whose capabilities the user names directly (commands) overrides it to say so
+   * in the user's own vocabulary.
+   * @param {string} id - The colliding capability id
+   * @returns {string} Human-readable explanation of what was skipped and why
+   * @protected
+   */
+  collisionMessage(id) {
+    return `A capability with the id "${id}" is already registered (built-in or from an extension), so this one was skipped.`;
   }
 
   /**
@@ -364,6 +376,18 @@ class BaseRegistry {
    */
   getIncludingDisabled(id) {
     return this.items.get(id) ?? this._disabledItems.get(id);
+  }
+
+  /**
+   * The id of the extension that provided a capability (null when it has no
+   * owning extension, or the id isn't registered). Lets one registry attribute a
+   * capability it derives from another's — an item-owned strategy is registered
+   * under the extension that ships the item.
+   * @param {string} id - Item ID
+   * @returns {string|null} Owning extension id, or null
+   */
+  getExtensionId(id) {
+    return this.itemExtensions.get(id) ?? null;
   }
 
   /**

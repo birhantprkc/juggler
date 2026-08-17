@@ -16,6 +16,7 @@
 import contextItemRegistry from '../../js/registries/context-item-registry.js';
 import strategyRegistry from '../../js/registries/strategy-registry.js';
 import { markRegistriesReady } from '../../js/registries/registry-ready.js';
+import { registerItemOwnedStrategies } from '../../js/registries/reload-registries.js';
 import { ContextBuilder } from '../../js/services/context-builder.js';
 import {
   createToolActionMessage,
@@ -58,6 +59,11 @@ export async function initializeRegistries() {
   if (!strategyRegistry.isInitialized()) {
     await strategyRegistry.init();
   }
+  // Context items may own (hidden) strategies of their own — the sub-agent
+  // pattern. Production runs this pass inside initAllRegistries(); this harness
+  // inits the two registries by hand, so it has to run it too or a sub-agent's
+  // strategy is simply missing under test.
+  registerItemOwnedStrategies();
   // The unit harness initializes registries directly (not via app.js /
   // engine-app.js / reload-registries.js), so it must also flip the
   // registries-ready signal. Without this, buildExtensionSystemPromptContributions

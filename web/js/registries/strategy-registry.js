@@ -70,18 +70,30 @@ class StrategyRegistry extends BaseRegistry {
   /**
    * Get all strategy manifests for system prompt
    *
-   * Returns manifest metadata for all registered strategies, ordered for
-   * display: built-in strategies first in the host's curated order, then any
-   * remaining strategies by their manifest `order` hint (stable on ties).
-   * Both the strategy selector and the command-editor strategy list read
-   * from here, so this is the single chokepoint for display ordering.
+   * The ENUMERATION accessor: manifest metadata for every registered strategy a
+   * user may be offered, ordered for display: built-in strategies first in the
+   * host's curated order, then any remaining strategies by their manifest
+   * `order` hint (stable on ties). The strategy selector, the Shift+Tab cycle
+   * ring, the default-strategy picker and the command-editor strategy list all
+   * read from here, so this is the single chokepoint for both display ordering
+   * and the `hidden` filter.
+   *
+   * A `hidden` strategy is excluded here and ONLY here: `get()` and
+   * `createStrategy()` deliberately still resolve hidden ids, because a subagent
+   * item pins its own hidden strategy on a delegated subthread and that thread
+   * must be able to instantiate it. Filtering at this one chokepoint (rather
+   * than at each call site) is also what keeps a hidden strategy out of the two
+   * first-available fallbacks below — ordering is by `manifest.order` then load
+   * order, so an unfiltered hidden strategy sorting first could silently become
+   * a user's conversation default.
    * @returns {Array<{id: string, manifest: import('juggler/strategy-type').StrategyManifest, modulePath: string, extensionId: string|null}>} Array of strategy metadata
    */
   getAllManifests() {
     // Same shape the base builds (id/manifest/modulePath/extensionId) — every
     // registered strategy is guaranteed a MANIFEST by validateClass at load —
-    // then reordered for display.
-    return /** @type {any} */ (orderStrategies(this.getManifests()));
+    // minus the hidden ones, then reordered for display.
+    const visible = this.getManifests().filter(({ manifest }) => /** @type {any} */ (manifest).hidden !== true);
+    return /** @type {any} */ (orderStrategies(visible));
   }
 
   /**

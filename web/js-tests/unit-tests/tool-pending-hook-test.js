@@ -30,6 +30,9 @@
  *   9. A hook that resolves with `{note}` leaves a settled (non-busy)
  *      `reviewStatus` carrying that note, so a still-parked call says why; a
  *      rejected hook clears instead, and the note never resolves the tool.
+ *  10. A hook that refuses the call (`refuseApproval`) settles it as a FAILED
+ *      tool, not a cancelled one — the worker stops the turn on a cancelled
+ *      tool, so a refusal recorded that way would end the run.
  * @module unit-tests/tool-pending-hook-test
  */
 
@@ -447,6 +450,56 @@ export async function runTests(_ctx) {
     } catch (e) {
       failed++;
       errors.push(`settled note sticks, rejection clears: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    // =======================================================================
+    // Test 10: refusing a parked call settles it as a failed tool
+    //
+    // The worker reads a CANCELLED tool as a human denial and stops the turn
+    // (anyBatchCancelled, thread_reducer.go). Automation declining on behalf of
+    // an absent user means the opposite — "this one call didn't work, carry on"
+    // — so refuseApproval completes the call with an error result instead. This
+    // is what lets a sub-agent, which has no human to approve anything, refuse
+    // a parked call without ending its own run.
+    // =======================================================================
+    try {
+      const conversation = await createApprovalTestConversation(session);
+      const mt = conversation.rootMessageThread;
+
+      const toolUseId = insertUnstartedBash(conversation, 'refused-1', 'echo refuse me');
+      mt.strategy = {
+        getApprovalPolicy: () => 'require-approval',
+        onToolPending: (/** @type {any} */ info) => {
+          mt.refuseApproval(info.toolUseId, 'Refused: nobody here can approve that.');
+        }
+      };
+
+      await handleNewToolAction(mt, toolUseId, conversation);
+
+      const ta = mt.getToolAction(toolUseId);
+      assert(ta?.get('state') === TOOL_STATES.COMPLETED,
+        `a refusal must settle the call as completed, got ${ta?.get('state')}`);
+      const result = ta?.get('result');
+      /**
+       * @param {string} k - Result field name
+       * @returns {any} The field, read through Y.Map or plain object
+       */
+      const field = (k) => (result?.get ? result.get(k) : result?.[k]);
+      assert(field('isError') === true,
+        'a refused call must report as an error, so the model sees a tool that failed');
+      assert(field('cancelled') !== true,
+        'a refused call must NOT be flagged cancelled — the worker reads that as a denial and stops the turn');
+      assert(String(field('content') || '').includes('Refused'),
+        `the refusal reason must reach the model, got ${JSON.stringify(field('content'))}`);
+
+      // Already settled: a second refusal writes nothing and says so.
+      assert(mt.refuseApproval(toolUseId, 'again') === false,
+        'refuseApproval must report false for a call that has already left PENDING');
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`refusal completes rather than cancels: ${e instanceof Error ? e.message : String(e)}`);
     }
   } finally {
     /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;

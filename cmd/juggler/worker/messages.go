@@ -483,11 +483,20 @@ type RunContextHookRequest struct {
 // session — which is the safe direction to fail in, since an unwanted create
 // only costs a slower correct answer. A tool that wants this exposes it as an
 // optional argument on its own schema and passes it through here.
+//
+// StrategyID and ModelConfig map onto CreateThreadOptions.StrategyID /
+// ModelConfigJSON exactly as Goal/Prompt/ResultSpec map onto their fields: they
+// pin the child's strategy and model, and omitting them leaves the child
+// inheriting from its parent. A tool that owns a hidden strategy (a subagent)
+// names it here, which is how a delegated run gets its own tool filter and
+// approval policy without the strategy appearing in any user-facing list.
 type SubthreadSpec struct {
-	Goal        string `json:"goal"`
-	Prompt      string `json:"prompt"`
-	ResultSpec  string `json:"resultSpec,omitempty"`
-	SessionName string `json:"sessionName,omitempty"`
+	Goal        string          `json:"goal"`
+	Prompt      string          `json:"prompt"`
+	ResultSpec  string          `json:"resultSpec,omitempty"`
+	SessionName string          `json:"sessionName,omitempty"`
+	StrategyID  string          `json:"strategyId,omitempty"`
+	ModelConfig json.RawMessage `json:"modelConfig,omitempty"`
 }
 
 // BuildSubthreadSpecRequest asks the engine to run a delegating tool's

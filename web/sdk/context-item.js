@@ -464,6 +464,11 @@ class ContextItem {
    * the browser (engine), after `validate()`. Returning a spec delegates the
    * call to a child agent run (whose last message becomes this tool's result);
    * returning `null` runs the ordinary client-side `execute()`.
+   *
+   * The spec may pin the child's `strategyId` and `modelConfig`; omitting them
+   * inherits from the calling thread. Naming a hidden strategy this item owns
+   * (see {@link ContextItem.getStrategies}) is what turns a delegating tool into
+   * a subagent — a named context boundary with its own tool filter.
    * [Context: engine]
    * @param {Record<string, unknown>} toolInput - Validated tool input.
    * @param {SubthreadBuildContext} ctx - { conversation, session, signal }.
@@ -1088,6 +1093,33 @@ class ContextItem {
    * @returns {Array<{name: string, category: string, description: string, input_schema: object}>} Array of tool definitions
    */
   static getToolDefinitions() {
+    return [];
+  }
+
+  /**
+   * Strategy classes this item owns — registered on load and forced hidden.
+   *
+   * This is how a delegating item becomes a **subagent**: return a strategy
+   * class here, name its id from {@link buildSubthreadSpec}, and the delegated
+   * child runs under a tool filter, approval policy and guidance the item
+   * itself defines — without that strategy ever appearing in the strategy
+   * selector, the Shift+Tab ring, the default picker or the command editor.
+   * The id is an implementation detail the user never sees; the tool's own name
+   * and description are the whole user-facing surface.
+   *
+   * Put the class in a module next to the item (NOT under the extension's
+   * `strategies/` directory, whose glob would register it as an ordinary
+   * visible strategy) and import it here.
+   *
+   * A subagent thread has no human steering it, so its strategy must be able to
+   * auto-approve everything it exposes: any tool it offers but cannot approve
+   * is a hang, not a prompt. Expose only what `getApprovalPolicy` returns
+   * `APPROVE` for, and use `onToolPending` to deny anything that parks.
+   * [Context: shared]
+   * @static
+   * @returns {Array<typeof import('./strategy-type.js').default>} Strategy classes to register hidden
+   */
+  static getStrategies() {
     return [];
   }
 

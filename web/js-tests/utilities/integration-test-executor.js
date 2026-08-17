@@ -148,6 +148,8 @@ import { runTests as runExtensionSettingsTests } from '../unit-tests/extension-s
 import { runTests as runUserCommandFactoryTests } from '../unit-tests/user-command-factory-test.js';
 import { runTests as runEngineApiVectorTests } from '../unit-tests/engineapi-vectors-test.js';
 import { runTests as runStrategyFallbackTests } from '../unit-tests/strategy-fallback-test.js';
+import { runTests as runStrategyHiddenTests } from '../unit-tests/strategy-hidden-test.js';
+import { runTests as runDelegatedSteeringTests } from '../unit-tests/delegated-thread-steering-test.js';
 import { runTests as runStrategyOrderTests } from '../unit-tests/strategy-order-test.js';
 import { runTests as runStrategyMenuRefreshTests } from '../unit-tests/strategy-menu-refresh-test.js';
 import { runTests as runPermissionPopupRefreshTests } from '../unit-tests/permission-popup-refresh-test.js';
@@ -363,6 +365,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:user-command-factory', run: runUserCommandFactoryTests },
   { name: 'unit:engineapi-vectors', run: runEngineApiVectorTests },
   { name: 'unit:strategy-fallback', run: runStrategyFallbackTests },
+  { name: 'unit:strategy-hidden', run: runStrategyHiddenTests },
+  { name: 'unit:delegated-thread-steering', run: runDelegatedSteeringTests },
   { name: 'unit:strategy-order', run: runStrategyOrderTests },
   { name: 'unit:strategy-menu-refresh', run: runStrategyMenuRefreshTests },
   { name: 'unit:permission-popup-refresh', run: runPermissionPopupRefreshTests },

@@ -358,6 +358,57 @@ The built-in strategies form a single autonomy axis — **Read-only** (cannot
 write), **Default** (asks before writing), **YOLO** (never asks). The full hook
 list and manifest fields are in **`web/sdk/strategy-type.js`**.
 
+**Keeping a strategy out of the picker — `hidden: true`:** a strategy with
+`hidden: true` in its manifest is excluded from every user-facing list (the
+selector, the Shift+Tab ring, the default-strategy picker, the command editor)
+and from the first-available fallbacks, but stays resolvable by id. That is for a
+strategy nobody picks — one that shapes a single delegated run rather than a mode
+the user enters. See the sub-agent pattern below.
+
+### Sub-agent — a tool that runs as its own agent
+
+A context item whose tool runs its invocation as a delegated child thread, under
+a strategy the item itself owns. The child's working context — its searches, its
+reads, its intermediate tool calls — never enters the caller's; only its final
+message comes back as the tool result. `Explore` and `Research` in
+`@juggler/core` are the reference implementations
+(`context-items/explore-agent-context-item.js` and its `subagents/` siblings).
+
+Three parts:
+
+1. **The item delegates.** Set `delegatesToSubthread: true` in its MANIFEST and
+   return a spec from `buildSubthreadSpec(toolInput)` — the child's `goal`,
+   `prompt` (self-contained: the child sees nothing of the caller's
+   conversation), and `resultSpec` (the return contract, which the item
+   synthesises rather than exposing on its tool schema).
+2. **The item owns a hidden strategy.** Return it from
+   `static getStrategies()`; the framework registers it and forces
+   `hidden: true`. Put the class in a module *beside* the item, not under the
+   extension's `strategies/` directory — that glob would register it as an
+   ordinary, visible strategy.
+3. **The spec pins it.** Set `spec.strategyId` to the strategy's id, guarded on
+   `strategyRegistry.has(id)` so a user who disabled the extension's strategies
+   gets a working (if unfiltered) child instead of a broken tool.
+
+**The no-hang invariant.** A sub-agent thread has no human in it, and
+`APPROVAL_POLICY` has no DENY. So a tool the strategy exposes but cannot
+auto-approve does not prompt anybody — it strands the caller's tool call for the
+life of the conversation. Everything surviving `filterTools` must therefore be
+either auto-approved by `getApprovalPolicy` or refused outright by
+`onToolPending` (`refuseApproval(toolUseId, reason)`, which settles the call as a
+failed tool the sub-agent can work around — **not**
+`resolveApproval(toolUseId, 'no')`, which records it as a human denial and stops
+the turn). Withhold anything that
+blocks on a person — note `AskUserQuestion` is category `read`, so a naive
+read-only filter keeps it, and as an *elicitation* it can be neither approved nor
+refused — and anything that steers the caller's session (`todo`, `plan`,
+`memory`, `define_command`, `new_conversation`).
+
+Deliver the sub-agent's brief through the strategy's `onActivate()` →
+`injectGuidance()`, from its own prompt module. In a freshly-born thread that
+reminder leads the transcript, so it acts as the brief without touching the
+cached system prefix.
+
 ### Command — a slash command
 
 The simplest type: no LLM, no approval. Implement `execute(args)` and return a

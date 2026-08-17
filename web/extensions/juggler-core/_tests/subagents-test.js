@@ -1,0 +1,207 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
+// SPDX-License-Identifier: Apache-2.0
+
+/**
+ * Tests for the shipped sub-agents, `Explore` and `Research`.
+ *
+ * A sub-agent is a delegating context item that owns a hidden strategy: the tool
+ * call runs as a child thread under a tool filter, approval policy and brief the
+ * item defines, and only the child's answer comes back.
+ *
+ * The load-bearing test here is the **no-hang invariant**. A sub-agent thread has
+ * no human in it, and `APPROVAL_POLICY` has no DENY — so a tool the strategy
+ * exposes but cannot auto-approve does not prompt anybody, it strands the
+ * caller's tool_use forever. Every tool that survives `filterTools` must
+ * therefore be either auto-approved by `getApprovalPolicy` or refused by
+ * `onToolPending`. That is asserted below against the real core tool list.
+ * @module _tests/subagents-test
+ */
+
+import { initializeRegistries, assert } from '../../../js-tests/utilities/test-helpers.js';
+import strategyRegistry from '../../../js/registries/strategy-registry.js';
+import { generateToolDefinitions } from '../../../js/services/tool-generator.js';
+import { APPROVAL_POLICY } from '../../../sdk/strategy-type.js';
+import { INTERACTION_KIND } from '../../../sdk/context-item.js';
+import ExploreAgentContextItem from '../context-items/explore-agent-context-item.js';
+import ResearchAgentContextItem from '../context-items/research-agent-context-item.js';
+
+/**
+ * @typedef {object} TestResult
+ * @property {number} passed - Number of passed tests
+ * @property {number} failed - Number of failed tests
+ * @property {string[]} errors - Error messages for failed tests
+ */
+
+// Only the fields StrategyType's constructor dereferences.
+const FAKE_MESSAGE_THREAD = /** @type {any} */ ({ conversation: { session: {} } });
+
+/**
+ * The two sub-agents, described by what each test needs to know about them.
+ * @type {Array<{label: string, Item: any, strategyId: string, toolName: string, arg: string}>}
+ */
+const SUBAGENTS = [
+  { label: 'Explore', Item: ExploreAgentContextItem, strategyId: 'subagent-explore', toolName: 'Explore', arg: 'task' },
+  { label: 'Research', Item: ResearchAgentContextItem, strategyId: 'subagent-research', toolName: 'Research', arg: 'question' }
+];
+
+/**
+ * Instantiate an item the way the engine does for one tool call.
+ * @param {any} Item - The context-item class
+ * @returns {any} An instance with the minimum context it needs
+ */
+function makeItem(Item) {
+  return new Item({ id: 'tu-1', session: {}, conversation: {}, messageThread: FAKE_MESSAGE_THREAD });
+}
+
+/**
+ * Run all sub-agent tests.
+ * @param {object} _ctx - Test context (unused)
+ * @returns {Promise<TestResult>} Pass/fail counts
+ */
+export async function runTests(_ctx) {
+  let passed = 0;
+  let failed = 0;
+  /** @type {string[]} */
+  const errors = [];
+
+  /**
+   * @param {string} label - Test name, used in the failure message
+   * @param {() => void|Promise<void>} fn - The test body
+   * @returns {Promise<void>} Resolves once the case has been recorded
+   */
+  const run = async (label, fn) => {
+    try {
+      await fn();
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  await initializeRegistries();
+  const allTools = await generateToolDefinitions();
+
+  for (const { label, Item, strategyId, toolName, arg } of SUBAGENTS) {
+    await run(`${label}: owns exactly one hidden strategy`, () => {
+      const classes = Item.getStrategies();
+      assert(classes.length === 1, `expected 1 owned strategy, got ${classes.length}`);
+      assert(classes[0].MANIFEST.id === strategyId,
+        `owned strategy id = ${classes[0].MANIFEST.id}, want ${strategyId}`);
+      assert(classes[0].MANIFEST.hidden === true, `${strategyId} must be hidden`);
+      assert(strategyRegistry.has(strategyId),
+        `${strategyId} must be registered (via the item's getStrategies hook)`);
+    });
+
+    await run(`${label}: declares one delegating tool`, () => {
+      assert(Item.MANIFEST.delegatesToSubthread === true,
+        `${label} must delegate — running a sub-agent inline defeats the point`);
+      const defs = Item.getToolDefinitions();
+      assert(defs.length === 1 && defs[0].name === toolName,
+        `expected one tool named ${toolName}`);
+      assert(defs[0].input_schema.required.includes(arg),
+        `${toolName} must require "${arg}" — the child sees nothing of the caller's conversation`);
+      assert(!('resultSpec' in defs[0].input_schema.properties),
+        `${toolName} must not expose resultSpec: the pre-shaped return contract is what it adds over create_thread`);
+    });
+
+    await run(`${label}: pins its own strategy on the delegated child`, async () => {
+      const item = makeItem(Item);
+      const spec = await item.buildSubthreadSpec({ [arg]: 'where is auth handled?' });
+      assert(spec && spec.prompt.includes('where is auth handled?'),
+        'the spec must carry the caller-supplied task verbatim');
+      assert(spec.resultSpec, 'a sub-agent synthesises its own resultSpec');
+      assert(spec.strategyId === strategyId,
+        `spec.strategyId = ${spec.strategyId}, want ${strategyId}`);
+    });
+
+    await run(`${label}: degrades instead of failing when its strategy is unregistered`, async () => {
+      // The user disabled the extension's strategies. The tool must still work —
+      // the child just runs under the caller's strategy instead of a filtered one.
+      const saved = strategyRegistry.items.get(strategyId);
+      strategyRegistry.items.delete(strategyId);
+      try {
+        const spec = await makeItem(Item).buildSubthreadSpec({ [arg]: 'anything' });
+        assert(spec && !spec.strategyId,
+          'with the strategy gone the spec must omit strategyId, not name a missing one');
+      } finally {
+        if (saved) strategyRegistry.items.set(strategyId, saved);
+      }
+    });
+
+    await run(`${label}: nothing it exposes can park (the no-hang invariant)`, () => {
+      const strategy = strategyRegistry.createStrategy(strategyId, FAKE_MESSAGE_THREAD);
+      const exposed = strategy.filterTools(allTools);
+      assert(exposed.length > 0, `${strategyId} filtered every tool away`);
+
+      // AskUserQuestion has category 'read', so a naive read-only filter KEEPS
+      // it — and as an elicitation it can be neither approved nor refused, which
+      // makes it the one tool that would genuinely wedge a run.
+      assert(!exposed.some(t => t.name === 'AskUserQuestion'),
+        'AskUserQuestion must not survive the filter — nobody is there to answer it');
+      for (const name of ['todo', 'plan', 'memory', 'define_command', 'new_conversation']) {
+        assert(!exposed.some(t => t.name === name),
+          `${name} steers the caller's session and must not survive the filter`);
+      }
+      // Delegation is disabled inside a delegated thread, so a sub-agent tool
+      // offered here could only ever run its inline path and fail.
+      for (const name of ['Explore', 'Research']) {
+        assert(!exposed.some(t => t.name === name),
+          `${name} cannot delegate from inside a sub-agent, so it must not be offered`);
+      }
+      for (const t of exposed) {
+        assert(t.category !== 'write' || t.name === 'bash',
+          `${strategyId} exposes the write tool ${t.name}; a sub-agent changes nothing`);
+      }
+
+      // Every survivor: auto-approved when the permission system raised no
+      // question, and refused (never left parked) when it did.
+      for (const t of exposed) {
+        const approved = strategy.getApprovalPolicy({
+          toolName: t.name, toolInput: {}, category: t.category,
+          defaultApproval: false, interactionKind: INTERACTION_KIND.GATE, autoApprovable: true
+        });
+        assert(approved === APPROVAL_POLICY.APPROVE,
+          `${t.name} would not be auto-approved (${approved}) — it would park with nobody to approve it`);
+      }
+
+      /** @type {{id: string, reason: string}|null} */
+      let refused = null;
+      let denied = false;
+      const thread = /** @type {any} */ ({
+        conversation: { session: {} },
+        refuseApproval: (/** @type {string} */ id, /** @type {string} */ reason) => { refused = { id, reason }; return true; },
+        resolveApproval: () => { denied = true; return true; }
+      });
+      const parking = strategyRegistry.createStrategy(strategyId, thread);
+      parking.onToolPending({ toolUseId: 'tu-parked', toolName: 'bash', toolInput: {}, category: 'write', permissionKey: 'execute' });
+      assert(refused !== null && refused.id === 'tu-parked',
+        'a parked call must be refused outright, not left waiting for a human who is not there');
+      assert(/bash/.test(refused.reason),
+        'the refusal must name the call that failed, so the sub-agent can work around it');
+      // A cancelled call is how a human denial is recorded, and the worker stops
+      // the turn on one. Refusing that way would end the sub-agent's run at its
+      // first awkward call rather than letting it carry on.
+      assert(!denied,
+        'a refusal must not go through resolveApproval — a cancelled call reads as a denial and stops the run');
+    });
+  }
+
+  await run('the two sub-agents withhold what the other is for', () => {
+    const explore = strategyRegistry.createStrategy('subagent-explore', FAKE_MESSAGE_THREAD).filterTools(allTools).map(t => t.name);
+    const research = strategyRegistry.createStrategy('subagent-research', FAKE_MESSAGE_THREAD).filterTools(allTools).map(t => t.name);
+
+    for (const name of ['WebSearch', 'WebFetch', 'exa_search']) {
+      assert(!explore.includes(name), `Explore must withhold ${name} — the network is Research's job`);
+    }
+    assert(!research.includes('bash'), 'Research must withhold bash — it reads, it does not run things');
+    assert(explore.includes('grep') && explore.includes('read') && explore.includes('query_code'),
+      'Explore keeps the codebase search tools');
+    assert(research.includes('read') && research.includes('grep'),
+      'Research keeps enough local read access to check what is actually installed');
+  });
+
+  return { passed, failed, errors };
+}

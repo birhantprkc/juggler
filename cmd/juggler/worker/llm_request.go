@@ -62,9 +62,13 @@ func (w *ConversationWorker) requestContextAndToolsForItemIDs(itemIDs []string) 
 		defer func() { w.expectedContextRequestID = "" }()
 		w.sendRenderContextItemsRequest(rid, itemIDs)
 	}
+	// threadItemId scopes the reply to the thread whose turn this is, so the
+	// engine filters the list through THAT thread's strategy. Without it a
+	// sub-thread running under its own strategy is offered the root's tool set.
 	w.send(map[string]any{
-		"type":      "request-tools",
-		"requestId": generateRequestID(),
+		"type":         "request-tools",
+		"requestId":    generateRequestID(),
+		"threadItemId": w.getProcessingThreadItemID(),
 	})
 
 	needContext := len(itemIDs) > 0

@@ -104,6 +104,11 @@ class StrategySwitcher {
    * returned the FIRST selector in DOM order — always the root column's — so
    * Shift+Tab silently drove the root conversation's strategy even when the
    * cursor sat in a sub-thread composer.
+   *
+   * Every lookup skips hidden selectors. A delegated sub-agent's column hides
+   * its own (its strategy belongs to the tool that called it), and driving an
+   * invisible control is worse than standing the gesture down: `canCycle` reads
+   * this, so an unresolvable column simply declines the shortcut.
    * @returns {import('../components/strategy-selector.js').StrategySelector|null} The selector or null
    * @private
    */
@@ -114,23 +119,28 @@ class StrategySwitcher {
       ? focused.closest('composer-box')
       : null;
     if (box) {
+      // A hidden selector here is an answer, not a miss: the user is typing in a
+      // column whose strategy is not theirs to change, so the gesture stands
+      // down rather than falling through and driving the ROOT column's.
       const owned = box.querySelector('strategy-selector');
       if (owned) {
-        return /** @type {import('../components/strategy-selector.js').StrategySelector} */ (owned);
+        return /** @type {HTMLElement} */ (owned).hidden
+          ? null
+          : /** @type {import('../components/strategy-selector.js').StrategySelector} */ (owned);
       }
     }
 
     // Fallback: the active conversation tab's (root column's) selector.
     const activeTab = document.querySelector('conversation-tab.active');
     if (activeTab) {
-      const selector = activeTab.querySelector('strategy-selector');
+      const selector = activeTab.querySelector('strategy-selector:not([hidden])');
       if (selector) {
         return /** @type {import('../components/strategy-selector.js').StrategySelector} */ (selector);
       }
     }
 
     // Last resort: any visible strategy selector.
-    const selector = document.querySelector('strategy-selector');
+    const selector = document.querySelector('strategy-selector:not([hidden])');
     return selector ? /** @type {import('../components/strategy-selector.js').StrategySelector} */ (selector) : null;
   }
 }

@@ -40,6 +40,12 @@
  *   strategy selector and command-editor strategy list). Every strategy —
  *   built-in or 3rd-party — uses the same field to declare its position; ties
  *   break by load order. Absent on every strategy, the list stays in load order.
+ * @property {boolean} [hidden] - Exclude from every user-facing strategy list
+ *   (selector, Shift+Tab ring, default picker, command editor) and from both
+ *   first-available fallbacks. Still resolvable by id, so a subagent item can
+ *   pin it on a delegated subthread. This is the autonomy axis staying a short
+ *   list of things a human picks, while an item-owned strategy shapes one
+ *   delegated run. Default: false.
  */
 
 /**
@@ -491,7 +497,10 @@ class StrategyType {
    * for. So a strategy may resolve anything it is handed here without risk of
    * silently answering a question — the framework has already excluded them.
    * @param {{toolUseId: string, toolName: string, toolInput: Record<string, unknown>, category: string|undefined, permissionKey: string, autoApprovable?: boolean}} info
-   *   - toolUseId: id to pass to `messageThread.resolveApproval`
+   *   - toolUseId: id to pass to `messageThread.resolveApproval` (a human's
+   *     verdict: `'yes'` runs it, `'no'` cancels it and stops the turn) or to
+   *     `messageThread.refuseApproval` (automation declining on an absent
+   *     user's behalf: the call fails, the turn continues)
    *   - toolName: name of the parked tool
    *   - toolInput: the tool's input parameters (plain object)
    *   - category: tool category ('read', 'write', 'meta', or undefined)

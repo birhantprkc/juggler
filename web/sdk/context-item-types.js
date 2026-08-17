@@ -283,7 +283,9 @@
  *   `tool_use` is answered by the child agent run's outcome, whatever it is —
  *   the reply it came to rest on, or the error it stopped on. The child's
  *   working context (large fetches, intermediate tool calls) never enters the
- *   parent. Default: false
+ *   parent. Pair it with a hidden strategy of the item's own (see the static
+ *   `getStrategies()` hook on `ContextItem`) and the tool becomes a subagent: a
+ *   named context boundary with its own tool filter. Default: false
  * @property {boolean} [workerManaged] - **@internal** (outside the engineApi compat promise). If true, execution is handled by the Go worker
  *   server-side instead of the engine browser. The plugin still provides
  *   `getToolDefinitions()`, `getStatusUI()`, and `getBadgeOptions()`, but
@@ -319,6 +321,13 @@
  *   tool. Every result opens with the name that was used, so a caller that did
  *   not plan ahead can still follow up. Expose it as an optional argument on
  *   your own tool schema and pass it through.
+ * @property {string} [strategyId] - Strategy the child runs under. Typically a
+ *   hidden strategy the item itself owns (see `ContextItem.getStrategies`), so
+ *   the delegated run gets its own tool filter, approval policy and guidance.
+ *   Omitted, the child inherits the calling thread's strategy.
+ * @property {{provider: string, model: string}} [modelConfig] - Model the child
+ *   runs under. Omitted, the child inherits the calling thread's model — which
+ *   is almost always right, since the user configures their own providers.
  */
 
 /**

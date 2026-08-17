@@ -53,6 +53,19 @@ func toolAction(id, state string) ConversationItem {
 	return item
 }
 
+// refusedToolAction returns a tool-action a strategy refused on an absent
+// user's behalf: a FAILED call (completed, isError), never a cancelled one.
+func refusedToolAction(id string) ConversationItem {
+	b, _ := json.Marshal(map[string]any{"content": "Refused: nobody here can approve that.", "isError": true})
+	return ConversationItem{
+		Type:      ItemTypeToolAction,
+		ToolUseID: id,
+		ToolName:  "bash",
+		State:     StateCompleted,
+		Result:    b,
+	}
+}
+
 // threadMsg returns a thread item. If result is non-empty, the thread
 // is considered complete (hasThreadResult returns true).
 func threadMsg(itemID, result string) ConversationItem {
@@ -295,6 +308,35 @@ func TestDecideNextAction_BatchAllCancelled_Nested(t *testing.T) {
 	}
 	if got := decideNextAction(items, ActivityAwaitingLLM, false, false); got != ActionGoIdle {
 		t.Errorf("all-cancelled/nested: expected GoIdle, got %s", got)
+	}
+}
+
+// TestDecideNextAction_BatchStrategyRefused pins the distinction the sub-agent
+// no-hang invariant rests on. A call a strategy refused because there is no
+// human to ask is recorded as a failed tool, so the loop carries on and the
+// agent can work around it. Recorded as CANCELLED it would land in the denial
+// branch instead and end the run at the first call the permission system would
+// have put to a person — which for a delegated agent is most of them.
+func TestDecideNextAction_BatchStrategyRefused(t *testing.T) {
+	refused := []ConversationItem{
+		userMsg("investigate"),
+		assistantMsg("looking"),
+		toolAction("call_1", StateCompleted),
+		refusedToolAction("call_2"),
+	}
+	if got := decideNextAction(refused, ActivityAwaitingLLM, false, false); got != ActionCallLLM {
+		t.Errorf("a strategy refusal must not stop the loop: expected CallLLM, got %s", got)
+	}
+
+	// The contrast, on an otherwise identical batch: a human denial still rests.
+	denied := []ConversationItem{
+		userMsg("investigate"),
+		assistantMsg("looking"),
+		toolAction("call_1", StateCompleted),
+		toolAction("call_2", StateCancelled),
+	}
+	if got := decideNextAction(denied, ActivityAwaitingLLM, false, false); got != ActionGoIdle {
+		t.Errorf("a human denial must still stop the loop: expected GoIdle, got %s", got)
 	}
 }
 

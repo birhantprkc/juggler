@@ -194,6 +194,22 @@ export default class MessageThread {
   }
 
   /**
+   * Whether this thread was spawned by a delegating tool (a subagent call)
+   * rather than by the user or the create_thread meta-tool. Read from the
+   * `delegated` flag the worker stamps on the thread Y.Map at creation, the same
+   * flag `withinDelegatedThread` reads server-side to stop a delegated child
+   * starting a further delegation.
+   *
+   * A delegated child is not user-steerable by design: its strategy is chosen by
+   * the tool that called it, so the UI hides that column's strategy control
+   * rather than offering a switch that would fight the tool for it.
+   * @returns {boolean} True for a thread spawned by tool delegation
+   */
+  get isDelegated() {
+    return this.threadItemId ? this.container.get('delegated') === true : false;
+  }
+
+  /**
    * The unsent composer-box draft for this thread — its text, its staged image
    * attachments, any dropped text files, AND the paste-blob side table backing
    * inline paste placeholders, as a single
@@ -985,6 +1001,40 @@ export default class MessageThread {
       written = true;
     }, this.conversation._doc.authorId);
     return written;
+  }
+
+  /**
+   * Refuse a parked call without stopping the turn.
+   *
+   * The counterpart to {@link resolveApproval} for automation standing in where
+   * there is no person to ask. A refusal settles the call as a FAILED one —
+   * state `completed`, result flagged `isError` — so the model sees a tool that
+   * did not work and can route around it.
+   *
+   * The distinction from a denial is load-bearing. `resolveApproval(id, 'no')`
+   * writes state `cancelled`, and the worker's reducer reads a cancelled member
+   * of a tool batch as a human denial, which stops the automatic loop
+   * (`anyBatchCancelled` in thread_reducer.go) — a person who denies a call
+   * means "stop", not "carry on without it". Automation refusing on an absent
+   * user's behalf means the opposite, so it refuses through this method and the
+   * loop continues.
+   *
+   * Only acts while the call is still PENDING; anything else has already been
+   * resolved by another path (the user, a rule sync, a peer) and is left alone.
+   * @plugin-api
+   * @param {string} toolUseId - The parked call to refuse
+   * @param {string} [reason] - Handed to the model verbatim as the tool's error
+   *   result. Say what could not be done, so the model can work around it.
+   * @returns {boolean} True when the refusal was written. False when the call is
+   *   missing or has already left PENDING.
+   */
+  refuseApproval(toolUseId, reason = 'Refused: this call needed approval and nothing here can grant it.') {
+    const message = this.getToolAction(toolUseId);
+    if (!message || message.get('state') !== TOOL_STATES.PENDING) return false;
+
+    recordTape('approval', this.conversationId, { toolUseId, response: 'refuse' });
+    this.completeToolAction(toolUseId, { content: reason, isError: true });
+    return true;
   }
 
   /**

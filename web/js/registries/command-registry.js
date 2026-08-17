@@ -67,6 +67,20 @@ class CommandRegistry extends BaseRegistry {
   }
 
   /**
+   * Commands are the one capability the user names themselves, so the collision
+   * message is written to them: it says which of their commands was skipped and
+   * what to do about it, in the `/name` vocabulary they typed.
+   * @override
+   * @param {string} id - The colliding command id
+   * @returns {string} Explanation shown in the manager UI
+   * @protected
+   */
+  collisionMessage(id) {
+    return `A command named /${id} already exists (built-in or from an extension), ` +
+      `so your custom /${id} was skipped. Rename your command to a name that isn't taken.`;
+  }
+
+  /**
    * Fetch the registerable user-command definitions (valid, project-shadowed)
    * and register a synthesised class for each. Failures are non-fatal — a broken
    * definition never blocks the built-in commands from loading.

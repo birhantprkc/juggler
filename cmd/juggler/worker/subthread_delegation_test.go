@@ -447,6 +447,52 @@ func TestDelegatedSessionResumeIsAppendOnly(t *testing.T) {
 	}
 }
 
+// TestDelegatedThreadRunsUnderSpecStrategy proves a spec can pin the child's
+// strategy. This is what makes a subagent a subagent: the delegating item owns a
+// (hidden) strategy with its own tool filter and approval policy, names it here,
+// and the child runs under it instead of inheriting the caller's. The id must
+// land on the child's own Y.Map, and resolve as its effective strategy.
+func TestDelegatedThreadRunsUnderSpecStrategy(t *testing.T) {
+	spec := &SubthreadSpec{
+		Goal:       "Explore the repo",
+		Prompt:     "Find where auth is implemented",
+		StrategyID: "subagent-explore",
+	}
+	w := newDelegationHarness(t, spec, []MockResponse{
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: "tool_use", ID: "tu-wf-6", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com","prompt":"where is auth?"}`)},
+			},
+			StopReason: "tool_use",
+		},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "In auth.go."}}, StopReason: "end_turn"},
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Thanks."}}, StopReason: "end_turn"},
+	})
+
+	w.runStrategyLoop("Where is auth?", false)
+
+	var childID string
+	for _, item := range w.doc.GetItems() {
+		if item.Type == ItemTypeThread {
+			childID = item.ItemID
+		}
+	}
+	if childID == "" {
+		t.Fatalf("expected a delegated child thread; items=%+v", w.doc.GetItems())
+	}
+
+	ycrdtMu.Lock()
+	ym := findThreadYMap(w.doc.getItems(), childID)
+	stamped, _ := ym.Get("currentStrategyId").(string)
+	ycrdtMu.Unlock()
+	if stamped != "subagent-explore" {
+		t.Errorf("child thread currentStrategyId = %q, want subagent-explore", stamped)
+	}
+	if got := w.doc.ResolveEffectiveStrategyID(childID); got != "subagent-explore" {
+		t.Errorf("effective strategy for the delegated child = %q, want subagent-explore", got)
+	}
+}
+
 // TestDelegatedChildErrorReachesParent proves an errored run is an answer, not a
 // hang: the child's turn fails, the run settles as an error carrying the
 // provider's text, and that text is delivered as the delegating call's

@@ -81,6 +81,7 @@ export async function initAllRegistries() {
   try {
     await strategyRegistry.init();
     await contextItemRegistry.init();
+    registerItemOwnedStrategies();
     await commandRegistry.init();
     // File viewers run in BOTH realms — render() in the viewer, extract() in the
     // engine worker — so unlike info cards this registry is initialised
@@ -94,6 +95,60 @@ export async function initAllRegistries() {
     }
   } finally {
     markRegistriesReady();
+  }
+}
+
+/**
+ * Register the strategy classes context items own (see `ContextItem.getStrategies`),
+ * forcing each hidden so it never reaches a user-facing strategy list. This is
+ * what lets a delegating item be a subagent: its delegated child runs under a
+ * tool filter and approval policy the item defines, pinned by id from
+ * `buildSubthreadSpec`.
+ *
+ * Placed here, between the two registries' inits, for three reasons:
+ *   - `strategyRegistry.init()` has already run, so file-based strategies hold
+ *     their ids and win any collision — item-owned registration is purely
+ *     additive, never a shadow.
+ *   - `contextItemRegistry.init()` has already run, so the classes to ask exist
+ *     and the config-disabled ones are already filtered out (a disabled item
+ *     contributes no strategy).
+ *   - `rebuildRegistriesNow()` resets both registries and re-runs this whole
+ *     sequence, so hot-reload and extension enable/disable are covered by doing
+ *     this here and nowhere else.
+ *
+ * A class that throws or collides is reported through the registry's failed-module
+ * list (surfaced in the Extensions catalog) and skipped — one broken subagent
+ * never takes the boot sequence with it.
+ *
+ * Exported for the unit-test harness, which initialises the two registries
+ * directly rather than through this module's sequence; production code should
+ * reach it via `initAllRegistries()`.
+ * @returns {void}
+ */
+export function registerItemOwnedStrategies() {
+  for (const { id, class: ItemClass } of contextItemRegistry.getAll()) {
+    let classes;
+    try {
+      classes = /** @type {any} */ (ItemClass).getStrategies?.() || [];
+    } catch (err) {
+      console.error(`[registries] Context item "${id}" failed to provide strategies:`, err);
+      continue;
+    }
+    for (const StrategyClass of classes) {
+      const manifest = /** @type {any} */ (StrategyClass)?.MANIFEST;
+      if (!manifest) {
+        console.error(`[registries] Context item "${id}" returned a strategy with no MANIFEST`);
+        continue;
+      }
+      // Forced, not merely expected: an item-owned strategy is an implementation
+      // detail of a tool, and the user picks the tool by its name — never the
+      // strategy by its id.
+      manifest.hidden = true;
+      strategyRegistry.registerClass(StrategyClass, {
+        extensionId: contextItemRegistry.getExtensionId(id),
+        modulePath: ''
+      });
+    }
   }
 }
 

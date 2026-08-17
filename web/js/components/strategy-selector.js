@@ -168,6 +168,11 @@ class StrategySelector extends HTMLElement {
    */
   setMessageThread(messageThread) {
     this._messageThread = messageThread;
+    // A delegated child runs under a strategy its calling tool pinned — often a
+    // hidden one that isn't in the list at all, so the button would read "Select
+    // Strategy" and a Shift+Tab would cycle a running sub-agent onto a real
+    // strategy. It is not user-steerable by design, so the control goes away.
+    this.hidden = messageThread ? messageThread.isDelegated === true : false;
     // Self-observe the bound conversation's metadata (before the display guards
     // below, which can early-return) so a remote strategy switch repaints us
     // directly rather than relying on a conversation-tab rebuild re-pushing.

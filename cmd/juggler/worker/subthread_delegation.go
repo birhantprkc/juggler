@@ -122,6 +122,11 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 		ToolInput:   toolInput,
 		SessionName: session.name,
 		Delegated:   true,
+		// A spec may pin the child's strategy and model. Empty leaves the child
+		// inheriting from the parent, which is what every delegating tool that
+		// does not own a strategy of its own gets.
+		StrategyID:      spec.StrategyID,
+		ModelConfigJSON: string(spec.ModelConfig),
 	}
 
 	// A busy session is answered, not queued or silently redirected. The
