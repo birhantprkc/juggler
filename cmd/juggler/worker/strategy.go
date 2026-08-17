@@ -68,98 +68,7 @@ const (
 //   - Text + end_turn → loop ends naturally
 //   - Cancellation
 func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation bool) {
-	defer func() {
-		// Non-blocking: if the loop returned after dispatching tools or
-		// creating a child thread (activity="awaiting_llm"), let the reducer
-		// dispatch the child. In production the run() event loop calls
-		// tryReconcile(); drain it inline here so tests (no run()) also work.
-		if w.getActivity() == ActivityAwaitingLLM {
-			w.storeState(StateIdle)
-			w.needsReconcile = true
-			w.drainReconcile()
-			return
-		}
-
-		wasCancelled := w.loadState() == StateCancelling
-		completedThreadID := w.thread.itemID // capture before clearing
-
-		// The run this loop just ran is over: record how it came out. This is
-		// the completion signal a parked caller waits on, and the source of the
-		// tool_result a delegating call is owed, so it runs at EVERY ending —
-		// rest, error and cancellation alike — and never leaves a stamped
-		// tool_use unpaired. Run BEFORE clearing state so the Y.Map read can
-		// find the items.
-		if completedThreadID != "" {
-			w.settleThreadRun(completedThreadID, wasCancelled)
-		}
-
-		w.storeState(StateIdle)
-		w.processingStartedAt = 0
-		w.approvalWaitStartedAt = 0
-		w.lastProgressWriteMs = 0
-		w.resetThreadContext()
-
-		if wasCancelled {
-			w.finalizeCancellation(completedThreadID)
-			return
-		}
-
-		// signalParentThread fires for a child whose run has settled, whatever it
-		// settled as: the parent asked a question and is owed the answer, and
-		// "the run errored" is an answer it can act on. The child stays exactly
-		// as it is — stopped, summarised or not, and free to run again.
-		if !w.signalParentThread(completedThreadID) {
-			w.sendStatus("idle", "")
-			w.CancelStaleToolActions()
-
-			// A completed sub-thread folds back into the root conversation. If
-			// the user queued a message at the ROOT while the sub-thread ran —
-			// e.g. typed a follow-up during /compact — nothing is left to drain
-			// that queue: the loop that just ended was scoped to the sub-thread,
-			// so its end-of-run drain only checked the sub-thread's own queue,
-			// and signalParentThread declined to re-drive the parent (this
-			// branch, because a needsStrategyRun/compaction thread is not
-			// llmCreated). Without this the message is stranded in the pending
-			// queue and the conversation rests at idle. Drive a fresh root turn
-			// to promote and answer it (the dispatched turn's top-of-loop
-			// promotePendingItems does the actual move). The sendStatus("idle")
-			// above already collapsed any compaction undo-merge and closed the
-			// capture window — so this follow-up becomes its own undo group —
-			// and cleared the LLM claim, so requestLLM can transition from none.
-			// Mirrors the reducer's ActionGoIdle drain. Guarded on
-			// completedThreadID != "" so it fires ONLY for a sub-thread
-			// completion — a root turn drains its own queue inside the loop (the
-			// end-of-run continue), never here.
-			if completedThreadID != "" && w.hasPendingItems("") {
-				w.requestLLM("")
-				w.needsReconcile = true
-				w.drainReconcile()
-				return
-			}
-
-			// Proactive compaction: if the settled root turn's anchored input
-			// usage crossed the threshold, fold the root here and hand off to the
-			// summarizer. When it folds, the pickup runs the fold thread to
-			// completion — which dispatches its own idle hook — so return without
-			// a second dispatch.
-			if w.maybeAutoCompactAtSettle() {
-				return
-			}
-
-			// Root conversation went idle — let the strategy drive any
-			// post-idle work (e.g. plan execution) in the engine. Fire-and-
-			// forget: its effects re-enter via doc sync + reconcile.
-			w.dispatchWorkerIdleHook()
-
-			// Same idle moment, one call per completed turn: let every
-			// context-item type run its onTurnEnd hook in the engine (e.g. an
-			// extension retaining a memory of the turn). Fire-and-forget; the
-			// hook's effects are external side-effects, not doc writes.
-			w.dispatchContextTurnHook()
-		} else {
-			w.drainReconcile()
-		}
-	}()
+	defer w.finishStrategyRun()
 
 	// Clear any stale streaming state from previous conversation turn
 	w.finalizeStreaming()
@@ -173,347 +82,478 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 		w.batcher.Flush() // Show user message in UI immediately
 	}
 
-	barrenTurns := 0
-	contextRecovery := contextRecoveryState{}
-	bypassContextGuard := false
+	st := strategyRunState{}
 
-strategyLoop:
 	for {
-		// Polite stop (Pause): every LLM turn begins at the top of this loop, so
-		// this is the boundary where we rest before re-invoking the model. It
-		// catches every in-loop re-entry a mid-turn pause can precede — a sync-tool
-		// continuation, a barren retry, and the end-of-run "queued follow-up"
-		// continuation. In-flight tools from the prior iteration are already
-		// committed to the doc, so promoting any queued messages and returning
-		// leaves a clean, resumable transcript; the deferred cleanup writes idle.
-		// consumePolitePending Swap(false)s the latch so the next user-initiated
-		// turn runs normally (D5, §10.4) and drops the synced pending cue. The
-		// reducer's dispatchCallLLMOnThread handles the between-turn (async-tool)
-		// case; this handles the never-left-the-loop case.
-		if w.consumePolitePending() {
-			w.promotePendingItems(w.thread.itemID)
+		if w.runOneTurn(&st) == turnDone {
 			return
 		}
+	}
+}
 
-		// A browser-folded /compact (or /handoff) thread is summarized by the
-		// bounded reducer, not an ordinary strategy turn: probe the whole
-		// transcript once and, on a provider overflow, map/reduce it. This is the
-		// single summarizer, committing through writeBoundedCompactionResult. The
-		// turn ends here; the deferred cleanup drives idle, which collapses the
-		// fold + summary into one undo group (compactionMergeFromIdx).
-		if w.thread.itemID != "" && w.isBoundedCompactionThread(w.thread.itemID) && !w.threadHasResult(w.thread.itemID) {
-			itemIDs := w.foldedCompactionContextItemIDs(w.thread.itemID)
-			ctxResult, tools, prepErr := w.requestContextAndToolsForItemIDs(itemIDs)
-			if prepErr != nil {
-				if errors.Is(prepErr, ErrCancelled) {
-					return
-				}
-				w.sendError(fmt.Sprintf("Failed to get context/tools for compaction: %v", prepErr), "")
-				return
-			}
-			handled, compactErr := w.runFoldedThreadCompaction(w.resolveModelConfig(), ctxResult, tools)
-			if handled {
-				if compactErr != nil && !errors.Is(compactErr, errBoundedCompactionCancelled) {
-					w.log.Error("❌ compaction error: %s", compactErr.Error())
-					errorData := map[string]any{}
-					for k, v := range compactionErrorData(compactErr) {
-						errorData[k] = v
-					}
-					w.sendErrorWithData(compactErr.Error(), "", errorData)
-				}
-				w.currentTxnID = ""
-				return
-			}
-		}
+// turnVerdict is how runOneTurn tells runStrategyLoop what to do next. Every
+// exit from a turn is one of exactly two things — run another turn, or end the
+// run — so the caller needs no other signal to drive the loop.
+type turnVerdict int
 
-		// Drain any messages queued while this turn was in flight (or while the
-		// previous tool batch awaited approval) into the thread as user messages,
-		// so the upcoming turn sees them. Promote BEFORE findUnstampedUserMsgID
-		// so the newest queued message is the one stamped for this round-trip.
-		//
-		// This drains at EVERY boundary, including a tool-result continuation:
-		// a message typed while tools ran (or sat at an approval prompt) is
-		// steering, and the user wants it seen at the earliest opportunity, not
-		// after the whole agentic run ends on assistant text. The promoted item
-		// appends AFTER the completed tool batch, so the request stays strictly
-		// append-only — the stateless API providers' prefix caches are
-		// unaffected. The claudecode provider cannot carry user content on its
-		// parked-CLI MCP fast path (userInterjectedAfterPendingTools), so an
-		// interjected continuation routes through the warm-append resume there —
-		// a few seconds of CLI respawn with the prompt cache intact, a fair
-		// price for prompt delivery of a deliberately-typed message.
+const (
+	// turnContinue asks for another LLM turn in the same run.
+	turnContinue turnVerdict = iota
+	// turnDone ends the run; finishStrategyRun then settles it.
+	turnDone
+)
+
+// strategyRunState is the bookkeeping that outlives a single turn but belongs to
+// one strategy run, carried across iterations by runStrategyLoop.
+type strategyRunState struct {
+	// barrenTurns counts consecutive turns that produced nothing user-visible,
+	// reset by any turn that does. Capped by MaxBarrenTurns.
+	barrenTurns int
+	// contextRecovery bounds one context-pressure incident; a successful
+	// dispatch clears it so a later overflow gets a fresh budget.
+	contextRecovery contextRecoveryState
+	// bypassContextGuard skips the pre-flight estimate guard for the next
+	// attempt only, after an overflow verdict asked to retry without it.
+	bypassContextGuard bool
+}
+
+// runOneTurn runs a single pass of the strategy loop: promote queued messages,
+// gather context and tools, call the LLM, persist the transaction blob, then
+// process the response. It returns turnContinue when the run needs another LLM
+// turn and turnDone when the run is over (rest, error or cancellation) — the
+// caller returns immediately on turnDone and finishStrategyRun settles it.
+func (w *ConversationWorker) runOneTurn(st *strategyRunState) turnVerdict {
+	// Polite stop (Pause): every LLM turn begins here, so this is the boundary
+	// where we rest before re-invoking the model. It catches every re-entry a
+	// mid-turn pause can precede — a sync-tool continuation, a barren retry, and
+	// the end-of-run "queued follow-up" continuation. In-flight tools from the
+	// prior turn are already committed to the doc, so promoting any queued
+	// messages and ending the run leaves a clean, resumable transcript;
+	// finishStrategyRun writes idle. consumePolitePending Swap(false)s the latch
+	// so the next user-initiated turn runs normally (D5, §10.4) and drops the
+	// synced pending cue. The reducer's dispatchCallLLMOnThread handles the
+	// between-turn (async-tool) case; this handles the case where the run never
+	// returned to the reducer at all.
+	if w.consumePolitePending() {
 		w.promotePendingItems(w.thread.itemID)
+		return turnDone
+	}
 
-		userMsgToStamp := w.findUnstampedUserMsgID()
-
-		// Fire the strategy's onActivate hook (in the engine) if the active
-		// strategy hasn't been activated yet. Placed AFTER promotePendingItems so
-		// the just-sent user message is already in the items array — the engine's
-		// injected guidance then lands deterministically after it, not racing the
-		// promotion. Blocks until the guidance has synced back, so buildMessages
-		// sees it. Idempotent across iterations (activatedStrategyId gate).
-		w.maybeActivateStrategy()
-
-		// Reset streaming state for this iteration — must reset message IDs
-		// AND content so each iteration creates new messages rather than
-		// updating previous ones.
-		w.finalizeStreaming()
-		w.streaming.textContent = ""
-		w.streaming.thinkingContent = ""
-
-		if w.loadState() == StateCancelling {
-			return
-		}
-
-		w.sendStatus("preparing", "")
-		w.batcher.Flush()
-
-		ctxResult, tools, err := w.requestContextAndTools()
-		if err != nil {
-			if errors.Is(err, ErrCancelled) {
-				return
+	// A browser-folded /compact (or /handoff) thread is summarized by the
+	// bounded reducer, not an ordinary strategy turn: probe the whole
+	// transcript once and, on a provider overflow, map/reduce it. This is the
+	// single summarizer, committing through writeBoundedCompactionResult. The
+	// turn ends here; the deferred cleanup drives idle, which collapses the
+	// fold + summary into one undo group (compactionMergeFromIdx).
+	if w.thread.itemID != "" && w.isBoundedCompactionThread(w.thread.itemID) && !w.threadHasResult(w.thread.itemID) {
+		itemIDs := w.foldedCompactionContextItemIDs(w.thread.itemID)
+		ctxResult, tools, prepErr := w.requestContextAndToolsForItemIDs(itemIDs)
+		if prepErr != nil {
+			if errors.Is(prepErr, ErrCancelled) {
+				return turnDone
 			}
-			w.sendError(fmt.Sprintf("Failed to get context/tools: %v", err), "")
-			return
+			w.sendError(fmt.Sprintf("Failed to get context/tools for compaction: %v", prepErr), "")
+			return turnDone
 		}
-
-		// Remember which of this turn's tools may delegate to a subthread, so
-		// processLLMResponse can route a call to the build-spec round-trip. Rebuilt
-		// each iteration from the freshly-offered tools (a strategy may filter the
-		// set differently per turn).
-		w.turnDelegatingTools = collectDelegatingToolNames(tools)
-		// But a delegated sub-agent must never delegate again: inside a delegated
-		// thread (or any descendant of one), delegating tools run inline and return
-		// raw content, so a chain of subthreads can't recurse indefinitely.
-		if len(w.turnDelegatingTools) > 0 && w.withinDelegatedThread(w.thread.itemID) {
-			w.turnDelegatingTools = nil
-		}
-
-		// txnID identifies this round-trip; insertTargetMessage stamps it onto
-		// every item produced during the call so callers don't plumb it through.
-		txnID := generateTransactionID()
-		w.currentTxnID = txnID
-
-		llmRequest := w.buildLLMRequest(ctxResult, tools, txnID, bypassContextGuard)
-
-		// Stamp the originating user message before the call. The transaction
-		// blob is written below regardless of outcome, so on LLM failure the
-		// user message + error item both link to a viewable blob.
-		if userMsgToStamp != "" {
-			_ = w.updateTargetItemByID(userMsgToStamp, "transactionId", txnID)
-		}
-
-		startTime := time.Now()
-
-		response, err := w.callLLMWithRetry(llmRequest)
-		if errors.Is(err, ErrRestartStrategy) {
-			continue strategyLoop
-		}
-
-		duration := time.Since(startTime)
-
-		w.batcher.Flush()
-
-		// Persist the transaction blob BEFORE any further Yjs mutation. On
-		// cancellation, capture whatever partial streaming content existed so
-		// the log shows truncated output rather than "No response data".
-		errMsg := ""
-		blobResponse := response
-		if err != nil {
-			if errors.Is(err, ErrCancelled) {
-				blobResponse = w.partialCancelledResponse()
-			} else {
-				errMsg = err.Error()
-			}
-		}
-		if blobErr := w.txnStore.SaveBlob(TransactionBlobInput{
-			ConversationID: w.conversationID,
-			TxnID:          txnID,
-			LLMRequest:     llmRequest,
-			Response:       blobResponse,
-			ErrMsg:         errMsg,
-			StartTime:      startTime,
-			Duration:       duration,
-			ModelConfig:    w.resolveModelConfig(),
-		}); blobErr != nil {
-			w.log.Error("❌ Failed to save transaction blob: %v", blobErr)
-		}
-
-		if err != nil {
-			if errors.Is(err, ErrCancelled) {
-				w.currentTxnID = ""
-				return
-			}
-
-			// Guard B: the selected model's provider isn't configured (no API key,
-			// provider disabled, OAuth not signed in). That is a user-fixable setup
-			// problem, not a turn failure — surface it as a validation error the
-			// client can act on (code "provider-unavailable": prompt to pick another
-			// model, never auto-retry) rather than a generic red error item. Do this
-			// before any context-limit handling: a credential failure is terminal and
-			// unrelated to compaction/recovery.
-			if errors.Is(err, ErrProviderUnavailable) {
-				msg := "The selected model's provider isn't configured. Pick another model, or configure it in settings."
-				if mc := w.resolveModelConfig(); mc != nil {
-					msg = fmt.Sprintf("The provider for %s (%s) isn't configured. Pick another model, or configure %s in settings.", mc.Model, mc.Provider, mc.Provider)
+		handled, compactErr := w.runFoldedThreadCompaction(w.resolveModelConfig(), ctxResult, tools)
+		if handled {
+			if compactErr != nil && !errors.Is(compactErr, errBoundedCompactionCancelled) {
+				w.log.Error("❌ compaction error: %s", compactErr.Error())
+				errorData := map[string]any{}
+				for k, v := range compactionErrorData(compactErr) {
+					errorData[k] = v
 				}
-				w.sendStatusWithCode("validation-error", msg, "provider-unavailable")
-				w.currentTxnID = ""
-				return
+				w.sendErrorWithData(compactErr.Error(), "", errorData)
 			}
-
-			var advisory *provider.ContextCompactionAdvisory
-			var contextLimit *provider.ContextLimitExceededError
-			var limit *provider.ContextLimitExceededError
-			isAdvisory := false
-			if errors.As(err, &advisory) {
-				// A silent-truncation guard is an estimate-based request to
-				// compact, never a terminal error; normalize it to the same
-				// overflow shape the provider-rejection path uses.
-				limit = contextLimitFromAdvisory(advisory)
-				isAdvisory = true
-			} else if errors.As(err, &contextLimit) {
-				limit = contextLimit
-			}
-			if limit != nil {
-				// Parse the original request only now that it is needed (a
-				// context-limit overflow), not on every successful turn.
-				var originalRequest hiddenLLMRequest
-				_ = json.Unmarshal(llmRequest, &originalRequest)
-				switch v := w.handleContextOverflow(limit, isAdvisory, bypassContextGuard, &contextRecovery, originalRequest.ModelConfig, err); v.verdict {
-				case overflowStop:
-					w.currentTxnID = ""
-					return
-				case overflowRetry:
-					w.currentTxnID = ""
-					continue strategyLoop
-				case overflowBypassAndRetry:
-					bypassContextGuard = true
-					w.currentTxnID = ""
-					continue strategyLoop
-				case overflowTerminal:
-					// Report v.err below. A synthesized terminal error must not
-					// re-enter overflow handling in the same iteration, even when
-					// it wraps a provider overflow.
-					err = v.err
-				}
-			}
-
-			w.log.Error("❌ LLM error: %s", err.Error())
-			errorData := map[string]any{
-				"duration": duration.Milliseconds(),
-			}
-			if mc := w.resolveModelConfig(); mc != nil {
-				errorData["provider"] = mc.Provider
-				errorData["model"] = mc.Model
-			}
-			// A failed bounded compaction / context recovery still leaves its
-			// partial accounting on the durable error item.
-			for k, v := range compactionErrorData(err) {
-				errorData[k] = v
-			}
-			// currentTxnID is still set, so insertTargetMessage stamps the
-			// error item with txnID — the View Transaction button opens the
-			// blob saved above.
-			w.sendErrorWithData(err.Error(), "", errorData)
 			w.currentTxnID = ""
-			return
+			return turnDone
+		}
+	}
+
+	// Drain any messages queued while this turn was in flight (or while the
+	// previous tool batch awaited approval) into the thread as user messages,
+	// so the upcoming turn sees them. Promote BEFORE findUnstampedUserMsgID
+	// so the newest queued message is the one stamped for this round-trip.
+	//
+	// This drains at EVERY boundary, including a tool-result continuation:
+	// a message typed while tools ran (or sat at an approval prompt) is
+	// steering, and the user wants it seen at the earliest opportunity, not
+	// after the whole agentic run ends on assistant text. The promoted item
+	// appends AFTER the completed tool batch, so the request stays strictly
+	// append-only — the stateless API providers' prefix caches are
+	// unaffected. The claudecode provider cannot carry user content on its
+	// parked-CLI MCP fast path (userInterjectedAfterPendingTools), so an
+	// interjected continuation routes through the warm-append resume there —
+	// a few seconds of CLI respawn with the prompt cache intact, a fair
+	// price for prompt delivery of a deliberately-typed message.
+	w.promotePendingItems(w.thread.itemID)
+
+	userMsgToStamp := w.findUnstampedUserMsgID()
+
+	// Fire the strategy's onActivate hook (in the engine) if the active
+	// strategy hasn't been activated yet. Placed AFTER promotePendingItems so
+	// the just-sent user message is already in the items array — the engine's
+	// injected guidance then lands deterministically after it, not racing the
+	// promotion. Blocks until the guidance has synced back, so buildMessages
+	// sees it. Idempotent across iterations (activatedStrategyId gate).
+	w.maybeActivateStrategy()
+
+	// Reset streaming state for this iteration — must reset message IDs
+	// AND content so each iteration creates new messages rather than
+	// updating previous ones.
+	w.finalizeStreaming()
+	w.streaming.textContent = ""
+	w.streaming.thinkingContent = ""
+
+	if w.loadState() == StateCancelling {
+		return turnDone
+	}
+
+	w.sendStatus("preparing", "")
+	w.batcher.Flush()
+
+	ctxResult, tools, err := w.requestContextAndTools()
+	if err != nil {
+		if errors.Is(err, ErrCancelled) {
+			return turnDone
+		}
+		w.sendError(fmt.Sprintf("Failed to get context/tools: %v", err), "")
+		return turnDone
+	}
+
+	// Remember which of this turn's tools may delegate to a subthread, so
+	// processLLMResponse can route a call to the build-spec round-trip. Rebuilt
+	// each iteration from the freshly-offered tools (a strategy may filter the
+	// set differently per turn).
+	w.turnDelegatingTools = collectDelegatingToolNames(tools)
+	// But a delegated sub-agent must never delegate again: inside a delegated
+	// thread (or any descendant of one), delegating tools run inline and return
+	// raw content, so a chain of subthreads can't recurse indefinitely.
+	if len(w.turnDelegatingTools) > 0 && w.withinDelegatedThread(w.thread.itemID) {
+		w.turnDelegatingTools = nil
+	}
+
+	// txnID identifies this round-trip; insertTargetMessage stamps it onto
+	// every item produced during the call so callers don't plumb it through.
+	txnID := generateTransactionID()
+	w.currentTxnID = txnID
+
+	llmRequest := w.buildLLMRequest(ctxResult, tools, txnID, st.bypassContextGuard)
+
+	// Stamp the originating user message before the call. The transaction
+	// blob is written below regardless of outcome, so on LLM failure the
+	// user message + error item both link to a viewable blob.
+	if userMsgToStamp != "" {
+		_ = w.updateTargetItemByID(userMsgToStamp, "transactionId", txnID)
+	}
+
+	startTime := time.Now()
+
+	response, err := w.callLLMWithRetry(llmRequest)
+	if errors.Is(err, ErrRestartStrategy) {
+		return turnContinue
+	}
+
+	duration := time.Since(startTime)
+
+	w.batcher.Flush()
+
+	// Persist the transaction blob BEFORE any further Yjs mutation. On
+	// cancellation, capture whatever partial streaming content existed so
+	// the log shows truncated output rather than "No response data".
+	errMsg := ""
+	blobResponse := response
+	if err != nil {
+		if errors.Is(err, ErrCancelled) {
+			blobResponse = w.partialCancelledResponse()
+		} else {
+			errMsg = err.Error()
+		}
+	}
+	if blobErr := w.txnStore.SaveBlob(TransactionBlobInput{
+		ConversationID: w.conversationID,
+		TxnID:          txnID,
+		LLMRequest:     llmRequest,
+		Response:       blobResponse,
+		ErrMsg:         errMsg,
+		StartTime:      startTime,
+		Duration:       duration,
+		ModelConfig:    w.resolveModelConfig(),
+	}); blobErr != nil {
+		w.log.Error("❌ Failed to save transaction blob: %v", blobErr)
+	}
+
+	if err != nil {
+		if errors.Is(err, ErrCancelled) {
+			w.currentTxnID = ""
+			return turnDone
 		}
 
-		bypassContextGuard = false
-		// A successful dispatch closes this context-pressure incident: a later
-		// overflow in the same (possibly very long) strategy run gets a fresh
-		// bounded recovery budget instead of inheriting an exhausted one. This
-		// cannot loop — re-entering recovery still takes a fresh provider
-		// overflow, and each incident stays progress-checked and bounded.
-		contextRecovery = contextRecoveryState{}
+		// Guard B: the selected model's provider isn't configured (no API key,
+		// provider disabled, OAuth not signed in). That is a user-fixable setup
+		// problem, not a turn failure — surface it as a validation error the
+		// client can act on (code "provider-unavailable": prompt to pick another
+		// model, never auto-retry) rather than a generic red error item. Do this
+		// before any context-limit handling: a credential failure is terminal and
+		// unrelated to compaction/recovery.
+		if errors.Is(err, ErrProviderUnavailable) {
+			msg := "The selected model's provider isn't configured. Pick another model, or configure it in settings."
+			if mc := w.resolveModelConfig(); mc != nil {
+				msg = fmt.Sprintf("The provider for %s (%s) isn't configured. Pick another model, or configure %s in settings.", mc.Model, mc.Provider, mc.Provider)
+			}
+			w.sendStatusWithCode("validation-error", msg, "provider-unavailable")
+			w.currentTxnID = ""
+			return turnDone
+		}
 
-		// Per-turn token economics at Info level so the prompt-cache hit rate is
-		// visible in the normal conversation log without enabling trace. cached/
-		// input is the prefix-cache hit rate: on an agent loop it should climb
-		// toward ~1.0 once routing is pinned (prompt_cache_key). A persistent 0
-		// on an OpenAI/Codex model means the growing prefix is being re-billed
-		// every turn — the shard-misrouting burn. cached=? / cacheWrite=? mean
-		// the provider reported no cache usage for the call: unknown, not a
-		// miss. thread is logged so an interleaved sub-context (its own short
-		// prefix, tiny output) is distinguishable from the main task's turns
-		// rather than looking like a cache miss on the same conversation.
-		cached, hit, cacheWrite := "?", "?", "?"
-		if response.CachedTokens != nil {
-			cached = fmt.Sprintf("%d", *response.CachedTokens)
-			hit = "0"
-			if response.InputTokens > 0 {
-				hit = fmt.Sprintf("%d", *response.CachedTokens*100/response.InputTokens)
+		var advisory *provider.ContextCompactionAdvisory
+		var contextLimit *provider.ContextLimitExceededError
+		var limit *provider.ContextLimitExceededError
+		isAdvisory := false
+		if errors.As(err, &advisory) {
+			// A silent-truncation guard is an estimate-based request to
+			// compact, never a terminal error; normalize it to the same
+			// overflow shape the provider-rejection path uses.
+			limit = contextLimitFromAdvisory(advisory)
+			isAdvisory = true
+		} else if errors.As(err, &contextLimit) {
+			limit = contextLimit
+		}
+		if limit != nil {
+			// Parse the original request only now that it is needed (a
+			// context-limit overflow), not on every successful turn.
+			var originalRequest hiddenLLMRequest
+			_ = json.Unmarshal(llmRequest, &originalRequest)
+			switch v := w.handleContextOverflow(limit, isAdvisory, st.bypassContextGuard, &st.contextRecovery, originalRequest.ModelConfig, err); v.verdict {
+			case overflowStop:
+				w.currentTxnID = ""
+				return turnDone
+			case overflowRetry:
+				w.currentTxnID = ""
+				return turnContinue
+			case overflowBypassAndRetry:
+				st.bypassContextGuard = true
+				w.currentTxnID = ""
+				return turnContinue
+			case overflowTerminal:
+				// Report v.err below. A synthesized terminal error must not
+				// re-enter overflow handling in the same iteration, even when
+				// it wraps a provider overflow.
+				err = v.err
 			}
 		}
-		if response.CacheWriteTokens != nil {
-			cacheWrite = fmt.Sprintf("%d", *response.CacheWriteTokens)
-		}
-		w.log.Info("[turn tokens] thread=%q input=%d cached=%s (%s%% hit) output=%d cacheWrite=%s stop=%s in %s",
-			w.thread.itemID, response.InputTokens, cached, hit,
-			response.OutputTokens, cacheWrite, response.StopReason,
-			duration.Round(time.Millisecond))
 
-		shouldContinue, err := w.processLLMResponse(response)
+		w.log.Error("❌ LLM error: %s", err.Error())
+		errorData := map[string]any{
+			"duration": duration.Milliseconds(),
+		}
+		if mc := w.resolveModelConfig(); mc != nil {
+			errorData["provider"] = mc.Provider
+			errorData["model"] = mc.Model
+		}
+		// A failed bounded compaction / context recovery still leaves its
+		// partial accounting on the durable error item.
+		for k, v := range compactionErrorData(err) {
+			errorData[k] = v
+		}
+		// currentTxnID is still set, so insertTargetMessage stamps the
+		// error item with txnID — the View Transaction button opens the
+		// blob saved above.
+		w.sendErrorWithData(err.Error(), "", errorData)
 		w.currentTxnID = ""
-		if err != nil {
-			if errors.Is(err, ErrCancelled) {
-				return
-			}
-			w.sendError(fmt.Sprintf("Error processing response: %v", err), "")
-			return
-		}
+		return turnDone
+	}
 
-		// Non-blocking: if async tools or a child thread were created,
-		// transition to "awaiting_llm" and let the reducer re-dispatch when
-		// the work completes.
-		if w.hasIncompleteTools() || w.hasIncompleteThreads() {
-			w.batcher.Flush()
-			w.transitionToAwaitingLLM()
-			return
-		}
+	st.bypassContextGuard = false
+	// A successful dispatch closes this context-pressure incident: a later
+	// overflow in the same (possibly very long) strategy run gets a fresh
+	// bounded recovery budget instead of inheriting an exhausted one. This
+	// cannot loop — re-entering recovery still takes a fresh provider
+	// overflow, and each incident stays progress-checked and bounded.
+	st.contextRecovery = contextRecoveryState{}
 
+	// Per-turn token economics at Info level so the prompt-cache hit rate is
+	// visible in the normal conversation log without enabling trace. cached/
+	// input is the prefix-cache hit rate: on an agent loop it should climb
+	// toward ~1.0 once routing is pinned (prompt_cache_key). A persistent 0
+	// on an OpenAI/Codex model means the growing prefix is being re-billed
+	// every turn — the shard-misrouting burn. cached=? / cacheWrite=? mean
+	// the provider reported no cache usage for the call: unknown, not a
+	// miss. thread is logged so an interleaved sub-context (its own short
+	// prefix, tiny output) is distinguishable from the main task's turns
+	// rather than looking like a cache miss on the same conversation.
+	cached, hit, cacheWrite := "?", "?", "?"
+	if response.CachedTokens != nil {
+		cached = fmt.Sprintf("%d", *response.CachedTokens)
+		hit = "0"
+		if response.InputTokens > 0 {
+			hit = fmt.Sprintf("%d", *response.CachedTokens*100/response.InputTokens)
+		}
+	}
+	if response.CacheWriteTokens != nil {
+		cacheWrite = fmt.Sprintf("%d", *response.CacheWriteTokens)
+	}
+	w.log.Info("[turn tokens] thread=%q input=%d cached=%s (%s%% hit) output=%d cacheWrite=%s stop=%s in %s",
+		w.thread.itemID, response.InputTokens, cached, hit,
+		response.OutputTokens, cacheWrite, response.StopReason,
+		duration.Round(time.Millisecond))
+
+	shouldContinue, err := w.processLLMResponse(response)
+	w.currentTxnID = ""
+	if err != nil {
+		if errors.Is(err, ErrCancelled) {
+			return turnDone
+		}
+		w.sendError(fmt.Sprintf("Error processing response: %v", err), "")
+		return turnDone
+	}
+
+	// Non-blocking: if async tools or a child thread were created,
+	// transition to "awaiting_llm" and let the reducer re-dispatch when
+	// the work completes.
+	if w.hasIncompleteTools() || w.hasIncompleteThreads() {
 		w.batcher.Flush()
+		w.transitionToAwaitingLLM()
+		return turnDone
+	}
 
-		// A turn that produced no action (no assistant text, no tool_use)
-		// leaves the user with nothing new to see. Some providers
-		// intermittently emit empty end_turn for transient reasons; retry
-		// up to MaxBarrenTurns with a visible "retrying" status so the UI
-		// doesn't look stuck. Only when the cap is hit do we surface the
-		// placeholder and exit — otherwise the UI would flip silently to
-		// idle, indistinguishable from a stuck spinner.
-		if !w.turnProducedAction(response) {
-			barrenTurns++
-			if barrenTurns >= MaxBarrenTurns {
-				w.insertBarrenStallPlaceholder()
-				return
-			}
-			w.sendStatus("retrying", fmt.Sprintf(
-				"No response — retrying (%d/%d)", barrenTurns, MaxBarrenTurns))
-			w.batcher.Flush()
-			continue strategyLoop
+	w.batcher.Flush()
+
+	// A turn that produced no action (no assistant text, no tool_use)
+	// leaves the user with nothing new to see. Some providers
+	// intermittently emit empty end_turn for transient reasons; retry
+	// up to MaxBarrenTurns with a visible "retrying" status so the UI
+	// doesn't look stuck. Only when the cap is hit do we surface the
+	// placeholder and exit — otherwise the UI would flip silently to
+	// idle, indistinguishable from a stuck spinner.
+	if !w.turnProducedAction(response) {
+		st.barrenTurns++
+		if st.barrenTurns >= MaxBarrenTurns {
+			w.insertBarrenStallPlaceholder()
+			return turnDone
 		}
-		barrenTurns = 0
+		w.sendStatus("retrying", fmt.Sprintf(
+			"No response — retrying (%d/%d)", st.barrenTurns, MaxBarrenTurns))
+		w.batcher.Flush()
+		return turnContinue
+	}
+	st.barrenTurns = 0
 
-		// Action happened. Done unless we explicitly need another LLM turn —
-		// processLLMResponse returns true only when sync tools fired and the
-		// loop must continue so the LLM can react to their results.
-		//
-		// End-of-run is also a drain boundary: if the user queued a follow-up
-		// while this turn ran, promote it and drive another turn instead of
-		// going idle (the top-of-loop promote does the actual move).
-		if !shouldContinue {
-			if w.hasPendingItems(w.thread.itemID) {
-				continue strategyLoop
-			}
+	// Action happened. Done unless we explicitly need another LLM turn —
+	// processLLMResponse returns true only when sync tools fired and the
+	// loop must continue so the LLM can react to their results.
+	//
+	// End-of-run is also a drain boundary: if the user queued a follow-up
+	// while this turn ran, promote it and drive another turn instead of
+	// going idle (the next turn's promotePendingItems does the actual move).
+	if !shouldContinue {
+		if w.hasPendingItems(w.thread.itemID) {
+			return turnContinue
+		}
+		return turnDone
+	}
+	if response.StopReason == "end_turn" && hasAssistantText(response) {
+		if w.hasPendingItems(w.thread.itemID) {
+			return turnContinue
+		}
+		return turnDone
+	}
+	return turnContinue
+}
+
+// finishStrategyRun settles the run a strategy loop just finished, whatever the
+// ending: rest, error or cancellation. Deferred by runStrategyLoop so no exit
+// path can skip it and strand a stamped tool_use unpaired.
+func (w *ConversationWorker) finishStrategyRun() {
+	// Non-blocking: if the loop returned after dispatching tools or
+	// creating a child thread (activity="awaiting_llm"), let the reducer
+	// dispatch the child. In production the run() event loop calls
+	// tryReconcile(); drain it inline here so tests (no run()) also work.
+	if w.getActivity() == ActivityAwaitingLLM {
+		w.storeState(StateIdle)
+		w.needsReconcile = true
+		w.drainReconcile()
+		return
+	}
+
+	wasCancelled := w.loadState() == StateCancelling
+	completedThreadID := w.thread.itemID // capture before clearing
+
+	// The run this loop just ran is over: record how it came out. This is
+	// the completion signal a parked caller waits on, and the source of the
+	// tool_result a delegating call is owed, so it runs at EVERY ending —
+	// rest, error and cancellation alike — and never leaves a stamped
+	// tool_use unpaired. Run BEFORE clearing state so the Y.Map read can
+	// find the items.
+	if completedThreadID != "" {
+		w.settleThreadRun(completedThreadID, wasCancelled)
+	}
+
+	w.storeState(StateIdle)
+	w.processingStartedAt = 0
+	w.approvalWaitStartedAt = 0
+	w.lastProgressWriteMs = 0
+	w.resetThreadContext()
+
+	if wasCancelled {
+		w.finalizeCancellation(completedThreadID)
+		return
+	}
+
+	// signalParentThread fires for a child whose run has settled, whatever it
+	// settled as: the parent asked a question and is owed the answer, and
+	// "the run errored" is an answer it can act on. The child stays exactly
+	// as it is — stopped, summarised or not, and free to run again.
+	if !w.signalParentThread(completedThreadID) {
+		w.sendStatus("idle", "")
+		w.CancelStaleToolActions()
+
+		// A completed sub-thread folds back into the root conversation. If
+		// the user queued a message at the ROOT while the sub-thread ran —
+		// e.g. typed a follow-up during /compact — nothing is left to drain
+		// that queue: the loop that just ended was scoped to the sub-thread,
+		// so its end-of-run drain only checked the sub-thread's own queue,
+		// and signalParentThread declined to re-drive the parent (this
+		// branch, because a needsStrategyRun/compaction thread is not
+		// llmCreated). Without this the message is stranded in the pending
+		// queue and the conversation rests at idle. Drive a fresh root turn to
+		// promote and answer it (the dispatched turn's promotePendingItems does
+		// the actual move). The sendStatus("idle") above already collapsed any
+		// compaction undo-merge and closed the capture window — so this follow-up
+		// becomes its own undo group — and cleared the LLM claim, so requestLLM
+		// can transition from none.
+		// Mirrors the reducer's ActionGoIdle drain. Guarded on
+		// completedThreadID != "" so it fires ONLY for a sub-thread
+		// completion — a root turn drains its own queue inside the loop (the
+		// end-of-run turnContinue), never here.
+		if completedThreadID != "" && w.hasPendingItems("") {
+			w.requestLLM("")
+			w.needsReconcile = true
+			w.drainReconcile()
 			return
 		}
-		if response.StopReason == "end_turn" && hasAssistantText(response) {
-			if w.hasPendingItems(w.thread.itemID) {
-				continue strategyLoop
-			}
+
+		// Proactive compaction: if the settled root turn's anchored input
+		// usage crossed the threshold, fold the root here and hand off to the
+		// summarizer. When it folds, the pickup runs the fold thread to
+		// completion — which dispatches its own idle hook — so return without
+		// a second dispatch.
+		if w.maybeAutoCompactAtSettle() {
 			return
 		}
+
+		// Root conversation went idle — let the strategy drive any
+		// post-idle work (e.g. plan execution) in the engine. Fire-and-
+		// forget: its effects re-enter via doc sync + reconcile.
+		w.dispatchWorkerIdleHook()
+
+		// Same idle moment, one call per completed turn: let every
+		// context-item type run its onTurnEnd hook in the engine (e.g. an
+		// extension retaining a memory of the turn). Fire-and-forget; the
+		// hook's effects are external side-effects, not doc writes.
+		w.dispatchContextTurnHook()
+	} else {
+		w.drainReconcile()
 	}
 }
 

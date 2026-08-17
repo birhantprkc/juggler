@@ -1227,6 +1227,29 @@ func (w *ConversationWorker) sendStatus(status, message string) {
 // (code "provider-unavailable" — never auto-retry). Empty code ⇒ omitted, so
 // every existing sendStatus caller is unchanged on the wire.
 func (w *ConversationWorker) sendStatusWithCode(status, message, code string) {
+	w.updateElapsedAnchor(status)
+	w.updateOSActivity(status)
+	w.writeProcessingState(status, message, code)
+	if status == "idle" {
+		w.finishIdleTransition()
+	}
+
+	// Also send direct WebSocket message for logging/debugging
+	wsMsg := map[string]any{
+		"type":    "status",
+		"status":  status,
+		"message": message,
+	}
+	if code != "" {
+		wsMsg["code"] = code
+	}
+	w.send(wsMsg)
+}
+
+// updateElapsedAnchor maintains the in-memory base for the spinner's elapsed-time
+// digit as `status` changes: a busy status lazily starts it, a resting one clears
+// it so the next turn counts from zero.
+func (w *ConversationWorker) updateElapsedAnchor(status string) {
 	// `startedAt` is the shared timer base every client uses to render
 	// the spinner's elapsed-time digit (see web/js/services/llm-state.js).
 	// It must come from the doc so all clients agree: a client falling back
@@ -1242,7 +1265,8 @@ func (w *ConversationWorker) sendStatusWithCode(status, message, code string) {
 		// Resting transition (idle, or a terminal-error status): clear the
 		// in-memory elapsed anchor so the NEXT turn starts its timer from zero.
 		// The doc's processingState already omits startedAt for resting statuses
-		// (see below); mirroring that in memory keeps the two in lockstep. The
+		// (writeProcessingState); mirroring that in memory keeps the two in
+		// lockstep. The
 		// runStrategyLoop defer also zeroes the anchor on the normal end-of-turn,
 		// but handleCancel's real-work-in-flight park branch rests via
 		// sendStatus("idle") WITHOUT going through that defer — without this reset
@@ -1251,6 +1275,11 @@ func (w *ConversationWorker) sendStatusWithCode(status, message, code string) {
 		// the cancelled turn's start.
 		w.processingStartedAt = 0
 	}
+}
+
+// updateOSActivity holds (or releases) the App Nap defeat that keeps this worker
+// scheduled for the whole busy span.
+func (w *ConversationWorker) updateOSActivity(status string) {
 	// App Nap defeat. Held for the entire busy span (LLM call + tool
 	// execution in the engine WebView between LLM calls), released on
 	// the idle transition. The osactivity package refcounts internally so
@@ -1265,6 +1294,11 @@ func (w *ConversationWorker) sendStatusWithCode(status, message, code string) {
 		osactivity.End()
 		w.activityAsserted = false
 	}
+}
+
+// writeProcessingState publishes the frame every client renders the spinner from:
+// the doc-native `processingState` blob, rebuilt from scratch on each call.
+func (w *ConversationWorker) writeProcessingState(status, message, code string) {
 	// Include threadItemId so frontend knows which column to target
 	stateMap := map[string]any{
 		"status":       status,
@@ -1295,60 +1329,54 @@ func (w *ConversationWorker) sendStatusWithCode(status, message, code string) {
 		stateMap["activity"] = ActivityCallingLLM
 		stateMap["claimedAt"] = time.Now().UnixMilli()
 	} else if status == "idle" {
-		// Increment turn counter on every idle transition so observers can
-		// detect that a turn happened even when Yjs sync batching merged the
-		// non-idle window into a single update. Seed from the doc's current
-		// value first so the counter stays MONOTONIC across a worker restart on
-		// a reloaded conversation: a fresh worker starts at 0 but the persisted
-		// doc may already carry a higher count (handleInit's first frame is
-		// idle, so this seed runs before any non-idle frame could regress it).
-		// Without the seed the counter would go backwards and break every fence
-		// observing it.
-		if docTC := w.docTurnCounter(); docTC > w.turnCounter {
-			w.turnCounter = docTC
-		}
-		w.turnCounter++
-		// Persist the bumped counter to its own durable top-level metadata key,
-		// OUTSIDE the ephemeral processingState blob (whose other fields —
-		// startedAt, live token counts, status — are rebuilt from scratch on
-		// every load by handleInit). completedTurns is the one value read back
-		// across a load (the monotonic turn fence), so it gets a clean key.
-		w.doc.SetMetadata("completedTurns", w.turnCounter)
+		w.bumpTurnCounterAtIdle()
 	}
 	w.doc.SetMetadata("processingState", stateMap)
+}
 
-	// When transitioning to idle, flush all pending Yjs updates so the
-	// browser sees the complete operation result AND the idle transition
-	// in the same sync batch. Without this, the idle metadata update sits
-	// in the batch buffer while the browser waits for it — breaking
-	// strategy hooks like onWorkerIdle that drive the next phase.
-	if status == "idle" {
-		// If a compaction was in flight, collapse every undo group the
-		// strategy added during the run into the single stack item that
-		// holds the viewer's compact insert — so the user undoes the
-		// whole compaction in one press. See checkForNewThreads for the
-		// snapshot that captured the start index.
-		if w.compactionMergeFromIdx >= 0 {
-			w.tracker.MergeFromIndex(w.compactionMergeFromIdx)
-			w.compactionMergeFromIdx = -1
-		}
-		// Close the current undo capture window so the next browser-originated
-		// action (e.g. /thread command) is recorded as a separate undo group
-		// rather than being coalesced with the just-completed turn's operations.
-		w.tracker.StopCapturing()
-		w.batcher.Flush()
+// bumpTurnCounterAtIdle advances the monotonic turn fence observers use to detect
+// that a turn happened even when Yjs sync batching merged the whole non-idle
+// window into a single update.
+func (w *ConversationWorker) bumpTurnCounterAtIdle() {
+	// Seed from the doc's current value first so the counter stays MONOTONIC
+	// across a worker restart on a reloaded conversation: a fresh worker starts
+	// at 0 but the persisted doc may already carry a higher count (handleInit's
+	// first frame is idle, so this seed runs before any non-idle frame could
+	// regress it). Without the seed the counter would go backwards and break
+	// every fence observing it.
+	if docTC := w.docTurnCounter(); docTC > w.turnCounter {
+		w.turnCounter = docTC
 	}
+	w.turnCounter++
+	// Persist the bumped counter to its own durable top-level metadata key,
+	// OUTSIDE the ephemeral processingState blob (whose other fields —
+	// startedAt, live token counts, status — are rebuilt from scratch on
+	// every load by handleInit). completedTurns is the one value read back
+	// across a load (the monotonic turn fence), so it gets a clean key.
+	w.doc.SetMetadata("completedTurns", w.turnCounter)
+}
 
-	// Also send direct WebSocket message for logging/debugging
-	wsMsg := map[string]any{
-		"type":    "status",
-		"status":  status,
-		"message": message,
+// finishIdleTransition closes out a completed run: it collapses any in-flight
+// compaction into one undo group, ends the undo capture window so the next
+// browser-originated action is its own group, and flushes the batcher so the
+// browser sees the operation result AND the idle transition in one sync batch.
+// Without that flush the idle metadata sits in the buffer while the browser waits
+// for it, stalling strategy hooks like onWorkerIdle that drive the next phase.
+func (w *ConversationWorker) finishIdleTransition() {
+	// If a compaction was in flight, collapse every undo group the
+	// strategy added during the run into the single stack item that
+	// holds the viewer's compact insert — so the user undoes the
+	// whole compaction in one press. See checkForNewThreads for the
+	// snapshot that captured the start index.
+	if w.compactionMergeFromIdx >= 0 {
+		w.tracker.MergeFromIndex(w.compactionMergeFromIdx)
+		w.compactionMergeFromIdx = -1
 	}
-	if code != "" {
-		wsMsg["code"] = code
-	}
-	w.send(wsMsg)
+	// Close the current undo capture window so the next browser-originated
+	// action (e.g. /thread command) is recorded as a separate undo group
+	// rather than being coalesced with the just-completed turn's operations.
+	w.tracker.StopCapturing()
+	w.batcher.Flush()
 }
 
 func (w *ConversationWorker) sendReady() {
