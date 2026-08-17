@@ -46,13 +46,16 @@ func (w *ConversationWorker) ensureEngineReady() bool {
 // dispatchStrategyHook sends a run-strategy-hook request to the engine only. A
 // non-empty requestID asks the engine to report the items it injected.
 // strategyID is the worker's authoritative active strategy: the engine runs the
-// hook on THAT strategy, never on its own (possibly sync-stale) copy.
-func (w *ConversationWorker) dispatchStrategyHook(requestID, hook, strategyID, previousStrategyID string) {
+// hook on THAT strategy, never on its own (possibly sync-stale) copy. threadID
+// (empty for root) names the thread that strategy belongs to, so a sub-thread's
+// strategy is never installed over the root's.
+func (w *ConversationWorker) dispatchStrategyHook(requestID, hook, strategyID, threadID, previousStrategyID string) {
 	data, err := json.Marshal(RunStrategyHookRequest{
 		Type:               "run-strategy-hook",
 		RequestID:          requestID,
 		Hook:               hook,
 		StrategyID:         strategyID,
+		ThreadItemID:       threadID,
 		PreviousStrategyID: previousStrategyID,
 	})
 	if err != nil {
@@ -109,7 +112,7 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 	// llmResponseChan).
 	drainStaleReply(w.strategyHookResultChan)
 	requestID := generateRequestID()
-	w.dispatchStrategyHook(requestID, "onActivate", current, activated)
+	w.dispatchStrategyHook(requestID, "onActivate", current, threadID, activated)
 	guidance, ok := w.waitForStrategyHook(requestID, StrategyHookTimeout)
 	if !ok {
 		return // engine didn't answer in time — retry on a later turn
@@ -142,7 +145,7 @@ func (w *ConversationWorker) dispatchWorkerIdleHook() {
 	// cleared), so this resolves the root strategy; routing through the per-thread
 	// resolver keeps every worker strategy read on one path.
 	strategyID := w.doc.ResolveEffectiveStrategyID(w.thread.itemID)
-	w.dispatchStrategyHook("", "onWorkerIdle", strategyID, "")
+	w.dispatchStrategyHook("", "onWorkerIdle", strategyID, w.thread.itemID, "")
 }
 
 // dispatchContextTurnHook fires the context-item onTurnEnd hook on the engine

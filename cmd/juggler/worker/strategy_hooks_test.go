@@ -14,6 +14,7 @@ import (
 type hookRec struct {
 	hook       string
 	strategyID string
+	threadID   string
 	prev       string
 	reqID      string
 }
@@ -44,13 +45,14 @@ func newStrategyHookHarness(t *testing.T, strategyID string, replyFn func(w *Con
 			Type               string `json:"type"`
 			Hook               string `json:"hook"`
 			StrategyID         string `json:"strategyId"`
+			ThreadItemID       string `json:"threadItemId"`
 			PreviousStrategyID string `json:"previousStrategyId"`
 			RequestID          string `json:"requestId"`
 		}
 		if json.Unmarshal(b, &m) != nil || m.Type != "run-strategy-hook" {
 			return
 		}
-		rec := hookRec{hook: m.Hook, strategyID: m.StrategyID, prev: m.PreviousStrategyID, reqID: m.RequestID}
+		rec := hookRec{hook: m.Hook, strategyID: m.StrategyID, threadID: m.ThreadItemID, prev: m.PreviousStrategyID, reqID: m.RequestID}
 		hookCh <- rec
 		if rec.reqID != "" && replyFn != nil {
 			replyFn(w, rec)
@@ -203,6 +205,12 @@ func TestWorkerActivatesSubThreadStrategy(t *testing.T) {
 	}
 	if hooks[0].strategyID != "read-only" {
 		t.Fatalf("onActivate must carry the sub-thread's effective strategy %q, got %q (flat root strategy leaked through)", "read-only", hooks[0].strategyID)
+	}
+	// The request must name the thread it belongs to. Without it the engine has
+	// nothing to scope the hook by and installs the sub-thread's strategy on the
+	// root thread, where it then refuses the user's own tool approvals.
+	if hooks[0].threadID != threadID {
+		t.Fatalf("onActivate must carry the sub-thread's threadItemId %q, got %q", threadID, hooks[0].threadID)
 	}
 	if got := w.doc.GetActivatedStrategyID(threadID); got != "read-only" {
 		t.Fatalf("sub-thread's own activatedStrategyId must be recorded %q, got %q", "read-only", got)

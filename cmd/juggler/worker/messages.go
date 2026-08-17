@@ -431,11 +431,15 @@ type RenderContextItemsRequest struct {
 // is empty for fire-and-forget hooks (onWorkerIdle); a non-empty RequestID asks
 // the engine to report which items it injected (onActivate) so the worker can
 // block until that guidance has synced into its doc before building the turn.
+// ThreadItemID names the thread the hook belongs to (empty for root): strategy
+// is per-thread, so the engine must run the hook on THAT thread's strategy and
+// leave every other thread's alone.
 type RunStrategyHookRequest struct {
 	Type               string `json:"type"` // "run-strategy-hook"
 	RequestID          string `json:"requestId,omitempty"`
 	Hook               string `json:"hook"`       // "onActivate" | "onWorkerIdle"
 	StrategyID         string `json:"strategyId"` // the worker's authoritative active strategy
+	ThreadItemID       string `json:"threadItemId,omitempty"`
 	PreviousStrategyID string `json:"previousStrategyId,omitempty"`
 }
 

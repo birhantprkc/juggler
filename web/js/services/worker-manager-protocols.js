@@ -256,7 +256,7 @@ export function handleApprovalRequest(wm, conversationId, data) {
  * the engine role is hard-asserted here.
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
- * @param {any} data - {hook, strategyId, requestId?, previousStrategyId?}
+ * @param {any} data - {hook, strategyId, threadItemId?, requestId?, previousStrategyId?}
  * @returns {Promise<void>} Resolves once the hook has run (and, for onActivate, the response is sent)
  */
 export async function handleRunStrategyHook(wm, conversationId, data) {
@@ -267,19 +267,25 @@ export async function handleRunStrategyHook(wm, conversationId, data) {
   const requestId = /** @type {string|undefined} */ (data.requestId);
 
   const conversation = await ensureEngineConversationLoaded(wm, conversationId);
-  const root = conversation?.rootMessageThread;
+
+  // Strategy is PER-THREAD, so the hook runs on the thread the worker named —
+  // never on root by default. A sub-agent thread activating its own strategy
+  // must not install that strategy over the root's: the root instance is cached
+  // for the conversation's life and nothing puts it back, so a leaked sub-agent
+  // strategy would go on refusing the user's own tool approvals.
+  const thread = resolveHookThread(conversation, data.threadItemId, conversationId);
 
   // Run the hook on the WORKER's authoritative strategy. The engine's synced
   // copy of currentStrategyId can lag (it auto-loaded an earlier snapshot, or
-  // the switch update hasn't applied yet), so align root.strategy to the id the
-  // worker sent before invoking — otherwise we'd run the stale strategy's hook
-  // (e.g. default's no-op) and silently inject nothing.
+  // the switch update hasn't applied yet), so align the thread's strategy to the
+  // id the worker sent before invoking — otherwise we'd run the stale strategy's
+  // hook (e.g. default's no-op) and silently inject nothing.
   const strategyId = /** @type {string|undefined} */ (data.strategyId);
-  if (root && strategyId && root.currentStrategyId !== strategyId) {
-    root.currentStrategyId = strategyId;
-    root.strategy = strategyRegistry.createStrategy(strategyId, root);
+  if (thread && strategyId && thread.currentStrategyId !== strategyId) {
+    thread.currentStrategyId = strategyId;
+    thread.strategy = strategyRegistry.createStrategy(strategyId, thread);
   }
-  const strategy = root?.strategy;
+  const strategy = thread?.strategy;
 
   if (requestId) {
     // onActivate: CAPTURE the guidance rather than writing it to the doc. The
@@ -311,6 +317,27 @@ export async function handleRunStrategyHook(wm, conversationId, data) {
   // execution spawning sub-threads — re-enter through the worker, so there is
   // nothing to capture or reply.
   await runStrategyHookGuarded(strategy, hook, data.previousStrategyId, conversationId);
+}
+
+/**
+ * Resolve the MessageThread a strategy hook targets. An empty/absent
+ * threadItemId means the root thread. A named sub-thread that can't be found —
+ * the engine's copy hasn't synced it yet, or it was folded away — resolves to
+ * nothing rather than falling back to root: running a sub-thread's strategy on
+ * root is the leak this argument exists to prevent.
+ * @param {any} conversation - The engine's loaded conversation (may be undefined)
+ * @param {string|undefined} threadItemId - Thread the hook belongs to, empty for root
+ * @param {string} conversationId - For the error log only
+ * @returns {any} The MessageThread, or undefined when the sub-thread is unknown
+ */
+function resolveHookThread(conversation, threadItemId, conversationId) {
+  if (!threadItemId) return conversation?.rootMessageThread;
+  try {
+    return conversation?.resolveMessageThread(threadItemId);
+  } catch {
+    console.error(`[worker-manager] strategy hook for unknown thread ${threadItemId} in ${conversationId} — skipped`);
+    return undefined;
+  }
 }
 
 /**
