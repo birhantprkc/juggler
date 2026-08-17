@@ -132,20 +132,38 @@ Constructive feedback is welcome — come and say hello on the [Discord](https:/
 
 ## Building from source
 
-The idea with the extensions system is that most people won't need to actually build the app. If you do, see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full setup. The short version:
+The idea with the extensions system is that most people won't need to actually build the app. If you do, there's no frontend build step and nothing to install beyond Go — the binaries are the whole thing. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full development setup.
+
+**You need:** Go 1.26+, and on Linux the GTK4/WebKitGTK development packages (the server runs its engine in a hidden webview):
+
+```bash
+sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev   # Ubuntu 24.04+/Debian
+```
+
+Then:
 
 ```bash
 git clone --recurse-submodules https://github.com/juggler-ai/juggler.git
-cd juggler && make build
+cd juggler
+make go-build
 ```
 
-If you already cloned without `--recurse-submodules`, fetch them with:
+If you already cloned without `--recurse-submodules`, fetch them with `git submodule update --init --recursive`.
 
-```bash
-git submodule update --init --recursive
-```
+That leaves everything in `bin/`:
 
-Windows binaries cross-compile from any host with `make build-windows`; the Linux desktop app must be built natively. If you want to build for a `x86/amd64` Intel Mac, you can build that locally.
+| Platform | What you get | Run it |
+|---|---|---|
+| macOS | `bin/Juggler.app`, with both binaries inside the bundle, plus `bin/juggler` and `bin/juggler-app` symlinks into it | `open bin/Juggler.app`, or `./bin/juggler` for the headless server |
+| Linux, Windows | `bin/juggler` (server) and `bin/juggler-app` (desktop app), side by side | `./bin/juggler`, or run the app |
+
+`make go-build` just compiles. `make build` lints first, which additionally needs Node — it installs the JS/CSS toolchain into `tooling/` on first run — and is what you want before opening a PR. `make test` runs the whole suite and needs no API keys. `make help` lists every target.
+
+To build the same installers and archives the official downloads use: `make mac-dmg` (needs `brew install create-dmg`), `make win-installer` (needs Inno Setup, run on Windows), `make linux-tarball`. These are unsigned — a macOS bundle built here is ad-hoc signed, so other machines' Gatekeeper will object to it.
+
+Windows binaries cross-compile from any host with `make build-windows`; the Linux desktop app must be built natively. If you want to build for a `x86/amd64` Intel Mac, you can build that locally. For a Linux host with no display, see [`docs/headless-linux.md`](docs/headless-linux.md).
+
+CI on this repo is a sanity gate — lint, build, test — and deliberately publishes no artifacts, so there are no per-commit builds to download. The official signed builds come from a separate release pipeline.
 
 ## Tech stack
 

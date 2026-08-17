@@ -742,11 +742,57 @@ tidy:
 	@echo "Tidying go modules..."
 	@$(GOCMD) mod tidy
 
-## help: Show this help message
+## help: Show this help message, listing every documented target.
+## Each entry comes from that target's `## name: …` doc comment, with the
+## continuation lines joined on and only the first sentence shown — the rest is
+## Makefile-internal detail, readable where it is written. Two rules keep prose
+## out of the listing: a `## …` line whose first word isn't `name:` is treated
+## as continuation (so a description may contain colons and run as long as it
+## likes), and an entry only prints if a rule of that name actually exists.
 help:
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@sed -n 's/^##//p' $(MAKEFILE_LIST) | column -t -s ':' | sed -e 's/^/ /'
+	@awk '\
+	function emit(n, d,   line, indent, cut, i, p, tail, sentence) { \
+	  sentence = d; p = 0; \
+	  while ((i = index(substr(d, p + 1), ". ")) > 0) { \
+	    p += i; tail = substr(d, 1, p); \
+	    if (tail ~ /(e\.g|i\.e|etc|vs)\.$$/) continue; \
+	    sentence = tail; break; \
+	  } \
+	  indent = sprintf("%20s", ""); \
+	  line = sprintf("  %-16s %s", n, sentence); \
+	  while (length(line) > 92) { \
+	    cut = 92; \
+	    while (cut > 20 && substr(line, cut, 1) != " ") cut--; \
+	    if (cut <= 20) break; \
+	    print substr(line, 1, cut - 1); \
+	    line = indent substr(line, cut + 1); \
+	  } \
+	  print line; \
+	} \
+	/^##[ \t]*[A-Za-z0-9_.-]+:/ { \
+	  sub(/^##[ \t]*/, ""); \
+	  i = index($$0, ":"); \
+	  cur = ++count; \
+	  name[cur] = substr($$0, 1, i - 1); \
+	  desc[cur] = substr($$0, i + 1); \
+	  sub(/^[ \t]+/, "", desc[cur]); \
+	  next; \
+	} \
+	/^##/ { \
+	  if (count == 0) next; \
+	  sub(/^##[ \t]*/, ""); \
+	  desc[count] = desc[count] " " $$0; \
+	  next; \
+	} \
+	/^[A-Za-z0-9_.-]+[ \t]*:/ { \
+	  rule = $$0; sub(/[ \t]*:.*/, "", rule); isrule[rule] = 1; \
+	} \
+	END { \
+	  for (i = 1; i <= count; i++) if (isrule[name[i]]) emit(name[i], desc[i]); \
+	} \
+	' $(MAKEFILE_LIST)
 
 .DEFAULT_GOAL := help

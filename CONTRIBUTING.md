@@ -6,13 +6,32 @@ submodule-fork workflow — is [`AGENTS.md`](AGENTS.md).
 
 ## Setup
 
-Juggler needs Go 1.26+ and a recent Node toolchain (for JS linting). Clone with
-submodules so the vendored Wails fork is populated:
+Juggler needs:
+
+- **Go 1.26+** — the only requirement for compiling.
+- **A recent Node toolchain** — for the JS/CSS linters and the frontend
+  type-check. `make lint`, `make build` and `make test-full` need it; `make
+  go-build` and `make test` don't. The first lint run installs the toolchain
+  into `tooling/node_modules` itself.
+- **On Linux, the GTK4 development packages** — the server links GTK4 +
+  WebKitGTK 6.0 through cgo, so the headers must be present at build time:
+
+  ```bash
+  sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev
+  ```
+
+  (Fedora: `gtk4-devel webkitgtk6.0-devel libsoup3-devel`; Arch: `gtk4
+  webkitgtk-6.0 libsoup3`.) Without them the build fails in pkg-config before
+  it compiles anything. Running the tests, or the server itself, on a machine
+  with no display additionally needs Xvfb — see
+  [`docs/headless-linux.md`](docs/headless-linux.md).
+
+Clone with submodules so the vendored Wails fork is populated:
 
 ```bash
 git clone --recurse-submodules https://github.com/juggler-ai/juggler
 cd juggler
-make build
+make go-build
 ```
 
 If you already cloned without submodules, run `git submodule update --init --recursive`.
@@ -20,10 +39,16 @@ If you already cloned without submodules, run `git submodule update --init --rec
 ## Building and running
 
 ```bash
+make go-build    # Build the Go binaries only — no linters, no Node
 make build       # Lint + build all Go binaries (bin/juggler, bin/juggler-app, bin/juggler-test)
-make go-build    # Build the Go binaries only (skip linting)
 make dev         # Build, then run the server against on-disk assets
+make help        # Every target, including the packaging ones
 ```
+
+On macOS the binaries land inside `bin/Juggler.app`, with `bin/juggler` and
+`bin/juggler-app` as symlinks into the bundle; elsewhere they're plain files in
+`bin/`. `make mac-dmg`, `make win-installer` and `make linux-tarball` build the
+distributable packages (unsigned).
 
 Juggler is two binaries: `cmd/juggler` is the headless **server** (HTTP/WS plus
 the hidden engine WebView), and `cmd/juggler-app` is the multi-window **desktop
