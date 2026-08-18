@@ -13,7 +13,7 @@ import (
 // newToolsRequestHarness wires a worker whose client answers every request-tools
 // the way a real one does: by queueing a tools-result message, which the wait
 // loop drains and dispatches to handleToolsResult on the worker's own goroutine.
-// Most worker tests inject straight into toolsResultChan, but the correlation
+// Most worker tests inject straight into the slot, but the correlation
 // these tests pin lives in that handler, so it is the one thing that must not be
 // bypassed.
 //
@@ -83,7 +83,7 @@ func offeredToolName(t *testing.T, w *ConversationWorker) string {
 //
 // request-tools is broadcast (w.send → callbacks.broadcast), so every connected
 // client answers it: one reply is consumed by the turn that asked and the rest
-// arrive late. toolsResultChan holds one, so a late reply left sitting in it is
+// arrive late. The slot holds one, so a late reply left sitting in it is
 // taken instantly by the next turn's wait — and with the slot then full, that
 // turn's OWN reply is dropped.
 //
@@ -135,17 +135,17 @@ func TestOnlyOneToolsReplyPerRequestIsAccepted(t *testing.T) {
 		return payload
 	}
 
-	w.expectedToolsRequestID = "the-in-flight-request"
+	defer w.toolsReply.arm("the-in-flight-request")()
 	w.handleToolsResult(toolsResult("first-client"))
-	if len(w.toolsResultChan) != 1 {
+	if w.toolsReply.held() != 1 {
 		t.Fatal("the first answer to the in-flight request must be accepted")
 	}
-	<-w.toolsResultChan // the turn reads its answer
+	<-w.toolsReply.out() // the turn reads its answer
 
 	w.handleToolsResult(toolsResult("second-client"))
 
 	select {
-	case leftover := <-w.toolsResultChan:
+	case leftover := <-w.toolsReply.out():
 		t.Fatalf("a second answer to the same request was accepted (%s); the next turn would read it as its own tool list", leftover)
 	default:
 	}

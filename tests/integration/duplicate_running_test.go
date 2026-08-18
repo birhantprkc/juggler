@@ -186,12 +186,15 @@ func attachMockEngine(w *worker.ConversationWorker) {
 		if err := json.Unmarshal(msg, &parsed); err != nil {
 			return
 		}
+		// Answers quote the id of the request they answer; the worker refuses one
+		// that names no request (see replySlot).
+		requestID, _ := parsed["requestId"].(string)
 		switch parsed["type"] {
 		case "request-tools":
-			resp, _ := json.Marshal(worker.ToolsResultMessage{Type: "tools-result", Tools: []worker.ToolDefinition{}})
+			resp, _ := json.Marshal(worker.ToolsResultMessage{Type: "tools-result", RequestID: requestID, Tools: []worker.ToolDefinition{}})
 			w.Send("tools-result", resp)
 		case "render-context-items-request":
-			resp, _ := json.Marshal(worker.RenderContextItemsResponse{Type: "render-context-items-response"})
+			resp, _ := json.Marshal(worker.RenderContextItemsResponse{Type: "render-context-items-response", RequestID: requestID})
 			w.Send("render-context-items-response", resp)
 		}
 	})

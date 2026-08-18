@@ -69,15 +69,11 @@ func newStrategyHookHarness(t *testing.T, strategyID string, replyFn func(w *Con
 		})
 		toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 		for {
-			select {
-			case <-w.done:
+			if !w.contextReply.inject(w.done, ctxResp) {
 				return
-			case w.contextResultChan <- ctxResp:
 			}
-			select {
-			case <-w.done:
+			if !w.toolsReply.inject(w.done, toolsResp) {
 				return
-			case w.toolsResultChan <- toolsResp:
 			}
 		}
 	}()
@@ -120,7 +116,7 @@ func TestWorkerDrivesStrategyHooks(t *testing.T) {
 			Type: "strategy-hook-response", RequestID: rec.reqID,
 			Guidance: []GuidanceItem{{Content: "READ-ONLY MODE: explore first.", Source: "read-only"}},
 		})
-		w.strategyHookResultChan <- resp
+		w.strategyHookReply.inject(w.done, resp)
 	})
 
 	w.runStrategyLoop("build a feature", false)
@@ -186,7 +182,7 @@ func TestWorkerActivatesSubThreadStrategy(t *testing.T) {
 			Type: "strategy-hook-response", RequestID: rec.reqID,
 			Guidance: []GuidanceItem{{Content: "READ-ONLY MODE: explore first.", Source: "read-only"}},
 		})
-		w.strategyHookResultChan <- resp
+		w.strategyHookReply.inject(w.done, resp)
 	})
 
 	// A sub-thread with its OWN read-only override on its Y.Map.
@@ -277,15 +273,11 @@ func TestWorkerDispatchesContextTurnHook(t *testing.T) {
 		})
 		toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 		for {
-			select {
-			case <-w.done:
+			if !w.contextReply.inject(w.done, ctxResp) {
 				return
-			case w.contextResultChan <- ctxResp:
 			}
-			select {
-			case <-w.done:
+			if !w.toolsReply.inject(w.done, toolsResp) {
 				return
-			case w.toolsResultChan <- toolsResp:
 			}
 		}
 	}()

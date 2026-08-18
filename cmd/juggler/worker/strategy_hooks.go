@@ -107,11 +107,8 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 	if !w.ensureEngineReady() {
 		return
 	}
-	// Drop any stale reply left buffered by a prior timed-out activation, so the
-	// requestID match below can't trip over it (mirrors callLLM draining
-	// llmResponseChan).
-	drainStaleReply(w.strategyHookResultChan)
 	requestID := generateRequestID()
+	defer w.strategyHookReply.arm(requestID)()
 	w.dispatchStrategyHook(requestID, "onActivate", current, threadID, activated)
 	guidance, ok := w.waitForStrategyHook(requestID, StrategyHookTimeout)
 	if !ok {
@@ -192,15 +189,15 @@ func (w *ConversationWorker) dispatchCancelStrategyExecution() {
 func (w *ConversationWorker) waitForStrategyHook(requestID string, timeout time.Duration) ([]GuidanceItem, bool) {
 	match := func(raw json.RawMessage) ([]GuidanceItem, bool) {
 		var resp StrategyHookResponse
-		if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
-			w.tape.Record("strategy-hook-response", map[string]any{"req": requestID, "guidance": len(resp.Guidance)})
-			return resp.Guidance, true
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, false
 		}
-		return nil, false
+		w.tape.Record("strategy-hook-response", map[string]any{"req": requestID, "guidance": len(resp.Guidance)})
+		return resp.Guidance, true
 	}
 	onTimeout := func() {
 		w.log.Error("[worker] onActivate hook timed out (req %s) — activation deferred to next turn", requestID)
 		w.tape.Record("strategy-hook-timeout", map[string]any{"req": requestID})
 	}
-	return waitForEngineReply(w, w.strategyHookResultChan, timeout, match, onTimeout)
+	return waitForEngineReply(w, w.strategyHookReply, timeout, match, onTimeout)
 }

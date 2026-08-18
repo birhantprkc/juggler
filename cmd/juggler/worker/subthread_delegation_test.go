@@ -73,7 +73,7 @@ func newDelegationHarnessSpecs(t *testing.T, specs []*SubthreadSpec, mocks []Moc
 				RequestID: head.RequestID,
 				Spec:      spec(),
 			})
-			w.subthreadSpecResultChan <- resp
+			w.subthreadSpecReply.inject(w.done, resp)
 		}
 	})
 	w.SetEngineClientID("engine")
@@ -94,15 +94,11 @@ func newDelegationHarnessSpecs(t *testing.T, specs []*SubthreadSpec, mocks []Moc
 			}},
 		})
 		for {
-			select {
-			case <-w.done:
+			if !w.contextReply.inject(w.done, ctxResp) {
 				return
-			case w.contextResultChan <- ctxResp:
 			}
-			select {
-			case <-w.done:
+			if !w.toolsReply.inject(w.done, toolsResp) {
 				return
-			case w.toolsResultChan <- toolsResp:
 			}
 		}
 	}()

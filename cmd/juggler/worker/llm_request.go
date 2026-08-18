@@ -55,24 +55,17 @@ func (w *ConversationWorker) requestContextAndTools() (*ContextResult, []ToolDef
 // while conversational history lives in the folded thread.
 func (w *ConversationWorker) requestContextAndToolsForItemIDs(itemIDs []string) (*ContextResult, []ToolDefinition, error) {
 	if len(itemIDs) > 0 {
-		// Pin the requestId so only the reply to THIS request is accepted as
-		// this turn's context (handleRenderContextItemsResponse drops the rest).
 		rid := generateRequestID()
-		w.expectedContextRequestID = rid
-		defer func() { w.expectedContextRequestID = "" }()
+		defer w.contextReply.arm(rid)()
 		w.sendRenderContextItemsRequest(rid, itemIDs)
 	}
 	// threadItemId scopes the reply to the thread whose turn this is, so the
 	// engine filters the list through THAT thread's strategy. Without it a
-	// sub-thread running under its own strategy is offered the root's tool set.
-	//
-	// The requestId is pinned for the reason the context one is, and matters for
-	// the same reason threadItemId does: this is a broadcast, so every connected
-	// client answers it, and a reply to any other request describes some other
-	// thread's tools (handleToolsResult drops those).
+	// sub-thread running under its own strategy is offered the root's tool set —
+	// which is also why the slot accepts only this request's answer: another
+	// request's describes another thread's tools.
 	toolsRequestID := generateRequestID()
-	w.expectedToolsRequestID = toolsRequestID
-	defer func() { w.expectedToolsRequestID = "" }()
+	defer w.toolsReply.arm(toolsRequestID)()
 	w.send(map[string]any{
 		"type":         "request-tools",
 		"requestId":    toolsRequestID,
@@ -82,11 +75,6 @@ func (w *ConversationWorker) requestContextAndToolsForItemIDs(itemIDs []string) 
 	needContext := len(itemIDs) > 0
 	ctxRaw, toolsRaw, err := w.waitForContextAndTools(ContextTimeout, needContext)
 	if err != nil {
-		// This turn is over without having read its answer — it was cancelled, or
-		// the other half never came. A reply accepted in the meantime is still in
-		// the cap-1 channel, where the next turn would take it as its own tool
-		// list, so it goes no further than here.
-		drainStaleReply(w.toolsResultChan)
 		return nil, nil, err
 	}
 

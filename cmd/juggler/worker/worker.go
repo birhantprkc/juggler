@@ -90,32 +90,23 @@ type ConversationWorker struct {
 	done     chan struct{}
 	stopped  chan struct{}
 
-	// Response channels for request/response correlation
-	llmResponseChan        chan llmCallResult
-	contextResultChan      chan json.RawMessage
-	toolsResultChan        chan json.RawMessage
-	strategyHookResultChan chan json.RawMessage
-	// Subthread-delegation round-trip (engine-targeted): the worker asks the
-	// engine to build a SubthreadSpec for a delegating tool.
-	subthreadSpecResultChan chan json.RawMessage
+	llmResponseChan chan llmCallResult
+
+	// One replySlot per request/reply round-trip with the clients (see
+	// reply_slot.go, which is where the correlation every one of them needs
+	// lives). replySlots holds them all, in construction order, so a test can
+	// check the whole set rather than the ones someone thought to list.
+	replySlots        []*replySlot
+	contextReply      *replySlot
+	toolsReply        *replySlot
+	strategyHookReply *replySlot
+	// The subthread-delegation round-trip is engine-targeted: the worker asks
+	// the engine to build a SubthreadSpec for a delegating tool.
+	subthreadSpecReply *replySlot
 	// turnDelegatingTools is the set of tool names offered this turn whose item
 	// declared delegatesToSubthread. Rebuilt each iteration from the tools list
 	// and read by processLLMResponse to route a call to the delegation path.
 	turnDelegatingTools map[string]bool
-
-	// requestId of the in-flight render-context-items request, or "" when none.
-	// The worker broadcasts the request to every connected client and may receive
-	// several replies — and late replies from earlier turns. Set/cleared on the
-	// worker's single event-loop goroutine (no lock needed); read by
-	// handleRenderContextItemsResponse to drop any reply that isn't this request's.
-	expectedContextRequestID string
-
-	// requestId of the in-flight request-tools, or "" when none. Same broadcast,
-	// same several-replies problem, and the same single-goroutine discipline as
-	// expectedContextRequestID; read by handleToolsResult. The tool list is
-	// filtered through the strategy of the thread whose turn it is, so accepting
-	// another request's reply hands this turn a different thread's tool set.
-	expectedToolsRequestID string
 
 	// Streaming state — accumulated chunks for the current turn's text/thinking messages.
 	// Zeroed by finalizeStreaming at iteration boundaries.
@@ -468,10 +459,6 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 		done:                      make(chan struct{}),
 		stopped:                   make(chan struct{}),
 		llmResponseChan:           make(chan llmCallResult, 1),
-		contextResultChan:         make(chan json.RawMessage, 1),
-		toolsResultChan:           make(chan json.RawMessage, 1),
-		strategyHookResultChan:    make(chan json.RawMessage, 1),
-		subthreadSpecResultChan:   make(chan json.RawMessage, 1),
 		tools:                     newToolCommandTracker(),
 		redriveInterval:           defaultRedriveInterval,
 		deliveryPumps:             make(map[string]*taskDeliveryPump),
@@ -482,6 +469,14 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 		compactionMergeFromIdx:    -1,
 		undoCoalesceFromIdx:       -1,
 	}
+	// The client round-trips, each named for the request it answers. Created
+	// after w.done, which they share so a blocked test client is released when
+	// the worker stops.
+	w.contextReply = w.newReplySlot("render-context-items-request")
+	w.toolsReply = w.newReplySlot("request-tools")
+	w.strategyHookReply = w.newReplySlot("run-strategy-hook")
+	w.subthreadSpecReply = w.newReplySlot("build-subthread-spec")
+
 	// Unbounded, order-preserving intake. Created after w.done so the pump's
 	// lifetime is tied to the worker; Send enqueues here so it never drops.
 	w.inboundQ = mailbox.NewQueue[workerMessage](w.done)

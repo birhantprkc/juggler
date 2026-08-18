@@ -263,17 +263,25 @@ func (ts *TestSession) SetupMockEngine() {
 			return
 		}
 
+		// An answer quotes the id of the request it answers, as a real client's
+		// does: the worker takes only the answer to the request it has in flight
+		// (see replySlot), so an unstamped reply is refused and the turn waits out
+		// its timeout instead.
+		requestID, _ := parsed["requestId"].(string)
+
 		switch parsed["type"] {
 		case "request-tools":
 			resp, _ := json.Marshal(worker.ToolsResultMessage{
-				Type:  "tools-result",
-				Tools: []worker.ToolDefinition{},
+				Type:      "tools-result",
+				RequestID: requestID,
+				Tools:     []worker.ToolDefinition{},
 			})
 			w.Send("tools-result", resp)
 
 		case "render-context-items-request":
 			resp, _ := json.Marshal(worker.RenderContextItemsResponse{
-				Type: "render-context-items-response",
+				Type:      "render-context-items-response",
+				RequestID: requestID,
 			})
 			w.Send("render-context-items-response", resp)
 		}

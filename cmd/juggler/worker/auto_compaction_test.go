@@ -46,15 +46,11 @@ func feedCompactionContextAndTools(w *ConversationWorker) {
 		})
 		toolsResponse, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 		for {
-			select {
-			case <-w.done:
+			if !w.contextReply.inject(w.done, contextResponse) {
 				return
-			case w.contextResultChan <- contextResponse:
 			}
-			select {
-			case <-w.done:
+			if !w.toolsReply.inject(w.done, toolsResponse) {
 				return
-			case w.toolsResultChan <- toolsResponse:
 			}
 		}
 	}()

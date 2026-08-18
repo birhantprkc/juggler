@@ -104,15 +104,11 @@ func TestToolTurnPushesStateToEngine(t *testing.T) {
 		})
 		toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 		for {
-			select {
-			case <-done:
+			if !w.contextReply.inject(done, ctxResp) {
 				return
-			case w.contextResultChan <- ctxResp:
 			}
-			select {
-			case <-done:
+			if !w.toolsReply.inject(done, toolsResp) {
 				return
-			case w.toolsResultChan <- toolsResp:
 			}
 		}
 	}()

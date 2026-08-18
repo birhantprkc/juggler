@@ -438,15 +438,11 @@ func feedStrategyContextAndTools(w *ConversationWorker) {
 	})
 	toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 	for {
-		select {
-		case <-w.done:
+		if !w.contextReply.inject(w.done, ctxResp) {
 			return
-		case w.contextResultChan <- ctxResp:
 		}
-		select {
-		case <-w.done:
+		if !w.toolsReply.inject(w.done, toolsResp) {
 			return
-		case w.toolsResultChan <- toolsResp:
 		}
 	}
 }
@@ -758,15 +754,11 @@ func TestContextRecoveryNoProgressErrorItemPreservesProviderCause(t *testing.T) 
 		})
 		toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 		for {
-			select {
-			case <-w.done:
+			if !w.contextReply.inject(w.done, ctxResp) {
 				return
-			case w.contextResultChan <- ctxResp:
 			}
-			select {
-			case <-w.done:
+			if !w.toolsReply.inject(w.done, toolsResp) {
 				return
-			case w.toolsResultChan <- toolsResp:
 			}
 		}
 	}()

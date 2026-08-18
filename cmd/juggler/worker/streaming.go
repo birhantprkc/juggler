@@ -407,16 +407,22 @@ func (w *ConversationWorker) waitForContextAndTools(timeout time.Duration, needC
 		// has eagerly buffered the next ctx before tools from the current pair arrive.
 		var ctxChan <-chan json.RawMessage
 		if contextResult == nil {
-			ctxChan = w.contextResultChan
+			ctxChan = w.contextReply.out()
 		}
 		var toolsChan <-chan json.RawMessage
 		if toolsResult == nil {
-			toolsChan = w.toolsResultChan
+			toolsChan = w.toolsReply.out()
 		}
 		select {
 		case result := <-ctxChan:
+			if !w.contextReply.answersCurrent(result) {
+				continue // an earlier round-trip's answer, left unread
+			}
 			contextResult = result
 		case result := <-toolsChan:
+			if !w.toolsReply.answersCurrent(result) {
+				continue
+			}
 			toolsResult = result
 		case msg := <-w.inbound:
 			w.handleMessageInWait(msg)

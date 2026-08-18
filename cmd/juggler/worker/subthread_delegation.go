@@ -90,10 +90,8 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 		return false
 	}
 
-	// Drop any stale reply buffered by a previously timed-out request so the
-	// requestID match below can't trip over it (mirrors callLLM/maybeActivate).
-	drainStaleReply(w.subthreadSpecResultChan)
 	requestID := generateRequestID()
+	defer w.subthreadSpecReply.arm(requestID)()
 	w.dispatchBuildSubthreadSpec(requestID, toolUseID, toolName, toolInput)
 	spec, ok := w.waitForSubthreadSpec(requestID, SubthreadSpecTimeout)
 	if !ok || spec == nil {
@@ -181,23 +179,22 @@ func (w *ConversationWorker) dispatchBuildSubthreadSpec(requestID, toolUseID, to
 func (w *ConversationWorker) waitForSubthreadSpec(requestID string, timeout time.Duration) (*SubthreadSpec, bool) {
 	match := func(raw json.RawMessage) (*SubthreadSpec, bool) {
 		var resp BuildSubthreadSpecResponse
-		if err := json.Unmarshal(raw, &resp); err == nil && resp.RequestID == requestID {
-			if resp.Error != "" {
-				w.log.Info("[worker] build-subthread-spec (%s): engine reported %q — running inline", requestID, resp.Error)
-				// Matched, but degrade to inline: a nil spec is the caller's
-				// "run the tool normally" signal (tryDelegateTool treats
-				// spec == nil identically to !ok), so stopping here with a nil
-				// spec preserves the original (nil, false) outcome.
-				return nil, true
-			}
-			w.tape.Record("build-subthread-spec-response", map[string]any{"req": requestID, "delegated": resp.Spec != nil})
-			return resp.Spec, true
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, false
 		}
-		return nil, false
+		if resp.Error != "" {
+			w.log.Info("[worker] build-subthread-spec (%s): engine reported %q — running inline", requestID, resp.Error)
+			// Degrade to inline: a nil spec is the caller's "run the tool
+			// normally" signal (tryDelegateTool treats spec == nil identically to
+			// !ok), so stopping here with a nil spec is the same outcome.
+			return nil, true
+		}
+		w.tape.Record("build-subthread-spec-response", map[string]any{"req": requestID, "delegated": resp.Spec != nil})
+		return resp.Spec, true
 	}
 	onTimeout := func() {
 		w.log.Info("[worker] build-subthread-spec timed out (req %s) — running tool inline", requestID)
 		w.tape.Record("build-subthread-spec-timeout", map[string]any{"req": requestID})
 	}
-	return waitForEngineReply(w, w.subthreadSpecResultChan, timeout, match, onTimeout)
+	return waitForEngineReply(w, w.subthreadSpecReply, timeout, match, onTimeout)
 }

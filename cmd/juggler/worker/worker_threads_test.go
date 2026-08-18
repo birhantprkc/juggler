@@ -68,8 +68,8 @@ func TestThreadRunSettlesOnTrailingText(t *testing.T) {
 		})
 
 		for i := 0; i < 3; i++ {
-			w.contextResultChan <- ctxResponse
-			w.toolsResultChan <- toolsResponse
+			w.contextReply.inject(w.done, ctxResponse)
+			w.toolsReply.inject(w.done, toolsResponse)
 		}
 	}()
 
@@ -153,8 +153,8 @@ func TestCreateThreadInjectsToolUseInParentMessages(t *testing.T) {
 			"tools": []any{},
 		})
 		for i := 0; i < 3; i++ {
-			w.contextResultChan <- ctxResponse
-			w.toolsResultChan <- toolsResponse
+			w.contextReply.inject(w.done, ctxResponse)
+			w.toolsReply.inject(w.done, toolsResponse)
 		}
 	}()
 
@@ -241,8 +241,8 @@ func TestReducer_EmptyUserThreadDoesNotAutoRunUnderAwaitingLLM(t *testing.T) {
 		})
 		toolsResponse, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 		for i := 0; i < 2; i++ {
-			w.contextResultChan <- ctxResponse
-			w.toolsResultChan <- toolsResponse
+			w.contextReply.inject(w.done, ctxResponse)
+			w.toolsReply.inject(w.done, toolsResponse)
 		}
 	}()
 
@@ -520,8 +520,8 @@ func TestBrowserCreateThreadUsesRequestedParentThread(t *testing.T) {
 			"type":  "tools-result",
 			"tools": []any{},
 		})
-		w.contextResultChan <- ctxResponse
-		w.toolsResultChan <- toolsResponse
+		w.contextReply.inject(w.done, ctxResponse)
+		w.toolsReply.inject(w.done, toolsResponse)
 	}()
 
 	payload, _ := json.Marshal(CreateThreadMessage{
@@ -638,8 +638,8 @@ func TestThreadErrorReturnsToParent(t *testing.T) {
 		// Parent turn 1 + thread turn (error). The buffered channels (cap 1)
 		// absorb a third send harmlessly if the parent never resumes.
 		for i := 0; i < 3; i++ {
-			w.contextResultChan <- ctxResponse
-			w.toolsResultChan <- toolsResponse
+			w.contextReply.inject(w.done, ctxResponse)
+			w.toolsReply.inject(w.done, toolsResponse)
 		}
 	}()
 

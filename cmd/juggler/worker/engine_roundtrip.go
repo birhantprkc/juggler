@@ -10,37 +10,25 @@ import (
 )
 
 // Engine round-trip helpers. Several worker→engine requests (run-strategy-hook,
-// build-subthread-spec) share the same shape: drain any stale
-// reply, send a targeted request stamped with a fresh request ID, then block on
-// a dedicated 1-buffered reply channel while still servicing inbound messages
-// and doc/batcher signals so the single run goroutine never deadlocks. This file
-// factors that shape out of the individual round-trip call sites.
+// build-subthread-spec) share the same shape: arm the round-trip's replySlot,
+// send a targeted request stamped with that request ID, then block on the slot
+// while still servicing inbound messages and doc/batcher signals so the single
+// run goroutine never deadlocks. This file factors that shape out of the
+// individual round-trip call sites.
 
-// drainStaleReply discards any reply left buffered on ch by a prior timed-out
-// engine round-trip, so the next requestID match can't trip over it (mirrors
-// the drain callLLM does on llmResponseChan before a new call).
-func drainStaleReply(ch <-chan json.RawMessage) {
-	select {
-	case <-ch:
-	default:
-	}
-}
-
-// waitForEngineReply blocks until match returns (value, true) for a reply on ch,
-// or the timeout / worker shutdown fires. While waiting it keeps servicing
+// waitForEngineReply blocks until match returns (value, true) for a reply on the
+// slot, or the timeout / worker shutdown fires. While waiting it keeps servicing
 // inbound worker messages (returning the zero value if a cancel arrives) and
-// doc/batcher signals, exactly like the hand-rolled engine-hook wait loops it
-// replaces. match is called for every reply on ch: it returns (value, true) to
-// stop and yield value, or (_, false) to keep waiting (e.g. a reply whose
-// requestID doesn't match ours). onTimeout, when non-nil, runs the caller's
-// timeout logging/tape before the zero value is returned.
+// doc/batcher signals. Correlation is not match's job — the slot has already
+// refused everything but this request's answer — so match decides only what the
+// answer MEANS: it returns (value, true) to stop and yield value, or (_, false)
+// to keep waiting (a reply it cannot read at all).
 //
 // It deliberately does NOT service livenessC/detectFrozenGap — these short
-// engine round-trips never did, unlike the LLM-call wait — so behavior is
-// preserved exactly.
+// engine round-trips never did, unlike the LLM-call wait.
 func waitForEngineReply[T any](
 	w *ConversationWorker,
-	ch <-chan json.RawMessage,
+	slot *replySlot,
 	timeout time.Duration,
 	match func(json.RawMessage) (T, bool),
 	onTimeout func(),
@@ -51,7 +39,10 @@ func waitForEngineReply[T any](
 
 	for {
 		select {
-		case raw := <-ch:
+		case raw := <-slot.out():
+			if !slot.answersCurrent(raw) {
+				continue // an earlier round-trip's answer, left unread
+			}
 			if v, ok := match(raw); ok {
 				return v, true
 			}

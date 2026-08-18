@@ -525,8 +525,8 @@ func TestPendingRequests_SubmitToTerminalRoundtrip(t *testing.T) {
 			"tools": []any{},
 		})
 		// One LLM iteration for the thread.
-		w.contextResultChan <- ctxResponse
-		w.toolsResultChan <- toolsResponse
+		w.contextReply.inject(w.done, ctxResponse)
+		w.toolsReply.inject(w.done, toolsResponse)
 	}()
 
 	// Stage a 'requested' createThread entry — the same Y.Map shape that

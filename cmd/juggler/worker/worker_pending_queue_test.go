@@ -75,19 +75,15 @@ func TestQueuedMessageJoinsToolResultContinuation(t *testing.T) {
 	toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 	go func() {
 		for {
-			select {
-			case <-stop:
+			if !w.contextReply.inject(stop, ctxResp) {
 				return
-			case w.contextResultChan <- ctxResp:
 			}
 		}
 	}()
 	go func() {
 		for {
-			select {
-			case <-stop:
+			if !w.toolsReply.inject(stop, toolsResp) {
 				return
-			case w.toolsResultChan <- toolsResp:
 			}
 		}
 	}()

@@ -41,8 +41,8 @@ func TestCheckForNewThreads_ProcessesNeedsStrategyRun(t *testing.T) {
 			"type":  "tools-result",
 			"tools": []any{},
 		})
-		w.contextResultChan <- ctxResponse
-		w.toolsResultChan <- toolsResponse
+		w.contextReply.inject(w.done, ctxResponse)
+		w.toolsReply.inject(w.done, toolsResponse)
 	}()
 
 	// Create a thread with needsStrategyRun=true and a user message
@@ -108,19 +108,15 @@ func TestCompactionSubthread_DrainsRootQueueOnCompletion(t *testing.T) {
 	toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
 	go func() {
 		for {
-			select {
-			case <-stop:
+			if !w.contextReply.inject(stop, ctxResp) {
 				return
-			case w.contextResultChan <- ctxResp:
 			}
 		}
 	}()
 	go func() {
 		for {
-			select {
-			case <-stop:
+			if !w.toolsReply.inject(stop, toolsResp) {
 				return
-			case w.toolsResultChan <- toolsResp:
 			}
 		}
 	}()
@@ -289,8 +285,8 @@ func TestCheckForNewThreads_SkipsCompletedThreads(t *testing.T) {
 			"type":  "tools-result",
 			"tools": []any{},
 		})
-		w.contextResultChan <- ctxResponse
-		w.toolsResultChan <- toolsResponse
+		w.contextReply.inject(w.done, ctxResponse)
+		w.toolsReply.inject(w.done, toolsResponse)
 	}()
 
 	// Creating the thread triggers processing via observer
@@ -331,8 +327,8 @@ func TestCheckForNewThreads_CancelDoesNotRetriggerNeedsStrategyRunThread(t *test
 		"type":  "tools-result",
 		"tools": []any{},
 	})
-	w.contextResultChan <- ctxResponse
-	w.toolsResultChan <- toolsResponse
+	w.contextReply.inject(w.done, ctxResponse)
+	w.toolsReply.inject(w.done, toolsResponse)
 
 	calls := 0
 	w.llmCallFunc = func(ctx context.Context, request json.RawMessage, chunkHandler func(StreamChunk)) (*LLMResponse, error) {

@@ -653,72 +653,25 @@ func (w *ConversationWorker) handleCancel() {
 	}
 }
 
+// Client replies are offered to the slot for the round-trip they answer, which
+// takes one and only if it is the answer to the request in flight. Every rule
+// that makes that safe lives in reply_slot.go, so these handlers are the routing
+// and nothing else.
+
 func (w *ConversationWorker) handleRenderContextItemsResponse(payload json.RawMessage) {
-	// Correlate the reply with the in-flight request. The worker broadcasts the
-	// render request to every connected client, so it may receive several replies
-	// plus late replies to earlier turns. Without this gate a stale reply (e.g.
-	// one from a peer that lacks this turn's sub-thread context items) could win
-	// the cap-1 slot and be consumed as this turn's context. Drop anything that
-	// isn't the reply to the current request; tests inject directly into the
-	// channel and so bypass this path.
-	if w.expectedContextRequestID == "" {
-		return
-	}
-	var head struct {
-		RequestID string `json:"requestId"`
-	}
-	if err := json.Unmarshal(payload, &head); err == nil && head.RequestID != "" && head.RequestID != w.expectedContextRequestID {
-		return
-	}
-	select {
-	case w.contextResultChan <- payload:
-	default:
-	}
+	w.contextReply.deliver(payload)
 }
 
-// handleToolsResult accepts the reply to the in-flight request-tools and drops
-// everything else, exactly as handleRenderContextItemsResponse does for context.
-// request-tools is broadcast, so one turn draws a reply from every connected
-// client, and late replies from earlier turns keep arriving; the channel holds
-// one. An accepted stale reply therefore wins that slot twice over — it is
-// served as this turn's tool list, and it leaves no room for the real one.
-//
-// What that costs is a whole thread's tool set: each turn's list is filtered
-// through the strategy of the thread it belongs to, so the turn after a
-// sub-agent's runs under the sub-agent's restricted list. Tests inject directly
-// into the channel and so bypass this path.
 func (w *ConversationWorker) handleToolsResult(payload json.RawMessage) {
-	if w.expectedToolsRequestID == "" {
-		return
-	}
-	var head struct {
-		RequestID string `json:"requestId"`
-	}
-	if err := json.Unmarshal(payload, &head); err == nil && head.RequestID != "" && head.RequestID != w.expectedToolsRequestID {
-		return
-	}
-	select {
-	case w.toolsResultChan <- payload:
-		// Exactly one reply per request. The rest of the clients are answering
-		// this same broadcast right now, and a duplicate accepted after this turn
-		// has read its answer would sit in the channel as the next turn's.
-		w.expectedToolsRequestID = ""
-	default:
-	}
+	w.toolsReply.deliver(payload)
 }
 
 func (w *ConversationWorker) handleStrategyHookResponse(payload json.RawMessage) {
-	select {
-	case w.strategyHookResultChan <- payload:
-	default:
-	}
+	w.strategyHookReply.deliver(payload)
 }
 
 func (w *ConversationWorker) handleBuildSubthreadSpecResponse(payload json.RawMessage) {
-	select {
-	case w.subthreadSpecResultChan <- payload:
-	default:
-	}
+	w.subthreadSpecReply.deliver(payload)
 }
 
 func (w *ConversationWorker) handleYjsSync(payload json.RawMessage) {
