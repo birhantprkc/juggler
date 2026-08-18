@@ -23,23 +23,46 @@ import { THREAD_ARROW_SVG, IMAGE_ATTACH_SVG, SEND_ARROW_SVG, KEBAB_SVG, CLOCK_SV
 import { showNotice } from './modal-dialog.js';
 import tooltipManager from '../services/tooltip-manager.js';
 import { CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
-import apiService from '../services/api.js';
-import { createImageThumb } from '../utils/image-lightbox.js';
-import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isDesktopWindow } from '../../sdk/lib/window-control.js';
+import { expandPasteTokens } from '../utils/paste-tokens.js';
 import {
-  makeToken,
-  parseTokens,
-  hasTokens,
-  expandPasteTokens,
-  nextId as nextPasteId,
-  stripStrayDelimiters,
-  PASTE_TOKEN_OPEN,
-  PASTE_TOKEN_CLOSE
-} from '../utils/paste-tokens.js';
+  handleFiles,
+  handleTextFiles,
+  pasteImagesFromAsyncClipboard,
+  renderAttachmentChips,
+  setPendingAttachments,
+  stagePendingAttachments,
+  stagePendingTextFiles,
+  uploadAndAdd,
+} from './composer-attachments.js';
+import {
+  capturePaste,
+  handleTokenKeydown,
+  onClipboardCopyCut,
+  reconcileTokens,
+  shouldCapturePaste,
+  snapSelectionOutOfTokens,
+  syncPasteMirror,
+  teardownPasteMirror,
+  tokenAtPoint,
+  expandTokenWithFeedback,
+} from './composer-paste-tokens.js';
+import {
+  fireScheduledSend,
+  stopScheduledCountdown,
+  syncScheduledSendFromDraft,
+  toggleSchedulePicker,
+  updateScheduleButton,
+} from './composer-schedule.js';
 
 /**
- * Composer component for sending messages
+ * Composer component for sending messages.
+ *
+ * Three self-contained corners of it live in companion modules, each taking
+ * this element as their first argument: composer-attachments.js (image and
+ * text-file staging), composer-paste-tokens.js (pasted-text placeholders) and
+ * composer-schedule.js (send after a delay). What stays here is the box
+ * itself — text, drafts, history, sending, and the menus.
  */
 
 /** Maximum height (px) the prompt textarea grows to before it starts scrolling. */
@@ -54,84 +77,6 @@ const MAX_TEXTAREA_HEIGHT_PX = 400;
  * instead.
  */
 const MAX_MESSAGE_CHARS = 100_000;
-
-/**
- * Fallback per-image byte ceiling — a generous upload-safety limit used when
- * the send target's provider has no specific, documented image cap (see
- * {@link PROVIDER_MAX_IMAGE_BYTES}), or when the model is automatic and the
- * provider isn't known client-side.
- */
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-
-/**
- * Per-provider hard limit on a single image's byte size, keyed by the provider
- * `name` from the providers list. Each mirrors that vendor's documented API
- * ceiling. Enforced at drop/paste/pick time so an oversized image is rejected
- * locally instead of being uploaded, attached, and rejected by the provider at
- * send time — where, because the attachment is now part of the conversation
- * history, EVERY subsequent turn re-sends it and fails the same way ("image too
- * big") until the user rewinds past the message. This is purely a size gate;
- * model *capability* is still never gated client-side (an incapable model
- * rejects at send time). Providers absent here fall back to
- * {@link MAX_ATTACHMENT_BYTES}.
- * @type {Record<string, number>}
- */
-const PROVIDER_MAX_IMAGE_BYTES = {
-  anthropic: 5 * 1024 * 1024, // Claude API: 5 MB per image
-  claudecode: 5 * 1024 * 1024, // Claude via Claude Code — same vision limit
-  openai: 20 * 1024 * 1024, // OpenAI vision: 20 MB per image
-  gemini: 20 * 1024 * 1024, // Gemini inline data: 20 MB request cap
-};
-
-/** Reject a send whose attachments sum past this aggregate (bytes). */
-const MAX_TURN_ATTACHMENT_BYTES = 50 * 1024 * 1024;
-
-/**
- * Reject any single dropped TEXT file larger than this (bytes). Much smaller
- * than the image cap: a dropped text file is inlined into the prompt as context
- * (not sent as an opaque asset), so the binding constraint is the context
- * window, not bandwidth — ~512 KB is already ~130k tokens. Enforced on
- * `file.size` BEFORE the file is read, so a multi-GB drop is rejected without
- * ever being allocated or decoded.
- */
-const MAX_TEXT_DROP_BYTES = 512 * 1024;
-
-/** Reject a drop whose text files sum past this aggregate (bytes). */
-const MAX_TEXT_DROP_TURN_BYTES = 1024 * 1024;
-
-/**
- * A pasted-text payload at or above EITHER threshold is captured into an inline
- * placeholder token instead of flooding the textarea: ~2,500 characters (about
- * one screenful) or 40 lines. Below both, the paste lands as ordinary text
- * exactly as before. Tuned by feel — a modest snippet stays inline; a source
- * file or a long log collapses to a chip.
- */
-const PASTE_CHIP_MIN_CHARS = 2_500;
-/** Line-count companion to {@link PASTE_CHIP_MIN_CHARS}. */
-const PASTE_CHIP_MIN_LINES = 40;
-
-/**
- * Heuristic: does a just-decoded string look like binary rather than text?
- *
- * `FileReader.readAsText` will happily decode a PDF or image into mojibake, so
- * we sample the decoded string for the two tells of a mis-decoded binary: NUL
- * bytes (never present in real text) and a high ratio of U+FFFD replacement
- * characters (what invalid UTF-8 sequences collapse to). Only the head is
- * sampled — enough to catch binaries cheaply without walking a large file.
- * @param {string} str - Decoded file contents
- * @returns {boolean} True if the content appears to be binary
- */
-function looksBinary(str) {
-  if (!str) return false;
-  const sample = str.length > 4096 ? str.slice(0, 4096) : str;
-  let replacement = 0;
-  for (let i = 0; i < sample.length; i++) {
-    const code = sample.charCodeAt(i);
-    if (code === 0) return true;            // NUL — decisive
-    if (code === 0xfffd) replacement++;     // U+FFFD replacement char
-  }
-  return replacement / sample.length > 0.1;
-}
 
 /**
  * Wails' injected runtime installs a `dragover`/`drop` handler on `<html>` that
@@ -162,55 +107,9 @@ function installFileDropOverride() {
   });
 }
 
-/**
- * The preset delay chips offered in the scheduled-send picker, tuned to the
- * primary use case: firing a command when the next LLM-provider time slice
- * opens. Minutes only — the picker's steppers cover everything in between.
- * @type {Array<{label: string, minutes: number}>}
- */
-const SCHEDULE_PRESETS = [
-  { label: '15m', minutes: 15 },
-  { label: '30m', minutes: 30 },
-  { label: '1h', minutes: 60 },
-  { label: '2h', minutes: 120 },
-  { label: '3h', minutes: 180 },
-  { label: '4h', minutes: 240 },
-  { label: '5h', minutes: 300 },
-];
 
-/** Granularity (minutes) of the scheduled-send picker — no finer than this. */
-const SCHEDULE_MINUTE_STEP = 5;
-/** Upper bound (hours) on the scheduled-send picker's hours stepper. */
-const SCHEDULE_MAX_HOURS = 12;
 
-/**
- * Format a millisecond duration as a compact countdown for the armed clock
- * button: "2h", "1h5m", "45m", or "<1m" once under a minute.
- * @param {number} ms
- * @returns {string} The compact countdown string.
- */
-function formatDelayShort(ms) {
-  const totalMin = Math.floor(Math.max(0, ms) / 60000);
-  if (totalMin < 1) return '<1m';
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  if (h && m) return `${h}h${m}m`;
-  if (h) return `${h}h`;
-  return `${m}m`;
-}
 
-/**
- * Format an epoch-ms instant as a 24-hour wall-clock "HH:MM" — the absolute
- * time the user is actually aligning to ("sends at 14:35").
- * @param {number} epochMs
- * @returns {string} The 24-hour "HH:MM" wall-clock time.
- */
-function formatClockTime(epochMs) {
-  const d = new Date(epochMs);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
 
 class Composer extends HTMLElement {
   constructor() {
@@ -309,7 +208,8 @@ class Composer extends HTMLElement {
     // survives a reload and stays bound to that thread). This box only arms,
     // cancels, and DISPLAYS the schedule — the actual firing is owned by
     // scheduledSendService, which polls every thread so a send goes out even
-    // when this thread isn't the one on screen. See _syncScheduledSendFromDraft.
+    // when this thread isn't the one on screen. See composer-schedule.js's
+    // syncScheduledSendFromDraft.
     /** @type {number|null} @private epoch-ms target for the pending send, or null */
     this._scheduledSendAt = null;
     /** @type {number|null} @private setInterval id that refreshes the countdown label */
@@ -397,10 +297,10 @@ class Composer extends HTMLElement {
     // Drop the countdown-refresh interval. The target stays persisted on the
     // thread's draft, so reconnecting (or rebinding) restores the countdown —
     // and scheduledSendService fires it whether or not this box is mounted.
-    this._stopScheduledCountdown();
+    stopScheduledCountdown(this);
     // Tear down the token mirror — critically, this detaches the document-level
     // selectionchange listener so a removed box leaves no dangling handler.
-    this._teardownPasteMirror();
+    teardownPasteMirror(this);
     // Release any object URLs held by in-flight upload previews.
     for (const a of this._pendingAttachments) {
       if (a._previewURL) URL.revokeObjectURL(a._previewURL);
@@ -613,7 +513,7 @@ class Composer extends HTMLElement {
     });
 
     // Render any chips that survived a re-render.
-    this._renderAttachmentChips();
+    renderAttachmentChips(this);
 
     textarea.addEventListener('keydown', (e) => {
       // Completion menu (@ mentions / slash commands) owns navigation keys while
@@ -737,8 +637,8 @@ class Composer extends HTMLElement {
     // this fires — so a caret-based test would never see the interior.
     textarea.addEventListener('click', (e) => {
       if (this._pasteBlobs.size === 0 || !this._pasteMirror) return;
-      const hit = this._tokenAtPoint(e.clientX, e.clientY);
-      if (hit) this._expandTokenWithFeedback(textarea, hit.token, hit.span);
+      const hit = tokenAtPoint(this, e.clientX, e.clientY);
+      if (hit) expandTokenWithFeedback(this, textarea, hit.token, hit.span);
     });
 
     // Show a pointer cursor while hovering a pill. The transparent textarea sits
@@ -749,7 +649,7 @@ class Composer extends HTMLElement {
         if (textarea.style.cursor) textarea.style.cursor = '';
         return;
       }
-      const want = this._tokenAtPoint(e.clientX, e.clientY) ? 'pointer' : '';
+      const want = tokenAtPoint(this, e.clientX, e.clientY) ? 'pointer' : '';
       if (textarea.style.cursor !== want) textarea.style.cursor = want;
     });
 
@@ -787,12 +687,12 @@ class Composer extends HTMLElement {
       scheduleBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this._toggleSchedulePicker();
+        toggleSchedulePicker(this);
       });
     }
     // A draft restored on mount may already carry a pending send — re-arm (or,
     // if its target has passed, fire) it now that the controls exist.
-    this._syncScheduledSendFromDraft();
+    syncScheduledSendFromDraft(this);
 
     // Send button (always visible). Send-only — cancelling a running turn is
     // the footer Stop button's job, so this never morphs into a Stop control.
@@ -872,9 +772,9 @@ class Composer extends HTMLElement {
     const sendBtn = this.querySelector('#send-button');
     if (sendBtn) sendBtn.classList.toggle('is-empty', empty);
     this._updateNewThreadControls();
-    // The schedule button follows the same empty rule; _updateScheduleButton
+    // The schedule button follows the same empty rule; updateScheduleButton
     // re-reads emptiness itself, so just re-render it.
-    this._updateScheduleButton();
+    updateScheduleButton(this);
   }
 
   _updateNewThreadControls() {
@@ -1299,7 +1199,7 @@ class Composer extends HTMLElement {
         ]);
         await this._lastMentionPromise;
       }
-      this._renderAttachmentChips();
+      renderAttachmentChips(this);
     }
 
     // The Conversation calls clearInput() after successful validation, so the
@@ -1316,7 +1216,7 @@ class Composer extends HTMLElement {
       if (a._previewURL) URL.revokeObjectURL(a._previewURL);
     }
     this._pendingAttachments = [];
-    this._renderAttachmentChips();
+    renderAttachmentChips(this);
     this.dispatchEvent(new CustomEvent('send-message', {
       detail: {
         message: outgoingMessage,
@@ -1358,7 +1258,7 @@ class Composer extends HTMLElement {
     // GC the paste-blob side table and tear down the mirror — this draft is done,
     // so the append-only table's life ends here (a fresh draft starts empty).
     this._pasteBlobs = new Map();
-    this._teardownPasteMirror();
+    teardownPasteMirror(this);
     this._pasteLastValue = '';
     this._pasteLastCaret = 0;
 
@@ -1378,9 +1278,9 @@ class Composer extends HTMLElement {
     // keystroke's _persistDraft would re-attach the stale target to a fresh,
     // unrelated draft and fire it. The draft was just nulled above, so this
     // resets in-memory state only (no re-persist needed).
-    this._stopScheduledCountdown();
+    stopScheduledCountdown(this);
     this._scheduledSendAt = null;
-    this._updateScheduleButton();
+    updateScheduleButton(this);
 
     // Clear input; callers manage focus explicitly.
     this.setText('');
@@ -1551,8 +1451,8 @@ class Composer extends HTMLElement {
       // re-entrant/rebuild bind that lands mid-restore sees the key and skips.
       this._restoredThreadKey = key;
       const draft = messageThread.draft;
-      this._stagePendingAttachments(draft.attachments);
-      this._stagePendingTextFiles(draft.textFiles);
+      stagePendingAttachments(this, draft.attachments);
+      stagePendingTextFiles(this, draft.textFiles);
       // Restore the append-only paste-blob table for this thread before staging
       // its text, so any inline placeholder in that text resolves and renders.
       this._pasteBlobs = new Map((draft.pasteBlobs || []).map((b) => [b.id, { content: b.content, bytes: b.bytes }]));
@@ -1589,7 +1489,7 @@ class Composer extends HTMLElement {
       // Rebind the scheduled-send timer to the newly-bound thread: cancel the
       // previous thread's live timer and re-arm from THIS thread's persisted
       // draft (firing at once if its target already passed).
-      this._syncScheduledSendFromDraft();
+      syncScheduledSendFromDraft(this);
     }
   }
 
@@ -1626,7 +1526,7 @@ class Composer extends HTMLElement {
    */
   _applyHistoryLevel(textarea, entry) {
     this.setText(entry.content);
-    this._stagePendingAttachments(entry.attachments || []);
+    stagePendingAttachments(this, entry.attachments || []);
     textarea.selectionStart = textarea.selectionEnd = entry.content.length;
     this._scheduleDraftSave(textarea.value);
   }
@@ -1711,958 +1611,119 @@ class Composer extends HTMLElement {
     }
   }
 
-  // ========================================================================
-  // IMAGE ATTACHMENTS
-  // ========================================================================
+  // ── Attachments ───────────────────────────────────────────────────────────
+  //
+  // The staging, upload, size gates and chip row live in
+  // composer-attachments.js. What stays here is the handful of methods the
+  // tests drive on a mounted element (and, for _uploadAndAdd, replace): every
+  // internal caller reaches them through the instance, so a stub is seen.
 
   /**
-   * The per-image byte ceiling for the model this composer will send to.
-   * Resolves the effective provider (thread override → conversation default)
-   * and returns its documented per-image limit ({@link PROVIDER_MAX_IMAGE_BYTES}),
-   * falling back to {@link MAX_ATTACHMENT_BYTES} when the provider has no
-   * specific limit or the model is automatic (provider unknown client-side).
-   * @returns {number} Max bytes for a single image attachment.
-   * @private
-   */
-  _maxImageBytes() {
-    const cfg = this._messageThread?.getEffectiveModelConfig?.()
-      || this._conversation?.modelConfig
-      || null;
-    const provider = cfg && cfg.provider ? cfg.provider : '';
-    return PROVIDER_MAX_IMAGE_BYTES[provider] || MAX_ATTACHMENT_BYTES;
-  }
-
-  /**
-   * Fallback image paste for WebKit desktop windows (WebKitGTK/WKWebView, i.e.
-   * the Wails app), whose synchronous `paste` event omits the image file and
-   * exposes it only through the async Clipboard API. Materialises any image
-   * entries as `File`s and routes them through the same {@link _handleFiles}
-   * path as sync paste / drop / picker. Best-effort: a missing API or a
-   * clipboard with no image is a silent no-op, so it can only add successful
-   * pastes, never break one.
+   * Read any images out of the async Clipboard API and route them through
+   * {@link Composer#_handleFiles} — the WebKit desktop-app paste path.
    * @returns {Promise<void>}
-   * @private
    */
   async _pasteImagesFromAsyncClipboard() {
-    const clipboard = navigator.clipboard;
-    if (!clipboard || typeof clipboard.read !== 'function') return;
-    let clipboardItems;
-    try {
-      clipboardItems = await clipboard.read();
-    } catch {
-      return; // no permission, insecure context, or nothing readable
-    }
-    /** @type {File[]} */
-    const files = [];
-    for (const item of clipboardItems) {
-      const type = Array.from(item.types || []).find((t) => t.startsWith('image/'));
-      if (!type) continue;
-      try {
-        const blob = await item.getType(type);
-        const ext = type.split('/')[1] || 'png';
-        files.push(new window.File([blob], `pasted-image-${files.length + 1}.${ext}`, { type }));
-      } catch { /* skip an entry we can't materialise; keep any others */ }
-    }
-    if (files.length > 0) this._handleFiles(files);
+    return pasteImagesFromAsyncClipboard(this);
   }
 
   /**
-   * Validate and upload a set of dropped/pasted/picked files, pushing each
-   * successful upload onto _pendingAttachments. Non-image files are ignored;
-   * oversized files (single or aggregate) are rejected with a warning.
-   *
-   * Image attachments are staged regardless of the current model's *capability*
-   * — that is never gated client-side; a model that can't accept images rejects
-   * the request at send time. Image *size* IS gated here, to the send target's
-   * per-provider limit ({@link _maxImageBytes}), so an image the provider would
-   * reject never enters the conversation in the first place.
+   * Stage dropped/pasted/picked image files, subject to the size gates.
    * @param {FileList|File[]} fileList
-   * @private
    */
   _handleFiles(fileList) {
-    const files = Array.from(fileList).filter((f) => f.type && f.type.startsWith('image/'));
-    if (files.length === 0) return;
-
-    const maxPerImage = this._maxImageBytes();
-
-    for (const file of files) {
-      if (file.size > maxPerImage) {
-        this.showWarning(
-          `"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB, ` +
-          `max ${maxPerImage / 1024 / 1024} MB per image for the current model).`
-        );
-        continue;
-      }
-      const pendingTotal = this._pendingAttachments.reduce((sum, a) => sum + (a.bytes || 0), 0);
-      if (pendingTotal + file.size > MAX_TURN_ATTACHMENT_BYTES) {
-        this.showWarning(
-          `Attachments exceed the ${MAX_TURN_ATTACHMENT_BYTES / 1024 / 1024} MB ` +
-          `per-message limit.`
-        );
-        break;
-      }
-      this._uploadAndAdd(file);
-    }
+    handleFiles(this, fileList);
   }
 
   /**
-   * Validate and stage a set of dropped non-image files as text snapshots.
-   *
-   * Three gates, in order:
-   *  1. per-file size — checked on `file.size` BEFORE any read, so a multi-GB
-   *     drop is rejected without ever being allocated or decoded;
-   *  2. aggregate size — the drop's text files may not sum past the per-message
-   *     limit (counting already-staged files);
-   *  3. binary — after decoding a known-small file, reject anything that looks
-   *     binary rather than text ({@link looksBinary}).
-   *
-   * Survivors are pushed onto `_pendingTextFiles` and become `dropped-file`
-   * context items at send time.
+   * Stage dropped text files as dropped-file context items.
    * @param {FileList|File[]} fileList
-   * @private
    */
   _handleTextFiles(fileList) {
-    for (const file of Array.from(fileList)) {
-      // Gate 1: size, on metadata, before reading a single byte.
-      if (file.size > MAX_TEXT_DROP_BYTES) {
-        this.showWarning(
-          `"${file.name}" is too large to attach as text ` +
-          `(${(file.size / 1024 / 1024).toFixed(1)} MB, ` +
-          `max ${MAX_TEXT_DROP_BYTES / 1024} KB).`
-        );
-        continue;
-      }
-      // Gate 2: aggregate across already-staged text files.
-      const stagedTotal = this._pendingTextFiles.reduce((sum, t) => sum + (t.bytes || 0), 0);
-      if (stagedTotal + file.size > MAX_TEXT_DROP_TURN_BYTES) {
-        this.showWarning(
-          `Dropped text files exceed the ${MAX_TEXT_DROP_TURN_BYTES / 1024 / 1024} MB ` +
-          `per-message limit.`
-        );
-        break;
-      }
-
-      const reader = new window.FileReader();
-      reader.onload = () => {
-        // readAsText yields a string; guard the union type without String().
-        const content = typeof reader.result === 'string' ? reader.result : '';
-        // Gate 3: binary check (file is already known-small, so this is cheap).
-        if (looksBinary(content)) {
-          this.showWarning(`"${file.name}" doesn't look like a text file.`);
-          return;
-        }
-        this._pendingTextFiles.push({ filename: file.name, content, bytes: file.size });
-        this._renderAttachmentChips();
-        // Persist so the staged file survives a reload alongside the text.
-        this._persistDraft();
-      };
-      reader.onerror = () => this.showWarning(`Couldn't read "${file.name}".`);
-      reader.readAsText(file);
-    }
+    handleTextFiles(this, fileList);
   }
 
   /**
-   * Remove a staged dropped text file and re-render the chip row.
-   * @param {{filename:string,content:string,bytes:number}} entry
-   * @private
-   */
-  _removeTextFile(entry) {
-    const idx = this._pendingTextFiles.indexOf(entry);
-    if (idx === -1) return;
-    this._pendingTextFiles.splice(idx, 1);
-    this._renderAttachmentChips();
-    this._persistDraft();
-  }
-
-  // ========================================================================
-  // PASTE PLACEHOLDERS
-  //
-  // A large paste collapses into an inline placeholder token — a run of
-  // ordinary characters (invisible delimiters bracketing a visible label) that
-  // behaves as text in every way (undoable, single-backspace-deletable,
-  // selectable, copyable) yet renders as a styled pill. The full content lives
-  // in the append-only _pasteBlobs table and is inlined at its exact position
-  // at send time, so the model/stored message is identical to a plain paste.
-  // See utils/paste-tokens for the grammar and the pure helpers.
-  // ========================================================================
-
-  /**
-   * Whether a pasted text payload is large enough to capture into a placeholder
-   * token rather than land as ordinary text. Either threshold trips it; a
-   * payload that decodes as binary is also captured (defensive — don't flood the
-   * box with mojibake).
-   * @param {string} text
-   * @returns {boolean} True to capture, false to paste normally.
-   * @private
-   */
-  _shouldCapturePaste(text) {
-    if (looksBinary(text)) return true;
-    if (text.length >= PASTE_CHIP_MIN_CHARS) return true;
-    // Count newlines rather than splitting (cheaper on a big blob).
-    let lines = 1;
-    for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) lines++;
-    return lines >= PASTE_CHIP_MIN_LINES;
-  }
-
-  /**
-   * UTF-8 byte size of a string, for the token label.
-   * @param {string} str
-   * @returns {number} Byte length.
-   * @private
-   */
-  _pasteByteLength(str) {
-    try { return new Blob([str]).size; } catch { return str.length; }
-  }
-
-  /**
-   * Capture `content` as an inline placeholder: allocate (or reuse, on an exact
-   * content match) a token id, store the blob, and insert the token string at
-   * the caret. The insert goes through the native editing path so Cmd+Z undoes
-   * the capture as one edit; the blob stays in the append-only table until GC.
-   * @param {string} content
-   * @private
-   */
-  _capturePaste(content) {
-    const textarea = /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
-    if (!textarea) return;
-    const bytes = this._pasteByteLength(content);
-    // Dedup: identical content already captured reuses that id (double-paste
-    // gives two tokens sharing one blob; both expand at send). Exact === only.
-    let id = null;
-    for (const [existingId, blob] of this._pasteBlobs) {
-      if (blob.content === content) { id = existingId; break; }
-    }
-    if (id === null) {
-      id = nextPasteId(textarea.value, this._pasteBlobs);
-      this._pasteBlobs.set(id, { content, bytes });
-    }
-    this._insertAtCaret(textarea, makeToken(id, bytes));
-    this._afterTokenMutation(textarea);
-  }
-
-  /**
-   * Insert `text` at the caret, preferring the native undoable path
-   * (execCommand) and falling back to a direct value splice where the host
-   * rejects the command (older engines, headless test window). Leaves the caret
-   * after the inserted text.
-   * @param {HTMLTextAreaElement} textarea
-   * @param {string} text
-   * @private
-   */
-  _insertAtCaret(textarea, text) {
-    textarea.focus();
-    const before = textarea.value;
-    // Baseline the reconciler to the pre-insert value: execCommand fires `input`
-    // synchronously below, and it must compare against what the box holds NOW —
-    // never a stale base that would make it revert this trusted insert.
-    this._pasteLastValue = before;
-    let ok = false;
-    try { ok = document.execCommand('insertText', false, text); } catch { ok = false; }
-    if (ok && textarea.value !== before) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    textarea.value = before.slice(0, start) + text + before.slice(end);
-    const pos = start + text.length;
-    try { textarea.setSelectionRange(pos, pos); } catch { /* non-fatal */ }
-  }
-
-  /**
-   * Delete the `[start, end)` character range, preferring the native undoable
-   * path (select + execCommand('delete')) with a direct-splice fallback.
-   * @param {HTMLTextAreaElement} textarea
-   * @param {number} start
-   * @param {number} end
-   * @private
-   */
-  _deleteRange(textarea, start, end) {
-    textarea.focus();
-    const before = textarea.value;
-    // Baseline the reconciler to the pre-delete value (see _insertAtCaret): the
-    // token in [start, end) is fully inside the change, so the delete reads as
-    // legitimate rather than a partial-interior edit to revert.
-    this._pasteLastValue = before;
-    try { textarea.setSelectionRange(start, end); } catch { /* non-fatal */ }
-    let ok = false;
-    try { ok = document.execCommand('delete', false); } catch { ok = false; }
-    if (!ok || textarea.value === before) {
-      textarea.value = before.slice(0, start) + before.slice(end);
-      try { textarea.setSelectionRange(start, start); } catch { /* non-fatal */ }
-    }
-    this._afterTokenMutation(textarea);
-  }
-
-  /**
-   * Replace a token with its full content in place (undoable). Cmd+Z afterwards
-   * restores the placeholder: the token characters come back and the append-only
-   * table still resolves them.
-   * @param {HTMLTextAreaElement} textarea
-   * @param {import('../utils/paste-tokens.js').PasteTokenMatch} tok
-   * @private
-   */
-  _expandToken(textarea, tok) {
-    const entry = this._pasteBlobs.get(tok.id);
-    const content = entry ? entry.content : tok.text.slice(1, -1);
-    textarea.focus();
-    try { textarea.setSelectionRange(tok.start, tok.end); } catch { /* non-fatal */ }
-    const before = textarea.value;
-    // Baseline the reconciler to the pre-expand value (see _insertAtCaret): the
-    // token is fully inside the replaced range, so expansion reads as legitimate.
-    this._pasteLastValue = before;
-    let ok = false;
-    try { ok = document.execCommand('insertText', false, content); } catch { ok = false; }
-    if (!ok || textarea.value === before) {
-      textarea.value = before.slice(0, tok.start) + content + before.slice(tok.end);
-      const pos = tok.start + content.length;
-      try { textarea.setSelectionRange(pos, pos); } catch { /* non-fatal */ }
-    }
-    this._afterTokenMutation(textarea);
-  }
-
-  /**
-   * Atomicity for placeholder tokens under Backspace/Delete/Arrow keys. Returns
-   * true (and prevents the default) when it acted on a token, false to let the
-   * key behave normally. A fast no-op when the text holds no tokens.
-   * @param {KeyboardEvent} e
-   * @param {HTMLTextAreaElement} textarea
-   * @returns {boolean} Whether the key was handled as a token operation.
-   * @private
-   */
-  _handleTokenKeydown(e, textarea) {
-    const key = e.key;
-    if (key !== 'Backspace' && key !== 'Delete' && key !== 'ArrowLeft' && key !== 'ArrowRight') return false;
-    const value = textarea.value;
-    if (!hasTokens(value)) return false;
-    const collapsed = textarea.selectionStart === textarea.selectionEnd;
-    if (!collapsed) return false; // selection-based edits: snapping keeps endpoints out
-    const p = textarea.selectionStart;
-    const tokens = parseTokens(value);
-
-    if (key === 'Backspace' || key === 'Delete') {
-      // Shift/Ctrl deletes keep native behaviour (the reconciler backstops any
-      // partial cut). A plain, word (Alt) or line (Meta) delete that ABUTS a
-      // token in the delete direction would otherwise chew into the label, so
-      // remove the whole token as one unit instead.
-      if (e.shiftKey || e.ctrlKey) return false;
-      const tok = key === 'Backspace'
-        ? tokens.find((t) => t.end === p)
-        : tokens.find((t) => t.start === p);
-      if (!tok) return false;
-      e.preventDefault();
-      this._deleteRange(textarea, tok.start, tok.end);
-      return true;
-    }
-
-    // Plain arrows skip a token as one unit. Modified arrows (word/line move,
-    // shift-select) fall through to native motion; the selection-snapper then
-    // bounces any caret/endpoint that landed inside a token back to a boundary.
-    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return false;
-    const tok = key === 'ArrowLeft'
-      ? tokens.find((t) => t.end === p)
-      : tokens.find((t) => t.start === p);
-    if (!tok) return false;
-    e.preventDefault();
-    const to = key === 'ArrowLeft' ? tok.start : tok.end;
-    try { textarea.setSelectionRange(to, to); } catch { /* non-fatal */ }
-    this._pasteLastCaret = to;
-    return true;
-  }
-
-  /**
-   * copy/cut handler: when the selection contains any token, write the EXPANDED
-   * text (tokens replaced by their content) to the clipboard and, for cut,
-   * delete the selection undoably. When the selection holds no token the browser
-   * does its normal thing. This keeps sentinel characters from ever leaving the
-   * composer — a paste back into another Juggler box re-captures naturally.
-   * @param {ClipboardEvent} e
-   * @param {HTMLTextAreaElement} textarea
-   * @param {boolean} isCut
-   * @private
-   */
-  _onClipboardCopyCut(e, textarea, isCut) {
-    if (this._pasteBlobs.size === 0) return;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    if (start === end) return;
-    const selected = textarea.value.slice(start, end);
-    if (!hasTokens(selected)) return;
-    if (!e.clipboardData) return;
-    e.preventDefault();
-    const expanded = expandPasteTokens(selected, this._pasteBlobs);
-    e.clipboardData.setData('text/plain', expanded);
-    if (isCut) this._deleteRange(textarea, start, end);
-  }
-
-  /**
-   * Length of the common leading run of two strings.
-   * @param {string} a
-   * @param {string} b
-   * @returns {number} The shared-prefix length.
-   * @private
-   */
-  _commonPrefixLen(a, b) {
-    const n = Math.min(a.length, b.length);
-    let i = 0;
-    while (i < n && a[i] === b[i]) i++;
-    return i;
-  }
-
-  /**
-   * Whether the single contiguous edit that turned `prev` into `cur` cut into a
-   * token's interior (as opposed to leaving tokens whole — typing outside them,
-   * or deleting one entirely). A textarea `input` is always one contiguous
-   * replacement, so the changed span in `prev` is `[prefix, prev.len - suffix)`;
-   * a token that overlaps that span but isn't fully inside it was damaged.
-   * @param {string} prev - The last known-good value.
-   * @param {string} cur - The current value after the edit.
-   * @returns {{start:number, end:number}|null} The damaged span in `prev`, or null.
-   * @private
-   */
-  _damagedTokenSpan(prev, cur) {
-    const pre = this._commonPrefixLen(prev, cur);
-    let sfx = 0;
-    const maxSfx = Math.min(prev.length - pre, cur.length - pre);
-    while (sfx < maxSfx && prev[prev.length - 1 - sfx] === cur[cur.length - 1 - sfx]) sfx++;
-    const chgStart = pre;
-    const chgEnd = prev.length - sfx; // [chgStart, chgEnd) is the edited span in prev
-    for (const t of parseTokens(prev)) {
-      const overlaps = t.start < chgEnd && t.end > chgStart;
-      const contained = t.start >= chgStart && t.end <= chgEnd;
-      if (overlaps && !contained) return t;
-    }
-    return null;
-  }
-
-  /**
-   * Reconcile the textarea after an `input` so a placeholder's contents can never
-   * be edited — only deleted whole. Two layers:
-   *  1. If the edit cut into a token's interior (a path that dodged the
-   *     caret/selection interceptors — autocorrect, dictation, drag-drop, exotic
-   *     IME), REVERT to the last known-good value: the edit simply doesn't take,
-   *     and the captured content is never silently lost.
-   *  2. Otherwise strip any orphaned delimiter characters as a final safety net,
-   *     then adopt the current value as the new known-good base.
-   * @param {HTMLTextAreaElement} textarea
-   * @returns {boolean} True if the value was changed (reverted or cleaned).
-   * @private
-   */
-  _reconcileTokens(textarea) {
-    const cur = textarea.value;
-    const prev = this._pasteLastValue;
-    const curHasDelims = cur.indexOf(PASTE_TOKEN_OPEN) !== -1 || cur.indexOf(PASTE_TOKEN_CLOSE) !== -1;
-    // Fast path: no tokens are or were in play — nothing to guard.
-    if (!curHasDelims && !hasTokens(prev)) { this._pasteLastValue = cur; return false; }
-
-    if (!this._pasteComposing && hasTokens(prev)) {
-      const damaged = this._damagedTokenSpan(prev, cur);
-      if (damaged) {
-        // Reject the edit: restore the last good value, park the caret at the
-        // start of the token that was hit (a boundary, never its interior).
-        this._snappingSelection = true;
-        textarea.value = prev;
-        try { textarea.setSelectionRange(damaged.start, damaged.start); } catch { /* non-fatal */ }
-        this._snappingSelection = false;
-        this._pasteLastValue = prev;
-        this._pasteLastCaret = damaged.start;
-        return true;
-      }
-    }
-
-    // Edit is legitimate. Strip any stray delimiters (half a token left by a
-    // path this couldn't revert) and adopt the result as the new base.
-    const cleaned = stripStrayDelimiters(cur, this._pasteBlobs);
-    if (cleaned !== cur) {
-      const at = Math.min(textarea.selectionStart, cleaned.length);
-      textarea.value = cleaned;
-      try { textarea.setSelectionRange(at, at); } catch { /* non-fatal */ }
-      this._pasteLastValue = cleaned;
-      this._pasteLastCaret = at;
-      return true;
-    }
-    this._pasteLastValue = cur;
-    this._pasteLastCaret = textarea.selectionStart;
-    return false;
-  }
-
-  /**
-   * Hit-test a viewport point against the mirror's rendered token pills, mapping
-   * a hit to its token in text order. Used for click-to-expand, which can't rely
-   * on the caret (a click inside a token is snapped to a boundary before `click`
-   * fires).
-   * @param {number} x - Client X.
-   * @param {number} y - Client Y.
-   * @returns {{token: import('../utils/paste-tokens.js').PasteTokenMatch, span: Element}|null}
-   *   The hit token and its rendered pill span, or null.
-   * @private
-   */
-  _tokenAtPoint(x, y) {
-    if (!this._pasteMirror) return null;
-    const textarea = /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
-    if (!textarea) return null;
-    const spans = this._pasteMirror.querySelectorAll('.paste-token');
-    const tokens = parseTokens(textarea.value);
-    const n = Math.min(spans.length, tokens.length);
-    for (let i = 0; i < n; i++) {
-      const span = spans[i];
-      const tok = tokens[i];
-      if (!span || !tok) continue;
-      const r = span.getBoundingClientRect();
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return { token: tok, span };
-    }
-    return null;
-  }
-
-  /**
-   * Expand a token in response to a click, with a visible acknowledgement. The
-   * insert of a large blob is synchronous and can briefly block the main thread,
-   * so paint a "busy" state on the pill FIRST (forcing a layout flush), then run
-   * the expansion on a later frame so that state is on screen before the block.
-   * @param {HTMLTextAreaElement} textarea
-   * @param {import('../utils/paste-tokens.js').PasteTokenMatch} tok
-   * @param {Element} [span] - The pill span to flag as busy.
-   * @private
-   */
-  _expandTokenWithFeedback(textarea, tok, span) {
-    if (span) {
-      span.classList.add('expanding');
-      void (/** @type {HTMLElement} */ (span)).offsetHeight; // force the state to paint
-    }
-    const run = () => {
-      // Re-resolve the token by id from the CURRENT text: the defer opens a small
-      // window in which positions could shift, so never expand a stale span.
-      const cur = parseTokens(textarea.value);
-      const fresh = cur.find((t) => t.id === tok.id && t.start === tok.start) || cur.find((t) => t.id === tok.id);
-      if (fresh) this._expandToken(textarea, fresh);
-    };
-    // A click means the view is frontmost, so rAF is not throttled here; a double
-    // rAF guarantees the busy state has painted before the blocking insert.
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => requestAnimationFrame(run));
-    } else {
-      setTimeout(run, 0);
-    }
-  }
-
-  /**
-   * Shared tail for every token-text mutation (capture, expand, delete, cut):
-   * refresh the mirror, re-measure the textarea, update the empty-sensitive
-   * controls, and persist the draft immediately (a discrete event, like an
-   * attachment add).
-   * @param {HTMLTextAreaElement} textarea
-   * @private
-   */
-  _afterTokenMutation(textarea) {
-    // A capture/expand/delete/cut is trusted, so it becomes the reconciler's new
-    // known-good base (an execCommand mutation also fires input, which must not
-    // then see the pre-mutation value and revert it).
-    this._pasteLastValue = textarea.value;
-    this._pasteLastCaret = textarea.selectionStart;
-    this._syncPasteMirror();
-    this.autoResize(textarea);
-    this._updateSendButtonState();
-    this._persistDraft();
-    this._completions?.handleInput();
-  }
-
-  // ── Token mirror overlay ───────────────────────────────────────────────
-
-  /**
-   * Rebuild or tear down the backdrop mirror to match the current text. With no
-   * tokens the mirror is removed and the textarea is a plain, fully ordinary
-   * textarea — all mirror risk is confined to the moments a placeholder exists.
-   * @private
-   */
-  _syncPasteMirror() {
-    const textarea = /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
-    if (!textarea) return;
-    const tokens = parseTokens(textarea.value);
-    if (tokens.length === 0) {
-      this._teardownPasteMirror(textarea);
-      return;
-    }
-    this._ensurePasteMirror(textarea);
-    this._renderPasteMirror(textarea.value, tokens);
-    this._syncMirrorMetrics(textarea);
-  }
-
-  /**
-   * Create the mirror div (once) behind the textarea, switch the textarea to
-   * transparent-text mode, disable spellcheck (squiggles on invisible text), and
-   * wire the resize + selection-snapping listeners.
-   * @param {HTMLTextAreaElement} textarea
-   * @private
-   */
-  _ensurePasteMirror(textarea) {
-    if (this._pasteMirror) return;
-    const mirror = document.createElement('div');
-    mirror.className = 'paste-mirror';
-    mirror.setAttribute('aria-hidden', 'true');
-    // Insert as the textarea's previous sibling so it sits behind it in the
-    // wrapper's stacking context.
-    textarea.parentElement?.insertBefore(mirror, textarea);
-    this._pasteMirror = mirror;
-    textarea.classList.add('paste-mirrored');
-    textarea.spellcheck = false;
-    if (typeof ResizeObserver === 'function') {
-      this._pasteMirrorRO = new ResizeObserver(() => this._syncMirrorMetrics(textarea));
-      this._pasteMirrorRO.observe(textarea);
-    }
-    // Selection snapping: an endpoint strictly inside a token snaps outward, so
-    // you can select ACROSS a token but never INTO it (also keeps typing/caret
-    // out of the label). Throttled to a microtask-ish guard via a reentrancy flag.
-    this._pasteSelectionListener = () => this._snapSelectionOutOfTokens(textarea);
-    document.addEventListener('selectionchange', this._pasteSelectionListener);
-  }
-
-  /**
-   * Remove the mirror and restore the plain-textarea state. Idempotent.
-   * @param {HTMLTextAreaElement} [textarea]
-   * @private
-   */
-  _teardownPasteMirror(textarea) {
-    const ta = textarea || /** @type {HTMLTextAreaElement|null} */ (this.querySelector('textarea'));
-    if (this._pasteMirrorRO) {
-      this._pasteMirrorRO.disconnect();
-      this._pasteMirrorRO = null;
-    }
-    if (this._pasteSelectionListener) {
-      document.removeEventListener('selectionchange', this._pasteSelectionListener);
-      this._pasteSelectionListener = null;
-    }
-    if (this._pasteMirror) {
-      this._pasteMirror.remove();
-      this._pasteMirror = null;
-    }
-    if (ta) {
-      ta.classList.remove('paste-mirrored');
-      ta.spellcheck = false; // matches the render() attribute default
-      if (ta.style.cursor) ta.style.cursor = ''; // drop any hover pointer cursor
-    }
-  }
-
-  /**
-   * Render the mirror's content: the same character string as the textarea, with
-   * each token wrapped in a styled `.paste-token` span. Because the label is real
-   * text and the span carries only metric-safe styling, both layers lay out
-   * identically by construction.
-   * @param {string} text
-   * @param {import('../utils/paste-tokens.js').PasteTokenMatch[]} tokens
-   * @private
-   */
-  _renderPasteMirror(text, tokens) {
-    const mirror = this._pasteMirror;
-    if (!mirror) return;
-    mirror.textContent = '';
-    let last = 0;
-    for (const t of tokens) {
-      if (t.start > last) mirror.appendChild(document.createTextNode(text.slice(last, t.start)));
-      const span = document.createElement('span');
-      span.className = 'paste-token';
-      span.textContent = t.text; // full token incl. invisible delimiters
-      mirror.appendChild(span);
-      last = t.end;
-    }
-    // A trailing newline needs a following character for pre-wrap to show the
-    // final empty line; mirror the textarea by appending the remainder plus a
-    // sentinel space when it ends on a newline.
-    let tail = text.slice(last);
-    if (tail.endsWith('\n')) tail += '\u200b';
-    if (tail) mirror.appendChild(document.createTextNode(tail));
-  }
-
-  /**
-   * Copy the textarea's box metrics and scroll onto the mirror so the two layers
-   * overlap exactly. Computed styles are copied (rather than assumed from CSS) so
-   * the mirror inherits the textarea's real font, regardless of theme.
-   * @param {HTMLTextAreaElement} textarea
-   * @private
-   */
-  _syncMirrorMetrics(textarea) {
-    const mirror = this._pasteMirror;
-    if (!mirror) return;
-    const cs = window.getComputedStyle(textarea);
-    for (const prop of [
-      'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariant',
-      'letterSpacing', 'lineHeight', 'textTransform', 'textIndent', 'tabSize',
-      'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'
-    ]) {
-      // @ts-ignore indexed style write
-      mirror.style[prop] = cs[prop];
-    }
-    mirror.style.top = `${textarea.offsetTop}px`;
-    mirror.style.left = `${textarea.offsetLeft}px`;
-    mirror.style.width = `${textarea.clientWidth}px`;
-    mirror.style.height = `${textarea.clientHeight}px`;
-    mirror.scrollTop = textarea.scrollTop;
-  }
-
-  /**
-   * Snap a selection endpoint that lands strictly inside a token outward to the
-   * token boundary. Guarded against reentrancy (setting the range re-fires
-   * selectionchange) and a no-op when nothing needs snapping.
-   * @param {HTMLTextAreaElement} textarea
-   * @private
-   */
-  _snapSelectionOutOfTokens(textarea) {
-    if (this._snappingSelection || this._pasteComposing) return;
-    if (document.activeElement !== textarea) return;
-    if (!hasTokens(textarea.value)) return;
-    const tokens = parseTokens(textarea.value);
-    let s = textarea.selectionStart;
-    let en = textarea.selectionEnd;
-
-    // Collapsed caret: it must never rest INSIDE a token. Snap it out in the
-    // direction of travel (a word/line jump or Home/End that landed in a label
-    // continues past it), falling back to the nearer edge when direction is
-    // ambiguous. This is what makes the interior unreachable by the caret, so no
-    // keystroke or paste can target it.
-    if (s === en) {
-      let p = s;
-      for (const t of tokens) {
-        if (p > t.start && p < t.end) {
-          const movingRight = p >= this._pasteLastCaret;
-          p = movingRight ? t.end : t.start;
-          break;
-        }
-      }
-      if (p !== s) {
-        this._snappingSelection = true;
-        try { textarea.setSelectionRange(p, p); } catch { /* non-fatal */ } finally { this._snappingSelection = false; }
-      }
-      this._pasteLastCaret = textarea.selectionStart;
-      return;
-    }
-
-    // Range selection: snap each endpoint outward so you can select ACROSS a
-    // token but never INTO it (also keeps a subsequent typed replacement whole).
-    const dir = textarea.selectionDirection;
-    for (const t of tokens) {
-      if (s > t.start && s < t.end) s = (s - t.start) <= (t.end - s) ? t.start : t.end;
-      if (en > t.start && en < t.end) en = (en - t.start) <= (t.end - en) ? t.start : t.end;
-    }
-    if (s !== textarea.selectionStart || en !== textarea.selectionEnd) {
-      if (s > en) { const tmp = s; s = en; en = tmp; }
-      this._snappingSelection = true;
-      try {
-        textarea.setSelectionRange(s, en, dir === 'none' ? undefined : dir);
-      } catch { /* non-fatal */ } finally {
-        this._snappingSelection = false;
-      }
-    }
-    this._pasteLastCaret = textarea.selectionStart;
-  }
-
-  /**
-   * Upload one image file to the conversation's asset store, showing an
-   * "uploading" chip while in flight and replacing it with the resolved
-   * AssetRef on success (or removing it on failure).
+   * Upload one image and add it to the pending attachments.
    * @param {File} file
-   * @private
+   * @returns {Promise<void>}
    */
   async _uploadAndAdd(file) {
-    const convId = this._conversation?.id;
-    if (!convId) {
-      this.showWarning('No active conversation for the attachment.');
-      return;
-    }
-    // Placeholder chip while the bytes upload. Carries a local preview URL so
-    // the thumbnail shows immediately (the asset GET URL only works post-upload).
-    const placeholder = {
-      id: '', mime: file.type, filename: file.name, bytes: file.size,
-      width: 0, height: 0, _uploading: true, _previewURL: URL.createObjectURL(file)
-    };
-    this._pendingAttachments.push(placeholder);
-    this._renderAttachmentChips();
-
-    try {
-      const ref = await apiService.uploadAsset(convId, file);
-      const idx = this._pendingAttachments.indexOf(placeholder);
-      if (idx !== -1) {
-        // Carry the local preview URL onto the resolved ref so the thumbnail
-        // doesn't flicker (revoked when the chip is removed / cleared).
-        this._pendingAttachments[idx] = { ...ref, _previewURL: placeholder._previewURL };
-      } else if (placeholder._previewURL) {
-        // Chip was removed mid-upload — drop the resolved ref and free the URL.
-        URL.revokeObjectURL(placeholder._previewURL);
-      }
-      this._renderAttachmentChips();
-      // The attachment is now a resolved asset — fold it into the persisted
-      // draft so it survives a reload alongside the text.
-      this._persistDraft();
-    } catch (err) {
-      const idx = this._pendingAttachments.indexOf(placeholder);
-      if (idx !== -1) this._pendingAttachments.splice(idx, 1);
-      if (placeholder._previewURL) URL.revokeObjectURL(placeholder._previewURL);
-      this._renderAttachmentChips();
-      this.showWarning(`Image upload failed: ${extractErrorMessage(err)}`);
-    }
+    return uploadAndAdd(this, file);
   }
 
   /**
-   * Remove a staged attachment and re-render the chip row.
-   * @param {{_previewURL?:string}} ref
-   * @private
-   */
-  _removeAttachment(ref) {
-    const idx = this._pendingAttachments.indexOf(/** @type {any} */ (ref));
-    if (idx === -1) return;
-    this._pendingAttachments.splice(idx, 1);
-    if (ref._previewURL) URL.revokeObjectURL(ref._previewURL);
-    this._renderAttachmentChips();
-    // Persist the draft so the removal survives a reload too.
-    this._persistDraft();
-  }
-
-  /**
-   * Replace the staged attachments with a restored set (used when a "rewind to
-   * this message" puts an attachment-bearing user message back into the box for
-   * editing/resend). Clones each ref down to the persistable AssetRef fields,
-   * dropping any UI-only state (`_previewURL`/`_uploading`) from the source —
-   * the restored chips render their thumbnails from the asset GET URL.
-   *
-   * Attachments are restored regardless of the current model — capability is
-   * not gated client-side. A model that can't accept images rejects the
-   * request at send time and that provider error surfaces as the turn error.
+   * Re-stage attachments from saved references (draft restore, history level).
    * @param {Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>} refs
    * @returns {number} Count of attachments actually staged.
    */
   setPendingAttachments(refs) {
-    const count = this._stagePendingAttachments(refs);
-    // This is a genuine draft change (rewind/restore-from-message) — persist
-    // the whole draft so text + attachments survive a reload together.
-    this._persistDraft();
-    return count;
+    return setPendingAttachments(this, refs);
+  }
+
+  // ── Pasted-text tokens ────────────────────────────────────────────────────
+  //
+  // The capture thresholds, atomic-token editing, clipboard expansion and
+  // mirror overlay live in composer-paste-tokens.js. These stay methods
+  // because paste-token-test.js drives them on a mounted element.
+
+  /**
+   * Whether a pasted string is big enough to become a placeholder token.
+   * @param {string} text
+   * @returns {boolean} True to capture, false to paste normally.
+   */
+  _shouldCapturePaste(text) {
+    return shouldCapturePaste(text);
   }
 
   /**
-   * Replace the in-memory staged attachments and re-render the chip row WITHOUT
-   * persisting. Used both by setPendingAttachments (which then persists) and by
-   * the draft-restore path in setMessageThread (which is reading FROM the
-   * persisted draft, so re-persisting would be redundant churn).
-   * @param {Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>} refs
-   * @returns {number} Count of attachments actually staged.
-   * @private
+   * Capture pasted content into a placeholder token at the caret.
+   * @param {string} content
    */
-  _stagePendingAttachments(refs) {
-    // Revoke any preview URLs on the outgoing pending set before replacing it.
-    for (const a of this._pendingAttachments) {
-      if (a._previewURL) URL.revokeObjectURL(a._previewURL);
-    }
-    this._pendingAttachments = [];
-
-    const list = Array.isArray(refs) ? refs.filter((r) => r && r.id) : [];
-    if (list.length === 0) {
-      this._renderAttachmentChips();
-      return 0;
-    }
-
-    this._pendingAttachments = list.map((r) => ({
-      id: r.id,
-      mime: r.mime,
-      filename: r.filename,
-      bytes: r.bytes,
-      width: r.width,
-      height: r.height
-    }));
-    this._renderAttachmentChips();
-    return this._pendingAttachments.length;
+  _capturePaste(content) {
+    capturePaste(this, content);
   }
 
   /**
-   * Replace the in-memory staged text files and re-render the chip row WITHOUT
-   * persisting — the restore counterpart to {@link _stagePendingTextFiles}'s
-   * caller reading FROM the persisted draft. Clones down to the persistable
-   * fields so no stray UI state carries over.
-   * @param {Array<{filename:string,content:string,bytes:number}>} entries
-   * @returns {number} Count of text files actually staged.
-   * @private
+   * Apply the atomic-token editing rules to a keydown.
+   * @param {KeyboardEvent} e
+   * @param {HTMLTextAreaElement} textarea
+   * @returns {boolean} Whether the key was handled as a token operation.
    */
-  _stagePendingTextFiles(entries) {
-    const list = Array.isArray(entries)
-      ? entries.filter((t) => t && typeof t.content === 'string')
-      : [];
-    this._pendingTextFiles = list.map((t) => ({
-      filename: t.filename || 'dropped file',
-      content: t.content,
-      bytes: t.bytes || 0
-    }));
-    this._renderAttachmentChips();
-    return this._pendingTextFiles.length;
+  _handleTokenKeydown(e, textarea) {
+    return handleTokenKeydown(this, e, textarea);
   }
 
   /**
-   * Render the staged-attachment chip row from _pendingAttachments. Rebuilds
-   * only its own container (never the textarea), so caret/focus are preserved.
-   * @private
+   * Put the expanded text on the clipboard when a token is copied or cut.
+   * @param {ClipboardEvent} e
+   * @param {HTMLTextAreaElement} textarea
+   * @param {boolean} isCut
    */
-  _renderAttachmentChips() {
-    // An image staged with no text is a valid send, so the enabled state of the
-    // send button depends on attachments too — refresh it on every attachment
-    // mutation (this method is the single choke point for add/remove/stage).
-    this._updateSendButtonState();
-    const container = this.querySelector('composer-box-attachments');
-    if (!container) return;
-    container.innerHTML = '';
-    if (this._pendingAttachments.length === 0 && this._pendingTextFiles.length === 0) {
-      container.classList.remove('has-attachments');
-      return;
-    }
-    container.classList.add('has-attachments');
-    const convId = this._conversation?.id;
+  _onClipboardCopyCut(e, textarea, isCut) {
+    onClipboardCopyCut(this, e, textarea, isCut);
+  }
 
-    for (const ref of this._pendingAttachments) {
-      const chip = document.createElement('div');
-      chip.className = 'attachment-chip' + (ref._uploading ? ' uploading' : '');
+  /**
+   * Revert an edit that damaged a token, and drop stray delimiters.
+   * @param {HTMLTextAreaElement} textarea
+   * @returns {boolean} True if the value was changed (reverted or cleaned).
+   */
+  _reconcileTokens(textarea) {
+    return reconcileTokens(this, textarea);
+  }
 
-      // Click the thumbnail to preview the staged image full-size — the same
-      // lightbox used for attachments inside a sent user-message item.
-      const src = ref._previewURL || (ref.id && convId ? apiService.assetURL(convId, ref.id) : '');
-      const thumb = createImageThumb({
-        src,
-        alt: ref.filename || '',
-        className: src ? 'attachment-thumb clickable' : 'attachment-thumb',
-      });
-      chip.appendChild(thumb);
+  /** Bring the backdrop mirror into line with the textarea's current value. */
+  _syncPasteMirror() {
+    syncPasteMirror(this);
+  }
 
-      const name = document.createElement('span');
-      name.className = 'attachment-name';
-      name.textContent = ref.filename || 'image';
-      chip.appendChild(name);
-
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'attachment-remove';
-      remove.setAttribute('aria-label', 'Remove attachment');
-      remove.textContent = '\u00d7';
-      remove.addEventListener('click', () => this._removeAttachment(ref));
-      chip.appendChild(remove);
-
-      container.appendChild(chip);
-    }
-
-    // Dropped text files: a document-icon chip (no image thumbnail).
-    for (const entry of this._pendingTextFiles) {
-      const chip = document.createElement('div');
-      chip.className = 'attachment-chip text-file';
-
-      const icon = document.createElement('span');
-      icon.className = 'attachment-icon icon-document';
-      chip.appendChild(icon);
-
-      const name = document.createElement('span');
-      name.className = 'attachment-name';
-      name.textContent = entry.filename || 'text file';
-      chip.appendChild(name);
-
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'attachment-remove';
-      remove.setAttribute('aria-label', 'Remove attachment');
-      remove.textContent = '\u00d7';
-      remove.addEventListener('click', () => this._removeTextFile(entry));
-      chip.appendChild(remove);
-
-      container.appendChild(chip);
-    }
+  /**
+   * Move a collapsed caret out of a token's interior.
+   * @param {HTMLTextAreaElement} textarea
+   */
+  _snapSelectionOutOfTokens(textarea) {
+    snapSelectionOutOfTokens(this, textarea);
   }
 
   /**
@@ -2707,325 +1768,15 @@ class Composer extends HTMLElement {
     }));
   }
 
-  // ── Scheduled send ("send after a delay") ─────────────────────────────
+  // ── Scheduled send ────────────────────────────────────────────────────────
   //
-  // Clicking the clock button arms a send for a chosen wall-clock time — the
-  // intended use is firing a queued command the instant the next LLM-provider
-  // time slice opens, so precision is coarse (5-minute granularity). The target
-  // is persisted on the thread's draft (epoch ms). This box only arms, cancels,
-  // and DISPLAYS a live countdown; the firing itself is owned by
-  // scheduledSendService, which sweeps every thread on an interval so a send
-  // goes out even while a different thread or tab is on screen. When the due
-  // thread IS on screen the service calls _fireScheduledSend here, so the send
-  // carries the live textarea's exact contents.
+  // Arming, the countdown and the delay picker live in composer-schedule.js.
+  // The fire path stays a method: scheduled-send-service.js calls
+  // `box._fireScheduledSend()` on the composer element when the wait is up.
 
-  /**
-   * Stop the countdown-refresh interval WITHOUT touching `_scheduledSendAt` or
-   * the persisted draft — the target survives so a later rebind restores it.
-   * @private
-   */
-  _stopScheduledCountdown() {
-    if (this._scheduledCountdownId !== null) {
-      clearInterval(this._scheduledCountdownId);
-      this._scheduledCountdownId = null;
-    }
-  }
-
-  /**
-   * Start (or restart) the coarse interval that refreshes the countdown label.
-   * Display only — it never fires the send. The label is recomputed from the
-   * absolute target each tick, so a throttled background timer can't make the
-   * displayed countdown drift.
-   * @private
-   */
-  _startScheduledCountdown() {
-    this._stopScheduledCountdown();
-    this._scheduledCountdownId = setInterval(() => this._updateScheduleButton(), 30000);
-  }
-
-  /**
-   * Arm a send for the absolute instant `targetAt` (epoch ms): record it,
-   * persist it onto the thread's draft, start the countdown, and reflect it on
-   * the clock button. scheduledSendService picks it up from the draft.
-   * @param {number} targetAt
-   * @private
-   */
-  _armScheduledSend(targetAt) {
-    this._scheduledSendAt = targetAt;
-    this._persistDraft();
-    this._startScheduledCountdown();
-    this._updateScheduleButton();
-  }
-
-  /**
-   * Cancel the pending send: stop the countdown, clear the target, and remove
-   * it from the persisted draft.
-   * @private
-   */
-  _cancelScheduledSend() {
-    this._stopScheduledCountdown();
-    this._scheduledSendAt = null;
-    this._persistDraft();
-    this._updateScheduleButton();
-  }
-
-  /**
-   * Fire the pending send. Called by scheduledSendService when THIS box is the
-   * one bound to the due thread. Clears the schedule FIRST (and persists that,
-   * so an empty box — where sendMessage() no-ops without clearing the draft —
-   * doesn't leave the target behind to re-fire on the next sweep), then presses
-   * Send on whatever is currently in the box.
-   * @private
-   */
+  /** Send the composed message now, ending an armed scheduled send. */
   _fireScheduledSend() {
-    this._stopScheduledCountdown();
-    this._scheduledSendAt = null;
-    this._persistDraft();
-    this._updateScheduleButton();
-    this.sendMessage();
-  }
-
-  /**
-   * Re-derive the displayed scheduled-send state from the bound thread's
-   * persisted draft. Stops any countdown left over from a previously-bound
-   * thread, then restores the target and its countdown for the newly-bound
-   * thread. Firing (including for an already-passed target) is left to
-   * scheduledSendService. Called after the controls render and on every genuine
-   * thread switch.
-   * @private
-   */
-  _syncScheduledSendFromDraft() {
-    this._stopScheduledCountdown();
-    const when = this._messageThread ? this._messageThread.draft.scheduledSendAt : null;
-    this._scheduledSendAt = (typeof when === 'number' && Number.isFinite(when)) ? when : null;
-    if (this._scheduledSendAt !== null) {
-      this._startScheduledCountdown();
-    }
-    this._updateScheduleButton();
-  }
-
-  /**
-   * Reflect the current scheduled-send state on the clock button: an `armed`
-   * class, a live countdown badge, and a tooltip naming the target time.
-   *
-   * An empty box overrides all of that: arming (or leaving armed) a delayed
-   * send with nothing to send would silently fire nothing, so an empty box
-   * disables the button and renders it un-armed — WITHOUT clearing
-   * `_scheduledSendAt` or the persisted draft. A timer the user already set is
-   * only hidden; the moment they type again this re-renders it armed with its
-   * countdown intact.
-   * @private
-   */
-  _updateScheduleButton() {
-    const btn = this.querySelector('.schedule-send-btn');
-    if (!btn) return;
-    const label = btn.querySelector('.schedule-send-countdown');
-    const empty = this.isEmpty();
-    /** @type {HTMLButtonElement} */ (btn).disabled = empty;
-    if (this._scheduledSendAt === null || empty) {
-      btn.classList.remove('armed');
-      // When a timer is armed but hidden by an empty box, point the user at how
-      // to bring it back rather than implying nothing is set.
-      btn.setAttribute('title', (empty && this._scheduledSendAt !== null)
-        ? 'Type a message to resume the timer'
-        : 'Send after a delay');
-      if (label) {
-        /** @type {HTMLElement} */ (label).hidden = true;
-        label.textContent = '';
-      }
-      return;
-    }
-    btn.classList.add('armed');
-    const remaining = Math.max(0, this._scheduledSendAt - Date.now());
-    btn.setAttribute('title', `Sending at ${formatClockTime(this._scheduledSendAt)} — click to change or cancel`);
-    if (label) {
-      /** @type {HTMLElement} */ (label).hidden = false;
-      label.textContent = formatDelayShort(remaining);
-    }
-  }
-
-  /**
-   * Toggle the delay picker: close it if open, otherwise open it.
-   * @private
-   */
-  _toggleSchedulePicker() {
-    if (this._schedulePickerCleanup) {
-      this._closeSchedulePicker();
-    } else {
-      this._openSchedulePicker();
-    }
-  }
-
-  /**
-   * Close the delay picker (tears down its popup surface).
-   * @private
-   */
-  _closeSchedulePicker() {
-    if (this._schedulePickerCleanup) {
-      const release = this._schedulePickerCleanup;
-      this._schedulePickerCleanup = null;
-      release();
-    }
-  }
-
-  /**
-   * Build and present the delay picker, anchored to the clock button (or a
-   * bottom sheet on a phone). Two shapes:
-   *   • Armed — a single "Cancel timer" button (nothing else to decide).
-   *   • Idle — full-width preset chips (15m…5h), hours + 5-minute steppers, and
-   *     one full-width "Schedule to send at HH:MM" button that both previews the
-   *     target time and confirms it.
-   * The picker never edits the textarea.
-   * @private
-   */
-  _openSchedulePicker() {
-    let anchor = /** @type {HTMLElement|null} */ (this.querySelector('.schedule-send-btn'));
-    // On touch the inline clock button is hidden unless a send is armed (it lives
-    // in the "⋮" actions sheet), so anchor to the still-visible overflow button
-    // when it is not laid out. On a phone the picker is a bottom sheet, where the
-    // anchor is moot anyway.
-    if (!anchor || anchor.offsetParent === null) {
-      anchor = /** @type {HTMLElement|null} */ (this.querySelector('#more-actions-button')) || anchor;
-    }
-    if (!anchor) return;
-
-    const menu = document.createElement('div');
-    menu.className = 'dropdown-menu schedule-send-menu show';
-    menu.id = 'schedule-send-menu';
-
-    const present = () => {
-      this._schedulePickerCleanup = presentPopup({
-        surface: menu,
-        anchor,
-        id: 'schedule-send',
-        onClose: () => this._closeSchedulePicker(),
-        align: 'right',
-        insideSelectors: ['.schedule-send-btn', '.schedule-send-menu'],
-      });
-    };
-
-    // --- Armed: show the target time, offer to cancel -----------------------
-    if (this._scheduledSendAt) {
-      const targetLine = document.createElement('div');
-      targetLine.className = 'schedule-armed-target';
-      targetLine.textContent = `Sending at ${formatClockTime(this._scheduledSendAt)}`;
-      menu.appendChild(targetLine);
-
-      const cancelBtn = document.createElement('button');
-      cancelBtn.type = 'button';
-      cancelBtn.className = 'schedule-cancel-btn schedule-cancel-only';
-      cancelBtn.textContent = 'Cancel timer';
-      cancelBtn.addEventListener('click', () => {
-        this._cancelScheduledSend();
-        this._closeSchedulePicker();
-      });
-      menu.appendChild(cancelBtn);
-      present();
-      return;
-    }
-
-    // --- Idle: pick a delay -------------------------------------------------
-    let hours = 1;
-    let minutes = 0;
-
-    const heading = document.createElement('div');
-    heading.className = 'schedule-send-heading';
-    heading.textContent = 'Send after a delay';
-    menu.appendChild(heading);
-
-    // Preset chips — stretch to fill the row.
-    const presetRow = document.createElement('div');
-    presetRow.className = 'schedule-preset-row';
-    menu.appendChild(presetRow);
-
-    // Steppers.
-    const steppers = document.createElement('div');
-    steppers.className = 'schedule-steppers';
-    menu.appendChild(steppers);
-
-    /**
-     * @param {string} unitLabel
-     * @param {() => number} get
-     * @param {(v: number) => void} set
-     * @param {number} min
-     * @param {number} max
-     * @param {number} step
-     * @returns {HTMLElement} the value element (for later text updates)
-     */
-    const buildStepper = (unitLabel, get, set, min, max, step) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'schedule-stepper';
-      const dec = document.createElement('button');
-      dec.type = 'button';
-      dec.className = 'schedule-stepper-btn';
-      dec.textContent = '\u2212'; // minus
-      dec.setAttribute('aria-label', `Fewer ${unitLabel}`);
-      const val = document.createElement('span');
-      val.className = 'schedule-stepper-value';
-      const unit = document.createElement('span');
-      unit.className = 'schedule-stepper-unit';
-      unit.textContent = unitLabel;
-      const inc = document.createElement('button');
-      inc.type = 'button';
-      inc.className = 'schedule-stepper-btn';
-      inc.textContent = '+';
-      inc.setAttribute('aria-label', `More ${unitLabel}`);
-      dec.addEventListener('click', () => { set(Math.max(min, get() - step)); refresh(); });
-      inc.addEventListener('click', () => { set(Math.min(max, get() + step)); refresh(); });
-      wrap.append(dec, val, unit, inc);
-      steppers.appendChild(wrap);
-      return val;
-    };
-
-    const hoursValueEl = buildStepper('hr',
-      () => hours, (v) => { hours = v; }, 0, SCHEDULE_MAX_HOURS, 1);
-    const minutesValueEl = buildStepper('min',
-      () => minutes, (v) => { minutes = v; }, 0, 60 - SCHEDULE_MINUTE_STEP, SCHEDULE_MINUTE_STEP);
-
-    // One full-width button that both previews and confirms the target time.
-    const actions = document.createElement('div');
-    actions.className = 'schedule-actions';
-    const scheduleBtn = document.createElement('button');
-    scheduleBtn.type = 'button';
-    scheduleBtn.className = 'schedule-confirm-btn';
-    actions.appendChild(scheduleBtn);
-    menu.appendChild(actions);
-
-    const refresh = () => {
-      hoursValueEl.textContent = String(hours);
-      minutesValueEl.textContent = String(minutes).padStart(2, '0');
-      const totalMin = hours * 60 + minutes;
-      if (totalMin <= 0) {
-        scheduleBtn.textContent = 'Pick a delay above';
-        scheduleBtn.disabled = true;
-      } else {
-        scheduleBtn.disabled = false;
-        scheduleBtn.textContent = `Schedule to send at ${formatClockTime(Date.now() + totalMin * 60000)}`;
-      }
-    };
-
-    for (const preset of SCHEDULE_PRESETS) {
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'schedule-preset';
-      chip.textContent = preset.label;
-      chip.addEventListener('click', () => {
-        hours = Math.min(SCHEDULE_MAX_HOURS, Math.floor(preset.minutes / 60));
-        minutes = preset.minutes % 60;
-        refresh();
-      });
-      presetRow.appendChild(chip);
-    }
-
-    scheduleBtn.addEventListener('click', () => {
-      const totalMin = hours * 60 + minutes;
-      if (totalMin <= 0) return;
-      this._armScheduledSend(Date.now() + totalMin * 60000);
-      this._closeSchedulePicker();
-    });
-
-    refresh();
-    present();
+    fireScheduledSend(this);
   }
 
   /**
@@ -3400,7 +2151,7 @@ class Composer extends HTMLElement {
     // Schedule-send ("send after a delay") is a rarely-used control, so on touch
     // it lives here rather than on the inline row. The row opens the same delay
     // picker as the inline clock button (which stays visible only while armed).
-    addRow('Send after a delay', CLOCK_SVG, () => this._toggleSchedulePicker());
+    addRow('Send after a delay', CLOCK_SVG, () => toggleSchedulePicker(this));
 
     /**
      * Append a closed-by-default collapsible section of pre-built rows (native
