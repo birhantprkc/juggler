@@ -7,6 +7,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/server"
@@ -56,6 +57,10 @@ type App struct {
 
 	serverErrChan chan error
 	cleanups      []func()
+
+	// cleanupOnce gates the teardown stack so it runs exactly once no matter
+	// which shutdown path gets there first.
+	cleanupOnce sync.Once
 }
 
 // Run executes startup phases in order, then blocks in waitForExit until a
@@ -116,10 +121,44 @@ func (a *App) pushCleanup(fn func()) {
 	a.cleanups = append(a.cleanups, fn)
 }
 
+// runCleanups releases everything the startup phases allocated, LIFO. Driven
+// from two places — beginShutdown on the quit path and Run's defer — so it is
+// gated to run exactly once: these cleanups shut the server down and release
+// the instance lock, and a second pass would tear down a second time.
 func (a *App) runCleanups() {
-	for i := len(a.cleanups) - 1; i >= 0; i-- {
-		a.cleanups[i]()
+	a.cleanupOnce.Do(func() {
+		for i := len(a.cleanups) - 1; i >= 0; i-- {
+			a.cleanups[i]()
+		}
+	})
+}
+
+// releaseResources gives back everything this process holds: any WAN tunnel,
+// then the teardown stack (server shutdown, provider subprocesses, the instance
+// lock). Every exit path that owns those resources goes through it, and it is
+// safe to call more than once — StopTunnel is a no-op with no tunnel up and
+// runCleanups is gated.
+func (a *App) releaseResources() {
+	if a.server != nil {
+		a.server.StopTunnel()
 	}
+	a.runCleanups()
+}
+
+// beginShutdown releases our own resources, then hands control to the native
+// application's quit.
+//
+// The ordering is load-bearing: on macOS quitNative is [NSApp terminate:],
+// which ends the process without unwinding, so Run's deferred runCleanups is
+// never reached. Anything left to that defer is simply never released — the
+// server is never shut down, cached conversations are never closed, and every
+// provider subprocess (notably the claude CLI, which is in its own process
+// group and so does not even receive the terminal's Ctrl-C) is orphaned,
+// carrying on with a control channel that no longer has anyone on the other
+// end. Teardown must therefore be complete before quitNative is called.
+func (a *App) beginShutdown(quitNative func()) {
+	a.releaseResources()
+	quitNative()
 }
 
 // fatal prints to stderr. Used only by phases that run before jlog.Init —

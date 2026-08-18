@@ -6,6 +6,7 @@ package claudecode
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,9 +17,11 @@ import (
 	"juggler/internal/userpaths/userpathstest"
 )
 
-// seedWarmSession writes a minimal CLI-native session file ending on an
-// assistant tool_use, mirroring what the real CLI leaves on disk when it parks
-// on a tools/call. Returns the file path.
+// seedWarmSession writes a minimal CLI-native session file ending on the
+// assistant tool_use(s) the CLI parked on. It mirrors the real CLI's layout of
+// ONE ENTRY PER CONTENT BLOCK: a turn calling two tools in parallel becomes two
+// chained assistant entries (uuid-asst-1, uuid-asst-2, …), one tool_use each —
+// not a single entry carrying both. Returns the file path.
 func seedWarmSession(t *testing.T, workingDir, sessionUUID string, toolUseIDs ...string) string {
 	t.Helper()
 	dir := projectsDir(workingDir)
@@ -28,18 +31,19 @@ func seedWarmSession(t *testing.T, workingDir, sessionUUID string, toolUseIDs ..
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir projects: %v", err)
 	}
-	var toolUseBlocks []map[string]any
-	for _, id := range toolUseIDs {
-		toolUseBlocks = append(toolUseBlocks, map[string]any{
+	entries := []map[string]any{newSyntheticEntry("user",
+		[]map[string]any{{"type": "text", "text": "do the thing"}},
+		"uuid-user-1", nil, sessionUUID, workingDir, time.Now())}
+	parent := "uuid-user-1"
+	for i, id := range toolUseIDs {
+		uuid := fmt.Sprintf("uuid-asst-%d", i+1)
+		entries = append(entries, newSyntheticEntry("assistant", []map[string]any{{
 			"type": "tool_use", "id": id, "name": "bash", "input": map[string]any{"command": "echo hi"},
-		})
+		}}, uuid, parent, sessionUUID, workingDir, time.Now()))
+		parent = uuid
 	}
-	userEntry := newSyntheticEntry("user", []map[string]any{{"type": "text", "text": "do the thing"}},
-		"uuid-user-1", nil, sessionUUID, workingDir, time.Now())
-	asstEntry := newSyntheticEntry("assistant", toolUseBlocks,
-		"uuid-asst-1", "uuid-user-1", sessionUUID, workingDir, time.Now())
 	var buf strings.Builder
-	for _, e := range []map[string]any{userEntry, asstEntry} {
+	for _, e := range entries {
 		line, err := json.Marshal(e)
 		if err != nil {
 			t.Fatalf("marshal seed entry: %v", err)
@@ -52,6 +56,28 @@ func seedWarmSession(t *testing.T, workingDir, sessionUUID string, toolUseIDs ..
 		t.Fatalf("write seed session: %v", err)
 	}
 	return path
+}
+
+// appendRawEntries appends already-shaped JSONL records to a session file,
+// used to reproduce the CLI's own non-message bookkeeping records (last-prompt,
+// ai-title, mode, queue-operation) which carry no uuid and are not part of the
+// parentUuid chain.
+func appendRawEntries(t *testing.T, path string, entries ...map[string]any) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open %s for append: %v", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	for _, e := range entries {
+		line, err := json.Marshal(e)
+		if err != nil {
+			t.Fatalf("marshal bookkeeping entry: %v", err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			t.Fatalf("append bookkeeping entry: %v", err)
+		}
+	}
 }
 
 // readJSONL parses a JSONL file into a slice of generic entry maps.
@@ -93,7 +119,7 @@ func TestAppendToolResultsToWarmSession_HappyPath(t *testing.T) {
 
 	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
 	results := []provider.Message{toolResultMsg("call_1", "the answer")}
-	if err := c.appendToolResultsToWarmSession(results); err != nil {
+	if err := c.appendToolResultsToWarmSession(results, nil); err != nil {
 		t.Fatalf("appendToolResultsToWarmSession: %v", err)
 	}
 
@@ -137,7 +163,7 @@ func TestAppendToolResultsToWarmSession_MissingFile(t *testing.T) {
 	userpathstest.Isolate(t)
 	workingDir := filepath.Join(t.TempDir(), "proj")
 	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: "uuid-absent"}}
-	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "x")}); err == nil {
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "x")}, nil); err == nil {
 		t.Fatal("expected an error for a missing warm session file (forces fresh fallback); got nil")
 	}
 }
@@ -166,8 +192,108 @@ func TestAppendToolResultsToWarmSession_TailNotToolUse(t *testing.T) {
 	}
 
 	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
-	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "x")}); err == nil {
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "x")}, nil); err == nil {
 		t.Fatal("expected an error when the tail entry isn't a tool_use; got nil")
+	}
+}
+
+// TestAppendToolResultsToWarmSession_SkipsTrailingBookkeeping appends when the
+// dangling tool_use is buried under the CLI's own bookkeeping records. The CLI
+// interleaves uuid-less entries (last-prompt, ai-title, mode, queue-operation)
+// into the session file, so the tool_use it parked on is routinely not the
+// file's physically-last line — treating those records as the tail wrongly
+// cold-started an otherwise perfectly warm session.
+func TestAppendToolResultsToWarmSession_SkipsTrailingBookkeeping(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-bookkeeping-tail"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path,
+		map[string]any{"type": "last-prompt", "lastPrompt": "do the thing", "leafUuid": "uuid-asst-1", "sessionId": uuid},
+		map[string]any{"type": "ai-title", "title": "Do The Thing"},
+	)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "the answer")}, nil); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v (bookkeeping records after the tool_use must not force a cold start)", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if !strings.HasPrefix(string(after), string(before)) {
+		t.Fatalf("warm prefix was modified — cache would miss.\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	entries := readJSONL(t, path)
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 entries (user, tool_use, last-prompt, ai-title, appended result); got %d", len(entries))
+	}
+	last := entries[4]
+	if last["type"] != "user" {
+		t.Fatalf("appended entry type = %v, want user", last["type"])
+	}
+	if last["parentUuid"] != "uuid-asst-1" {
+		t.Fatalf("appended entry parentUuid = %v, want uuid-asst-1 — it must chain to the dangling tool_use, not to a bookkeeping record", last["parentUuid"])
+	}
+	msg, _ := last["message"].(map[string]any)
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("appended message content = %v, want one tool_result block", msg["content"])
+	}
+	block, _ := content[0].(map[string]any)
+	if block["type"] != "tool_result" || block["tool_use_id"] != "call_1" || block["content"] != "the answer" {
+		t.Fatalf("appended block = %+v, want tool_result for call_1 with the answer", block)
+	}
+}
+
+// TestAppendToolResultsToWarmSession_BookkeepingOverTextTurnStillRefuses locks
+// in the real invariant while skipping bookkeeping records: when the last actual
+// MESSAGE is a plain assistant text turn, there is no dangling tool_use to
+// close and we must still cold-start. Skipping uuid-less records must not
+// degrade into accepting any tail at all.
+func TestAppendToolResultsToWarmSession_BookkeepingOverTextTurnStillRefuses(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-text-under-bookkeeping"
+	dir := projectsDir(workingDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir projects: %v", err)
+	}
+	entry := newSyntheticEntry("assistant", []map[string]any{{"type": "text", "text": "all done"}},
+		"uuid-asst-text", nil, uuid, workingDir, time.Now())
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal entry: %v", err)
+	}
+	path := filepath.Join(dir, uuid+".jsonl")
+	if err := os.WriteFile(path, append(line, '\n'), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	appendRawEntries(t, path,
+		map[string]any{"type": "last-prompt", "lastPrompt": "do the thing", "leafUuid": "uuid-asst-text", "sessionId": uuid},
+	)
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	err = c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "x")}, nil)
+	if err == nil {
+		t.Fatal("expected an error when the last message is a text turn with no dangling tool_use; got nil")
+	}
+	// It must refuse because there is no tool_use to close, NOT because it
+	// tripped over the uuid-less bookkeeping record on the way — otherwise this
+	// test would keep passing even if tail-scanning regressed.
+	if !strings.Contains(err.Error(), "tool_use") {
+		t.Fatalf("refusal reason = %q, want it to name the missing tool_use (a uuid complaint means the bookkeeping record was treated as the tail)", err)
 	}
 }
 
@@ -243,6 +369,255 @@ func TestWarmAppendResume_EndToEndResumesWarm(t *testing.T) {
 	}
 }
 
+// abortEntry builds the `user` tool_result a CLI journals when it is handed an
+// abandoned-call marker for the tool it was parked on.
+func abortEntry(workingDir, sessionUUID, entryUUID, parentUUID, toolUseID string) map[string]any {
+	return newSyntheticEntry("user", []map[string]any{{
+		"type": "tool_result", "tool_use_id": toolUseID,
+		"content": teardownAbortResultText, "is_error": true,
+	}}, entryUUID, parentUUID, sessionUUID, workingDir, time.Now())
+}
+
+// TestAppendToolResultsToWarmSession_HealsAbandonedCallTail appends when the
+// file ends on an abandoned-call marker instead of the dangling tool_use.
+//
+// This is the shape a tool parked across an app restart leaves behind: the
+// marker answers a call that was never actually aborted, only deferred, and the
+// real result is the one arriving now. Refusing here cold-started a fully warm
+// conversation — ~70k tokens re-read to deliver one plan approval.
+func TestAppendToolResultsToWarmSession_HealsAbandonedCallTail(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-abort-tail"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path, abortEntry(workingDir, uuid, "uuid-abort-1", "uuid-asst-1", "call_1"))
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "the answer")}, nil); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v (an abandoned-call marker must not force a cold start)", err)
+	}
+
+	entries := readJSONL(t, path)
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (user, tool_use, real result); got %d — the marker must be cut, not kept", len(entries))
+	}
+	last := entries[2]
+	if last["parentUuid"] != "uuid-asst-1" {
+		t.Fatalf("appended entry parentUuid = %v, want uuid-asst-1 (chains to the tool_use, not to the marker)", last["parentUuid"])
+	}
+	msg, _ := last["message"].(map[string]any)
+	content, _ := msg["content"].([]any)
+	block, _ := content[0].(map[string]any)
+	if block["content"] != "the answer" {
+		t.Fatalf("appended block = %+v, want the real result for call_1", block)
+	}
+}
+
+// TestAppendToolResultsToWarmSession_HealsStrandedTurnAfterAbandonedCall cuts
+// past an assistant turn generated FROM the marker as well. An orphaned CLI
+// outlives its parent by a few seconds and can spend that time replying to the
+// marker and journalling the reply — a turn no one ever saw, sitting between us
+// and the tool_use.
+func TestAppendToolResultsToWarmSession_HealsStrandedTurnAfterAbandonedCall(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-stranded-turn"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path,
+		abortEntry(workingDir, uuid, "uuid-abort-1", "uuid-asst-1", "call_1"),
+		newSyntheticEntry("assistant", []map[string]any{{"type": "text", "text": "That didn't land."}},
+			"uuid-ghost-1", "uuid-abort-1", uuid, workingDir, time.Now()),
+		map[string]any{"type": "last-prompt", "lastPrompt": "do the thing", "leafUuid": "uuid-ghost-1", "sessionId": uuid},
+	)
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "the answer")}, nil); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v (a stranded turn must not force a cold start)", err)
+	}
+
+	entries := readJSONL(t, path)
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries; got %d — the marker, the stranded turn and its stale last-prompt must all be cut", len(entries))
+	}
+	if entries[2]["parentUuid"] != "uuid-asst-1" {
+		t.Fatalf("appended entry parentUuid = %v, want uuid-asst-1", entries[2]["parentUuid"])
+	}
+}
+
+// TestAppendToolResultsToWarmSession_RealUserTailStillRefuses keeps the healing
+// narrow. A user turn that is NOT an abandoned-call marker means real
+// conversation continued past the tool_use, and cutting back to it would delete
+// history — so we must still cold-start.
+func TestAppendToolResultsToWarmSession_RealUserTailStillRefuses(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-real-user-tail"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path,
+		newSyntheticEntry("user", []map[string]any{{
+			"type": "tool_result", "tool_use_id": "call_1", "content": "genuine output",
+		}}, "uuid-real-1", "uuid-asst-1", uuid, workingDir, time.Now()),
+		newSyntheticEntry("assistant", []map[string]any{{"type": "text", "text": "done"}},
+			"uuid-asst-2", "uuid-real-1", uuid, workingDir, time.Now()),
+	)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "x")}, nil); err == nil {
+		t.Fatal("expected a refusal when real history follows the tool_use; got nil")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a refused append must leave the file untouched.\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestAppendToolResultsToWarmSession_SnapshotWinsOverDiskWreckage proves the
+// pre-teardown snapshot is what gets written: whatever a dying CLI adds to the
+// file afterwards is discarded rather than reasoned about.
+func TestAppendToolResultsToWarmSession_SnapshotWinsOverDiskWreckage(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-snapshot"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	snapshot := c.snapshotWarmSession()
+	if len(snapshot) == 0 {
+		t.Fatal("snapshotWarmSession returned nothing for a seeded session")
+	}
+
+	// The CLI journals the marker after we snapshotted — the teardown race.
+	appendRawEntries(t, path, abortEntry(workingDir, uuid, "uuid-abort-1", "uuid-asst-1", "call_1"))
+
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "the answer")}, snapshot); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v", err)
+	}
+	entries := readJSONL(t, path)
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries; got %d — the snapshot must overwrite the wreckage", len(entries))
+	}
+	msg, _ := entries[2]["message"].(map[string]any)
+	content, _ := msg["content"].([]any)
+	block, _ := content[0].(map[string]any)
+	if block["content"] != "the answer" {
+		t.Fatalf("appended block = %+v, want the real result", block)
+	}
+}
+
+// TestAppendToolResultsToWarmSession_ParallelToolUses closes a turn that called
+// two tools at once. The CLI journals one entry per content block, so the file
+// ends on TWO chained assistant tool_use entries and its last entry names only
+// the second call — reading just that entry made the first call's result look
+// like it belonged to another turn, and cold-started every multi-tool turn there
+// has ever been. The reported case: an `edit` awaiting approval alongside an
+// auto-approved `read`.
+func TestAppendToolResultsToWarmSession_ParallelToolUses(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-parallel"
+	path := seedWarmSession(t, workingDir, uuid, "call_edit", "call_read")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{
+		toolResultMsg("call_edit", "edited"),
+		toolResultMsg("call_read", "contents"),
+	}, nil); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v (parallel tool calls must not force a cold start)", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if !strings.HasPrefix(string(after), string(before)) {
+		t.Fatalf("warm prefix was modified — cache would miss.\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	entries := readJSONL(t, path)
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 entries (user, 2 tool_use, 2 results); got %d", len(entries))
+	}
+	// One result entry per tool_use entry, each chained to the call it answers —
+	// the CLI's own layout — with the last left as the leaf.
+	for i, want := range []struct{ parent, id, content string }{
+		{"uuid-asst-1", "call_edit", "edited"},
+		{"uuid-asst-2", "call_read", "contents"},
+	} {
+		e := entries[3+i]
+		if e["type"] != "user" || e["parentUuid"] != want.parent {
+			t.Fatalf("entry %d = %+v, want a user entry chained to %s", 3+i, e, want.parent)
+		}
+		msg, _ := e["message"].(map[string]any)
+		content, _ := msg["content"].([]any)
+		if len(content) != 1 {
+			t.Fatalf("entry %d content = %v, want one tool_result block", 3+i, msg["content"])
+		}
+		block, _ := content[0].(map[string]any)
+		if block["tool_use_id"] != want.id || block["content"] != want.content {
+			t.Fatalf("entry %d block = %+v, want %s → %q", 3+i, block, want.id, want.content)
+		}
+	}
+}
+
+// TestAppendToolResultsToWarmSession_HalfAnsweredRunRefuses keeps the run check
+// honest in the other direction: a dangling call with no result would leave the
+// rebuilt assistant turn half-answered, which the API rejects outright. Better a
+// cold start than a wedged turn.
+func TestAppendToolResultsToWarmSession_HalfAnsweredRunRefuses(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-half-answered"
+	path := seedWarmSession(t, workingDir, uuid, "call_edit", "call_read")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	err = c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_edit", "edited")}, nil)
+	if err == nil {
+		t.Fatal("expected a refusal when one of the parallel calls has no result; got nil")
+	}
+	if !strings.Contains(err.Error(), "call_read") {
+		t.Fatalf("refusal reason = %q, want it to name the unanswered call_read", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a refused append must leave the file untouched.\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 // TestAppendToolResultsToWarmSession_UnmatchedResult errors when the result's id
 // doesn't match a tool_use the warm file is dangling on.
 func TestAppendToolResultsToWarmSession_UnmatchedResult(t *testing.T) {
@@ -254,7 +629,7 @@ func TestAppendToolResultsToWarmSession_UnmatchedResult(t *testing.T) {
 	const uuid = "uuid-mismatch"
 	seedWarmSession(t, workingDir, uuid, "call_1")
 	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
-	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("other_call", "x")}); err == nil {
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("other_call", "x")}, nil); err == nil {
 		t.Fatal("expected an error when the result id doesn't match the dangling tool_use; got nil")
 	}
 }

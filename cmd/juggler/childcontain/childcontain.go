@@ -34,9 +34,11 @@
 //	         process group; Terminate signals the whole process group.
 //
 //	macOS:   Setpgid creates a child process group; Terminate signals the whole
-//	         process group. There is no kernel parent-death primitive, so hard
-//	         kills of the parent may still orphan children until explicit
-//	         shutdown/cancel runs.
+//	         process group. There is no kernel parent-death primitive, so Adopt
+//	         registers the child with a small reaper process that holds a pipe
+//	         from this one and kills whatever is still contained when that pipe
+//	         reaches EOF — which is what every hard kill, crash, force-quit and
+//	         same-PID re-exec of the parent produces. See reaper_other.go.
 //
 //	Windows: Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE contains the
 //	         child process tree. Terminate closes the job handle, killing all job

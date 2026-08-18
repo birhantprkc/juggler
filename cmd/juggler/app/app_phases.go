@@ -287,7 +287,7 @@ func (a *App) initServer() error {
 	// context gauge fills in (it stays blank until then rather than guessing).
 	claudecode.SetModelInfoChangedHook(srv.RefreshProviders)
 	a.pushCleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			jlog.Error("Shutdown error: %v", err)

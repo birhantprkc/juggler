@@ -17,11 +17,19 @@ import (
 )
 
 const (
-	// quitGraceTimeout bounds how long the shutdown goroutine waits for
-	// app.Quit() to actually terminate the process before forcing os.Exit.
-	// A normal terminate kills us in well under a second; this only fires if
-	// the macOS quit genuinely stalled.
-	quitGraceTimeout = 5 * time.Second
+	// serverShutdownTimeout bounds the graceful server shutdown registered as a
+	// cleanup by initServer: closing WebSockets, stopping workers, and closing
+	// every cached conversation (which terminates provider subprocesses).
+	serverShutdownTimeout = 10 * time.Second
+
+	// quitGraceTimeout bounds how long the shutdown goroutine waits before
+	// forcing os.Exit. A normal quit kills us in well under a second; this only
+	// fires if the shutdown genuinely stalled.
+	//
+	// It must stay comfortably above serverShutdownTimeout: the teardown runs
+	// inside this window (see App.beginShutdown), and force-exiting partway
+	// through would orphan the very subprocesses teardown exists to reap.
+	quitGraceTimeout = serverShutdownTimeout + 5*time.Second
 )
 
 // runWindowApp blocks on the calling goroutine and dispatches by mode:

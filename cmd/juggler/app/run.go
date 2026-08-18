@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -149,13 +150,13 @@ func Run(cfg Config) int {
 	// is a new process and the child must notice the old one die; on unix the
 	// supervisor owns child lifetime outright (and survives restart by re-exec,
 	// keeping its PID).
+	app := &App{flags: flags, config: cfg}
 	if flags.testMode || flags.exitWithParent || (flags.sessionChild && runtime.GOOS == "windows") {
-		startParentWatchdog()
+		startParentWatchdog(app.releaseResources)
 	}
 
 	printBanner()
 
-	app := &App{flags: flags, config: cfg}
 	if err := app.Run(); err != nil {
 		return 1
 	}
@@ -187,23 +188,51 @@ func registerProviders() {
 	streamidle.Register()
 }
 
-// startParentWatchdog self-terminates the process if the parent dies — e.g. the
-// juggler-app desktop process that spawned this server quit or crashed, or the
-// test harness was SIGKILL'd before it could signal the pool. This is what makes
-// a spawned server never outlive its owner. The actual wait is platform-specific
-// (waitParentExit): macOS/Linux poll PPID (no Pdeathsig wired here); Windows
-// waits on the parent's process handle, since Windows never reparents an orphan
-// so PPID polling there would never fire.
-func startParentWatchdog() {
+// startParentWatchdog releases resources and self-terminates the process if the
+// parent dies — e.g. the juggler-app desktop process that spawned this server
+// quit or crashed, or the test harness was SIGKILL'd before it could signal the
+// pool. This is what makes a spawned server never outlive its owner. The actual
+// wait is platform-specific (waitParentExit): macOS/Linux poll PPID (no
+// Pdeathsig wired here); Windows waits on the parent's process handle, since
+// Windows never reparents an orphan so PPID polling there would never fire.
+//
+// release is the teardown this exit path owes: see onParentGone.
+func startParentWatchdog(release func()) {
 	startPPID := os.Getppid()
 	if startPPID <= 1 {
 		return
 	}
 	go func() {
 		waitParentExit(startPPID)
-		fmt.Fprintln(os.Stderr, "parent gone — self-terminating")
-		os.Exit(0)
+		onParentGone(release, quitGraceTimeout, os.Exit)
 	}()
+}
+
+// onParentGone releases this process's resources, then terminates.
+//
+// The release is not optional housekeeping: os.Exit runs no deferred cleanup,
+// and the server owns provider subprocesses that outlive it by default (the
+// claude CLI sits in its own process group, so it does not even receive the
+// signals its owner does). Skipping teardown here left one orphan per live
+// conversation every time the desktop app quit.
+//
+// It is bounded, because the watchdog's contract is that a spawned server never
+// outlives its owner: a teardown that hangs must not be able to keep us alive.
+func onParentGone(release func(), limit time.Duration, exit func(int)) {
+	fmt.Fprintln(os.Stderr, "parent gone — self-terminating")
+	if release != nil {
+		released := make(chan struct{})
+		go func() {
+			defer close(released)
+			release()
+		}()
+		select {
+		case <-released:
+		case <-time.After(limit):
+			fmt.Fprintf(os.Stderr, "teardown did not finish within %v — exiting anyway\n", limit)
+		}
+	}
+	exit(0)
 }
 
 func parseFlags(hasTerminal bool) (appFlags, bool) {

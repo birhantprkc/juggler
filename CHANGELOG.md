@@ -21,6 +21,7 @@ of changes; this project follows semantic versioning.
 - An unreachable update server is only reported when you asked for the check yourself
 - A context-cache rebuild now stands in the transcript where it happened, instead of flashing past
 - Switching model, provider or thinking level now warns that the next send re-reads the whole context
+- Some claude code improvements to avoid leaving processes running, and better resuming
 
 ## [0.5.6] - 2026-08-14
 

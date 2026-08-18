@@ -916,8 +916,9 @@ func (cp *controlProtocol) discardStaleBuffers() (stashed, parked int) {
 	return stashed, parked
 }
 
-// teardown releases any parked callers so they observe the session ending
-// instead of hanging forever. Called from the session's tearDownLiveCLI
+// teardown stops the actor, releases anything waiting on a control_response so
+// it observes the session ending instead of hanging forever, and drops the
+// parked/stashed tool bookkeeping. Called from the session's tearDownLiveCLI
 // path before the underlying stdin pipe is closed.
 func (cp *controlProtocol) teardown() {
 	// Never entered concurrently: the sole caller (activeSession.tearDownLiveCLI)
@@ -937,21 +938,20 @@ func (cp *controlProtocol) teardown() {
 		close(ch)
 		delete(cp.pendingOut, id)
 	}
-	// Release every parked tools/call with an error result. The CLI blocks on
-	// stdin waiting for our control_response per pending tools/call and stdio
-	// has NO transport timeout (see dispatch.go) — so without this, a session
-	// torn down while tool calls are parked leaves the CLI hung forever instead
-	// of unwinding. stdin is still open here (teardown runs before the pipe is
-	// closed), and the actor has exited so we are the sole writer.
+	// Parked tools/call are abandoned in silence, deliberately. The CLI blocks on
+	// stdin per pending tools/call and stdio has NO transport timeout (see
+	// dispatch.go), but it is not left hanging on that: tearDownLiveCLI closes
+	// stdin the moment this returns and SIGKILLs anything still alive after
+	// teardownGracePeriod, so a blocked CLI unwinds either way.
+	//
+	// Answering them instead is what does damage. An error result is a delivered
+	// result as far as the CLI is concerned: it journals it into its own session
+	// file, displacing the dangling assistant tool_use that warm-append resumes
+	// from (warm_append_resume.go), and — if it outlives us, as an orphan briefly
+	// does — spends a full model turn replying to it, for nobody. All for a call
+	// whose real result is about to be delivered by the process that takes over.
 	for _, call := range cp.parkedCalls {
-		mcpResp, err := mcpToolsCallSuccess(call.jsonrpcID, "tool execution aborted: conversation session ended", true)
-		if err != nil {
-			jlog.Error("teardown: encode abort response for requestID=%s: %v", call.requestID, err)
-			continue
-		}
-		if err := cp.sendControlSuccess(call.requestID, mcpResp); err != nil {
-			jlog.Debug("teardown: send abort response for requestID=%s failed (stdin likely closing): %v", call.requestID, err)
-		}
+		jlog.Debug("teardown: abandoning parked tools/call key=%q requestID=%s (its result is delivered on resume)", call.key, call.requestID)
 	}
 	cp.parkedCalls = nil
 	cp.stashedResults = nil

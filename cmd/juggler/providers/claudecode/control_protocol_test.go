@@ -694,12 +694,18 @@ func TestControlProtocol_TeardownReleasesPendingOut(t *testing.T) {
 	}
 }
 
-// TestControlProtocol_TeardownReleasesParkedToolsCall locks the never-hang
-// safety net: a tools/call parked in parkedCalls (worker never delivered a
-// result) must be answered with an error mcp_response on teardown, so the CLI —
-// which blocks on stdin with no transport timeout — unwinds instead of hanging
-// forever. Regression for the "tools stuck forever" wedge at the provider seam.
-func TestControlProtocol_TeardownReleasesParkedToolsCall(t *testing.T) {
+// TestControlProtocol_TeardownAbandonsParkedToolsCall locks the rule that
+// teardown answers nothing: a tools/call still parked when the session goes down
+// is dropped without a synthetic result on stdin.
+//
+// The CLI blocks on stdin with no transport timeout, but it is not left hanging
+// on our response — tearDownLiveCLI closes stdin the moment teardown returns and
+// SIGKILLs whatever survives teardownGracePeriod. A synthetic result, by
+// contrast, is one the CLI journals into its own session file, displacing the
+// dangling assistant tool_use warm-append resumes from and cold-starting an
+// otherwise warm conversation. Regression for the ~70k-token cache miss on
+// approving a tool call parked across a restart.
+func TestControlProtocol_TeardownAbandonsParkedToolsCall(t *testing.T) {
 	buf, cp := captureStdin()
 
 	args := json.RawMessage(`{"cmd":"ls"}`)
@@ -719,18 +725,12 @@ func TestControlProtocol_TeardownReleasesParkedToolsCall(t *testing.T) {
 
 	cp.teardown()
 
-	lines := readLines(t, buf)
-	if len(lines) != 1 {
-		t.Fatalf("expected one abort response from teardown, got %d: %q", len(lines), buf.String())
+	// The actor has exited, so reading the maps directly here is race-free.
+	if buf.Len() != 0 {
+		t.Fatalf("teardown wrote to stdin; the CLI would journal it into its session file and cold-start the next resume: %q", buf.String())
 	}
-	respBody := lines[0]["response"].(map[string]any)
-	if respBody["request_id"] != "req-parked" {
-		t.Errorf("request_id = %v, want req-parked", respBody["request_id"])
-	}
-	wrapper := respBody["response"].(map[string]any)["mcp_response"].(map[string]any)
-	result := wrapper["result"].(map[string]any)
-	if isErr, _ := result["isError"].(bool); !isErr {
-		t.Errorf("teardown abort response must be an error result; got %+v", result)
+	if len(cp.parkedCalls) != 0 {
+		t.Fatalf("teardown left %d parked call(s) behind", len(cp.parkedCalls))
 	}
 }
 
@@ -1088,8 +1088,8 @@ func TestControlProtocol_ProductionParkThenPauseDelivers(t *testing.T) {
 }
 
 // TestControlProtocol_StarvedReaderPauseThenDeliverThenPark reproduces the
-// multi-CLI 2-minute stall ("stream stalled: no output" → teardown's "tool
-// execution aborted: conversation session ended"). In production a round's
+// multi-CLI 2-minute stall ("stream stalled: no output" → teardown). In
+// production a round's
 // stop_reason=tool_use pause can be processed by the always-on reader BEFORE its
 // tools/call park arrives (the order seen in the logs: pause at 09:29:03, park 5s
 // later at 09:29:08). The pause latches roundClosed. With several CLIs in flight,

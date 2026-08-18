@@ -52,6 +52,13 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 		return c.coldStartFallback(ctx, req, callback, "warm-append-split-lost")
 	}
 
+	// Snapshot the warm session file BEFORE the teardown below. A CLI parked on a
+	// tools/call writes nothing until that call is answered, so what is on disk
+	// now is the file's last good state. Appending to the snapshot rather than to
+	// whatever the file has become by the time we read it means a dying CLI's
+	// final writes can neither race us nor survive us.
+	snapshot := c.snapshotWarmSession()
+
 	// We are about to mutate the warm session file and re-resume it, so no live
 	// CLI may be holding it. Tear down any parked/live process first (no-op if
 	// none); the resume anchor (uuid/sentCount/sentHash + sidecar) survives.
@@ -59,7 +66,7 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 	c.activeSession.pendingTools = nil
 
 	pairedResults := req.Messages[deltaStart:tailStart]
-	if err := c.appendToolResultsToWarmSession(pairedResults); err != nil {
+	if err := c.appendToolResultsToWarmSession(pairedResults, snapshot); err != nil {
 		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("warm-append-failed: %v", err))
 	}
 
@@ -108,61 +115,105 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 	return c.finalizeTurn(req, turn, err)
 }
 
+// warmSessionPath is the CLI's own session file for the active warm uuid, or ""
+// when there is no uuid to resume or no ~/.claude/projects dir for the cwd.
+func (c *Client) warmSessionPath() string {
+	if c.activeSession == nil || c.activeSession.sessionUUID == "" {
+		return ""
+	}
+	dir := projectsDir(c.workingDir)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, c.activeSession.sessionUUID+".jsonl")
+}
+
+// snapshotWarmSession reads the warm session file while the CLI is still parked
+// on its tools/call — the last moment the file is guaranteed quiescent. Returns
+// nil on any problem, so the caller simply reads the file itself instead.
+func (c *Client) snapshotWarmSession() []byte {
+	path := c.warmSessionPath()
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
 // appendToolResultsToWarmSession appends a single `user: tool_result` entry —
 // closing the warm transcript's dangling tool_use — to the CLI's own session
 // file at ~/.claude/projects/<dir>/<sessionUUID>.jsonl, then atomically replaces
 // it. The appended entry reuses the native session shape (newSyntheticEntry) and
 // chains to the file's current last entry.
 //
+// snapshot is the file's contents read before any teardown touched it; nil means
+// read it from disk now. Writing snapshot+entry over the file discards anything
+// a dying CLI journalled in between.
+//
 // It refuses (returns an error, so the caller cold-starts fresh) unless the file
-// exists AND its last entry is the assistant tool_use the results answer — the
-// guard that keeps the file's tool_use→tool_result adjacency valid even if the
-// CLI happened to write a trailing non-tool entry.
-func (c *Client) appendToolResultsToWarmSession(results []provider.Message) error {
+// exists AND ends on assistant tool_use entries that the results answer exactly,
+// one for one — the guard that keeps the file's tool_use→tool_result adjacency
+// valid. The one tail it will cut back past is an abandoned-call marker of our
+// own (dropTeardownWreckage), which answers nothing and stands in the way.
+func (c *Client) appendToolResultsToWarmSession(results []provider.Message, snapshot []byte) error {
 	if c.activeSession == nil || c.activeSession.sessionUUID == "" {
 		return fmt.Errorf("no warm session uuid to append to")
 	}
-	dir := projectsDir(c.workingDir)
-	if dir == "" {
+	path := c.warmSessionPath()
+	if path == "" {
 		return fmt.Errorf("no ~/.claude/projects dir for working dir %q", c.workingDir)
 	}
-	path := filepath.Join(dir, c.activeSession.sessionUUID+".jsonl")
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read warm session %s: %w", path, err)
+	data := snapshot
+	if len(data) == 0 {
+		var err error
+		if data, err = os.ReadFile(path); err != nil {
+			return fmt.Errorf("read warm session %s: %w", path, err)
+		}
 	}
 	trimmed := bytes.TrimRight(data, "\n")
 	if len(trimmed) == 0 {
 		return fmt.Errorf("warm session %s is empty", path)
 	}
 	lines := bytes.Split(trimmed, []byte("\n"))
-	lastUUID, danglingIDs, err := parseTailToolUseEntry(lines[len(lines)-1])
+	dangling, err := trailingToolUses(lines)
 	if err != nil {
-		return fmt.Errorf("warm session %s: %w", path, err)
+		healed, ok := dropTeardownWreckage(lines)
+		if !ok {
+			return fmt.Errorf("warm session %s: %w", path, err)
+		}
+		healedDangling, healErr := trailingToolUses(healed)
+		if healErr != nil {
+			return fmt.Errorf("warm session %s: %w", path, err)
+		}
+		jlog.Debug("warm-append: dropped %d trailing entr(ies) an abandoned call left behind (%v) — resuming warm",
+			len(lines)-len(healed), err)
+		lines, dangling = healed, healedDangling
 	}
 
 	blocks := toolResultBlocks(results)
 	if len(blocks) == 0 {
 		return fmt.Errorf("no tool_result blocks to append")
 	}
-	for _, b := range blocks {
-		if !danglingIDs[b.ToolUseID] {
-			return fmt.Errorf("tool_result %s does not match the warm file's dangling tool_use", b.ToolUseID)
-		}
-	}
-
-	entry := newSyntheticEntry("user", blocks, newSyntheticSessionUUID(), lastUUID,
-		c.activeSession.sessionUUID, c.workingDir, time.Now())
-	line, err := json.Marshal(entry)
+	entries, err := pairResultsWithToolUses(blocks, dangling, c.activeSession.sessionUUID, c.workingDir)
 	if err != nil {
-		return fmt.Errorf("marshal append entry: %w", err)
+		return fmt.Errorf("warm session %s: %w", path, err)
 	}
 
-	out := make([]byte, 0, len(trimmed)+len(line)+2)
-	out = append(out, trimmed...)
-	out = append(out, '\n')
-	out = append(out, line...)
+	body := bytes.Join(lines, []byte("\n"))
+	out := make([]byte, 0, len(body)+1)
+	out = append(out, body...)
+	for _, entry := range entries {
+		line, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("marshal append entry: %w", err)
+		}
+		out = append(out, '\n')
+		out = append(out, line...)
+	}
 	out = append(out, '\n')
 
 	// Atomic replace so a torn write can never corrupt the warm session: write a
@@ -179,11 +230,173 @@ func (c *Client) appendToolResultsToWarmSession(results []provider.Message) erro
 	return nil
 }
 
-// parseTailToolUseEntry decodes the warm file's last JSONL entry and returns its
-// uuid (the parent for the appended result) plus the set of tool_use IDs it
-// carries. Errors unless the entry is an assistant turn containing at least one
-// tool_use — i.e. the file ends exactly where a dangling tool_use is expected.
-func parseTailToolUseEntry(line []byte) (uuid string, toolUseIDs map[string]bool, err error) {
+// danglingToolUse is one trailing assistant tool_use entry awaiting a result:
+// the uuid an answering entry chains to, and the tool_use IDs it carries.
+type danglingToolUse struct {
+	uuid string
+	ids  []string
+}
+
+// trailingToolUses returns the run of assistant tool_use entries the warm file
+// ends on, oldest first — every call the CLI is parked on.
+//
+// The CLI journals one entry PER CONTENT BLOCK, so an assistant turn that calls
+// two tools in parallel ends the file with two chained assistant entries, one
+// tool_use each. Reading only the last entry sees only the last call, and a
+// result for the other one looks like it belongs to a different turn — which
+// cold-started every multi-tool turn there has ever been. The run stops at the
+// first entry that is not an assistant tool_use (the turn's text or thinking
+// block, or the user turn before it), so it never reaches back past the message
+// the results answer.
+//
+// Uuid-less lines are skipped on the way: the CLI interleaves bookkeeping
+// records — last-prompt (the pending prompt plus the leaf it hangs off),
+// ai-title, mode, queue-operation — so the physically-last line is routinely not
+// a message at all, and a transcript ending on a parked tool_use commonly has a
+// last-prompt written after it. The thread is reconstructed by walking
+// parentUuid, so those records sit outside the chain and skipping them is sound.
+func trailingToolUses(lines [][]byte) ([]danglingToolUse, error) {
+	var run []danglingToolUse
+	var tailType string
+	for i := len(lines) - 1; i >= 0; i-- {
+		var probe struct {
+			UUID string `json:"uuid"`
+		}
+		if err := json.Unmarshal(lines[i], &probe); err != nil {
+			// An unparseable line is not something we can reason about: stop
+			// rather than reaching past it for an anchor that may not be real.
+			break
+		}
+		if probe.UUID == "" {
+			continue // one of the CLI's uuid-less bookkeeping records
+		}
+		uuid, ids, err := parseToolUseEntry(lines[i])
+		if err != nil {
+			if tailType == "" {
+				tailType = err.Error()
+			}
+			break
+		}
+		run = append([]danglingToolUse{{uuid: uuid, ids: ids}}, run...)
+	}
+	if len(run) == 0 {
+		if tailType == "" {
+			tailType = "no message entry to append to"
+		}
+		return nil, fmt.Errorf("%s", tailType)
+	}
+	return run, nil
+}
+
+// pairResultsWithToolUses builds the session entries that close the dangling
+// tool_uses, mirroring the CLI's own layout: one `user` entry per tool_use
+// entry, each chained to the entry it answers, the last of them left as the leaf.
+//
+// It refuses unless results and dangling calls correspond exactly. A result with
+// no matching call would break tool_use→tool_result adjacency; a call left
+// without a result would leave the rebuilt assistant turn half-answered, which
+// the API rejects outright. Either way the caller cold-starts instead.
+func pairResultsWithToolUses(blocks []anthropic.APIContentBlock, dangling []danglingToolUse, sessionUUID, workingDir string) ([]map[string]any, error) {
+	byID := make(map[string]anthropic.APIContentBlock, len(blocks))
+	for _, b := range blocks {
+		byID[b.ToolUseID] = b
+	}
+	answered := map[string]bool{}
+	now := time.Now()
+	entries := make([]map[string]any, 0, len(dangling))
+	for _, d := range dangling {
+		mine := make([]anthropic.APIContentBlock, 0, len(d.ids))
+		for _, id := range d.ids {
+			b, ok := byID[id]
+			if !ok {
+				return nil, fmt.Errorf("dangling tool_use %s has no result to close it", id)
+			}
+			mine = append(mine, b)
+			answered[id] = true
+		}
+		entries = append(entries, newSyntheticEntry("user", mine, newSyntheticSessionUUID(), d.uuid,
+			sessionUUID, workingDir, now))
+	}
+	for _, b := range blocks {
+		if !answered[b.ToolUseID] {
+			return nil, fmt.Errorf("tool_result %s does not match the warm file's dangling tool_use", b.ToolUseID)
+		}
+	}
+	return entries, nil
+}
+
+// teardownAbortResultText marks a tool_result Juggler synthesised for a parked
+// tools/call it abandoned, rather than one a tool actually produced. A session
+// file ending on it ends on a result that answers nothing: the tool was never
+// aborted, only deferred — waiting on an approval, or on the next process.
+const teardownAbortResultText = "tool execution aborted: conversation session ended"
+
+// dropTeardownWreckage cuts a warm session file back to its dangling assistant
+// tool_use by removing an abandoned-call marker and everything after it,
+// reporting whether it found one.
+//
+// A CLI handed one of these markers treats it as a delivered result: it
+// journals it as a `user` tool_result, displacing the tool_use warm-append
+// resumes from, and — given long enough — spends a whole model turn responding
+// to it and journals that too. None of it is conversation. The result is a lie
+// and the turn built on it reached nobody, so the file is cut back to the
+// tool_use and the real result delivered there.
+//
+// The scan walks back over trailing assistant entries (that stranded turn) to
+// the newest user entry. Only a marker of our own qualifies: any other user turn
+// means real conversation continued past this point, and nothing may be cut.
+func dropTeardownWreckage(lines [][]byte) ([][]byte, bool) {
+	for i := len(lines) - 1; i >= 0; i-- {
+		var probe struct {
+			UUID string `json:"uuid"`
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(lines[i], &probe); err != nil {
+			return nil, false
+		}
+		switch {
+		case probe.UUID == "":
+			continue // a bookkeeping record — outside the parentUuid chain
+		case probe.Type == "assistant":
+			continue // a turn stranded on the far side of the marker
+		case probe.Type == "user" && isTeardownAbortEntry(lines[i]):
+			return lines[:i], true
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+// isTeardownAbortEntry reports whether a session entry is a user turn whose
+// content is nothing but abandoned-call markers. Every block must be one: a
+// user turn that also carries a genuine result is real history.
+func isTeardownAbortEntry(line []byte) bool {
+	var e struct {
+		Message struct {
+			Content []struct {
+				Type    string          `json:"type"`
+				IsError bool            `json:"is_error"`
+				Content json.RawMessage `json:"content"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &e); err != nil || len(e.Message.Content) == 0 {
+		return false
+	}
+	for _, b := range e.Message.Content {
+		if b.Type != "tool_result" || !b.IsError || !bytes.Contains(b.Content, []byte(teardownAbortResultText)) {
+			return false
+		}
+	}
+	return true
+}
+
+// parseToolUseEntry decodes one JSONL entry and returns its uuid (the parent for
+// an answering result) plus the tool_use IDs it carries, in order. Errors unless
+// the entry is an assistant turn containing at least one tool_use — the caller
+// reads that error as "the run of dangling calls ends here".
+func parseToolUseEntry(line []byte) (uuid string, toolUseIDs []string, err error) {
 	var e struct {
 		UUID    string `json:"uuid"`
 		Type    string `json:"type"`
@@ -203,10 +416,10 @@ func parseTailToolUseEntry(line []byte) (uuid string, toolUseIDs map[string]bool
 	if e.Type != "assistant" {
 		return "", nil, fmt.Errorf("last entry is %q, not an assistant tool_use", e.Type)
 	}
-	ids := map[string]bool{}
+	var ids []string
 	for _, b := range e.Message.Content {
 		if b.Type == "tool_use" && b.ID != "" {
-			ids[b.ID] = true
+			ids = append(ids, b.ID)
 		}
 	}
 	if len(ids) == 0 {

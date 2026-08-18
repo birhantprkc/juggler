@@ -56,17 +56,23 @@ func (a *App) waitForExit() {
 		readyCh <- windowRefs{app: app, win: win}
 	}
 
-	// quit closes done and asks the native application to stop when this startup
-	// path owns one. Node-hosted production servers have no native application.
+	// quit closes done, releases everything the startup phases allocated, and
+	// only then asks the native application to stop when this startup path owns
+	// one. Node-hosted production servers have no native application.
+	//
+	// Teardown runs here rather than being left to Run's deferred walk because
+	// the native quit does not reliably return — see beginShutdown.
 	quit := func() {
 		if a.server != nil {
 			a.server.StopTunnel()
 		}
 		signalDone()
 		<-ready
-		if refs.app != nil {
-			refs.app.Quit()
-		}
+		a.beginShutdown(func() {
+			if refs.app != nil {
+				refs.app.Quit()
+			}
+		})
 	}
 
 	// 'w' opens a desktop window: the server is windowless, so it launches the

@@ -451,7 +451,9 @@ const teardownGracePeriod = 500 * time.Millisecond
 // Teardown order matters:
 //  1. Release any parked control-protocol callers (outbound requests
 //     waiting on a control_response that's never coming) so they observe
-//     shutdown instead of hanging on a closed pipe.
+//     shutdown instead of hanging on a closed pipe. Inbound tools/call are
+//     abandoned unanswered — steps 2 and 3 are what unwind the CLI, and a
+//     synthetic result would only pollute its session file (control_protocol.go).
 //  2. Close stdin to signal EOF — gives the CLI a chance to flush its
 //     session file before we escalate.
 //  3. Wait up to teardownGracePeriod for the CLI to exit cleanly; if it
@@ -508,7 +510,8 @@ func (s *activeSession) doTearDownLiveCLI() {
 
 		// Release any parked control-protocol callers (e.g. an outbound
 		// initialize that never got a response) so they observe shutdown
-		// instead of hanging on a closed pipe. Stops the actor goroutine too.
+		// instead of hanging on a closed pipe. Stops the actor goroutine too,
+		// and drops the parked tools/call without answering them.
 		if lc.control != nil {
 			lc.control.teardown()
 		}

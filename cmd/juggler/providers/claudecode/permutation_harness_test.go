@@ -1110,7 +1110,7 @@ func TestToolDeliveryInterjection(t *testing.T) {
 
 // TestToolDeliveryRestart covers the restart-mid-park axis: the live CLI is torn
 // down (app quit+restart, crash, watchdog re-exec) while a tool is parked, then
-// the conversation continues. Tearing down the live CLI error-releases the parked
+// the conversation continues. Tearing down the live CLI abandons the parked
 // tools/call via control.teardown() AND clears pendingTools (sidecar-rebuild
 // semantics — doTearDownLiveCLI nils s.live + s.pendingTools, cli_lifecycle.go),
 // so the next turn cannot route through regimeContinue (no live CLI, no
