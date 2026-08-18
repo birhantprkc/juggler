@@ -4,7 +4,10 @@
 
 package anthropic
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // ModelContextWindows maps Anthropic model names to their context window sizes (in tokens)
 // These values are based on official Anthropic documentation as of 2025
@@ -136,6 +139,94 @@ func SupportsThinking(model string) bool {
 		}
 	}
 	return false
+}
+
+// thinkingMode names the wire form a model accepts for extended thinking. The
+// zero value is the adaptive form, which is what an unrecognised id gets — see
+// thinkingModeForModel for why that direction is the safe one.
+type thinkingMode int
+
+const (
+	// thinkingAdaptive is thinking.type "adaptive", steered by
+	// output_config.effort. Generation 4.6 and later.
+	thinkingAdaptive thinkingMode = iota
+	// thinkingLegacy is thinking.type "enabled" with an explicit budget_tokens.
+	// Generation 4.5 and earlier.
+	thinkingLegacy
+)
+
+// thinkingModeForModel reports which thinking wire form a model accepts.
+// Anthropic split the API at generation 4.6: 4.5 and earlier accept only the
+// manual form (thinking.type "enabled" with budget_tokens) and reject
+// "adaptive" with a 400, while 4.7 and later accept only "adaptive" and reject
+// "enabled" with a 400. Generation 4.6 accepts both and documents "enabled" as
+// deprecated, so it takes the adaptive path along with everything newer.
+//
+// An id carrying no recognisable generation falls to adaptive. The set of models
+// needing the manual form is closed — it ends at 4.5, and Anthropic adds only
+// newer models — while ids keep arriving from the live Models API, so an
+// unrecognised id is far likelier to be newer than older. Defaulting the other
+// way would hand every future model the 400 this mapping exists to avoid.
+//
+// Callers reach this only for models SupportsThinking already accepts; models
+// with no thinking at all never consult it.
+func thinkingModeForModel(model string) thinkingMode {
+	major, minor, ok := claudeVersion(model)
+	switch {
+	case !ok:
+		return thinkingAdaptive
+	case major > 4, major == 4 && minor >= 6:
+		return thinkingAdaptive
+	default:
+		return thinkingLegacy
+	}
+}
+
+// claudeVersion extracts the numeric major.minor generation from an Anthropic
+// model id ("claude-sonnet-4-5-20250929" → 4, 5; "claude-opus-4-6" → 4, 6;
+// "claude-3-7-sonnet-20250219" → 3, 7; "claude-sonnet-5" → 5, 0). Ids name the
+// generation either family-first ("sonnet-4-5") or version-first ("3-7-sonnet"),
+// separated by dashes or by a dot ("claude-4.5-sonnet"), so the first numeric
+// token is the major and a numeric token immediately after it is the minor.
+// A run of more than two digits is a release date rather than a version, and is
+// skipped. ok is false for ids naming no generation at all
+// ("claude-mythos-preview").
+func claudeVersion(model string) (major, minor int, ok bool) {
+	tokens := strings.Split(strings.ToLower(model), "-")
+	for i, token := range tokens {
+		head, tail, dotted := strings.Cut(token, ".")
+		value, isVersion := versionNumber(head)
+		if !isVersion {
+			continue
+		}
+		major = value
+		// A dotted token carries both parts ("4.5"); a bare one carries the
+		// major, with any minor in the token that follows ("4", "5").
+		if dotted {
+			minor, _ = versionNumber(tail)
+			return major, minor, true
+		}
+		if i+1 < len(tokens) {
+			if next, isMinor := versionNumber(tokens[i+1]); isMinor {
+				minor = next
+			}
+		}
+		return major, minor, true
+	}
+	return 0, 0, false
+}
+
+// versionNumber parses one version component. Components are one or two digits;
+// a longer run of digits is a release date (20250929), never a version.
+func versionNumber(token string) (int, bool) {
+	if token == "" || len(token) > 2 {
+		return 0, false
+	}
+	value, err := strconv.Atoi(token)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 // SupportsImageInput reports whether an Anthropic model accepts image input.

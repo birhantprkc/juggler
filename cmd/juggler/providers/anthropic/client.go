@@ -331,11 +331,29 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 		}
 	}
 
-	// Extended thinking. Anthropic forbids a forced tool_choice (type "tool" or
-	// "any") together with thinking — a hard 400 — so a forced-tool turn wins
-	// and drops thinking for that turn.
-	// Temperature is never set here, which thinking also requires.
-	if budget, ok := thinkingBudgetForLevel(c.model, req.ThinkingLevel, maxTokens); ok && !forcesTool(req.ToolChoice) {
+	// Thinking. Anthropic takes two wire forms and rejects the wrong one with a
+	// hard 400, so the model's generation picks the branch (thinkingModeForModel).
+	// Both forms send nothing at all for "off" and for levels this provider does
+	// not recognise. Temperature is never set here, which both forms require.
+	if SupportsThinking(c.model) && thinkingModeForModel(c.model) == thinkingAdaptive {
+		// Adaptive thinking, steered by output_config.effort rather than a token
+		// budget. display is set explicitly because it defaults to "omitted" on
+		// newer models, which returns thinking blocks stripped of their text —
+		// Juggler shows that text. The model bounds its own thinking against
+		// max_tokens, so the budget clamp has no equivalent here, and this form
+		// is compatible with a forced tool_choice.
+		if effort, ok := anthropicThinkingEfforts[req.ThinkingLevel]; ok {
+			params.Thinking = anthropicsdk.ThinkingConfigParamUnion{
+				OfAdaptive: &anthropicsdk.ThinkingConfigAdaptiveParam{
+					Display: anthropicsdk.ThinkingConfigAdaptiveDisplaySummarized,
+				},
+			}
+			params.OutputConfig = anthropicsdk.OutputConfigParam{Effort: effort}
+		}
+	} else if budget, ok := thinkingBudgetForLevel(c.model, req.ThinkingLevel, maxTokens); ok && !forcesTool(req.ToolChoice) {
+		// Manual thinking. Anthropic forbids a forced tool_choice (type "tool" or
+		// "any") together with this form — a hard 400 — so a forced-tool turn
+		// wins and drops thinking for that turn.
 		params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
 	}
 
@@ -343,20 +361,21 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 }
 
 // forcesTool reports whether a ToolChoice compels the model to call a tool
-// (mode "tool" or "any"). Only these two modes conflict with extended thinking;
-// "auto"/"none"/nil do not.
+// (mode "tool" or "any"). Only these two modes conflict with manual thinking;
+// "auto"/"none"/nil do not, and adaptive thinking accepts every mode.
 func forcesTool(tc *provider.ToolChoice) bool {
 	return tc != nil && (tc.Mode == provider.ToolChoiceTool || tc.Mode == provider.ToolChoiceAny)
 }
 
 // anthropicThinkingLevels are the levels an Anthropic thinking model advertises,
-// in display order. "off" carries no budget (no thinking param); the rest map to
-// budget_tokens via anthropicThinkingBudgets.
+// in display order. "off" sends no thinking param; the rest map to the wire
+// value the model's thinking form takes — budget_tokens via
+// anthropicThinkingBudgets, or output_config.effort via anthropicThinkingEfforts.
 var anthropicThinkingLevels = []string{"off", "low", "medium", "high", "max"}
 
-// anthropicThinkingBudgets maps a thinking level to its Anthropic budget_tokens.
-// A level absent here ("off", or any string this provider doesn't recognise) ⇒
-// no thinking param, byte-identical to pre-feature behaviour.
+// anthropicThinkingBudgets maps a thinking level to its Anthropic budget_tokens,
+// for models on the manual thinking form. A level absent here ("off", or any
+// string this provider doesn't recognise) ⇒ no thinking param.
 var anthropicThinkingBudgets = map[string]int64{
 	"low":    2048,
 	"medium": 8192,
@@ -364,10 +383,27 @@ var anthropicThinkingBudgets = map[string]int64{
 	"max":    32768,
 }
 
+// anthropicThinkingEfforts maps a thinking level to its output_config.effort
+// value, for models on the adaptive thinking form. A level absent here ("off",
+// or an unrecognised string) ⇒ neither a thinking nor an output_config param.
+//
+// The API also defines an "xhigh" effort sitting between "high" and "max", left
+// unused here: it arrived with generation 4.7, while "max" is available on every
+// model that takes the adaptive form at all (4.6 and later). Mapping any level
+// to "xhigh" would 400 on Sonnet and Opus 4.6, and there is no sixth level to
+// carry it without one of the five losing its meaning.
+var anthropicThinkingEfforts = map[string]anthropicsdk.OutputConfigEffort{
+	"low":    anthropicsdk.OutputConfigEffortLow,
+	"medium": anthropicsdk.OutputConfigEffortMedium,
+	"high":   anthropicsdk.OutputConfigEffortHigh,
+	"max":    anthropicsdk.OutputConfigEffortMax,
+}
+
 // thinkingBudgetForLevel maps a thinking level to an Anthropic budget_tokens
-// value for the given model. It returns (budget, true) when thinking should be
-// enabled for this turn, or (0, false) for "off"/absent/unknown levels and
-// models that don't support extended thinking. The budget is clamped to stay a
+// value for the given model, for models on the manual thinking form. It returns
+// (budget, true) when thinking should be enabled for this turn, or (0, false)
+// for "off"/absent/unknown levels and models that don't support extended
+// thinking at all. The budget is clamped to stay a
 // safe margin (~4k answer headroom) below the effective max_tokens going on the
 // wire, since Anthropic requires budget_tokens < max_tokens. The wire value is
 // passed in rather than re-derived from the static catalog so a capability
