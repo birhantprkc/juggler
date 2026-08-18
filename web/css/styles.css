@@ -1901,6 +1901,15 @@ a:hover {
         width: min(15rem, 80vw);
         transform: translateX(-100%);
         transition: transform 200ms ease;
+
+        /* Horizontal drags are the swipe-to-dismiss gesture
+           (ui-event-manager.js `_setupSidebarSwipe`), vertical ones stay the
+           browser's so the tab list still scrolls. `pan-y` claims exactly that
+           split — `none` would take the scroll away too. It only states the
+           intent: holding a swipe against a browser that reads the drag's
+           vertical drift as a scroll takes cancelling the touchmove, which the
+           swipe does once it owns the gesture. */
+        touch-action: pan-y;
     }
 
     /* Shadow only while open: when closed the drawer's right edge sits at the

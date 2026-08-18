@@ -112,6 +112,7 @@ import { runTests as runNewTabUxTests } from '../unit-tests/new-tab-ux-test.js';
 import { runTests as runBinUndoToastTests } from '../unit-tests/bin-undo-toast-test.js';
 import { runTests as runConversationFocusPolicyTests } from '../unit-tests/conversation-focus-policy-test.js';
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
+import { runTests as runSidebarSwipeTests } from '../unit-tests/sidebar-swipe-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
 import { runTests as runSkillCompletionTests } from '../unit-tests/skill-completion-test.js';
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
@@ -314,6 +315,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:read-file-action', run: runReadFileActionTests },
   { name: 'unit:path-input-quotes', run: runPathInputQuotesTests },
   { name: 'unit:mobile-composer', run: runMobileComposerTests },
+  { name: 'unit:sidebar-swipe', run: runSidebarSwipeTests },
   { name: 'unit:slash-completion', run: runSlashCompletionTests },
   { name: 'unit:skill-completion', run: runSkillCompletionTests },
   { name: 'unit:search-action', run: runSearchActionTests },

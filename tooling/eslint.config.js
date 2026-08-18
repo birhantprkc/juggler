@@ -48,6 +48,7 @@ export default [
         Event: 'readonly',
         KeyboardEvent: 'readonly',
         MouseEvent: 'readonly',
+        PointerEvent: 'readonly',
         MutationObserver: 'readonly',
         IntersectionObserver: 'readonly',
         ResizeObserver: 'readonly',
