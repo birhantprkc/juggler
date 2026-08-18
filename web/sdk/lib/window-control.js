@@ -53,6 +53,29 @@ export function postWindowControl(endpoint, query = '') {
 }
 
 /**
+ * Tell the native host that this page has finished flushing its drafts, so the
+ * close/quit it announced may proceed. The host is blocked waiting for this —
+ * unlike the other control signals it is a reply, not a command, and the token
+ * identifies which announcement it answers so a stale reply can't release a
+ * later one.
+ *
+ * A no-op without a native host (a browser tab has nothing waiting on it, and
+ * pagehide covers that case instead). Failures are swallowed: the host bounds
+ * its own wait, so a dropped reply costs a timeout, never a hang.
+ * @param {string} token - The ackToken from the close-requested event.
+ * @returns {Promise<void>}
+ */
+export async function reportDraftsFlushed(token) {
+  const url = windowControlURL('drafts-flushed', `?token=${encodeURIComponent(token)}`);
+  if (!url) return;
+  try {
+    await fetch(url, { method: 'POST' });
+  } catch {
+    // Nothing to recover: the host times out and quits regardless.
+  }
+}
+
+/**
  * Whether this page is hosted in a native desktop-app window (window-mode) as
  * opposed to a plain browser tab. Reads the `windowMode` document flag the host
  * bakes onto <html>, which drives the browser-tab vs desktop-window UX split

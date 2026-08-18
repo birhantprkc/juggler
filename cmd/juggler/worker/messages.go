@@ -23,10 +23,12 @@
 //   - sync/undo: yjs-sync, undo, redo, clear-history, stop-undo-capturing,
 //     begin-undo-coalesce, end-undo-coalesce, request-full-state, resync-request,
 //     resync-to-origin, clear-undo-stacks, get-transaction
+//   - persistence: flush-persistence (save now and ack — the quit handshake's
+//     "it's on disk" barrier)
 //   - diagnostics: engine-trace, rename-log
 //   - naming: request-auto-name (/handoff's promoted summary, or the tab bar's
 //     manual "auto-name now")
-//   - test-only: get-yjs-state, ping, flush-persistence, set-mock-responses, release-mock
+//   - test-only: get-yjs-state, ping, set-mock-responses, release-mock
 //
 // NOTE: State mutations (item add/delete/update) flow through Yjs CRDT sync,
 // not as messages. The worker observes Yjs document changes via RegisterItemsObserver.

@@ -1178,18 +1178,25 @@ class WorkerManager {
   // ============================================================================
 
   /**
-   * Test-only: force the worker to persist its conversation state to disk now,
-   * bypassing the SaveDebounceTime debounce, and resolve once the write has
-   * completed (the worker acks after saveStateToDisk returns). Lets persistence
-   * tests do a deterministic mutate → save → destroy → reload without sleeping
+   * Force the worker to persist its conversation state to disk now, bypassing
+   * the SaveDebounceTime debounce, and resolve once the write has completed (the
+   * worker acks after saveStateToDisk returns).
+   *
+   * The worker takes inbound messages serially, so every yjs-sync sent before
+   * this one is already applied when it runs — which makes the ack a genuine
+   * "it's on disk" barrier, not just "it arrived". Quit teardown uses that to
+   * confirm rescued drafts landed before the app terminates; persistence tests
+   * use it for a deterministic mutate → save → destroy → reload without sleeping
    * past the 2s debounce, which races the save on slow/contended CI runners.
    * @param {string} conversationId - Conversation ID
+   * @param {number} [timeoutMs] - Ack timeout. Defaults to a patient 30s, since
+   *   a loaded pool can push the save behind a deep inbound queue and the
+   *   per-test hard timeout is the fail-fast bound. Teardown callers pass
+   *   something far shorter — they have a native quit waiting on them.
    * @returns {Promise<void>}
    */
-  async flushPersistence(conversationId) {
-    // Patient like ping(): a loaded pool can push the save behind a deep inbound
-    // queue. The per-test hard timeout remains the fail-fast bound.
-    await this._sendWithAck(conversationId, { type: 'flush-persistence' }, 30000);
+  async flushPersistence(conversationId, timeoutMs = 30000) {
+    await this._sendWithAck(conversationId, { type: 'flush-persistence' }, timeoutMs);
   }
 
   /**

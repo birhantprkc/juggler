@@ -1141,6 +1141,9 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 	case "get-transaction":
 		w.handleGetTransaction(msg.Payload)
 
+	case "flush-persistence":
+		w.handleFlushPersistence(msg.Payload)
+
 	case "compact":
 		w.handleCompact(msg.Payload)
 
@@ -1186,6 +1189,44 @@ func (w *ConversationWorker) handleGetTransaction(payload json.RawMessage) {
 		}
 	}
 	w.reply(ack)
+}
+
+// handleFlushPersistence forces the conversation's in-memory state to disk
+// synchronously, bypassing the SaveDebounceTime debounce, then acks. Runtime
+// feature — must stay outside the test-only handler gate.
+//
+// This is the barrier behind the quit handshake. The worker takes inbound
+// messages serially, so every yjs-sync sent before this one has already been
+// applied by the time the handler runs; because it then saves inline, the ack
+// means the state is on disk, not merely received. The browser sends it after
+// flushing composer drafts when the native shell announces an imminent close,
+// and persistence tests use it instead of sleeping past the debounce before a
+// destroy+reload cycle.
+//
+// This runs on the worker goroutine (dispatched inline from the run loop), so it
+// saves directly — mirroring the loop's own flushReq case — rather than routing
+// through ConversationWorker.FlushPersistence, which would deadlock waiting on
+// the same loop to service flushReq.
+func (w *ConversationWorker) handleFlushPersistence(payload json.RawMessage) {
+	var msg struct {
+		AckID string `json:"ackId,omitempty"`
+	}
+	_ = json.Unmarshal(payload, &msg)
+
+	// Match the run loop's flushReq handling: skip while deleting (the folder is
+	// about to be removed), otherwise stop the pending debounce timer and save.
+	if !w.deleting.Load() {
+		if w.saveTimer != nil {
+			w.saveTimer.Stop()
+		}
+		if err := w.saveStateToDisk(); err != nil {
+			w.log.Error("Failed to flush persistence: %v", err)
+		}
+	}
+	w.send(map[string]any{
+		"type":  "ack",
+		"ackId": msg.AckID,
+	})
 }
 
 // =============================================================================

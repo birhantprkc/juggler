@@ -198,6 +198,16 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 		zoom, _ := strconv.Atoi(r.URL.Query().Get("zoom"))
 		a.setWindowZoom(zoom)
 		w.WriteHeader(http.StatusNoContent)
+	case "drafts-flushed":
+		// The page's reply to a close-requested announcement: its composer drafts
+		// are rescued and the affected conversations are on disk, so the pending
+		// close/quit may proceed. Unlike every other action here this is a reply
+		// to something we asked, so it only counts when it quotes the token from
+		// that announcement — a reply to an earlier one must not release a later
+		// one. Always 204: the page has nothing to do about a mismatch, and the
+		// waiter times out on its own.
+		a.releaseFlushWait(e, r.URL.Query().Get("token"))
+		w.WriteHeader(http.StatusNoContent)
 	case "pick-directory":
 		// Native folder chooser for the in-page project picker. Runs as a sheet on
 		// the requesting window and returns the chosen absolute path (empty string

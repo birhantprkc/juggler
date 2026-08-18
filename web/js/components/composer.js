@@ -659,7 +659,15 @@ class Composer extends HTMLElement {
     // with no path to dismiss it. Menu items accept on pointerdown +
     // preventDefault, which keeps focus in the textarea, so an accept never
     // reaches here; only a genuine focus change does.
-    textarea.addEventListener('blur', () => this._completions?.close());
+    // Losing focus also commits the draft. The debounce exists to keep
+    // keystrokes from thrashing the Yjs doc, and the user has demonstrably
+    // stopped typing — waiting out the remaining delay only widens the window
+    // where the text lives nowhere but this textarea, which is what a crash or
+    // a force-quit takes with it.
+    textarea.addEventListener('blur', () => {
+      this._completions?.close();
+      this.flushDraft();
+    });
 
     // New thread button - creates thread immediately
     const threadBtn = this.querySelector('.new-thread-btn');
@@ -861,13 +869,24 @@ class Composer extends HTMLElement {
    * Immediately persist the live textarea value, bypassing the debounce. Used by
    * page/native-window teardown, where the debounced timer may not get another
    * turn before the webview is destroyed.
+   *
+   * Returns the conversation id when there were unsaved keystrokes — a debounce
+   * was pending, so this call is what rescued them — and null otherwise. Quit
+   * teardown uses that to force a synchronous disk write for exactly the
+   * conversations that need one. Attachment and text-file changes persist
+   * immediately when they happen, so they never arm the timer and never appear
+   * here.
+   * @returns {string|null} The rescued conversation's id, or null if there was
+   *   nothing pending to rescue.
    */
   flushDraft() {
-    if (this._draftSaveTimeoutId !== null) {
-      clearTimeout(this._draftSaveTimeoutId);
+    const pendingSave = this._draftSaveTimeoutId;
+    if (pendingSave !== null) {
+      clearTimeout(pendingSave);
       this._draftSaveTimeoutId = null;
     }
     this._persistDraft();
+    return pendingSave !== null ? (this._messageThread?.conversationId ?? null) : null;
   }
 
   /**

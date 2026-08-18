@@ -23,6 +23,7 @@ import {
 } from './registries/reload-registries.js';
 import actionExecutor from './services/action-executor.js';
 import workerManager from './services/worker-manager.js';
+import { CLOSE_FLUSH_ACK_TIMEOUT_MS } from './utils/constants.js';
 import providersCache from './services/providers-cache.js';
 import { setupHeaderControls } from './utils/header-controls.js';
 import { registerConversationShortcuts } from './services/shortcut-bindings.js';
@@ -31,7 +32,7 @@ import { updateWindowTitle } from './utils/window-title.js';
 import { initAttention } from './utils/attention-manager.js';
 import scheduledSendService from './services/scheduled-send-service.js';
 import { initViewportFit } from './utils/viewport-fit.js';
-import { openExternalURL, externalURLFromHref, localFilePathFromHref } from '../sdk/lib/window-control.js';
+import { openExternalURL, externalURLFromHref, localFilePathFromHref, reportDraftsFlushed } from '../sdk/lib/window-control.js';
 import { osOpenPath } from './services/ops-api.js';
 import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-installs on import)
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
@@ -111,13 +112,45 @@ class JugglerApp {
     }
   }
 
-  /** @private */
+  /**
+   * Flush every composer's pending draft into its Yjs doc.
+   * @returns {Set<string>} conversation ids that had unsaved keystrokes, i.e.
+   *   the ones this call rescued. Callers tearing the page down force those to
+   *   disk; the rest were already persisted when the user last stopped typing.
+   * @private
+   */
   flushComposerDrafts() {
+    /** @type {Set<string>} */
+    const rescued = new Set();
     document.querySelectorAll('composer-box').forEach((box) => {
       if (typeof (/** @type {any} */ (box).flushDraft) === 'function') {
-        /** @type {any} */ (box).flushDraft();
+        const convId = /** @type {any} */ (box).flushDraft();
+        if (convId) rescued.add(convId);
       }
     });
+    return rescued;
+  }
+
+  /**
+   * Handle the native host's warning that this window is about to close: rescue
+   * every pending draft, force the affected conversations to disk, then tell the
+   * host it may proceed.
+   *
+   * The host blocks on that reply, so this must always answer — hence the short
+   * per-conversation timeout and allSettled rather than all(). A worker that
+   * can't be reached costs its slice of the budget and nothing more; the host
+   * bounds the total wait anyway and quits on expiry.
+   * @param {string} [token] - Ack token identifying the host's announcement.
+   * @private
+   */
+  async _flushDraftsForClose(token) {
+    const rescued = this.flushComposerDrafts();
+    // Comfortably inside the host's wait: it would rather quit with a draft in
+    // flight than hang on a wedged worker.
+    await Promise.allSettled(
+      [...rescued].map((id) => workerManager.flushPersistence(id, CLOSE_FLUSH_ACK_TIMEOUT_MS))
+    );
+    if (token) await reportDraftsFlushed(token);
   }
 
   /**
@@ -247,8 +280,9 @@ class JugglerApp {
       this._handleDuplicateConversation();
     });
 
-    window.addEventListener('juggler:window-close-requested', () => {
-      this.flushComposerDrafts();
+    window.addEventListener('juggler:window-close-requested', (e) => {
+      const token = /** @type {CustomEvent} */ (e).detail?.ackToken;
+      void this._flushDraftsForClose(token);
     });
 
     // Rollback and branch handlers

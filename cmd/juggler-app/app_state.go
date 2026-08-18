@@ -31,6 +31,13 @@ const (
 	minWindowHeight     = 600
 )
 
+// closeFlushTimeout bounds the whole close-requested handshake — every window
+// flushing its composer drafts and confirming they reached disk. Generous enough
+// to cover a page whose worker is mid-turn (the page allows 2.5s per
+// conversation and answers regardless), short enough that a wedged webview can't
+// make the app feel hung on Cmd+Q.
+const closeFlushTimeout = 4 * time.Second
+
 // saveDebounce collapses a burst of window move/resize events into a single
 // geometry write ~this long after the last change.
 const saveDebounce = 300 * time.Millisecond
@@ -89,6 +96,15 @@ type winEntry struct {
 	// real close proceed instead of vetoing and re-prompting. Owned by the
 	// registry goroutine like the rest of winEntry's shared fields.
 	forceClose bool
+
+	// flushSeq counts close-requested announcements to this window; flushDone is
+	// the channel closed when the page answers the current one (nil between
+	// handshakes). The page quotes the sequence number back, which is what stops
+	// a reply to an earlier announcement from releasing a later one — the same
+	// notification is issued for a quit and for an updater restart. Owned by the
+	// registry goroutine.
+	flushSeq  int
+	flushDone chan struct{}
 }
 
 // regState is the registry's owned data: the open windows and the servers this
@@ -1023,7 +1039,11 @@ func (a *appState) handleWindowClosed(e *winEntry) {
 	if s, ok := a.currentWindowState(e); ok {
 		putWindowState(e.serverURL, s)
 	}
-	a.notifyWindowCloseRequested(e)
+	// Give the page its chance to rescue composer drafts and confirm they reached
+	// disk. Must complete before the entry leaves the registry below, since that
+	// is where the page's reply is matched, and before the server is stopped —
+	// the flush it is waiting on goes through that server.
+	a.awaitFlush(e.id, a.notifyWindowCloseRequested(e), time.Now().Add(closeFlushTimeout))
 	close(e.stopSave)
 
 	var orphanServer *exec.Cmd
@@ -1060,31 +1080,105 @@ func (a *appState) handleWindowClosed(e *winEntry) {
 	}
 }
 
-// notifyWindowCloseRequested tells one webview that its native window is about to
-// close, giving page-owned state a synchronous chance to flush before teardown.
-func (a *appState) notifyWindowCloseRequested(e *winEntry) {
-	if e == nil || e.win == nil {
-		return
-	}
-	done := make(chan struct{}, 1)
-	application.InvokeAsync(func() {
-		e.win.ExecJS("window.dispatchEvent(new CustomEvent('juggler:window-close-requested'))")
-		done <- struct{}{}
+// armFlushWait registers a fresh close-requested handshake for e and returns the
+// token the page must quote back, plus the channel closed when it does. Any
+// previous handshake for the window is abandoned (its channel left unclosed —
+// its waiter is already gone or timing out), so a re-announcement never inherits
+// a stale reply. Returns an empty token when the window is no longer registered.
+func (a *appState) armFlushWait(e *winEntry) (string, chan struct{}) {
+	done := make(chan struct{})
+	token := ""
+	a.reg(func(st *regState) {
+		w := st.windows[e.id]
+		if w == nil {
+			return
+		}
+		w.flushSeq++
+		w.flushDone = done
+		token = strconv.Itoa(w.flushSeq)
 	})
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		logf("window close notification timed out for %s", e.id)
+	if token == "" {
+		return "", nil
 	}
+	return token, done
 }
 
-// notifyAllWindowsCloseRequested dispatches the same close-requested lifecycle
-// event to every live window before app-wide termination.
+// releaseFlushWait completes the handshake for e when token names the current
+// announcement, unblocking whoever is waiting to close or quit. Anything else —
+// a stale sequence number, a repeat of one already answered — is ignored: the
+// waiter keeps waiting and eventually times out, which is the safe direction.
+func (a *appState) releaseFlushWait(e *winEntry, token string) {
+	a.reg(func(st *regState) {
+		w := st.windows[e.id]
+		if w == nil || w.flushDone == nil || token != strconv.Itoa(w.flushSeq) {
+			return
+		}
+		close(w.flushDone)
+		w.flushDone = nil
+	})
+}
+
+// notifyWindowCloseRequested tells one webview that its native window is about to
+// close, giving page-owned state a chance to flush before teardown. It returns
+// the channel that closes once the page reports it has finished; the caller does
+// the waiting, so several windows can flush concurrently.
+//
+// Nothing here can be inferred from ExecJS returning: it only schedules the
+// script (ExecJS → InvokeSync → InvokeAsync → an async WKWebView evaluate), so
+// the page's reply on /drafts-flushed is the only real evidence the flush ran.
+func (a *appState) notifyWindowCloseRequested(e *winEntry) chan struct{} {
+	if e == nil || e.win == nil {
+		return nil
+	}
+	token, done := a.armFlushWait(e)
+	if token == "" {
+		return nil
+	}
+	application.InvokeAsync(func() {
+		e.win.ExecJS("window.dispatchEvent(new CustomEvent('juggler:window-close-requested'," +
+			"{detail:{ackToken:'" + token + "'}}))")
+	})
+	return done
+}
+
+// notifyAllWindowsCloseRequested dispatches the close-requested lifecycle event
+// to every live window and waits for them all to report back before returning,
+// so app-wide termination can't outrun a page still writing its drafts to disk.
+//
+// Every window is notified first and waited on afterwards, against one shared
+// deadline: the flushes are independent, so N windows should cost one timeout
+// rather than N. On expiry we quit anyway — a draft in flight is a smaller loss
+// than an app that won't close.
 func (a *appState) notifyAllWindowsCloseRequested() {
 	var wins []*winEntry
 	a.reg(func(st *regState) { wins = sortedWindows(st) })
+
+	waits := make(map[string]chan struct{}, len(wins))
 	for _, e := range wins {
-		a.notifyWindowCloseRequested(e)
+		if done := a.notifyWindowCloseRequested(e); done != nil {
+			waits[e.id] = done
+		}
+	}
+
+	deadline := time.Now().Add(closeFlushTimeout)
+	for id, done := range waits {
+		a.awaitFlush(id, done, deadline)
+	}
+}
+
+// awaitFlush blocks until the page answers the handshake on done, or deadline
+// passes. A nil channel means there was nothing to notify. Expiry is logged and
+// tolerated: losing a draft still in flight beats refusing to close. Callers
+// waiting on several windows share one deadline, so the whole set costs at most
+// one timeout — an already-expired deadline returns immediately.
+func (a *appState) awaitFlush(id string, done chan struct{}, deadline time.Time) {
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Until(deadline)):
+		logf("window %s did not confirm its draft flush; closing anyway", id)
 	}
 }
 

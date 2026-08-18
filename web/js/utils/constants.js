@@ -16,8 +16,24 @@ export const SAVE_DEBOUNCE_MS = 300;
 /** Maximum number of messages to keep in history */
 export const MAX_MESSAGE_HISTORY = 100;
 
-/** Debounce delay for saving draft message in composer (milliseconds) */
-export const DRAFT_SAVE_DEBOUNCE_MS = 2000;
+/**
+ * Debounce delay for saving draft message in composer (milliseconds).
+ *
+ * This is how long freshly typed text exists only in the textarea, recoverable
+ * by nothing — so it is a data-loss window, not just a tuning knob, and it is
+ * kept near the shortest pause that still reads as "stopped typing" rather than
+ * "mid-word". Its only cost is Yjs update chatter: each expiry rewrites the
+ * whole draft record, and repeated writes to the same key merge cheaply.
+ */
+export const DRAFT_SAVE_DEBOUNCE_MS = 750;
+
+/**
+ * How long the close/quit handshake waits for one conversation's worker to
+ * confirm a rescued draft reached disk (milliseconds). Deliberately short: the
+ * native host is blocked on our reply and would rather quit with a draft in
+ * flight than hang on a wedged worker.
+ */
+export const CLOSE_FLUSH_ACK_TIMEOUT_MS = 2500;
 
 // ===== Yjs Sync Constants =====
 
