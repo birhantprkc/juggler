@@ -2,7 +2,7 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import { renderAssistantContentWrapped, renderMarkdownWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
+import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
 import { stripLLMTags } from './content-utils.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
@@ -41,8 +41,10 @@ export function getThreadDisplayContent(threadYMap, siblingArray) {
 /**
  * @typedef {object} ThreadStatus
  * @property {ThreadStatusKind} kind - Which state the thread is in.
- * @property {string} goal - The thread's user-facing goal ("" if unset).
- * @property {string} message - Status line to render under the goal.
+ * @property {string} goal - The thread's user-facing goal ("" if unset). The
+ *   surface showing this status paints it as its own header; the status block
+ *   itself never does.
+ * @property {string} message - Status line to render beneath that header.
  * @property {boolean} spinner - Whether the status block should show a spinner.
  * @property {boolean} [showSummary] - Paint the thread's summary instead of a
  *   status block. Set only when the thread is genuinely at rest, so the several
@@ -187,21 +189,23 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
 /**
  * Paint a thread tile / properties-panel summary surface. Renders the
  * markdown summary when the thread is at rest and has one; otherwise renders a
- * structured status block (goal line + optional spinner + status line). Shared
- * so the in-conversation tile and the panel stay visually identical.
+ * structured status block (optional spinner + status line). Shared so the
+ * in-conversation tile and the panel stay visually identical.
+ *
+ * The goal is never painted here. It is the header of whichever surface is
+ * showing this body — the tile's badge row, the panel's section header, the
+ * group tile's title — so each surface paints it there itself, and this stays
+ * the body beneath it.
  * @param {HTMLElement} el - Element to populate.
  * @param {string} text - Summary text (only used when status.showSummary).
- * @param {{status?: ThreadStatus, showGoalWithSummary?: boolean}} [opts]
+ * @param {{status?: ThreadStatus}} [opts]
  */
 export function paintThreadSummary(el, text, opts) {
   const status = opts?.status;
   const showSummary = status ? !!status.showSummary : !!text;
   if (showSummary) {
     el.className = 'thread-summary';
-    const goalLine = opts?.showGoalWithSummary && status?.goal
-      ? `<div class="thread-status-goal">${renderMarkdownWrapped(stripLLMTags(status.goal), { escapeXml: true })}</div>`
-      : '';
-    el.innerHTML = `${goalLine}${renderAssistantContentWrapped(stripLLMTags(text))}`;
+    el.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
     decorateCodeBlocks(el);
     return;
   }
@@ -214,64 +218,30 @@ export function paintThreadSummary(el, text, opts) {
 
   el.className = 'thread-summary thread-status';
   el.dataset.kind = status.kind;
-  const goalLine = status.goal
-    ? `<div class="thread-status-goal">${renderMarkdownWrapped(stripLLMTags(status.goal), { escapeXml: true })}</div>`
-    : '';
   const spinnerEl = status.spinner
     ? '<juggler-spinner class="thread-status-spinner" style="--size: 0.9em"></juggler-spinner>'
     : '';
   // A status with nothing to say and no spinner renders no line at all, rather
   // than an empty one the column gap would still space out.
-  const msgLine = (status.message || status.spinner)
+  el.innerHTML = (status.message || status.spinner)
     ? `<div class="thread-status-message">${spinnerEl}<span>${escapeHtml(status.message || '')}</span></div>`
     : '';
-  el.innerHTML = `${goalLine}${msgLine}`;
-  // Record the goal source we just rendered so the next in-place text update
-  // (paintThreadStatusText) can skip re-parsing the markdown when it's unchanged.
-  const goalEl = /** @type {GoalEl|null} */ (el.querySelector('.thread-status-goal'));
-  if (goalEl) goalEl._renderedGoalSrc = status.goal || '';
 }
 
 /**
- * @typedef {HTMLElement & { _renderedGoalSrc?: string }} GoalEl
- */
-
-/**
- * Render `goalSrc` markdown into `goalEl`, but only when it differs from the
- * goal source last rendered into that element. The goal almost never changes
- * while the status message ticks ~1Hz, so skipping the rewrite avoids
- * needlessly re-parsing the markdown and replacing the `.thread-status-goal`
- * subtree on every tick. Safe because the render is a pure function of the
- * source string.
- * @param {GoalEl} goalEl
- * @param {string} goalSrc
- */
-function renderGoalInto(goalEl, goalSrc) {
-  const src = goalSrc || '';
-  if (goalEl._renderedGoalSrc === src) return;
-  goalEl._renderedGoalSrc = src;
-  goalEl.innerHTML = src
-    ? renderMarkdownWrapped(stripLLMTags(src), { escapeXml: true })
-    : '';
-  decorateCodeBlocks(goalEl);
-}
-
-/**
- * Update only the text content of an already-painted status block (goal +
- * message). Leaves the `<juggler-spinner>` element and the surrounding
- * structure untouched so CSS animations (spinner rotation, parent icon-box
- * pulse) don't restart. Caller must ensure the block was previously painted
- * by `paintThreadSummary` with a status of the same shape — one that painted a
- * status block rather than a summary, and whose message and spinner presence
- * are unchanged. Anything else changes which elements exist, so it needs a
- * fresh `paintThreadSummary` instead.
+ * Update only the text of an already-painted status block. Leaves the
+ * `<juggler-spinner>` element and the surrounding structure untouched so CSS
+ * animations (spinner rotation, parent icon-box pulse) don't restart. Caller
+ * must ensure the block was previously painted by `paintThreadSummary` with a
+ * status of the same shape — one that painted a status block rather than a
+ * summary, and whose message and spinner presence are unchanged. Anything else
+ * changes which elements exist, so it needs a fresh `paintThreadSummary`
+ * instead.
  * @param {HTMLElement} el - The `.thread-summary.thread-status` element.
  * @param {ThreadStatus} status - Current status.
  */
 export function paintThreadStatusText(el, status) {
   el.dataset.kind = status.kind;
-  const goalEl = /** @type {GoalEl|null} */ (el.querySelector('.thread-status-goal'));
-  if (goalEl) renderGoalInto(goalEl, status.goal);
   const msgSpan = el.querySelector('.thread-status-message > span');
   if (msgSpan) msgSpan.textContent = status.message || '';
 }

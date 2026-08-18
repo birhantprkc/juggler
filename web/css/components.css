@@ -1923,10 +1923,6 @@ properties-panel-section {
     gap: 0.8rem;
     padding-bottom: 0.5rem;
     border-bottom: 1px solid var(--border-divider);
-
-    --message-icon-size: 0.875rem;
-    --message-icon-pad: 0.3rem;
-    --message-icon-row-height: calc(var(--message-icon-size) + 2 * var(--message-icon-pad));
 }
 
 /* For a plugin-backed item the header badge doubles as a link into

@@ -505,7 +505,7 @@ func TestNoticeItemEmitsNothingToTheLLM(t *testing.T) {
 	item := ConversationItem{
 		Type:    ItemTypeNotice,
 		ItemID:  "NOTICE_1",
-		Summary: "Context cache rebuilt",
+		Summary: "Cache miss",
 		Content: cacheMissNoticeLead + "\n\nReason: diverged",
 		Source:  "claudecode",
 	}

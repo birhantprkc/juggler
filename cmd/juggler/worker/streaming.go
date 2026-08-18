@@ -309,9 +309,12 @@ func (w *ConversationWorker) insertCacheMissNotice(reason string) {
 	}
 	w.lastCacheMissNotice = reason
 	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
-		Type:      ItemTypeNotice,
-		ItemID:    generateItemID(),
-		Summary:   "Context cache rebuilt",
+		Type:   ItemTypeNotice,
+		ItemID: generateItemID(),
+		// The summary is the row's entire label — the transcript shows a warning
+		// triangle and this text as a lozenge, nothing else — so it stays short
+		// enough to read as one. The detail is in Content, for the panel.
+		Summary:   "Cache miss",
 		Content:   cacheMissNoticeLead + "\n\nReason: " + reason,
 		Source:    "claudecode",
 		Timestamp: time.Now().Format(time.RFC3339),

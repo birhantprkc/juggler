@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import BaseMessage from './base-message.js';
+import { renderResultStatusMessage } from '../../sdk/lib/html.js';
 import { wrapWithIcon, TYPE_ICONS } from '../utils/icon-message-renderer.js';
 
 /**
@@ -11,13 +12,15 @@ import { wrapWithIcon, TYPE_ICONS } from '../utils/icon-message-renderer.js';
  * cache, say. It stands in the transcript where the event occurred, so the
  * explanation is still there when the user gets round to looking at it.
  *
- * Amber triangle, no action button: a notice reports, it does not ask. The
- * hover delete control every transcript row carries is the only affordance —
- * a reader who does not care can tidy it away.
+ * Amber triangle, no action button: a notice reports, it does not ask. The row
+ * is one line — icon and title lozenge, the same tile every other one-liner
+ * builds — because nothing failed and nothing needs doing. The detail (the
+ * plain-English lead and the provider's verbatim reason) is read by selecting
+ * the row, in the properties panel.
  */
 class NoticeMessage extends BaseMessage {
   static get observedAttributes() {
-    return ['content', 'notice-title'];
+    return ['notice-title'];
   }
 
   /** @returns {string} The notice's terse title */
@@ -33,22 +36,10 @@ class NoticeMessage extends BaseMessage {
     const article = document.createElement('article');
     article.className = 'notice';
 
-    const body = document.createElement('div');
-
-    if (this.title) {
-      const titleEl = document.createElement('div');
-      titleEl.className = 'notice-message-title';
-      titleEl.textContent = this.title;
-      body.appendChild(titleEl);
-    }
-
-    // The detail carries the provider's own reason on its own line below the
-    // plain-English lead, so `white-space: pre-wrap` (see .notice-message-detail)
-    // keeps the two apart without parsing the text here.
-    const detail = document.createElement('div');
-    detail.className = 'notice-message-detail';
-    detail.textContent = this.content;
-    body.appendChild(detail);
+    // Title-as-lozenge and no summary text: the title alone says what happened,
+    // and wrapWithIcon hoists the lozenge up beside the icon, leaving a row the
+    // height of any other single-line item.
+    const body = renderResultStatusMessage({ typeName: this.title || 'Notice', summary: '' });
 
     // The `error` glyph is a warning triangle; amber rather than the error
     // component's red, and distinct from thinking's yellow.

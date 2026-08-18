@@ -14,6 +14,7 @@ import { assert } from '../utilities/test-helpers.js';
 import '../../js/components/composer.js';
 import NoticeMessage from '../../js/components/notice-message.js';
 import { buildPrefixFingerprint, classifyContextCacheImpact } from '../../js/services/context-cache-impact.js';
+import { typeNameForItem } from '../../js/utils/item-badge.js';
 
 /**
  * @returns {{box: any, container: HTMLElement, metadata: Map<string, any>, notify: (key: string) => void}} Mounted composer and metadata controls
@@ -122,25 +123,34 @@ export async function runTests() {
     }
   });
 
-  test('a notice renders its title and keeps the provider reason verbatim', () => {
+  test('a notice is a one-line tile: icon, title lozenge, nothing else', () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     try {
       const el = /** @type {any} */ (document.createElement('notice-message'));
       el.setAttribute('message-id', 'NOTICE_1');
-      el.setAttribute('notice-title', 'Context cache rebuilt');
-      el.setAttribute('content', 'Claude Code re-read the whole conversation.\n\nReason: diverged: system prompt changed');
+      el.setAttribute('notice-title', 'Cache miss');
       container.appendChild(el);
 
       assert(el instanceof NoticeMessage, 'notice-message must upgrade to the NoticeMessage class');
-      const text = el.textContent || '';
-      assert(text.includes('Context cache rebuilt'), `notice must show its title, got ${text}`);
-      assert(text.includes('diverged: system prompt changed'),
-        `notice must keep the provider's reason verbatim, got ${text}`);
+      const badge = el.querySelector('.message-icon-badge .context-item-type-badge');
+      assert(!!badge, 'notice must label itself with a lozenge beside the icon');
+      assert(badge.textContent === 'Cache miss', `lozenge must carry the title, got ${badge.textContent}`);
+      assert(!!el.querySelector('.message-icon-box svg'), 'notice must keep its warning triangle');
+      assert((el.textContent || '').trim() === 'Cache miss',
+        `the row carries the title and nothing more, got ${el.textContent}`);
       assert(!el.querySelector('button'), 'a notice reports; it must offer no action button');
     } finally {
       container.remove();
     }
+  });
+
+  test('the panel labels a notice the same way the row does', () => {
+    const notice = item({ type: 'notice', summary: 'Cache miss', content: 'lead\n\nReason: diverged' });
+    assert(typeNameForItem(notice) === 'Cache miss',
+      `panel header must reuse the notice's own title, got ${typeNameForItem(notice)}`);
+    assert(typeNameForItem(item({ type: 'notice' })) === 'Notice',
+      'a notice with no title still needs a label');
   });
 
   test('adding and removing a notice never reads as a cache bust', () => {

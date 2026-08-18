@@ -198,8 +198,8 @@ reader is rarely looking at the moment it happens.
 
 | Key | Type | Notes |
 |---|---|---|
-| `summary` | string | Terse title, e.g. `Context cache rebuilt`. |
-| `content` | string | The detail: a plain-English lead, then the underlying reason verbatim. |
+| `summary` | string | Terse title, e.g. `Cache miss`. It is the transcript row's whole label (rendered as the lozenge beside the warning triangle), so keep it short. |
+| `content` | string | The detail: a plain-English lead, then the underlying reason verbatim. Read in the properties panel, not the row. |
 | `source` | string | What reported it (provider or plugin id). |
 
 Purely for the reader, in two senses that both need holding: the worker's

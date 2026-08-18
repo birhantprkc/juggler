@@ -19,11 +19,13 @@ const THREAD_SUMMARY_MAX_CHARS = 600;
 /**
  * ThreadMessage — parent-tile rendering of a sub-thread.
  *
- * While the thread is working, the tile shows a status block (goal + spinner +
- * status line) reflecting the sub-thread's current state. The status string
- * mirrors the conversation footer's wording for that thread (e.g. "Streaming •
- * 250 tokens"), driven by an `llmState` snapshot the parent column hands in.
- * Once it is at rest with a summary, the tile shows that instead.
+ * The face is a header row — icon, type lozenge, and the goal the call named —
+ * with the thread's own text stacked beneath it, indented to the lozenge.
+ * While the thread is working that text is a status block (spinner + status
+ * line) reflecting the sub-thread's current state; the status string mirrors
+ * the conversation footer's wording for that thread (e.g. "Streaming • 250
+ * tokens"), driven by an `llmState` snapshot the parent column hands in. Once
+ * it is at rest with a summary, the tile shows that instead.
  */
 class ThreadMessage extends HTMLElement {
   constructor() {
@@ -160,7 +162,7 @@ class ThreadMessage extends HTMLElement {
     const key = !this._item
       ? 'empty'
       : showsSummary
-        ? `summary:${result}`
+        ? `summary:${status?.goal}:${result}`
         : `status:${status?.kind}:${status?.goal}:${status?.message}:${status?.spinner ? 1 : 0}`;
 
     if (this._mode !== mode) {
@@ -170,15 +172,28 @@ class ThreadMessage extends HTMLElement {
       article.className = 'thread-item';
       if (!showsSummary) article.setAttribute('data-processing', 'true');
 
-      const summaryDiv = document.createElement('div');
-      paintThreadSummary(summaryDiv, result, status ? { status, showGoalWithSummary: true } : undefined);
-
-      // Icon + "Thread" lozenge come from the one shared badge resolver (same
-      // code the properties-panel header uses), grouped with the icon via
+      // Header row: icon + "Thread" lozenge from the one shared badge resolver
+      // (same code the properties-panel header uses), grouped with the icon via
       // wrapWithIcon's badge option so they keep a fixed layout, exactly like
-      // the type badge on the other context-item tiles.
+      // the type badge on the other context-item tiles — then the goal as the
+      // row's title.
+      const goalEl = document.createElement('div');
+      goalEl.className = 'thread-goal llm-description';
+      goalEl.textContent = status?.goal || '';
       const badge = badgeForItem(this._item, { fallbackType: 'thread' });
-      article.appendChild(wrapWithIcon(summaryDiv, { ...badge, badge: badge.typeName }));
+      article.appendChild(wrapWithIcon(goalEl, { ...badge, badge: badge.typeName }));
+
+      // Body: whatever the thread has to say, stacked under that header rather
+      // than sharing its row, so a summary running to several lines gets the
+      // tile's width instead of the sliver beside the badge. Its own wrapper,
+      // because applyCollapsible inserts the Show more toggle as the summary's
+      // next sibling and both must sit in the indented column.
+      const body = document.createElement('div');
+      body.className = 'thread-body';
+      const summaryDiv = document.createElement('div');
+      paintThreadSummary(summaryDiv, result, status ? { status } : undefined);
+      body.appendChild(summaryDiv);
+      article.appendChild(body);
 
       // Stop affordance: when the subtree has live work to stop (running /
       // pending / paused) the user can stop it straight from the parent tile —
@@ -187,7 +202,7 @@ class ThreadMessage extends HTMLElement {
       // to conversation.cancelThread (subtree-scoped cancel + 'Cancelled'
       // summary). stopPropagation keeps the click from also selecting the tile.
       // It lives inside the status-message row (right-aligned) so it sits with
-      // the status line rather than overlaying the goal text.
+      // the status line rather than floating loose in the tile.
       if (stoppable) {
         const msgEl = summaryDiv.querySelector('.thread-status-message');
         (msgEl || article).appendChild(this._buildStopButton());
@@ -210,10 +225,14 @@ class ThreadMessage extends HTMLElement {
     if (this._paintedKey === key) return;
     this._paintedKey = key;
 
+    const goalEl = this.querySelector('.thread-goal');
+    const goal = status?.goal || '';
+    if (goalEl && goalEl.textContent !== goal) goalEl.textContent = goal;
+
     const summaryDiv = /** @type {HTMLElement|null} */ (this.querySelector('.thread-summary'));
     if (!summaryDiv) return;
     if (showsSummary) {
-      paintThreadSummary(summaryDiv, result, { status, showGoalWithSummary: true });
+      paintThreadSummary(summaryDiv, result, { status });
       applyCollapsible(summaryDiv, { key: this._item?.get?.('itemId') || '', maxChars: THREAD_SUMMARY_MAX_CHARS });
       return;
     }

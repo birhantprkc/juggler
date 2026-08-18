@@ -39,6 +39,17 @@ select {
     --font-sans: 'Inter', 'Segoe UI', 'Roboto', sans-serif;
     --font-ui: var(--font-sans); /* Font for menus, settings panels, and UI elements */
 
+    /* Icon-row geometry, shared by every surface that puts a round icon (and,
+       usually, a type lozenge) beside a title: the conversation rows, the
+       properties-panel header, the thread tile. The title row is given
+       --message-icon-row-height and centred, so every item type aligns its
+       title to the icon identically; change these to move them all. Declared
+       here rather than on the row so a block BELOW a row can indent itself to
+       the icon column. */
+    --message-icon-size: 0.875rem;
+    --message-icon-pad: 0.3rem;
+    --message-icon-row-height: calc(var(--message-icon-size) + 2 * var(--message-icon-pad));
+
     /* Z-Index Scale - use these instead of arbitrary values */
     --z-base: 1;           /* Default stacking */
     --z-raised: 10;        /* Slightly elevated elements */
@@ -2363,33 +2374,13 @@ error-message article.error {
     color: var(--accent-red, #f85149);
 }
 
-/* Notices get the same card treatment as errors, in amber rather than red: the
-   event is worth stopping on, but nothing has failed and there is nothing to
-   act on. */
+/* A notice takes no card and no extra room: the amber triangle and its lozenge
+   are the whole row, laid out by the shared .message-with-icon rules. Nothing
+   has failed and there is nothing to act on, so the detail waits in the
+   properties panel. */
 notice-message article.notice {
-    background: color-mix(in srgb, var(--accent-yellow) 8%, transparent);
-    border: 0.0625rem solid color-mix(in srgb, var(--accent-yellow) 30%, transparent);
-    border-radius: 0.5rem;
-    padding: 0.85rem 0.95rem;
-    font-size: 0.85rem;
-    overflow-wrap: break-word;
-
-    /* Defensive: prevent long provider reasons overflowing the panel. */
     max-width: 100%;
     overflow: hidden;
-}
-
-.notice-message-title {
-    margin-bottom: 0.35rem;
-    font-weight: 500;
-    color: var(--text-primary);
-}
-
-/* pre-wrap keeps the provider's verbatim reason on its own line below the lead
-   without the component parsing the text apart. */
-.notice-message-detail {
-    white-space: pre-wrap;
-    color: var(--text-secondary);
 }
 
 /* All message components need display: block for proper backgrounds and selection */
@@ -2409,28 +2400,12 @@ tool-action-message {
 
 /* Left padding prevents icon hover border from being clipped by parent overflow:hidden */
 .message-with-icon {
-    /* Shared icon-row geometry. The title row (.action-result-status / .message-text)
-       is given this same height and centered, so every item type aligns its title to
-       the icon/badge identically. Change --message-icon-row-height to move them all. */
-    --message-icon-size: 0.875rem;
-    --message-icon-pad: 0.3rem;
-    --message-icon-row-height: calc(var(--message-icon-size) + 2 * var(--message-icon-pad));
-
     display: flex;
     align-items: flex-start;
     gap: 1rem;
 }
 
 .message-icon-box {
-    /* Self-contained sizing so the icon box renders identically wherever it is
-       placed — the conversation row (under .message-with-icon) AND standalone
-       contexts like the properties-panel header, which has no such ancestor.
-       .message-with-icon still declares the same values for its row-height calc;
-       these are the fallback that keeps mask-class icons (no intrinsic size)
-       from collapsing to 0×0 when that ancestor is absent. */
-    --message-icon-size: 0.875rem;
-    --message-icon-pad: 0.3rem;
-
     border-radius: 50%;
     padding: var(--message-icon-pad);
     margin-top: 0;
@@ -2808,6 +2783,33 @@ thread-message {
     cursor: pointer;
 }
 
+/* The tile face is a header row (icon, lozenge, goal) with the thread's own
+   text stacked beneath it, rather than beside it: a summary is prose several
+   lines long, and sharing the header's row would wrap it into the narrow
+   column left of the badge. */
+thread-message .thread-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+/* The goal is the caller's own description of the task, so it carries the
+   shared LLM-description styling; the icon-row band lines its first line up
+   with the icon and lozenge beside it, exactly like every other item's title. */
+thread-message .thread-goal {
+    min-height: var(--message-icon-row-height);
+    display: flex;
+    align-items: center;
+}
+
+/* The body hangs off the lozenge, not the tile edge: one icon column plus the
+   badge group's gap of left gutter, so a long summary reads as belonging to
+   the header above it instead of spilling back under the icon. */
+thread-message .thread-body {
+    margin-left: calc(var(--message-icon-row-height) + 1rem);
+    min-width: 0;
+}
+
 /* Stop affordance on a running tile: sits at the right end of the status
    message row, red hover like the column header's Cancel. Only rendered while
    the thread is not yet closed. */
@@ -2853,32 +2855,6 @@ tool-group-message .thread-summary {
     flex-direction: column;
     gap: 0.25rem;
     color: var(--text-secondary);
-}
-
-.thread-summary.thread-status .thread-status-goal {
-    color: var(--text-primary);
-    font-style: normal;
-}
-
-.thread-summary.thread-status .thread-status-goal > :first-child {
-    margin-top: 0;
-}
-
-.thread-summary.thread-status .thread-status-goal > :last-child {
-    margin-bottom: 0;
-}
-
-.thread-summary.thread-status .thread-status-goal p,
-.thread-summary.thread-status .thread-status-goal ul,
-.thread-summary.thread-status .thread-status-goal ol,
-.thread-summary.thread-status .thread-status-goal pre,
-.thread-summary.thread-status .thread-status-goal h1,
-.thread-summary.thread-status .thread-status-goal h2,
-.thread-summary.thread-status .thread-status-goal h3,
-.thread-summary.thread-status .thread-status-goal h4,
-.thread-summary.thread-status .thread-status-goal h5,
-.thread-summary.thread-status .thread-status-goal h6 {
-    margin: 0.4em 0;
 }
 
 .thread-summary.thread-status .thread-status-message {

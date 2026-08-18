@@ -233,7 +233,9 @@ export function typeNameForItem(item, ctx = {}) {
   const type = item?.get?.('type') ?? ctx.fallbackType;
   switch (type) {
     case 'error': return 'Error';
-    case 'notice': return 'Notice';
+    // A notice's summary IS its label — the row shows nothing but this lozenge,
+    // so the panel header has to read the same way.
+    case 'notice': return item?.get?.('summary') || 'Notice';
     case 'user': return 'User Message';
     case 'thinking': return 'Thinking';
     case 'assistant': return 'Assistant Message';

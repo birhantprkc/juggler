@@ -599,7 +599,8 @@ function createErrorBubble(message, itemIndex) {
 
 /**
  * Create a notice message element — a durable record of something that happened
- * to a turn, standing where it happened.
+ * to a turn, standing where it happened. Only the title crosses into the row;
+ * the detail is the properties panel's, which reads it from the item itself.
  * @param {Message} message
  * @param {number} [itemIndex]
  * @returns {HTMLElement} Created element.
@@ -608,10 +609,7 @@ function createNoticeBubble(message, itemIndex) {
   return createMessageElement('notice-message', {
     itemId: message.get('itemId'),
     itemIndex,
-    attributes: {
-      'notice-title': message.get('summary') || '',
-      content: message.get('content') || ''
-    }
+    attributes: { 'notice-title': message.get('summary') || '' }
   });
 }
 

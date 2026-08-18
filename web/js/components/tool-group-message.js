@@ -202,8 +202,8 @@ class ToolGroupMessage extends HTMLElement {
   /**
    * Paint the status line beneath the title, through the shared thread-status
    * painter so a paused group inherits the sub-thread tile's approval highlight.
-   * The goal is blanked because the title row above already carries it — this
-   * block is only ever the one status line.
+   * The painter never renders the goal, which the title row above already
+   * carries, so this block is only ever the one status line.
    *
    * A run with nothing to report leaves the block empty AND classless, so it
    * contributes no box, padding or column gap of its own.
@@ -219,7 +219,7 @@ class ToolGroupMessage extends HTMLElement {
       delete el.dataset.kind;
       return;
     }
-    paintThreadSummary(el, '', { status: { ...status, goal: '' } });
+    paintThreadSummary(el, '', { status });
   }
 
   /**
