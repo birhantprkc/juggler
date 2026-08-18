@@ -98,6 +98,15 @@ const CV_ROW_TAGS = new Set([
 const SKIP_FLUSH_IDLE_MS = 200;
 
 /**
+ * Controls that own their own clicks. A click landing on one of these inside a
+ * tile is an action on the item — answering a question, retrying, opening a
+ * disclosure — not a request to navigate into the item's details, so it never
+ * triggers a reveal of the item's child column.
+ */
+const INTERACTIVE_SELECTOR =
+  'button, a, input, textarea, select, summary, [role="button"], [contenteditable="true"]';
+
+/**
  * ConversationArea - Fixed conversation panel at bottom of viewport
  */
 class ConversationArea extends HTMLElement {
@@ -117,6 +126,12 @@ class ConversationArea extends HTMLElement {
     this._selectionOrigin = null;
     /** @type {boolean} @private - Whether the last pointer press began inside an action-confirmation widget */
     this._mousedownInApproval = false;
+    /** @type {boolean} @private - Whether the last pointer press began on a control inside a tile */
+    this._mousedownOnControl = false;
+    /** @type {boolean} @private - Whether the click being handled is an approval action rather than navigation */
+    this._clickIsApprovalAction = false;
+    /** @type {boolean} @private - Whether the click being handled landed on a control inside a tile */
+    this._clickOnControl = false;
     /** @type {import('../model/message-thread.js').MessageThread|null} @private */
     this._messageThread = null;
     /** @type {string|null} @private - Locally tracked selected item ID (per-column) */
@@ -766,6 +781,7 @@ class ConversationArea extends HTMLElement {
       wrapper.addEventListener('mousedown', (e) => {
         const target = /** @type {HTMLElement} */ (e.target);
         this._mousedownInApproval = !!target?.closest?.('action-confirmation');
+        this._mousedownOnControl = !!target?.closest?.(INTERACTIVE_SELECTOR);
       }, true);
 
       wrapper.addEventListener('click', (e) => {
@@ -774,8 +790,14 @@ class ConversationArea extends HTMLElement {
         // the button onto a neighbour after a layout move is still an approval
         // action, not navigation.
         const insideApproval = !!target.closest?.('action-confirmation') || this._mousedownInApproval;
-        this._mousedownInApproval = false;
         this._clickIsApprovalAction = insideApproval;
+        // Same press-location reasoning for controls that live outside an
+        // approval widget — an extension's custom form (the question options),
+        // a retry button, a link. Decided here, while the DOM the press landed
+        // on is still intact, and consumed by the bubble handler below.
+        this._clickOnControl = !!target.closest?.(INTERACTIVE_SELECTOR) || this._mousedownOnControl;
+        this._mousedownInApproval = false;
+        this._mousedownOnControl = false;
         // Approving / denying is an act of "advance, I'm done with this
         // item", not navigation. Clear the user-origin pin so rule 2b can
         // hand selection to the next pending approval. Otherwise users
@@ -793,7 +815,9 @@ class ConversationArea extends HTMLElement {
       // count as "click on the background of the column" and deselect.
       wrapper.addEventListener('click', (e) => {
         const wasApprovalAction = this._clickIsApprovalAction;
+        const onControl = this._clickOnControl;
         this._clickIsApprovalAction = false;
+        this._clickOnControl = false;
         if (wasApprovalAction) return;
 
         const target = /** @type {HTMLElement} */ (e.target);
@@ -824,13 +848,17 @@ class ConversationArea extends HTMLElement {
               // start of a text selection, not a request to see details.
               const tag = selectableItem.tagName;
               const isProse = tag === 'USER-MESSAGE' || tag === 'ASSISTANT-MESSAGE';
-              if (!isProse &&
-                  !target.closest('button, a, input, textarea, select, summary, [role="button"], [contenteditable="true"]')) {
+              if (!isProse && !onControl) {
                 this._dispatchItemSelected(itemId, 'user', true);
               }
               return;
             }
-            this._selectItem(itemId, 'user');
+            // A click on a control inside an unselected tile still selects it —
+            // the action belongs to that item — but it is not a request to see
+            // the item's details, so it must not reveal the child column. Same
+            // rule as the repeat click above: without it, answering a question
+            // on a narrow viewport pages the columns away mid-answer.
+            this._selectItem(itemId, 'user', { allowReveal: !onControl });
             // Move focus out of textarea so keyboard navigation works
             if (document.activeElement?.tagName === 'TEXTAREA') {
               /** @type {HTMLElement} */ (document.activeElement).blur();
@@ -1403,9 +1431,12 @@ class ConversationArea extends HTMLElement {
    * Select an item by ID.
    * @param {string} itemId
    * @param {'user'|'auto'} [origin='user']
+   * @param {{allowReveal?: boolean}} [opts] - allowReveal false when the click
+   *   that caused this selection landed on a control inside the tile: the item
+   *   still becomes selected, but its child column is not revealed.
    * @private
    */
-  _selectItem(itemId, origin = 'user') {
+  _selectItem(itemId, origin = 'user', { allowReveal = true } = {}) {
     if (!this._conversation) return;
     // A folded tool row has no row of its own — selecting it means selecting the
     // group standing in for it, which opens the run in the next column.
@@ -1445,7 +1476,7 @@ class ConversationArea extends HTMLElement {
     // on-screen item never moves the viewport.
     this._scrollItemIntoView(itemId, smooth);
 
-    this._dispatchItemSelected(itemId, origin);
+    this._dispatchItemSelected(itemId, origin, false, allowReveal);
 
     // Tail-only safety net: re-pin the end on the next frame. The hidden→visible
     // composer-box transition re-measures the textarea, which can clamp a
@@ -1539,11 +1570,14 @@ class ConversationArea extends HTMLElement {
    * @param {boolean} [reveal=false] - Repeat-click "show me more" gesture: the
    *   selection is unchanged; the tab should just reveal this item's details
    *   column if it has drifted off-screen.
+   * @param {boolean} [allowReveal=true] - False suppresses the reveal for this
+   *   selection regardless of item type (a click on a control inside the tile).
    * @private
    */
-  _dispatchItemSelected(itemId, origin = 'auto', reveal = false) {
+  _dispatchItemSelected(itemId, origin = 'auto', reveal = false, allowReveal = true) {
+    const revealable = allowReveal && !!itemId && this._isItemRevealable(itemId);
     this.dispatchEvent(new CustomEvent('item-selected', {
-      detail: { itemId, origin, reveal, revealable: itemId ? this._isItemRevealable(itemId) : false },
+      detail: { itemId, origin, reveal, revealable },
       bubbles: true,
       composed: true
     }));
@@ -1556,7 +1590,8 @@ class ConversationArea extends HTMLElement {
    * Context items, tool actions, thinking, errors, and threads all reveal — for
    * a thread the child column is its conversation column, which is exactly where
    * the reveal is most useful. Mirrors the repeat-click prose check in the
-   * column click handler.
+   * column click handler. This judges the item alone; a click that landed on a
+   * control inside the tile suppresses the reveal separately (see allowReveal).
    * @param {string} itemId
    * @returns {boolean} True when a reveal scroll is appropriate for this item
    * @private

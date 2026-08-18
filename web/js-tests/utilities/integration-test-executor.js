@@ -117,6 +117,7 @@ import { runTests as runSkillCompletionTests } from '../unit-tests/skill-complet
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
+import { runTests as runControlClickRevealTests } from '../unit-tests/control-click-reveal-test.js';
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
 import { runTests as runNewThreadFocusTests } from '../unit-tests/new-thread-focus-test.js';
 import { runTests as runApprovalFocusReturnTests } from '../unit-tests/approval-focus-return-test.js';
@@ -342,6 +343,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },
+  { name: 'unit:control-click-reveal', run: runControlClickRevealTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
   { name: 'unit:new-thread-focus', run: runNewThreadFocusTests, needsExclusiveRun: true },
   { name: 'unit:approval-focus-return', run: runApprovalFocusReturnTests, needsExclusiveRun: true },

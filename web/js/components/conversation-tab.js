@@ -1231,7 +1231,8 @@ class ConversationTab extends HTMLElement {
     // column that just appeared for the tapped item sits off-screen to the
     // right. Reveal it so the user sees the detail they selected. Prose
     // (user/assistant messages) is exempt — a tap there is reading, not a
-    // request to scroll away to a child column (see _isItemRevealable).
+    // request to scroll away to a child column (see _isItemRevealable) — as is
+    // a tap on a control inside the tile, which is an action on the item.
     if (origin === 'user' && itemId && revealable && window.matchMedia?.('(width <= 36rem)').matches) {
       this._revealDetailsColumn(columnIndex);
     }
