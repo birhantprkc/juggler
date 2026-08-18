@@ -8766,6 +8766,16 @@ update-notice .update-notice__status--error .update-notice__status-text {
     color: var(--accent-red);
 }
 
+/* The underlying error text, sitting beneath the plain-English lead. Kept in
+   the secondary colour so the lead reads first and this stays legible. */
+update-notice .update-notice__status-detail {
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
 update-notice .update-notice__skew {
     margin: 0.5rem 0 0;
     padding: 0.5rem 0.625rem;

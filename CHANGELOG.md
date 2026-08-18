@@ -18,6 +18,7 @@ of changes; this project follows semantic versioning.
 - The explore_code tool is now query_code, shown as "Script"; existing conversations keep working
 - An extension that fails to reload now says so instead of quietly vanishing
 - Auto-approval follows `cd`, judging relative paths where the command actually runs
+- An unreachable update server is only reported when you asked for the check yourself
 
 ## [0.5.6] - 2026-08-14
 

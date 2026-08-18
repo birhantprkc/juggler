@@ -45,6 +45,10 @@ type UpdaterSnapshot struct {
 	Written    int64  `json:"written,omitempty"`
 	Total      int64  `json:"total,omitempty"`
 	Error      string `json:"error,omitempty"`
+	// ErrorStage is which phase produced Error ("check", "download", "verify",
+	// "install"). The page leads with it so a check that couldn't reach the
+	// server doesn't claim an update failed — nothing was being updated.
+	ErrorStage string `json:"errorStage,omitempty"`
 }
 
 // updaterSnapshot returns the current updater state. Default: not present, so a
@@ -52,8 +56,11 @@ type UpdaterSnapshot struct {
 var updaterSnapshot = func() UpdaterSnapshot { return UpdaterSnapshot{Present: false} }
 
 // updaterInstall starts (or no-ops if already running) the download+stage flow.
-// Default: no-op — there is nothing to install without an overlay.
-var updaterInstall = func() {}
+// The argument is userInitiated: true when a click asked for this, false for the
+// page's own proactive kick. A failure the user did not ask for is logged, not
+// shown, so an unreachable update server never puts an error in front of someone
+// who never asked. Default: no-op — there is nothing to install without an overlay.
+var updaterInstall = func(_ bool) {}
 
 // updaterCheck runs a check-only probe: it asks the updater whether a newer
 // release exists and pushes the resulting snapshot to the page, but never

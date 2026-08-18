@@ -253,7 +253,9 @@ func (a *appState) handleUpdaterControl(w http.ResponseWriter, r *http.Request, 
 	case "install":
 		// Fire-and-forget; the overlay guards against a double-start itself. The
 		// page learns the outcome from the pushed snapshot, not this response.
-		go updaterInstall()
+		// auto=1 marks the page's own proactive kick rather than a click, so a
+		// failure nobody asked to see stays in the log.
+		go updaterInstall(r.URL.Query().Get("auto") != "1")
 		w.WriteHeader(http.StatusNoContent)
 	case "check":
 		// Check-only probe: reveal availability without starting a download. The

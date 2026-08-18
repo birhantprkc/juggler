@@ -151,6 +151,7 @@ class UpdateButton extends HTMLElement {
       updaterState,
       pct,
       error: u.error || null,
+      errorStage: u.errorStage || null,
       currentVersion: s.currentVersion || '',
       targetVersion,
       appVersion: u.appVersion || null,
@@ -219,6 +220,9 @@ class UpdateButton extends HTMLElement {
    * the app already auto-downloads a found update — so it's latency, not policy.
    * No-op in browser / free / non-macOS builds (no updater present) and once the
    * updater has moved past its initial idle state.
+   *
+   * Marked `auto` because nobody clicked for it: if the update server is
+   * unreachable the failure belongs in the log, not in the header.
    * @private
    * @param {import('./update-notice.js').UpdateViewModel} vm
    */
@@ -228,7 +232,7 @@ class UpdateButton extends HTMLElement {
     const st = vm.updaterState || '';
     if (st !== '' && st !== 'idle') return;
     this._autoKicked = true;
-    void startInstall();
+    void startInstall({ auto: true });
   }
 
   /** @private */

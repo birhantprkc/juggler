@@ -25,6 +25,8 @@
  * @property {number} [written] - Bytes downloaded so far.
  * @property {number} [total] - Total bytes to download (<=0 ⇒ indeterminate).
  * @property {string} [error] - Last error message, when state === 'error'.
+ * @property {string} [errorStage] - Which phase produced `error`: check |
+ *   download | verify | install.
  * @property {boolean} [appManagedServer] - Whether this window's server was
  *   spawned by the app (and so is replaced by the bundle swap).
  */
@@ -52,10 +54,16 @@ export async function getUpdaterState() {
  * Kick (or retry) the background download+stage flow. No-op without a native
  * host. The result arrives via the pushed `juggler:updater-status` snapshot, not
  * a return value.
+ *
+ * Pass `auto: true` for a kick the page decided to make on its own rather than
+ * one the user clicked for: the app then keeps any failure to the log instead of
+ * surfacing it, so an update server that is down doesn't raise an error nobody
+ * asked to see. Clicks leave it false and get the error reported.
+ * @param {{auto?: boolean}} [opts] - auto=true marks a self-initiated kick.
  * @returns {Promise<void>}
  */
-export async function startInstall() {
-  const url = windowControlURL('updater', '?op=install');
+export async function startInstall({ auto = false } = {}) {
+  const url = windowControlURL('updater', auto ? '?op=install&auto=1' : '?op=install');
   if (!url) return;
   // Transient failures are ignored — the next pushed snapshot reflects reality.
   await fetchJson(url, { method: 'POST', fallback: null });

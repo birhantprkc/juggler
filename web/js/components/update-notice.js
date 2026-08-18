@@ -33,6 +33,8 @@ import { startInstall, requestRestart } from '../services/updater-control.js';
  *   available | downloading | verifying | installing | ready | error, or null.
  * @property {number|null} pct - Download percent (0–100), or null when unknown.
  * @property {string|null} error - Updater error text, when updaterState==='error'.
+ * @property {string|null} [errorStage] - Which phase produced `error`: check |
+ *   download | verify | install | restart. Decides the plain-English lead.
  * @property {string} [currentVersion] - The viewed server's version.
  * @property {string} [targetVersion] - The version being offered.
  * @property {string|null} [appVersion] - This app bundle's version.
@@ -49,6 +51,24 @@ const ELEMENT_NODE = 1;
 
 /** Generic heading used when the manifest doesn't author its own title. */
 const DEFAULT_TITLE = 'New Juggler Version Available';
+
+/**
+ * Plain-English lead for a failure, keyed by the stage that produced it. The
+ * stage matters: a check that couldn't reach the server never began an update,
+ * so reporting it as a failed update would simply be untrue. Whichever lead
+ * applies, the underlying error text is shown beneath it, never replaced by it.
+ * @type {Record<string, string>}
+ */
+const ERROR_LEADS = {
+  check: 'Couldn’t check for updates.',
+  download: 'Couldn’t download the update.',
+  verify: 'Couldn’t verify the downloaded update.',
+  install: 'Couldn’t install the update.',
+  restart: 'Couldn’t restart to finish the update.',
+};
+
+/** Lead used when the failure arrived without a recognised stage. */
+const ERROR_LEAD_DEFAULT = 'Couldn’t complete the update.';
 
 /**
  * Tags allowed in a server-authored notice body, each mapped to the attributes
@@ -258,6 +278,10 @@ class UpdateNotice extends HTMLElement {
       vm.upToDate ? 'uptodate' : '',
       vm.present ? 'present' : 'absent',
       vm.updaterState || '',
+      // The failure itself is part of the shape: the status region is built from
+      // the stage and the message, so a change in either has to rebuild.
+      vm.errorStage || '',
+      vm.error || '',
       vm.appManagedServer ? 'managed' : 'external',
       vm.serverUpdateAvailable ? 'server' : '',
       vm.notice ? vm.notice.id : '',
@@ -381,10 +405,14 @@ class UpdateNotice extends HTMLElement {
       region.className = 'update-notice__status update-notice__status--error';
       const text = document.createElement('p');
       text.className = 'update-notice__status-text';
-      text.textContent = vm.error
-        ? `Update failed: ${vm.error}`
-        : 'The update failed. You can try again.';
+      text.textContent = ERROR_LEADS[vm.errorStage || ''] || ERROR_LEAD_DEFAULT;
       region.appendChild(text);
+      if (vm.error) {
+        const detail = document.createElement('p');
+        detail.className = 'update-notice__status-detail';
+        detail.textContent = vm.error;
+        region.appendChild(detail);
+      }
       return region;
     }
     if (!FLOW_STATES.has(vm.updaterState || '')) return null;
@@ -408,11 +436,14 @@ class UpdateNotice extends HTMLElement {
   }
 
   /**
-   * Patch the progress region's bar + text in place (no rebuild).
+   * Patch the progress region's bar + text in place (no rebuild). Confined to
+   * the flow states: the error region reuses the same status-text class, and
+   * patching it would replace the failure with progress copy.
    * @private
    * @param {UpdateViewModel} vm
    */
   _patchProgress(vm) {
+    if (!FLOW_STATES.has(vm.updaterState || '')) return;
     const region = this.querySelector('.update-notice__status');
     if (region) this._applyProgress(/** @type {HTMLElement} */ (region), vm);
   }
@@ -553,7 +584,12 @@ class UpdateNotice extends HTMLElement {
       }
       if (res.status === 'error' && this._vm) {
         // Surface the failure in the status region without closing the dialog.
-        this._vm = { ...this._vm, updaterState: 'error', error: res.message || 'Restart failed.' };
+        this._vm = {
+          ...this._vm,
+          updaterState: 'error',
+          error: res.message || null,
+          errorStage: 'restart',
+        };
         this._build(this._vm);
       }
       // status 'ok' quits the app; nothing more to do.
