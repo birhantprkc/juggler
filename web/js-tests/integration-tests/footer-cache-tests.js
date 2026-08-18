@@ -113,7 +113,7 @@ export const footerShowsBlobTokensTest = {
 
     // DOM: the footer's async fetch must resolve and render
     // "Nk cached" reflecting the provider-reported numbers
-    // (inputTokens=3000, cachedTokens=0 from the mock).
+    // (inputTokens=3000, cachedTokens=2000 from the mock).
     const td = findTokenDisplay(conversation);
     if (!td) return; // headless
 
@@ -312,9 +312,106 @@ export const footerCacheHiddenWhileProcessingTest = {
   }
 };
 
+// ============================================================================
+// TEST 5: an unreported cached count is unknown, and unknown warns about nothing.
+// ============================================================================
+
+/**
+ * A provider that reports no cache usage for a call leaves `cachedTokens` out
+ * of the blob, and the footer passes that absence on as null. Unknown is not a
+ * miss: it draws no warning, no `+Nk new`, and no cached slice of the bar. A
+ * reported 0 is a measured miss and keeps warning.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const footerCacheUnknownTest = {
+  name: 'footer-cache-unknown',
+  description: 'token-display treats a null cached count as unknown — no cache-warn, no "+Nk new", no cached bar segment — while a reported 0 still warns.',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('OK.', { inputTokens: 100 })
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'hi' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'hi' },
+      { type: 'assistant', content: 'OK.' }
+    ]
+  },
+
+  async customAssertions(conversation) {
+    const td = findTokenDisplay(conversation);
+    if (!td) return;
+
+    forceContextWindow(conversation, 200000);
+
+    // 130000 tokens the provider said nothing about. The uncached delta the
+    // warning is built on cannot be computed, so none of it may be drawn.
+    /** @type {any} */ (td).setUsage({
+      total: 130000,
+      cached: null,
+      budget: 200000,
+    });
+    if (td.classList.contains('cache-warn')) {
+      throw new Error(`Unknown cache must not warn; classes were: ${td.className}`);
+    }
+    if (/\bnew\b/.test(td.textContent || '')) {
+      throw new Error(`Unknown cache must render no "+Nk new" segment; got ${JSON.stringify(td.textContent)}`);
+    }
+    if (/\bcached\b/.test(td.textContent || '')) {
+      throw new Error(`Unknown cache must render no cached count; got ${JSON.stringify(td.textContent)}`);
+    }
+    const cachedSeg = /** @type {HTMLElement|null} */ (td.querySelector('.token-fill-cached'));
+    if (!cachedSeg || cachedSeg.style.width !== '0%') {
+      throw new Error(`Unknown cache must leave the cached bar segment at 0%; got ${cachedSeg ? cachedSeg.style.width : '<missing>'}`);
+    }
+
+    // Omitting the field says the same thing as passing null.
+    /** @type {any} */ (td).setUsage({
+      total: 130000,
+      budget: 200000,
+    });
+    if (td.classList.contains('cache-warn')) {
+      throw new Error(`An absent cached count must not warn; classes were: ${td.className}`);
+    }
+    if (/\bnew\b/.test(td.textContent || '')) {
+      throw new Error(`An absent cached count must render no "+Nk new" segment; got ${JSON.stringify(td.textContent)}`);
+    }
+
+    // A reported 0 is a miss the provider measured, and reads as one.
+    /** @type {any} */ (td).setUsage({
+      total: 130000,
+      cached: 0,
+      budget: 200000,
+    });
+    if (!td.classList.contains('cache-warn')) {
+      throw new Error(`A reported 0 with 130k input must warn; classes were: ${td.className}`);
+    }
+
+    // And a reported hit stays quiet, with its count on the line.
+    /** @type {any} */ (td).setUsage({
+      total: 129916,
+      cached: 128425,
+      budget: 200000,
+    });
+    if (td.classList.contains('cache-warn')) {
+      throw new Error(`A 98% hit must not warn; classes were: ${td.className}`);
+    }
+    if (!/\bcached\b/.test(td.textContent || '')) {
+      throw new Error(`A reported hit must render its cached count; got ${JSON.stringify(td.textContent)}`);
+    }
+  }
+};
+
 export const tests = [
   footerShowsBlobTokensTest,
   footerHidesAfterRewindTest,
   footerCacheWarnTest,
-  footerCacheHiddenWhileProcessingTest
+  footerCacheHiddenWhileProcessingTest,
+  footerCacheUnknownTest
 ];

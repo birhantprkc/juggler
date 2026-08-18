@@ -512,6 +512,9 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 			}, &transientCLIError{msg: "claude CLI stopped for tool_use but emitted no usable tool call"}
 		}
 		c.activeSession.pendingTools = pending
+		// Clock start for the idle sweeper's parked ceiling: from here the CLI
+		// is blocked on stdin, so its stillness is ours and not its own.
+		c.activeSession.parkedAt = time.Now()
 		// Stash the snapshot for diagnostic logging only — never returned.
 		c.activeSession.inputTokens = turn.InputTokens
 		c.activeSession.outputTokens = turn.OutputTokens
@@ -526,7 +529,9 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		// The CLI is now blocked on stdin waiting for our control_response
 		// for each pending tools/call. Stdio has no transport timeout, so
 		// the CLI patiently waits for as long as the user takes to
-		// approve. No watchdog needed. Per-conv state lives on
+		// approve. No watchdog needed: the only bound is the idle sweeper's
+		// parked ceiling, which reclaims the subprocess of a park nobody ever
+		// answers (see reapIdleCLI). Per-conv state lives on
 		// c.activeSession (set in-place above) — no broadcast needed.
 		jlog.Debug("Session paused: %d pending tool IDs (uuid=%s, partial in=%d out=%d cacheWrite=%d)",
 			len(pending), c.activeSession.sessionUUID, turn.InputTokens, turn.OutputTokens, turn.CacheWriteTokens)

@@ -136,9 +136,18 @@ func (c *Client) Name() string {
 // next turn --resumes warm. Per-thread keying means one CLI per thread, so
 // idle processes must be bounded — but a re-opened thread should still resume
 // warm, hence we reap the process, not the session. Non-blocking on ownership:
-// if a turn holds `own` the session is active, so skip. A session parked
-// awaiting tool results (pendingTools != nil) is waiting on us, not idle.
-func (c *Client) reapIdleCLI(idle time.Duration) {
+// if a turn holds `own` the session is active, so skip; holding the token for
+// the whole check makes the pendingTools/parkedAt/live reads race-free against
+// the turn goroutine that writes them.
+//
+// A session parked awaiting tool results is waiting on US, not idle: the CLI
+// sits blocked on stdin while a tool runs (a sub-agent thread, a long build, an
+// approval prompt the user hasn't answered), and lastUsedAt is frozen for the
+// duration. Reaping there strands the parked call and costs the next turn its
+// warm resume, so a parked session is measured against `parked` from the moment
+// it parked instead of against `idle` — long enough for any tool that is going
+// to finish, short enough that an abandoned park still gives its process back.
+func (c *Client) reapIdleCLI(idle, parked time.Duration) {
 	if c.own == nil {
 		return
 	}
@@ -150,12 +159,31 @@ func (c *Client) reapIdleCLI(idle time.Duration) {
 	defer func() { c.own <- struct{}{} }()
 
 	s := c.activeSession
-	if s == nil || !s.hasLiveCLI() || len(s.pendingTools) > 0 {
+	if s == nil || !s.hasLiveCLI() {
+		return
+	}
+	if len(s.pendingTools) > 0 {
+		held := time.Since(s.parkedAt)
+		if held < parked {
+			if held >= idle {
+				// Logged only once the park has outlived the idle timeout, so
+				// an ordinary tool call that straddles a sweep stays silent and
+				// only the exemptions that actually matter are accounted for.
+				jlog.Debug("claudecode: session parked %v on %d tool call(s) — waiting on us, exempt from idle reap (uuid=%s)",
+					held.Round(time.Second), len(s.pendingTools), shortID(s.sessionUUID))
+			}
+			return
+		}
+		jlog.Info("claudecode: reaping CLI parked %v on %d tool call(s) — past the %v ceiling, so nothing is coming back for it (uuid=%s)",
+			held.Round(time.Second), len(s.pendingTools), parked, shortID(s.sessionUUID))
+		s.tearDownLiveCLI() // free the OS process; the resumable record survives
 		return
 	}
 	if time.Since(s.lastUsedAt) < idle {
 		return
 	}
+	jlog.Debug("claudecode: reaping CLI idle %v (uuid=%s)",
+		time.Since(s.lastUsedAt).Round(time.Second), shortID(s.sessionUUID))
 	s.tearDownLiveCLI() // free the OS process; the resumable record survives
 }
 
@@ -449,7 +477,8 @@ func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, 
 	}
 
 	if c.activeSession != nil {
-		// Touch lastUsedAt for diagnostics; nothing sweeps it.
+		// Touch lastUsedAt so the idle sweeper (reapIdleCLI) counts this turn
+		// as recent activity.
 		c.activeSession.lastUsedAt = time.Now()
 	}
 

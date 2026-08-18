@@ -26,9 +26,13 @@ const NEARLY_FULL_PCT = 95;
  *   5. While `processing` is true, the cached portion is suppressed — the
  *      anchor is from the previous turn and can transiently disagree with
  *      the in-flight Yjs state.
+ *   6. A null (or absent) `cached` means the provider reported no cache usage
+ *      for the turn: unknown, not zero. Unknown draws nothing — no cached
+ *      parenthetical, no `+Nk new`, no cache-warn, no cached bar segment —
+ *      and says so in the tooltip. A reported 0 is a real miss and warns.
  * @typedef {object} TokenUsage
  * @property {number} total - Total input tokens for the most recent turn
- * @property {number} [cached] - Cached portion of `total`
+ * @property {number|null} [cached] - Cached portion of `total`; null or absent when the provider reported no cache usage
  * @property {number} [budget] - Context window (0/undefined = unknown)
  * @property {boolean} [processing] - True while a turn is streaming
  * @property {boolean} [approximate] - Input total is a local fallback estimate
@@ -37,7 +41,7 @@ class TokenDisplay extends HTMLElement {
   constructor() {
     super();
     /** @type {number}  @private */ this.total = 0;
-    /** @type {number}  @private */ this.cached = 0;
+    /** @type {number|null} @private */ this.cached = null;
     /** @type {number}  @private */ this.budget = 0;
     /** @type {boolean} @private */ this.processing = false;
     /** @type {boolean} @private */ this.approximate = false;
@@ -52,7 +56,12 @@ class TokenDisplay extends HTMLElement {
    */
   setUsage(usage) {
     const total = Math.max(0, Number(usage.total) || 0);
-    const cached = Math.max(0, Math.min(total, Number(usage.cached) || 0));
+    // Null or absent is the provider declining to report cache usage: it is
+    // carried through as null so nothing downstream reads it as a miss. A
+    // reported number — including 0 — stays a number.
+    const cached = usage.cached === null || usage.cached === undefined
+      ? null
+      : Math.max(0, Math.min(total, Number(usage.cached) || 0));
     const budget = Math.max(0, Number(usage.budget) || 0);
     const processing = !!usage.processing;
     const approximate = !!usage.approximate;
@@ -71,7 +80,7 @@ class TokenDisplay extends HTMLElement {
 
   /** Clear all state and hide the element. */
   clear() {
-    this.setUsage({ total: 0, cached: 0, budget: 0, processing: false });
+    this.setUsage({ total: 0, cached: null, budget: 0, processing: false });
   }
 
   render() {
@@ -82,10 +91,16 @@ class TokenDisplay extends HTMLElement {
       return;
     }
 
+    // The cached count the render works from: null wherever there is nothing
+    // trustworthy to say about the cache, whether because the provider did not
+    // report it or because a turn is in flight (rule 5). Every cache-derived
+    // figure below is guarded on it, so unknown states the total and stops.
+    const cached = this.processing ? null : this.cached;
+
     const hasBudget = this.budget > 0;
     const totalPct = hasBudget ? Math.min(100, (this.total / this.budget) * 100) : 0;
-    const cachedPct = (!hasBudget || this.processing) ? 0
-      : Math.min(totalPct, (this.cached / this.budget) * 100);
+    const cachedPct = (!hasBudget || cached === null) ? 0
+      : Math.min(totalPct, (cached / this.budget) * 100);
     const usedPct = Math.max(0, totalPct - cachedPct);
 
     this.classList.remove('token-medium', 'token-high');
@@ -94,14 +109,14 @@ class TokenDisplay extends HTMLElement {
       else if (totalPct > 60) this.classList.add('token-medium');
     }
 
-    const uncached = this.processing ? 0 : Math.max(0, this.total - this.cached);
+    const uncached = cached === null ? 0 : Math.max(0, this.total - cached);
     const warn = uncached > UNCACHED_WARN_TOKENS;
     this.classList.toggle('cache-warn', warn);
 
     let leftText = `${this.approximate ? '~' : ''}${fmtTokens(this.total)}`;
-    if (!this.processing && this.cached > 0) {
+    if (cached !== null && cached > 0) {
       const newPart = warn ? ` · <span class="token-new">+${fmtTokens(uncached)} new</span>` : '';
-      leftText += ` <span class="token-cached">(${fmtTokens(this.cached)} cached${newPart})</span>`;
+      leftText += ` <span class="token-cached">(${fmtTokens(cached)} cached${newPart})</span>`;
     }
 
     const meterHTML = hasBudget
@@ -109,9 +124,13 @@ class TokenDisplay extends HTMLElement {
       : '';
 
     // Rule 1 keeps the visible count neutral, so a nearly-full window says so
-    // in the tooltip rather than in the pill itself.
+    // in the tooltip rather than in the pill itself. The tooltip is also where
+    // an unreported cache figure is accounted for: the pill states the total
+    // and leaves the cache out, and the tooltip says why it is missing.
     if (hasBudget && totalPct >= NEARLY_FULL_PCT) {
       this.title = `${Math.round(totalPct)}% full. Something’s got to give.`;
+    } else if (!this.processing && this.cached === null) {
+      this.title = 'Cache use not reported for this turn.';
     } else {
       this.removeAttribute('title');
     }

@@ -450,10 +450,86 @@ func TestAppendToolResultsToWarmSession_HealsStrandedTurnAfterAbandonedCall(t *t
 	}
 }
 
+// TestAppendToolResultsToWarmSession_HealsCLIClosedCallTail appends when the
+// file ends on a result the CLI synthesised for itself while being torn down.
+//
+// A CLI killed while parked on a tools/call closes that call in its own words —
+// the observed one is "(<tool> completed with no output)", no is_error, no
+// marker text of ours. It is still an answer to a call whose real result is only
+// arriving now, so it is cut like any other teardown wreckage; refusing here
+// cold-started a fully warm conversation for 80k tokens.
+func TestAppendToolResultsToWarmSession_HealsCLIClosedCallTail(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-cli-closed-tail"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path, newSyntheticEntry("user", []map[string]any{{
+		"type": "tool_result", "tool_use_id": "call_1",
+		"content": "(mcp__juggler__Explore completed with no output)",
+	}}, "uuid-cli-closed-1", "uuid-asst-1", uuid, workingDir, time.Now()))
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "the answer")}, nil); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v (a call the CLI closed on its way down must not force a cold start)", err)
+	}
+
+	entries := readJSONL(t, path)
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (user, tool_use, real result); got %d — the CLI's own closing result must be cut, not kept", len(entries))
+	}
+	last := entries[2]
+	if last["parentUuid"] != "uuid-asst-1" {
+		t.Fatalf("appended entry parentUuid = %v, want uuid-asst-1 (chains to the tool_use, not to the CLI's closing result)", last["parentUuid"])
+	}
+	msg, _ := last["message"].(map[string]any)
+	content, _ := msg["content"].([]any)
+	block, _ := content[0].(map[string]any)
+	if block["content"] != "the answer" {
+		t.Fatalf("appended block = %+v, want the real result for call_1", block)
+	}
+}
+
+// TestAppendToolResultsToWarmSession_MixedResultTailStillRefuses keeps the
+// per-block strictness. A user turn that answers the call we hold a result for
+// AND carries something else is a turn the user really sent, so nothing is cut
+// and we cold-start instead.
+func TestAppendToolResultsToWarmSession_MixedResultTailStillRefuses(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-mixed-tail"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path, newSyntheticEntry("user", []map[string]any{
+		{"type": "tool_result", "tool_use_id": "call_1", "content": "genuine output"},
+		{"type": "text", "text": "and while you're there, do this too"},
+	}, "uuid-mixed-1", "uuid-asst-1", uuid, workingDir, time.Now()))
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "x")}, nil); err == nil {
+		t.Fatal("expected a refusal when the tail entry also carries a block that is not a tool_result; got nil")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a refused append must leave the file untouched.\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 // TestAppendToolResultsToWarmSession_RealUserTailStillRefuses keeps the healing
-// narrow. A user turn that is NOT an abandoned-call marker means real
-// conversation continued past the tool_use, and cutting back to it would delete
-// history — so we must still cold-start.
+// narrow. A user turn answering a call we are NOT delivering a result for is
+// real conversation that continued past the tool_use, and cutting back to it
+// would delete history — so we must still cold-start.
 func TestAppendToolResultsToWarmSession_RealUserTailStillRefuses(t *testing.T) {
 	userpathstest.Isolate(t)
 	workingDir := filepath.Join(t.TempDir(), "proj")
@@ -464,7 +540,7 @@ func TestAppendToolResultsToWarmSession_RealUserTailStillRefuses(t *testing.T) {
 	path := seedWarmSession(t, workingDir, uuid, "call_1")
 	appendRawEntries(t, path,
 		newSyntheticEntry("user", []map[string]any{{
-			"type": "tool_result", "tool_use_id": "call_1", "content": "genuine output",
+			"type": "tool_result", "tool_use_id": "call_other", "content": "genuine output",
 		}}, "uuid-real-1", "uuid-asst-1", uuid, workingDir, time.Now()),
 		newSyntheticEntry("assistant", []map[string]any{{"type": "text", "text": "done"}},
 			"uuid-asst-2", "uuid-real-1", uuid, workingDir, time.Now()),

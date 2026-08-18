@@ -54,6 +54,7 @@ import { tests as binGuardTests } from '../integration-tests/bin-guard-tests.js'
 import { tests as modelAvailabilityTests } from '../integration-tests/model-availability-tests.js';
 import { runTests as runContextCacheImpactTests } from '../unit-tests/context-cache-impact-test.js';
 import { runTests as runCacheMissWarningTests } from '../unit-tests/cache-miss-warning-test.js';
+import { runTests as runTokenCacheUnknownTests } from '../unit-tests/token-cache-unknown-test.js';
 import { runTests as runCompactionStatusTests } from '../unit-tests/compaction-status-test.js';
 import { runTests as runContextItemPersistenceTests } from '../unit-tests/context-item-persistence-test.js';
 import { runTests as runContextItemSeedExecuteTests } from '../unit-tests/context-item-seed-execute-test.js';
@@ -270,6 +271,7 @@ const ALL_TESTS = [
 const UNIT_TEST_SUITES = [
   { name: 'unit:context-cache-impact', run: runContextCacheImpactTests },
   { name: 'unit:cache-miss-warning', run: runCacheMissWarningTests },
+  { name: 'unit:token-cache-unknown', run: runTokenCacheUnknownTests },
   { name: 'unit:compaction-status', run: runCompactionStatusTests },
   { name: 'unit:key-shortcut-manager', run: runKeyShortcutManagerTests },
   // Exclusive: the Escape preference is one localStorage key on an origin every

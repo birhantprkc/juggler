@@ -156,8 +156,9 @@ func (c *Client) snapshotWarmSession() []byte {
 // It refuses (returns an error, so the caller cold-starts fresh) unless the file
 // exists AND ends on assistant tool_use entries that the results answer exactly,
 // one for one — the guard that keeps the file's tool_use→tool_result adjacency
-// valid. The one tail it will cut back past is an abandoned-call marker of our
-// own (dropTeardownWreckage), which answers nothing and stands in the way.
+// valid. The one tail it will cut back past is one that already answers the very
+// calls these results are for (dropTeardownWreckage): those answers are stale by
+// construction, and stand in the way of the real ones.
 func (c *Client) appendToolResultsToWarmSession(results []provider.Message, snapshot []byte) error {
 	if c.activeSession == nil || c.activeSession.sessionUUID == "" {
 		return fmt.Errorf("no warm session uuid to append to")
@@ -178,10 +179,19 @@ func (c *Client) appendToolResultsToWarmSession(results []provider.Message, snap
 	if len(trimmed) == 0 {
 		return fmt.Errorf("warm session %s is empty", path)
 	}
+	blocks := toolResultBlocks(results)
+	if len(blocks) == 0 {
+		return fmt.Errorf("no tool_result blocks to append")
+	}
+	appending := make(map[string]bool, len(blocks))
+	for _, b := range blocks {
+		appending[b.ToolUseID] = true
+	}
+
 	lines := bytes.Split(trimmed, []byte("\n"))
 	dangling, err := trailingToolUses(lines)
 	if err != nil {
-		healed, ok := dropTeardownWreckage(lines)
+		healed, ok := dropTeardownWreckage(lines, appending)
 		if !ok {
 			return fmt.Errorf("warm session %s: %w", path, err)
 		}
@@ -194,10 +204,6 @@ func (c *Client) appendToolResultsToWarmSession(results []provider.Message, snap
 		lines, dangling = healed, healedDangling
 	}
 
-	blocks := toolResultBlocks(results)
-	if len(blocks) == 0 {
-		return fmt.Errorf("no tool_result blocks to append")
-	}
 	entries, err := pairResultsWithToolUses(blocks, dangling, c.activeSession.sessionUUID, c.workingDir)
 	if err != nil {
 		return fmt.Errorf("warm session %s: %w", path, err)
@@ -332,20 +338,32 @@ func pairResultsWithToolUses(blocks []anthropic.APIContentBlock, dangling []dang
 const teardownAbortResultText = "tool execution aborted: conversation session ended"
 
 // dropTeardownWreckage cuts a warm session file back to its dangling assistant
-// tool_use by removing an abandoned-call marker and everything after it,
-// reporting whether it found one.
+// tool_use by removing a stale answer to the calls in appending — the tool_use
+// IDs whose results are about to be written — and everything after it, reporting
+// whether it found one.
 //
-// A CLI handed one of these markers treats it as a delivered result: it
-// journals it as a `user` tool_result, displacing the tool_use warm-append
-// resumes from, and — given long enough — spends a whole model turn responding
-// to it and journals that too. None of it is conversation. The result is a lie
-// and the turn built on it reached nobody, so the file is cut back to the
-// tool_use and the real result delivered there.
+// A teardown closes a parked tools/call one of two ways, and both leave a `user`
+// tool_result where warm-append needs the tool_use: Juggler's own abandoned-call
+// marker (teardownAbortResultText), or text the CLI synthesises for itself on
+// its way down ("(<tool> completed with no output)" and the like). Keying on the
+// text can only ever chase the wording of the day, so the cut is keyed on
+// identity instead: warm-append runs only while holding an UNDELIVERED result
+// for exactly these calls, so an entry that answers one of them answers it with
+// something no tool produced. It is stale by construction — a genuine result
+// consumed as real conversation could not still be undelivered here — and
+// whatever turn was built on it reached nobody.
 //
-// The scan walks back over trailing assistant entries (that stranded turn) to
-// the newest user entry. Only a marker of our own qualifies: any other user turn
-// means real conversation continued past this point, and nothing may be cut.
-func dropTeardownWreckage(lines [][]byte) ([][]byte, bool) {
+// An entry qualifies when every one of its content blocks is a tool_result AND
+// either every one of those blocks answers a call in appending, or the entry is
+// an abandoned-call marker (which answers nothing at all, so it goes whatever id
+// it carries). A user turn holding any other block is real history: if one
+// block fails the test, nothing is cut.
+//
+// The scan walks back over trailing assistant entries (a turn stranded on the
+// far side of the stale answer) to the newest user entry, skipping the CLI's
+// uuid-less bookkeeping records. Any user turn that does not qualify means real
+// conversation continued past this point, and nothing may be cut.
+func dropTeardownWreckage(lines [][]byte, appending map[string]bool) ([][]byte, bool) {
 	for i := len(lines) - 1; i >= 0; i-- {
 		var probe struct {
 			UUID string `json:"uuid"`
@@ -358,8 +376,8 @@ func dropTeardownWreckage(lines [][]byte) ([][]byte, bool) {
 		case probe.UUID == "":
 			continue // a bookkeeping record — outside the parentUuid chain
 		case probe.Type == "assistant":
-			continue // a turn stranded on the far side of the marker
-		case probe.Type == "user" && isTeardownAbortEntry(lines[i]):
+			continue // a turn stranded on the far side of the stale answer
+		case probe.Type == "user" && (answersOnlyCalls(lines[i], appending) || isTeardownAbortEntry(lines[i])):
 			return lines[:i], true
 		default:
 			return nil, false
@@ -368,9 +386,35 @@ func dropTeardownWreckage(lines [][]byte) ([][]byte, bool) {
 	return nil, false
 }
 
+// answersOnlyCalls reports whether a session entry is a user turn whose content
+// is nothing but tool_results for the calls in appending — the calls whose real
+// results are about to be written. Every block must be one: a user turn that
+// also carries a genuine unrelated result is real history.
+func answersOnlyCalls(line []byte, appending map[string]bool) bool {
+	var e struct {
+		Message struct {
+			Content []struct {
+				Type      string `json:"type"`
+				ToolUseID string `json:"tool_use_id"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &e); err != nil || len(e.Message.Content) == 0 {
+		return false
+	}
+	for _, b := range e.Message.Content {
+		if b.Type != "tool_result" || !appending[b.ToolUseID] {
+			return false
+		}
+	}
+	return true
+}
+
 // isTeardownAbortEntry reports whether a session entry is a user turn whose
 // content is nothing but abandoned-call markers. Every block must be one: a
-// user turn that also carries a genuine result is real history.
+// user turn that also carries a genuine result is real history. A marker answers
+// nothing, so it qualifies for cutting on its text alone, without its call
+// having to be one whose result is being appended.
 func isTeardownAbortEntry(line []byte) bool {
 	var e struct {
 		Message struct {

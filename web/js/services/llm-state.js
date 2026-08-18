@@ -186,8 +186,11 @@ class LLMState {
    * is idle or before the provider has reported any usage. Only meaningful for
    * models whose provider sets streamsLiveUsage — other providers may report a
    * number here that isn't fit for the context meter, so gate on that flag.
+   *
+   * The cached portion is null when the step carried no cache figure at all:
+   * unknown, not a miss. A reported 0 comes back as 0.
    * @param {string} conversationId - Conversation ID
-   * @returns {{inputTokens: number, cachedTokens: number}|null} Live usage, or null when idle or no usage reported yet.
+   * @returns {{inputTokens: number, cachedTokens: number|null}|null} Live usage, or null when idle or no usage reported yet.
    */
   getLiveInputUsage(conversationId) {
     if (!this.isConversationProcessing(conversationId)) return null;
@@ -197,7 +200,7 @@ class LLMState {
     const cached = data?.cachedTokens;
     return {
       inputTokens,
-      cachedTokens: typeof cached === 'number' && cached > 0 ? cached : 0,
+      cachedTokens: typeof cached === 'number' && cached >= 0 ? cached : null,
     };
   }
 

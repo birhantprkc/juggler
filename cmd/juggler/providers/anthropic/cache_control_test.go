@@ -160,6 +160,163 @@ func TestNoBreakpointWhenNoSystemPrompt(t *testing.T) {
 	}
 }
 
+// signedThinking builds a thinking message the transform will keep: an unsigned
+// one is dropped outright (Anthropic rejects a signatureless thinking block), so
+// the signature is what makes it reach the SDK union as an OfThinking variant.
+func signedThinking(content string) provider.Message {
+	return provider.Message{
+		Type:         "thinking",
+		Content:      content,
+		ProviderData: map[string]any{"signature": "sig-" + content},
+	}
+}
+
+// breakpointAt returns the (message, block) index of the single ephemeral
+// message-level breakpoint, or (-1, -1) when there is none. It fails the test if
+// more than one exists — exactly one is the invariant the whole scheme rests on.
+func breakpointAt(t *testing.T, messages []anthropicsdk.MessageParam) (int, int) {
+	t.Helper()
+	msgIdx, blkIdx := -1, -1
+	for i, m := range messages {
+		for j, blk := range m.Content {
+			if cc := blk.GetCacheControl(); cc != nil && string(cc.Type) == "ephemeral" {
+				if msgIdx >= 0 {
+					t.Fatalf("expected exactly one message-level breakpoint; found a second at message[%d].block[%d] (first at message[%d].block[%d])", i, j, msgIdx, blkIdx)
+				}
+				msgIdx, blkIdx = i, j
+			}
+		}
+	}
+	return msgIdx, blkIdx
+}
+
+// TestRollingBreakpointSkipsTrailingThinkingBlock: a thinking block has no
+// cache_control field at all (the SDK union's GetCacheControl returns nil for
+// it), so an assistant turn ending in one — what a "continue" turn leaves as the
+// final message — would drop the breakpoint entirely if it could only be written
+// on the final block. It lands on the last block that accepts it instead.
+func TestRollingBreakpointSkipsTrailingThinkingBlock(t *testing.T) {
+	c := &Client{model: "claude-test"}
+	params := c.buildMessageParams(provider.MessageRequest{
+		SystemPrompt: "SYS",
+		Messages: []provider.Message{
+			{Type: "user", Content: "first"},
+			{Type: "assistant", Content: "reply"},
+			signedThinking("still working"),
+		},
+	})
+
+	n := len(params.Messages)
+	if n == 0 {
+		t.Fatal("expected messages")
+	}
+	last := params.Messages[n-1]
+	if len(last.Content) != 2 {
+		t.Fatalf("expected the final assistant message to hold [text, thinking], got %d blocks", len(last.Content))
+	}
+	if last.Content[1].OfThinking == nil {
+		t.Fatalf("expected block[1] of the final message to be a thinking block")
+	}
+	// The SDK fact this whole search rule exists for.
+	if cc := last.Content[1].GetCacheControl(); cc != nil {
+		t.Errorf("expected a thinking block to refuse cache_control, got %+v", cc)
+	}
+
+	msgIdx, blkIdx := breakpointAt(t, params.Messages)
+	if msgIdx != n-1 || blkIdx != 0 {
+		t.Errorf("expected the breakpoint on the final message's text block (message[%d].block[0]), got message[%d].block[%d]", n-1, msgIdx, blkIdx)
+	}
+	if got := countEphemeralBreakpoints(params.Messages); got != 1 {
+		t.Errorf("expected exactly one rolling breakpoint, got %d", got)
+	}
+}
+
+// TestRollingBreakpointFallsBackToEarlierMessage: when the whole final message
+// refuses cache_control (thinking blocks only), the search crosses the message
+// boundary rather than giving up. Retreating one message shortens the cached
+// prefix by that message; giving up forfeits the entire conversation prefix.
+func TestRollingBreakpointFallsBackToEarlierMessage(t *testing.T) {
+	c := &Client{model: "claude-test"}
+	params := c.buildMessageParams(provider.MessageRequest{
+		SystemPrompt: "SYS",
+		Messages: []provider.Message{
+			{Type: "user", Content: "first"},
+			signedThinking("only reasoning"),
+		},
+	})
+
+	n := len(params.Messages)
+	if n != 2 {
+		t.Fatalf("expected a user message and a thinking-only assistant message, got %d messages", n)
+	}
+	if len(params.Messages[1].Content) != 1 || params.Messages[1].Content[0].OfThinking == nil {
+		t.Fatalf("expected the final message to hold a single thinking block")
+	}
+
+	msgIdx, blkIdx := breakpointAt(t, params.Messages)
+	if msgIdx != 0 || blkIdx != 0 {
+		t.Errorf("expected the breakpoint to fall back to the preceding user message (message[0].block[0]), got message[%d].block[%d]", msgIdx, blkIdx)
+	}
+	if got := countEphemeralBreakpoints(params.Messages); got != 1 {
+		t.Errorf("expected exactly one rolling breakpoint, got %d", got)
+	}
+}
+
+// TestRollingBreakpointOnToolResultTail: the ordinary case is untouched — a
+// message ending in a cacheable block (here a tool_result) carries the
+// breakpoint on that very last block, keeping the cached prefix maximal.
+func TestRollingBreakpointOnToolResultTail(t *testing.T) {
+	c := &Client{model: "claude-test"}
+	params := c.buildMessageParams(provider.MessageRequest{
+		SystemPrompt: "SYS",
+		Messages: []provider.Message{
+			{Type: "user", Content: "read it"},
+			{Type: "tool-use", ToolUseID: "t1", ToolName: "read_file", ToolInput: map[string]any{"path": "a.go"}},
+			{Type: "tool-result", ToolUseID: "t1", Content: "package main"},
+		},
+	})
+
+	n := len(params.Messages)
+	last := params.Messages[n-1]
+	if len(last.Content) == 0 {
+		t.Fatal("last message has no content blocks")
+	}
+	if last.Content[len(last.Content)-1].OfToolResult == nil {
+		t.Fatalf("expected the final block to be a tool_result")
+	}
+
+	msgIdx, blkIdx := breakpointAt(t, params.Messages)
+	if msgIdx != n-1 || blkIdx != len(last.Content)-1 {
+		t.Errorf("expected the breakpoint on the very last block (message[%d].block[%d]), got message[%d].block[%d]",
+			n-1, len(last.Content)-1, msgIdx, blkIdx)
+	}
+	if got := countEphemeralBreakpoints(params.Messages); got != 1 {
+		t.Errorf("expected exactly one rolling breakpoint, got %d", got)
+	}
+}
+
+// TestNoRollingBreakpointWhenNoBlockAcceptsOne: a request whose every block
+// refuses cache_control gets no breakpoint (there is nowhere to put one) and
+// still builds a valid request rather than panicking. The client logs the loss.
+func TestNoRollingBreakpointWhenNoBlockAcceptsOne(t *testing.T) {
+	c := &Client{model: "claude-test"}
+	params := c.buildMessageParams(provider.MessageRequest{
+		SystemPrompt: "SYS",
+		Messages:     []provider.Message{signedThinking("only reasoning")},
+	})
+
+	if len(params.Messages) != 1 || len(params.Messages[0].Content) != 1 {
+		t.Fatalf("expected a single thinking-only message, got %+v", params.Messages)
+	}
+	if got := countEphemeralBreakpoints(params.Messages); got != 0 {
+		t.Errorf("expected no message-level breakpoint when nothing accepts one, got %d", got)
+	}
+	// The system breakpoint is independent and must survive.
+	if len(params.System) != 1 || string(params.System[0].CacheControl.Type) != "ephemeral" {
+		t.Errorf("the system breakpoint must still be written")
+	}
+}
+
 // TestCachePrefixStableAcrossStrategyChange pins the two designs it contrasts.
 //
 // Current design: strategies contribute NOTHING to the system prompt (they

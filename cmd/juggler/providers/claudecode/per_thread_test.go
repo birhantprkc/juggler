@@ -107,20 +107,106 @@ func TestReapIdleCLI_FreesProcessKeepsSession(t *testing.T) {
 	}
 
 	// Fresh session (lastUsedAt just now) — must NOT be reaped.
-	c.reapIdleCLI(time.Hour)
+	c.reapIdleCLI(time.Hour, time.Hour)
 	if !c.activeSession.hasLiveCLI() {
 		t.Fatal("a fresh (non-idle) session must not be reaped")
 	}
 
 	// Force idle, then reap: process freed, resumable record kept.
 	c.activeSession.lastUsedAt = time.Now().Add(-time.Hour)
-	c.reapIdleCLI(time.Minute)
+	c.reapIdleCLI(time.Minute, time.Hour)
 
 	if c.activeSession == nil {
 		t.Fatal("reap must KEEP the resumable session record (warm --resume)")
 	}
 	if c.activeSession.hasLiveCLI() {
 		t.Fatal("reap must free the idle live CLI process")
+	}
+	if c.activeSession.sessionUUID != uuid {
+		t.Fatalf("reap must preserve sessionUUID (got %q want %q)", c.activeSession.sessionUUID, uuid)
+	}
+}
+
+// warmSessionForReap runs one turn against the fake CLI so the returned client
+// holds a live persistent CLI with a captured sessionUUID — the state the
+// idle reaper acts on.
+func warmSessionForReap(t *testing.T, sessionID, convID string) *Client {
+	t.Helper()
+	installFakeClaude(t, fakeModeUntilClose, sessionID)
+	c := mkClient(t, "claude-sonnet-4-6") // root-thread session
+	if _, err := c.streamMessage(context.Background(), provider.MessageRequest{
+		ConversationID: convID, SystemPrompt: "sys", Messages: []provider.Message{userMsg("hello")},
+	}, nopCallback()); err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+	if c.activeSession == nil || !c.activeSession.hasLiveCLI() {
+		t.Fatal("precondition: expected a live persistent CLI after the turn")
+	}
+	if c.activeSession.sessionUUID == "" {
+		t.Fatal("precondition: expected a captured sessionUUID")
+	}
+	return c
+}
+
+// TestReapIdleCLI_ParkedSessionIsNotIdle pins the parked exemption: while the
+// CLI is blocked on stdin awaiting tool results it is waiting on US, and
+// lastUsedAt stands still for the whole park — so a tool that outruns the idle
+// timeout (a sub-agent thread, a long build) must not have its CLI reaped out
+// from under it. Clearing the pending tools puts the same session straight back
+// under the plain idle rule.
+func TestReapIdleCLI_ParkedSessionIsNotIdle(t *testing.T) {
+	c := warmSessionForReap(t, "uuid-parked", "conv_parked")
+	uuid := c.activeSession.sessionUUID
+
+	// Parked on a tool call twenty minutes ago: idle by lastUsedAt, but well
+	// inside the parked ceiling.
+	c.activeSession.pendingTools = []pendingToolMeta{{ID: "toolu_1", Name: "Explore", Args: []byte("{}")}}
+	c.activeSession.parkedAt = time.Now().Add(-20 * time.Minute)
+	c.activeSession.lastUsedAt = time.Now().Add(-20 * time.Minute)
+
+	c.reapIdleCLI(10*time.Minute, time.Hour)
+	if !c.activeSession.hasLiveCLI() {
+		t.Fatal("a session parked on pending tools must not be reaped as idle")
+	}
+	if c.activeSession.sessionUUID != uuid {
+		t.Fatalf("exempt sweep must leave the session untouched (uuid %q want %q)", c.activeSession.sessionUUID, uuid)
+	}
+
+	// Same session, same timestamps, no pending tools: the plain idle rule
+	// applies again and the process goes.
+	c.activeSession.pendingTools = nil
+	c.reapIdleCLI(10*time.Minute, time.Hour)
+	if c.activeSession == nil {
+		t.Fatal("reap must KEEP the resumable session record (warm --resume)")
+	}
+	if c.activeSession.hasLiveCLI() {
+		t.Fatal("an idle session with no pending tools must still be reaped")
+	}
+	if c.activeSession.sessionUUID != uuid {
+		t.Fatalf("reap must preserve sessionUUID (got %q want %q)", c.activeSession.sessionUUID, uuid)
+	}
+}
+
+// TestReapIdleCLI_ParkedPastCeilingIsReaped pins the bound on that exemption: a
+// park nobody ever answers (a wedged tool, an unanswered approval, an abandoned
+// window) would otherwise hold its subprocess forever, so once the park outlives
+// the parked ceiling the process is reclaimed — while the resumable session
+// record survives, exactly as an idle reap.
+func TestReapIdleCLI_ParkedPastCeilingIsReaped(t *testing.T) {
+	c := warmSessionForReap(t, "uuid-parked-ceiling", "conv_parked_ceiling")
+	uuid := c.activeSession.sessionUUID
+
+	c.activeSession.pendingTools = []pendingToolMeta{{ID: "toolu_1", Name: "Bash", Args: []byte("{}")}}
+	c.activeSession.parkedAt = time.Now().Add(-2 * defaultCLIReapParkedTimeout)
+	c.activeSession.lastUsedAt = time.Now() // recent activity must not save it
+
+	c.reapIdleCLI(10*time.Minute, defaultCLIReapParkedTimeout)
+
+	if c.activeSession == nil {
+		t.Fatal("reap must KEEP the resumable session record (warm --resume)")
+	}
+	if c.activeSession.hasLiveCLI() {
+		t.Fatalf("a session parked past the %v ceiling must be reaped", defaultCLIReapParkedTimeout)
 	}
 	if c.activeSession.sessionUUID != uuid {
 		t.Fatalf("reap must preserve sessionUUID (got %q want %q)", c.activeSession.sessionUUID, uuid)

@@ -30,9 +30,21 @@ import (
 // be idle before its live subprocess is freed (the resumable record survives,
 // so a reopened thread --resumes warm). Generous by default ("don't be too
 // eager" — threads are often reopened); override via JUGGLER_CLI_IDLE_MS.
+//
+// defaultCLIReapParkedTimeout is the much longer ceiling that applies while a
+// session is parked on tool results. A parked CLI is blocked on stdin for
+// however long the tool takes, so the idle timeout would reap it mid-tool —
+// sub-agent tools and long bash commands routinely run past ten minutes, and a
+// reap there strands the parked call and costs the next turn its warm resume.
+// An hour clears the longest tool juggler runs to completion by a wide margin
+// (a bash/monitor timeout caps at 20 minutes) while still reclaiming the
+// subprocess of a park nobody is coming back to: a wedged tool, an approval
+// prompt left unanswered, an abandoned window. Override via
+// JUGGLER_CLI_PARKED_MS.
 const (
-	cliReapSweepInterval      = 60 * time.Second
-	defaultCLIReapIdleTimeout = 10 * time.Minute
+	cliReapSweepInterval        = 60 * time.Second
+	defaultCLIReapIdleTimeout   = 10 * time.Minute
+	defaultCLIReapParkedTimeout = 1 * time.Hour
 )
 
 func cliReapIdleTimeout() time.Duration {
@@ -42,6 +54,15 @@ func cliReapIdleTimeout() time.Duration {
 		}
 	}
 	return defaultCLIReapIdleTimeout
+}
+
+func cliReapParkedTimeout() time.Duration {
+	if v := os.Getenv("JUGGLER_CLI_PARKED_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return defaultCLIReapParkedTimeout
 }
 
 // conversation is the per-conversation handle returned by OpenConversation. It
@@ -110,7 +131,7 @@ func (cv *conversation) run() {
 			// Free idle live CLIs across this conversation's threads; the
 			// resumable record survives so a reopened thread --resumes warm.
 			for _, s := range sessions {
-				s.reapIdleCLI(cliReapIdleTimeout())
+				s.reapIdleCLI(cliReapIdleTimeout(), cliReapParkedTimeout())
 			}
 		}
 	}

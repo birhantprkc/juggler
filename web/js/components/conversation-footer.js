@@ -58,8 +58,10 @@ class ConversationFooter extends HTMLElement {
    * Cache of resolved transaction-blob token totals, keyed by
    * transactionId. Lookups are global to the element instance
    * (same conversation for the element's lifetime, so no key
-   * collision risk).
-   * @type {Map<string, {inputTokens: number, cachedTokens: number, inputTokensApproximate: boolean}|null>}
+   * collision risk). `cachedTokens` is null when the blob carries no
+   * cache figure — the provider reported none for that call, which is
+   * unknown rather than a miss.
+   * @type {Map<string, {inputTokens: number, cachedTokens: number|null, inputTokensApproximate: boolean}|null>}
    * @private
    */
   _blobTokenCache = new Map();
@@ -354,7 +356,14 @@ class ConversationFooter extends HTMLElement {
       const { default: workerManager } = await import('../services/worker-manager.js');
       const blob = /** @type {any} */ (await workerManager.getTransaction(convId, txnId));
       const inputTokens = Number(blob?.inputTokens) || 0;
-      const cachedTokens = Number(blob?.cachedTokens) || 0;
+      // The blob omits the key entirely when the provider reported no cache
+      // usage for the call, and carries a real 0 when it reported a miss. The
+      // two are different answers, so the absent key becomes null rather than
+      // a zero the meter would draw as "all of this was new".
+      const reportedCached = blob?.cachedTokens;
+      const cachedTokens = reportedCached === undefined || reportedCached === null
+        ? null
+        : Number(reportedCached) || 0;
       const inputTokensApproximate = blob?.inputTokensApproximate === true;
       if (inputTokens > 0) {
         // Only cache positive results. The blob may not exist yet:
@@ -432,7 +441,7 @@ class ConversationFooter extends HTMLElement {
 
     /** @type {any} */ (tokenDisplay).setUsage({
       total: anchor?.inputTokens ?? 0,
-      cached: anchor?.cachedTokens ?? 0,
+      cached: anchor?.cachedTokens ?? null,
       budget,
       processing,
       approximate: anchor?.inputTokensApproximate ?? false,

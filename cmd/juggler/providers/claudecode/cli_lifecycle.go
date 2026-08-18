@@ -331,6 +331,14 @@ type activeSession struct {
 	// CLI parked there.
 	pendingTools []pendingToolMeta
 
+	// parkedAt is when the CLI parked on the pendingTools above — the moment it
+	// blocked on stdin awaiting our control_responses. The idle-eviction
+	// sweeper measures a parked session against the parked ceiling from here
+	// rather than against lastUsedAt, which stands still for the whole park
+	// (see reapIdleCLI). Meaningful only while pendingTools is non-empty, and
+	// never persisted: a session restored from a sidecar parks nothing.
+	parkedAt time.Time
+
 	// fedResultIDs records the tool_use_ids whose result this session has already
 	// fed to the CLI during the current LLM turn. A second feed of the same id is
 	// always a duplicate; continueSession drops it (the fedResultIDs backstop in
@@ -345,9 +353,11 @@ type activeSession struct {
 	cacheReadTokens  int
 	cacheWriteTokens int
 
-	// lastUsedAt is updated at the entry of every StreamMessage call. The
-	// idle-eviction sweeper uses it to decide when to tear down a live CLI.
-	// Sessions with no live CLI ignore this field.
+	// lastUsedAt is updated at the entry of every StreamMessage call and again
+	// as each round of a turn is read. The idle-eviction sweeper uses it to
+	// decide when to tear down a live CLI — except while the session is parked
+	// on tool results, which is measured from parkedAt instead. Sessions with
+	// no live CLI ignore this field.
 	lastUsedAt time.Time
 
 	// exitDiag holds the CLI process's exit status ("exit status 1",

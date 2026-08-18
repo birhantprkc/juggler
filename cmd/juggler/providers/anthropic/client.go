@@ -37,7 +37,7 @@ type thinkingAccumulator struct {
 }
 
 // transformMessages converts unified Message[] to Anthropic SDK format and
-// places the rolling cache breakpoint on the final block. Uses
+// places the rolling cache breakpoint on the last block that accepts one. Uses
 // TransformToAPIMessages() for message grouping and alternation, then converts
 // to SDK-specific types.
 //
@@ -270,7 +270,9 @@ func convertTools(tools []provider.ToolDefinition) []anthropicsdk.ToolUnionParam
 //	  - The message breakpoint sits on the final block, so each turn writes an
 //	    incrementally longer prefix and the next turn reads the prior one: a
 //	    rolling cache over the growing conversation, with no offset bookkeeping on
-//	    our side.
+//	    our side. Blocks that cannot carry cache_control (thinking,
+//	    redacted_thinking) are stepped over, so the breakpoint lands on the last
+//	    block that accepts one — see setRollingCacheBreakpoint.
 //	  - Standing context items lead the messages, before all history
 //	    (worker.prependContextItemMessages). An unchanged render is byte-identical
 //	    each turn and rides the cache; a real change busts from that point, which
@@ -428,22 +430,43 @@ func thinkingBudgetForLevel(model, level string, maxTokens int64) (int64, bool) 
 	return budget, true
 }
 
-// setRollingCacheBreakpoint places an ephemeral cache_control breakpoint on the
-// final content block of the final message. Anthropic matches the longest
-// previously-cached prefix, so writing the breakpoint at the tail each turn
-// rolls the cache forward across the conversation without us tracking offsets.
-// No-op on empty input or a message with no blocks.
+// setRollingCacheBreakpoint places the single ephemeral cache_control breakpoint
+// as late in the request as a block will accept it. Anthropic matches the
+// longest previously-cached prefix, so writing the breakpoint at the tail each
+// turn rolls the cache forward across the conversation without us tracking
+// offsets.
+//
+// The search runs backward — last block of the last message, then earlier blocks
+// of that message, then earlier messages — because not every block type can
+// carry cache_control. The SDK's ContentBlockParamUnion.GetCacheControl returns
+// nil for thinking and redacted_thinking blocks, which have no such field, and
+// an assistant turn can end on one (a "continue"/autonomous turn leaves a
+// thinking-tailed assistant message with no user message after it). Anchoring
+// only on the final block would then place no breakpoint at all and forfeit the
+// entire message-body cache for that request, silently. Retreating instead costs
+// just the uncached tail between the breakpoint and the end of the request —
+// bounded by one message — which is why the walk crosses message boundaries too:
+// a message whose every block is thinking is possible in principle, and one
+// short message of lost prefix is far cheaper than the whole conversation.
+//
+// No-op on empty input.
 func setRollingCacheBreakpoint(messages []anthropicsdk.MessageParam) {
 	if len(messages) == 0 {
 		return
 	}
-	last := &messages[len(messages)-1]
-	if len(last.Content) == 0 {
-		return
+	for i := len(messages) - 1; i >= 0; i-- {
+		content := messages[i].Content
+		for j := len(content) - 1; j >= 0; j-- {
+			if cc := content[j].GetCacheControl(); cc != nil {
+				*cc = anthropicsdk.NewCacheControlEphemeralParam()
+				return
+			}
+		}
 	}
-	if cc := last.Content[len(last.Content)-1].GetCacheControl(); cc != nil {
-		*cc = anthropicsdk.NewCacheControlEphemeralParam()
-	}
+	// Every block in the request refused cache_control. Not reachable from any
+	// history the transform produces, and it costs the whole message-body cache,
+	// so say so rather than dropping the breakpoint in silence.
+	jlog.Info("⚠ anthropic cache-miss: no block in %d messages accepts cache_control — request sent without a rolling breakpoint", len(messages))
 }
 
 // sendMessageStreaming sends a message request using the streaming API to preserve block generation order.

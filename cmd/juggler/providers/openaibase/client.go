@@ -94,13 +94,32 @@ type Quirks struct {
 	OmitResponsesMaxOutputTokens bool
 
 	// SessionAffinityHeader sends a stable per-conversation `session_id`
-	// header on Responses requests. The ChatGPT Codex backend keys its
-	// cache-affinity routing on this header, NOT on prompt_cache_key: live
-	// A/B probing measured a 26–40% prompt-cache miss rate on rapid
-	// consecutive requests without it and 0 misses in 52 rounds with it
-	// (originator / OpenAI-Beta headers had no effect). Off by default —
-	// other vendors don't know the header — and enabled for the Codex-plan
-	// provider, whose CLI always sends it.
+	// header on Responses requests. The ChatGPT Codex backend
+	// (chatgpt.com/backend-api/codex/responses) keys its cache-affinity
+	// routing on this header, NOT on prompt_cache_key: live A/B probing
+	// measured a 26–40% prompt-cache miss rate on rapid consecutive requests
+	// without it and 0 misses in 52 rounds with it (originator / OpenAI-Beta
+	// headers had no effect).
+	//
+	// That number is a measurement of that one backend, not a general OpenAI
+	// result, so this is deliberately off everywhere else — including the
+	// first-party Platform provider talking to api.openai.com:
+	//   - The Platform API's documented cache-routing control is the
+	//     prompt_cache_key request field: a request is routed to a cache
+	//     machine by that key, with the prompt prefix hash as the secondary
+	//     key. promptCacheKey sets it on both the Responses and the Chat
+	//     Completions path, so Platform traffic is already pinned by the
+	//     supported mechanism and has nothing left for a header to buy.
+	//   - No OpenAI-documented request header affects cache routing at all.
+	//     `session_id` is absent from the Platform header contract, so there
+	//     is no documented behaviour to switch on there.
+	//   - The underscore in the name makes it actively risky on the
+	//     OpenAI-compatible and local providers: nginx treats underscored
+	//     request headers as invalid and drops them by default
+	//     (underscores_in_headers off), and Envoy can be configured to
+	//     reject the request outright with a 400, so an upstream sitting
+	//     behind such a gateway breaks for no gain.
+	// Enabled for the Codex-plan provider, whose CLI always sends it.
 	SessionAffinityHeader bool
 
 	// IncludePresencePenalty / IncludeFrequencyPenalty send the named
