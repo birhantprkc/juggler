@@ -479,6 +479,41 @@ func openRunMessagesLocked(nested *ycrdt.YArray) []*ycrdt.YMap {
 	return open
 }
 
+// reopenThreadRun makes an explicit Continue inside a stopped thread the next
+// run of that session. Continue has no new user message to serve as an open run
+// record, so the trailing record must be reopened before the reducer advertises
+// the thread as live. Only that record moves: earlier records remain receipts
+// for the earlier parent items that own them.
+func (w *ConversationWorker) reopenThreadRun(threadItemID string) {
+	if threadItemID == "" {
+		return
+	}
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
+	if threadYMap == nil {
+		return
+	}
+	nested, _ := threadYMap.Get("items").(*ycrdt.YArray)
+	if nested == nil {
+		return
+	}
+	for i := int(nested.GetLength()) - 1; i >= 0; i-- {
+		m, ok := nested.Get(ycrdt.Number(i)).(*ycrdt.YMap)
+		if !ok {
+			continue
+		}
+		if itemType, _ := m.Get("type").(string); itemType != ItemTypeUser {
+			continue
+		}
+		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+			m.Delete("runStatus")
+			m.Delete("runResult")
+		}, w.doc.authorID)
+		return
+	}
+}
+
 // lastSettlingItem returns the item that decides how a run ended: the last one
 // that either records a state transition (effectiveItems) or is an error.
 // Errors are included here and excluded there because an error does not choose

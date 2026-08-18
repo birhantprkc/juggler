@@ -262,7 +262,43 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`resumed session: ${msg(e)}`); }
 
-  // --- 8: an alias is not mistaken for a thread that never finishes ---
+  // --- 8: Continue reopens only the trailing session item ---
+  // Continue appends no user message, so the worker reuses the latest run
+  // record. Clearing its settled outcome must make only the latest owner spin.
+  try {
+    const { root, canonical, aliases } = session([
+      { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
+      { toolUseId: 'tu-2', prompt: 'who calls it?', status: 'cancelled', result: '[The run was cancelled before it finished.]' }
+    ]);
+    const nested = canonical.get('items');
+    const latest = nested.get(nested.length - 1);
+    latest.delete('runStatus');
+    latest.delete('runResult');
+
+    const live = { message: 'Streaming…', threadId: 'T1' };
+    const earlier = getThreadStatus(canonical, live, root);
+    const running = getThreadStatus(aliases[0], live, root);
+    assert(earlier.showSummary === true && earlier.spinner === false,
+      `the earlier owner must remain frozen; got ${JSON.stringify(earlier)}`);
+    assert(running.kind === 'running' && running.spinner === true,
+      `the latest owner must show the restarted session; got ${JSON.stringify(running)}`);
+    assert(itemRunSettled(canonical, root) === true,
+      'the earlier owner remains settled');
+    assert(itemRunSettled(aliases[0], root) === false,
+      'the latest owner becomes open');
+    assert(getThreadDisplayContent(aliases[0], root).text === '',
+      'the cancellation is cleared while the continued run is active');
+
+    latest.set('runStatus', 'rest');
+    latest.set('runResult', 'The router calls it.');
+    assert(getThreadDisplayContent(canonical, root).text === 'Auth lives in auth.go.',
+      'the earlier owner keeps its answer after the continuation settles');
+    assert(getThreadDisplayContent(aliases[0], root).text === 'The router calls it.',
+      'the latest owner shows the continued answer');
+    passed++;
+  } catch (e) { failed++; errors.push(`continued session: ${msg(e)}`); }
+
+  // --- 9: an alias is not mistaken for a thread that never finishes ---
   // An alias owns no transcript and no summary, so the thread-level question
   // ("does it record a settled run, or carry a result?") answers "still working"
   // for as long as it stands there. Everything that asks whether a column is

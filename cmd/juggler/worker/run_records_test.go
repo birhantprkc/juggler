@@ -524,6 +524,85 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 	}
 }
 
+// TestContinueReopensOnlyTheTrailingSessionItem covers restarting a cancelled
+// session with Continue, which appends no user message. The latest run record is
+// reused so the latest parent item follows the session back into work, while an
+// earlier item remains a frozen receipt for its own call.
+func TestContinueReopensOnlyTheTrailingSessionItem(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.ensureItems()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.storeState(StateProcessing)
+
+	threadID, err := w.createThread(CreateThreadOptions{
+		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
+		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
+	})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	w.thread.itemID = threadID
+	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go.",
+	})
+	w.settleThreadRun(threadID, false)
+
+	w.resetThreadContext()
+	if err := w.resumeSession(threadID, CreateThreadOptions{
+		Goal: "trace callers", Prompt: "who calls it?", ToolUseID: "tu-2",
+		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"who calls it?"}`), Delegated: true,
+	}); err != nil {
+		t.Fatalf("resumeSession: %v", err)
+	}
+	w.thread.itemID = threadID
+	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.settleThreadRun(threadID, true)
+
+	items := w.doc.GetItems()
+	canonical, alias := items[len(items)-2], items[len(items)-1]
+	if !itemRunSettled(items, canonical) || !itemRunSettled(items, alias) {
+		t.Fatal("both calls must be settled before Continue")
+	}
+	firstBefore := appendThreadMessages(nil, canonical, items)
+
+	w.storeState(StateIdle)
+	sendMsg(t, w, SendMessageMessage{ThreadItemID: threadID, IsContinuation: true})
+
+	items = w.doc.GetItems()
+	canonical, alias = items[len(items)-2], items[len(items)-1]
+	if !itemRunSettled(items, canonical) {
+		t.Error("Continue reopened the earlier parent item")
+	}
+	if itemRunSettled(items, alias) {
+		t.Error("the latest parent item stayed settled while its session restarted")
+	}
+	if got := appendThreadMessages(nil, alias, items); got[1]["content"] != pendingToolResultPlaceholder {
+		t.Errorf("latest tool_result = %q, want the pending placeholder", got[1]["content"])
+	}
+	firstAfter := appendThreadMessages(nil, canonical, items)
+	beforeJSON, _ := json.Marshal(firstBefore)
+	afterJSON, _ := json.Marshal(firstAfter)
+	if string(afterJSON) != string(beforeJSON) {
+		t.Errorf("the earlier call moved:\nbefore %s\nafter  %s", beforeJSON, afterJSON)
+	}
+
+	w.thread.itemID = threadID
+	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type: ItemTypeAssistant, ItemID: "a-2", Content: "The router calls it.",
+	})
+	w.settleThreadRun(threadID, false)
+
+	items = w.doc.GetItems()
+	got := appendThreadMessages(nil, items[len(items)-1], items)
+	content, _ := got[1]["content"].(string)
+	if !strings.Contains(content, "The router calls it.") || strings.Contains(content, runCancelledNote) {
+		t.Errorf("continued result = %q, want the new reply without the cancellation", content)
+	}
+}
+
 // TestEarlierItemKeepsItsOwnResult is the other half of the rule, and the one
 // that keeps the wire stable: only the LAST item referring to a session tracks
 // it. A session called twice has two items, and the first is a receipt for the
