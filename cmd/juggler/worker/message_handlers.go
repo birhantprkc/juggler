@@ -676,9 +676,33 @@ func (w *ConversationWorker) handleRenderContextItemsResponse(payload json.RawMe
 	}
 }
 
+// handleToolsResult accepts the reply to the in-flight request-tools and drops
+// everything else, exactly as handleRenderContextItemsResponse does for context.
+// request-tools is broadcast, so one turn draws a reply from every connected
+// client, and late replies from earlier turns keep arriving; the channel holds
+// one. An accepted stale reply therefore wins that slot twice over — it is
+// served as this turn's tool list, and it leaves no room for the real one.
+//
+// What that costs is a whole thread's tool set: each turn's list is filtered
+// through the strategy of the thread it belongs to, so the turn after a
+// sub-agent's runs under the sub-agent's restricted list. Tests inject directly
+// into the channel and so bypass this path.
 func (w *ConversationWorker) handleToolsResult(payload json.RawMessage) {
+	if w.expectedToolsRequestID == "" {
+		return
+	}
+	var head struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(payload, &head); err == nil && head.RequestID != "" && head.RequestID != w.expectedToolsRequestID {
+		return
+	}
 	select {
 	case w.toolsResultChan <- payload:
+		// Exactly one reply per request. The rest of the clients are answering
+		// this same broadcast right now, and a duplicate accepted after this turn
+		// has read its answer would sit in the channel as the next turn's.
+		w.expectedToolsRequestID = ""
 	default:
 	}
 }

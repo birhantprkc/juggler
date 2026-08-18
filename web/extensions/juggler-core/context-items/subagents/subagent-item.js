@@ -169,15 +169,18 @@ export default class SubagentContextItem extends ContextItem {
 
   /**
    * Only reached when the call could NOT be delegated — the thread nesting cap,
-   * or an engine round-trip that failed. There is no sensible inline version of
-   * a sub-agent, so say what happened and hand the work back.
+   * a turn whose tool list did not offer this tool, or an engine round-trip that
+   * failed. There is no sensible inline version of a sub-agent, so say what
+   * happened and hand the work back. Which of those it was is not knowable from
+   * here, and naming the wrong one sends the reader hunting the wrong bug, so
+   * the message names none of them.
    * @override
    * @returns {Promise<Record<string, unknown>>} Never resolves
    * @throws {Error} Always
    */
   async execute() {
     const { tool, fallback } = /** @type {typeof SubagentContextItem} */ (this.constructor).descriptor();
-    throw new Error(`${tool} runs as a sub-agent and could not be delegated here (nesting limit reached). ${fallback}`);
+    throw new Error(`${tool} runs as a sub-agent and couldn't be delegated here. ${fallback}`);
   }
 
   /**

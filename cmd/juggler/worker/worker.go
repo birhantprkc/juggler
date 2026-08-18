@@ -110,6 +110,13 @@ type ConversationWorker struct {
 	// handleRenderContextItemsResponse to drop any reply that isn't this request's.
 	expectedContextRequestID string
 
+	// requestId of the in-flight request-tools, or "" when none. Same broadcast,
+	// same several-replies problem, and the same single-goroutine discipline as
+	// expectedContextRequestID; read by handleToolsResult. The tool list is
+	// filtered through the strategy of the thread whose turn it is, so accepting
+	// another request's reply hands this turn a different thread's tool set.
+	expectedToolsRequestID string
+
 	// Streaming state — accumulated chunks for the current turn's text/thinking messages.
 	// Zeroed by finalizeStreaming at iteration boundaries.
 	streaming streamingState
