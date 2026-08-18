@@ -34,6 +34,7 @@ import {
   isThinkingMessage,
   isToolActionMessage,
   isErrorMessage,
+  isNoticeMessage,
   isThreadMessage,
 } from '../../sdk/lib/message.js';
 import { isGroupEntry } from '../utils/item-grouping.js';
@@ -174,6 +175,7 @@ export const MESSAGE_TAGS = new Set([
   'THINKING-MESSAGE',
   'CONTEXT-ITEM-MESSAGE',
   'ERROR-MESSAGE',
+  'NOTICE-MESSAGE',
   'COMPACT-SUMMARY-MESSAGE',
   'TOOL-ACTION-MESSAGE',
   'TOOL-GROUP-MESSAGE'
@@ -454,6 +456,9 @@ function createBubblesForEvent(area, message, itemIndex) {
   } else if (isErrorMessage(message)) {
     const el = createErrorBubble(message, itemIndex);
     if (el) elements.push(el);
+  } else if (isNoticeMessage(message)) {
+    const el = createNoticeBubble(message, itemIndex);
+    if (el) elements.push(el);
   } else if (isThreadMessage(message)) {
     const live = area?._snapshotLiveStatus?.() || null;
     const el = createThreadBubble(message, itemIndex, live);
@@ -589,6 +594,24 @@ function createErrorBubble(message, itemIndex) {
     itemId: message.get('itemId'),
     itemIndex,
     attributes: { content: message.get('summary') || message.get('message') || message.get('content') || 'An error occurred' }
+  });
+}
+
+/**
+ * Create a notice message element — a durable record of something that happened
+ * to a turn, standing where it happened.
+ * @param {Message} message
+ * @param {number} [itemIndex]
+ * @returns {HTMLElement} Created element.
+ */
+function createNoticeBubble(message, itemIndex) {
+  return createMessageElement('notice-message', {
+    itemId: message.get('itemId'),
+    itemIndex,
+    attributes: {
+      'notice-title': message.get('summary') || '',
+      content: message.get('content') || ''
+    }
   });
 }
 

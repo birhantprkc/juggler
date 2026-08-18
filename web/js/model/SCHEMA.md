@@ -188,6 +188,28 @@ A nested sub-conversation.
 | `stack` | string \| undefined | Stack trace. |
 | `hasRetryButton` | boolean \| undefined | Whether the UI should offer a retry. |
 
+### `type: 'notice'` — `NoticeMessage`
+A durable record of something that happened to a turn and is worth reading after
+the fact — currently a provider rebuilding its context cache. It stands in the
+transcript at the point the event occurred (the worker's `insertCacheMissNotice`
+appends it mid-turn, so it lands after the message that triggered the turn and
+before the reply it paid for) rather than as a transient badge, because the
+reader is rarely looking at the moment it happens.
+
+| Key | Type | Notes |
+|---|---|---|
+| `summary` | string | Terse title, e.g. `Context cache rebuilt`. |
+| `content` | string | The detail: a plain-English lead, then the underlying reason verbatim. |
+| `source` | string | What reported it (provider or plugin id). |
+
+Purely for the reader, in two senses that both need holding: the worker's
+`itemWireMessages` has no case for it, so it emits **nothing** to the provider;
+and `buildPrefixFingerprint` (`services/context-cache-impact.js`) skips it, so
+adding or deleting one never reads as a change to the cached prefix. Both are
+what let a notice be freely inserted and freely tidied away. It IS conversational
+for `isConversationalItemType`, so it never gets mistaken for standing starting
+context by the leading-run scan.
+
 ### `type: <context-item-type>` — `ContextItemMessage`
 For non-tool context items (`rule`, `system-prompt`, `file-content`, …), the
 `type` field IS the context-item type id (no `'context-item'` wrapper).

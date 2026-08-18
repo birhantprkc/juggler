@@ -15,10 +15,18 @@
  * all the same event: the outgoing prefix now diverges from the last-sent one
  * above the freshly-appended tail.
  *
- * We model the prefix as an ordered fingerprint: element 0 is the tool-set
- * signature (the only part of `[tools][system]` a strategy switch changes, since
- * strategy guidance is injected as tail messages, never placed in the system
- * prompt) and the rest is one signature per history item. The baseline is the
+ * We model the prefix as an ordered fingerprint. Element 0 is the MODEL: a cache
+ * entry belongs to one model at one provider, so changing either discards the
+ * whole prefix rather than diverging part-way down it — a different vendor has
+ * nothing cached at all, and even a sibling model at the same vendor keys its
+ * own entries. The thinking level is signed with it, because providers render
+ * the thinking configuration into the prompt itself, so changing the level
+ * starts a new prefix exactly as changing the model does. Putting all of that
+ * first is what makes it fall out of the same diff: the divergence lands at
+ * index 0 and the re-read slice is everything. Element 1
+ * is the tool-set signature (the only part of `[tools][system]` a strategy
+ * switch changes, since strategy guidance is injected as tail messages, never
+ * placed in the system prompt), and the rest is one signature per history item. The baseline is the
  * fingerprint captured when the conversation last went idle (that transcript is
  * exactly what was cached). Diff current vs baseline: a divergence that *replaces*
  * a cached item (current is not a prefix of baseline) busts the cache from there;
@@ -46,6 +54,12 @@
  * re-read slice, and caution only when the estimate clears
  * CONTEXT_CACHE_WARNING_TOKENS. (A pure append adds new tail the cache never held,
  * beyond that overlap, so it is not counted — appending never busts.)
+ *
+ * Items that emit NOTHING to the provider are left out of the fingerprint
+ * entirely (see NON_EMITTING_ITEM_TYPES). They are not in the cached prefix, so
+ * they cannot move it: signing them would make deleting one — a `notice` a
+ * reader tidied away, say — read as a divergence and raise a caution about a
+ * bust that never happens.
  * @module services/context-cache-impact
  */
 
@@ -70,6 +84,22 @@ export const CONTEXT_CACHE_IMPACT_CHANGED = 'context-cache-impact-changed';
  * @type {number}
  */
 export const CONTEXT_CACHE_WARNING_TOKENS = 25000;
+
+/**
+ * Item types the worker's `itemWireMessages` emits nothing for, so they never
+ * reach the provider and are never part of the cached prefix. Excluded from the
+ * fingerprint so adding or removing one costs nothing and reads as nothing.
+ * @type {ReadonlySet<string>}
+ */
+const NON_EMITTING_ITEM_TYPES = new Set(['notice']);
+
+/**
+ * How many leading fingerprint entries describe the request's shape (the model,
+ * then the tool set) rather than a piece of content. They carry no content
+ * weight, so the size estimate skips them.
+ * @type {number}
+ */
+const PREFIX_HEAD_ENTRIES = 2;
 
 /**
  * A cheap, stable per-item signature: its id plus a light content fingerprint
@@ -108,8 +138,12 @@ function contextItemSignature(ci) {
 }
 
 /**
- * Build the ordered prefix fingerprint: the tool-set signature, then one
- * signature per leading `prefix` context item, then one per history item.
+ * Build the ordered prefix fingerprint: the model, the tool-set signature, then
+ * one signature per leading `prefix` context item, then one per history item.
+ *
+ * The model heads the list because a cache entry is scoped to it (see the module
+ * comment): a switch diverges at index 0, so the whole prefix is re-read, which
+ * is exactly what happens.
  *
  * Prefix context items (frozen pinned/dropped files) sit between tools+system and
  * the growing history, so they ARE part of the cached prefix now: adding, removing,
@@ -117,15 +151,19 @@ function contextItemSignature(ci) {
  * history item. They precede the history entries here so a divergence in them is
  * measured against everything cached after them.
  * @param {object} args
+ * @param {string} [args.modelSig] - The effective `provider/model` the next send would use
  * @param {string} args.toolsetSig - Sorted tool-name signature under the effective strategy
  * @param {Array<{id?: string, type?: string, data?: {content?: unknown}}>} [args.prefixItems] - The thread's leading `prefix`-position context items
  * @param {Array<{get?: (key: string) => any}>} args.items - The thread's history items
  * @returns {string[]} The prefix fingerprint
  */
-export function buildPrefixFingerprint({ toolsetSig, prefixItems = [], items }) {
-  const fp = ['tools:' + (toolsetSig || '')];
+export function buildPrefixFingerprint({ modelSig, toolsetSig, prefixItems = [], items }) {
+  const fp = ['model:' + (modelSig || ''), 'tools:' + (toolsetSig || '')];
   for (const ci of prefixItems || []) fp.push(contextItemSignature(ci));
-  for (const item of items || []) fp.push(itemSignature(item));
+  for (const item of items || []) {
+    if (NON_EMITTING_ITEM_TYPES.has(String(item?.get?.('type') || ''))) continue;
+    fp.push(itemSignature(item));
+  }
   return fp;
 }
 
@@ -133,10 +171,10 @@ export function buildPrefixFingerprint({ toolsetSig, prefixItems = [], items }) 
  * Recover a fingerprint entry's content-length weight — the trailing `~<len>`
  * that itemSignature() encodes. Used to size the re-read slice by content, so a
  * bust that re-reads one big message weighs more than one that re-reads several
- * tiny ones. The tool-set entry ('tools:…', no `~<len>` tail) weighs 0: its real
- * cost lives in the tool definitions this module does not track, and a tool-set
- * change re-reads the whole history after it anyway, so item content dominates the
- * estimate either way.
+ * tiny ones. The two head entries ('model:…' and 'tools:…', neither carrying a
+ * `~<len>` tail) weigh 0: their real cost lives in the tool definitions and
+ * system prompt this module does not track, and a change to either re-reads the
+ * whole history after it anyway, so item content dominates the estimate.
  * @param {string|undefined} sig - A fingerprint entry
  * @returns {number} Its content-length weight (0 when none is encoded)
  */
@@ -183,7 +221,7 @@ export function classifyContextCacheImpact({ baseline, current, anchorTokens }) 
   // slice) and when the whole conversation is now small (few chars to re-read at
   // all) — e.g. right after a /clear.
   let baselineChars = 0;
-  for (let i = 1; i < n; i++) baselineChars += signatureWeight(baseline[i]);
+  for (let i = PREFIX_HEAD_ENTRIES; i < n; i++) baselineChars += signatureWeight(baseline[i]);
   const estReReadTokens = baselineChars > 0
     ? anchorTokens * (reReadChars / baselineChars)
     : 0;

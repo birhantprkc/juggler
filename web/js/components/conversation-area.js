@@ -19,6 +19,7 @@ import './assistant-message.js';
 import './thinking-message.js';
 import './context-item-message.js';
 import './error-message.js';
+import './notice-message.js';
 import './thread-message.js';
 import './tool-group-message.js';
 import { buildDisplayItems, isGroupEntry } from '../utils/item-grouping.js';
@@ -89,6 +90,7 @@ const CV_ROW_TAGS = new Set([
   'TOOL-GROUP-MESSAGE',
   'CONTEXT-ITEM-MESSAGE',
   'ERROR-MESSAGE',
+  'NOTICE-MESSAGE',
 ]);
 
 /**
@@ -832,7 +834,7 @@ class ConversationArea extends HTMLElement {
         // Check if clicked on a selectable item (any message element)
         const selectableItem = target.closest(
           'user-message, assistant-message, thinking-message, context-item-message, ' +
-          'error-message, tool-action-message, thread-message, tool-group-message'
+          'error-message, notice-message, tool-action-message, thread-message, tool-group-message'
         );
         if (selectableItem) {
           const itemId = selectableItem.getAttribute('message-id');
@@ -1697,7 +1699,7 @@ class ConversationArea extends HTMLElement {
 
     const selectables = Array.from(messageList.querySelectorAll(
       'user-message[message-id], assistant-message[message-id], thinking-message[message-id], ' +
-      'context-item-message[message-id], error-message[message-id], ' +
+      'context-item-message[message-id], error-message[message-id], notice-message[message-id], ' +
       'tool-action-message[message-id], thread-message[message-id], tool-group-message[message-id]'
     ));
     /** @type {string[]} */

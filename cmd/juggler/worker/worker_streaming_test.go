@@ -445,8 +445,72 @@ func TestStatusChunkSurfacesPhase(t *testing.T) {
 	if got, _ := state["phase"].(string); got != "Rebuilding Claude Code context" {
 		t.Errorf("processingState.phase = %q, want %q", got, "Rebuilding Claude Code context")
 	}
-	if got, _ := state["cacheMissReason"].(string); got != "diverged: system prompt changed" {
-		t.Errorf("processingState.cacheMissReason = %q", got)
+}
+
+// TestCacheMissLandsInTranscript verifies that a consequential provider cache
+// miss becomes a durable notice item standing where it happened, rather than a
+// caption on the spinner that the next status frame overwrites. Repeating the
+// same reason within one turn must leave ONE notice: a provider is free to
+// re-emit its status chunk, and a column of identical notices helps nobody.
+func TestCacheMissLandsInTranscript(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	w.sendStatus("streaming", "")
+
+	const reason = "diverged: system prompt changed"
+	w.llmCallFunc = func(ctx context.Context, request json.RawMessage, chunkHandler func(StreamChunk)) (*LLMResponse, error) {
+		chunkHandler(StreamChunk{Type: "status", Content: "Rebuilding Claude Code context", CacheMissReason: reason})
+		// The same miss re-announced mid-turn must not add a second item.
+		chunkHandler(StreamChunk{Type: "status", Content: "Waiting for response", CacheMissReason: reason})
+		chunkHandler(StreamChunk{Type: "text", Content: "hi"})
+		return &LLMResponse{
+			Blocks:     []LLMResponseBlock{{Type: "text", Content: "hi"}},
+			StopReason: "end_turn",
+		}, nil
+	}
+
+	if _, err := w.callLLM(nil); err != nil {
+		t.Fatalf("callLLM failed: %v", err)
+	}
+
+	var notices []ConversationItem
+	for _, item := range w.getTargetItems() {
+		if item.Type == ItemTypeNotice {
+			notices = append(notices, item)
+		}
+	}
+	if len(notices) != 1 {
+		t.Fatalf("got %d notice items, want exactly 1", len(notices))
+	}
+	if notices[0].Summary == "" {
+		t.Error("notice item has no summary — nothing for the transcript row to title itself with")
+	}
+	// The plain-English lead goes ABOVE the provider's own text, never in place
+	// of it: both must survive into the item.
+	if !strings.Contains(notices[0].Content, reason) {
+		t.Errorf("notice content dropped the provider's reason: %q", notices[0].Content)
+	}
+	if !strings.Contains(notices[0].Content, cacheMissNoticeLead) {
+		t.Errorf("notice content dropped the plain-English lead: %q", notices[0].Content)
+	}
+}
+
+// TestNoticeItemEmitsNothingToTheLLM pins the contract that makes a notice safe
+// to insert mid-turn: itemWireMessages has no case for it, so it contributes
+// nothing to the provider payload. That fallthrough is SILENT — a stray case
+// added later would quietly start narrating our caching to the model — so it is
+// asserted rather than trusted.
+func TestNoticeItemEmitsNothingToTheLLM(t *testing.T) {
+	item := ConversationItem{
+		Type:    ItemTypeNotice,
+		ItemID:  "NOTICE_1",
+		Summary: "Context cache rebuilt",
+		Content: cacheMissNoticeLead + "\n\nReason: diverged",
+		Source:  "claudecode",
+	}
+	if msgs := itemWireMessages(item, []ConversationItem{item}); msgs != nil {
+		t.Errorf("notice item emitted %d wire message(s), want none: %+v", len(msgs), msgs)
 	}
 }
 

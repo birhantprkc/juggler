@@ -493,6 +493,7 @@ func (w *ConversationWorker) finishStrategyRun() {
 	w.processingStartedAt = 0
 	w.approvalWaitStartedAt = 0
 	w.lastProgressWriteMs = 0
+	w.lastCacheMissNotice = ""
 	w.resetThreadContext()
 
 	if wasCancelled {

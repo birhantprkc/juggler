@@ -912,6 +912,14 @@ const (
 	// buildMessages emits it as a single user message with an inert-data
 	// header; it is conversational (and re-foldable by a later recovery).
 	ItemTypeCompactionSummary = "compaction-summary"
+	// ItemTypeNotice is a durable, user-facing record of something that happened
+	// to a turn and is worth reading after the fact — a provider rebuilding its
+	// context cache, say. It carries Summary (the terse title), Content (the
+	// detail, ending in the underlying reason verbatim) and Source (what
+	// reported it). It stands in the transcript at the point the event occurred,
+	// and is never sent to the LLM: itemWireMessages has no case for it, so it
+	// emits nothing (TestNoticeItemEmitsNothingToTheLLM pins that).
+	ItemTypeNotice = "notice"
 )
 
 // isConversationalItemType reports whether an item type is conversation history
@@ -924,7 +932,8 @@ func isConversationalItemType(t string) bool {
 	switch t {
 	case ItemTypeUser, ItemTypeAssistant, ItemTypeThinking, ItemTypeToolAction,
 		ItemTypeThread, ItemTypeMetaToolResult, ItemTypeError,
-		ItemTypeSystemReminder, ItemTypeGuidance, ItemTypeCompactionSummary:
+		ItemTypeSystemReminder, ItemTypeGuidance, ItemTypeCompactionSummary,
+		ItemTypeNotice:
 		return true
 	default:
 		return false

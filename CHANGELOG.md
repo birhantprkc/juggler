@@ -19,6 +19,8 @@ of changes; this project follows semantic versioning.
 - An extension that fails to reload now says so instead of quietly vanishing
 - Auto-approval follows `cd`, judging relative paths where the command actually runs
 - An unreachable update server is only reported when you asked for the check yourself
+- A context-cache rebuild now stands in the transcript where it happened, instead of flashing past
+- Switching model, provider or thinking level now warns that the next send re-reads the whole context
 
 ## [0.5.6] - 2026-08-14
 

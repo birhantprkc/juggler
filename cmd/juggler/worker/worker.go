@@ -275,6 +275,14 @@ type ConversationWorker struct {
 	// on every peer. Zeroed at idle transitions.
 	lastProgressWriteMs int64
 
+	// lastCacheMissNotice is the reason of the cache-miss notice most recently
+	// inserted into the transcript, so a provider that repeats the same status
+	// chunk within one turn leaves one notice rather than a column of identical
+	// ones. Two DIFFERENT reasons in a turn are two genuine events and both get
+	// an item. Cleared at idle transitions, so the same reason next turn is
+	// reported again.
+	lastCacheMissNotice string
+
 	// turnCounter is incremented on every transition to idle. It is written
 	// into the durable `completedTurns` metadata key (NOT the ephemeral
 	// processingState blob) so the browser (and test harness) can observe that

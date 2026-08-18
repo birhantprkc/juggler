@@ -85,9 +85,10 @@ class StrategySelector extends HTMLElement {
     this._observedConversation = null;
     // ── Context-cache-bust detection (see services/context-cache-impact.js) ──
     // The composer caution fires when the NEXT send would re-read a large slice
-    // of cached context — for ANY reason (a staged strategy switch that changes
-    // the tool set, a deleted/edited earlier item). Detection is a fingerprint
-    // diff against the transcript as it was when the conversation last went idle.
+    // of cached context — for ANY reason (a switch to a different model or
+    // provider, a staged strategy switch that changes the tool set, a
+    // deleted/edited earlier item). Detection is a fingerprint diff against the
+    // transcript as it was when the conversation last went idle.
     /**
      * Whether the next send discards a large cached prefix. Computed off the hot
      * path from the cached inputs below; render() reads only this scalar.
@@ -130,6 +131,20 @@ class StrategySelector extends HTMLElement {
      * @private
      */
     this._itemsObserver = null;
+    /**
+     * The sub-thread container Y.Map currently observed for a per-thread model
+     * override, so we rebind only when it actually changes. Null for the root
+     * thread (its model is conversation metadata) and when unbound.
+     * @type {any}
+     * @private
+     */
+    this._observedContainer = null;
+    /**
+     * The container observer registered while bound to a sub-thread, or null.
+     * @type {((event: any) => void)|null}
+     * @private
+     */
+    this._containerObserver = null;
   }
 
   connectedCallback() {
@@ -145,6 +160,7 @@ class StrategySelector extends HTMLElement {
     }
     this._bindMetadataObserver(null);
     this._bindItemsObserver(null);
+    this._bindContainerObserver(null);
     // Tear down the open dropdown (surface, scrim, observer, dismissal wiring).
     if (this._popupRelease) {
       this._popupRelease();
@@ -234,6 +250,13 @@ class StrategySelector extends HTMLElement {
         // cache impact itself when the id actually changed.
         this.setMessageThread(this._messageThread);
       }
+      if (keys.has?.('defaultModelConfig')) {
+        // The conversation's model changed (this thread inherits it unless it
+        // holds its own override). The cached prefix belongs to the OLD model,
+        // so re-diff — deliberately without rebaselining: the point is to say
+        // so BEFORE the send, while changing your mind is still free.
+        this._recomputeImpact();
+      }
       if (keys.has?.('completedTurns')) {
         // A turn reached idle. completedTurns is the durable fence the worker
         // bumps once per idle transition (it survives Yjs busy→idle batching,
@@ -292,7 +315,33 @@ class StrategySelector extends HTMLElement {
       if (this._isIdle()) this._recomputeImpact();
     };
     yarray.observeDeep(this._itemsObserver);
+    this._bindContainerObserver(thread);
     this._refreshCacheInputs({ rebaseline: true });
+  }
+
+  /**
+   * Watch a SUB-thread's own container for a per-thread model override. That key
+   * lives on the thread's Y.Map — which sits in the PARENT's items array, not in
+   * the array `_bindItemsObserver` watches — so without this a column's own
+   * model switch would be the one model switch that never warned. The root
+   * thread has no container of its own; its model is conversation metadata and
+   * is covered by the `defaultModelConfig` branch of the metadata observer.
+   * @param {import('../model/message-thread.js').default|null} thread
+   * @private
+   */
+  _bindContainerObserver(thread) {
+    const container = thread?.threadItemId ? thread.container : null;
+    if (container === this._observedContainer) return;
+    if (this._containerObserver && this._observedContainer) {
+      this._observedContainer.unobserve?.(this._containerObserver);
+    }
+    this._containerObserver = null;
+    this._observedContainer = container;
+    if (!container) return;
+    this._containerObserver = (/** @type {any} */ event) => {
+      if (event?.keysChanged?.has?.('modelConfig') && this._isIdle()) this._recomputeImpact();
+    };
+    container.observe(this._containerObserver);
   }
 
   /**
@@ -306,6 +355,30 @@ class StrategySelector extends HTMLElement {
   _toolSignature(strategy, tools) {
     const filtered = strategy?.filterTools ? strategy.filterTools(tools) : tools;
     return (filtered || []).map((/** @type {any} */ t) => t?.name || '').sort().join(',');
+  }
+
+  /**
+   * The effective `provider/model#thinking` the next send would use, resolved
+   * through the thread's walk-up inheritance. Heads the prefix fingerprint: a
+   * cache entry belongs to one model at one provider, so switching either
+   * discards the whole cached prefix — the largest bust there is, and the one no
+   * provider reports back to us.
+   *
+   * The thinking level rides along because Anthropic renders the thinking
+   * configuration INTO the prompt, so changing it starts a new prefix and
+   * invalidates the message cache unconditionally (tool/system breakpoints too,
+   * on models that render it ahead of them). We sign the LEVEL, which is what the
+   * user chooses; the provider's own budget clamping (see the anthropic client's
+   * thinkingBudgetForLevel) can shift the wire value without a user action, and
+   * that is not something a caution about the next send can or should predict.
+   * @param {any} thread - The bound message thread
+   * @returns {string} The model signature ('' when no model is set)
+   * @private
+   */
+  _modelSignature(thread) {
+    const cfg = thread?.getEffectiveModelConfig?.();
+    if (!cfg) return '';
+    return `${cfg.provider || ''}/${cfg.model || ''}#${cfg.thinking || ''}`;
   }
 
   /**
@@ -380,7 +453,12 @@ class StrategySelector extends HTMLElement {
     const prefixItems = (thread.contextItems || []).filter(
       (/** @type {any} */ ci) => contextPositionOf(ci) === 'prefix'
     );
-    return buildPrefixFingerprint({ toolsetSig, prefixItems, items: thread.items });
+    return buildPrefixFingerprint({
+      modelSig: this._modelSignature(thread),
+      toolsetSig,
+      prefixItems,
+      items: thread.items
+    });
   }
 
   /**

@@ -17,7 +17,7 @@
  */
 
 /**
- * @typedef {'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'tool-action' | 'meta-tool-result' | 'guidance' | 'system-reminder' | 'error' | 'thread'} MessageType
+ * @typedef {'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'tool-action' | 'meta-tool-result' | 'guidance' | 'system-reminder' | 'error' | 'notice' | 'thread'} MessageType
  */
 
 /**
@@ -39,6 +39,7 @@
  *   GUIDANCE: 'guidance',
  *   SYSTEM_REMINDER: 'system-reminder',
  *   ERROR: 'error',
+ *   NOTICE: 'notice',
  *   THREAD: 'thread'
  * }}
  */
@@ -53,6 +54,7 @@ export const MESSAGE_TYPES = Object.freeze({
   GUIDANCE: 'guidance',
   SYSTEM_REMINDER: 'system-reminder',
   ERROR: 'error',
+  NOTICE: 'notice',
   THREAD: 'thread'
 });
 
@@ -80,6 +82,7 @@ const CONVERSATIONAL_ITEM_TYPES = new Set([
   MESSAGE_TYPES.THREAD,
   MESSAGE_TYPES.META_TOOL_RESULT,
   MESSAGE_TYPES.ERROR,
+  MESSAGE_TYPES.NOTICE,
   MESSAGE_TYPES.SYSTEM_REMINDER,
   MESSAGE_TYPES.GUIDANCE
 ]);
@@ -257,13 +260,25 @@ export const ACTION_STATES = Object.freeze({
 /** @typedef {YMapItem & {type: 'error', message: string, content?: string, summary?: string, stack?: string, hasRetryButton?: boolean, itemId?: string, transactionId?: string}} ErrorMessage */
 
 /**
+ * NoticeMessage - a durable record of something that happened to a turn and is
+ * worth reading after the fact (a provider rebuilding its context cache, say).
+ * It stands in the transcript at the point the event occurred: `summary` is the
+ * terse title, `content` the detail, `source` what reported it.
+ *
+ * Purely for the reader — it emits nothing to the provider (the worker's
+ * itemWireMessages has no case for it) and is excluded from the context-cache
+ * fingerprint, so tidying one away never reads as a change to the sent prefix.
+ * @typedef {YMapItem & {type: 'notice', summary?: string, content?: string, source?: string, itemId?: string, transactionId?: string}} NoticeMessage
+ */
+
+/**
  * Thread message - a nested sub-conversation embedded in a parent conversation.
  * The thread's `items` key holds a Y.Array that is the child conversation.
  * @typedef {YMapItem & {type: 'thread', itemId: string, goal: string, result: string|null, transactionId?: string}} ThreadMessage
  */
 
 /**
- * @typedef {UserMessage | AssistantMessage | ThinkingMessage | ToolUseMessage | ToolResultMessage | ToolActionMessage | ContextItemMessage | GuidanceMessage | SystemReminderMessage | ErrorMessage | ThreadMessage} Message
+ * @typedef {UserMessage | AssistantMessage | ThinkingMessage | ToolUseMessage | ToolResultMessage | ToolActionMessage | ContextItemMessage | GuidanceMessage | SystemReminderMessage | ErrorMessage | NoticeMessage | ThreadMessage} Message
  */
 
 // ============================================================================
@@ -362,6 +377,15 @@ export function isSystemReminderMessage(msg) {
  */
 export function isErrorMessage(msg) {
   return _getType(msg) === MESSAGE_TYPES.ERROR;
+}
+
+/**
+ * Type guard for NoticeMessage
+ * @param {Message} msg - Message to check
+ * @returns {msg is NoticeMessage} True if message is a NoticeMessage
+ */
+export function isNoticeMessage(msg) {
+  return _getType(msg) === MESSAGE_TYPES.NOTICE;
 }
 
 /**
@@ -468,6 +492,24 @@ export function createErrorMessage({ message, stack, hasRetryButton }) {
     message,
     stack,
     hasRetryButton
+  });
+}
+
+/**
+ * Creates a notice message — a durable record of something that happened to a
+ * turn, standing in the transcript where it happened.
+ * @param {object} params - Parameters for the notice message
+ * @param {string} params.title - Terse title (stored as `summary`)
+ * @param {string} params.detail - The explanation, ending in the underlying reason verbatim
+ * @param {string} [params.source] - What reported it (provider or plugin id)
+ * @returns {NoticeMessage} The created notice message
+ */
+export function createNoticeMessage({ title, detail, source }) {
+  return /** @type {any} */ ({
+    type: MESSAGE_TYPES.NOTICE,
+    summary: title,
+    content: detail,
+    source
   });
 }
 

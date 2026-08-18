@@ -125,7 +125,12 @@ func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 		// shows what's happening instead of a static "Receiving..." that
 		// looks jammed. Transient: cleared by the next sendStatus, hidden by
 		// the frontend once output tokens begin to flow.
-		w.mergeProcessingPhase(chunk.Content, chunk.CacheMissReason)
+		//
+		// A status chunk may ALSO carry a consequential cache miss. That is not
+		// transient — it is an event worth reading after the fact — so it lands
+		// in the transcript as its own item instead of riding the spinner.
+		w.mergeProcessingPhase(chunk.Content)
+		w.insertCacheMissNotice(chunk.CacheMissReason)
 	default:
 		// Other chunk types (tool_use, etc.) - finalize any active streaming
 		w.finalizeStreaming()
@@ -261,9 +266,8 @@ func (w *ConversationWorker) mergeProcessingTokens(outputTokens, inputTokens, ca
 // processingState so every observing client renders the same spinner text off
 // the doc. Mirrors mergeProcessingTokens' liveness guard: a no-op unless the
 // status is a running one, so a status chunk that races past sendStatus("idle")
-// can't revive a stale spinner. A consequential cache miss is retained across
-// subsequent phase labels until the next sendStatus rebuilds processingState.
-func (w *ConversationWorker) mergeProcessingPhase(phase, cacheMissReason string) {
+// can't revive a stale spinner.
+func (w *ConversationWorker) mergeProcessingPhase(phase string) {
 	if phase == "" {
 		return
 	}
@@ -280,10 +284,38 @@ func (w *ConversationWorker) mergeProcessingPhase(phase, cacheMissReason string)
 		return
 	}
 	state["phase"] = phase
-	if cacheMissReason != "" {
-		state["cacheMissReason"] = cacheMissReason
-	}
 	w.doc.SetMetadata("processingState", state)
+}
+
+// cacheMissNoticeLead states, in plain English, what a provider cache miss cost.
+// The provider's own reason is appended after it verbatim: the lead goes ABOVE
+// the underlying text, never in place of it.
+const cacheMissNoticeLead = "Claude Code re-read the whole conversation instead of using its cached copy, so this turn cost more than it needed to."
+
+// insertCacheMissNotice records a consequential provider cache miss in the
+// transcript, at the point in the conversation where it happened — after the
+// message that triggered the turn, before the reply it paid for. A miss is
+// worth reading after the fact (and worth still being there tomorrow), so it is
+// a durable item rather than a caption on a spinner that the next status frame
+// overwrites.
+//
+// Going through insertTargetMessage stamps the in-flight transaction id, so
+// undoing the turn takes the notice with it. The item is deliberately absent
+// from itemWireMessages: the model neither needs nor benefits from reading
+// about our caching.
+func (w *ConversationWorker) insertCacheMissNotice(reason string) {
+	if reason == "" || reason == w.lastCacheMissNotice {
+		return
+	}
+	w.lastCacheMissNotice = reason
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type:      ItemTypeNotice,
+		ItemID:    generateItemID(),
+		Summary:   "Context cache rebuilt",
+		Content:   cacheMissNoticeLead + "\n\nReason: " + reason,
+		Source:    "claudecode",
+		Timestamp: time.Now().Format(time.RFC3339),
+	})
 }
 
 func (w *ConversationWorker) finalizeStreaming() {

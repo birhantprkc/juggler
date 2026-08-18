@@ -3,12 +3,17 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Composer display tests for provider-reported context-cache misses.
+ * Display tests for context-cache misses. The two warnings are about different
+ * moments and live in different places: a miss that has ALREADY happened is a
+ * notice item standing in the transcript, and the composer's button speaks only
+ * about the send the user has not made yet.
  * @module unit-tests/cache-miss-warning-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
 import '../../js/components/composer.js';
+import NoticeMessage from '../../js/components/notice-message.js';
+import { buildPrefixFingerprint, classifyContextCacheImpact } from '../../js/services/context-cache-impact.js';
 
 /**
  * @returns {{box: any, container: HTMLElement, metadata: Map<string, any>, notify: (key: string) => void}} Mounted composer and metadata controls
@@ -45,7 +50,17 @@ function mountComposer() {
 }
 
 /**
- * Run composer cache-miss warning tests.
+ * A plain-object stand-in for a conversation item Y.Map — enough for the
+ * fingerprint's `.get()` reads.
+ * @param {Record<string, any>} fields - The item's fields
+ * @returns {{get: (key: string) => any}} A Y.Map-shaped item
+ */
+function item(fields) {
+  return { get: (key) => fields[key] };
+}
+
+/**
+ * Run cache-miss display tests.
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Test counts and errors
  */
 export async function runTests() {
@@ -64,9 +79,12 @@ export async function runTests() {
     catch (e) { failed++; errors.push(`${name}: ${e instanceof Error ? e.message : String(e)}`); }
   }
 
-  test('provider cache miss flashes the existing warning with its reason', () => {
+  test('the composer button stays silent about a miss that already happened', () => {
     const { box, container, metadata, notify } = mountComposer();
     try {
+      // The worker no longer writes a cache-miss into processingState, but a
+      // stale doc from an older build might: the button must ignore it either
+      // way, because a past-tense miss is the notice item's business.
       metadata.set('processingState', {
         status: 'streaming',
         startedAt: 123,
@@ -77,31 +95,77 @@ export async function runTests() {
 
       const warning = /** @type {HTMLElement|null} */ (box.querySelector('#context-cache-warning'));
       assert(!!warning, 'cache warning button must exist');
-      assert(!warning.hasAttribute('hidden'), 'provider cache miss must reveal the warning');
-      assert(warning.classList.contains('cache-miss-flash'), 'provider cache miss must flash the warning');
-      assert((warning.getAttribute('title') || '').includes('system prompt changed'),
-        `warning title must include the reason, got ${warning.getAttribute('title')}`);
+      assert(warning.hasAttribute('hidden'),
+        'a miss that already happened must not reveal the predictive warning');
     } finally {
       container.remove();
     }
   });
 
-  test('cache miss for another thread does not reveal this composer warning', () => {
-    const { box, container, metadata, notify } = mountComposer();
+  test('the composer button still warns about the next send', () => {
+    const { box, container } = mountComposer();
     try {
-      metadata.set('processingState', {
-        status: 'streaming',
-        startedAt: 456,
-        threadItemId: 'thread-other',
-        cacheMissReason: 'model-changed',
-      });
-      notify('processingState');
-
       const warning = /** @type {HTMLElement|null} */ (box.querySelector('#context-cache-warning'));
-      assert(!!warning?.hasAttribute('hidden'), 'another thread\'s cache miss must stay hidden');
+      assert(!!warning?.hasAttribute('hidden'), 'warning starts hidden');
+
+      box._cacheImpactWarning = true;
+      box._updateCacheWarningButton();
+      assert(!warning.hasAttribute('hidden'), 'a predicted bust must reveal the warning');
+      assert((warning.getAttribute('title') || '').includes('next message'),
+        `warning must speak about the send not yet made, got ${warning.getAttribute('title')}`);
+
+      box._cacheImpactWarning = false;
+      box._updateCacheWarningButton();
+      assert(warning.hasAttribute('hidden'), 'warning clears when the prefix matches again');
     } finally {
       container.remove();
     }
+  });
+
+  test('a notice renders its title and keeps the provider reason verbatim', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    try {
+      const el = /** @type {any} */ (document.createElement('notice-message'));
+      el.setAttribute('message-id', 'NOTICE_1');
+      el.setAttribute('notice-title', 'Context cache rebuilt');
+      el.setAttribute('content', 'Claude Code re-read the whole conversation.\n\nReason: diverged: system prompt changed');
+      container.appendChild(el);
+
+      assert(el instanceof NoticeMessage, 'notice-message must upgrade to the NoticeMessage class');
+      const text = el.textContent || '';
+      assert(text.includes('Context cache rebuilt'), `notice must show its title, got ${text}`);
+      assert(text.includes('diverged: system prompt changed'),
+        `notice must keep the provider's reason verbatim, got ${text}`);
+      assert(!el.querySelector('button'), 'a notice reports; it must offer no action button');
+    } finally {
+      container.remove();
+    }
+  });
+
+  test('adding and removing a notice never reads as a cache bust', () => {
+    const history = [
+      item({ itemId: 'MSG_1', type: 'user', content: 'x'.repeat(40000) }),
+      item({ itemId: 'MSG_2', type: 'assistant', content: 'y'.repeat(40000) }),
+    ];
+    const baseline = buildPrefixFingerprint({ toolsetSig: 'a,b', items: history });
+
+    // A notice inserted mid-history must not shift the fingerprint at all: it
+    // is not in the cached prefix, so it cannot have moved it.
+    const withNotice = buildPrefixFingerprint({
+      toolsetSig: 'a,b',
+      items: [history[0], item({ itemId: 'NOTICE_1', type: 'notice', content: 'z'.repeat(500) }), history[1]],
+    });
+    assert(withNotice.join('|') === baseline.join('|'),
+      'a notice must contribute nothing to the prefix fingerprint');
+
+    // And tidying it away again must not caution about a bust that never happens.
+    const impact = classifyContextCacheImpact({
+      baseline: withNotice,
+      current: baseline,
+      anchorTokens: 50000,
+    });
+    assert(impact === 'none', `deleting a notice must stay silent, got ${impact}`);
   });
 
   return { passed, failed, errors };

@@ -54,6 +54,9 @@ export async function runTests(_ctx) {
 
   const fp = (/** @type {string} */ sig, /** @type {any[]} */ its) =>
     buildPrefixFingerprint({ toolsetSig: sig, items: its });
+  // As fp, but pinning the model signature that heads the fingerprint.
+  const fpm = (/** @type {string} */ modelSig, /** @type {string} */ sig, /** @type {any[]} */ its) =>
+    buildPrefixFingerprint({ modelSig, toolsetSig: sig, items: its });
   /**
    * A history item with a given content length, so the re-read slice can be sized
    * by content.
@@ -144,6 +147,52 @@ export async function runTests(_ctx) {
     const smallBaseline = fp('read,write', few);
     const current = fp('read', few); // toolset changed → divergence at index 0
     const impact = classifyContextCacheImpact({ baseline: smallBaseline, current, anchorTokens: 10000 });
+    assert(impact === 'none', `a full bust of a small context is not worth cautioning, got ${impact}`);
+  });
+
+  // ── Model / provider switches ────────────────────────────────────────────
+  // The biggest bust there is, and the one no provider reports back: a cache
+  // entry is scoped to one model at one provider, so a switch leaves NOTHING
+  // cached — a different vendor never had the prefix at all.
+
+  test('switching provider over a long conversation → busts-large', () => {
+    const before = fpm('anthropic/claude-sonnet-4', 'read,write', many);
+    const after = fpm('openai/gpt-5', 'read,write', many);
+    const impact = classifyContextCacheImpact({ baseline: before, current: after, anchorTokens: big });
+    assert(impact === 'busts-large', `a provider switch discards the whole prefix, got ${impact}`);
+  });
+
+  test('switching model within one provider → busts-large', () => {
+    // Cache entries are keyed per-model, so a sibling model is just as cold.
+    const before = fpm('anthropic/claude-sonnet-4', 'read,write', many);
+    const after = fpm('anthropic/claude-opus-4', 'read,write', many);
+    const impact = classifyContextCacheImpact({ baseline: before, current: after, anchorTokens: big });
+    assert(impact === 'busts-large', `a sibling model keys its own cache, got ${impact}`);
+  });
+
+  test('same model, untouched transcript → none', () => {
+    const before = fpm('anthropic/claude-sonnet-4', 'read,write', many);
+    const after = fpm('anthropic/claude-sonnet-4', 'read,write', many);
+    const impact = classifyContextCacheImpact({ baseline: before, current: after, anchorTokens: big });
+    assert(impact === 'none', `an unchanged model must stay silent, got ${impact}`);
+  });
+
+  test('changing the thinking level → busts-large', () => {
+    // The thinking configuration is rendered INTO the prompt, so changing the
+    // level starts a new prefix and the message cache misses unconditionally —
+    // same total loss as changing the model, from a control that looks unrelated.
+    const before = fpm('anthropic/claude-sonnet-4#medium', 'read,write', many);
+    const after = fpm('anthropic/claude-sonnet-4#high', 'read,write', many);
+    const impact = classifyContextCacheImpact({ baseline: before, current: after, anchorTokens: big });
+    assert(impact === 'busts-large', `a thinking-level change starts a new prefix, got ${impact}`);
+  });
+
+  test('switching model on a small conversation → none', () => {
+    // Total loss, but of almost nothing: the magnitude gate still rules.
+    const few = [sized('a', 10), sized('b', 10)];
+    const before = fpm('anthropic/claude-sonnet-4', 'read,write', few);
+    const after = fpm('openai/gpt-5', 'read,write', few);
+    const impact = classifyContextCacheImpact({ baseline: before, current: after, anchorTokens: 10000 });
     assert(impact === 'none', `a full bust of a small context is not worth cautioning, got ${impact}`);
   });
 

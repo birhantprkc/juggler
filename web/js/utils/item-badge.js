@@ -126,6 +126,9 @@ export function iconOptionsForItem(item, ctx = {}) {
   const type = item?.get?.('type') ?? ctx.fallbackType;
   switch (type) {
     case 'error': return { color: /** @type {string} */ (TYPE_COLORS.error), iconSvg: TYPE_ICONS.error };
+    // Same warning triangle as an error, in amber: something happened worth
+    // reading, but nothing failed. Mirrors notice-message's own render.
+    case 'notice': return { color: 'amber', iconSvg: TYPE_ICONS.error };
     case 'user': return { color: 'green', iconSvg: USER_AVATAR_SVG };
     case 'thinking': return { color: /** @type {string} */ (TYPE_COLORS.thinking), iconSvg: TYPE_ICONS.thinking };
     case 'assistant': return { color: 'slate', iconSvg: TYPE_ICONS.assistant };
@@ -230,6 +233,7 @@ export function typeNameForItem(item, ctx = {}) {
   const type = item?.get?.('type') ?? ctx.fallbackType;
   switch (type) {
     case 'error': return 'Error';
+    case 'notice': return 'Notice';
     case 'user': return 'User Message';
     case 'thinking': return 'Thinking';
     case 'assistant': return 'Assistant Message';

@@ -255,12 +255,6 @@ class Composer extends HTMLElement {
     this._impactListenerBound = false;
     /** @type {boolean} @private */
     this._cacheImpactWarning = false;
-    /** @type {number|null} @private */
-    this._cacheMissFlashTimeoutId = null;
-    /** @type {string|null} @private */
-    this._activeCacheMissSignature = null;
-    /** @type {string|null} @private */
-    this._cacheMissReason = null;
   }
 
   connectedCallback() {
@@ -289,10 +283,6 @@ class Composer extends HTMLElement {
     if (this._conversationMetadataObserver && this._conversation) {
       this._conversation.unobserveMetadata(this._conversationMetadataObserver);
       this._conversationMetadataObserver = null;
-    }
-    if (this._cacheMissFlashTimeoutId !== null) {
-      clearTimeout(this._cacheMissFlashTimeoutId);
-      this._cacheMissFlashTimeoutId = null;
     }
     // Drop the countdown-refresh interval. The target stays persisted on the
     // thread's draft, so reconnecting (or rebinding) restores the countdown —
@@ -793,42 +783,17 @@ class Composer extends HTMLElement {
   }
 
   /**
-   * Flash the cache warning when the provider reports a consequential cold
-   * start for this composer's thread. The worker includes the turn's shared
-   * start time, making the signature stable across repeated Yjs observations
-   * while still allowing a later miss with the same reason to flash again.
+   * Show or hide the cache caution beside Send. It speaks only about the send
+   * the user has not made yet: the transcript no longer matches what was last
+   * cached, so the next message re-reads a large slice at full price. A miss
+   * that has ALREADY happened is a different statement about a different moment,
+   * and is recorded as a notice item in the transcript instead.
    * @private
    */
-  _updateProviderCacheMiss() {
-    const state = this._conversation?.processingState;
-    const reason = typeof state?.cacheMissReason === 'string' ? state.cacheMissReason : '';
-    const stateThread = state?.threadItemId || null;
-    if (!reason || stateThread !== (this.threadItemId || null)) return;
-    const signature = `${state?.startedAt || ''}:${stateThread || 'root'}:${reason}`;
-    if (signature === this._activeCacheMissSignature) return;
-    this._activeCacheMissSignature = signature;
-    this._cacheMissReason = reason;
-    if (this._cacheMissFlashTimeoutId !== null) clearTimeout(this._cacheMissFlashTimeoutId);
-    this._cacheMissFlashTimeoutId = window.setTimeout(() => {
-      this._cacheMissFlashTimeoutId = null;
-      this._cacheMissReason = null;
-      this._updateCacheWarningButton();
-    }, 8000);
-    this._updateCacheWarningButton();
-  }
-
-  /** @private */
   _updateCacheWarningButton() {
     const btn = this.querySelector('#context-cache-warning');
     if (!btn) return;
-    const providerMiss = this._cacheMissReason !== null;
-    const title = providerMiss
-      ? `Claude Code rebuilt the context instead of using its cache. Reason: ${this._cacheMissReason}`
-      : 'Items in the conversation have changed, so the next message will cause a cache-miss';
-    btn.toggleAttribute('hidden', !providerMiss && !this._cacheImpactWarning);
-    btn.classList.toggle('cache-miss-flash', providerMiss);
-    btn.setAttribute('title', title);
-    btn.setAttribute('aria-label', title);
+    btn.toggleAttribute('hidden', !this._cacheImpactWarning);
   }
 
   /**
@@ -1353,15 +1318,8 @@ class Composer extends HTMLElement {
    * @param {import('../model/conversation.js').default|null} conversation - Conversation instance
    */
   setConversation(conversation) {
-    const conversationChanged = this._conversation !== conversation;
     if (this._conversationMetadataObserver && this._conversation) {
       this._conversation.unobserveMetadata(this._conversationMetadataObserver);
-    }
-    if (conversationChanged) {
-      if (this._cacheMissFlashTimeoutId !== null) clearTimeout(this._cacheMissFlashTimeoutId);
-      this._cacheMissFlashTimeoutId = null;
-      this._activeCacheMissSignature = null;
-      this._cacheMissReason = null;
     }
     this._conversation = conversation;
     this._conversationMetadataObserver = null;
@@ -1369,13 +1327,11 @@ class Composer extends HTMLElement {
       this._conversationMetadataObserver = (event) => {
         if (event.keysChanged?.has?.('processingState')) {
           this._updateNewThreadControls();
-          this._updateProviderCacheMiss();
         }
       };
       conversation.observeMetadata(this._conversationMetadataObserver);
     }
     this._updateNewThreadControls();
-    this._updateProviderCacheMiss();
 
     const permissionControls = this.querySelector('permission-controls');
     if (permissionControls && 'setMessageThread' in permissionControls) {
@@ -1432,7 +1388,6 @@ class Composer extends HTMLElement {
 
     this._messageThread = messageThread;
     this.threadItemId = messageThread.threadItemId;
-    this._updateProviderCacheMiss();
 
     this._syncStrategySelector();
 

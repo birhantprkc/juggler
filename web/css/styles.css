@@ -2354,12 +2354,42 @@ error-message article.error {
     color: var(--accent-red, #f85149);
 }
 
+/* Notices get the same card treatment as errors, in amber rather than red: the
+   event is worth stopping on, but nothing has failed and there is nothing to
+   act on. */
+notice-message article.notice {
+    background: color-mix(in srgb, var(--accent-yellow) 8%, transparent);
+    border: 0.0625rem solid color-mix(in srgb, var(--accent-yellow) 30%, transparent);
+    border-radius: 0.5rem;
+    padding: 0.85rem 0.95rem;
+    font-size: 0.85rem;
+    overflow-wrap: break-word;
+
+    /* Defensive: prevent long provider reasons overflowing the panel. */
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.notice-message-title {
+    margin-bottom: 0.35rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+/* pre-wrap keeps the provider's verbatim reason on its own line below the lead
+   without the component parsing the text apart. */
+.notice-message-detail {
+    white-space: pre-wrap;
+    color: var(--text-secondary);
+}
+
 /* All message components need display: block for proper backgrounds and selection */
 user-message,
 assistant-message,
 thinking-message,
 context-item-message,
 error-message,
+notice-message,
 thread-message,
 tool-group-message,
 tool-action-message {
