@@ -32,6 +32,7 @@ type capabilityCacheConversation struct {
 	closed      bool
 	submits     int
 	lastRequest provider.MessageRequest
+	cancel      func()
 }
 
 func (c *capabilityCacheConversation) Submit(_ context.Context, req provider.MessageRequest, _ provider.StructuredStreamCallback) (*provider.StreamResult, error) {
@@ -41,7 +42,11 @@ func (c *capabilityCacheConversation) Submit(_ context.Context, req provider.Mes
 }
 func (c *capabilityCacheConversation) Subscribe(provider.TurnSink) {}
 func (c *capabilityCacheConversation) CacheTTL() time.Duration     { return 0 }
-func (c *capabilityCacheConversation) Cancel()                     {}
+func (c *capabilityCacheConversation) Cancel() {
+	if c.cancel != nil {
+		c.cancel()
+	}
+}
 func (c *capabilityCacheConversation) Close() error {
 	c.closed = true
 	return nil
@@ -89,6 +94,75 @@ func TestConversationCacheCapabilitiesArePartOfIdentity(t *testing.T) {
 	if len(opened) != 2 || !opened[0].closed {
 		t.Fatalf("opened conversations = %+v, want old handle closed before replacement", opened)
 	}
+}
+
+func TestConversationCacheCancelDoesNotBlockOtherConversations(t *testing.T) {
+	const providerName = "test_nonblocking_cancel_cache"
+	var opened []*capabilityCacheConversation
+	provider.RegisterProvider(provider.ProviderInfo{Name: providerName}, func(provider.Config) (provider.Provider, error) {
+		return &capabilityCacheProvider{opened: &opened}, nil
+	})
+
+	cache := newConversationCache(nil)
+	credential := core.ProviderCredential{APIKey: "test-key"}
+	capabilities := provider.ModelCapabilities{ContextWindowTokens: 1000, MaxOutputTokens: 100}
+	if _, err := cache.GetOrOpen(context.Background(), "stuck", providerName, "model", credential, capabilities); err != nil {
+		t.Fatalf("open stuck conversation: %v", err)
+	}
+
+	cancelStarted := make(chan struct{})
+	releaseCancel := make(chan struct{})
+	opened[0].cancel = func() {
+		close(cancelStarted)
+		<-releaseCancel
+	}
+	cancelDone := make(chan struct{})
+	go func() {
+		cache.CancelConversation("stuck")
+		close(cancelDone)
+	}()
+	<-cancelStarted
+	select {
+	case <-cancelDone:
+	case <-time.After(time.Second):
+		t.Fatal("CancelConversation waited for provider cancellation to complete")
+	}
+
+	openDone := make(chan error, 1)
+	go func() {
+		_, err := cache.GetOrOpen(context.Background(), "unrelated", providerName, "model", credential, capabilities)
+		openDone <- err
+	}()
+	select {
+	case err := <-openDone:
+		if err != nil {
+			t.Fatalf("open unrelated conversation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unrelated conversation blocked behind provider cancellation")
+	}
+
+	sameDone := make(chan error, 1)
+	go func() {
+		_, err := cache.GetOrOpen(context.Background(), "stuck", providerName, "other-model", credential, capabilities)
+		sameDone <- err
+	}()
+	select {
+	case err := <-sameDone:
+		t.Fatalf("same conversation raced provider cancellation: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseCancel)
+	select {
+	case err := <-sameDone:
+		if err != nil {
+			t.Fatalf("switch cancelled conversation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("same-conversation switch did not resume after cancellation")
+	}
+	cache.Shutdown()
 }
 
 func TestConversationCacheAdmissionContractFlowsFromProviderInfo(t *testing.T) {

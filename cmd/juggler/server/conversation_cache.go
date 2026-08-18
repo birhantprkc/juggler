@@ -188,6 +188,26 @@ func (cc *conversationCache) Shutdown() {
 // cache itself needs no mutex.
 func (cc *conversationCache) runActor() {
 	entries := make(map[conversationCacheKey]provider.Conversation)
+	cancelling := make(map[string]<-chan struct{})
+	pendingCancellation := func(convID string) <-chan struct{} {
+		done := cancelling[convID]
+		if done == nil {
+			return nil
+		}
+		select {
+		case <-done:
+			delete(cancelling, convID)
+			return nil
+		default:
+			return done
+		}
+	}
+	deferUntil := func(done <-chan struct{}, op cacheOp) {
+		go func() {
+			<-done
+			cc.ops <- op
+		}()
+	}
 	var sinkFactory turnSinkFactory
 	for op := range cc.ops {
 		switch op.kind {
@@ -196,6 +216,10 @@ func (cc *conversationCache) runActor() {
 			op.doneCh <- struct{}{}
 
 		case cacheOpGetOrOpen:
+			if done := pendingCancellation(op.key.convID); done != nil {
+				deferUntil(done, op)
+				continue
+			}
 			if existing, ok := entries[op.key]; ok {
 				op.respCh <- cacheResult{conv: existing}
 				continue
@@ -252,6 +276,10 @@ func (cc *conversationCache) runActor() {
 			op.respCh <- cacheResult{conv: conv}
 
 		case cacheOpCloseConversation:
+			if done := pendingCancellation(op.convID); done != nil {
+				deferUntil(done, op)
+				continue
+			}
 			for k, conv := range entries {
 				if k.convID == op.convID {
 					if err := conv.Close(); err != nil {
@@ -273,13 +301,30 @@ func (cc *conversationCache) runActor() {
 
 		case cacheOpCancelConversation:
 			// Don't drop the entry — Cancel preserves the handle and its warm
-			// resume token for the next turn. Only Close removes from the cache.
+			// resume token for the next turn. Cancellation can wait for a provider
+			// turn to unwind, so run it outside this process-wide cache actor and
+			// acknowledge once cancellation has started. A stuck provider must not
+			// block its worker or prevent unrelated conversations from opening or
+			// switching providers. Later operations for this conversation wait for
+			// cancellation so its handle still has a single lifecycle owner.
+			if pendingCancellation(op.convID) != nil {
+				op.doneCh <- struct{}{}
+				continue
+			}
+			var conversations []provider.Conversation
 			for k, conv := range entries {
 				if k.convID == op.convID {
-					conv.Cancel()
-					_ = k
+					conversations = append(conversations, conv)
 				}
 			}
+			cancelDone := make(chan struct{})
+			cancelling[op.convID] = cancelDone
+			go func() {
+				for _, conv := range conversations {
+					conv.Cancel()
+				}
+				close(cancelDone)
+			}()
 			op.doneCh <- struct{}{}
 
 		case cacheOpShutdown:
