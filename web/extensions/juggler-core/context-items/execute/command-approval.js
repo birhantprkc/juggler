@@ -285,18 +285,32 @@ function stripTrailingSafeSinks(tokens, cfg = {}) {
  *
  * Returns `null` when a leading `cd` IS present but is not a cleanly-strippable
  * `cd <in-root> <sep>` — a bare `cd` (→ $HOME), `cd -`, or an out-of-root target.
- * `null` means "refuse", and each caller acts on it: the approval path rejects
- * (an out-of-project `cd` must never auto-approve) and the suggestion path
- * returns no suggestions (so it never nudges the user toward a sandbox-weakening
- * `cd *` grant that would auto-approve `cd` to anywhere). A non-`cd` leading
- * token — or a `cd` too short to carry a separator — returns the tokens
- * unchanged for normal segmentation, where {@link CdHandler} validates a lone
- * `cd <path>` segment in any position.
+ * `null` means "refuse": an out-of-project `cd` must never auto-approve, so the
+ * approval path rejects outright.
+ *
+ * One of those refusals has an honest remedy, and `outGrantable` is how the
+ * suggestion path asks for it. When the sole objection is that the target sits
+ * outside the allowed roots AND that target is a grantable root, the folder
+ * grant covering it is reported there along with the directory the rest of the
+ * command runs in and the tokens that follow — enough for the caller to offer
+ * "allow this folder" and analyse the remainder as it will actually run. That
+ * grant is the narrow fix; it is emphatically not a `cd *` glob, which would
+ * auto-approve `cd` to anywhere and is never suggested for a `cd` in any
+ * position (see {@link CdHandler.pathArgs}). A refusal with no grantable target —
+ * a bare `cd`, `cd -`, `cd ~`, a target carrying a shell expansion — leaves
+ * `outGrantable` untouched, so the caller falls back to suggesting nothing.
+ *
+ * A non-`cd` leading token — or a `cd` too short to carry a separator — returns
+ * the tokens unchanged for normal segmentation, where {@link CdHandler}
+ * validates a lone `cd <path>` segment in any position.
  * @param {ShellToken[]} tokens tokens with a possible leading `cd X <sep>`
  * @param {ApprovalCtx} ctx approval context
+ * @param {{grant?: string, cwd?: string, tokens?: ShellToken[]}} [outGrantable] if
+ *   provided, receives `{grant, cwd, tokens}` when the refusal is solely an
+ *   out-of-root target that a folder grant would fix
  * @returns {ShellToken[] | null} tokens with a clean leading `cd X <sep>` removed, unchanged when there is no leading `cd`, or null to refuse
  */
-function stripLeadingSafeCd(tokens, ctx) {
+function stripLeadingSafeCd(tokens, ctx, outGrantable) {
   if (tokens.length < 3) return tokens;
   const t0 = checkedAt(tokens, 0);
   if (t0.type !== 'word' || t0.text !== 'cd') return tokens;
@@ -304,7 +318,22 @@ function stripLeadingSafeCd(tokens, ctx) {
   const t2 = checkedAt(tokens, 2);
   if (t1.type !== 'word') return null;
   if (t2.type !== 'op' || !TOP_LEVEL_SPLIT_OPS.has(t2.text)) return null;
-  if (!pathAllowed(t1.text, ctx)) return null;
+  // `cd -` moves to $OLDPWD, which this analysis cannot see — and it is not the
+  // relative directory `./-` that the containment check would otherwise take it
+  // for. Refuse, as {@link CdHandler.isSafe} does for a lone `cd -` segment.
+  if (t1.text.startsWith('-')) return null;
+  if (!pathAllowed(t1.text, ctx)) {
+    if (outGrantable) {
+      const target = cdTargetCwd(t1.text, ctx);
+      const root = canonicalRoot(target, ctx.home);
+      if (root) {
+        outGrantable.grant = root;
+        outGrantable.cwd = target;
+        outGrantable.tokens = tokens.slice(3);
+      }
+    }
+    return null;
+  }
   ctx.cwd = cdTargetCwd(t1.text, ctx);
   return tokens.slice(3);
 }
@@ -997,15 +1026,20 @@ function segmentRemedies(seg, interpreters, cfg) {
  *     outside the allowed roots. Granting those folders keeps the command-shape
  *     restriction while letting the command read where it needs to — the right
  *     answer for `grep -r … ~/elsewhere` / `find ~/elsewhere …`, far better than
- *     a `grep *` wildcard.
+ *     a `grep *` wildcard. A leading `cd` to a grantable folder outside the
+ *     roots contributes its target to the same grant, so `cd ~/elsewhere && ls`
+ *     offers the one folder that fixes it rather than nothing at all.
  *   - **glob patterns** (`{patterns}`) — escalating breadth, one pattern per
  *     rejected segment combined per tier, as before.
  *
  * Returns `[]` (caller should fall back to an exact whole-command rule) when:
  *   - the command already auto-approves — nothing to suggest;
  *   - it can't be statically decomposed into clean segments — command
- *     substitution, control flow, a `cd` that escapes the allowed roots, a
- *     dangerous env prefix, or a segment with a leftover operator.
+ *     substitution, control flow, a dangerous env prefix, or a segment with a
+ *     leftover operator;
+ *   - a leading `cd` escapes the allowed roots to somewhere no folder grant can
+ *     reach: a bare `cd` (→ $HOME), `cd -`, `cd ~`, or a target carrying a shell
+ *     expansion.
  * @param {string} command command string
  * @param {object} [opts] options
  * @param {string} [opts.platform] 'darwin', 'linux', or 'windows' (default 'darwin')
@@ -1046,9 +1080,25 @@ export function suggestApprovalPatterns(command, opts = {}) {
   const ctx = { platform, home, allowedRoots, patterns, writeEnabled, cwd, vars: new Map() };
 
   let working = stripTrailingSafeSinks(tokens, ctx);
-  const afterCd = stripLeadingSafeCd(working, ctx);
-  if (afterCd === null) return [];
-  working = afterCd;
+  // A leading `cd` to a grantable folder outside the roots is fixable by
+  // granting that folder, so it is analysed rather than refused: the grant joins
+  // the roots and the rest of the command is judged standing in that directory —
+  // the state the command would run in once the user says yes. Every other
+  // leading-`cd` refusal has no honest remedy, so there is nothing to suggest.
+  /** @type {{grant?: string, cwd?: string, tokens?: ShellToken[]}} */
+  const cdGrantable = {};
+  const afterCd = stripLeadingSafeCd(working, ctx, cdGrantable);
+  /** @type {string[]} folders the leading `cd` alone requires */
+  const cdGrants = [];
+  if (afterCd === null) {
+    if (!cdGrantable.grant || !cdGrantable.tokens) return [];
+    cdGrants.push(cdGrantable.grant);
+    ctx.allowedRoots = [...allowedRoots, cdGrantable.grant];
+    ctx.cwd = cdGrantable.cwd || ctx.cwd;
+    working = cdGrantable.tokens;
+  } else {
+    working = afterCd;
+  }
   if (working.length === 0) return [];
 
   const segments = splitOnOps(working, TOP_LEVEL_SPLIT_OPS);
@@ -1074,7 +1124,10 @@ export function suggestApprovalPatterns(command, opts = {}) {
     if (!rem) return [];
     perSegment.push(rem);
   }
-  if (perSegment.length === 0) return [];
+  // Nothing left to fix and no folder to grant → nothing to suggest. A leading
+  // `cd` grant counts on its own: once that folder is allowed, every segment
+  // after it may well be safe already, and the grant IS the whole suggestion.
+  if (perSegment.length === 0 && cdGrants.length === 0) return [];
 
   /** @type {Array<{patterns?: string[], allowedPaths?: string[]}>} */
   const suggestions = [];
@@ -1087,6 +1140,9 @@ export function suggestApprovalPatterns(command, opts = {}) {
     /** @type {string[]} */
     const allowedPaths = [];
     const within = new Set();
+    for (const p of cdGrants) {
+      if (!within.has(p)) { within.add(p); allowedPaths.push(p); }
+    }
     for (const r of perSegment) {
       for (const p of r.paths) {
         if (!within.has(p)) { within.add(p); allowedPaths.push(p); }

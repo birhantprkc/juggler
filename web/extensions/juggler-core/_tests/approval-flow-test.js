@@ -703,9 +703,19 @@ export async function runTests(_ctx) {
     // Add a wildcard pattern for 'cd *'
     conversation.rootMessageThread.addRule('execute', { kind: 'glob', value: 'cd *', scope: 'conversation' });
 
-    // Simple command SHOULD match the wildcard
-    const simpleMatch = isExecutePermitted(conversation, 'cd /safe/path');
-    assert(simpleMatch === true, 'cd * should match cd /safe/path');
+    // A simple, in-project `cd` is approved.
+    const simpleMatch = isExecutePermitted(conversation, 'cd subdir');
+    assert(simpleMatch === true, 'cd subdir (inside the project) should be approved');
+
+    // SECURITY: the wildcard does NOT widen where `cd` may go. `cd` declares its
+    // target as a path argument, so a move outside the allowed roots is a path
+    // obstacle, and the analyser refuses to let a glob paper over one — the same
+    // rule that stops `grep *` reading /etc/passwd. It matters most here: `cd`
+    // relocates everything that follows it, so a `cd *` grant that escaped the
+    // project would hand over the whole filesystem. The honest remedy is a
+    // folder grant, which is what the approval prompt offers instead.
+    const escapingMatch = isExecutePermitted(conversation, 'cd /safe/path');
+    assert(escapingMatch === false, 'cd * should NOT match a cd outside the allowed roots');
 
     // SECURITY: Compound command should NOT match wildcard
     const compoundMatch = isExecutePermitted(conversation, 'cd /path && rm -rf /');

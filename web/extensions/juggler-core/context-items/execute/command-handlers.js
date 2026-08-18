@@ -275,6 +275,27 @@ class CommandBuiltinHandler extends CommandHandler {
  */
 class CdHandler extends CommandHandler {
   static commandName = 'cd';
+
+  /**
+   * The directory `cd` moves to. Declaring it makes an out-of-root target a
+   * *path* obstacle, which is what it is: the fix is to grant that folder, and
+   * the analyser withholds the `cd *` generalisation once a path is the sole
+   * obstacle — a blanket `cd *` would auto-approve moving anywhere, dropping the
+   * containment rule the command broke.
+   *
+   * Only `cd <path>` names a directory. A bare `cd` (→ $HOME), `cd -` (→ the
+   * previous directory, unknowable here), and any longer form are shape
+   * failures no grant can rescue, so they return null.
+   * @param {string[]} args args
+   * @returns {string[] | null} the target directory, or null if not `cd <path>`
+   */
+  static pathArgs(args) {
+    if (args.length !== 1) return null;
+    const target = checkedAt(args, 0);
+    if (target.startsWith('-')) return null;
+    return [target];
+  }
+
   /**
    * @param {string[]} args args
    * @param {ApprovalCtx} ctx ctx
@@ -2644,8 +2665,17 @@ class XargsHandler extends CommandHandler {
   }
 }
 
-/** Registry — add a class and an entry here to support a new command. */
-export const COMMAND_HANDLERS = /** @type {Map<string, typeof CommandHandler>} */ (new Map([
+/**
+ * Registry — add a class and an entry here to support a new command.
+ *
+ * The entry list is annotated rather than the Map: handler subclasses narrow the
+ * base signatures they override (a handler that ignores `ctx` declares one
+ * parameter), so left to itself the checker hunts for a common supertype across
+ * the union and settles on whichever handler comes first. Naming the element
+ * type states the intent — every entry is a `CommandHandler` subclass — and
+ * keeps that inference from turning on the order of this list.
+ */
+export const COMMAND_HANDLERS = new Map(/** @type {Array<[string, typeof CommandHandler]>} */ ([
   [PwdHandler.commandName, PwdHandler],
   [WhoamiHandler.commandName, WhoamiHandler],
   [IdHandler.commandName, IdHandler],

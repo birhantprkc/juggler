@@ -381,6 +381,12 @@ const CASES = [
     command: 'echo hi && cd && cat .ssh/id_rsa', patterns: [], platform: 'darwin', expected: false },
   { name: 'cd - (→ $OLDPWD) prompts',
     command: 'echo hi && cd - && ls', patterns: [], platform: 'darwin', expected: false },
+  // Leading `cd -` too: $OLDPWD is unknowable here, and it is emphatically not
+  // the relative directory `./-` that the containment check would take it for.
+  { name: 'leading cd - (→ $OLDPWD) prompts',
+    command: 'cd - && ls', patterns: [], platform: 'darwin', expected: false },
+  { name: 'leading cd - is not rescued by a cd wildcard',
+    command: 'cd -; ls', patterns: ['cd *', 'ls *'], platform: 'darwin', expected: false },
   { name: 'cd into project then absolute out-of-project read still prompts',
     command: 'cd ~/code/juggler && cat /etc/passwd', patterns: [], platform: 'darwin', expected: false },
   { name: 'cd into subdir then a .. escape still prompts',
@@ -1436,7 +1442,60 @@ const SUGGEST_CASES = [
   // that starts `git -C …`, and every tier must survive the dry-run.
   { name: 'git write subcommand with an out-of-root -C → still the ordinary tiers',
     command: 'git -C /Users/jules/other-repo push origin main',
-    expected: [['git -C /Users/jules/other-repo push origin main'], ['git *']] }
+    expected: [['git -C /Users/jules/other-repo push origin main'], ['git *']] },
+
+  // === A leading `cd` out of the roots is a path obstacle like any other =====
+  // Granting the folder it moves to is the whole fix: the segments after it are
+  // judged standing in that folder, so a command that only reads where it landed
+  // needs nothing else. No glob tier can appear here — the analyser refuses an
+  // escaping `cd` before it ever consults the pattern list, so a `cd *` (or even
+  // the exact command text) could not honestly approve it.
+  { name: 'leading cd out of roots (&&) → grant the folder, no glob tier',
+    command: 'cd /Users/jules/other-repo && ls',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo'] }] },
+  { name: 'leading cd out of roots (;) → grant the folder',
+    command: 'cd /Users/jules/other-repo; ls',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo'] }] },
+  // The reported shape: cd into a sibling project's conversation dir, then read
+  // around inside it. Everything after the cd is relative to where it landed.
+  { name: 'leading cd out of roots + relative reads inside it → one folder grant',
+    command: 'cd "/Users/jules/other-repo/.juggler/Some Conversation--conv_abc123"; ls; ls txns | tail -5',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo/.juggler/Some Conversation--conv_abc123'] }] },
+  // A relative escaping cd resolves against the working directory first, so the
+  // grant names the folder it actually reaches.
+  { name: 'leading relative cd escaping the roots → grant the resolved folder',
+    command: 'cd ../other-repo; ls',
+    expected: [{ allowedPaths: ['/Users/jules/code/other-repo'] }] },
+  // The cd grant unions with the grants its following segments need.
+  { name: 'leading cd out of roots + read in a third folder → union both grants',
+    command: 'cd /Users/jules/other-repo && cat /opt/sdk/windows/notes.txt',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo', '/opt/sdk/windows/notes.txt'] }] },
+  // A segment that is unsafe for a NON-path reason is not rescued by the grant,
+  // and no glob can cover the escaping cd → nothing honest to suggest.
+  { name: 'leading cd out of roots + a destructive segment → no suggestion',
+    command: 'cd /Users/jules/other-repo; rm -rf /',
+    expected: [] },
+  // Targets no folder grant can reach: the refusal stands with nothing to offer.
+  { name: 'leading bare cd (→ $HOME) → no suggestion',
+    command: 'cd; ls', expected: [] },
+  { name: 'leading cd - (→ $OLDPWD) → no suggestion',
+    command: 'cd -; ls', expected: [] },
+  { name: 'leading cd ~ (home is too broad to grant) → no suggestion',
+    command: 'cd ~; ls', expected: [] },
+  { name: 'leading cd to a bare system top-level → no suggestion',
+    command: 'cd /usr; ls', expected: [] },
+  { name: 'leading cd to a path carrying a shell expansion → no suggestion',
+    command: 'cd $HOME/x; ls', expected: [] },
+
+  // A `cd` in any OTHER position declares its target as a path argument too, so
+  // an out-of-root move offers that folder rather than a `cd *` wildcard — which
+  // would auto-approve moving anywhere and drop the containment rule entirely.
+  { name: 'non-leading cd out of roots → grant the folder, never cd *',
+    command: 'ls; cd /Users/jules/other-repo',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo'] }] },
+  { name: 'lone cd out of roots → grant the folder, never cd *',
+    command: 'cd /Users/jules/other-repo',
+    expected: [{ allowedPaths: ['/Users/jules/other-repo'] }] }
 ];
 
 /**
