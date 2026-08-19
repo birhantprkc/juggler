@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-08-19
+
 - Extensions can ship a sub-agent: a tool running under a strategy the tool itself owns
 - New Explore and Research tools investigate in their own context, returning only the answer
 - Refactored to simplify sub-threads and to make them resumable sessions. An LLM can now append to an existing subthread and get subsequent results from it. Removed the concept of summarising threads or marking them closed.
