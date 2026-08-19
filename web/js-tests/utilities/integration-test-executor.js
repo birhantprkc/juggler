@@ -173,6 +173,7 @@ import { runTests as runSettingsFirstLoadTests } from '../unit-tests/settings-fi
 import { runTests as runProxySettingsTests } from '../unit-tests/proxy-settings-test.js';
 import { runTests as runReconnectPolicyTests } from '../unit-tests/reconnect-policy-test.js';
 import { runTests as runPopupBackButtonTests } from '../unit-tests/popup-back-button-test.js';
+import { runTests as runPopupSurfaceTests } from '../unit-tests/popup-surface-test.js';
 import { runTests as runModelDisplayTests } from '../unit-tests/model-display-test.js';
 import { runTests as runEngineProjectSwitchTests } from '../unit-tests/engine-project-switch-test.js';
 import { runTests as runWindowTitleTests } from '../unit-tests/window-title-test.js';
@@ -402,6 +403,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:proxy-settings', run: runProxySettingsTests },
   { name: 'unit:reconnect-policy', run: runReconnectPolicyTests },
   { name: 'unit:popup-back-button', run: runPopupBackButtonTests },
+  { name: 'unit:popup-surface', run: runPopupSurfaceTests },
   { name: 'unit:model-display', run: runModelDisplayTests },
   { name: 'unit:engine-project-switch', run: runEngineProjectSwitchTests },
   { name: 'unit:window-title', run: runWindowTitleTests },

@@ -161,9 +161,17 @@ class StrategySelector extends HTMLElement {
     this._bindMetadataObserver(null);
     this._bindItemsObserver(null);
     this._bindContainerObserver(null);
-    // Tear down the open dropdown (surface, scrim, observer, dismissal wiring).
-    this._menu?.close();
-    this._menu = null;
+    // Tear down the open dropdown (surface, scrim, observer, dismissal wiring) —
+    // but a MOVE is not a removal. The touch actions sheet relocates this element
+    // into the sheet and back out again, and each move disconnects it, so closing
+    // here directly would destroy a menu the user just opened. Deferring one
+    // microtask outlasts the synchronous re-insertion: still detached by then
+    // means genuinely gone.
+    queueMicrotask(() => {
+      if (this.isConnected) return;
+      this._menu?.close();
+      this._menu = null;
+    });
     this._cycle.reset();
   }
 

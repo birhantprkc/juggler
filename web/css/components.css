@@ -4568,6 +4568,17 @@ composer-box .context-cache-warning-btn .icon-warning {
         display: none;
     }
 
+    /* …except while its dropdown is open. Opening it from the sheet closes the
+       sheet (one popup at a time), which hands the selector straight back to
+       this inline slot — and on a tablet, wide enough that the dropdown anchors
+       to a button rather than becoming a sheet, a hidden button is a zero-sized
+       anchor and the menu lands in the top-left corner. Showing it for exactly
+       the span the menu is open keeps the anchor real. A delegated thread's
+       selector stays gone: [hidden] is excluded rather than out-specified. */
+    composer-box input-controls-config > strategy-selector:not([hidden]):has(.strategy-selector-button.open) {
+        display: flex;
+    }
+
     /* One row, never wrapping: [permission] [model] [⋮] … [send]. Neutralise the
        narrow-column fold (config never claims a full row here) and let the
        config cluster shrink (min-width:0) so a long model name ellipsises

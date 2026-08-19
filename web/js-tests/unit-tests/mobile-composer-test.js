@@ -14,6 +14,10 @@
  *      existing handlers: the New Thread row dispatches the /thread command and
  *      the Attach image row triggers the hidden file input. Opening the sheet
  *      and picking a row closes it.
+ *   4. The strategy menu opened from inside that sheet is dismissible. It is the
+ *      one row that presents a popup of its own, which closes the sheet
+ *      mid-presentation and re-parents the selector — a cascade that must still
+ *      leave a menu that closes and releases its open-popup token.
  *
  * The touch decision normally reads `matchMedia('(hover: none) and
  * (pointer: coarse)')`, which the headless harness cannot drive. So the test
@@ -23,6 +27,7 @@
  */
 
 import { initializeRegistries, assert } from '../utilities/test-helpers.js';
+import { closeAllPopups, isAnyPopupOpen, __resetPopupManagerForTests } from '../../js/utils/popup-manager.js';
 import '../../js/components/composer.js';
 
 /**
@@ -58,6 +63,14 @@ function mountTouchComposer() {
   container.addEventListener('send-message', (e) => sent.push(/** @type {CustomEvent} */ (e).detail));
 
   return { box, textarea, container, sent };
+}
+
+/**
+ * Yield to the macrotask queue, so one shimmed animation frame can run.
+ * @returns {Promise<void>} Resolves after the next macrotask.
+ */
+function tick() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 /**
@@ -206,6 +219,70 @@ export async function runTests() {
     } finally {
       /** @type {any} */ (box)._closeActionsSheet?.();
       container.remove();
+    }
+  }
+
+  // ── Test 5: the strategy menu opened FROM the sheet is still dismissible ──
+  // Opening it announces a new popup from inside presentPopup, so the sheet
+  // closes mid-presentation and hands the selector back to the inline row — a
+  // re-parent, which disconnects the element. Nothing in that cascade may strand
+  // the menu: it must end up on <body>, dismissible, and must release its
+  // open-popup token (a leaked one makes Escape stop dismissing popups AND stop
+  // reaching the running turn for the rest of the session).
+  {
+    __resetPopupManagerForTests();
+    // presentInlineMenu and presentPopup both defer a frame, and the hidden
+    // test window may never paint. Drive both off macrotasks instead.
+    const realRaf = window.requestAnimationFrame;
+    const realCancelRaf = window.cancelAnimationFrame;
+    window.requestAnimationFrame = (/** @type {FrameRequestCallback} */ cb) =>
+      /** @type {any} */ (setTimeout(() => cb(performance.now()), 0));
+    window.cancelAnimationFrame = (/** @type {number} */ id) => clearTimeout(id);
+    const { box, container } = mountTouchComposer();
+    try {
+      await /** @type {any} */ (box)._openActionsSheet();
+      const selector = /** @type {any} */ (
+        document.querySelector('.actions-sheet strategy-selector'));
+      assert(!!selector, 'the strategy selector must be relocated into the sheet');
+
+      const strategyBtn = /** @type {HTMLElement|null} */ (
+        selector.querySelector('.strategy-selector-button'));
+      assert(!!strategyBtn, 'the relocated selector must render its button');
+      /** @type {HTMLElement} */ (strategyBtn).click();
+      await tick(); // presentInlineMenu's frame: relocate + present
+      await tick(); // presentPopup's own frame: place it
+
+      assert(!document.querySelector('.actions-sheet'),
+        'opening the strategy menu must close the actions sheet (one popup at a time)');
+      const menu = document.querySelector('.strategy-dropdown[data-strategy-selector="true"]');
+      assert(!!menu, 'the strategy menu must be presented on <body>, not torn down by the re-parent');
+      assert(menu.parentElement === document.body,
+        'the presented menu must be hosted on <body>');
+      const config = box.querySelector('input-controls-config');
+      assert(!!config && config.contains(selector),
+        'the selector itself must be back in the inline control row');
+
+      // Escape / Back / scrim-tap all route through closeAllPopups.
+      closeAllPopups();
+      assert(!document.querySelector('.strategy-dropdown[data-strategy-selector="true"]'),
+        'dismissing must remove the presented menu');
+      assert(!document.querySelector('.popup-sheet-scrim'),
+        'dismissing must remove the sheet scrim');
+      assert(!isAnyPopupOpen(),
+        'dismissing must release the open-popup token (a leak disables Escape for the session)');
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push('actions-sheet-strategy-menu: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      closeAllPopups();
+      document.querySelectorAll('.strategy-dropdown[data-strategy-selector="true"], .popup-sheet-scrim')
+        .forEach((el) => el.remove());
+      /** @type {any} */ (box)._closeActionsSheet?.();
+      container.remove();
+      window.requestAnimationFrame = realRaf;
+      window.cancelAnimationFrame = realCancelRaf;
+      __resetPopupManagerForTests();
     }
   }
 

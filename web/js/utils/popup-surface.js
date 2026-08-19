@@ -194,10 +194,15 @@ export function presentPopup({
   const mql = window.matchMedia(SHEET_QUERY);
   mql.addEventListener('change', apply);
 
-  // Position after layout so the surface has measurable dimensions.
-  requestAnimationFrame(apply);
+  // Position after layout so the surface has measurable dimensions. The handle
+  // is kept so a release arriving before that frame runs can cancel it —
+  // otherwise the placement would fire against a surface already torn down and,
+  // in sheet mode, hang a fresh scrim over the page with nothing left to remove
+  // it.
+  const placementFrame = requestAnimationFrame(apply);
 
   return () => {
+    cancelAnimationFrame(placementFrame);
     mql.removeEventListener('change', apply);
     if (observer) observer.disconnect();
     if (scrim) scrim.remove();
@@ -230,7 +235,9 @@ export function presentPopup({
  * `<body>` that nothing can close. So this owns the frame handle as well as the
  * popup release, cancels the frame on close, and looks the nodes up INSIDE the
  * frame rather than capturing them at schedule time (a re-render between the
- * two then yields the new menu instead of a stale one).
+ * two then yields the new menu instead of a stale one). A close landing during
+ * the presentation itself — while `presentPopup` is on the stack and there is
+ * no release yet — is honoured the moment there is something to tear down.
  *
  * The popup id, the marker attribute and the outside-click selectors are all
  * derived from the host's tag name, so the three can't drift apart: a menu is
@@ -265,7 +272,7 @@ export function presentInlineMenu({ host, surfaceSelector, anchorSelector, onClo
     surface.setAttribute(marker, 'true');
     live = surface;
     onPresent?.(surface);
-    release = presentPopup({
+    const presented = presentPopup({
       surface,
       anchor,
       id: host.localName,
@@ -273,6 +280,21 @@ export function presentInlineMenu({ host, surfaceSelector, anchorSelector, onClo
       align,
       insideSelectors: [host.localName, `${surfaceSelector}[${marker}="true"]`],
     });
+    // A close can arrive DURING presentPopup, before it has returned anything to
+    // own: it announces itself to the popup manager from inside that call, and a
+    // popup closing in response can synchronously close this one too (the mobile
+    // actions sheet does exactly that — it re-parents the host, and a re-parent
+    // disconnects it). Such a close finds `frame` already null and `release`
+    // still null, so it can only set the flag; honouring it here is what stops
+    // the teardown being stranded on a handle the host has already dropped —
+    // which left the surface and its scrim on <body> with nothing able to
+    // remove them.
+    if (cancelled) {
+      presented();
+      live = null;
+      return;
+    }
+    release = presented;
   });
 
   return {
