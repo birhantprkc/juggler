@@ -6,10 +6,32 @@ package claudecode
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	provider "juggler/cmd/juggler/providers/registry"
 )
+
+func TestContinuationNudgeForRequest_DistinguishesHumanContinue(t *testing.T) {
+	generic := continuationNudgeForRequest(provider.MessageRequest{})
+	if generic != continuationNudge {
+		t.Fatalf("generic nudge = %q, want %q", generic, continuationNudge)
+	}
+
+	explicit := continuationNudgeForRequest(provider.MessageRequest{ExplicitContinuation: true})
+	if explicit != explicitContinuationNudge {
+		t.Fatalf("explicit nudge = %q, want explicit continuation cue", explicit)
+	}
+	if !strings.HasPrefix(explicit, "<system-reminder>") || !strings.HasSuffix(explicit, "</system-reminder>") {
+		t.Fatalf("explicit cue lost system-reminder framing: %q", explicit)
+	}
+	if !strings.Contains(explicit, "most recent request") || !strings.Contains(explicit, "necessary tool calls") {
+		t.Fatalf("explicit cue does not instruct Claude to finish the interrupted work: %q", explicit)
+	}
+	if !strings.Contains(explicit, "message authored by the user") {
+		t.Fatalf("explicit cue does not prevent user attribution: %q", explicit)
+	}
+}
 
 // regenerateMsgs is the shape a regenerate produces: the committed prefix plus
 // the assistant reply the CLI itself generated last turn, with no new user

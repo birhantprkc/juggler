@@ -720,6 +720,28 @@ func TestInjectedGuidanceReachesMessages(t *testing.T) {
 	}
 }
 
+func TestBuildLLMRequest_ExplicitContinuationIsCallScoped(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+
+	var first map[string]any
+	if err := json.Unmarshal(w.buildLLMRequestWithIntent(&ContextResult{}, nil, "txn-continue", false, true), &first); err != nil {
+		t.Fatalf("unmarshal continuation request: %v", err)
+	}
+	if got, ok := first["explicitContinuation"].(bool); !ok || !got {
+		t.Fatalf("explicitContinuation = %v, want true", first["explicitContinuation"])
+	}
+
+	var second map[string]any
+	if err := json.Unmarshal(w.buildLLMRequest(&ContextResult{}, nil, "txn-next", false), &second); err != nil {
+		t.Fatalf("unmarshal next request: %v", err)
+	}
+	if _, present := second["explicitContinuation"]; present {
+		t.Fatalf("explicitContinuation leaked into the next request: %v", second["explicitContinuation"])
+	}
+}
+
 // TestBuildLLMRequest_ForcedToolChoice verifies the generic forced-tool
 // mechanism at the worker boundary: a thread carrying a `forceTool` Yjs field
 // (set by a plugin) makes buildLLMRequest emit a provider-agnostic toolChoice on

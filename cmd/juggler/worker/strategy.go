@@ -68,6 +68,10 @@ const (
 //   - Text + end_turn → loop ends naturally
 //   - Cancellation
 func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation bool) {
+	w.runStrategyLoopWithIntent(userText, isContinuation, false)
+}
+
+func (w *ConversationWorker) runStrategyLoopWithIntent(userText string, isContinuation, explicitContinuation bool) {
 	defer w.finishStrategyRun()
 
 	// Clear any stale streaming state from previous conversation turn
@@ -85,9 +89,10 @@ func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation boo
 	st := strategyRunState{}
 
 	for {
-		if w.runOneTurn(&st) == turnDone {
+		if w.runOneTurn(&st, explicitContinuation) == turnDone {
 			return
 		}
+		explicitContinuation = false
 	}
 }
 
@@ -122,7 +127,7 @@ type strategyRunState struct {
 // process the response. It returns turnContinue when the run needs another LLM
 // turn and turnDone when the run is over (rest, error or cancellation) — the
 // caller returns immediately on turnDone and finishStrategyRun settles it.
-func (w *ConversationWorker) runOneTurn(st *strategyRunState) turnVerdict {
+func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVerdict {
 	// Polite stop (Pause): every LLM turn begins here, so this is the boundary
 	// where we rest before re-invoking the model. It catches every re-entry a
 	// mid-turn pause can precede — a sync-tool continuation, a barren retry, and
@@ -238,7 +243,7 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState) turnVerdict {
 	txnID := generateTransactionID()
 	w.currentTxnID = txnID
 
-	llmRequest := w.buildLLMRequest(ctxResult, tools, txnID, st.bypassContextGuard)
+	llmRequest := w.buildLLMRequestWithIntent(ctxResult, tools, txnID, st.bypassContextGuard, explicitContinuation)
 
 	// Stamp the originating user message before the call. The transaction
 	// blob is written below regardless of outcome, so on LLM failure the

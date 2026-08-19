@@ -256,8 +256,15 @@ func (c *Client) runPersistentResumeTurn(ctx context.Context, req provider.Messa
 //
 // Falls back to a fresh start on any spawn/stdin failure — same shape as
 // runPersistentResumeTurn's error handling.
+func continuationNudgeForRequest(req provider.MessageRequest) string {
+	if req.ExplicitContinuation {
+		return explicitContinuationNudge
+	}
+	return continuationNudge
+}
+
 func (c *Client) runResumeNudge(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback, claimsRequest bool) (*provider.StreamResult, error) {
-	nudge := []provider.Message{{Type: "user", Content: continuationNudge}}
+	nudge := []provider.Message{{Type: "user", Content: continuationNudgeForRequest(req)}}
 	nudgeLines, err := c.formatMessagesAsStreamJSONLines(nudge, c.activeSession.sessionUUID)
 	if err != nil || len(nudgeLines) == 0 {
 		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("nudge-unserializable: %v", err))

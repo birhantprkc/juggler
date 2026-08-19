@@ -100,6 +100,10 @@ func (w *ConversationWorker) requestContextAndToolsForItemIDs(itemIDs []string) 
 // the caller (runStrategyLoop) so the same id is used for the request, the
 // blob filename, and the stamping of items inserted during the round-trip.
 func (w *ConversationWorker) buildLLMRequest(ctxResult *ContextResult, tools []ToolDefinition, txnID string, bypassContextGuard bool) json.RawMessage {
+	return w.buildLLMRequestWithIntent(ctxResult, tools, txnID, bypassContextGuard, false)
+}
+
+func (w *ConversationWorker) buildLLMRequestWithIntent(ctxResult *ContextResult, tools []ToolDefinition, txnID string, bypassContextGuard, explicitContinuation bool) json.RawMessage {
 	// Withhold tools the current thread may not use before anything else reads
 	// the list — in particular resolveForcedToolChoice below must validate a
 	// forced tool against the FILTERED list, never against a tool we're stripping.
@@ -125,6 +129,9 @@ func (w *ConversationWorker) buildLLMRequest(ctxResult *ContextResult, tools []T
 		"transactionId": txnID,
 	}
 
+	if explicitContinuation {
+		request["explicitContinuation"] = true
+	}
 	if bypassContextGuard {
 		request["bypassContextGuard"] = true
 	}

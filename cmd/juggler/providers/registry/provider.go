@@ -107,6 +107,12 @@ type MessageRequest struct {
 	// whose own bounded pack/split controller already handles context pressure.
 	BypassContextGuard bool
 
+	// ExplicitContinuation marks a provider request initiated by the human's
+	// Continue action without adding a user-authored transcript message. Stateful
+	// providers may use it to distinguish that intent from internal empty-delta
+	// triggers such as regeneration. It is ephemeral and never part of history.
+	ExplicitContinuation bool
+
 	// ThinkingLevel selects how much extended reasoning / "thinking" the model
 	// does this turn, named in the provider's OWN native vocabulary. It is one
 	// of the strings the model advertised in ModelInfo.ThinkingLevels (e.g.

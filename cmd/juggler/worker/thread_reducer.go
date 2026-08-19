@@ -545,7 +545,7 @@ func (w *ConversationWorker) dispatchCallLLMOnThread(threadItemID string) {
 		w.needsReconcile = true
 		return
 	}
-	w.consumeExplicitContinuation(threadItemID)
+	explicitContinuation := w.consumeExplicitContinuation(threadItemID)
 
 	// Set up thread context from doc state.
 	w.thread.itemID = threadItemID
@@ -565,7 +565,7 @@ func (w *ConversationWorker) dispatchCallLLMOnThread(threadItemID string) {
 	w.storeState(StateProcessing)
 	w.sendStatus("preparing", "")
 	w.batcher.Flush()
-	w.runStrategyLoop("", true)
+	w.runStrategyLoopWithIntent("", true, explicitContinuation)
 }
 
 // selectThreadFallbackResult returns a run's trailing assistant text — what a

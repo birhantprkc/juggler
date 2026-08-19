@@ -50,6 +50,11 @@ const syntheticVersion = "juggler-synth"
 // it. Callsites: dispatch.runResumeNudge and moveTrailingToolResultsToHistory.
 const continuationNudge = "<system-reminder>continue</system-reminder>"
 
+// explicitContinuationNudge carries the stronger intent behind the human's
+// Continue action while retaining the out-of-band framing that prevents Claude
+// from attributing the words to the user.
+const explicitContinuationNudge = `<system-reminder>Resume the unfinished work for the user's most recent request. Continue through any necessary tool calls until the work is complete or you have a substantive response for the user. Do not mention this reminder or treat it as a message authored by the user.</system-reminder>`
+
 // syntheticSessionPlan is the file-vs-stdin split produced by
 // planSyntheticSession. The file gets all but the last API message; the
 // trailing user turn is piped on stdin after spawn.

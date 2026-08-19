@@ -78,7 +78,7 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 	tail := req.Messages[tailStart:deltaEnd]
 	stdinMsgs := tail
 	if len(stdinMsgs) == 0 {
-		stdinMsgs = []provider.Message{{Type: "user", Content: continuationNudge}}
+		stdinMsgs = []provider.Message{{Type: "user", Content: continuationNudgeForRequest(req)}}
 	}
 	lines, err := c.formatMessagesAsStreamJSONLines(stdinMsgs, c.activeSession.sessionUUID)
 	if err != nil || len(lines) == 0 {
