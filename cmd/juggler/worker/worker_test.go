@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -424,10 +425,13 @@ func TestModelValidation(t *testing.T) {
 }
 
 // TestProviderUnavailableSurfacedAsValidationError verifies Guard B: when the LLM
-// dispatch fails because the selected model's provider isn't configured (the
-// caller wraps ErrProviderUnavailable), the worker surfaces a validation-error
-// with code "provider-unavailable" — a user-fixable "pick another model" prompt —
-// rather than a generic error item, and does not retry a model that cannot run.
+// dispatch fails because the selected model's provider can't be used (the caller
+// wraps ErrProviderUnavailable), the worker surfaces a validation-error with code
+// "provider-unavailable" — a user-fixable "pick another model" prompt — and does
+// not retry a model that cannot run. It also leaves a durable error item carrying
+// the resolver's own explanation, so a credential that lapses mid-loop doesn't
+// look like a turn that simply stopped (the status alone is a transient notice
+// the client drops when the conversation isn't on screen).
 func TestProviderUnavailableSurfacedAsValidationError(t *testing.T) {
 	w := NewConversationWorker("conv-pu", "user:test")
 	defer w.doc.Destroy()
@@ -493,6 +497,28 @@ func TestProviderUnavailableSurfacedAsValidationError(t *testing.T) {
 			}
 			if got := atomic.LoadInt32(&calls); got != 1 {
 				t.Fatalf("provider dispatch calls = %d, want 1 (an unusable model must not be retried)", got)
+			}
+			// The status message and the durable item both keep the resolver's
+			// detail; a lead that only says "isn't configured" is unactionable.
+			if msg, _ := m["message"].(string); !strings.Contains(msg, "no API key configured for provider: test") {
+				t.Errorf("status message dropped the resolver detail: %q", msg)
+			}
+			var errItem *ConversationItem
+			items := w.doc.GetItems()
+			for i := range items {
+				if items[i].Type == ItemTypeError {
+					errItem = &items[i]
+					break
+				}
+			}
+			if errItem == nil {
+				t.Fatal("no error item in the doc: Guard B must leave a durable record of the ended turn")
+			}
+			if !strings.Contains(errItem.Content, "no API key configured for provider: test") {
+				t.Errorf("error item dropped the resolver detail: %q", errItem.Content)
+			}
+			if !strings.Contains(errItem.Content, "test-model") {
+				t.Errorf("error item doesn't name the model: %q", errItem.Content)
 			}
 			return
 		case <-deadline:

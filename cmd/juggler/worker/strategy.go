@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -294,18 +295,37 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 			return turnDone
 		}
 
-		// Guard B: the selected model's provider isn't configured (no API key,
-		// provider disabled, OAuth not signed in). That is a user-fixable setup
-		// problem, not a turn failure — surface it as a validation error the
-		// client can act on (code "provider-unavailable": prompt to pick another
-		// model, never auto-retry) rather than a generic red error item. Do this
-		// before any context-limit handling: a credential failure is terminal and
-		// unrelated to compaction/recovery.
+		// Guard B: the selected model's provider can't be used (no API key,
+		// provider disabled, OAuth not signed in, sign-in expired). That is a
+		// user-fixable setup problem, so it carries the validation-error code
+		// "provider-unavailable" — prompt to pick another model, never
+		// auto-retry. Do this before any context-limit handling: a credential
+		// failure is terminal and unrelated to compaction/recovery.
 		if errors.Is(err, ErrProviderUnavailable) {
-			msg := "The selected model's provider isn't configured. Pick another model, or configure it in settings."
-			if mc := w.resolveModelConfig(); mc != nil {
-				msg = fmt.Sprintf("The provider for %s (%s) isn't configured. Pick another model, or configure %s in settings.", mc.Model, mc.Provider, mc.Provider)
+			mc := w.resolveModelConfig()
+			msg := "The selected model's provider can't be used. Pick another model, or configure it in settings."
+			errorData := map[string]any{"duration": duration.Milliseconds()}
+			if mc != nil {
+				msg = fmt.Sprintf("The provider for %s (%s) can't be used. Pick another model, or configure %s in settings.", mc.Model, mc.Provider, mc.Provider)
+				errorData["provider"] = mc.Provider
+				errorData["model"] = mc.Model
 			}
+			// Carry the resolver's own account of what is wrong ("codex access
+			// token is expired; sign in with the Codex app or run `codex
+			// login`"). The lead says what to do, the detail says why, and a
+			// credential failure is barely actionable without it — an expired
+			// sign-in reads as a lie when reported as "isn't configured".
+			if detail := providerUnavailableDetail(err); detail != "" {
+				msg += "\n\n" + detail
+			}
+			// This ends the turn, so it needs a durable record like any other
+			// terminal failure. The validation-error status alone is a
+			// client-side transient notice: it is a timed toast when the
+			// conversation is on screen and nothing at all when it isn't, so a
+			// credential that lapses mid-loop leaves a turn that simply stops.
+			// Insert the item first, while currentTxnID still stamps it with
+			// the transaction saved above.
+			w.sendErrorWithData(msg, "", errorData)
 			w.sendStatusWithCode("validation-error", msg, "provider-unavailable")
 			w.currentTxnID = ""
 			return turnDone
@@ -864,6 +884,27 @@ func classifyLLMError(msg string, cause error) error {
 	default:
 		return fmt.Errorf("LLM error: %s", msg)
 	}
+}
+
+// providerUnavailableDetail returns the credential resolver's own explanation
+// from an error wrapping ErrProviderUnavailable: everything the LLM caller
+// appended after the sentinel. Only the resolver knows which of the several
+// user-fixable states this is ("no API key configured", "codex access token is
+// expired; sign in with the Codex app…"), and Guard B's lead can't convey it.
+// The text is located by the sentinel rather than by trimming a prefix because
+// the error reaches Guard B already wrapped (classifyLLMError, delivery). An
+// error carrying nothing beyond the sentinel yields "".
+func providerUnavailableDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	marker := ErrProviderUnavailable.Error() + ": "
+	raw := err.Error()
+	i := strings.Index(raw, marker)
+	if i < 0 {
+		return ""
+	}
+	return strings.TrimSpace(raw[i+len(marker):])
 }
 
 // processLLMResponse handles the LLM response blocks.

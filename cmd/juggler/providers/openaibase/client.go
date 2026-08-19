@@ -700,6 +700,10 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	// Track function calls being assembled (keyed by item ID)
 	functionCalls := make(map[string]*toolCallAccumulator)
 
+	// Stop reason reported by a response.incomplete event, applied to a
+	// text-only turn below. Empty until such an event arrives.
+	var incompleteStop string
+
 	// Process the stream - events are ResponseStreamEventUnion
 	for stream.Next() {
 		sess.Reset()
@@ -786,6 +790,33 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 					return nil, err
 				}
 			}
+
+		case "error":
+			// A failure reported in-band on an otherwise-healthy 200 stream (an
+			// auth rejection mid-stream, a backend fault) rather than as an HTTP
+			// status. stream.Err() stays nil afterwards, so unless this becomes
+			// the turn's error the turn returns zero blocks and a clean
+			// end_turn — a conversation that stops with nothing to show for it.
+			e := evt.AsError()
+			return nil, c.enhanceError(fmt.Errorf("openai-responses stream error: %s", responsesErrorText(e.Code, e.Message, e.Param)))
+
+		case "response.failed":
+			// Terminal failure of the response itself; same silent-stop
+			// reasoning as the error event above.
+			failed := evt.AsResponseFailed().Response.Error
+			return nil, c.enhanceError(fmt.Errorf("openai-responses response failed: %s", responsesErrorText(string(failed.Code), failed.Message, "")))
+
+		case "response.incomplete":
+			// The response stopped short (token cap, content filter). What
+			// streamed so far stands, so this is a stop reason rather than an
+			// error — but it must not be reported as a clean finish.
+			incompleteStop = mapResponsesIncompleteReason(evt.AsResponseIncomplete().Response.IncompleteDetails.Reason)
+
+		default:
+			// Every other event is progress detail this loop has no use for
+			// (response.created, *.done, content-part boundaries). Traced, never
+			// dropped in silence, so a newly-meaningful event type is findable.
+			jlog.Trace("[openai-responses] unhandled event %s", evt.Type)
 		}
 	}
 
@@ -807,9 +838,14 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 		}
 	}
 
+	// A truncated turn that still asked for tools stays "tool_use": the calls
+	// were emitted above and the loop has to resolve them.
 	stopReason := "end_turn"
-	if len(functionCalls) > 0 {
+	switch {
+	case len(functionCalls) > 0:
 		stopReason = "tool_use"
+	case incompleteStop != "":
+		stopReason = incompleteStop
 	}
 
 	inputTokens, inputTokensApproximate, outputTokens := estimateMissingUsage(req, inputTokens, outputTokens, textContent.String())
@@ -1467,6 +1503,45 @@ func estimateImageTokens(req provider.MessageRequest) int {
 
 // mapOpenAIFinishReason maps OpenAI's finish_reason to normalized stop_reason values.
 // OpenAI values: "stop", "length", "tool_calls", "content_filter", "function_call"
+// responsesErrorText renders a Responses-API error onto one line. The backend
+// populates the triple inconsistently (a code with no message is common), so
+// every present field is kept, and an empty one still names itself rather than
+// surfacing as a blank error.
+func responsesErrorText(code, message, param string) string {
+	text := message
+	if text == "" {
+		text = "no detail reported"
+	}
+	var extra []string
+	if code != "" {
+		extra = append(extra, "code "+code)
+	}
+	if param != "" {
+		extra = append(extra, "param "+param)
+	}
+	if len(extra) > 0 {
+		text += " (" + strings.Join(extra, ", ") + ")"
+	}
+	return text
+}
+
+// mapResponsesIncompleteReason maps a Responses-API incomplete_details.reason
+// onto the stop-reason vocabulary mapOpenAIFinishReason uses. An unrecognised
+// reason returns "", leaving the computed stop reason alone: inventing a stop
+// reason the rest of the pipeline doesn't know is worse than the finish it
+// already inferred.
+func mapResponsesIncompleteReason(reason string) string {
+	switch reason {
+	case "max_output_tokens":
+		return "max_tokens"
+	case "content_filter":
+		return "content_filter"
+	default:
+		jlog.Trace("[openai-responses] unmapped incomplete reason %q", reason)
+		return ""
+	}
+}
+
 func mapOpenAIFinishReason(reason string) string {
 	switch reason {
 	case "stop":
