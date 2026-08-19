@@ -245,12 +245,15 @@ class ConversationTab extends HTMLElement {
           // its own next ID; we route through ColumnSelectionState so the
           // rebuild updates the visual + properties panel consistently.
           //
-          // Rule 16: when this advances to the next pending approval (e.g. the
-          // user just approved the one that had keyboard focus), engage its
-          // widget so it gets real focus — not just selection. This path calls
-          // ColumnSelectionState directly, bypassing the _onItemSelected auto-
-          // engage, so without this the next item is selected but unfocused and
-          // Enter merely engages it instead of acting on it.
+          // Rule 16: when this advances to a pending approval (e.g. the user
+          // just approved the one that had keyboard focus, or one arrived on
+          // its own), engage its widget so it gets real focus — not just
+          // selection. This path calls ColumnSelectionState directly, bypassing
+          // the _onItemSelected auto-engage, so without this the next item is
+          // selected but unfocused and Enter merely engages it instead of
+          // acting on it. _engageSelectedApproval applies Rule 16's draft
+          // exception itself: this path sees arriving approvals too, so gating
+          // only the _onItemSelected one leaves the keyboard stealable.
           if (this._maybeAutoSelectNextPendingInAllColumns()) {
             this._engageSelectedApproval();
           }
@@ -741,7 +744,7 @@ class ConversationTab extends HTMLElement {
     }
     if (selectApproval) {
       this._maybeAutoSelectNextPendingInAllColumns();
-      this._engageSelectedApproval();
+      this._engageSelectedApproval({ force: true });
     } else if (typeof /** @type {any} */ (root).scrollToBottom === 'function') {
       /** @type {any} */ (root).scrollToBottom(true);
     }
@@ -753,10 +756,20 @@ class ConversationTab extends HTMLElement {
    * frame because {@link _maybeAutoSelectNextPendingInAllColumns} may rebuild the
    * column, recreating the action-confirmation element. Columns are scanned in
    * order (root first) and only the first pending approval is engaged.
+   *
+   * Rule 16 applies here as it does to the auto-select path: an approval that
+   * arrives on its own must not take the keyboard off a prompt being written,
+   * or the next Enter answers a question the user never read. Judged on the
+   * deferred tick — the only moment that decides anything — so a draft typed
+   * while the frame was pending still counts.
+   * @param {{force?: boolean}} [opts] - `force` engages regardless of a draft,
+   *   for the jump-to-attention shortcut: the user asked to be taken to the
+   *   approval, so their own request outranks their own draft.
    * @private
    */
-  _engageSelectedApproval() {
+  _engageSelectedApproval({ force = false } = {}) {
     const run = () => {
+      if (!force && this._composerHoldsDraft()) return;
       for (const col of this._columns) {
         if (col.tagName !== 'CONVERSATION-AREA') continue;
         const selected = /** @type {any} */ (col).getSelectedElement?.();

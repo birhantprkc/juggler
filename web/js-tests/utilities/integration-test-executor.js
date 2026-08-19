@@ -128,6 +128,7 @@ import { runTests as runControlClickRevealTests } from '../unit-tests/control-cl
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
 import { runTests as runNewThreadFocusTests } from '../unit-tests/new-thread-focus-test.js';
 import { runTests as runApprovalFocusReturnTests } from '../unit-tests/approval-focus-return-test.js';
+import { runTests as runApprovalDraftFocusTests } from '../unit-tests/approval-draft-focus-test.js';
 import { runTests as runNestedApprovalStatusTests } from '../unit-tests/nested-approval-status-test.js';
 import { runTests as runThreadAliasTests } from '../unit-tests/thread-alias-test.js';
 import { runTests as runRunRecordsTests } from '../unit-tests/run-records-test.js';
@@ -362,6 +363,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
   { name: 'unit:new-thread-focus', run: runNewThreadFocusTests, needsExclusiveRun: true },
   { name: 'unit:approval-focus-return', run: runApprovalFocusReturnTests, needsExclusiveRun: true },
+  { name: 'unit:approval-draft-focus', run: runApprovalDraftFocusTests, needsExclusiveRun: true },
   { name: 'unit:nested-approval-status', run: runNestedApprovalStatusTests },
   { name: 'unit:run-records', run: runRunRecordsTests },
   { name: 'unit:thread-alias', run: runThreadAliasTests },

@@ -5,7 +5,6 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- Restarted sub-threads clear their stopped state and show live progress
 - Extensions can ship a sub-agent: a tool running under a strategy the tool itself owns
 - New Explore and Research tools investigate in their own context, returning only the answer
 - Refactored to simplify sub-threads and to make them resumable sessions. An LLM can now append to an existing subthread and get subsequent results from it. Removed the concept of summarising threads or marking them closed.
@@ -20,6 +19,7 @@ of changes; this project follows semantic versioning.
 - An extension that fails to reload now says so instead of quietly vanishing
 - Auto-approval follows `cd`, judging relative paths where the command actually runs
 - An unreachable update server is only reported when you asked for the check yourself
+- An approval arriving mid-sentence no longer steals the keyboard from your draft
 - A context-cache rebuild now stands in the transcript where it happened, instead of flashing past
 - Switching model, provider or thinking level now warns that the next send re-reads the whole context
 - Some claude code improvements to avoid leaving processes running, and better resuming
