@@ -49,16 +49,43 @@
          harmless. -->
     <script nonce="{{.CSPNonce}}">
         (function() {
+            var params = new URLSearchParams(window.location.search);
+            // A native desktop window is opened with ?window=1; remote browsers
+            // never have it. Resolved first because it decides which store wins
+            // below: a desktop window's zoom and theme belong to the project and
+            // live server-side, while a remote viewer's belong to the device in
+            // front of the user and live here.
+            var isWindow = params.has('window');
+            // Opaque per-project key from the server, namespacing this origin's
+            // localStorage. The origin identifies a port, not a project — the
+            // next project's server reuses it, and a viewer arriving over the
+            // studio relay sees one origin for every project on every machine —
+            // so a bare key would hand this project whatever the last one left
+            // behind. Empty for a no-project window, which uses the bare key.
+            window.__projectKey = "{{.ProjectKey}}";
+            var storeKey = function(base) {
+                return window.__projectKey ? base + ':' + window.__projectKey : base;
+            };
+            // The first candidate this window accepts, in precedence order.
+            var pick = function(candidates, accepts) {
+                for (var i = 0; i < candidates.length; i++) {
+                    if (accepts(candidates[i])) return candidates[i];
+                }
+                return null;
+            };
+
             // Resolve the theme to paint synchronously, so the page (and the
             // strip under the transparent macOS titlebar) is the right colour on
-            // the very first frame. Precedence (mirrors theme-manager.js): this
-            // project's saved session theme mode (server-injected, authoritative)
-            // > a ?mode= seed inherited from the window that opened this one
-            // (carries 'system' faithfully, so 'auto' survives the hand-off) > a
-            // resolved ?theme= seed (concrete colour only) > this window's
-            // localStorage > follow the OS. localStorage sits below the
-            // session/seed because every project's server reuses the same origin,
-            // so a bare localStorage value may belong to a DIFFERENT project.
+            // the very first frame. Precedence (mirrors theme-manager.js) — in a
+            // desktop window: this project's saved session theme mode (server-
+            // injected, authoritative) > a ?mode= seed inherited from the window
+            // that opened this one (carries 'system' faithfully, so 'auto'
+            // survives the hand-off) > a resolved ?theme= seed (concrete colour
+            // only) > this device's stored mode > follow the OS. In a remote
+            // browser the device's own mode comes first and the session value is
+            // only a starting point, so re-theming on a phone doesn't follow the
+            // desktop home; the seeds are absent there, since only the native
+            // host bakes them into a window URL.
             // 'system' (and any absent value) follows the OS via
             // prefers-color-scheme so system-light doesn't flash dark — but when a
             // concrete ?theme= seed rode along we paint that instead, so a window
@@ -69,14 +96,12 @@
             var sessionThemeMode = "{{.InitialThemeMode}}";
             window.__sessionThemeMode = sessionThemeMode;
             var isThemeMode = function(m) { return m === 'system' || m === 'light' || m === 'dark'; };
-            var seedTheme = new URLSearchParams(window.location.search).get('theme');
-            var seedMode = new URLSearchParams(window.location.search).get('mode');
-            var lsThemeMode = localStorage.getItem('juggler-theme');
-            var themeMode = isThemeMode(sessionThemeMode) ? sessionThemeMode
-                : isThemeMode(seedMode) ? seedMode
-                : (seedTheme === 'light' || seedTheme === 'dark') ? seedTheme
-                : isThemeMode(lsThemeMode) ? lsThemeMode
-                : 'system';
+            var seedTheme = params.get('theme');
+            var seedMode = params.get('mode');
+            var lsThemeMode = localStorage.getItem(storeKey('juggler-theme'));
+            var themeMode = pick(isWindow
+                ? [sessionThemeMode, seedMode, seedTheme, lsThemeMode]
+                : [lsThemeMode, sessionThemeMode], isThemeMode) || 'system';
             var theme = themeMode === 'light' || themeMode === 'dark'
                 ? themeMode
                 : (seedTheme === 'light' || seedTheme === 'dark') ? seedTheme
@@ -96,25 +121,24 @@
             // UI zoom (root font-size). Apply synchronously so the whole UI
             // paints at the right scale — a font-size change reflows everything,
             // so a late correction is a visible jump. Precedence (mirrors
-            // zoom-manager.js): this project's saved session zoom (server-
-            // injected, authoritative) > an inherited ?zoom= seed from the window
-            // that opened this one > this window's localStorage > default.
-            // localStorage sits below the seed because every project's server
-            // reuses the same origin, so a bare value may be another project's.
+            // zoom-manager.js) — in a desktop window: this project's saved
+            // session zoom (server-injected, authoritative) > an inherited ?zoom=
+            // seed from the window that opened this one > this device's cached
+            // value > the default. In a remote browser the device's own value
+            // comes first, so a phone that zoomed out stays zoomed out without
+            // taking the desktop with it.
             // window.__sessionZoom is read back by zoom-manager.js.
             var sessionZoom = {{.InitialZoom}};
             window.__sessionZoom = sessionZoom;
-            var seedZoom = parseInt(new URLSearchParams(window.location.search).get('zoom'), 10);
-            var lsZoom = parseInt(localStorage.getItem('juggler-zoom'), 10);
-            var zoom = sessionZoom > 0 ? sessionZoom
-                : !isNaN(seedZoom) ? seedZoom
-                : !isNaN(lsZoom) ? lsZoom
-                : 110;
+            var seedZoom = parseInt(params.get('zoom'), 10);
+            var lsZoom = parseInt(localStorage.getItem(storeKey('juggler-zoom')), 10);
+            var isZoom = function(z) { return z > 0; };
+            var zoom = pick(isWindow
+                ? [sessionZoom, seedZoom, lsZoom]
+                : [lsZoom, sessionZoom], isZoom) || 110;
             document.documentElement.style.fontSize = Math.max(60, Math.min(160, zoom)) + '%';
-            // Mark window-mode when loaded inside a native desktop window, which
-            // the desktop app opens with ?window=1; remote browsers never have
-            // this query param.
-            if (new URLSearchParams(window.location.search).has('window')) {
+            // Mark window-mode when loaded inside a native desktop window.
+            if (isWindow) {
                 document.documentElement.dataset.windowMode = '1';
                 // Record the host OS synchronously (pre-paint) so window-chrome
                 // CSS — the macOS traffic-light gutter, the Windows caption

@@ -5,22 +5,19 @@
 /**
  * Zoom Manager - Handles UI zoom via root font-size scaling.
  *
- * Zoom is per-window, and remembered per project: the authoritative store is the
- * project's session (server-side), so reopening a project restores the size you
- * left it at even though each window is a separate process on its own port (a
- * fresh, empty localStorage). The precedence when a window opens is:
+ * Who owns the zoom depends on which client is reading it — see ui-pref-scope.js
+ * for the rule this shares with the theme. The sources, best first:
  *
- *   1. this project's saved session zoom  (window.__sessionZoom, server-injected)
- *   2. an inherited ?zoom= seed           (from the window that opened this one)
- *   3. this window's localStorage cache   (a no-project window's own last value)
- *   4. the default
+ *   - desktop window: this project's saved session zoom (window.__sessionZoom,
+ *     server-injected and authoritative) > an inherited ?zoom= seed from the
+ *     window that opened this one > this device's cached value > the default.
+ *   - remote browser: this device's cached value > the session zoom > the
+ *     default. Nothing is written back to the session, so a phone that zooms out
+ *     doesn't resize the desktop window it dialled into.
  *
- * The session value is authoritative, and the inherited seed outranks
- * localStorage, because every project's server reuses the same origin — so a
- * bare localStorage value may belong to a DIFFERENT project. On change we persist
- * to the session (the server no-ops for a no-project window), cache in
- * localStorage, and report to the native host so the next window it opens
- * inherits this (last-active) size.
+ * One limitation, in the transport rather than here: a Cloudflare quick tunnel
+ * hands out a fresh hostname every session, so a device reaching a project that
+ * way gets an empty localStorage each time and opens at the session zoom again.
  *
  * The synchronous pre-paint block in index.html applies the same precedence
  * before first paint (a font-size change reflows everything, so a late
@@ -29,10 +26,11 @@
  */
 
 import { onDocumentReady } from './document-ready.js';
-import { postWindowControl } from '../../sdk/lib/window-control.js';
+import { postWindowControl, isDesktopWindow } from '../../sdk/lib/window-control.js';
 import { fetchJson } from '../services/http.js';
+import { scopedKey, resolvePref } from './ui-pref-scope.js';
 
-const ZOOM_KEY = 'juggler-zoom';
+const ZOOM_KEY_BASE = 'juggler-zoom';
 const ZOOM_STEP = 10;
 const ZOOM_MIN = 60;
 const ZOOM_MAX = 160;
@@ -71,9 +69,18 @@ function sessionZoom() {
   return z > 0 ? clamp(z) : null;
 }
 
-/** @returns {number|null} This window's cached level, or null. */
+/**
+ * This device's localStorage key for the loaded project (see ui-pref-scope.js).
+ * @returns {string} The namespaced storage key.
+ * @private
+ */
+function zoomKey() {
+  return scopedKey(ZOOM_KEY_BASE);
+}
+
+/** @returns {number|null} This device's cached level for this project, or null. */
 function storedZoom() {
-  return parseLevel(localStorage.getItem(ZOOM_KEY));
+  return parseLevel(localStorage.getItem(zoomKey()));
 }
 
 /**
@@ -101,6 +108,8 @@ function applyZoom(level) {
 /**
  * Persist the current zoom into this project's session (best-effort). The token
  * fetch shim authorises the request; the server no-ops for a no-project window.
+ * Only a desktop window may call this — the server refuses the write from a
+ * remote viewer, whose zoom is its own device's business.
  * @param {number} level - Zoom percentage.
  * @private
  */
@@ -128,19 +137,24 @@ export function getCurrentZoom() {
 }
 
 /**
- * Set zoom level, apply, persist (session + localStorage cache), and report to
- * the native host so new windows inherit it.
+ * Set zoom level, apply, store it, and report to the native host so new windows
+ * inherit it. A desktop window also persists to the project's session, which is
+ * its authoritative store; a remote browser stops at localStorage, so the device
+ * remembers its own size without changing the desktop's.
  * @param {number} level - Zoom percentage (clamped to min/max).
  */
 function setZoom(level) {
   current = clamp(level);
   applyZoom(current);
   try {
-    localStorage.setItem(ZOOM_KEY, current.toString());
+    localStorage.setItem(zoomKey(), current.toString());
   } catch (_e) {
-    /* localStorage may be full or unavailable — the session copy still holds */
+    /* localStorage may be full or unavailable — a desktop window still has the
+       session copy; a remote browser loses the size when the page closes */
   }
-  persistToSession(current);
+  if (isDesktopWindow()) {
+    persistToSession(current);
+  }
   reportToHost(current);
 }
 
@@ -160,21 +174,29 @@ export function zoomOut() {
 
 /**
  * Initialize zoom on page load. Resolves the level by precedence, adopts it
- * (idempotent with the pre-paint block), caches it, and reports it to the host.
- * When the window inherited a seed into a session that had none of its own, the
- * inherited size is persisted so the project remembers it next time — never
- * overriding a saved session value, and never stamping the plain default.
+ * (idempotent with the pre-paint block), stores it, and reports it to the host.
+ * A desktop window takes the project's saved size first; a remote browser takes
+ * this device's, falling back to the project's only when the device has none.
+ * When a desktop window inherited a seed into a session that had none of its
+ * own, the inherited size is persisted so the project remembers it next time —
+ * never overriding a saved session value, and never stamping the plain default.
  * @private
  */
 function initZoom() {
+  const desktop = isDesktopWindow();
   const session = sessionZoom();
-  const stored = storedZoom();
   const seed = seedZoom();
 
-  current = session ?? seed ?? stored ?? ZOOM_DEFAULT;
+  current = resolvePref({
+    desktop,
+    session,
+    device: storedZoom(),
+    windowScoped: [seed],
+    fallback: ZOOM_DEFAULT
+  });
   applyZoom(current);
   try {
-    localStorage.setItem(ZOOM_KEY, current.toString());
+    localStorage.setItem(zoomKey(), current.toString());
   } catch (_e) {
     /* cache write is best-effort */
   }
@@ -183,8 +205,9 @@ function initZoom() {
   // Remember an inherited seed against the project so a later reopen (with no
   // live inheritance) still restores it. Only when the session had nothing —
   // i.e. this window inherited its size — so a saved session zoom is never
-  // overwritten and the plain default is never stamped.
-  if (session === null && seed !== null) {
+  // overwritten and the plain default is never stamped. A remote browser never
+  // writes to the session at all.
+  if (desktop && session === null && seed !== null) {
     persistToSession(current);
   }
 }

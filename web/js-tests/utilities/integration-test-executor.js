@@ -109,12 +109,14 @@ import { runTests as runMarkdownSanitizerTests } from '../unit-tests/markdown-sa
 import { runTests as runUserMessageMarkdownTests } from '../unit-tests/user-message-markdown-test.js';
 import { runTests as runExternalLinkTests } from '../unit-tests/external-link-test.js';
 import { runTests as runAnsiTests } from '../unit-tests/ansi-test.js';
+import { runTests as runUIPrefScopeTests } from '../unit-tests/ui-pref-scope-test.js';
 import { runTests as runToolNameResolutionTests } from '../unit-tests/tool-name-resolution-test.js';
 import { runTests as runNewTabUxTests } from '../unit-tests/new-tab-ux-test.js';
 import { runTests as runBinUndoToastTests } from '../unit-tests/bin-undo-toast-test.js';
 import { runTests as runConversationFocusPolicyTests } from '../unit-tests/conversation-focus-policy-test.js';
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
 import { runTests as runSidebarSwipeTests } from '../unit-tests/sidebar-swipe-test.js';
+import { runTests as runTabDragGhostTests } from '../unit-tests/tab-drag-ghost-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
 import { runTests as runSkillCompletionTests } from '../unit-tests/skill-completion-test.js';
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
@@ -141,6 +143,7 @@ import { runTests as runTransactionPanelTests } from '../unit-tests/transaction-
 import { runTests as runModelSelectorHudTests } from '../unit-tests/model-selector-hud-test.js';
 import { runTests as runFindTests } from '../unit-tests/find-test.js';
 import { runTests as runContextMenuTests } from '../unit-tests/context-menu-test.js';
+import { runTests as runDisconnectionOverlayTests } from '../unit-tests/disconnection-overlay-test.js';
 import { runTests as runExtensionRegistryTests } from '../unit-tests/extension-registry-test.js';
 import { runTests as runFileViewerRegistryTests } from '../unit-tests/file-viewer-registry-test.js';
 import { runTests as runPdfViewerTests } from '../unit-tests/pdf-viewer-test.js';
@@ -320,6 +323,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:path-input-quotes', run: runPathInputQuotesTests },
   { name: 'unit:mobile-composer', run: runMobileComposerTests },
   { name: 'unit:sidebar-swipe', run: runSidebarSwipeTests },
+  { name: 'unit:tab-drag-ghost', run: runTabDragGhostTests },
   { name: 'unit:slash-completion', run: runSlashCompletionTests },
   { name: 'unit:skill-completion', run: runSkillCompletionTests },
   { name: 'unit:search-action', run: runSearchActionTests },
@@ -342,6 +346,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:user-message-markdown', run: runUserMessageMarkdownTests },
   { name: 'unit:external-link', run: runExternalLinkTests },
   { name: 'unit:ansi', run: runAnsiTests },
+  { name: 'unit:ui-pref-scope', run: runUIPrefScopeTests },
   { name: 'unit:tool-name-resolution', run: runToolNameResolutionTests },
   { name: 'unit:new-tab-ux', run: runNewTabUxTests },
   { name: 'unit:bin-undo-toast', run: runBinUndoToastTests },
@@ -364,6 +369,7 @@ const UNIT_TEST_SUITES = [
   // one of them (tabReorder) gates every lane's Session.bumpConversation.
   { name: 'unit:tab-behaviour-prefs', run: runTabBehaviourPrefsTests, needsExclusiveRun: true },
   { name: 'unit:context-menu', run: runContextMenuTests },
+  { name: 'unit:disconnection-overlay', run: runDisconnectionOverlayTests },
   { name: 'unit:extension-registry', run: runExtensionRegistryTests },
   { name: 'unit:file-viewer-registry', run: runFileViewerRegistryTests },
   { name: 'unit:pdf-viewer', run: runPdfViewerTests },

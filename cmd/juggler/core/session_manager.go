@@ -652,6 +652,10 @@ func (m *SessionManager) GetUIZoom() (int, bool) {
 // SetUIZoom persists the UI zoom for this project and writes the session
 // manifest. A non-positive value or a no-project session (still at the picker)
 // is a no-op — there is nowhere to store it — mirroring SetWindowState.
+//
+// This is the desktop window's size. Only a viewer on this machine may set it:
+// the route is wrapped in localViewerOnly, so a phone or laptop browsing in
+// remotely keeps its own size in its own localStorage instead.
 func (m *SessionManager) SetUIZoom(zoom int) error {
 	if zoom <= 0 {
 		return nil
@@ -693,7 +697,7 @@ func (m *SessionManager) GetUITheme() (string, bool) {
 
 // SetUITheme persists the UI theme mode for this project and writes the session
 // manifest. An unrecognised mode or a no-project session (still at the picker)
-// is a no-op — mirroring SetUIZoom.
+// is a no-op — mirroring SetUIZoom, including its local-viewer-only route guard.
 func (m *SessionManager) SetUITheme(mode string) error {
 	if !validUIThemeMode(mode) {
 		return nil

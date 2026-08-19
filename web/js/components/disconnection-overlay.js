@@ -20,13 +20,36 @@ const TICK_MS = 1000;
  * Longest gap between ticks that counts as time spent waiting. The wait is
  * accumulated tick by tick rather than measured against the wall clock because
  * the page can stop running: a suspended laptop drops the link and then freezes
- * for hours, and a hidden tab has its timers throttled to once a minute.
- * Counting that gap put the overlay on its last line the instant the machine
- * woke, before a single retry had been given the chance to fail. A gap longer
- * than this is time the page wasn't running, so it doesn't count.
+ * for hours. Counting that gap would put the overlay on its last line the
+ * instant the machine woke, before a single retry had been given the chance to
+ * fail. A gap longer than this is time the page wasn't running, so it doesn't
+ * count.
  * @type {number}
  */
 const MAX_TICK_MS = 2000;
+
+/**
+ * The line the overlay opens on, before any tier is reached. Deliberately the
+ * plainest thing that is true: most drops are a blip that recovers on its own,
+ * and the wording for a wait that has gone wrong is worth having only when the
+ * wait actually has.
+ * @type {string}
+ */
+const OPENING_LINE = 'Reconnecting.';
+
+/**
+ * Wording for the wait as it drags on, mild to resigned, ordered longest wait
+ * first. Each threshold is time the previous line spent in view (see
+ * {@link DisconnectionOverlay._tick}), so every rung is one somebody has read
+ * before the next one replaces it.
+ * @type {ReadonlyArray<{afterMs: number, line: string}>}
+ */
+const MESSAGE_TIERS = Object.freeze([
+  { afterMs: 8 * 60 * 1000, line: 'This isn’t going very well.' },
+  { afterMs: 3 * 60 * 1000, line: 'Still trying.' },
+  { afterMs: 60 * 1000, line: 'Lost the server.' },
+  { afterMs: 20 * 1000, line: 'Still reconnecting.' },
+]);
 
 /**
  * Wording for the wait, restated as it drags on.
@@ -34,9 +57,25 @@ const MAX_TICK_MS = 2000;
  * @returns {string} The line to show.
  */
 function messageForWait(waitedMs) {
-  if (waitedMs >= 2 * 60 * 1000) return 'This isn’t going very well.';
-  if (waitedMs >= 30 * 1000) return 'Still trying.';
-  return 'Lost the server.';
+  const tier = MESSAGE_TIERS.find((candidate) => waitedMs >= candidate.afterMs);
+  return tier ? tier.line : OPENING_LINE;
+}
+
+/**
+ * Whether the page is hidden, and so painting nothing anyone can read: a
+ * background tab, a minimised or fully occluded window, a locked phone.
+ *
+ * `data-doc-hidden` is the app's own signal (see App._initDocumentVisibilityPause),
+ * and it is the one to trust on macOS, where a Cmd-Tab back to the window fires
+ * window `focus` but NOT `visibilitychange` — the app clears the attribute on
+ * `focus` for exactly that reason. `document.hidden` is consulted too so this
+ * still works in a page where nothing maintains the attribute. Being wrong in
+ * the hidden direction only makes the wording escalate slower, which is the
+ * side to be wrong on.
+ * @returns {boolean} True when nothing on this page is being read.
+ */
+function pageHidden() {
+  return document.documentElement.hasAttribute('data-doc-hidden') || document.hidden;
 }
 
 /**
@@ -46,9 +85,19 @@ function messageForWait(waitedMs) {
  * seconds it shows only the Juggler spinner; after that it reveals a message
  * describing the wait, the retry countdown, and the server URL it is trying to
  * reach. The message restates itself as the wait grows (see
- * {@link messageForWait}) and the countdown ticks on its own line, so neither
- * overwrites the other. Both the grace period and the wording run off time the
- * page actually spent waiting, not wall-clock elapsed (see {@link MAX_TICK_MS}).
+ * {@link MESSAGE_TIERS}) and the countdown ticks on its own line, so neither
+ * overwrites the other.
+ *
+ * Both the grace period and the wording run off time this page spent waiting
+ * IN VIEW — not wall-clock elapsed, and not time it spent hidden. Time the page
+ * wasn't running at all is excluded by {@link MAX_TICK_MS}; time it was running
+ * but hidden is excluded by {@link pageHidden}. Hidden pages matter as much as
+ * suspended ones here: a browser clamps a background tab's timers to about once
+ * a second, which is the tick period, so an unwatched tab accrues the wait at
+ * very nearly full speed. Left to count, a two-minute tab switch meant the
+ * overlay revealed itself on its last line, having silently burned through the
+ * lines that lead up to it. Nothing escalates until the line before it has been
+ * on screen, in front of someone, for its full turn.
  */
 class DisconnectionOverlay {
   constructor() {
@@ -64,10 +113,14 @@ class DisconnectionOverlay {
     this._countdownInterval = null;
     /** @type {number|null} @private Drives the reveal and the message tiers. */
     this._waitTimer = null;
-    /** @type {number} @private Time spent waiting while the page was running. */
+    /** @type {number} @private Time spent waiting while the page was in view. */
     this._waitedMs = 0;
     /** @type {number} @private When the wait was last advanced. */
     this._lastTickAt = 0;
+    /** @type {boolean} @private Whether the page went hidden since the last tick. */
+    this._hiddenSinceTick = false;
+    /** @type {(() => void)|null} @private Watches for the page going hidden. */
+    this._visibilityListener = null;
   }
 
   /**
@@ -80,6 +133,17 @@ class DisconnectionOverlay {
 
     this._waitedMs = 0;
     this._lastTickAt = Date.now();
+    this._hiddenSinceTick = false;
+
+    // A tick only counts if the page was in view for the WHOLE interval, so a
+    // page that hid and came back between two ticks must be caught as it goes.
+    // This reads `document.hidden` rather than pageHidden(): the app toggles
+    // `data-doc-hidden` from this same event, and listener order between the
+    // two is not ours to assume.
+    this._visibilityListener = () => {
+      if (document.hidden) this._hiddenSinceTick = true;
+    };
+    document.addEventListener('visibilitychange', this._visibilityListener);
 
     this._element = document.createElement('div');
     this._element.className = 'disconnection-overlay';
@@ -128,6 +192,10 @@ class DisconnectionOverlay {
       clearInterval(this._waitTimer);
       this._waitTimer = null;
     }
+    if (this._visibilityListener) {
+      document.removeEventListener('visibilitychange', this._visibilityListener);
+      this._visibilityListener = null;
+    }
     if (this._element) {
       this._element.remove();
       this._element = null;
@@ -138,14 +206,24 @@ class DisconnectionOverlay {
   }
 
   /**
-   * Advance the wait, then reveal the info block once the spinner-only grace
-   * period has passed and keep its wording current.
+   * Advance the wait by the part of this interval someone could actually have
+   * been reading the overlay, then reveal the info block once the spinner-only
+   * grace period has passed and keep its wording current.
    * @private
    */
   _tick() {
     const now = Date.now();
-    this._waitedMs += Math.min(now - this._lastTickAt, MAX_TICK_MS);
+    const sinceLastTick = Math.min(now - this._lastTickAt, MAX_TICK_MS);
     this._lastTickAt = now;
+
+    // Unseen time isn't waiting: it buys no escalation, and there is nothing to
+    // restate on a page nobody is looking at. Anything after this line only
+    // happens on a page in view.
+    const wasHidden = this._hiddenSinceTick || pageHidden();
+    this._hiddenSinceTick = false;
+    if (wasHidden) return;
+
+    this._waitedMs += sinceLastTick;
 
     // The info block is always laid out (reserving its space so nothing
     // shifts); it's only kept invisible during the grace period.

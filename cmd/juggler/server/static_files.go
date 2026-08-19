@@ -6,7 +6,9 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -375,6 +377,36 @@ func (s *Server) serveFavicon(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(content)
 }
 
+// projectStorageKeyLen is how much of the path hash the viewer's storage key
+// carries: 8 bytes, plenty to separate one user's project folders.
+const projectStorageKeyLen = 16
+
+// projectStorageKey derives an opaque, stable per-project key that the viewer
+// uses to namespace its own localStorage.
+//
+// The page origin identifies a *port*, not a project: every project's server
+// defaults to the same port, so a bare key can hold the value another project
+// left behind; one process can switch project in place; and a viewer reaching
+// the server over the studio relay sees a single origin for every project on
+// every machine it connects to. Keyed by this, a cached preference belongs to
+// the project it was set in.
+//
+// It hashes the path rather than carrying it because the key is visible in a
+// localStorage that origin shares with other pages, and where a project lives is
+// nobody else's business. Empty for a no-project window, where the viewer falls
+// back to the bare key.
+func projectStorageKey(projectPath string) string {
+	if projectPath == "" {
+		return ""
+	}
+	abs := projectPath
+	if a, err := filepath.Abs(projectPath); err == nil {
+		abs = a
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(abs)))
+	return hex.EncodeToString(sum[:])[:projectStorageKeyLen]
+}
+
 // serveIndex serves the index.html template
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 	// Reload template from disk on each request when serving assets from disk
@@ -395,12 +427,18 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 	// Injected so the page paints at the right scale on the very first frame —
 	// a font-size change reflows the whole UI, so a late correction is a visible
 	// jump. 0 lets the client fall back to an inherited seed or the default.
+	//
+	// This is the desktop window's setting. A remote viewer is sent it too, so a
+	// phone opens at the size the desktop is at rather than a stock default, but
+	// there it ranks below the device's own stored preference and the device
+	// never writes back (see web/js/utils/zoom-manager.js).
 	initialZoom, _ := s.SessionManager().GetUIZoom()
 
 	// The project session's saved UI theme mode (system|light|dark), or "" when
 	// none. Injected so the first paint uses this project's own theme instead of
 	// whichever theme another project left in the origin-shared localStorage
 	// (every project's server reuses the same port, hence the same origin).
+	// Ranked for a remote viewer exactly as the zoom above is.
 	initialThemeMode, _ := s.SessionManager().GetUITheme()
 
 	data := struct {
@@ -412,6 +450,7 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 		APIToken         string
 		InitialZoom      int
 		InitialThemeMode string
+		ProjectKey       string
 	}{
 		StaticVersion:    s.staticVersion,
 		IsTestMode:       s.testMode,
@@ -419,6 +458,9 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 		APIToken:         s.apiToken,
 		InitialZoom:      initialZoom,
 		InitialThemeMode: initialThemeMode,
+		// Namespaces the viewer's localStorage so a cached zoom/theme belongs to
+		// the project it was set in, whichever origin the viewer arrived on.
+		ProjectKey: projectStorageKey(s.ProjectPath()),
 		// The desktop app opens the page with ?window=1; remote browsers never
 		// have it. Mirrors the client-side check in index.html and gates the
 		// Wails runtime <script>, which only does anything in a native window.

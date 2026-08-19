@@ -5,22 +5,24 @@
 /**
  * Theme Manager - Handles the light/dark/system theme setting.
  *
- * The user picks one of three *modes*, remembered per project in the session
- * (server-side) and cached in localStorage:
+ * The user picks one of three *modes*:
  *   - 'system' (default): follow the OS light/dark setting, live.
  *   - 'light' / 'dark':   an explicit override that ignores the OS.
  * A mode resolves to a concrete *theme* ('light' or 'dark') for painting.
  *
- * On load the mode is resolved by precedence: this project's saved session mode
- * (window.__sessionThemeMode, server-injected, authoritative) > this window's own
- * mode from a prior load (sessionStorage, survives reload) > a ?mode= seed
- * inherited from the window that opened this one (carries 'system' faithfully, so
- * 'auto' survives the hand-off) > a resolved ?theme= seed (concrete colour only,
- * a fallback) > this window's localStorage > 'system'. localStorage sits below
- * the session/seed because every project's
- * server reuses the same origin, so a bare localStorage value may belong to a
- * DIFFERENT project — which is exactly why theme is stored in the session, not
- * left to localStorage alone.
+ * Who owns the mode depends on which client is reading it — see ui-pref-scope.js
+ * for the rule this shares with the zoom. The sources, best first:
+ *
+ *   - desktop window: this project's saved session mode (window.__sessionThemeMode,
+ *     server-injected and authoritative) > this window's own mode from a prior
+ *     load (sessionStorage, survives reload) > a ?mode= seed inherited from the
+ *     window that opened this one (carries 'system' faithfully, so 'auto'
+ *     survives the hand-off) > a resolved ?theme= seed (concrete colour only, a
+ *     fallback) > this device's stored mode > 'system'.
+ *   - remote browser: this device's stored mode > the window-scoped hints above >
+ *     the session mode > 'system', and nothing is written back. A phone opens in
+ *     the theme the desktop is in, but switching it to dark leaves the desktop
+ *     alone and doesn't fight whatever a second remote device prefers.
  *
  * The per-window sessionStorage layer sits above the seed so a project switch
  * keeps 'system'/'auto'. Switching projects reloads the page with the same URL,
@@ -31,11 +33,21 @@
  * the seed still wins there (its intended anti-flash handoff).
  */
 
-import { windowControlURL } from '../../sdk/lib/window-control.js';
+import { windowControlURL, isDesktopWindow } from '../../sdk/lib/window-control.js';
 import { onDocumentReady } from './document-ready.js';
 import { fetchJson } from '../services/http.js';
+import { scopedKey, resolvePref } from './ui-pref-scope.js';
 
-const THEME_KEY = 'juggler-theme';
+const THEME_KEY_BASE = 'juggler-theme';
+
+/**
+ * This device's localStorage key for the loaded project (see ui-pref-scope.js).
+ * @returns {string} The namespaced storage key.
+ * @private
+ */
+function themeKey() {
+  return scopedKey(THEME_KEY_BASE);
+}
 
 /**
  * Per-window record of the resolved mode, in sessionStorage. Survives a same-URL
@@ -82,7 +94,7 @@ function systemTheme() {
  * @returns {string} One of MODES.
  */
 export function getMode() {
-  const stored = localStorage.getItem(THEME_KEY);
+  const stored = localStorage.getItem(themeKey());
   return stored === MODES.LIGHT || stored === MODES.DARK || stored === MODES.SYSTEM
     ? stored
     : MODES.SYSTEM;
@@ -209,7 +221,9 @@ function rememberWindowMode(mode) {
  * Persist this window's theme mode into the project's session (best-effort). The
  * server no-ops for a no-project window; per-project storage is what lets a
  * reopened project restore its own theme instead of whichever theme another
- * project left in the origin-shared localStorage.
+ * project left in the origin-shared localStorage. Only a desktop window may call
+ * this — the server refuses the write from a remote viewer, whose theme is its
+ * own device's business.
  * @param {string} mode - One of MODES.
  * @private
  */
@@ -219,17 +233,20 @@ function persistThemeToSession(mode) {
 }
 
 /**
- * Persist a mode and apply the theme it resolves to. Persistence is both to this
- * project's session (so a reopen restores it) and localStorage (this window's
- * cache / the browser-tab store).
+ * Persist a mode and apply the theme it resolves to. A desktop window stores it
+ * both in this project's session (so a reopen restores it) and in localStorage;
+ * a remote browser stops at localStorage, so the device remembers its own theme
+ * without changing the desktop's.
  * @param {string} mode - One of MODES.
  */
 export function setMode(mode) {
   if (mode !== MODES.SYSTEM && mode !== MODES.LIGHT && mode !== MODES.DARK) {
     return;
   }
-  localStorage.setItem(THEME_KEY, mode);
-  persistThemeToSession(mode);
+  localStorage.setItem(themeKey(), mode);
+  if (isDesktopWindow()) {
+    persistThemeToSession(mode);
+  }
   const theme = mode === MODES.SYSTEM ? systemTheme() : mode;
   applyTheme(theme, mode);
   document.dispatchEvent(new CustomEvent(THEME_MODE_EVENT, { detail: { mode, theme } }));
@@ -309,28 +326,38 @@ function applyTheme(theme, mode) {
  * Initialize theme on page load
  */
 function initTheme() {
-  // Resolve the initial mode by precedence: this project's saved session mode
-  // (authoritative — a bare localStorage value may be another project's, since
-  // every project's server reuses the same origin) > this window's own mode from
-  // a prior load (sessionStorage — set on a same-window reload, so a project
-  // switch keeps 'system' instead of getting pinned by the stale seed) > a ?mode=
-  // seed inherited from the window that opened this one > a resolved ?theme= seed
-  // > this window's localStorage > follow the OS. The ?mode= seed carries the
+  // Resolve the initial mode by precedence. In a desktop window: this project's
+  // saved session mode (authoritative) > this window's own mode from a prior load
+  // (sessionStorage — set on a same-window reload, so a project switch keeps
+  // 'system' instead of getting pinned by the stale seed) > a ?mode= seed
+  // inherited from the window that opened this one > a resolved ?theme= seed >
+  // this device's stored mode > follow the OS. The ?mode= seed carries the
   // opener's actual mode ('system' included), so a window opened from an 'auto'
   // window stays 'auto'; the ?theme= seed is only a *resolved* theme (concrete),
   // kept below it as a fallback for hosts that hand off just a colour hint.
+  //
+  // In a remote browser the device's own stored mode comes first, since the theme
+  // belongs to the device rather than the project; the session mode drops to a
+  // starting point for a device that has never chosen one. The seeds are absent
+  // there — only the native host bakes them into a window URL.
+  const desktop = isDesktopWindow();
   const session = sessionMode();
   const windowPref = windowMode();
   const seedMd = seedMode();
   const seed = seedTheme();
-  const stored = localStorage.getItem(THEME_KEY);
-  const mode = session ?? windowPref ?? seedMd ?? seed
-    ?? (isMode(stored) ? stored : null) ?? MODES.SYSTEM;
+  const rawStored = localStorage.getItem(themeKey());
+  const mode = resolvePref({
+    desktop,
+    session,
+    device: isMode(rawStored) ? rawStored : null,
+    windowScoped: [windowPref, seedMd, seed],
+    fallback: MODES.SYSTEM
+  });
 
   // Cache the resolved mode so getMode()/cycleTheme() start from it this window,
   // and record it per-window so the next same-window load (e.g. a project switch)
   // resolves from the window's real mode rather than the stale ?theme= seed.
-  localStorage.setItem(THEME_KEY, mode);
+  localStorage.setItem(themeKey(), mode);
   rememberWindowMode(mode);
   applyTheme(mode === MODES.SYSTEM ? systemTheme() : mode, mode);
 
@@ -338,8 +365,9 @@ function initTheme() {
   // its own prior load, or an inherited seed), persist it so the project
   // remembers this theme next open. This stores the window's *actual* mode —
   // 'system' included — so a project switch no longer overwrites 'auto' with a
-  // fixed light/dark. No-ops server-side for a no-project window.
-  if (session === null && (windowPref !== null || seedMd !== null || seed !== null)) {
+  // fixed light/dark. No-ops server-side for a no-project window, and a remote
+  // browser never writes to the session at all.
+  if (desktop && session === null && (windowPref !== null || seedMd !== null || seed !== null)) {
     persistThemeToSession(mode);
   }
 

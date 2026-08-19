@@ -46,13 +46,39 @@ func isLoopbackAddr(remoteAddr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// isLocalDirect reports whether a request came from this machine over a plain
+// loopback connection. Remote-ingress requests are excluded explicitly: remote
+// transports reach the server over loopback too (an http-over-DataChannel
+// dispatch, or a tunnel forwarder hop), so the address alone would admit them.
+func isLocalDirect(r *http.Request) bool {
+	return isLoopbackAddr(r.RemoteAddr) && !isRemoteIngress(r)
+}
+
 // engineRoleAllowed reports whether a request may claim the engine WS role. The
 // engine is the in-process WebView, reachable only over loopback. Remote-ingress
 // requests are excluded explicitly — remote transports reach the server over
 // loopback (an http-over-DataChannel dispatch, or a tunnel forwarder hop), so a
 // remote guest could otherwise claim the engine slot.
 func engineRoleAllowed(r *http.Request) bool {
-	return isLoopbackAddr(r.RemoteAddr) && !isRemoteIngress(r)
+	return isLocalDirect(r)
+}
+
+// localViewerOnly guards a write to this project's stored UI preferences (zoom,
+// theme). Those describe how the desktop window on this machine is set up, so
+// only a viewer on this machine may change them. A phone or laptop browsing in
+// over the LAN or a tunnel is handed the stored values as its starting point but
+// keeps its own preferences in its own localStorage — it reads the desktop's
+// setup without redecorating it, and several remote devices no longer overwrite
+// each other through one shared slot.
+func localViewerOnly(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLocalDirect(r) {
+			http.Error(w, "UI preferences are per-device: a remote viewer keeps its own",
+				http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	})
 }
 
 // lanGateMiddleware rejects non-loopback connections when public mode is off.

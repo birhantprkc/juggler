@@ -1532,8 +1532,9 @@ class ConversationBar extends HTMLElement {
       if (delta !== 0) {
         scrollContainer.scrollTop += delta;
         // The drop index can change when content moves under the (stationary)
-        // pointer. The ghost is fixed to the viewport, so it naturally stays under
-        // the pointer as the list scrolls beneath it — nothing to reposition here.
+        // pointer. The ghost sits outside the scroll container, so it naturally
+        // stays under the pointer as the list scrolls beneath it — nothing to
+        // reposition here.
         recomputeDropAndShift(lastClientY);
         this._autoScrollRaf = requestAnimationFrame(updateAutoScroll);
       } else {
@@ -1548,13 +1549,22 @@ class ConversationBar extends HTMLElement {
     };
 
     // Build the floating drag ghost: a clone of the tab positioned `fixed` on the
-    // host. No layout ancestor establishes a containing block for fixed elements,
-    // so it anchors to the viewport and escapes the tab list's overflow:auto clip,
-    // free to travel the full height of the sidebar. Its fixed anchor is the tab's
-    // resting rect (captured at grab time), so translating it by the pointer delta
-    // keeps it under the finger exactly. The real tab stays in place as an invisible
+    // host, so it escapes the tab list's overflow:auto clip and is free to travel
+    // the full height of the sidebar. Its anchor is the tab's resting rect
+    // (captured at grab time), so translating it by the pointer delta keeps it
+    // under the finger exactly. The real tab stays in place as an invisible
     // placeholder (.drag-source) that the siblings shift around, so render()
     // reconciliation still finds it where it belongs.
+    //
+    // `left`/`top` on a fixed element resolve against the viewport only while no
+    // ancestor establishes a containing block for fixed positioning. In drawer
+    // mode the host itself is one: the phone sidebar slides in under a
+    // `transform` (styles.css, `@media (width <= 36rem)`), and a transform makes
+    // the element the containing block for its fixed descendants. Feeding it
+    // viewport coordinates there drops the ghost a whole header's height below
+    // the finger. So place the ghost at the origin, measure where that origin
+    // actually landed, and offset from there — correct under either regime, and
+    // it stays correct for any future transform/filter/containment on the path.
     const createGhost = () => {
       const d = this._drag;
       if (!d) return;
@@ -1564,11 +1574,15 @@ class ConversationBar extends HTMLElement {
       ghost.classList.remove('is-renaming');
       ghost.removeAttribute('data-conversation-id');
       ghost.setAttribute('aria-hidden', 'true');
-      ghost.style.left = `${rect.left}px`;
-      ghost.style.top = `${rect.top}px`;
+      ghost.style.transform = 'none';
+      ghost.style.left = '0';
+      ghost.style.top = '0';
       ghost.style.width = `${rect.width}px`;
       ghost.style.height = `${rect.height}px`;
       this.appendChild(ghost);
+      const origin = ghost.getBoundingClientRect();
+      ghost.style.left = `${rect.left - origin.left}px`;
+      ghost.style.top = `${rect.top - origin.top}px`;
       d.ghost = ghost;
       d.tab.classList.add('drag-source');
     };

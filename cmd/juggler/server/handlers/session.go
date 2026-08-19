@@ -181,10 +181,12 @@ func (api *SessionAPI) HandleGetUIZoom(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, r, 0, map[string]any{"uiZoom": zoom, "hasZoom": ok})
 }
 
-// HandleSetUIZoom persists the UI zoom into this project's session. The page
-// PUTs it when the user zooms (and when a brand-new window inherits a size), so
-// the project remembers it across relaunches. A no-project session no-ops (see
-// SessionManager.SetUIZoom).
+// HandleSetUIZoom persists the UI zoom into this project's session. A desktop
+// window PUTs it when the user zooms (and when a brand-new window inherits a
+// size), so the project remembers it across relaunches. A no-project session
+// no-ops (see SessionManager.SetUIZoom). The route is wrapped in
+// localViewerOnly: a remote viewer reads this value as its starting point but
+// keeps its own size on its own device, so it never reaches here.
 func (api *SessionAPI) HandleSetUIZoom(w http.ResponseWriter, r *http.Request) {
 	body, ok := DecodeJSON[struct {
 		UIZoom int `json:"uiZoom"`
@@ -209,11 +211,12 @@ func (api *SessionAPI) HandleGetUITheme(w http.ResponseWriter, r *http.Request) 
 	WriteJSON(w, r, 0, map[string]any{"uiTheme": mode, "hasTheme": ok})
 }
 
-// HandleSetUITheme persists the UI theme mode into this project's session. The
-// page PUTs it when the user changes theme (and when a brand-new window inherits
-// one), so the project remembers it across relaunches instead of reading
-// whichever theme another project left in the origin-shared localStorage. A
-// no-project session no-ops (see SessionManager.SetUITheme).
+// HandleSetUITheme persists the UI theme mode into this project's session. A
+// desktop window PUTs it when the user changes theme (and when a brand-new
+// window inherits one), so the project remembers it across relaunches instead of
+// reading whichever theme another project left in the origin-shared
+// localStorage. A no-project session no-ops (see SessionManager.SetUITheme), and
+// the route is wrapped in localViewerOnly exactly as the zoom route is.
 func (api *SessionAPI) HandleSetUITheme(w http.ResponseWriter, r *http.Request) {
 	body, ok := DecodeJSON[struct {
 		UITheme string `json:"uiTheme"`

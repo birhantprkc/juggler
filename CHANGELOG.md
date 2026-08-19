@@ -24,6 +24,7 @@ of changes; this project follows semantic versioning.
 - Switching model, provider or thinking level now warns that the next send re-reads the whole context
 - Some claude code improvements to avoid leaving processes running, and better resuming
 - Quitting no longer discards a draft you had only just typed; drafts also save on leaving the composer
+- Zoom and theme changed on a phone stay on that phone instead of following the desktop home
 
 ## [0.5.6] - 2026-08-14
 
