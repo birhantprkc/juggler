@@ -235,7 +235,7 @@ func (a *windowApp) persistNow() {
 // own goroutine (HandleWindowEvent), so calling app.Quit() inline would race
 // Wails' own built-in window-destroy listener for the same event. Routing
 // through done makes a single goroutine own persist+quit.
-func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testIframes int, done <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
+func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testIframes int, done <-chan struct{}, teardownDone <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
 	// testMode is always true on this path (the dispatcher only routes here in
 	// test mode); kept as a local so the shared windowApp logic reads
 	// consistently.
@@ -573,6 +573,8 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 	// debounced save is our only guarantee of a fresh write on that path.
 	go func() {
 		<-done
+		// Teardown first, native quit second — see awaitTeardown.
+		awaitTeardown(teardownDone, serverShutdownTimeout)
 		jlog.Info("[window] shutdown requested — quitting Wails")
 		if !headless || !testMode {
 			application.InvokeAsync(func() {

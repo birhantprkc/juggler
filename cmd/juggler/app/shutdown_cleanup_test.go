@@ -5,6 +5,7 @@
 package app
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -110,6 +111,80 @@ func TestBeginShutdownRunsCleanupsBeforeNativeQuit(t *testing.T) {
 	// LIFO, matching the existing teardown contract.
 	if order[0] != "cleanup-last-registered" || order[1] != "cleanup-first-registered" {
 		t.Fatalf("cleanup order = %v, want LIFO (last registered released first)", order)
+	}
+}
+
+// TestAwaitTeardownHoldsTheNativeQuitUntilCleanupsFinish is the regression test
+// for a quit that discarded whatever a conversation was in the middle of.
+//
+// beginShutdown gets the order right, but it was not the only route to the
+// native quit: closing the done channel woke a goroutine that called app.Quit()
+// straight away, in parallel with the cleanups beginShutdown was still running.
+// [NSApp terminate:] ends the process without unwinding, so it was a footrace
+// for whether the worker shutdown inside those cleanups got as far as writing
+// its conversations. Nothing else persists a conversation while an LLM call is
+// in flight — the run loop is inside the turn and can't service a save — so
+// losing that race lost the whole turn, the user's own message included.
+func TestAwaitTeardownHoldsTheNativeQuitUntilCleanupsFinish(t *testing.T) {
+	a := &App{}
+
+	order := make(chan string, 2)
+
+	cleanupRunning := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	a.pushCleanup(func() {
+		close(cleanupRunning)
+		<-releaseCleanup // stands in for a worker writing its document
+		order <- "cleanup"
+	})
+
+	teardownDone := make(chan struct{})
+	nativeQuit := make(chan struct{})
+	// Stands in for the shutdown goroutine in runHeadlessServerApp: it wakes as
+	// soon as the quit is requested, and must wait rather than terminate us.
+	go func() {
+		awaitTeardown(teardownDone, 10*time.Second)
+		order <- "native-quit"
+		close(nativeQuit)
+	}()
+
+	go a.beginShutdown(func() { close(teardownDone) })
+
+	<-cleanupRunning
+	select {
+	case <-nativeQuit:
+		t.Fatal("the native quit was issued while a cleanup was still running — anything it had not yet reached is lost")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseCleanup)
+	select {
+	case <-nativeQuit:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the native quit never landed after teardown finished")
+	}
+
+	got := []string{<-order, <-order}
+	if want := []string{"cleanup", "native-quit"}; !slices.Equal(got, want) {
+		t.Fatalf("shutdown order = %v, want %v", got, want)
+	}
+}
+
+// TestAwaitTeardownGivesUpOnAWedgedCleanup keeps the other guarantee: waiting
+// for teardown must not become a way to never quit at all. A cleanup that hangs
+// costs us the budget and no more.
+func TestAwaitTeardownGivesUpOnAWedgedCleanup(t *testing.T) {
+	budget := 20 * time.Millisecond
+	returned := make(chan struct{})
+	go func() {
+		awaitTeardown(make(chan struct{}), budget) // never signalled
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a wedged cleanup blocked the native quit indefinitely")
 	}
 }
 

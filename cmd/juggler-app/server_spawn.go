@@ -24,6 +24,17 @@ import (
 // print its bound address before giving up.
 const serverStartTimeout = 20 * time.Second
 
+// serverStopGrace bounds how long stopServer waits after the interrupt before
+// force-killing a spawned server.
+//
+// It must stay above the server's own shutdown budget, because that teardown is
+// what writes conversation documents to disk — and a conversation with an LLM
+// call in flight has nothing on disk for the whole turn, so a kill that lands
+// first costs the user the entire exchange. A healthy server is gone in well
+// under a second; this only bites when one is genuinely struggling, and both
+// callers are off any path the user waits on.
+const serverStopGrace = 15 * time.Second
+
 // orphanDrainTimeout bounds how long we wait for an about-to-exit orphan server
 // (its owning app died on a quick quit→relaunch) to release the project lock
 // before we spawn a fresh one. Generous: the orphan's parent-watchdog polls
@@ -184,7 +195,7 @@ func spawnServer(project string) (string, *exec.Cmd, error) {
 
 // stopServer asks a spawned server to exit (the clean-close path: a window
 // closed, or the app is quitting). It tries a graceful interrupt first, then
-// force-kills after a short grace period. On Windows, where Signal(os.Interrupt)
+// force-kills once serverStopGrace elapses. On Windows, where Signal(os.Interrupt)
 // to another process is unsupported and returns an error, it force-kills
 // immediately rather than waiting out a grace period for a signal that was never
 // delivered. The crash/hard-kill path is covered separately by the server's own
@@ -202,7 +213,7 @@ func stopServer(cmd *exec.Cmd) {
 	go func() { _, _ = cmd.Process.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(serverStopGrace):
 		_ = cmd.Process.Kill()
 	}
 }

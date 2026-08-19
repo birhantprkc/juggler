@@ -104,28 +104,41 @@ func (w *ConversationWorker) repairDuplicateItemIds() int {
 	return len(toRepair)
 }
 
-// saveStateToDisk writes the Yjs document via the saveBinary callback,
-// which handles folder creation and atomic write inside the session store.
+// writeStateToDisk writes the Yjs document via the saveBinary callback, which
+// handles folder creation and atomic write inside the session store. It reports
+// whether a write actually happened (false when the worker has no store wiring
+// or the document is empty).
 //
-// After a successful save, the transaction blob store is swept: any blob
-// whose id is no longer referenced by either the live items tree OR any
-// undoLog entry is deleted. Piggy-backing on the debounced save keeps GC
-// off the hot path while ensuring it runs whenever the doc actually changes.
-func (w *ConversationWorker) saveStateToDisk() error {
+// This is the whole of what persistence owes the user. Everything else a save
+// does is housekeeping, which is why the shutdown path calls this directly.
+func (w *ConversationWorker) writeStateToDisk() (bool, error) {
 	if w.projectPath == "" || w.saveBinary == nil {
-		return nil // Can't save without store wiring
+		return false, nil // Can't save without store wiring
 	}
 
 	state := w.doc.ToState()
 	if len(state) == 0 {
-		return nil // Nothing to save
+		return false, nil // Nothing to save
 	}
 
 	if err := w.saveBinary(w.conversationID, state); err != nil {
-		return fmt.Errorf("save conversation binary: %w", err)
+		return false, fmt.Errorf("save conversation binary: %w", err)
 	}
 
 	w.dirty.Store(false)
+	return true, nil
+}
+
+// saveStateToDisk writes the document, then sweeps the transaction blob store:
+// any blob whose id is no longer referenced by either the live items tree OR any
+// undoLog entry is deleted, and unreferenced assets go the same way.
+// Piggy-backing GC on the debounced save keeps it off the hot path while
+// ensuring it runs whenever the doc actually changes.
+func (w *ConversationWorker) saveStateToDisk() error {
+	wrote, err := w.writeStateToDisk()
+	if err != nil || !wrote {
+		return err
+	}
 
 	if err := w.sweepTransactions(); err != nil {
 		w.log.Error("Failed to sweep transaction blobs: %v", err)
@@ -189,8 +202,13 @@ func (w *ConversationWorker) onShutdown() {
 	if !w.dirty.Load() {
 		return
 	}
+	// Write only — no blob/asset GC. Every worker's shutdown save runs inside
+	// one bounded teardown window, and a sweep walks the conversation's whole
+	// txns and assets directories: pure latency in front of the only write that
+	// still stands between a mid-turn conversation and losing the turn. GC
+	// resumes on the next debounced save after the next launch.
 	w.log.Info("💾 Saving conversation %s...", w.conversationID)
-	if err := w.saveStateToDisk(); err != nil {
+	if _, err := w.writeStateToDisk(); err != nil {
 		w.log.Error("Failed to save state on shutdown: %v", err)
 	}
 }

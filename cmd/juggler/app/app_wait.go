@@ -56,24 +56,50 @@ func (a *App) waitForExit() {
 		readyCh <- windowRefs{app: app, win: win}
 	}
 
+	// teardownDone is closed once the teardown stack has finished, immediately
+	// before the native quit is issued. window.go's shutdown goroutine waits on
+	// it, so closing done can no longer race [NSApp terminate:] against the
+	// cleanups: whoever asks to quit, teardown completes first.
+	teardownDone := make(chan struct{})
+	var teardownOnce sync.Once
+	signalTeardownDone := func() { teardownOnce.Do(func() { close(teardownDone) }) }
+
 	// quit closes done, releases everything the startup phases allocated, and
 	// only then asks the native application to stop when this startup path owns
 	// one. Node-hosted production servers have no native application.
 	//
 	// Teardown runs here rather than being left to Run's deferred walk because
 	// the native quit does not reliably return — see beginShutdown.
+	//
+	// Single-shot: several triggers can fire at once (a failing engine host and
+	// a SIGINT, say), and a second pass would issue a second native quit while
+	// the first is mid-flight. Concurrent callers block here until the first
+	// has finished tearing down, which is what they want anyway.
+	var quitOnce sync.Once
 	quit := func() {
-		if a.server != nil {
-			a.server.StopTunnel()
-		}
-		signalDone()
-		<-ready
-		a.beginShutdown(func() {
-			if refs.app != nil {
-				refs.app.Quit()
+		quitOnce.Do(func() {
+			if a.server != nil {
+				a.server.StopTunnel()
 			}
+			signalDone()
+			<-ready
+			a.beginShutdown(func() {
+				signalTeardownDone()
+				if refs.app != nil {
+					refs.app.Quit()
+				}
+			})
 		})
 	}
+
+	// requestQuit is the trigger handed to the window layer and the engine host.
+	// It runs the same serialized path as the signal handlers rather than just
+	// closing done: an engine-host failure or a window close owes the same
+	// teardown a Ctrl-C does, and closing done alone would terminate the process
+	// with the cleanup stack untouched — server never shut down, conversations
+	// never saved, provider subprocesses orphaned. On its own goroutine because
+	// quit blocks on <-ready, and its callers include Wails event listeners.
+	requestQuit := func() { go quit() }
 
 	// 'w' opens a desktop window: the server is windowless, so it launches the
 	// juggler-app process pointed at this server's URL. The app owns the visible
@@ -298,7 +324,7 @@ func (a *App) waitForExit() {
 			return
 		}
 	}
-	runWindowApp(a.server, devMode, !a.flags.window, a.flags.testMode, a.flags.testIframes, selected, done, signalDone, onWindowReady)
+	runWindowApp(a.server, devMode, !a.flags.window, a.flags.testMode, a.flags.testIframes, selected, done, teardownDone, requestQuit, onWindowReady)
 }
 
 func (a *App) stdinIsTTY() bool {

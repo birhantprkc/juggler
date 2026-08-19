@@ -22,13 +22,16 @@ const (
 	// every cached conversation (which terminates provider subprocesses).
 	serverShutdownTimeout = 10 * time.Second
 
-	// quitGraceTimeout bounds how long the shutdown goroutine waits before
-	// forcing os.Exit. A normal quit kills us in well under a second; this only
-	// fires if the shutdown genuinely stalled.
+	// quitGraceTimeout bounds how long a shutdown path waits before forcing
+	// os.Exit. A normal quit kills us in well under a second; this only fires if
+	// the shutdown genuinely stalled.
 	//
-	// It must stay comfortably above serverShutdownTimeout: the teardown runs
-	// inside this window (see App.beginShutdown), and force-exiting partway
-	// through would orphan the very subprocesses teardown exists to reap.
+	// It must stay comfortably above serverShutdownTimeout, because the
+	// parent-gone watchdog runs the whole teardown inside this window (see
+	// onParentGone) and force-exiting partway through would orphan the very
+	// subprocesses teardown exists to reap. On the quit path teardown has
+	// already finished before the window opens (see awaitTeardown), so there it
+	// bounds only the native quit itself.
 	quitGraceTimeout = serverShutdownTimeout + 5*time.Second
 )
 
@@ -40,14 +43,33 @@ const (
 //   - Test: runs the integration harness's visible tiled pool or debug lane.
 //
 // done is closed when an external signal (SIGTERM, server error, etc.) wants to
-// quit; requestQuit triggers the single serialized shutdown path; onWindowReady
-// hands the caller the *App (and main window, when there is one) once launched.
-func runWindowApp(srv *server.Server, devMode bool, headless bool, testMode bool, testIframes int, selected selectedEngineHost, done <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
+// quit; teardownDone is closed once the teardown stack has finished, gating the
+// native quit; requestQuit triggers the single serialized shutdown path;
+// onWindowReady hands the caller the *App (and main window, when there is one)
+// once launched.
+func runWindowApp(srv *server.Server, devMode bool, headless bool, testMode bool, testIframes int, selected selectedEngineHost, done <-chan struct{}, teardownDone <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
 	if testMode {
-		runTestPoolWindowApp(srv, devMode, headless, testIframes, done, requestQuit, onWindowReady)
+		runTestPoolWindowApp(srv, devMode, headless, testIframes, done, teardownDone, requestQuit, onWindowReady)
 		return
 	}
-	runHeadlessServerApp(srv, selected, done, requestQuit, onWindowReady)
+	runHeadlessServerApp(srv, selected, done, teardownDone, requestQuit, onWindowReady)
+}
+
+// awaitTeardown blocks until the teardown stack has finished, or the budget
+// elapses.
+//
+// The native quit is [NSApp terminate:], which ends the process without
+// unwinding. Issuing it while cleanups are still running discards whatever they
+// had not yet reached — most visibly the conversation documents the workers
+// write on their way out, so a conversation mid-turn loses the whole turn
+// (nothing else persists it while the LLM call is in flight). The budget keeps a
+// wedged cleanup from holding the process open indefinitely.
+func awaitTeardown(teardownDone <-chan struct{}, budget time.Duration) {
+	select {
+	case <-teardownDone:
+	case <-time.After(budget):
+		jlog.Error("[server] teardown did not finish within %v — quitting anyway", budget)
+	}
 }
 
 // runHeadlessServerApp runs a windowless production server. Node mode starts
@@ -60,7 +82,7 @@ func runWindowApp(srv *server.Server, devMode bool, headless bool, testMode bool
 // requestQuit is the same shutdown trigger the signal handlers use. Engine-host
 // startup failures route through it so the server cannot linger without a
 // functioning engine.
-func runHeadlessServerApp(srv *server.Server, selected selectedEngineHost, done <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
+func runHeadlessServerApp(srv *server.Server, selected selectedEngineHost, done <-chan struct{}, teardownDone <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
 	if !engineHostRequiresNativeApp(selected.mode) {
 		onWindowReady(nil, nil)
 		startEngineHost(buildEngineHost(selected, nil, srv, requestQuit), srv, requestQuit)
@@ -125,6 +147,8 @@ func runHeadlessServerApp(srv *server.Server, selected selectedEngineHost, done 
 
 	go func() {
 		<-done
+		// Teardown first, native quit second — see awaitTeardown.
+		awaitTeardown(teardownDone, serverShutdownTimeout)
 		jlog.Info("[server] shutdown requested — quitting Wails")
 		app.Quit()
 		// Safety net: if [NSApp terminate:] fails to land under main-queue

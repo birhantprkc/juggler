@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"sync"
 	"time"
 
 	"juggler/cmd/juggler/core"
@@ -366,9 +367,19 @@ func (m *Manager) run() {
 			// call observing the worker's ctx unblocks before w.Stop closes
 			// its inbound channel.
 			m.cancel()
+			// Concurrently, because Stop blocks until that worker has unwound
+			// its turn and written its document, and every worker shares one
+			// bounded teardown window. In sequence, the last worker's LLM call
+			// is not even cancelled until all the others have finished saving —
+			// so a busy session runs the window out and the conversations at
+			// the back of the queue never get written at all. Each Stop touches
+			// only its own worker; the writes serialize behind the session
+			// manager's actor either way.
+			var wg sync.WaitGroup
 			for _, w := range workers {
-				w.Stop()
+				wg.Go(w.Stop)
 			}
+			wg.Wait()
 			workers = make(map[string]*ConversationWorker)
 			if op.done != nil {
 				op.done <- struct{}{}
