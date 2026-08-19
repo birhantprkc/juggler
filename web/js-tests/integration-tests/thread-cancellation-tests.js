@@ -127,6 +127,22 @@ export const cancelDuringThreadTest = {
 				'should keep the composer in the child column'
       );
     }
+    // An open run with nothing driving it reads as 'unfinished', not 'idle'.
+    // The root's Continue is hidden while the run is open, so this tile carries
+    // the only way out: the status the Stop button is gated on.
+    const items = conversation.rootMessageThread.items;
+    const status = getThreadStatus(thread, null, items);
+    if (status.kind !== 'unfinished') {
+      throw new Error(
+        `interrupt-during-thread-keeps-open: tile reports '${status.kind}' ('${status.message}'), ` +
+				'want \'unfinished\' — a stopped mid-run thread must not read as resting'
+      );
+    }
+    if (status.spinner || status.showSummary) {
+      throw new Error(
+        'interrupt-during-thread-keeps-open: an unfinished tile shows neither a spinner nor a summary'
+      );
+    }
   }
 };
 
@@ -625,6 +641,157 @@ export const resumeAfterCancelReportsToCallerTest = {
   }
 };
 
+// ============================================================================
+// TEST 10: Continue on a cancelled thread reports to the caller
+// ============================================================================
+
+/**
+ * The same recovery as thread-resume-after-cancel-parent, but picked back up
+ * with the thread's Continue button rather than by typing into it.
+ *
+ * The two gestures reach the reopened run by different routes, which is why
+ * both are pinned. Typing appends a user message, and that message IS the new
+ * run's record. Continue appends nothing: there is no message to carry a
+ * runStatus, so the trailing record of the cancelled run has to be reopened
+ * before the thread reads as live again. Without that, the run stays settled as
+ * cancelled, the thread never runs, and the parent is answered
+ * "[The run was cancelled before it finished.]" with the work sitting undone.
+ *
+ * Mock responses:
+ *   1. Root: create_thread
+ *   2. Thread: bash tool call (will be cancelled)
+ *   3. Thread (continued): text "Task done"
+ *   4. Root (auto-resumed): text "All finished."
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const continueAfterCancelReportsToCallerTest = {
+  name: 'thread-continue-after-cancel-parent',
+  description: 'Continue on a thread whose run settled as cancelled reports the new answer to the call that made it',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Run it' }),
+    toolUseResponse('call_2', 'bash',
+      { command: 'env echo "started"; sleep 10' },
+      'Running.'
+    ),
+    textResponse('Task done'),
+    textResponse('All finished.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Begin' },
+    { type: 'wait-for-thread-approval', toolUseId: 'call_2' },
+    { type: 'start-capture-progress', toolUseId: 'call_2' },
+    { type: 'approve-thread-tool-no-wait', toolUseId: 'call_2' },
+    { type: 'wait-for-progress', toolUseId: 'call_2', minEvents: 1 },
+    // Stopped from the root vantage, which settles the run as cancelled.
+    { type: 'cancel-from-root' },
+    // The user opens the stopped thread and clicks Continue.
+    { type: 'continue-sub-thread', threadIndex: 0 },
+    // Continue only starts the thread's turn; the parent's follows it.
+    { type: 'wait-for-idle' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Begin' },
+      { type: 'thread', itemId: '$ITEM_3', result: 'Task done' },
+      { type: 'assistant', content: 'All finished.' }
+    ]
+  },
+
+  customAssertions: (conversation) => {
+    const items = conversation.rootMessageThread.items;
+    const thread = items.find((/** @type {any} */ it) => it.get?.('type') === 'thread');
+    if (!thread) throw new Error('thread-continue-after-cancel-parent: thread item missing');
+    const record = itemRunRecord(thread, items);
+    if (record?.result !== 'Task done') {
+      throw new Error(
+        'thread-continue-after-cancel-parent: the call that started the thread reports ' +
+				`${JSON.stringify(record)}, want the continued run's reply`
+      );
+    }
+    if (getThreadStatus(thread, null, items).showSummary !== true) {
+      throw new Error('thread-continue-after-cancel-parent: the tile does not show the thread\'s answer');
+    }
+  }
+};
+
+// ============================================================================
+// TEST 11: The unfinished tile carries the way out
+// ============================================================================
+
+/**
+ * An own-vantage interrupt leaves the run OPEN, which is deliberate — but it
+ * also leaves the parent parked on it, and while the run is open the root
+ * column has no Continue (hasBusyItems), no Stop (nothing is processing) and
+ * Escape does nothing (no activity to cancel). Every affordance that could move
+ * the conversation on is gone from the column the user is looking at.
+ *
+ * So the tile carries the way out: a thread stopped mid-run reads as
+ * 'unfinished' rather than 'idle', which is what gates its Stop button. That
+ * Stop settles the run — releasing the parked caller and bringing the root's
+ * Continue back — without the interrupt itself having to settle anything.
+ *
+ * Mock responses:
+ *   1. Root: create_thread
+ *   2. Thread: bash tool call (will be interrupted)
+ *   3. Thread: should NOT be consumed
+ *   4. Root: should NOT be consumed
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const unfinishedTileStopSettlesRunTest = {
+  name: 'unfinished-tile-stop-settles-run',
+  description: 'A thread stopped mid-run keeps a Stop on its tile, and it settles the run',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'create_thread', { goal: 'Run task', prompt: 'Execute bash' }),
+    toolUseResponse('call_2', 'bash',
+      { command: 'env echo "started"; sleep 10' },
+      'Running command.'
+    ),
+    textResponse('Thread should not see this.'),
+    textResponse('Root should not see this.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Start task' },
+    { type: 'wait-for-thread-approval', toolUseId: 'call_2' },
+    { type: 'start-capture-progress', toolUseId: 'call_2' },
+    { type: 'approve-thread-tool-no-wait', toolUseId: 'call_2' },
+    { type: 'wait-for-progress', toolUseId: 'call_2', minEvents: 1 },
+    // Own-vantage interrupt: the run is left open, and nothing is driving it.
+    { type: 'cancel' },
+    // The tile still offers a Stop — the run is open, so there is a caller to
+    // release. An 'idle' tile would render none.
+    { type: 'assert-dom', selector: 'thread-message .thread-stop-btn' },
+    { type: 'click-dom', selector: 'thread-message .thread-stop-btn' },
+    { type: 'wait-for-state', condition: { completedThreadCount: 1 } }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Start task' },
+      { type: 'thread', itemId: '$ITEM_3' }
+    ]
+  },
+
+  customAssertions: (conversation) => {
+    assertRunCancelled(conversation, 'unfinished-tile-stop-settles-run');
+    // Settled → the root is free again, so its Continue comes back.
+    if (conversation.rootMessageThread.hasBusyItems()) {
+      throw new Error(
+        'unfinished-tile-stop-settles-run: root still busy after settling the run — ' +
+				'the parent column stays without a Continue'
+      );
+    }
+  }
+};
+
 // Export all tests
 export const tests = [
   cancelDuringThreadTest,
@@ -635,5 +802,7 @@ export const tests = [
   denyInThreadNoAutoResumeTest,
   cancelThreadSettlesRunTest,
   threadTileStopButtonTest,
-  resumeAfterCancelReportsToCallerTest
+  resumeAfterCancelReportsToCallerTest,
+  continueAfterCancelReportsToCallerTest,
+  unfinishedTileStopSettlesRunTest
 ];

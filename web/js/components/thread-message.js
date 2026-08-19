@@ -104,15 +104,18 @@ class ThreadMessage extends HTMLElement {
    * Build the tile's stop button. Click dispatches `cancel-thread-requested`
    * (bubbling + composed) carrying this thread's itemId; the conversation-tab
    * resolves it to conversation.cancelThread.
+   * @param {string} label - Literal description of what the click does, for the
+   *     title and aria-label. A thread that is running is stopped; one that
+   *     already stopped mid-run is only settled, which is what frees the caller.
    * @returns {HTMLButtonElement} The stop button element.
    * @private
    */
-  _buildStopButton() {
+  _buildStopButton(label) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'thread-action-btn thread-stop-btn';
-    btn.title = 'Stop this thread';
-    btn.setAttribute('aria-label', 'Stop this thread');
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
     btn.textContent = 'Stop';
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -131,14 +134,17 @@ class ThreadMessage extends HTMLElement {
 
   render() {
     const status = this._item ? getThreadStatus(this._item, this._live) : null;
-    // The tile shows a Stop button only when the subtree actually has something
-    // to stop: it's the live processing column (running), about to be driven
-    // (pending), or parked on an approval (paused). A queued/idle/errored tile
-    // owns no in-flight work, so a Stop there would be misleading — and clicking
-    // it could only stamp the tile, never preempt a sibling (see
-    // conversation.cancelThread / _threadOwnsActiveWork).
+    // The tile shows a Stop button when the subtree has something to stop —
+    // it's the live processing column (running), about to be driven (pending),
+    // or parked on an approval (paused) — and when it has an open run to
+    // SETTLE (unfinished). The latter owns no in-flight work, so the click only
+    // stamps the tile; that stamp is the point, because it is what releases the
+    // caller parked on the run and brings the parent column's Continue back. A
+    // queued/idle/errored tile has neither, so a Stop there would be
+    // misleading (see conversation.cancelThread / _threadOwnsActiveWork).
     const stoppable = !!status &&
-      (status.kind === 'running' || status.kind === 'pending' || status.kind === 'paused');
+      (status.kind === 'running' || status.kind === 'pending' ||
+       status.kind === 'paused' || status.kind === 'unfinished');
     // Source of truth: the run this item stands for, or the thread's summary
     // when it stands for none. Don't read the attribute — it's only set at
     // create time and would go stale after the worker writes the summary.
@@ -170,7 +176,12 @@ class ThreadMessage extends HTMLElement {
       this._paintedKey = key;
       const article = document.createElement('article');
       article.className = 'thread-item';
-      if (!showsSummary) article.setAttribute('data-processing', 'true');
+      // The icon pulse says work is under way. A thread stopped mid-run has
+      // none: the pulse would be the only moving pixel in the state, telling
+      // the user the opposite of what the tile says.
+      if (!showsSummary && status?.kind !== 'unfinished') {
+        article.setAttribute('data-processing', 'true');
+      }
 
       // Header row: icon + "Thread" lozenge from the one shared badge resolver
       // (same code the properties-panel header uses), grouped with the icon via
@@ -205,7 +216,11 @@ class ThreadMessage extends HTMLElement {
       // the status line rather than floating loose in the tile.
       if (stoppable) {
         const msgEl = summaryDiv.querySelector('.thread-status-message');
-        (msgEl || article).appendChild(this._buildStopButton());
+        (msgEl || article).appendChild(this._buildStopButton(
+          status?.kind === 'unfinished'
+            ? 'Stop waiting for this thread'
+            : 'Stop this thread'
+        ));
       }
 
       this.replaceChildren(article);

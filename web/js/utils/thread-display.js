@@ -35,7 +35,7 @@ export function getThreadDisplayContent(threadYMap, siblingArray) {
 }
 
 /**
- * @typedef {'running'|'pending'|'paused'|'queued'|'errored'|'idle'} ThreadStatusKind
+ * @typedef {'running'|'pending'|'paused'|'queued'|'errored'|'unfinished'|'idle'} ThreadStatusKind
  */
 
 /**
@@ -69,6 +69,10 @@ export function getThreadDisplayContent(threadYMap, siblingArray) {
  *   errored  — a nested item is an error message.
  *   queued   — the conversation is still processing (a sibling is the live
  *              thread) but this one hasn't run yet: it's waiting its turn.
+ *   unfinished — this item's run was started, never settled, and nothing is
+ *              driving it. Stopped mid-run: it moves again only if the user
+ *              picks it up or settles it, and the caller stays parked until
+ *              one of those happens.
  *   idle     — none of the above: nothing is actively driving this thread. It
  *              is stopped, which is a resting state, not a terminal one — it
  *              may never have started, or it may have run and come to rest
@@ -178,6 +182,21 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
   // still-unfinished thread correctly falls through to 'idle'.
   if (live && live.message) {
     return { kind: 'queued', goal, message: 'Waiting for its turn…', spinner: false };
+  }
+
+  // A run was started for this call and never settled, and nothing is driving
+  // it: the thread stopped mid-run and will not pick itself back up. This is
+  // the state an own-vantage stop leaves behind — the worker turn is preempted
+  // but no outcome is recorded, deliberately, so the run stays open and takes
+  // work again (conversation.interruptThread).
+  //
+  // It is not 'idle', because an unsettled run is not a resting state: the
+  // caller that made this call is parked on it, and while it stays open the
+  // parent column has no Continue and the conversation cannot move on. The tile
+  // carries the Stop that settles it — the only affordance the parent column
+  // has in this state (see thread-message).
+  if (record && !record.status) {
+    return { kind: 'unfinished', goal, message: 'Unfinished', spinner: false };
   }
 
   // "Idle", not "Stopped": with the conversation idle and no result, nothing is
