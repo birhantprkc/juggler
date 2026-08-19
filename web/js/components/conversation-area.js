@@ -602,21 +602,21 @@ class ConversationArea extends HTMLElement {
             <thread-column-icon-box></thread-column-icon-box>
             <h3 class="properties-panel-title thread-column-goal"></h3>
           </header>
-          <thread-column-actions>
-            <button class="properties-panel-btn thread-expand-btn" title="Expand this thread back into the parent">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M120-120v-320h80v184l504-504H520v-80h320v320h-80v-184L256-200h184v80H120Z"/></svg>
-              Expand into parent
-            </button>
-            <button class="properties-panel-btn thread-copy-tab-btn" title="Copy this thread (with inherited context) to a new conversation">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-160v-326L336-382l-56-58 200-200 200 200-56 58-104-104v326h-80ZM160-600v-120q0-33 23.5-56.5T240-800h480q33 0 56.5 23.5T800-720v120h-80v-120H240v120h-80Z"/></svg>
-              Copy thread to new conversation
-            </button>
-          </thread-column-actions>
         </properties-panel-section>
       </header>
       <conversation-message-list-wrapper>
         <section class="conversation-message-list" id="message-list">
           <div class="conversation-message-list-inner" id="message-list-inner">
+            <thread-column-actions class="hidden">
+              <button class="properties-panel-btn thread-expand-btn" title="Expand this thread back into the parent">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M120-120v-320h80v184l504-504H520v-80h320v320h-80v-184L256-200h184v80H120Z"/></svg>
+                Expand into parent
+              </button>
+              <button class="properties-panel-btn thread-copy-tab-btn" title="Copy this thread (with inherited context) to a new conversation">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-160v-326L336-382l-56-58 200-200 200 200-56 58-104-104v326h-80ZM160-600v-120q0-33 23.5-56.5T240-800h480q33 0 56.5 23.5T800-720v120h-80v-120H240v120h-80Z"/></svg>
+                Copy thread to new conversation
+              </button>
+            </thread-column-actions>
             <conversation-footer></conversation-footer>
           </div>
         </section>
@@ -647,6 +647,8 @@ class ConversationArea extends HTMLElement {
     if (!header) return;
 
     header.classList.remove('hidden');
+    const actionsEl = /** @type {HTMLElement|null} */ (this.querySelector('thread-column-actions'));
+    actionsEl?.classList.remove('hidden');
     const goalEl = header.querySelector('.thread-column-goal');
     if (goalEl) goalEl.textContent = displayGoal;
 
@@ -664,7 +666,7 @@ class ConversationArea extends HTMLElement {
 
     // Expand: splice this thread's items back into the parent and drop the tile.
     // Clone to clear listeners from a prior show.
-    const expandBtn = header.querySelector('.thread-expand-btn');
+    const expandBtn = actionsEl?.querySelector('.thread-expand-btn');
     if (expandBtn) {
       const newExpandBtn = expandBtn.cloneNode(true);
       expandBtn.parentNode?.replaceChild(newExpandBtn, expandBtn);
@@ -683,7 +685,7 @@ class ConversationArea extends HTMLElement {
     // Wire up Copy to new conversation — the promote-thread-requested event
     // (conversation-tab handles it via promoteThreadToNewTab). Clone to clear
     // listeners from a prior show.
-    const copyTabBtn = header.querySelector('.thread-copy-tab-btn');
+    const copyTabBtn = actionsEl?.querySelector('.thread-copy-tab-btn');
     if (copyTabBtn) {
       const newCopyTabBtn = copyTabBtn.cloneNode(true);
       copyTabBtn.parentNode?.replaceChild(newCopyTabBtn, copyTabBtn);
@@ -700,10 +702,9 @@ class ConversationArea extends HTMLElement {
     }
 
     // Remove old dynamically-added delete controls and re-add via shared utility
-    header.querySelectorAll('.properties-panel-btn.danger').forEach(b => b.remove());
+    actionsEl?.querySelectorAll('.properties-panel-btn.danger').forEach(b => b.remove());
 
     const threadItemId = threadYMap.get('itemId');
-    const actionsEl = /** @type {HTMLElement|null} */ (header.querySelector('thread-column-actions'));
     const parentThread = this._parentMessageThread;
     if (actionsEl && parentThread && threadItemId) {
       const idx = parentThread.findIndexByItemId(threadItemId);
@@ -750,6 +751,7 @@ class ConversationArea extends HTMLElement {
   hideThreadHeader() {
     const header = this.querySelector('.thread-column-header');
     if (header) header.classList.add('hidden');
+    this.querySelector('thread-column-actions')?.classList.add('hidden');
   }
 
   setupEventListeners() {

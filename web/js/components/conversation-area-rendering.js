@@ -48,6 +48,7 @@ import { itemGoal } from '../model/thread-alias.js';
 
 // DOM element tag names - constants to avoid typos
 const FOOTER_TAG = 'CONVERSATION-FOOTER';
+const THREAD_ACTIONS_TAG = 'THREAD-COLUMN-ACTIONS';
 
 // Synthesized non-item elements managed outside the item-diff (like the footer
 // and context toggle): the terminal thread-result block. Excluded from
@@ -73,6 +74,7 @@ const RESULT_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" vie
  */
 function isManagedNonItem(child) {
   return child.tagName === FOOTER_TAG ||
+    child.tagName === THREAD_ACTIONS_TAG ||
     child.classList.contains(THREAD_RESULT_CLASS) ||
     child.classList.contains(PENDING_ZONE_CLASS);
 }
@@ -317,8 +319,7 @@ export function ensureThreadResult(area, messageList, footer) {
   });
   headerActions.appendChild(resummariseBtn);
 
-  // Expand and Promote live in the column header (thread-column-actions), which
-  // is on screen whether this block renders or not.
+  // Expand and Promote live at the start of the thread's scrollable transcript.
 
   const body = document.createElement('div');
   body.className = 'thread-result-body markdown';

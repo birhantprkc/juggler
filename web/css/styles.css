@@ -2891,7 +2891,7 @@ tool-group-message .thread-summary {
 }
 
 
-/* Thread column header - shown at top of thread conversation columns.
+/* Thread column header - shown above thread conversation columns.
    Uses properties-panel-section/header for consistent styling with properties panel. */
 .thread-column-header {
     padding: 1rem;
@@ -2915,6 +2915,7 @@ thread-column-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.25rem;
+    margin-bottom: 1rem;
 }
 
 .thread-action-btn {
