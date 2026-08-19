@@ -292,7 +292,10 @@ export async function runTests(_ctx) {
     );
     panel._blobOutputTokens.set('txn-1', 1234);
     const chip = panel._buildTokenChip();
-    assert(chip.textContent === '1,234',
+    // Counts carry the environment's thousands separator, which is a comma in
+    // en-US and nothing at all in the POSIX locale a bare CI machine reports —
+    // what is being pinned here is the number and the missing `~`, not grouping.
+    assert(chip.textContent === (1234).toLocaleString(),
       `the provider's own number, unmarked, got "${chip.textContent}"`);
     assert(chip.title.includes('reported by the provider'),
       `the tooltip must say whose number it is, got "${chip.title}"`);

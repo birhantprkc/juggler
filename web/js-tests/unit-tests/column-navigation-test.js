@@ -156,12 +156,27 @@ export async function runTests() {
     assert(!!container, 'no column-container');
 
     // Narrow the row so the columns overflow it and a horizontal scroll
-    // position exists to be lost. Both columns are at least 30rem wide.
+    // position exists to be lost.
     container.style.width = '520px';
     container.style.maxWidth = '520px';
+    // The tab is laid out off-screen with an auto height, which leaves the row
+    // 520x0 — a box whose scrollability engines are entitled to disagree about.
+    // Give it the height it has in the app.
+    container.style.height = '600px';
+    // Snapping is the phone layout's, and it belongs to the user's finger: on a
+    // mandatory-snap scroller the position set below is pulled back to the
+    // nearest snap point the moment it is written, so the drag this stands in
+    // for could not be expressed at all. The lane's viewport decides whether
+    // that layout is in force, so pin the desktop row explicitly rather than
+    // depending on how wide a test window a platform hands back.
+    container.style.scrollSnapType = 'none';
 
     const rootCol = /** @type {any} */ (tab.querySelectorAll('column-container > conversation-area')[0]);
     assert(!!rootCol, 'no root conversation column');
+    // A column wider than the row, stated here rather than inherited: the CSS
+    // width is a resizable default the user owns (and the phone layout drops to
+    // a viewport-wide column), and this test only needs the row to overflow.
+    rootCol.style.flex = '0 0 800px';
 
     // Land the selection in the middle of the list: the tail re-arms
     // auto-follow (rule A), and both neighbours must exist for ↑ and ↓.
@@ -179,7 +194,10 @@ export async function runTests() {
     container.style.scrollBehavior = 'auto';
     container.scrollLeft = 200;
     assert(container.scrollLeft > 1,
-      'the columns did not overflow the row, so there was no scroll position to lose');
+      'the row kept no scroll position, so there was none to lose: '
+      + `client ${container.clientWidth}x${container.clientHeight}, `
+      + `scrollWidth ${container.scrollWidth}, columns ${container.children.length}, `
+      + `snap "${getComputedStyle(container).scrollSnapType}", viewport ${window.innerWidth}px`);
 
     // Record every horizontal move the tab asks for, without performing it:
     // the row's `scroll-behavior: smooth` would otherwise still be animating

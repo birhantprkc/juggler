@@ -65,6 +65,20 @@ function mount(live) {
 }
 
 /**
+ * Whether this environment asks for reduced motion.
+ *
+ * The fumble is the one part of the spinner that is decoration rather than
+ * instrumentation, so it is suppressed twice under the preference: the CSS
+ * leaves `.js-dropping` spinning in the ring, and `offerDrop` returns before
+ * arming. CI machines report the preference, so the drop cases assert whichever
+ * of the two behaviours this machine is entitled to.
+ * @returns {boolean} True when the reduce preference is set.
+ */
+function reducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}
+
+/**
  * Run all live-spinner tests.
  * @returns {Promise<TestResult>} Pass/fail counts and error messages.
  */
@@ -510,20 +524,26 @@ export async function runTests() {
     club.classList.add('js-dropping');
     el._invalidateAnimations();
     const drop = club.getAnimations().find((/** @type {any} */ a) => a.animationName === 'juggler-spinner-drop');
-    if (!drop) throw new Error('js-dropping did not start a drop animation');
+    if (reducedMotion()) {
+      // The club keeps its place in the cascade: under the preference the class
+      // buys the spin alone, and there is no fall to run to completion.
+      if (drop) throw new Error('reduced motion must leave the club in the ring');
+    } else {
+      if (!drop) throw new Error('js-dropping did not start a drop animation');
 
-    const full = el._dropDurationMs(club);
-    const nominal = Number(drop.effect.getComputedTiming().activeDuration);
-    if (!(full >= nominal))
-      throw new Error(`allowed ${full}ms for a ${nominal}ms fumble — it would be cut short`);
+      const full = el._dropDurationMs(club);
+      const nominal = Number(drop.effect.getComputedTiming().activeDuration);
+      if (!(full >= nominal))
+        throw new Error(`allowed ${full}ms for a ${nominal}ms fumble — it would be cut short`);
 
-    // Halve the speed and the fumble takes twice as long in wall time. This is
-    // the case that used to snap: a spinner tired by a long tool call runs well
-    // below 1x, and the drop is stretched with everything else.
-    drop.playbackRate = 0.5;
-    const slow = el._dropDurationMs(club);
-    if (!(slow > full * 1.8))
-      throw new Error(`at half speed expected roughly double (${full}ms → ${slow}ms)`);
+      // Halve the speed and the fumble takes twice as long in wall time. This is
+      // the case that used to snap: a spinner tired by a long tool call runs well
+      // below 1x, and the drop is stretched with everything else.
+      drop.playbackRate = 0.5;
+      const slow = el._dropDurationMs(club);
+      if (!(slow > full * 1.8))
+        throw new Error(`at half speed expected roughly double (${full}ms → ${slow}ms)`);
+    }
     club.classList.remove('js-dropping');
     passed++;
   } catch (e) { failed++; errors.push(`the fumble runs to completion at any speed: ${e.message}`); }
@@ -555,8 +575,11 @@ export async function runTests() {
     const armed = [inert, dropA, dropB].filter(el => el._dropTimer).length;
     if (armed > 1)
       throw new Error(`session budget breached: ${armed} spinners armed a fumble at once`);
-    if (armed !== 1)
-      throw new Error(`expected exactly one armed fumble, got ${armed}`);
+    // Under reduced motion nothing arms at all: `offerDrop` turns 500 offers
+    // down before the budget is ever consulted.
+    const expected = reducedMotion() ? 0 : 1;
+    if (armed !== expected)
+      throw new Error(`expected ${expected} armed fumble(s)${expected === 0 ? ' under reduced motion' : ''}, got ${armed}`);
     // Nothing may fumble on the spot: a drop that fired the instant a turn
     // began would land on every trivial turn, which is not rare.
     if (document.querySelectorAll('.js-dropping').length !== 0)
