@@ -2,16 +2,12 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import { saveScrollState, getScrollState } from '../utils/scroll-persistence.js';
 import {
   isUserMessage,
   isAssistantMessage,
   isToolActionMessage,
-  isErrorMessage,
   isThreadMessage,
-  TOOL_STATES
 } from '../../sdk/lib/message.js';
-import contextItemRegistry from '../registries/context-item-registry.js';
 import './conversation-footer.js';
 import './tool-action-message.js';
 import './user-message.js';
@@ -37,7 +33,6 @@ import { itemGoal } from '../model/thread-alias.js';
 import { appendDeleteControls } from '../utils/panel-delete-controls.js';
 import { findNeighborItemId } from '../services/context-item-utilities.js';
 import {
-  MESSAGE_TAGS,
   ensureFooterExists,
   ensureThreadResult,
   removeAllElements,
@@ -48,7 +43,8 @@ import {
   ensurePendingMessages,
   getItemId,
 } from './conversation-area-rendering.js';
-import { recordTape } from '../utils/event-tape.js';
+import * as scroll from './conversation-area-scroll.js';
+import * as selection from './conversation-area-selection.js';
 import { StatusMessageBuilder } from '../services/status-message-builder.js';
 
 /**
@@ -186,7 +182,7 @@ class ConversationArea extends HTMLElement {
       this._streamingScrollObserver = null;
       this._observedContainer = null;
     }
-    this._teardownSelectionVisibilityWatcher();
+    selection.teardownSelectionVisibilityWatcher(this);
     this._conversation = conversation;
 
     // Set up new observer for nextSteps metadata
@@ -330,7 +326,7 @@ class ConversationArea extends HTMLElement {
       // a drift the reader can't escape while text streams. Skipped when pinned
       // (native bottom-anchoring is what we want there) and on structural changes
       // (those are handled by the FLIP path + onItemsInserted).
-      const anchorEl = (!pinned && !structural && scroller) ? this._topVisibleMessageElement() : null;
+      const anchorEl = (!pinned && !structural && scroller) ? scroll.topVisibleMessageElement(this) : null;
       const anchorTopBefore = anchorEl ? anchorEl.getBoundingClientRect().top : 0;
 
       this._notifyChangedElements(events, conversation);
@@ -342,7 +338,7 @@ class ConversationArea extends HTMLElement {
       // Re-anchor the reader: nudge scrollTop by however far the anchor drifted so
       // the lines under their eyes stay put. The nudge is relative, rect-derived,
       // and instant — sign-agnostic across the reversed scroller (matching
-      // _scrollElementIntoView) and never glides. When pinned we take neither
+      // scrollElementIntoView) and never glides. When pinned we take neither
       // branch: native column-reverse anchoring keeps the newest text in view (and
       // the height glide above smooths it). Auto-follow of new items / approvals /
       // busy-status still comes from onItemsInserted and showBusy, never here.
@@ -570,7 +566,7 @@ class ConversationArea extends HTMLElement {
     // the element (and its captured Conversation) from being collected.
     this.conversation = null;
     this.setThreadContext(null);
-    this._teardownSelectionVisibilityWatcher();
+    selection.teardownSelectionVisibilityWatcher(this);
     if (this._scrollAnimationFrame !== null) {
       cancelAnimationFrame(this._scrollAnimationFrame);
       this._scrollAnimationFrame = null;
@@ -807,7 +803,7 @@ class ConversationArea extends HTMLElement {
         // selection stay glued to the now-completed item.
         if (insideApproval && this._selectionOrigin === 'user') {
           this._selectionOrigin = null;
-          this._teardownSelectionVisibilityWatcher();
+          selection.teardownSelectionVisibilityWatcher(this);
         }
       }, true);
 
@@ -825,8 +821,8 @@ class ConversationArea extends HTMLElement {
         const target = /** @type {HTMLElement} */ (e.target);
 
         // Check if user has selected any text
-        const selection = window.getSelection();
-        if (selection && selection.toString().length > 0) {
+        const textSelection = window.getSelection();
+        if (textSelection && textSelection.toString().length > 0) {
           // User is selecting text, don't steal focus or select
           return;
         }
@@ -851,7 +847,7 @@ class ConversationArea extends HTMLElement {
               const tag = selectableItem.tagName;
               const isProse = tag === 'USER-MESSAGE' || tag === 'ASSISTANT-MESSAGE';
               if (!isProse && !onControl) {
-                this._dispatchItemSelected(itemId, 'user', true);
+                selection.dispatchItemSelected(this, itemId, 'user', true);
               }
               return;
             }
@@ -872,7 +868,7 @@ class ConversationArea extends HTMLElement {
 
         // Clicked on the background — deselect any current item in this column,
         // then focus the input so the next keystroke starts composing.
-        this._clearSelection();
+        selection.clearSelection(this);
         const textarea = composer.querySelector('textarea');
         if (textarea) {
           textarea.focus();
@@ -886,7 +882,7 @@ class ConversationArea extends HTMLElement {
         const t = /** @type {HTMLElement} */ (e.target);
         if (t && t.tagName === 'TEXTAREA') {
           this._selectionOrigin = null;
-          this._teardownSelectionVisibilityWatcher();
+          selection.teardownSelectionVisibilityWatcher(this);
         }
       });
     }
@@ -919,7 +915,7 @@ class ConversationArea extends HTMLElement {
     });
     controls.querySelector('[data-scroll="bottom"]')?.addEventListener('click', (e) => {
       e.stopPropagation();
-      this._scrollEndIntoView(true);
+      scroll.scrollEndIntoView(this, true);
     });
 
     messageList.addEventListener('scroll', () => {
@@ -1087,7 +1083,7 @@ class ConversationArea extends HTMLElement {
 
   /**
    * Smooth-scroll to the very start (oldest message) of the conversation. Uses a
-   * relative, viewport-rect-based nudge (like _scrollElementIntoView) so it's
+   * relative, viewport-rect-based nudge (like scrollElementIntoView) so it's
    * agnostic to the reversed scroller's scrollTop sign, and clamped so it lands
    * exactly at the top rather than overshooting.
    * @private
@@ -1106,22 +1102,22 @@ class ConversationArea extends HTMLElement {
 
   /** Select the next item in the list */
   selectNextItem() {
-    this._selectNextItem();
+    selection.selectNextItem(this);
   }
 
   /** Select the previous item in the list */
   selectPreviousItem() {
-    this._selectPreviousItem();
+    selection.selectPreviousItem(this);
   }
 
   /** Skip forward to the next user message */
   selectNextUserMessage() {
-    this._selectNextUserMessage();
+    selection.selectNextUserMessage(this);
   }
 
   /** Skip backward to the previous user message */
   selectPreviousUserMessage() {
-    this._selectPreviousUserMessage();
+    selection.selectPreviousUserMessage(this);
   }
 
   /**
@@ -1134,12 +1130,12 @@ class ConversationArea extends HTMLElement {
 
   /** Clear the current selection */
   clearSelection() {
-    this._clearSelection();
+    selection.clearSelection(this);
   }
 
   /** @returns {string[]} List of selectable item IDs */
   getSelectableItemIds() {
-    return this._getSelectableItemIds();
+    return selection.getSelectableItemIds(this);
   }
 
   /** @returns {string|null} Currently selected item ID */
@@ -1168,94 +1164,19 @@ class ConversationArea extends HTMLElement {
     return el !== null;
   }
 
-  // ── Selection & Scrolling ────────────────────────────────────────
+  // ── Selection & scrolling ────────────────────────────────────────
   //
-  // UX rules:
+  // Both engines live in companion modules: the selection rules (1-5b) in
+  // conversation-area-selection.js, the scroll rules (6-11) in
+  // conversation-area-scroll.js. The UX rules they implement, and why each
+  // scroll is clamped scrollTop math rather than scrollIntoView, are written up
+  // in those two module docs. What stays here are the entry points other files
+  // call.
   //
-  //  SELECTION
-  //   1. User arrow-keys / clicks → select that item.
-  //   2. LLM inserts items → auto-select the best candidate
-  //      (error > pending-approval > latest non-text item).
-  //      Never auto-select user messages, transaction markers,
-  //      assistant messages, or thinking messages.
-  //   2b. After the selected pending-approval item transitions out
-  //      of PENDING (approved / cancelled), auto-select the first
-  //      remaining pending-approval item in the thread — so the
-  //      user lands on the next thing to act on without scrolling
-  //      or clicking. Driven from conversation-tab, which observes
-  //      conversation:changed (including empty-insertedItemIds state
-  //      transitions) and calls `getNextPendingApprovalToSelect()`
-  //      on each conversation-area column. Suppressed by rule 4
-  //      (origin === 'user').
-  //   3. A new user message resets auto-follow (ready to track the response)
-  //      AND forces the follow target into view, bypassing the rule-11
-  //      near-bottom gate — the user just acted, so showing the footer
-  //      spinner/status is what they're waiting for. The tall user message
-  //      itself often pushes the footer below the viewport, so we can't
-  //      rely on _isScrolledNearBottom() returning true at this point.
-  //      (Combined with the tail-only rule in _getFollowTarget, this
-  //      lands cleanly on the footer rather than on a busy sub-thread
-  //      tile higher up.)
-  //   4. Once the user manually selects, auto-follow is suppressed
-  //      until the next user message resets it.
-  //   5. Never select an item that isn't visible in the DOM.
-  //   5b. When a selected item is deleted, auto-select the nearest visible
-  //       neighbor (next preferred, previous if last). Driven by the
-  //       deletion site (properties-panel), not the render path.
-  //       See: request-item-selection event in conversation-tab.
-  //
-  //  SCROLLING
-  //   All scrolling is direct, clamped scrollTop math against the
-  //   #message-list (_scrollEndIntoView / _scrollElementIntoView), not
-  //   Element.scrollIntoView: scrollTop is container-scoped and auto-clamped to
-  //   [0, scrollHeight - clientHeight], so it can neither overshoot nor scroll a
-  //   parent (e.g. the horizontal column container) as a side effect. The list
-  //   wrapper never overlaps the composer, so the one correct "end of
-  //   conversation" position is simply scrollTop = scrollHeight, which clamps to
-  //   "end of content at the bottom edge, above the box". Selecting the tail
-  //   item and every follow-target update share that path.
-  //
-  //   A selection scroll is re-asserted one frame later (see _selectItem): the
-  //   selection triggers a column rebuild whose own rAF callbacks would
-  //   otherwise perturb scrollTop right after our scroll. Chrome's scroll
-  //   anchoring hid that; Safari (which has none) showed it as a just-selected
-  //   tail item jumping down behind the composer. The re-assert makes our
-  //   scroll the final word.
-  //   6/7. Selection (user or auto) of an item → bring the item fully into
-  //      view with minimal, clamped movement (_scrollElementIntoView). The
-  //      tail item routes to _scrollEndIntoView (it IS the end).
-  //   8. New items arrive but none auto-selected → scroll the follow
-  //      target (status spinner or footer) into view, if near bottom.
-  //   9. Streaming content grows → keep follow target visible,
-  //      but only while user was already near bottom.
-  //  10. LLM busy indicator appears → scroll follow target into view
-  //      (same conditions as rule 9).
-  //  11. User scrolls far from the bottom (>~20rem) → stop
-  //      auto-scrolling. No fighting. Scrolling near the bottom
-  //      (~20rem) allows auto-scrolling to continue.
-  //
-  // The follow target (see _getFollowTarget) always sits at the end of the
-  // conversation, in priority order:
-  //   selected busy thread > any busy thread > footer spinner > footer.
-  //   Revealing any of them is the same _scrollEndIntoView call.
-  //
-  // State:
-  //   _localSelectedItemId  – which item is selected (string | null)
-  //   _selectionOrigin      – 'user' | 'auto' | null
-  //
-  // Entry points:
-  //   onItemsInserted     → rules 2-4, 8
-  //   _selectItem         → rules 1, 5-7
-  //   streaming observer  → rules 9, 11
-  //   showBusy            → rule 10
-  //
-  // Note: _rebuildColumns (conversation-tab) applies selections via
-  //   _localSelectedItemId + _applySelectedClass, bypassing _selectItem
-  //   to avoid re-entrant events and data-driven scroll hijacking.
-  //   When the selection is genuinely new (openThread, maybeAutoSelectThread)
-  //   the caller invokes _scrollSelectionsIntoView to honour rules 6-7.
-  //
-  // See also: Focus rules in conversation-tab.js (rules 12-19).
+  // The underscore-prefixed delegates below are not private in practice:
+  // conversation-tab reaches into them to apply a selection made during a
+  // column rebuild without re-entering the event path, and the browser tests
+  // drive _selectItem directly.
   // ────────────────────────────────────────────────────────────────
 
   /**
@@ -1265,737 +1186,51 @@ class ConversationArea extends HTMLElement {
    * @param {Array<any>} items - Current full items array
    */
   onItemsInserted(insertedItemIds, items) {
-    if (!insertedItemIds.length) return;
-
-    const itemMap = new Map();
-    for (const item of items) {
-      const id = item?.get?.('itemId');
-      if (id) itemMap.set(id, item);
-    }
-
-    // Rule 3: new user message → reset auto-follow
-    let sawUserMessage = false;
-    for (const id of insertedItemIds) {
-      const item = itemMap.get(id);
-      if (item && isUserMessage(item)) {
-        this._selectionOrigin = null;
-        sawUserMessage = true;
-        break;
-      }
-    }
-
-    // Rule 2: find best auto-select candidate (suppressed by rule 4)
-    if (this._selectionOrigin !== 'user') {
-      const candidate = this._pickAutoSelectCandidate(insertedItemIds, itemMap);
-      if (candidate) {
-        const candidateId = candidate.get('itemId');
-        if (candidateId && candidateId !== this._localSelectedItemId) {
-          this._selectItem(candidateId, 'auto');
-          return; // _selectItem already scrolls
-        }
-      }
-    }
-
-    // A new user message just landed in the DOM — force-follow regardless
-    // of the near-bottom check. This is the right moment for the
-    // "show me the spinner working on my message" scroll: the user-msg
-    // element is now real, and the follow target (footer / spinner) sits
-    // just below it. Doing this here (rather than at submitMessage time)
-    // means we never scroll into a phantom position before the user msg
-    // is rendered, which would push the new user message offscreen.
-    if (sawUserMessage) {
-      this._scrollToFollowIfNeeded(true);
-      return;
-    }
-
-    // No candidate selected — scroll follow target into view if near bottom (rule 8)
-    if (this._isScrolledNearBottom()) {
-      this._scrollToFollowIfNeeded();
-    }
+    selection.onItemsInserted(this, insertedItemIds, items);
   }
 
   /**
-   * Pick the best auto-select candidate from a set of inserted item IDs.
-   * Priority: error > pending approval / shouldAutoSelect > last non-user item.
-   * Skips user messages and transaction markers (rule 2).
-   * @param {string[]} ids
-   * @param {Map<string, any>} itemMap
-   * @returns {any|null} The best candidate item, or null if none found
-   * @private
-   */
-  _pickAutoSelectCandidate(ids, itemMap) {
-    // If the user is already looking at a PENDING tool-action, a *new* PENDING
-    // tool-action arriving in a later insertion batch must NOT preempt it —
-    // otherwise multiple sequentially-streamed approvals yank the user to the
-    // last one, when they need to act on the first. (Errors still preempt;
-    // resolved against the live items array — the current selection won't
-    // be in the insertedItemIds batch.)
-    let currentIsPending = false;
-    if (this._localSelectedItemId && this._messageThread) {
-      const sel = this._messageThread.items.find(
-        i => i?.get?.('itemId') === this._localSelectedItemId
-      );
-      if (sel && isToolActionMessage(/** @type {Message} */ (sel)) &&
-          sel.get('state') === TOOL_STATES.PENDING) {
-        currentIsPending = true;
-      }
-    }
-
-    let fallback = null;
-    for (const id of ids) {
-      const item = itemMap.get(id);
-      if (!item) continue;
-      // Neutral plugin opt-out: items inserted "in the background" (e.g.
-      // /compact's summary thread) set noAutoSelect so the user's column
-      // isn't yanked into them.
-      if (item.get?.('noAutoSelect')) continue;
-      if (isUserMessage(item)) continue;
-
-      if (isErrorMessage(item)) return item;
-
-      if (isToolActionMessage(item)) {
-        const ActionClass = item.get('toolName')
-          ? contextItemRegistry.getByToolName(item.get('toolName'))
-          : null;
-        const isPending = item.get('state') === TOOL_STATES.PENDING;
-        if (ActionClass?.shouldAutoSelect?.() || isPending) {
-          if (isPending && currentIsPending) continue; // earliest pending wins
-          return item;
-        }
-      }
-      // Text-only messages — selecting just duplicates content in a properties panel.
-      // Thinking messages are included (not skipped) so users can watch them stream in.
-      if (isAssistantMessage(item)) continue;
-
-      // Only items that render a selectable row are valid fallbacks. Internal
-      // payload items (e.g. the meta-tool-result a sync meta tool such as
-      // drop_context_items leaves behind) have no selectable element, so picking one would
-      // silently fail _selectItem's visibility check and leave the column with
-      // no selection. When a whole turn arrives in one coalesced sync, such an
-      // item can be the last in the batch and would otherwise shadow the real
-      // tool-action that precedes it.
-      if (this._isItemVisible(id)) fallback = item;
-    }
-    return fallback;
-  }
-
-  /**
-   * Rule 2b: pure decision function — does this column have a pending-approval
-   * item that should become the next auto-selection? Returns the itemId of the
-   * first pending-approval item iff one exists AND the current selection isn't
-   * already a pending-approval item AND origin isn't 'user'. Otherwise null.
-   *
-   * Caller (conversation-tab) is responsible for routing the result through
-   * the standard selection path so the visual update and rebuild happen.
-   * @returns {string|null} itemId of the first pending-approval item to auto-select, or null
+   * Rule 2b: the itemId of the pending-approval item that should become the
+   * next auto-selection, or null. Called by conversation-tab.
+   * @returns {string|null} itemId to auto-select, or null
    */
   getNextPendingApprovalToSelect() {
-    // Diagnostic: record the Rule 2b decision + the reason it bailed, so a
-    // "selection didn't advance" flake shows WHY in the tape (the leading
-    // suspect being origin==='user' not cleared on approve).
-    const trace = (/** @type {string} */ reason, /** @type {string|null} */ picked) => {
-      recordTape('autoselect-2b', this._conversation?.id ?? null, {
-        reason,
-        picked,
-        origin: this._selectionOrigin,
-        selected: this._localSelectedItemId ?? null
-      });
-    };
-    if (this._selectionOrigin === 'user') { trace('origin-user', null); return null; }
-    if (!this._messageThread) { trace('no-thread', null); return null; }
-    const pending = this._messageThread.getPendingApprovalMessages();
-    if (pending.length === 0) { trace('none-pending', null); return null; }
-
-    // If the current selection is already a pending tool-action, leave it
-    // alone — the user hasn't acted on it yet.
-    if (this._localSelectedItemId) {
-      const sel = this._messageThread.items.find(
-        i => i?.get?.('itemId') === this._localSelectedItemId
-      );
-      if (sel && isToolActionMessage(/** @type {Message} */ (sel)) &&
-          sel.get('state') === TOOL_STATES.PENDING) {
-        trace('selected-still-pending', null);
-        return null;
-      }
-    }
-
-    // The caller applies this id as the column's selection, so hand back the id
-    // this column actually renders: a folded approval is reached by selecting
-    // its group, which opens the run (and the approval) in the next column.
-    const nextId = this._displayIdFor(pending[0]?.get?.('itemId'));
-    if (!nextId || nextId === this._localSelectedItemId) { trace('no-change', nextId ?? null); return null; }
-    if (!this._isItemVisible(nextId)) { trace('not-visible', nextId); return null; }
-    trace('pick', nextId);
-    return nextId;
+    return selection.getNextPendingApprovalToSelect(this);
   }
 
   /**
-   * Select an item by ID.
    * @param {string} itemId
    * @param {'user'|'auto'} [origin='user']
-   * @param {{allowReveal?: boolean}} [opts] - allowReveal false when the click
-   *   that caused this selection landed on a control inside the tile: the item
-   *   still becomes selected, but its child column is not revealed.
+   * @param {{allowReveal?: boolean}} [opts]
    * @private
    */
-  _selectItem(itemId, origin = 'user', { allowReveal = true } = {}) {
-    if (!this._conversation) return;
-    // A folded tool row has no row of its own — selecting it means selecting the
-    // group standing in for it, which opens the run in the next column.
-    itemId = this._displayIdFor(itemId);
-    // Rule 5: never select a hidden item
-    if (!this._isItemVisible(itemId)) return;
-
-    recordTape('selection', this._conversation.id, {
-      itemId,
-      origin,
-      threadItemId: this._messageThread?.threadItemId ?? null
-    });
-
-    this._localSelectedItemId = itemId;
-    this._selectionOrigin = origin;
-
-    const ids = this._getSelectableItemIds();
-    const isTail = ids.length > 0 && ids[ids.length - 1] === itemId;
-
-    // Rule A: selecting the last item re-arms auto-follow. The user's mental
-    // model is "I want to see whatever shows up next"; only items further up
-    // the list represent inspection that should pin the selection.
-    if (origin === 'user' && isTail) {
-      this._selectionOrigin = null;
-    }
-
-    this._applySelectedClass(itemId);
-
-    // Auto-selection ('auto') is the system following incoming content to the end
-    // of the conversation — glide there, like the streaming-content follow. A
-    // 'user' selection (arrow keys, click) is navigation the user drives directly,
-    // where a glide reads as lag, so it stays instant.
-    const smooth = origin === 'auto';
-
-    // Rules 6-7: scroll selected item into view. This is a no-op when the item
-    // is already fully visible (see _scrollElementIntoView), so selecting an
-    // on-screen item never moves the viewport.
-    this._scrollItemIntoView(itemId, smooth);
-
-    this._dispatchItemSelected(itemId, origin, false, allowReveal);
-
-    // Tail-only safety net: re-pin the end on the next frame. The hidden→visible
-    // composer-box transition re-measures the textarea, which can clamp a
-    // bottom-pinned scroll; for the tail we re-assert the end so it can never end
-    // up behind the composer (Safari has no scroll-anchoring to recover the
-    // clamp). We must NOT re-assert for non-tail items: there the initial
-    // _scrollItemIntoView already no-opped (the item was fully visible), and
-    // re-pinning would needlessly scroll an on-screen item.
-    if (isTail) {
-      const scrolledId = itemId;
-      requestAnimationFrame(() => {
-        // Match the initial scroll's mode: an instant re-assert would snap and
-        // kill an in-flight auto-follow glide.
-        if (this._localSelectedItemId === scrolledId) this._scrollItemIntoView(scrolledId, smooth);
-      });
-    }
-
-    // Rule C: if origin remained 'user', start watching the element so we can
-    // re-arm auto-follow when it drifts offscreen for a few seconds.
-    this._watchSelectionVisibility();
+  _selectItem(itemId, origin = 'user', opts = {}) {
+    selection.selectItem(this, itemId, origin, opts);
   }
 
   /**
-   * Clear the current selection.
-   * @private
-   */
-  _clearSelection() {
-    if (!this._conversation) return;
-    this._localSelectedItemId = null;
-    this._selectionOrigin = null;
-    this._teardownSelectionVisibilityWatcher();
-    this._applySelectedClass(null);
-    this._dispatchItemSelected(null);
-  }
-
-  /**
-   * Watch the currently selected element's viewport visibility. If it stays
-   * offscreen for OFFSCREEN_RESUME_MS while origin is still 'user', demote to
-   * null so the next inserted item can auto-select.
-   * @private
-   */
-  _watchSelectionVisibility() {
-    this._teardownSelectionVisibilityWatcher();
-    if (this._selectionOrigin !== 'user' || !this._localSelectedItemId) return;
-
-    const messageList = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
-    if (!messageList) return;
-    const el = this.querySelector(`[message-id="${this._localSelectedItemId}"]`);
-    if (!el) return;
-
-    const watchedId = this._localSelectedItemId;
-    const OFFSCREEN_RESUME_MS = 3000;
-
-    this._selectedVisibilityObserver = new IntersectionObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      if (entry.isIntersecting) {
-        if (this._offscreenResumeTimer !== null) {
-          clearTimeout(this._offscreenResumeTimer);
-          this._offscreenResumeTimer = null;
-        }
-        return;
-      }
-      if (this._offscreenResumeTimer !== null) return;
-      this._offscreenResumeTimer = /** @type {number} */ (/** @type {unknown} */ (setTimeout(() => {
-        this._offscreenResumeTimer = null;
-        if (this._selectionOrigin === 'user' && this._localSelectedItemId === watchedId) {
-          this._selectionOrigin = null;
-          this._teardownSelectionVisibilityWatcher();
-        }
-      }, OFFSCREEN_RESUME_MS)));
-    }, { root: messageList, threshold: 0 });
-    this._selectedVisibilityObserver.observe(el);
-  }
-
-  /** @private */
-  _teardownSelectionVisibilityWatcher() {
-    if (this._selectedVisibilityObserver) {
-      this._selectedVisibilityObserver.disconnect();
-      this._selectedVisibilityObserver = null;
-    }
-    if (this._offscreenResumeTimer !== null) {
-      clearTimeout(this._offscreenResumeTimer);
-      this._offscreenResumeTimer = null;
-    }
-  }
-
-  /**
-   * @param {string|null} itemId
-   * @param {'user'|'auto'} [origin='auto']
-   * @param {boolean} [reveal=false] - Repeat-click "show me more" gesture: the
-   *   selection is unchanged; the tab should just reveal this item's details
-   *   column if it has drifted off-screen.
-   * @param {boolean} [allowReveal=true] - False suppresses the reveal for this
-   *   selection regardless of item type (a click on a control inside the tile).
-   * @private
-   */
-  _dispatchItemSelected(itemId, origin = 'auto', reveal = false, allowReveal = true) {
-    const revealable = allowReveal && !!itemId && this._isItemRevealable(itemId);
-    this.dispatchEvent(new CustomEvent('item-selected', {
-      detail: { itemId, origin, reveal, revealable },
-      bubbles: true,
-      composed: true
-    }));
-  }
-
-  /**
-   * Whether tapping this item should auto-scroll to reveal its child column.
-   * Prose messages (user/assistant) are exempt: a fresh tap is reading, not a
-   * request to scroll away, and a repeat tap is the start of a text selection.
-   * Context items, tool actions, thinking, errors, and threads all reveal — for
-   * a thread the child column is its conversation column, which is exactly where
-   * the reveal is most useful. Mirrors the repeat-click prose check in the
-   * column click handler. This judges the item alone; a click that landed on a
-   * control inside the tile suppresses the reveal separately (see allowReveal).
-   * @param {string} itemId
-   * @returns {boolean} True when a reveal scroll is appropriate for this item
-   * @private
-   */
-  _isItemRevealable(itemId) {
-    const el = this.querySelector(`[message-id="${itemId}"]`);
-    if (!el) return false;
-    const tag = el.tagName;
-    return tag !== 'USER-MESSAGE' && tag !== 'ASSISTANT-MESSAGE';
-  }
-
-  /**
-   * Select the next item in the list
-   * @private
-   */
-  _selectNextItem() {
-    const items = this._getSelectableItemIds();
-    if (items.length === 0) return;
-
-    const currentId = this._localSelectedItemId;
-    const currentIndex = currentId ? items.indexOf(currentId) : -1;
-
-    if (currentIndex < items.length - 1) {
-      this._selectItem(/** @type {string} */ (items[currentIndex + 1])); // bounded by currentIndex < items.length - 1
-    } else if (currentIndex === -1 && items.length > 0) {
-      this._selectItem(/** @type {string} */ (items[0])); // bounded by items.length > 0
-    }
-  }
-
-  /**
-   * Select the previous item in the list
-   * @private
-   */
-  _selectPreviousItem() {
-    const items = this._getSelectableItemIds();
-    if (items.length === 0) return;
-
-    const currentId = this._localSelectedItemId;
-    const currentIndex = currentId ? items.indexOf(currentId) : -1;
-
-    if (currentIndex > 0) {
-      this._selectItem(/** @type {string} */ (items[currentIndex - 1])); // bounded by currentIndex > 0
-    } else if (currentIndex === -1 && items.length > 0) {
-      this._selectItem(/** @type {string} */ (items[items.length - 1])); // bounded by items.length > 0
-    }
-  }
-
-  /**
-   * Select the next user message below the current selection.
-   * @private
-   */
-  _selectNextUserMessage() {
-    const items = this._getSelectableItemIds();
-    if (items.length === 0) return;
-
-    const currentIndex = this._localSelectedItemId ? items.indexOf(this._localSelectedItemId) : -1;
-    for (let i = currentIndex + 1; i < items.length; i++) {
-      const id = /** @type {string} */ (items[i]);
-      if (this._isUserMessageItem(id)) {
-        this._selectItem(id);
-        return;
-      }
-    }
-  }
-
-  /**
-   * Select the previous user message above the current selection.
-   * @private
-   */
-  _selectPreviousUserMessage() {
-    const items = this._getSelectableItemIds();
-    if (items.length === 0) return;
-
-    const currentIndex = this._localSelectedItemId ? items.indexOf(this._localSelectedItemId) : items.length;
-    for (let i = currentIndex - 1; i >= 0; i--) {
-      const id = /** @type {string} */ (items[i]);
-      if (this._isUserMessageItem(id)) {
-        this._selectItem(id);
-        return;
-      }
-    }
-  }
-
-  /**
-   * Check whether a selectable item is a user message.
-   * @param {string} itemId
-   * @returns {boolean} True if the item is a user-message element.
-   * @private
-   */
-  _isUserMessageItem(itemId) {
-    const el = this.querySelector(`[message-id="${itemId}"]`);
-    return el?.tagName === 'USER-MESSAGE';
-  }
-
-  /**
-   * Get list of selectable item IDs
-   * @returns {string[]} Array of message IDs
-   * @private
-   */
-  _getSelectableItemIds() {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return [];
-
-    const selectables = Array.from(messageList.querySelectorAll(
-      'user-message[message-id], assistant-message[message-id], thinking-message[message-id], ' +
-      'context-item-message[message-id], error-message[message-id], notice-message[message-id], ' +
-      'tool-action-message[message-id], thread-message[message-id], tool-group-message[message-id]'
-    ));
-    /** @type {string[]} */
-    const ids = [];
-    for (const el of selectables) {
-      const id = el.getAttribute('message-id');
-      if (id && id !== '' && this._isItemVisible(id)) {
-        ids.push(id);
-      }
-    }
-    return ids;
-  }
-
-  /**
-   * Check if an item is currently visible
-   * @param {string} itemId - Item ID to check
-   * @returns {boolean} True if the item is visible
-   * @private
-   */
-  _isItemVisible(itemId) {
-    const el = this.querySelector(`[message-id="${this._displayIdFor(itemId)}"]`);
-    return el !== null;
-  }
-
-  /**
-   * Toggle the .selected class on the correct DOM element.
-   * Pure visual update — no scrolling, no events.
    * @param {string|null} selectedId
    * @private
    */
   _applySelectedClass(selectedId) {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return;
-    selectedId = selectedId ? this._displayIdFor(selectedId) : selectedId;
-
-    const currentlySelected = messageList.querySelectorAll('.selected');
-    if (selectedId && currentlySelected.length === 1 &&
-        currentlySelected[0]?.getAttribute('message-id') === selectedId) {
-      return; // already correct
-    }
-    currentlySelected.forEach(el => el.classList.remove('selected'));
-    if (selectedId) {
-      const el = messageList.querySelector(`[message-id="${selectedId}"]`);
-      if (el) el.classList.add('selected');
-    }
+    selection.applySelectedClass(this, selectedId);
   }
 
   /**
-   * Rules 6–7: Scroll a selected item into view (minimal movement).
-   * Used for user-initiated and auto selection.
-   *
-   * Selecting the TAIL item means "show me the end of the conversation", so it
-   * routes through the one layout-guaranteed scroll (_scrollEndIntoView) — the
-   * footer, and the composer just below it, pinned to the bottom of the
-   * viewport. Any other item gets a minimal, clamped scroll. Neither path uses
-   * scrollIntoView, whose ancestor-walking + nearest/end alignment guesswork is
-   * exactly what parked the footer past the scroll clamp and shoved the clicked
-   * item behind the (tall) composer.
-   * `smooth` only applies to the tail/end path (the auto-follow case); a non-tail
-   * item gets the same minimal, instant nudge regardless — it's inspection, not
-   * an end-follow.
    * @param {string} itemId
    * @param {boolean} [smooth=false]
    * @private
    */
   _scrollItemIntoView(itemId, smooth = false) {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return;
-    itemId = this._displayIdFor(itemId);
-    const el = messageList.querySelector(`[message-id="${itemId}"]`);
-    if (!el) return;
-    // Detect the tail by SELECTABLE order, not DOM adjacency: a
-    // `nextElementSibling === footer` test misfires when a non-selectable
-    // trailing element (e.g. a transaction marker) sits between the last
-    // selectable item and the footer, which would route a tail selection to the
-    // minimal-scroll path instead of the scroll-to-end path.
-    const ids = this._getSelectableItemIds();
-    if (ids.length > 0 && ids[ids.length - 1] === itemId) {
-      this._scrollEndIntoView(smooth);
-      return;
-    }
-    this._scrollElementIntoView(el);
-  }
-
-  /**
-   * The single layout-guaranteed scroll: pin the END of all content (the whole
-   * footer, plus any queued-message bubbles rendered below it) to the bottom of
-   * the message-list viewport. The scroller is column-reverse, so the content
-   * end sits at the flex-start edge and "scroll to the end" is simply
-   * scrollTop = 0 — clamped by construction, it can neither overshoot nor scroll
-   * an ancestor. This is the consistent code-path for "scroll the end of the
-   * conversation into view", shared by tail selection and follow-target updates.
-   * No scrollIntoView.
-   *
-   * `smooth` animates the move (used when auto-following the growing end of the
-   * conversation), riding the scroller's `scroll-behavior: smooth`. Selection
-   * passes `false` to override that with an instant scroll, where a glide would
-   * read as lag.
-   * @param {boolean} [smooth=false]
-   * @private
-   */
-  _scrollEndIntoView(smooth = false) {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return;
-    // Reversed scroller: the end of the content sits at the flex-start edge, so
-    // "scroll to the end of the conversation" is simply scrollTop = 0 — clamped
-    // by construction, it can neither overshoot nor scroll an ancestor. The glide
-    // comes from the scroller's CSS scroll-behavior; `instant` opts out per-call.
-    messageList.scrollTo({ top: 0, behavior: smooth ? 'smooth' : 'instant' });
-  }
-
-  /**
-   * Minimal-movement scroll to bring an element fully into the message-list
-   * viewport. Scrolls ONLY the message-list — assigning scrollTop auto-clamps to
-   * [0, scrollHeight − clientHeight], so nothing can be driven past the end —
-   * never scrollIntoView (which would also scroll ancestors and guess an edge).
-   * @param {Element} el
-   * @private
-   */
-  _scrollElementIntoView(el) {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return;
-    const listRect = messageList.getBoundingClientRect();
-    const elRect = el.getBoundingClientRect();
-    let delta = 0;
-    if (elRect.top < listRect.top) delta = -(listRect.top - elRect.top);
-    else if (elRect.bottom > listRect.bottom) delta = elRect.bottom - listRect.bottom;
-    if (delta === 0) return;
-    // Relative nudge: `delta` comes from viewport rects (direction-agnostic), and
-    // in the reversed scroller scrollTop increases toward the content end exactly
-    // as it does in a normal column, so the same offset brings the element into
-    // view. Clamped, so it can't overshoot. Instant (overriding the scroller's
-    // scroll-behavior: smooth) — selection inspection shouldn't glide.
-    messageList.scrollTo({ top: messageList.scrollTop + delta, behavior: 'instant' });
-  }
-
-  /**
-   * Find the most relevant follow target when auto-following.
-   *
-   * Key principle: if there's content *after* a candidate, the user has
-   * moved past it. Only follow a busy thread when it's the tail of the
-   * conversation; otherwise follow the footer (or its spinner). This
-   * keeps the auto-follow target glued to where new content is actually
-   * appearing, not to a sub-thread tile that happens to still be running
-   * higher up the list.
-   *
-   * Preference order:
-   *   1. The currently-selected item, but only if it's a busy thread AND
-   *      it sits at the tail of the list (otherwise the selection is an
-   *      inspection target, not an "I'm watching this" target).
-   *   2. The footer's processing spinner (if visible).
-   *   3. A busy thread at the tail of the list.
-   *   4. The footer itself.
-   *   5. The last rendered element.
-   * @returns {Element|null} Element to keep visible while auto-following
-   * @private
-   */
-  _getFollowTarget() {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return null;
-
-    const footer = messageList.querySelector('conversation-footer');
-    const tailEl = footer?.previousElementSibling || messageList.lastElementChild;
-    const tailIsBusyThread = tailEl?.tagName === 'THREAD-MESSAGE'
-      && !tailEl.getAttribute('result');
-
-    if (this._localSelectedItemId) {
-      const selected = messageList.querySelector(`[message-id="${this._localSelectedItemId}"]`);
-      if (selected && selected === tailEl && tailIsBusyThread) return selected;
-    }
-
-    if (footer) {
-      const processing = footer.querySelector('footer-processing');
-      if (processing && !processing.classList.contains('hidden')) {
-        return processing;
-      }
-    }
-
-    if (tailIsBusyThread) return tailEl;
-
-    if (footer) return footer;
-
-    return messageList.lastElementChild;
-  }
-
-  /**
-   * Rules 7–10: Keep the end of the conversation visible. By default skips work
-   * when the view is already pinned to the very bottom of all content (avoids
-   * fighting the user's scroll position or causing jank). Pass `force = true` to
-   * scroll even from a partially-scrolled position — used on edges that must
-   * reveal the end completely (e.g. the processing spinner just becoming visible
-   * after a user submit; rules 8 + 10).
-   * @param {boolean} [force=false]
-   * @private
-   */
-  _scrollToFollowIfNeeded(force = false) {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return;
-    if (!this._getFollowTarget()) return;
-
-    if (!force) {
-      // "Already there?" — in the reversed scroller the very bottom of ALL
-      // content (footer + any queued bubbles) sits at scrollTop 0, so the
-      // distance from the bottom is just |scrollTop| (WebKit reports it negative
-      // when scrolled up). No scrollHeight/clientHeight arithmetic needed.
-      if (Math.abs(messageList.scrollTop) <= 1) return;
-    }
-
-    // One consistent, layout-safe code-path: pin the very end of the content
-    // (footer + queued items) above the composer, no matter how tall the
-    // growable box currently is. Direct clamped scrollTop, never scrollIntoView.
-    // Smooth-scroll: this is the deliberate auto-follow of the growing end of the
-    // conversation, where a glide reads well. (Selection-driven and correction
-    // scrolls call _scrollEndIntoView() with no arg and stay instant.)
-    this._scrollEndIntoView(true);
-  }
-
-  /**
-   * Public entry point for callers outside conversation-area that need to
-   * land the current follow target (footer spinner / busy thread / footer)
-   * unconditionally. Used on user-driven edges — submit, continue — where
-   * the column should always reveal the place where the LLM response will
-   * appear.
-   * @param {boolean} [force=false]
-   */
-  scrollFollowTargetIntoView(force = false) {
-    this._scrollToFollowIfNeeded(force);
-  }
-
-  /**
-   * Check if user is currently scrolled near bottom
-   * @private
-   * @returns {boolean} True if within 320px (~20rem) of bottom
-   */
-  _isScrolledNearBottom() {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return true;
-
-    // Reversed scroller: distance from the bottom is |scrollTop| (0 at bottom).
-    if (Math.abs(messageList.scrollTop) <= 320) return true;
-
-    // Last message is at least partially visible (handles tall elements like long responses)
-    const footer = messageList.querySelector('conversation-footer');
-    const lastMessage = footer?.previousElementSibling;
-    if (lastMessage) {
-      return lastMessage.getBoundingClientRect().bottom < messageList.getBoundingClientRect().bottom;
-    }
-
-    return false;
-  }
-
-  /**
-   * The topmost message element still touching the viewport (its bottom edge is
-   * at or below the viewport top). Used as the anchor for element-based scroll
-   * restore and for holding the reader's place while the tail bubble streams.
-   * @private
-   * @returns {HTMLElement|null} Anchor element, or null if the list is empty.
-   */
-  _topVisibleMessageElement() {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return null;
-    const content = this.querySelector('#message-list-inner');
-    if (!content) return null;
-    const listTop = messageList.getBoundingClientRect().top;
-    for (const el of Array.from(content.children)) {
-      if (!MESSAGE_TAGS.has(el.tagName)) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.bottom > listTop) {
-        return /** @type {HTMLElement} */ (el);
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Id of the topmost message element whose top edge is at or below the
-   * viewport top. Used as the anchor for element-based restore.
-   * @private
-   * @returns {string|null} Anchor item id, or null if the list is empty.
-   */
-  _getTopVisibleItemId() {
-    const el = this._topVisibleMessageElement();
-    return el ? el.getAttribute('message-id') : null;
+    scroll.scrollItemIntoView(this, itemId, smooth);
   }
 
   /**
    * Persist current scroll state (atBottom + element anchor) to localStorage.
-   * Called on pagehide; element-anchored so restore survives content height
-   * changes that would invalidate an absolute scrollTop.
+   * Called on pagehide.
    */
   saveScrollPositionImmediately() {
-    if (!this._conversation) return;
-    saveScrollState(this._conversation.id, {
-      atBottom: this._isScrolledNearBottom(),
-      topItemId: this._getTopVisibleItemId(),
-    });
+    scroll.saveScrollPositionImmediately(this);
   }
 
   /**
@@ -2003,30 +1238,15 @@ class ConversationArea extends HTMLElement {
    * after messages are rendered. Only restores once per conversation load.
    */
   restoreScrollPosition() {
-    if (this._initialScrollRestored) return;
-    this._initialScrollRestored = true;
+    scroll.restoreScrollPosition(this);
+  }
 
-    if (!this._conversation) return;
-    const state = getScrollState(this._conversation.id);
-    if (!state || state.atBottom) {
-      this.scrollToBottom(true);
-      return;
-    }
-
-    if (state.topItemId) {
-      const messageList = this.querySelector('#message-list');
-      const anchor = messageList?.querySelector(`[message-id="${state.topItemId}"]`);
-      if (anchor) {
-        // Restoring to a mid-conversation anchor. scrollIntoView is
-        // direction-agnostic — it computes the scrollport offset to land the
-        // anchor at block-start regardless of the scroller's flex direction.
-        // Instant: this is a one-shot restore on load, not a navigation glide,
-        // so it must override the scroller's scroll-behavior: smooth.
-        anchor.scrollIntoView({ block: 'start', behavior: 'instant' });
-        return;
-      }
-    }
-    this.scrollToBottom(true);
+  /**
+   * Scroll to bottom if conditions allow
+   * @param {boolean} [force=false] - If true, scroll regardless of user position
+   */
+  scrollToBottom(force = false) {
+    scroll.scrollToBottom(this, force);
   }
 
   /**
@@ -2035,70 +1255,6 @@ class ConversationArea extends HTMLElement {
   resetScrollRestoreFlag() {
     this._initialScrollRestored = false;
     this._animationsPrimed = false;
-  }
-
-  /**
-   * Scroll to bottom if conditions allow
-   * @param {boolean} [force=false] - If true, scroll regardless of user position
-   */
-  scrollToBottom(force = false) {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return;
-
-    // Don't auto-scroll if user has scrolled away, unless forced
-    if (!force && !this._isScrolledNearBottom()) {
-      return;
-    }
-
-    // Cancel any pending scroll animation to prevent multiple queued scrolls
-    if (this._scrollAnimationFrame !== null) {
-      window.cancelAnimationFrame(this._scrollAnimationFrame);
-    }
-
-    // Queue a single scroll operation
-    this._scrollAnimationFrame = window.requestAnimationFrame(() => {
-      this._scrollEndIntoView();
-      this._scrollAnimationFrame = null;
-    });
-  }
-
-  /**
-   * Scroll to a specific message by its itemId
-   * @param {string} itemId - The itemId to scroll to
-   */
-  scrollToMessageId(itemId) {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return;
-
-    const element = messageList.querySelector(`[message-id="${itemId}"]`);
-    if (element) {
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }
-
-  /**
-   * Scroll to an item if it's not already visible.
-   * Only scrolls if user hasn't manually scrolled away.
-   * @param {string} itemId - The itemId to scroll to
-   */
-  scrollToItem(itemId) {
-    const messageList = this.querySelector('#message-list');
-    if (!messageList) return;
-
-    const element = messageList.querySelector(`[message-id="${itemId}"]`);
-    if (!element) return;
-
-    // Check if element is already visible
-    const listRect = messageList.getBoundingClientRect();
-    const elRect = element.getBoundingClientRect();
-    if (elRect.top >= listRect.top && elRect.bottom <= listRect.bottom) {
-      return; // Already visible
-    }
-
-    // Only auto-scroll if near bottom (user hasn't scrolled away)
-    if (!this._isScrolledNearBottom()) return;
-
-    this._scrollElementIntoView(element);
   }
 
   // ============================================================
@@ -2115,7 +1271,7 @@ class ConversationArea extends HTMLElement {
   /**
    * Render conversation from items array using ID-based diffing.
    *
-   * Reentrancy guard: _selectItem and _clearSelection dispatch item-selected,
+   * Reentrancy guard: selecting and clearing dispatch item-selected,
    * which can trigger _rebuildColumns → renderFromItems in conversation-tab.
    * @param {Array<any>} items
    */
@@ -2171,7 +1327,7 @@ class ConversationArea extends HTMLElement {
     const animate = structuralChange
       && this._animationsPrimed
       && !prefersReducedMotion()
-      && this._isScrolledNearBottom();
+      && scroll.isScrolledNearBottom(this);
     const beforeTops = animate ? this._captureItemTops(content) : null;
 
     removeDeletedElements(currentElements, elementsToKeep);
@@ -2196,10 +1352,10 @@ class ConversationArea extends HTMLElement {
     // was removed, silently clear — the tab owns selection state. Never
     // dispatch item-selected here (it would loop back via conversation-tab).
     if (this._localSelectedItemId) {
-      if (!this._isItemVisible(this._localSelectedItemId)) {
+      if (!selection.isItemVisible(this, this._localSelectedItemId)) {
         this._localSelectedItemId = null;
         this._selectionOrigin = null;
-        this._teardownSelectionVisibilityWatcher();
+        selection.teardownSelectionVisibilityWatcher(this);
         this._applySelectedClass(null);
       } else {
         this._applySelectedClass(this._localSelectedItemId);
@@ -2489,10 +1645,10 @@ class ConversationArea extends HTMLElement {
    */
   showBusy() {
     // Rule 10: scroll follow target into view (only if near bottom)
-    const wasNearBottom = this._isScrolledNearBottom();
+    const wasNearBottom = scroll.isScrolledNearBottom(this);
     this.updateFooter();
     if (wasNearBottom) {
-      this._scrollToFollowIfNeeded();
+      scroll.scrollToFollowIfNeeded(this);
     }
   }
 

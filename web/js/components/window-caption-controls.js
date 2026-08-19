@@ -30,6 +30,7 @@
 
 import { windowControlURL } from '../../sdk/lib/window-control.js';
 import { fetchJson } from '../services/http.js';
+import JugglerElement from './juggler-element.js';
 
 // Caption glyphs, drawn as 1px strokes on a 10×10 grid so they stay crisp and
 // match the thin-line Windows convention. currentColor lets them inherit the
@@ -53,7 +54,7 @@ function svg(inner) {
         + ` fill="none" stroke="currentColor" stroke-width="1">${inner}</svg>`;
 }
 
-class WindowCaptionControls extends HTMLElement {
+class WindowCaptionControls extends JugglerElement {
   connectedCallback() {
     const root = document.documentElement;
     // Only the frameless in-process windows (Windows, Linux) get caption
@@ -80,7 +81,7 @@ class WindowCaptionControls extends HTMLElement {
     }
 
     this._maxBtn = this.querySelector('[data-action="maximise"]');
-    this.addEventListener('click', (e) => {
+    this.on(this, 'click', (e) => {
       // The click can land on a button or the SVG glyph inside it; both
       // expose closest(). Walk up to the button carrying the action.
       const node = e.target;
@@ -95,16 +96,11 @@ class WindowCaptionControls extends HTMLElement {
     // injected by the native side and work even though the outbound
     // Window.* RPC does not, so we keep the subscription when present.
     if (wails.Events?.On) {
-      this._offMax = wails.Events.On('common:WindowMaximise', () => this._renderMaxGlyph(true));
-      this._offUnmax = wails.Events.On('common:WindowUnMaximise', () => this._renderMaxGlyph(false));
+      this.addCleanup(wails.Events.On('common:WindowMaximise', () => this._renderMaxGlyph(true)));
+      this.addCleanup(wails.Events.On('common:WindowUnMaximise', () => this._renderMaxGlyph(false)));
     }
     // Seed the glyph from the current native state.
     this._control('state');
-  }
-
-  disconnectedCallback() {
-    this._offMax?.();
-    this._offUnmax?.();
   }
 
   /**

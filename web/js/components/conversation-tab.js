@@ -225,7 +225,7 @@ class ConversationTab extends HTMLElement {
           this._syncWithConversation();
 
           // Notify all open conversation-area columns about inserted items.
-          // Each column self-filters via _pickAutoSelectCandidate so foreign
+          // Each column self-filters via pickAutoSelectCandidate so foreign
           // IDs are silently skipped.
           const insertedItemIds = event.data?.insertedItemIds;
           if (insertedItemIds?.length) {
@@ -773,7 +773,7 @@ class ConversationTab extends HTMLElement {
   /**
    * Fan accumulated-while-hidden insertedItemIds into each conversation-area
    * column's onItemsInserted, so the standard auto-selection policy
-   * (_pickAutoSelectCandidate: error > pending-approval > shouldAutoSelect >
+   * (pickAutoSelectCandidate: error > pending-approval > shouldAutoSelect >
    * fallback) evaluates them exactly as it would have if the tab had been
    * visible. The user-override gate (_selectionOrigin === 'user') still
    * applies, so a manual selection made before switching away is preserved.
@@ -1231,7 +1231,7 @@ class ConversationTab extends HTMLElement {
     // column that just appeared for the tapped item sits off-screen to the
     // right. Reveal it so the user sees the detail they selected. Prose
     // (user/assistant messages) is exempt — a tap there is reading, not a
-    // request to scroll away to a child column (see _isItemRevealable) — as is
+    // request to scroll away to a child column (see isItemRevealable) — as is
     // a tap on a control inside the tile, which is an action on the item.
     if (origin === 'user' && itemId && revealable && window.matchMedia?.('(width <= 36rem)').matches) {
       this._revealDetailsColumn(columnIndex);
@@ -1600,7 +1600,7 @@ class ConversationTab extends HTMLElement {
 
     // Pre-sync selection BEFORE renderFromItems so a stale _localSelectedItemId
     // (from a thread this column previously displayed) doesn't trigger
-    // _clearSelection and a re-entrant _rebuildColumns call.
+    // clearSelection and a re-entrant _rebuildColumns call.
     /** @type {any} */ (col)._localSelectedItemId = this._selection.selections[i] || null;
 
     if (entry.groupId) {

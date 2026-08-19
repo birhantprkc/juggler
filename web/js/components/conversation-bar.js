@@ -34,6 +34,7 @@ import { registerContextMenuProvider } from '../services/context-menu-service.js
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import { isAutoNameEnabled, refreshAutoNameSetting } from '../services/auto-name-setting.js';
 import { isTabHighlightEnabled, ATTENTION_PREFS_EVENT } from '../utils/attention-manager.js';
+import JugglerElement from './juggler-element.js';
 import './bin-modal.js';
 import './info-rail.js';
 
@@ -73,7 +74,7 @@ const BIN_UNDO_TIMEOUT_MS = 5000;
  */
 let _activeBar = null;
 
-class ConversationBar extends HTMLElement {
+class ConversationBar extends JugglerElement {
   constructor() {
     super();
 
@@ -108,33 +109,6 @@ class ConversationBar extends HTMLElement {
     /** @type {Function|null} @private Unsubscribe from LLMState status observer */
     this._llmStateUnsubscribe = null;
 
-    /** @type {((e: Event) => void)|null} @private */
-    this._focusTabListHandler = null;
-
-    /** @type {((e: MouseEvent) => void)|null} @private */
-    this._barClickHandler = null;
-
-    /** @type {((e: KeyboardEvent) => void)|null} @private */
-    this._keydownHandler = null;
-
-    /** @type {((e: FocusEvent) => void)|null} @private */
-    this._focusOutHandler = null;
-
-    /** @type {((e: Event) => void)|null} @private */
-    this._cycleTabHandler = null;
-
-    /** @type {(() => void)|null} @private */
-    this._newConversationHandler = null;
-
-    /** @type {(() => void)|null} @private */
-    this._binActiveHandler = null;
-
-    /** @type {(() => void)|null} @private */
-    this._renameActiveHandler = null;
-
-    /** @type {(() => void)|null} @private Repaints tab status when the tab-highlight preference changes */
-    this._attentionPrefsHandler = null;
-
     /** @type {number} @private Timestamp (ms) of the last accepted new-conversation create, for leading-edge debounce */
     this._lastCreateAt = 0;
 
@@ -153,6 +127,7 @@ class ConversationBar extends HTMLElement {
   }
 
   disconnectedCallback() {
+    super.disconnectedCallback();
     if (_activeBar === this) _activeBar = null;
     if (this._unsubscribe) {
       this._unsubscribe();
@@ -161,42 +136,6 @@ class ConversationBar extends HTMLElement {
     if (this._llmStateUnsubscribe) {
       this._llmStateUnsubscribe();
       this._llmStateUnsubscribe = null;
-    }
-    if (this._focusTabListHandler) {
-      document.removeEventListener('juggler:focus-tab-list', this._focusTabListHandler);
-      this._focusTabListHandler = null;
-    }
-    if (this._barClickHandler) {
-      this.removeEventListener('click', this._barClickHandler);
-      this._barClickHandler = null;
-    }
-    if (this._keydownHandler) {
-      document.removeEventListener('keydown', this._keydownHandler);
-      this._keydownHandler = null;
-    }
-    if (this._focusOutHandler) {
-      this.removeEventListener('focusout', this._focusOutHandler);
-      this._focusOutHandler = null;
-    }
-    if (this._cycleTabHandler) {
-      window.removeEventListener('juggler:cycle-tab', this._cycleTabHandler);
-      this._cycleTabHandler = null;
-    }
-    if (this._newConversationHandler) {
-      document.removeEventListener('juggler:new-conversation', this._newConversationHandler);
-      this._newConversationHandler = null;
-    }
-    if (this._binActiveHandler) {
-      document.removeEventListener('juggler:bin-active-conversation', this._binActiveHandler);
-      this._binActiveHandler = null;
-    }
-    if (this._renameActiveHandler) {
-      document.removeEventListener('juggler:rename-active-conversation', this._renameActiveHandler);
-      this._renameActiveHandler = null;
-    }
-    if (this._attentionPrefsHandler) {
-      window.removeEventListener(ATTENTION_PREFS_EVENT, this._attentionPrefsHandler);
-      this._attentionPrefsHandler = null;
     }
     this._hideBinUndo();
   }
@@ -217,9 +156,7 @@ class ConversationBar extends HTMLElement {
    * @private
    */
   _setupKeyboardNavigation() {
-    if (this._keydownHandler || this._focusTabListHandler) return;
-
-    this._focusTabListHandler = () => this._enterTabListFocus();
+    this.onDocument('juggler:focus-tab-list', () => this._enterTabListFocus());
 
     // A click on the bar's empty background focuses the tab list — the same
     // mode ArrowLeft out of the leftmost conversation column enters — so a bar
@@ -232,16 +169,17 @@ class ConversationBar extends HTMLElement {
     // with their own click behaviour: tabs, the info cards, and any interactive
     // control (the +, Bin, card buttons/links, the resize handle). A click that
     // misses all of those — bare rail, gaps, padding — enters tab-list focus.
-    this._barClickHandler = (e) => {
+    this.on(this, 'click', (/** @type {Event} */ e) => {
       const target = /** @type {HTMLElement|null} */ (e.target);
       if (!target) return;
       if (target.closest(
         '.conversation-tab, .info-card, col-resize-handle, button, a, input, textarea, select',
       )) return;
       this._enterTabListFocus();
-    };
+    });
 
-    this._keydownHandler = (e) => {
+    this.onDocument('keydown', (/** @type {Event} */ evt) => {
+      const e = /** @type {KeyboardEvent} */ (evt);
       if (!this.classList.contains('tab-list-focused')) return;
 
       // Stand down while an overlay owns the keyboard: this document-level
@@ -281,47 +219,37 @@ class ConversationBar extends HTMLElement {
           this._enterRenameMode(this._session?.visibleConversationId || '');
           break;
       }
-    };
+    });
 
-    this._focusOutHandler = () => {
+    this.on(this, 'focusout', () => {
       queueMicrotask(() => {
         if (!this.matches(':focus-within')) {
           this._exitTabListFocus();
         }
       });
-    };
+    });
 
-    this._cycleTabHandler = (e) => this._handleCycleTab(e);
+    this.onWindow('juggler:cycle-tab', (/** @type {Event} */ e) => this._handleCycleTab(e));
 
     // Command shortcuts route here so a keystroke and a click share one path:
     // "new conversation" reuses the cap + inline-rename UX; "bin" reuses the
     // running-turn guard + fly-to-bin animation, always targeting the visible tab.
-    this._newConversationHandler = () => { void this._createConversation(); };
-    this._binActiveHandler = () => {
+    this.onDocument('juggler:new-conversation', () => { void this._createConversation(); });
+    this.onDocument('juggler:bin-active-conversation', () => {
       const id = this._session?.visibleConversationId;
       if (id) void this._binConversation(id);
-    };
+    });
     // F2 (from the KeyShortcutManager) opens inline rename on the visible tab —
     // the same UX as clicking the already-active tab.
-    this._renameActiveHandler = () => {
+    this.onDocument('juggler:rename-active-conversation', () => {
       const id = this._session?.visibleConversationId;
       if (id) this._enterRenameMode(id);
-    };
+    });
 
     // The tab-highlight preference decides whether an awaiting tab pulses at
     // all, so a change to it must repaint the tabs currently pulsing — the whole
     // point of the toggle is to quiet them now, not once their approval clears.
-    this._attentionPrefsHandler = () => this._refreshAllTabStatus();
-
-    document.addEventListener('juggler:focus-tab-list', this._focusTabListHandler);
-    this.addEventListener('click', this._barClickHandler);
-    document.addEventListener('keydown', this._keydownHandler);
-    this.addEventListener('focusout', this._focusOutHandler);
-    window.addEventListener('juggler:cycle-tab', this._cycleTabHandler);
-    document.addEventListener('juggler:new-conversation', this._newConversationHandler);
-    document.addEventListener('juggler:bin-active-conversation', this._binActiveHandler);
-    document.addEventListener('juggler:rename-active-conversation', this._renameActiveHandler);
-    window.addEventListener(ATTENTION_PREFS_EVENT, this._attentionPrefsHandler);
+    this.onWindow(ATTENTION_PREFS_EVENT, () => this._refreshAllTabStatus());
   }
 
   /**

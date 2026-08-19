@@ -90,7 +90,6 @@ interface HTMLElementTagNameMap {
 		conversation: unknown;
 		transactions: unknown[];
 		scrollToBottom(force?: boolean): void;
-		scrollFollowTargetIntoView(force?: boolean): void;
 		updateSpinner(show: boolean): void;
 		showError(error: string): void;
 		hideRetryNotification(): void;

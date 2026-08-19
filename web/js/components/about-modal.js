@@ -6,6 +6,7 @@ import { markPopupOpen } from '../utils/popup-manager.js';
 import { focusWhenShown } from '../utils/focus.js';
 import { fetchJson } from '../services/http.js';
 import { LOGO_WITH_NAME_SVG } from '../utils/juggler-logo.js';
+import JugglerElement from './juggler-element.js';
 
 /**
  * AboutModal - Shows information about the application
@@ -13,7 +14,7 @@ import { LOGO_WITH_NAME_SVG } from '../utils/juggler-logo.js';
  * Opens when clicking the logo in the header. Displays app name, version,
  * and a brief description with a link to the website.
  */
-class AboutModal extends HTMLElement {
+class AboutModal extends JugglerElement {
   constructor() {
     super();
     /** @type {boolean} @private */
@@ -22,20 +23,11 @@ class AboutModal extends HTMLElement {
     this._version = '';
     /** @type {(() => void)|null} @private */
     this._releasePopupOpen = null;
-    /** @type {(() => void)|null} @private */
-    this._logoClickHandler = null;
   }
 
   connectedCallback() {
     this.render();
     this._setupLogoClick();
-  }
-
-  disconnectedCallback() {
-    if (this._logoClickHandler) {
-      this._logoClickHandler();
-      this._logoClickHandler = null;
-    }
   }
 
   /**
@@ -58,12 +50,8 @@ class AboutModal extends HTMLElement {
         document.addEventListener('pointerup', () => document.removeEventListener('pointermove', onMove), { once: true });
       };
       const onClick = () => { if (!dragged) this.open(); };
-      logo.addEventListener('pointerdown', onPointerDown);
-      logo.addEventListener('click', onClick);
-      this._logoClickHandler = () => {
-        logo.removeEventListener('pointerdown', onPointerDown);
-        logo.removeEventListener('click', onClick);
-      };
+      this.on(logo, 'pointerdown', onPointerDown);
+      this.on(logo, 'click', onClick);
     }
   }
 

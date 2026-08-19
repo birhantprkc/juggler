@@ -12,6 +12,7 @@ import { fetchExtensions, fetchExtensionLocations } from '../services/extensions
 import { fetchJson, httpErrorText } from '../services/http.js';
 import { showNotice } from './modal-dialog.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
+import JugglerElement from './juggler-element.js';
 import { renderMarkdown, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
 import { ExtensionSettingsEditor } from './settings/extensions-settings.js';
 
@@ -167,9 +168,9 @@ export function buildExtensionCards(extensions, entriesByPath, failedByPath, dis
  * registries in place (the same path as plugin hot reload) so the change takes
  * effect without a reload.
  * @class
- * @augments HTMLElement
+ * @augments JugglerElement
  */
-class PluginCatalog extends HTMLElement {
+class PluginCatalog extends JugglerElement {
   constructor() {
     super();
 
@@ -231,36 +232,23 @@ class PluginCatalog extends HTMLElement {
      */
     this._expanded = null;
 
-    /**
-     * Re-reads the catalog after any registry rebuild — a watched file changed,
-     * another client toggled a capability, or Reload was pressed. Without it an
-     * open catalog keeps showing the pre-reload cards.
-     * @type {(() => void)|null}
-     */
-    this._onRegistriesReloaded = null;
   }
 
   /** Called when the component is inserted into the DOM. */
   connectedCallback() {
     this.classList.add('plugin-catalog');
     this._ready = this._init();
-    this._onRegistriesReloaded = () => {
-      // A reload triggered by this catalog's own toggle already refreshes the
-      // cards; _busy marks that window, so skip the duplicate pass.
+    // Re-read the catalog after any registry rebuild — a watched file changed,
+    // another client toggled a capability, or Reload was pressed. Without it an
+    // open catalog keeps showing the pre-reload cards. A reload triggered by
+    // this catalog's own toggle already refreshes the cards; _busy marks that
+    // window, so skip the duplicate pass.
+    this.onDocument(REGISTRIES_RELOADED, () => {
       if (this._busy) return;
       this._loadData().then(() => this.render()).catch((err) => {
         console.warn('[PluginCatalog] Could not refresh after reload:', err);
       });
-    };
-    document.addEventListener(REGISTRIES_RELOADED, this._onRegistriesReloaded);
-  }
-
-  /** Called when the component is removed from the DOM: drop the reload subscription. */
-  disconnectedCallback() {
-    if (this._onRegistriesReloaded) {
-      document.removeEventListener(REGISTRIES_RELOADED, this._onRegistriesReloaded);
-      this._onRegistriesReloaded = null;
-    }
+    });
   }
 
   /**

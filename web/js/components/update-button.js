@@ -5,6 +5,7 @@
 import wsService from '../services/websocket.js';
 import { getUpdaterState, startInstall } from '../services/updater-control.js';
 import { fetchJson } from '../services/http.js';
+import JugglerElement from './juggler-element.js';
 
 /**
  * <update-button> — the single header affordance for updates. It merges the two
@@ -31,7 +32,7 @@ import { fetchJson } from '../services/http.js';
 /** Updater states in which the button should be visible. */
 const VISIBLE_STATES = new Set(['available', 'downloading', 'verifying', 'installing', 'ready', 'error']);
 
-class UpdateButton extends HTMLElement {
+class UpdateButton extends JugglerElement {
   constructor() {
     super();
     /** @type {any} @private — latest server update-status */
@@ -46,8 +47,6 @@ class UpdateButton extends HTMLElement {
     this._autoKicked = false;
     /** @type {number} @private — pending rAF handle for throttled renders */
     this._raf = 0;
-    /** @type {(() => void)[]} @private — teardown callbacks */
-    this._offs = [];
     /** @type {HTMLButtonElement} @private — the pill (set in connectedCallback) */
     this._btn = /** @type {HTMLButtonElement} */ (/** @type {unknown} */ (null));
     /** @type {HTMLElement} @private — the pill label span */
@@ -66,7 +65,7 @@ class UpdateButton extends HTMLElement {
     this._btn = /** @type {HTMLButtonElement} */ (this.querySelector('.update-btn'));
     this._labelEl = /** @type {HTMLElement} */ (this.querySelector('.update-btn__label'));
     this._pctEl = /** @type {HTMLElement} */ (this.querySelector('.update-btn__pct'));
-    this._btn.addEventListener('click', () => this._openDialog());
+    this.on(this._btn, 'click', () => this._openDialog());
 
     // Source 1 — server version notice. Seed now and re-seed on every (re)connect.
     this._onWS('update-status', (data) => { this._server = data; this._scheduleRender(); });
@@ -76,18 +75,17 @@ class UpdateButton extends HTMLElement {
     // Source 2 — in-app updater. Seed over the control endpoint, then track the
     // pushed snapshots. The app also asks us to open the dialog from its menu.
     void this._seedUpdater();
-    this._onWindow('juggler:updater-status', (e) => {
+    this.onWindow('juggler:updater-status', (e) => {
       const detail = /** @type {CustomEvent} */ (e).detail;
       if (detail && typeof detail === 'object') { this._updater = detail; this._scheduleRender(); }
     });
-    this._onWindow('juggler:open-update-dialog', () => this._openDialog(true));
+    this.onWindow('juggler:open-update-dialog', () => this._openDialog(true));
 
     this._scheduleRender();
   }
 
   disconnectedCallback() {
-    this._offs.forEach((off) => off());
-    this._offs = [];
+    super.disconnectedCallback();
     if (this._raf) cancelAnimationFrame(this._raf);
   }
 
@@ -98,17 +96,7 @@ class UpdateButton extends HTMLElement {
    */
   _onWS(type, cb) {
     wsService.on(/** @type {any} */ (type), cb);
-    this._offs.push(() => wsService.off?.(/** @type {any} */ (type), cb));
-  }
-
-  /**
-   * @private
-   * @param {string} type
-   * @param {(e: Event) => void} cb
-   */
-  _onWindow(type, cb) {
-    window.addEventListener(type, cb);
-    this._offs.push(() => window.removeEventListener(type, cb));
+    this.addCleanup(() => wsService.off?.(/** @type {any} */ (type), cb));
   }
 
   /** @private */

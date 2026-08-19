@@ -34,6 +34,7 @@
 import { providers, isHidden, hideCard, INFO_CARDS_CHANGED_EVENT } from '../services/info-cards-manager.js';
 import { TIPS_CHANGED_EVENT } from '../services/tips-manager.js';
 import './info-cards-button.js';
+import JugglerElement from './juggler-element.js';
 
 /**
  * The runtime shape of a mounted card — an {@link import('juggler/info-card-type').default}
@@ -42,7 +43,7 @@ import './info-cards-button.js';
  * @typedef {import('juggler/info-card-type').default} InfoCardProvider
  */
 
-class InfoRail extends HTMLElement {
+class InfoRail extends JugglerElement {
   constructor() {
     super();
     /**
@@ -53,10 +54,6 @@ class InfoRail extends HTMLElement {
     this._mounted = [];
     /** @type {boolean} @private Reentrancy guard: a reconcile must not nest. */
     this._reconciling = false;
-    /** @type {ResizeObserver|null} @private */
-    this._resizeObserver = null;
-    /** @type {(() => void)|null} @private Content/enabled-state change listener. */
-    this._onChange = null;
     /** @type {import('../model/session.js').default|undefined} @private */
     this._session = undefined;
     /** @type {HTMLElement|null} @private The "i" menu heading the stack. */
@@ -72,9 +69,8 @@ class InfoRail extends HTMLElement {
       this.appendChild(this._cardsButton);
     }
 
-    this._onChange = () => this._reconcile();
-    window.addEventListener(INFO_CARDS_CHANGED_EVENT, this._onChange);
-    window.addEventListener(TIPS_CHANGED_EVENT, this._onChange);
+    this.onWindow(INFO_CARDS_CHANGED_EVENT, () => this._reconcile());
+    this.onWindow(TIPS_CHANGED_EVENT, () => this._reconcile());
 
     // The rail's own height IS the free space (CSS flex: 1 1 0). Observe it and
     // reconcile SYNCHRONOUSLY: a ResizeObserver callback runs after layout but
@@ -84,19 +80,15 @@ class InfoRail extends HTMLElement {
     // Our own add/remove doesn't change the rail's height (overflow-hidden,
     // flex-basis 0), so it can't feed back into a loop.
     if (typeof ResizeObserver !== 'undefined') {
-      this._resizeObserver = new ResizeObserver(() => this._reconcile());
-      this._resizeObserver.observe(this);
+      const resizeObserver = new ResizeObserver(() => this._reconcile());
+      resizeObserver.observe(this);
+      this.addCleanup(() => resizeObserver.disconnect());
     }
     this._reconcile();
   }
 
   disconnectedCallback() {
-    if (this._resizeObserver) { this._resizeObserver.disconnect(); this._resizeObserver = null; }
-    if (this._onChange) {
-      window.removeEventListener(INFO_CARDS_CHANGED_EVENT, this._onChange);
-      window.removeEventListener(TIPS_CHANGED_EVENT, this._onChange);
-      this._onChange = null;
-    }
+    super.disconnectedCallback();
     this._teardownAll();
   }
 
