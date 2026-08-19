@@ -1247,7 +1247,13 @@ class ConversationTab extends HTMLElement {
     // (user/assistant messages) is exempt — a tap there is reading, not a
     // request to scroll away to a child column (see isItemRevealable) — as is
     // a tap on a control inside the tile, which is an action on the item.
-    if (origin === 'user' && itemId && revealable && window.matchMedia?.('(width <= 36rem)').matches) {
+    //
+    // This is a pointer gesture. ↑/↓ walking this column's items is not asking
+    // for the column beside it, and on a narrow viewport a reveal per keypress
+    // would page the row away from the list being walked — so the keyboard
+    // keeps the horizontal position, on every viewport, as it does above.
+    if (origin === 'user' && !this._isKeyboardNavigating
+      && itemId && revealable && window.matchMedia?.('(width <= 36rem)').matches) {
       this._revealDetailsColumn(columnIndex);
     }
 

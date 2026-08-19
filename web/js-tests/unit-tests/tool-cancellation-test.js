@@ -35,6 +35,76 @@ import {
   __resetToolExecutionReporterForTest
 } from '../../js/services/worker-manager-protocols.js';
 
+/** The op boundary every read tool's execute() ends up at (see services/ops-api.js). */
+const OP_ENDPOINT = '/api/ops/call';
+
+/**
+ * Stub the op boundary — and nothing else — with a request that stays in flight
+ * until its signal aborts, exactly how a big grep behaves when Escape fires.
+ *
+ * `window.fetch` belongs to the whole page, not to the action under test: the
+ * app issues its own requests (a plugin-watcher refresh, a settings read), and
+ * a stub that counts the first request of ANY kind as "the op is in flight"
+ * releases the test before the action has registered, leaving it to assert
+ * against an executor that is still empty. Everything but {@link OP_ENDPOINT}
+ * goes through to the real fetch untouched, so `started` means this action's op.
+ * @param {{honourSignal?: boolean}} [opts] - honourSignal false ignores the
+ *   abort signal entirely: a non-cooperative tool whose op cannot be
+ *   interrupted, which the executor must still settle.
+ * @returns {{started: Promise<void>, restore: () => void}} A promise that resolves
+ *   once an op fetch is in flight, and the call that puts the real fetch back.
+ */
+function stubOpFetch({ honourSignal = true } = {}) {
+  const realFetch = window.fetch;
+  /** @type {() => void} */
+  let resolveStarted;
+  const started = /** @type {Promise<void>} */ (new Promise((r) => { resolveStarted = r; }));
+  window.fetch = (/** @type {any} */ url, /** @type {any} */ opts = {}) => {
+    if (String(url) !== OP_ENDPOINT) return realFetch.call(window, url, opts);
+    return new Promise((_resolve, reject) => {
+      resolveStarted();
+      const signal = honourSignal ? opts.signal : null;
+      if (!signal) return; // no signal threaded → hang (the regression)
+      const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort);
+    });
+  };
+  return { started, restore: () => { window.fetch = realFetch; } };
+}
+
+/**
+ * Fail the test if the op fetch never starts, rather than hanging the lane.
+ * @param {Promise<void>} started - The {@link stubOpFetch} in-flight promise.
+ * @param {string} [what='op fetch never started'] - Message for the timeout.
+ * @returns {Promise<void>} Resolves once the op is in flight.
+ */
+function awaitOpStarted(started, what = 'op fetch never started') {
+  return Promise.race([
+    started,
+    new Promise((_r, rej) => setTimeout(() => rej(new Error(what)), 4000))
+  ]).then(() => undefined);
+}
+
+/**
+ * Leave the shared executor empty for the next case.
+ *
+ * Every case below parks a deliberately hung op in the one process-wide
+ * ActionExecutor, so a case that fails an assertion mid-flight hands its still
+ * running action to every case after it: the report then names four failures
+ * for one bug, and the three innocent ones are the loudest. Each case's own
+ * "running actions should be cleared" assertion runs before this, so draining
+ * here can't hide a leak the case was meant to catch.
+ * @returns {Promise<void>} Resolves once the executor has drained (or gave up).
+ */
+async function drainExecutor() {
+  if (!actionExecutor.hasRunningActions()) return;
+  actionExecutor.cancelAllActions();
+  for (let i = 0; i < 100 && actionExecutor.hasRunningActions(); i++) {
+    await new Promise((r) => { setTimeout(r, 10); });
+  }
+}
+
 /**
  * Start a hung-fetch grep action in a conversation and resolve once its op is in
  * flight, so the executor holds a live running action for it. Returns the exec
@@ -48,27 +118,13 @@ import {
 async function startHungGrep(session, conversation, toolUseId, runningEpoch) {
   const contextItemRegistry = (await import('../../js/registries/context-item-registry.js')).default;
   const actionId = /** @type {any} */ (contextItemRegistry.getByToolName('grep'))?.MANIFEST?.id;
-  let resolveStarted;
-  const started = new Promise((r) => { resolveStarted = r; });
-  const prevFetch = window.fetch;
-  window.fetch = (/** @type {any} */ _url, /** @type {any} */ opts = {}) =>
-    new Promise((_resolve, reject) => {
-      const signal = opts.signal;
-      resolveStarted();
-      if (!signal) return;
-      const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
-      if (signal.aborted) { onAbort(); return; }
-      signal.addEventListener('abort', onAbort);
-    });
+  const { started, restore } = stubOpFetch();
   const execPromise = actionExecutor.execute(
     actionId, { pattern: 'x' },
     { session, conversation, messageThread: conversation.rootMessageThread, toolUseId, runningEpoch, _approvalHandled: true }
   );
-  await Promise.race([
-    started,
-    new Promise((_r, rej) => setTimeout(() => rej(new Error('op fetch never started')), 4000))
-  ]);
-  window.fetch = prevFetch;
+  await awaitOpStarted(started);
+  restore();
   return { execPromise };
 }
 
@@ -101,23 +157,11 @@ export async function runTests(_ctx) {
       const conversation = await createTestConversation(session);
       const messageThread = conversation.rootMessageThread;
 
-      let resolveFetchStarted;
-      const fetchStarted = new Promise((r) => { resolveFetchStarted = r; });
-
-      // Stub the op boundary: a request that never resolves on its own but
-      // rejects with an AbortError the instant its signal aborts. If the
-      // caller failed to thread a signal (the bug), the request hangs
-      // forever — the abort below would do nothing and the test would time
-      // out, which is the failure we want to catch.
-      window.fetch = (/** @type {any} */ _url, /** @type {any} */ opts = {}) =>
-        new Promise((_resolve, reject) => {
-          const signal = opts.signal;
-          resolveFetchStarted();
-          if (!signal) return; // no signal threaded → hang (regression)
-          const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
-          if (signal.aborted) { onAbort(); return; }
-          signal.addEventListener('abort', onAbort);
-        });
+      // A request that never resolves on its own but rejects with an AbortError
+      // the instant its signal aborts. If the caller failed to thread a signal
+      // (the bug), the request hangs forever — the abort below would do nothing
+      // and the test would time out, which is the failure we want to catch.
+      const { started: fetchStarted } = stubOpFetch();
 
       // ActionExecutor keys on the plugin's MANIFEST id ('search'), not the
       // LLM-facing tool name ('grep'). Resolve it the same way the framework
@@ -135,10 +179,7 @@ export async function runTests(_ctx) {
       );
 
       // Wait until the op fetch is actually in flight before cancelling.
-      await Promise.race([
-        fetchStarted,
-        new Promise((_r, rej) => setTimeout(() => rej(new Error('op fetch never started')), 4000))
-      ]);
+      await awaitOpStarted(fetchStarted);
 
       assert(actionExecutor.hasRunningActions(), 'grep action should be running while the op is in flight');
 
@@ -163,6 +204,7 @@ export async function runTests(_ctx) {
       errors.push(`cancel in-flight grep: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       window.fetch = originalFetch;
+      await drainExecutor();
     }
   }
 
@@ -192,19 +234,8 @@ export async function runTests(_ctx) {
       const conversation = await createTestConversation(session);
       const messageThread = conversation.rootMessageThread;
 
-      let resolveFetchStarted;
-      const fetchStarted = new Promise((r) => { resolveFetchStarted = r; });
-
       // Honour the signal if threaded; hang forever otherwise (the bug).
-      window.fetch = (/** @type {any} */ _url, /** @type {any} */ opts = {}) =>
-        new Promise((_resolve, reject) => {
-          const signal = opts.signal;
-          resolveFetchStarted();
-          if (!signal) return; // no signal threaded → hang (regression)
-          const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
-          if (signal.aborted) { onAbort(); return; }
-          signal.addEventListener('abort', onAbort);
-        });
+      const { started: fetchStarted } = stubOpFetch();
 
       const contextItemRegistry = (await import('../../js/registries/context-item-registry.js')).default;
       const ActionClass = contextItemRegistry.getByToolName('batch_grep');
@@ -218,10 +249,7 @@ export async function runTests(_ctx) {
         { session, conversation, messageThread, toolUseId, _approvalHandled: true }
       );
 
-      await Promise.race([
-        fetchStarted,
-        new Promise((_r, rej) => setTimeout(() => rej(new Error('batch op fetch never started')), 4000))
-      ]);
+      await awaitOpStarted(fetchStarted, 'batch op fetch never started');
       assert(actionExecutor.hasRunningActions(), 'batch_grep action should be running while its ops are in flight');
 
       const found = actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
@@ -241,6 +269,7 @@ export async function runTests(_ctx) {
       errors.push(`cancel in-flight batch_grep: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       window.fetch = originalFetch;
+      await drainExecutor();
     }
   }
 
@@ -255,12 +284,8 @@ export async function runTests(_ctx) {
       const conversation = await createTestConversation(session);
       const messageThread = conversation.rootMessageThread;
 
-      let resolveFetchStarted;
-      const fetchStarted = new Promise((r) => { resolveFetchStarted = r; });
-
-      // Deliberately ignore opts.signal entirely: hang forever no matter what.
-      window.fetch = (/** @type {any} */ _url, /** @type {any} */ _opts = {}) =>
-        new Promise(() => { resolveFetchStarted(); });
+      // Deliberately ignore the signal entirely: hang forever no matter what.
+      const { started: fetchStarted } = stubOpFetch({ honourSignal: false });
 
       const contextItemRegistry = (await import('../../js/registries/context-item-registry.js')).default;
       const ActionClass = contextItemRegistry.getByToolName('grep');
@@ -274,10 +299,7 @@ export async function runTests(_ctx) {
         { session, conversation, messageThread, toolUseId, _approvalHandled: true }
       );
 
-      await Promise.race([
-        fetchStarted,
-        new Promise((_r, rej) => setTimeout(() => rej(new Error('op fetch never started')), 4000))
-      ]);
+      await awaitOpStarted(fetchStarted);
       assert(actionExecutor.hasRunningActions(), 'action should be running while the un-cancellable op is in flight');
 
       const found = actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
@@ -297,6 +319,7 @@ export async function runTests(_ctx) {
       errors.push(`backstop cancel of non-cooperative tool: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       window.fetch = originalFetch;
+      await drainExecutor();
     }
   }
 
@@ -376,17 +399,7 @@ export async function runTests(_ctx) {
       const conversation = await createTestConversation(session);
       const messageThread = conversation.rootMessageThread;
 
-      let resolveFetchStarted;
-      const fetchStarted = new Promise((r) => { resolveFetchStarted = r; });
-      window.fetch = (/** @type {any} */ _url, /** @type {any} */ opts = {}) =>
-        new Promise((_resolve, reject) => {
-          const signal = opts.signal;
-          resolveFetchStarted();
-          if (!signal) return;
-          const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
-          if (signal.aborted) { onAbort(); return; }
-          signal.addEventListener('abort', onAbort);
-        });
+      const { started: fetchStarted } = stubOpFetch();
 
       const contextItemRegistry = (await import('../../js/registries/context-item-registry.js')).default;
       const ActionClass = contextItemRegistry.getByToolName('grep');
@@ -403,10 +416,7 @@ export async function runTests(_ctx) {
         { session, conversation, messageThread, toolUseId, runningEpoch: 2, _approvalHandled: true }
       );
 
-      await Promise.race([
-        fetchStarted,
-        new Promise((_r, rej) => setTimeout(() => rej(new Error('op fetch never started')), 4000))
-      ]);
+      await awaitOpStarted(fetchStarted);
       assert(actionExecutor.hasRunningActions(), 'action should be running while the op is in flight');
 
       // Stale cancel (generation 1) — must NOT abort generation 2.
@@ -428,6 +438,7 @@ export async function runTests(_ctx) {
       errors.push(`generation-scoped cancel: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       window.fetch = originalFetch;
+      await drainExecutor();
     }
   }
 
@@ -441,33 +452,18 @@ export async function runTests(_ctx) {
       const conversation = await createTestConversation(session);
       const messageThread = conversation.rootMessageThread;
 
-      const startStub = () => {
-        let resolveStarted;
-        const started = new Promise((r) => { resolveStarted = r; });
-        window.fetch = (/** @type {any} */ _url, /** @type {any} */ opts = {}) =>
-          new Promise((_resolve, reject) => {
-            const signal = opts.signal;
-            resolveStarted();
-            if (!signal) return;
-            const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'));
-            if (signal.aborted) { onAbort(); return; }
-            signal.addEventListener('abort', onAbort);
-          });
-        return started;
-      };
-
       const contextItemRegistry = (await import('../../js/registries/context-item-registry.js')).default;
       const actionId = /** @type {any} */ (contextItemRegistry.getByToolName('grep'))?.MANIFEST?.id;
 
       // (a) entry HAS an epoch, caller supplies none → unscoped abort.
       {
-        const started = startStub();
+        const { started } = stubOpFetch();
         const toolUseId = 'tc-epoch-unscoped-a';
         const execPromise = actionExecutor.execute(
           actionId, { pattern: 'x' },
           { session, conversation, messageThread, toolUseId, runningEpoch: 5, _approvalHandled: true }
         );
-        await Promise.race([started, new Promise((_r, rej) => setTimeout(() => rej(new Error('op never started')), 4000))]);
+        await awaitOpStarted(started, 'op never started');
         const outcome = actionExecutor.cancelByToolUseId(toolUseId, conversation.id);
         assert(outcome === 'hit', `absent caller epoch must abort unscoped ('hit'), got ${outcome}`);
         const result = await execPromise;
@@ -476,13 +472,13 @@ export async function runTests(_ctx) {
 
       // (b) entry has NO epoch, caller supplies one → unscoped abort.
       {
-        const started = startStub();
+        const { started } = stubOpFetch();
         const toolUseId = 'tc-epoch-unscoped-b';
         const execPromise = actionExecutor.execute(
           actionId, { pattern: 'x' },
           { session, conversation, messageThread, toolUseId, _approvalHandled: true }
         );
-        await Promise.race([started, new Promise((_r, rej) => setTimeout(() => rej(new Error('op never started')), 4000))]);
+        await awaitOpStarted(started, 'op never started');
         const outcome = actionExecutor.cancelByToolUseId(toolUseId, conversation.id, 9);
         assert(outcome === 'hit', `epoch-less running action must abort unscoped ('hit'), got ${outcome}`);
         const result = await execPromise;
@@ -495,6 +491,7 @@ export async function runTests(_ctx) {
       errors.push(`unscoped-epoch fallback: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       window.fetch = originalFetch;
+      await drainExecutor();
     }
   }
 
@@ -593,6 +590,7 @@ export async function runTests(_ctx) {
     } finally {
       /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;
       window.fetch = originalFetch;
+      await drainExecutor();
       __resetToolExecutionReporterForTest();
     }
   }
@@ -640,6 +638,7 @@ export async function runTests(_ctx) {
     } finally {
       /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;
       window.fetch = originalFetch;
+      await drainExecutor();
       __resetToolExecutionReporterForTest();
     }
   }

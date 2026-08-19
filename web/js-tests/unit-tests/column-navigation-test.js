@@ -12,8 +12,10 @@
  *   1. An auto-selection (a column picking up an item that just arrived) applies
  *      to its own column and leaves the keyboard where the user left it. Only a
  *      selection the user drives moves the active column.
- *   2. Walking items with ↑/↓ never scrolls the row horizontally. The selection
- *      moves inside one column; nothing to its left or right was asked for.
+ *   2. Walking items with ↑/↓ never scrolls the row horizontally, on any
+ *      viewport. The selection moves inside one column; nothing to its left or
+ *      right was asked for. The narrow layout reveals the child column of the
+ *      item you touch, but that is a pointer gesture, not a keystroke.
  *   3. Clicking into a column that is off-screen still reveals it — the case
  *      that must keep working, and the control that stops rule 2 from passing
  *      because nothing scrolls at all.
@@ -208,6 +210,17 @@ export async function runTests() {
     const realScrollTo = container.scrollTo.bind(container);
     /** @type {any} */ (container).scrollTo = (/** @type {any} */ opts) => { scrolls.push(opts); };
 
+    // Hold the tab in the narrow layout for the walk below. That layout is where
+    // the rule can break: it pages the columns full-width and reveals the child
+    // column of the item you touch, so a reveal per keypress would scroll the
+    // row away from the list being walked. Which side of the breakpoint a lane
+    // lands on is the platform's choice of test-window width, so pin it rather
+    // than test the rule on some machines and not others.
+    const realMatchMedia = window.matchMedia.bind(window);
+    /** @type {any} */ (window).matchMedia = (/** @type {string} */ q) => (q === '(width <= 36rem)'
+      ? { matches: true, media: q, addEventListener() {}, removeEventListener() {} }
+      : realMatchMedia(q));
+
     try {
       const selectedId = () => rootCol.querySelector('.selected')?.getAttribute('message-id') ?? null;
       const before = selectedId();
@@ -241,6 +254,7 @@ export async function runTests() {
         'clicking into an off-screen column must still bring it into view');
     } finally {
       /** @type {any} */ (container).scrollTo = realScrollTo;
+      /** @type {any} */ (window).matchMedia = realMatchMedia;
     }
 
     passed++;
