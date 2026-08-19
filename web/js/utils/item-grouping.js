@@ -151,14 +151,16 @@ function resultField(item, key) {
 
 /**
  * Whether an item renders no row in the transcript, and so should neither join
- * a run nor break one. Mirrors the two cases the bubble factory bails on: a
+ * a run nor break one. Mirrors the cases the bubble factory bails on: a
  * tool-action that produced a context item (rendered as that context item, not
- * as a tool row) and a text bubble with nothing visible in it.
+ * as a tool row), a text bubble with nothing visible in it, and a Continue's
+ * marker, which is a run record rather than a message.
  * @param {any} item - Conversation item Y.Map.
  * @returns {boolean} True if the item paints nothing.
  */
 function rendersNothing(item) {
   const type = item?.get?.('type');
+  if (type === 'user') return !!item.get('continuation');
   if (type === 'tool-action') return resultField(item, 'resultType') === 'context';
   if (type === 'assistant' || type === 'thinking') {
     const content = item.get('content') || '';

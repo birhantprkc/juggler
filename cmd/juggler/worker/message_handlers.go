@@ -388,11 +388,11 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	}
 
 	// Explicit Continue clicks have no new user item to make the reducer's
-	// intent obvious. Reopen a stopped subthread's trailing run record before
-	// publishing it as live, then remember the one-shot intent until the reducer
-	// claims the turn. Root continuations have no parent run record to reopen.
+	// intent obvious. Open a run record for a stopped subthread before publishing
+	// it as live, then remember the one-shot intent until the reducer claims the
+	// turn. Root continuations have no run records to open.
 	if msg.IsContinuation {
-		w.reopenThreadRun(msg.ThreadItemID)
+		w.openThreadContinuationRun(msg.ThreadItemID)
 		w.markExplicitContinuation(msg.ThreadItemID)
 	}
 

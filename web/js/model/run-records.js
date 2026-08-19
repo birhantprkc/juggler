@@ -20,6 +20,8 @@
  * Pure Y.Map/Y.Array walking; callers wrap the write in their own transaction.
  */
 
+import { plainToYMap } from './item-accessor.js';
+
 /**
  * Run status for a cancelled or interrupted run. Matches the Go spelling
  * (worker/run_records.go); the two writers must agree.
@@ -141,9 +143,12 @@ function trailingReply(threadYMap) {
  * Writes no summary: the thread's own transcript shows what happened, and
  * passing a stop off as the thread's result would be a lie the tile repeats.
  * @param {any} threadYMap - The thread Y.Map.
+ * @param {() => string} [mintItemId] - Mints an itemId, for the receipt this may
+ *   have to append (see reportRunToParent). Omit only where the caller knows the
+ *   thread has no parent item to report to.
  * @returns {boolean} True when a run was settled.
  */
-export function settleRunCancelled(threadYMap) {
+export function settleRunCancelled(threadYMap, mintItemId) {
   const open = openRunMessages(threadYMap);
   if (!open.length) return false;
   const produced = trailingReply(threadYMap);
@@ -152,5 +157,74 @@ export function settleRunCancelled(threadYMap) {
     item.set('runStatus', RUN_STATUS_CANCELLED);
     item.set('runResult', result);
   }
+  // openRunMessages walks backwards, so the last entry started this run.
+  const starter = open[open.length - 1];
+  if (mintItemId) {
+    reportRunToParent(threadYMap, starter.get('itemId'), starter.get('runToolUseId') || '', mintItemId);
+  }
   return true;
+}
+
+/**
+ * Give a settling run somewhere in the parent to report to, when the item that
+ * would otherwise report it has already answered the model.
+ *
+ * The parent's last item referring to this thread is its live view, and absorbs
+ * a run nobody called for as long as its own result is still unsent — nothing
+ * has been read, so nothing moves. Once that item's result has gone to the model
+ * (`runResultFed`) it is committed history: rewriting it would slide every
+ * message after it and cold-start a stateful provider. So a further run is
+ * appended as a RECEIPT of its own instead, selecting the run by the message
+ * that started it. An unread receipt is re-pointed rather than joined by
+ * another, so a child prompted six times leaves the parent one item to read.
+ *
+ * Mirrors reportRunToParentLocked in worker/run_records.go. The worker does this
+ * for every run it drives; this covers the runs it does not — a stop that
+ * settles a thread the worker is not driving.
+ * @param {any} threadYMap - The canonical thread Y.Map, whose run just settled.
+ * @param {string} starterItemId - The itemId of the message that started it.
+ * @param {string} starterCall - The tool-use id that message was called by, or ''.
+ * @param {() => string} mintItemId - Mints the receipt's itemId.
+ * @returns {void}
+ */
+export function reportRunToParent(threadYMap, starterItemId, starterCall, mintItemId) {
+  const siblings = threadYMap?.parent;
+  const canonicalId = threadYMap?.get?.('itemId');
+  if (!starterItemId || !canonicalId || typeof siblings?.insert !== 'function') return;
+
+  const arr = typeof siblings.toArray === 'function' ? siblings.toArray() : [];
+  let trailing = null;
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const item = arr[i];
+    if (typeof item?.get !== 'function' || item.get('type') !== 'thread') continue;
+    const id = item.get('itemId');
+    if (id !== canonicalId && item.get('aliasOf') !== canonicalId) continue;
+    trailing = item;
+    break;
+  }
+  if (!trailing) return;
+
+  const selector = trailing.get('runToolUseId') || '';
+  const runItemId = trailing.get('runItemId');
+  // A thread item with no run selector answers no call — a user- or
+  // strategy-created thread — so it has no committed pair to protect.
+  if (!selector && !runItemId) return;
+  if (runItemId === starterItemId) return;
+
+  if (!trailing.get('runResultFed')) {
+    // Still unread, so this item absorbs the run — and now says which one, so
+    // the absorption survives being read (see itemRunRecord). A call whose OWN
+    // run this is needs no such note.
+    if (runItemId || starterCall !== selector) trailing.set('runItemId', starterItemId);
+    return;
+  }
+  siblings.insert(siblings.length, [plainToYMap({
+    type: 'thread',
+    itemId: mintItemId(),
+    timestamp: new Date().toISOString(),
+    aliasOf: canonicalId,
+    goal: threadYMap.get('goal') || '',
+    sessionName: threadYMap.get('sessionName') || '',
+    runItemId: starterItemId
+  })]);
 }

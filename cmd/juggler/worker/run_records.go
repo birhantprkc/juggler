@@ -231,6 +231,34 @@ func trailingRunOutcome(items []ConversationItem) (status, result string, ok boo
 	return "", "", false
 }
 
+// isReceiptItem reports whether a thread item is a receipt: the parent's view of
+// a run nobody called (receiptItem). It names its run by the message that
+// started it and carries no tool-use coordinates, because there is no call to
+// name it by.
+func isReceiptItem(item ConversationItem) bool {
+	return item.Type == ItemTypeThread && item.RunItemID != "" && item.RunToolUseID == ""
+}
+
+// runRecordByItemID returns the outcome of the run started by a named message
+// in a thread's transcript, and whether that message is still there.
+//
+// This is the selector for a run no call made (ConversationItem.RunItemID). It
+// walks the nested items rather than going through threadRunRecords, because
+// that function's guard — a record needs tool-use coordinates to count — is
+// load-bearing for the wire path that emits one tool_use per record, and a
+// human-started run has no coordinates at all.
+func runRecordByItemID(canonical ConversationItem, itemID string) (status, result string, ok bool) {
+	if itemID == "" {
+		return "", "", false
+	}
+	for _, it := range threadNestedItems(canonical) {
+		if it.Type == ItemTypeUser && it.ItemID == itemID {
+			return it.RunStatus, it.RunResult, true
+		}
+	}
+	return "", "", false
+}
+
 // itemRunCall builds the tool-use coordinates a thread item's run selector
 // names, in the fields buildToolUseMap reads.
 func itemRunCall(item ConversationItem) ConversationItem {
@@ -247,13 +275,25 @@ func itemRunCall(item ConversationItem) ConversationItem {
 // Reports false for an item with no run selector, for an alias whose canonical
 // is gone, and for a selector naming a run the transcript no longer records.
 //
-// Which run that is depends on where the item stands. The LAST of the parent's
-// items referring to a session is its live view and answers for the run the
-// transcript is on now (isTrailingViewOf); every earlier item answers for the
-// one run its selector names, frozen where that run settled. So a session
-// resumed by a later call reports to the item that call appended, and a session
-// resumed by a human — whose run no call named at all — reports to the item
-// still waiting on it, rather than to nobody.
+// Which run that is depends on where the item stands, and on whether it has
+// been read. The LAST of the parent's items referring to a session is its live
+// view and answers for the run the transcript is on now (isTrailingViewOf), so a
+// session resumed by a human — whose run no call named at all — reports to the
+// item still waiting on it rather than to nobody. Every earlier item answers for
+// the one run its selector names, frozen where that run settled, so a session
+// resumed by a later call reports to the item that call appended.
+//
+// An item whose result has already gone to the provider (RunResultFed) is
+// frozen too, wherever it stands. It is committed history: the live view is a
+// licence to absorb news the parent has not heard yet, not a licence to correct
+// something it has. A run that arrives after it has been read gets a receipt
+// item of its own instead (settleThreadRun).
+//
+// What it freezes ONTO is the run it actually reported, which need not be the
+// one its call started: an item that absorbed a human's resume before anybody
+// read it carries that run's selector (RunItemID, written at settle), and
+// freezing back onto its own call would report something other than what it
+// sent.
 //
 // The live view borrows the OUTCOME only. Its tool-use coordinates, its goal and
 // its call number stay its own, because it is still the parent's view of the
@@ -270,14 +310,25 @@ func itemThreadRun(siblings []ConversationItem, item ConversationItem) (canonica
 		}
 	}
 	run, call, ok = runByToolUseID(canonical, item.RunToolUseID)
-	if isTrailingViewOf(siblings, item, canonical.ItemID) {
+	numbered := func() int {
+		if ok {
+			return call
+		}
+		// A selector no record answers still stands for a call that was made, so
+		// it is numbered after the ones that are recorded.
+		return len(threadRunRecords(canonical)) + 1
+	}
+	if !item.RunResultFed && isTrailingViewOf(siblings, item, canonical.ItemID) {
 		if status, result, recorded := trailingRunOutcome(threadNestedItems(canonical)); recorded {
-			if !ok {
-				// A selector no record answers still stands for a call that was
-				// made, so it is numbered after the ones that are recorded.
-				call = len(threadRunRecords(canonical)) + 1
-			}
-			return canonical, threadRun{call: itemRunCall(item), status: status, result: result}, call, true
+			return canonical, threadRun{call: itemRunCall(item), status: status, result: result}, numbered(), true
+		}
+	}
+	if item.RunItemID != "" {
+		// The run this item absorbed while it was still unread (settleThreadRun
+		// names it there). Read once the item is frozen, so what it reports is
+		// what it sent.
+		if status, result, found := runRecordByItemID(canonical, item.RunItemID); found {
+			return canonical, threadRun{call: itemRunCall(item), status: status, result: result}, numbered(), true
 		}
 	}
 	if !ok {
@@ -479,39 +530,29 @@ func openRunMessagesLocked(nested *ycrdt.YArray) []*ycrdt.YMap {
 	return open
 }
 
-// reopenThreadRun makes an explicit Continue inside a stopped thread the next
-// run of that session. Continue has no new user message to serve as an open run
-// record, so the trailing record must be reopened before the reducer advertises
-// the thread as live. Only that record moves: earlier records remain receipts
-// for the earlier parent items that own them.
-func (w *ConversationWorker) reopenThreadRun(threadItemID string) {
-	if threadItemID == "" {
+// openThreadContinuationRun makes an explicit Continue inside a stopped thread
+// the next run of that session, by appending a continuation marker for that run
+// to be recorded on (continuationMarker). Continue has no user message of its
+// own, and the reducer will not advertise a thread as live without an open run
+// record.
+//
+// The marker is appended rather than the previous record being reopened.
+// Clearing that record would rewrite whatever the parent has already been told:
+// its result would revert to the pending placeholder the moment Continue was
+// clicked, and become a different run's answer under the same tool_use id when
+// this run settled — the in-place rewrite receipts exist to prevent, arriving
+// through the one gesture that has no message to append. Every earlier record
+// stays exactly as it was read.
+//
+// No-op at the root, which has no run records at all.
+func (w *ConversationWorker) openThreadContinuationRun(threadItemID string) {
+	if threadItemID == "" || w.thread.itemsArray == nil {
 		return
 	}
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
-	if threadYMap == nil {
-		return
+	if runSettled, hasRuns := runSettlement(w.getTargetItems()); hasRuns && !runSettled {
+		return // a run is already open — this Continue joins it
 	}
-	nested, _ := threadYMap.Get("items").(*ycrdt.YArray)
-	if nested == nil {
-		return
-	}
-	for i := int(nested.GetLength()) - 1; i >= 0; i-- {
-		m, ok := nested.Get(ycrdt.Number(i)).(*ycrdt.YMap)
-		if !ok {
-			continue
-		}
-		if itemType, _ := m.Get("type").(string); itemType != ItemTypeUser {
-			continue
-		}
-		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-			m.Delete("runStatus")
-			m.Delete("runResult")
-		}, w.doc.authorID)
-		return
-	}
+	w.insertTargetMessage(w.getTargetItemsLength(), continuationMarker())
 }
 
 // lastSettlingItem returns the item that decides how a run ended: the last one
@@ -586,6 +627,93 @@ func (w *ConversationWorker) stampRunOutcome(threadItemID, status, result string
 	return true
 }
 
+// trailingSessionItemLocked returns the LAST of the parent's items referring to
+// a session — its live view, the one item a settling run may still report to.
+// The canonical thread and its aliases and receipts are the whole set, and they
+// always stand in one array (resolveAliasTarget). Mirrors isTrailingViewOf,
+// which asks the same question of an item snapshot. Caller MUST hold ycrdtMu.
+func trailingSessionItemLocked(arr *ycrdt.YArray, canonicalID string) *ycrdt.YMap {
+	if arr == nil {
+		return nil
+	}
+	for i := int(arr.GetLength()) - 1; i >= 0; i-- {
+		m, ok := arr.Get(ycrdt.Number(i)).(*ycrdt.YMap)
+		if !ok {
+			continue
+		}
+		if t, _ := m.Get("type").(string); t != ItemTypeThread {
+			continue
+		}
+		id, _ := m.Get("itemId").(string)
+		aliasOf, _ := m.Get("aliasOf").(string)
+		if id != canonicalID && aliasOf != canonicalID {
+			continue
+		}
+		return m
+	}
+	return nil
+}
+
+// reportRunToParentLocked gives a settling run somewhere in the parent to report
+// to, when the item that would otherwise report it has already answered the
+// model.
+//
+// The live view absorbs a run nobody called for as long as its own result is
+// still unsent: nothing has been read, so nothing moves, and the call still
+// waiting gets the answer it is waiting for. Once that item's real result has
+// gone to the provider (runResultFed) it is committed history — rewriting it
+// would slide every message after it, cold-start a stateful provider, and leave
+// the parent's own reasoning standing after a result that now contradicts it. So
+// a further run is appended as a RECEIPT of its own instead, at the end of the
+// parent's array where the model reads it as news.
+//
+// Appending on SETTLE rather than on resume is what keeps that promise cheap:
+// there is never an unsettled receipt, so the parent never parks on work it did
+// not ask for and no isError placeholder is ever emitted for one. Coalescing
+// falls out of the same rule — an unread receipt is re-pointed at the newer run
+// rather than joined by another, so a user who sends six prompts into a child
+// leaves the parent one item to read, not six.
+//
+// A thread item with no run selector at all is left alone: a user- or
+// strategy-created thread answers no call, so it has no committed pair to
+// protect and its tile is the only view of it there has ever been.
+//
+// Caller MUST hold ycrdtMu and be inside the settling transaction, so the run's
+// outcome and the parent's view of it land as one change.
+func (w *ConversationWorker) reportRunToParentLocked(threadItemID string, threadYMap *ycrdt.YMap, starterID, starterCall string) {
+	if starterID == "" {
+		return
+	}
+	parentArr := w.doc.parentArrayOfLocked(threadItemID)
+	trailing := trailingSessionItemLocked(parentArr, threadItemID)
+	if trailing == nil {
+		return
+	}
+	selector, _ := trailing.Get("runToolUseId").(string)
+	runItemID, _ := trailing.Get("runItemId").(string)
+	if selector == "" && runItemID == "" {
+		return
+	}
+	if runItemID == starterID {
+		return // already the item this run reports to
+	}
+	if fed, _ := trailing.Get("runResultFed").(bool); !fed {
+		// Still unread, so this item absorbs the run — and now says which one it
+		// absorbed. Naming it is what makes the absorption survive being read: the
+		// item is frozen the moment its result reaches the model, and an item
+		// frozen back onto the call it was made by would report something other
+		// than what it sent. A call whose OWN run this is needs no such note.
+		if runItemID != "" || starterCall != selector {
+			trailing.Set("runItemId", starterID)
+		}
+		return
+	}
+	goal, _ := threadYMap.Get("goal").(string)
+	sessionName, _ := threadYMap.Get("sessionName").(string)
+	receipt := receiptItem(threadItemID, goal, sessionName, starterID)
+	parentArr.Insert(ycrdt.Number(int(parentArr.GetLength())), ycrdt.ArrayAny{conversationItemToYMap(receipt)})
+}
+
 // settleThreadRun records how the run that just ended on threadItemID came out:
 // runStatus/runResult onto the message that started it, and — for a run that
 // came to rest — the same text onto the thread as its current summary.
@@ -635,17 +763,25 @@ func (w *ConversationWorker) settleThreadRun(threadItemID string, cancelled bool
 	_, recordsRun := runSettlementLocked(nested)
 
 	// A run with no message to stamp reports through `result` or not at all: a
-	// creation that appended no invocation message (a continuation, or a call
-	// that supplied no prompt) records a run nowhere else, so a caller parked on
-	// this child would be waiting on a run that can never report. That case
+	// creation that appended no invocation message (a continuation creation, or a
+	// call that supplied no prompt) records a run nowhere else, so a caller parked
+	// on this child would be waiting on a run that can never report. That case
 	// writes whatever the run came to; every other ending keeps failure out of
-	// the summary.
+	// the summary. A human's Continue is not one of them — it appends a marker to
+	// be recorded on (openThreadContinuationRun).
 	orphanRun := len(open) == 0 && !recordsRun
 	summarises := status == runStatusRest || orphanRun
 
 	if len(open) == 0 && !summarises {
 		ycrdtMu.Unlock()
 		return
+	}
+	starterID, starterCall := "", ""
+	if len(open) > 0 {
+		// openRunMessagesLocked walks backwards, so the last entry is the message
+		// that STARTED this run — the one a parent item selects it by.
+		starterID, _ = open[len(open)-1].Get("itemId").(string)
+		starterCall, _ = open[len(open)-1].Get("runToolUseId").(string)
 	}
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		for _, m := range open {
@@ -655,6 +791,7 @@ func (w *ConversationWorker) settleThreadRun(threadItemID string, cancelled bool
 		if summarises && result != threadResult {
 			threadYMap.Set("result", result)
 		}
+		w.reportRunToParentLocked(threadItemID, threadYMap, starterID, starterCall)
 	}, w.doc.authorID)
 	ycrdtMu.Unlock()
 

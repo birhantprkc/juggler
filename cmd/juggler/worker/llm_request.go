@@ -374,6 +374,12 @@ func toolResultWire(item ConversationItem) map[string]any {
 func itemWireMessages(item ConversationItem, siblings []ConversationItem) []map[string]any {
 	switch item.Type {
 	case ItemTypeUser:
+		if item.Continuation {
+			// A Continue's marker exists to carry a run record, not to say
+			// anything (continuationMarker). Emitting it would put an empty user
+			// turn on the wire where a Continue has always cost nothing.
+			return nil
+		}
 		return []map[string]any{buildUserMessageMap(item)}
 
 	case ItemTypeAssistant:
@@ -511,11 +517,23 @@ func resolvedRunGoal(call ConversationItem, fallback string) string {
 // and reads the record there; one whose canonical is gone gets a paired error,
 // because a dangling tool_use is wire-invalid.
 //
-// The one pair that may still change is the LAST, which tracks the session
-// rather than a single run of it (itemThreadRun): a child resumed by hand
-// answers the call still waiting on it. Confining that to the last pair is the
-// whole of the stability argument — every pair above it is settled for good, so
-// the committed prefix and the warm prompt cache survive a resume either way.
+// The one pair that may still change is the LAST, and only while it is still
+// UNANSWERED. It tracks the session rather than a single run of it
+// (itemThreadRun), so a child resumed by hand answers the call still waiting on
+// it — nothing has been sent, so nothing moves. The moment that pair's real
+// result goes to the provider it is stamped (stampThreadResultFed) and becomes
+// committed history like every pair above it, and a further run of the same
+// session lands on a RECEIPT item appended at the end instead (receiptItem,
+// settleThreadRun). That is the whole of the stability argument: no pair the
+// model has read ever changes, so the committed prefix and the prompt cache
+// warmed on it survive any number of resumes.
+//
+// A receipt emits ONE user-role message rather than a pair, because nothing
+// called it: minting a tool_use for it would have the wire claim the model chose
+// to re-run the thread, and on claudecode would cold-start every resume — the
+// CLI's own transcript has no such call to answer (appendToolResultsToWarmSession
+// refuses, warm_append_resume.go), while a plain user-role message at the end is
+// the cheapest warm append there is.
 //
 // A thread with no selector emits one pair per RUN, in order, sourced from its
 // run records whether they are still on its invocation messages or carried by a
@@ -537,6 +555,9 @@ func resolvedRunGoal(call ConversationItem, fallback string) string {
 // null input is silently dropped by the provider, so the summary is the safer
 // wire shape when input wasn't recorded.
 func appendThreadMessages(messages []map[string]any, item ConversationItem, siblings []ConversationItem) []map[string]any {
+	if isReceiptItem(item) {
+		return append(messages, buildReceiptMessage(item, siblings))
+	}
 	if item.RunToolUseID != "" {
 		canonical, run, call, ok := itemThreadRun(siblings, item)
 		if ok {
@@ -576,6 +597,42 @@ func missingRunToolResultMap(item ConversationItem) map[string]any {
 		"toolUseId": item.RunToolUseID,
 		"content":   "The thread this call ran in is no longer in the conversation, so its result is gone.",
 		"isError":   true,
+	}
+}
+
+// buildReceiptMessage renders a receipt item: what a thread said in a run the
+// parent never asked for, delivered as a single user-role message.
+//
+// It reports the run its RunItemID names and nothing else, so the message is
+// fixed from the moment the item exists — a receipt is only ever appended for a
+// run that has already settled. An unanswered receipt may be re-pointed at a
+// newer run when the session runs again before the parent reads this one
+// (settleThreadRun), which changes the text of something nobody has seen; once
+// answered, neither the selector nor the text moves again.
+//
+// A run whose record has gone — the message edited away, the thread deleted —
+// says so. It still emits exactly one message, because the count is what the
+// prompt cache is sensitive to, and there is no dangling tool_use to close here.
+func buildReceiptMessage(item ConversationItem, siblings []ConversationItem) map[string]any {
+	label := item.SessionName
+	if label == "" {
+		label = item.Goal
+	}
+	canonical, ok := resolveAliasTarget(siblings, item)
+	if ok {
+		if label == "" {
+			label = canonical.Goal
+		}
+		if status, result, found := runRecordByItemID(canonical, item.RunItemID); found && result != "" {
+			return map[string]any{
+				"type":    ItemTypeUser,
+				"content": receiptPreamble(label, status) + "\n\n" + result,
+			}
+		}
+	}
+	return map[string]any{
+		"type":    ItemTypeUser,
+		"content": receiptPreamble(label, "") + "\n\nThat run's reply is no longer in the conversation.",
 	}
 }
 
@@ -742,7 +799,11 @@ func (w *ConversationWorker) buildMessagesFromItems(items []ConversationItem, st
 	for i := 0; i < len(items); i++ {
 		item := items[i]
 		if item.Type != ItemTypeToolAction {
-			messages = append(messages, itemWireMessages(item, items)...)
+			wire := itemWireMessages(item, items)
+			if stampPending && item.Type == ItemTypeThread {
+				w.stampThreadResultFed(item, wire)
+			}
+			messages = append(messages, wire...)
 			continue
 		}
 
@@ -788,6 +849,53 @@ func (w *ConversationWorker) buildMessagesFromItems(items []ConversationItem, st
 	}
 
 	return messages
+}
+
+// stampThreadResultFed records that a thread item's REAL answer has now gone to
+// the provider, by stamping runResultFed on it. Called from the live turn only
+// (the stampPending gate), so snapshot consumers — the compaction canonicalizer,
+// tests — render the same messages and write nothing.
+//
+// This is the one fact the document cannot otherwise recover. The same pair is
+// emitted over and over as the pending placeholder while a child run is in
+// flight, so a later item in the transcript proves a turn happened, not that an
+// answer was delivered; only the wire builder knows which of the two it just
+// emitted. Everything that must never rewrite a committed pair reads this stamp
+// (settleThreadRun appends a receipt rather than updating a stamped item), and
+// an unstamped item is still free to change because nothing has seen it.
+//
+// Stamped once and never refreshed: the question is whether the model has this
+// item's answer, not whether it had it recently — the opposite of a
+// tool-action's resultFedTurn, which self-expires so a stuck tool can be
+// recovered on a later turn.
+func (w *ConversationWorker) stampThreadResultFed(item ConversationItem, wire []map[string]any) {
+	if item.ItemID == "" || item.RunResultFed || !wireCarriesRealResult(wire) {
+		return
+	}
+	w.doc.UpdateThreadItemFieldsRecursive(item.ItemID, map[string]any{
+		"runResultFed": true,
+	})
+}
+
+// wireCarriesRealResult reports whether an item's emitted messages answer the
+// caller, as opposed to parking it on the pending placeholder.
+//
+// tool_use blocks are skipped because they are the question, not the answer,
+// and their content never changes. Everything else counts: a tool_result with
+// real content, the honest error for a run whose thread is gone, a receipt's
+// user-role message, a legacy thread's assistant summary. Each of those is
+// something the model has now read and must keep reading unchanged.
+func wireCarriesRealResult(wire []map[string]any) bool {
+	for _, m := range wire {
+		if t, _ := m["type"].(string); t == "tool-use" {
+			continue
+		}
+		if content, _ := m["content"].(string); content == pendingToolResultPlaceholder {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // contextItemMessageContent formats one standing context item's rendered text as

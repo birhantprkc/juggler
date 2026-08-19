@@ -649,13 +649,12 @@ export const resumeAfterCancelReportsToCallerTest = {
  * The same recovery as thread-resume-after-cancel-parent, but picked back up
  * with the thread's Continue button rather than by typing into it.
  *
- * The two gestures reach the reopened run by different routes, which is why
- * both are pinned. Typing appends a user message, and that message IS the new
- * run's record. Continue appends nothing: there is no message to carry a
- * runStatus, so the trailing record of the cancelled run has to be reopened
- * before the thread reads as live again. Without that, the run stays settled as
- * cancelled, the thread never runs, and the parent is answered
- * "[The run was cancelled before it finished.]" with the work sitting undone.
+ * The two gestures reach the new run by different routes, which is why both are
+ * pinned. Typing appends a user message, and that message IS the new run's
+ * record. Continue has no message of its own, so it appends a continuation
+ * marker for the run to be recorded on. Without a record the thread never reads
+ * as live, never runs, and the parent is answered "[The run was cancelled before
+ * it finished.]" with the work sitting undone.
  *
  * Mock responses:
  *   1. Root: create_thread
@@ -792,6 +791,118 @@ export const unfinishedTileStopSettlesRunTest = {
   }
 };
 
+// ============================================================================
+// TEST 12: A resume after the parent has read the answer appends
+// ============================================================================
+
+/**
+ * The same human resume as thread-resume-after-cancel-parent, but this time the
+ * parent has already READ the call's answer and moved on. Rewriting it now would
+ * slide every message the parent has sent since, cold-start a stateful provider,
+ * and leave the parent's own reply standing after a result that contradicts it —
+ * so the new run arrives as a RECEIPT appended at the end instead.
+ *
+ * The receipt is not a second call: it renders as a tile pointing at the same
+ * thread, and reaches the model as a user-role message. Minting a tool_use for
+ * it would have the wire claim the model chose to re-run the thread, and on
+ * claudecode would cold-start every resume, since the CLI's own transcript has
+ * no such call for the result to answer.
+ *
+ * The receipt does not wake the parent: it is news about work the user did in
+ * another column, not the answer to a call, so the parent reads it on its next
+ * turn rather than spending one nobody asked for. That ordering is what the mock
+ * budget here pins — a spurious turn would eat the last response and leave the
+ * final send with nothing.
+ *
+ * Mock responses:
+ *   1. Root: create_thread
+ *   2. Thread: text "First answer"
+ *   3. Root: text "All finished."   ← the parent reads the call's answer here
+ *   4. Thread (resumed by hand): text "Second answer"
+ *   5. Root: text "Understood."     ← the turn that finally reads the receipt
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const resumeAfterAnswerAppendsReceiptTest = {
+  name: 'thread-resume-after-answer-appends',
+  description: 'Resuming a thread whose answer the parent already read appends a receipt instead of rewriting it',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'create_thread', { goal: 'Do task', prompt: 'Run it' }),
+    textResponse('First answer'),
+    textResponse('All finished.'),
+    textResponse('Second answer'),
+    textResponse('Understood.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Begin' },
+    { type: 'wait-for-idle' },
+    // The thread ran, the parent answered on it and came to rest. From here the
+    // call's result is committed history.
+    { type: 'send-thread-message', message: 'Keep going' },
+    { type: 'wait-for-idle' },
+    // The parent's next turn is the user's, and it carries the receipt.
+    { type: 'send-message', message: 'Anything else?' },
+    { type: 'wait-for-idle' },
+    {
+      type: 'validate-context-snapshot',
+      expectedMessages: [
+        { role: 'user', contentIncludes: 'continued in the thread' },
+        { role: 'user', contentIncludes: 'Second answer' }
+      ],
+      expectedContent: ['First answer']
+    }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Begin' },
+      { type: 'thread', itemId: '$ITEM_3', result: 'Second answer' },
+      { type: 'assistant', content: 'All finished.' },
+      { type: 'thread' },
+      { type: 'user', content: 'Anything else?' },
+      { type: 'assistant', content: 'Understood.' }
+    ]
+  },
+
+  customAssertions: (conversation) => {
+    const label = 'thread-resume-after-answer-appends';
+    const items = conversation.rootMessageThread.items;
+    const threads = items.filter((/** @type {any} */ it) => it.get?.('type') === 'thread');
+    if (threads.length !== 2) {
+      throw new Error(`${label}: expected the call's item and one receipt, got ${threads.length} thread items`);
+    }
+    const [call, receipt] = threads;
+
+    const answered = itemRunRecord(call, items);
+    if (answered?.result !== 'First answer') {
+      throw new Error(
+        `${label}: the call the parent has already read now reports ` +
+				`${JSON.stringify(answered)}, want its own run's reply`
+      );
+    }
+    if (call.get('runResultFed') !== true) {
+      throw new Error(`${label}: the call's item was never marked as read, so nothing was protecting it`);
+    }
+
+    if (receipt.get('aliasOf') !== call.get('itemId')) {
+      throw new Error(`${label}: the receipt must point at the thread it is a view of`);
+    }
+    if (receipt.get('runToolUseId')) {
+      throw new Error(`${label}: a receipt must claim no call — nobody made one`);
+    }
+    const resumed = itemRunRecord(receipt, items);
+    if (resumed?.result !== 'Second answer') {
+      throw new Error(`${label}: the receipt reports ${JSON.stringify(resumed)}, want the resumed run's reply`);
+    }
+    if (getThreadStatus(receipt, null, items).showSummary !== true) {
+      throw new Error(`${label}: the receipt tile does not show the run it stands for`);
+    }
+  }
+};
+
 // Export all tests
 export const tests = [
   cancelDuringThreadTest,
@@ -804,5 +915,6 @@ export const tests = [
   threadTileStopButtonTest,
   resumeAfterCancelReportsToCallerTest,
   continueAfterCancelReportsToCallerTest,
-  unfinishedTileStopSettlesRunTest
+  unfinishedTileStopSettlesRunTest,
+  resumeAfterAnswerAppendsReceiptTest
 ];

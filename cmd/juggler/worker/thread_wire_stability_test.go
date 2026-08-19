@@ -60,6 +60,147 @@ func aliasOf(canonical ConversationItem, toolUseID, toolName, input string) Conv
 	}, toolUseID, toolName, input)
 }
 
+// humanRun builds the record of a run nobody called: a plain user message the
+// user typed into a stopped child, stamped with how the run it started settled.
+func humanRun(itemID, content, status, result string) ConversationItem {
+	return ConversationItem{
+		Type:      ItemTypeUser,
+		ItemID:    itemID,
+		Content:   content,
+		RunStatus: status,
+		RunResult: result,
+	}
+}
+
+// receiptOf builds the parent item a human-started run reports to: a thread item
+// owning no transcript, pointing at the canonical, selecting its run by the
+// message that started it.
+func receiptOf(canonical ConversationItem, runItemID string) ConversationItem {
+	return ConversationItem{
+		Type:        ItemTypeThread,
+		ItemID:      "receipt_" + runItemID,
+		AliasOf:     canonical.ItemID,
+		Goal:        canonical.Goal,
+		SessionName: canonical.SessionName,
+		RunItemID:   runItemID,
+	}
+}
+
+// TestReceiptEmitsOneUserMessage pins the shape of a run the parent never asked
+// for. It is reported as a single user-role message, not as a tool_use/
+// tool_result pair: no call was made, and minting one would have the wire claim
+// the model chose to re-run the thread. On claudecode that claim is also fatal —
+// the CLI's own transcript has no such call for the result to answer, so the
+// warm append refuses and every resume cold-starts.
+func TestReceiptEmitsOneUserMessage(t *testing.T) {
+	canonical := withSelector(threadWithRuns("map the auth flow",
+		invocation("call_1", "Explore", `{"prompt":"find it"}`, "auth lives in auth.go"),
+		humanRun("human_1", "and the tests?", runStatusRest, "tests in auth_test.go")),
+		"call_1", "Explore", `{"prompt":"find it"}`)
+	canonical.SessionName = "hunt"
+	receipt := receiptOf(canonical, "human_1")
+	siblings := []ConversationItem{canonical, receipt}
+
+	got := appendThreadMessages(nil, receipt, siblings)
+	if len(got) != 1 {
+		t.Fatalf("a receipt must emit exactly one message, got %d: %v", len(got), got)
+	}
+	if got[0]["type"] != ItemTypeUser {
+		t.Errorf("a receipt must report as user-role, got %v", got[0]["type"])
+	}
+	if got[0]["toolUseId"] != nil {
+		t.Errorf("a receipt must claim no call, got %v", got[0])
+	}
+	content, _ := got[0]["content"].(string)
+	if !strings.HasPrefix(content, "hunt · continued in the thread") {
+		t.Errorf("a receipt must name the session and say nobody called it, got %q", content)
+	}
+	if !strings.Contains(content, "tests in auth_test.go") {
+		t.Errorf("a receipt must carry its own run's reply, got %q", content)
+	}
+
+	// The canonical still answers for its own call alone: the human's run is the
+	// receipt's business, and the call above it is committed history.
+	gotCanonical := appendThreadMessages(nil, canonical, siblings)
+	if len(gotCanonical) != 2 || gotCanonical[1]["toolUseId"] != "call_1" {
+		t.Fatalf("the canonical must still emit its own pair alone, got %v", gotCanonical)
+	}
+	if c, _ := gotCanonical[1]["content"].(string); !strings.Contains(c, "auth lives in auth.go") {
+		t.Errorf("the canonical's answer moved: %q", c)
+	}
+}
+
+// TestReceiptWithoutItsRecordStillEmitsOneMessage guards the count, which is what
+// the prompt cache is sensitive to. A run record that has been edited away leaves
+// the receipt with nothing to report, and it must say so in one message rather
+// than emit none and slide everything after it.
+func TestReceiptWithoutItsRecordStillEmitsOneMessage(t *testing.T) {
+	canonical := withSelector(threadWithRuns("map the auth flow",
+		invocation("call_1", "Explore", `{"prompt":"find it"}`, "auth lives in auth.go")),
+		"call_1", "Explore", `{"prompt":"find it"}`)
+	orphan := receiptOf(canonical, "human_gone")
+
+	got := appendThreadMessages(nil, orphan, []ConversationItem{canonical, orphan})
+	if len(got) != 1 || got[0]["type"] != ItemTypeUser {
+		t.Fatalf("a receipt whose record is gone must still emit one user message, got %v", got)
+	}
+	if c, _ := got[0]["content"].(string); !strings.Contains(c, "no longer in the conversation") {
+		t.Errorf("it must say the reply is gone rather than invent one, got %q", c)
+	}
+}
+
+// TestReceiptAppendsToParentWire is the point of the receipt: a run the parent
+// never asked for lands at the END of its history, leaving the answer it has
+// already read exactly where it was.
+func TestReceiptAppendsToParentWire(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	run1 := invocation("call_1", "create_thread", `{"prompt":"where is auth?"}`, "auth lives in auth.go")
+	canonical := withSelector(threadWithRuns("map the auth flow", run1),
+		"call_1", "create_thread", `{"prompt":"where is auth?"}`)
+	canonical.SessionName = "hunt"
+
+	opening := []ConversationItem{
+		{Type: ItemTypeUser, ItemID: "u_1", Content: "Investigate auth"},
+		canonical,
+		{Type: ItemTypeAssistant, ItemID: "a_1", Content: "It is in auth.go."},
+	}
+	before := w.buildMessagesFromItems(opening, false)
+	wireBefore, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// The user types into the stopped child; that run settles.
+	resumed := withSelector(threadWithRuns("map the auth flow", run1,
+		humanRun("human_1", "who calls it?", runStatusRest, "the server does")),
+		"call_1", "create_thread", `{"prompt":"where is auth?"}`)
+	resumed.SessionName = "hunt"
+
+	after := append(append([]ConversationItem{}, opening...), receiptOf(resumed, "human_1"))
+	after[1] = resumed
+
+	got := w.buildMessagesFromItems(after, false)
+	if len(got) != len(before)+1 {
+		t.Fatalf("a human resume must add exactly one message, got %d against %d", len(got), len(before))
+	}
+	wirePrefix, err := json.Marshal(got[:len(before)])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(wirePrefix) != string(wireBefore) {
+		t.Fatalf("a human resume moved the committed prefix:\nbefore %s\nafter  %s", wireBefore, wirePrefix)
+	}
+	tail := got[len(got)-1]
+	if tail["type"] != ItemTypeUser {
+		t.Fatalf("the resume must close the history as a user message, got %v", tail)
+	}
+	if c, _ := tail["content"].(string); !strings.Contains(c, "the server does") {
+		t.Errorf("the receipt must carry the resumed run's reply, got %q", c)
+	}
+}
+
 // TestCreateThreadStampsRunRecordOnInvocationMessage pins where the tool-use
 // coordinates live. They must ride on the invocation message — the user item
 // this creation appends — and NOT on the thread Y.Map, which is scalar and so
@@ -345,6 +486,77 @@ func TestAppendThreadMessages_RunInFlightKeepsPairCount(t *testing.T) {
 	}
 	if gotInFlight[1]["isError"] != true {
 		t.Errorf("an unsettled run must render the pending placeholder result, got %v", gotInFlight[1])
+	}
+}
+
+// TestResultFedStampMarksTheAnswerNotTheTurn pins the discriminator the whole
+// receipt model rests on: an item is stamped when its REAL result reaches the
+// provider, never when the pending placeholder does.
+//
+// The distinction is invisible from the transcript. A parent builds requests
+// while its child is still running — a turn that called create_thread alongside
+// another tool, auto-continue racing ahead, an interjection — so "a later item
+// exists" proves a turn happened, not that an answer was delivered. Stamping on
+// the placeholder would freeze an item nobody has been told the answer to, and
+// the run's real result would then be reported twice: once by the frozen item,
+// once by the receipt appended for it.
+func TestResultFedStampMarksTheAnswerNotTheTurn(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.ensureItems()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.storeState(StateProcessing)
+
+	threadID, err := w.createThread(CreateThreadOptions{
+		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
+		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
+	})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	fed := func() bool {
+		for _, it := range w.doc.GetItems() {
+			if it.ItemID == threadID {
+				return it.RunResultFed
+			}
+		}
+		t.Fatal("thread item gone")
+		return false
+	}
+
+	// A build while the run is in flight emits the placeholder — the caller is
+	// parked, and nothing has been answered.
+	w.resetThreadContext()
+	if msgs := w.buildMessages(nil); msgs[len(msgs)-1]["content"] != pendingToolResultPlaceholder {
+		t.Fatalf("expected the pending placeholder while the run is in flight, got %v", msgs[len(msgs)-1])
+	}
+	if fed() {
+		t.Error("the placeholder stamped the item as answered — a later resume would then append a duplicate of the same run")
+	}
+
+	// The run settles and the next build carries its result.
+	w.thread.itemID = threadID
+	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go.",
+	})
+	w.settleThreadRun(threadID, false)
+	w.resetThreadContext()
+
+	// A snapshot build renders the same messages and writes nothing: only the
+	// live turn may record what the provider has seen.
+	if msgs := w.buildMessagesFromItems(w.doc.GetItems(), false); len(msgs) == 0 {
+		t.Fatal("snapshot build emitted nothing")
+	}
+	if fed() {
+		t.Error("a snapshot build stamped the item — compaction and tests must not record deliveries")
+	}
+
+	if msgs := w.buildMessages(nil); !strings.Contains(msgs[len(msgs)-1]["content"].(string), "Auth lives in auth.go.") {
+		t.Fatalf("expected the run's result on the wire, got %v", msgs[len(msgs)-1])
+	}
+	if !fed() {
+		t.Error("the item's real result went to the provider unstamped — a later resume would rewrite it in place")
 	}
 }
 

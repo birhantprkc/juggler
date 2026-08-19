@@ -134,6 +134,18 @@ func (cd *ConversationDocument) findParentThreadID(threadItemID string) string {
 	return result
 }
 
+// parentArrayOfLocked returns the Y.Array a thread item stands in: the root
+// items array for a top-level thread, the holding thread's nested array
+// otherwise. That array is where the parent's view of the thread lives — its
+// canonical item, its aliases and its receipts are all siblings there. Caller
+// MUST hold ycrdtMu.
+func (cd *ConversationDocument) parentArrayOfLocked(threadItemID string) *ycrdt.YArray {
+	if parentID := cd.findParentThreadID(threadItemID); parentID != "" {
+		return findThreadItemsArray(cd.getItems(), parentID)
+	}
+	return cd.getItems()
+}
+
 // threadDepth returns how deeply the given thread is nested: the root level
 // ("") is depth 0, a thread directly under root is depth 1, its child depth 2,
 // and so on. Walks the parent chain via findParentThreadID under a single lock.
@@ -210,6 +222,34 @@ func updateToolActionFieldsInArray(doc *ycrdt.Doc, origin string, arr *ycrdt.YAr
 				m.Set(field, convertToYcrdt(value))
 			}
 		}, origin)
+		return true
+	})
+}
+
+// UpdateThreadItemFieldsRecursive searches all arrays (root + nested threads)
+// for the THREAD item whose itemId matches and updates its fields in one
+// transaction. Returns true if the item was found and updated.
+//
+// It walks every item rather than every thread (walkThreads skips aliases,
+// because container questions are not asked of an item that holds no
+// transcript), so it reaches an alias and a receipt as readily as a canonical.
+// Those are exactly the items whose per-call bookkeeping — the
+// runResultFedTurn stamp, a receipt's run selector — has to be written.
+func (cd *ConversationDocument) UpdateThreadItemFieldsRecursive(itemID string, fields map[string]any) bool {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	return walkAllItems(cd.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
+		if id, _ := m.Get("itemId").(string); id != itemID {
+			return false
+		}
+		if t, _ := m.Get("type").(string); t != ItemTypeThread {
+			return false
+		}
+		cd.doc.Transact(func(_ *ycrdt.Transaction) {
+			for field, value := range fields {
+				m.Set(field, convertToYcrdt(value))
+			}
+		}, docInternalOrigin)
 		return true
 	})
 }

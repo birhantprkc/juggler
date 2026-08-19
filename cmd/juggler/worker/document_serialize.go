@@ -330,6 +330,9 @@ func yMapToConversationItem(m *ycrdt.YMap) ConversationItem {
 		RunGoal:                yMapString(m, "runGoal"),
 		RunStatus:              yMapString(m, "runStatus"),
 		RunResult:              yMapString(m, "runResult"),
+		Continuation:           yMapBool(m, "continuation"),
+		RunItemID:              yMapString(m, "runItemId"),
+		RunResultFed:           yMapBool(m, "runResultFed"),
 
 		PreventUserDeletion: yMapBool(m, "preventUserDeletion"),
 		IsNew:               yMapBool(m, "isNew"),

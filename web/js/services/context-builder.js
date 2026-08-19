@@ -90,6 +90,16 @@ function threadContextEntries(msg) {
     return (record && record.result) ? [runContextEntry(itemGoal(msg), sessionName, record)] : [];
   }
 
+  // A receipt stands for a run nobody called, so it contributes a user-role
+  // message rather than a call's result — mirrors buildReceiptMessage.
+  if (msg.get('runItemId')) {
+    const record = itemRunRecord(msg);
+    const label = sessionName || itemGoal(msg) || goal;
+    let head = `${label} · continued in the thread`;
+    if (record?.status && record.status !== 'rest') head += ` · ${record.status}`;
+    return [`${head}\n\n${record?.result || 'That run\'s reply is no longer in the conversation.'}`];
+  }
+
   /** @type {string[]} */
   const entries = [];
   const runs = threadRunRecords(thread);
@@ -208,6 +218,11 @@ export class ContextBuilder {
         }
         continue;
       }
+
+      // A Continue's marker carries that run's record and nothing to say, so it
+      // reaches the model as nothing at all (itemWireMessages in
+      // worker/llm_request.go makes the same exclusion).
+      if (isUserMessage(msg) && msg.get('continuation')) continue;
 
       // Pass through known LLM-relevant message types
       if (isUserMessage(msg) || isAssistantMessage(msg) || isThinkingMessage(msg)

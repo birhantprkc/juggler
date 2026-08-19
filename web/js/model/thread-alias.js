@@ -16,12 +16,16 @@
  * one session read as five results down the parent transcript rather than one
  * tile whose text keeps being overwritten.
  *
- * WHICH run depends on where the item stands. The LAST item referring to a
- * session is its live view: it shows the run the transcript is on now, whoever
- * started it — including a run a human started by typing into a stopped child,
- * which no call named and which nothing else in the parent stands for. Every
- * earlier item is a receipt for the one call it was made by, frozen where that
- * run settled, so a later result can never rewrite a tile further up.
+ * WHICH run depends on where the item stands, and on whether the model has read
+ * it. The LAST item referring to a session is its live view: it shows the run
+ * the transcript is on now, whoever started it — including a run a human started
+ * by typing into a stopped child, which no call named and which nothing else in
+ * the parent stands for. Every earlier item stands for the one call it was made
+ * by, frozen where that run settled, so a later result can never rewrite a tile
+ * further up. An item whose result has gone to the model (`runResultFed`) is
+ * frozen the same way, and a run arriving after that is appended as a RECEIPT: a
+ * third kind of item, standing for a run nobody called, naming it by the message
+ * that started it (`runItemId`) since there is no call to name it by.
  *
  * An alias and its canonical are always siblings: a session is scoped to the
  * thread that called it, so a resume can only be issued from the array the
@@ -95,6 +99,29 @@ function isTrailingViewOf(itemYMap, canonical, siblingArray) {
     return id === itemYMap?.get?.('itemId');
   }
   return false;
+}
+
+/**
+ * The outcome of the run a named message started, or null when that message is
+ * no longer in the transcript.
+ *
+ * This is the selector for a run no call made (`runItemId`, carried by a
+ * receipt). It walks the items directly rather than going through
+ * threadRunRecords, whose "a record needs tool-use coordinates" guard is
+ * load-bearing for the entries built per call — and a human-started run has no
+ * coordinates at all. Mirrors runRecordByItemID in worker/run_records.go.
+ * @param {any} threadYMap - The canonical thread Y.Map.
+ * @param {string} itemId - The itemId of the message that started the run.
+ * @returns {{status: string, result: string}|null} That run's outcome, or null.
+ */
+function runRecordByItemId(threadYMap, itemId) {
+  if (!itemId) return null;
+  for (const item of asArray(threadYMap?.get?.('items'))) {
+    if (typeof item?.get !== 'function' || item.get('type') !== 'user') continue;
+    if (item.get('itemId') !== itemId) continue;
+    return { status: item.get('runStatus') || '', result: item.get('runResult') || '' };
+  }
+  return null;
 }
 
 /**
@@ -227,25 +254,39 @@ export function itemGoal(itemYMap, siblingArray) {
  * strategy-created thread, a fold, every document written before aliases — and
  * for a selector naming a run the transcript no longer holds.
  *
- * Which run that is depends on where the item stands. The LAST item referring to
- * a session is its live view and answers for the run the transcript is on now
- * (isTrailingViewOf); every earlier item answers for the one run its selector
- * names, frozen where that run settled. So a session resumed by a later call
- * reports to the item that call appended, and a session resumed by a human —
- * whose run no call named at all — reports to the item still waiting on it.
- * The live view borrows the OUTCOME only: its call number stays its own, because
- * it is still the parent's view of the call it made. Mirrors itemThreadRun in
+ * Which run that is depends on where the item stands, and on whether it has been
+ * read. The LAST item referring to a session is its live view and answers for
+ * the run the transcript is on now (isTrailingViewOf), so a session resumed by a
+ * human — whose run no call named at all — reports to the item still waiting on
+ * it. Every earlier item answers for the one run its selector names, frozen
+ * where that run settled, so a session resumed by a later call reports to the
+ * item that call appended. The live view borrows the OUTCOME only: its call
+ * number stays its own, because it is still the parent's view of the call it
+ * made.
+ *
+ * An item whose result has already gone to the model (`runResultFed`) is frozen
+ * too, wherever it stands: the live view may absorb news the parent has not
+ * heard, never correct something it has. A run arriving after that gets a
+ * receipt item of its own, which selects it by the message that started it
+ * (`runItemId`) because there is no call to name it by. Mirrors itemThreadRun in
  * worker/run_records.go.
- * @param {any} itemYMap - The thread item Y.Map (canonical or alias).
+ * @param {any} itemYMap - The thread item Y.Map (canonical, alias or receipt).
  * @param {any} [siblingArray] - The array the item stands in.
  * @returns {ItemRunRecord|null} That run's record, or null.
  */
 export function itemRunRecord(itemYMap, siblingArray) {
   const selector = itemYMap?.get?.('runToolUseId');
-  if (!selector) return null;
+  const runItemId = itemYMap?.get?.('runItemId');
+  if (!selector && !runItemId) return null;
   const canonical = isAlias(itemYMap) ? resolveAliasTarget(itemYMap, siblingArray) : itemYMap;
   if (!canonical) return null;
   const runs = threadRunRecords(canonical);
+  if (!selector) {
+    const record = runRecordByItemId(canonical, runItemId);
+    // A run nobody called is numbered after the calls that are recorded: it is
+    // not one of them, but it did happen after them.
+    return record ? { ...record, call: runs.length + 1 } : null;
+  }
   let call = 0;
   let matched = null;
   for (let i = 0; i < runs.length; i++) {
@@ -255,11 +296,19 @@ export function itemRunRecord(itemYMap, siblingArray) {
       break;
     }
   }
-  if (isTrailingViewOf(itemYMap, canonical, siblingArray)) {
+  // A selector no record answers still stands for a call that was made, so it is
+  // numbered after the ones that are recorded.
+  const numbered = call || runs.length + 1;
+  if (!itemYMap.get('runResultFed') && isTrailingViewOf(itemYMap, canonical, siblingArray)) {
     const trailing = trailingRunOutcome(canonical);
-    // A selector no record answers still stands for a call that was made, so it
-    // is numbered after the ones that are recorded.
-    if (trailing) return { ...trailing, call: call || runs.length + 1 };
+    if (trailing) return { ...trailing, call: numbered };
+  }
+  if (runItemId) {
+    // The run this item absorbed while it was still unread (the worker names it
+    // there when the run settles). Read once the item is frozen, so what it
+    // reports is what it sent.
+    const absorbed = runRecordByItemId(canonical, runItemId);
+    if (absorbed) return { ...absorbed, call: numbered };
   }
   if (!matched) return null;
   return { status: matched.status, result: matched.result, call };
@@ -279,9 +328,10 @@ export function itemRunRecord(itemYMap, siblingArray) {
  * fold, every document written before aliases — answers from the thread itself.
  * An ALIAS with no selector stands for no run and is over: it owns no transcript
  * and no summary, so asking the thread question of it would answer "still
- * working" for as long as it exists. Mirrors itemRunSettled in
- * worker/run_records.go.
- * @param {any} itemYMap - The item Y.Map (canonical, alias, or anything else).
+ * working" for as long as it exists. A RECEIPT is over by construction — it is
+ * only ever appended for a run that has already settled, and nobody is waiting
+ * on it. Mirrors itemRunSettled in worker/run_records.go.
+ * @param {any} itemYMap - The item Y.Map (canonical, alias, receipt, or anything else).
  * @param {any} [siblingArray] - The array the item stands in.
  * @returns {boolean} True when this item's run is over.
  */

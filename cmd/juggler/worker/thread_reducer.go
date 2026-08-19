@@ -184,6 +184,19 @@ func decideNextAction(items []ConversationItem, activity string, isRoot bool, ex
 		return ActionNone
 
 	case ItemTypeThread:
+		// A RECEIPT is never a trigger. It stands for a run nobody here asked for
+		// — a human picked a child back up — and it is only ever appended once
+		// this thread's own call has been answered, so nothing is waiting on it.
+		// Waking an idle conversation to react to it would spend a turn the user
+		// never asked for, on work they did in another column. It is news, and it
+		// is read on this thread's next turn, in order, like any other item.
+		if isReceiptItem(last) {
+			if activity == ActivityAwaitingLLM {
+				return ActionGoIdle
+			}
+			return ActionNone
+		}
+
 		// A nested thread is the effective last item. Asked of the run THIS item
 		// stands for: a call into a session already called stands as its own alias
 		// item, which owns no transcript, and asking the alias whether it has one

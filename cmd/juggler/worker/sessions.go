@@ -220,6 +220,19 @@ func sessionPreamble(name string, call int, status string) string {
 	return head
 }
 
+// receiptPreamble is the line a receipt's message opens with: which thread
+// spoke, that nobody called it, and how the run ended when that was anything
+// other than rest. It takes the place of sessionPreamble's "resumed, call N",
+// which would be a lie twice over — no call was made, so there is no call to
+// number.
+func receiptPreamble(label, status string) string {
+	head := label + " · continued in the thread"
+	if status != "" && status != runStatusRest {
+		head += " · " + status
+	}
+	return head
+}
+
 // sessionBusyMessage is the refusal a caller gets for invoking a session whose
 // run has not finished.
 func sessionBusyMessage(name string) string {
@@ -250,6 +263,28 @@ func invocationMessage(opts CreateThreadOptions) ConversationItem {
 	}
 }
 
+// continuationMarker builds the message a Continue starts its run with: no
+// content, no call, nothing to say — just somewhere for that run's outcome to be
+// recorded.
+//
+// Every run needs a record of its own, because a record is what the parent's
+// items point at (ConversationItem.RunItemID) and what tells every decider the
+// thread is working again. Continue is the one gesture with no message behind
+// it, and reusing the previous run's record — clearing its outcome to make it
+// look open — would rewrite an answer the parent may already have read, turning
+// a settled result back into the pending placeholder mid-history.
+//
+// It emits nothing on the wire (itemWireMessages), so a Continue still costs the
+// model exactly what it always did: nothing.
+func continuationMarker() ConversationItem {
+	return ConversationItem{
+		Type:         ItemTypeUser,
+		ItemID:       generateItemID(),
+		Timestamp:    time.Now().Format(time.RFC3339),
+		Continuation: true,
+	}
+}
+
 // aliasItem is the parent's view of one call into a session it has already
 // called: a thread item that owns no transcript and points at the canonical
 // thread holding it.
@@ -275,6 +310,33 @@ func aliasItem(canonicalItemID, goal, sessionName string, opts CreateThreadOptio
 		RunToolName:  opts.ToolName,
 		RunToolInput: opts.ToolInput,
 		RunGoal:      opts.RunGoal,
+	}
+}
+
+// receiptItem is the parent's view of a run NOBODY CALLED: the user typed into
+// a stopped child, or continued it. It stands where an alias would, and shows
+// the same thread, but it is not an alias of a call — there is no tool_use to
+// name, so it selects its run by the child message that started it (RunItemID)
+// and reports on the wire as a single user-role message (appendThreadMessages).
+//
+// It exists because the alternative is rewriting a pair the model has already
+// read. The item still waiting on a call may absorb a human's resume — nothing
+// has been sent, so nothing moves — but once that call has been answered the
+// answer is committed history, and a second run has to land somewhere of its
+// own. Appending it here is what keeps the parent's committed prefix, and the
+// prompt cache warmed on it, exactly where they were.
+//
+// goal and sessionName are frozen display copies for the tile alone, as on an
+// alias; the thread they describe is the truth.
+func receiptItem(canonicalItemID, goal, sessionName, runItemID string) ConversationItem {
+	return ConversationItem{
+		Type:        ItemTypeThread,
+		ItemID:      generateItemID(),
+		Timestamp:   time.Now().Format(time.RFC3339),
+		AliasOf:     canonicalItemID,
+		Goal:        goal,
+		SessionName: sessionName,
+		RunItemID:   runItemID,
 	}
 }
 

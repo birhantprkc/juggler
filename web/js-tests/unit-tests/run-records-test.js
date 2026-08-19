@@ -140,6 +140,58 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`cancelled run keeps its output: ${msg(e)}`); }
 
+  // --- 3b: a stop that settles a run the parent has already read appends ---
+  // The worker does this for the runs it drives; a stop reaching a thread it is
+  // not driving must reach the same shape, or the two writers disagree about
+  // where a run reports and the parent's committed answer gets rewritten by the
+  // browser instead. Mirrors reportRunToParentLocked in worker/run_records.go.
+  try {
+    const doc = new Y.Doc();
+    const root = doc.getArray('items');
+    const t = new Y.Map();
+    const starter = item({ type: 'user', itemId: 'human-1', content: 'keep going' });
+    doc.transact(() => {
+      root.insert(0, [t]);
+      t.set('type', 'thread');
+      t.set('itemId', 'T1');
+      t.set('goal', 'map auth');
+      t.set('sessionName', 'hunt');
+      t.set('runToolUseId', 'tu-1');
+      t.set('runResultFed', true); // the parent has read this call's answer
+      const arr = new Y.Array();
+      t.set('items', arr);
+      arr.insert(0, [
+        item({
+          type: 'user', itemId: 'inv-1', content: 'where is auth?',
+          runToolUseId: 'tu-1', runToolName: 'Explore',
+          runStatus: 'rest', runResult: 'Auth lives in auth.go.'
+        }),
+        starter
+      ]);
+    });
+
+    let minted = 0;
+    doc.transact(() => { settleRunCancelled(t, () => `msg-new-${++minted}`); });
+    assert(t.get('runResultFed') === true && root.length === 2,
+      `the read item must be left alone and a receipt appended; got ${root.length} items`);
+    const receipt = root.get(1);
+    assert(receipt.get('aliasOf') === 'T1' && receipt.get('runItemId') === 'human-1',
+      `the receipt must select the run that just settled; got ${JSON.stringify(receipt.toJSON())}`);
+    assert(receipt.get('sessionName') === 'hunt' && !receipt.get('runToolUseId'),
+      'a receipt shows the session but claims no call');
+
+    // A second stopped run, with that receipt still unread, follows it forward
+    // rather than stacking another item.
+    const again = item({ type: 'user', itemId: 'human-2', content: 'and the tests?' });
+    doc.transact(() => {
+      t.get('items').push([again]);
+      settleRunCancelled(t, () => `msg-new-${++minted}`);
+    });
+    assert(root.length === 2 && root.get(1).get('runItemId') === 'human-2',
+      `an unread receipt must follow the session forward; got ${root.length} items`);
+    passed++;
+  } catch (e) { failed++; errors.push(`browser settle reports to the parent: ${msg(e)}`); }
+
   // --- 4: the terminal Result block is a compaction fold's alone ---
   // A fold's transcript is folded away, so its summary stands nowhere else and
   // the block IS the column. Every other thread ends on the reply its last run

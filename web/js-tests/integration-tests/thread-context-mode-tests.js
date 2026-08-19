@@ -106,7 +106,10 @@ export const threadLocalContextItemRenderedTest = {
       { type: 'system-prompt', itemId: '$ITEM_1' },
       { type: 'user', content: 'Start work' },
       { type: 'thread', itemId: '$ITEM_3' },
-      { type: 'assistant', content: 'Thread finished.' }
+      { type: 'assistant', content: 'Thread finished.' },
+      // The run the user started by typing into the child reports to a receipt
+      // of its own: the root has already read the answer to the call it made.
+      { type: 'thread' }
     ]
   }
 };

@@ -262,18 +262,18 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`resumed session: ${msg(e)}`); }
 
-  // --- 8: Continue reopens only the trailing session item ---
-  // Continue appends no user message, so the worker reuses the latest run
-  // record. Clearing its settled outcome must make only the latest owner spin.
+  // --- 8: Continue moves only the trailing session item ---
+  // Continue has no user message of its own, so the worker appends a marker for
+  // its run to be recorded on. Only the latest owner may follow the session into
+  // that run.
   try {
     const { root, canonical, aliases } = session([
       { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
       { toolUseId: 'tu-2', prompt: 'who calls it?', status: 'cancelled', result: '[The run was cancelled before it finished.]' }
     ]);
     const nested = canonical.get('items');
+    nested.push([item({ type: 'user', itemId: 'cont-1', continuation: true })]);
     const latest = nested.get(nested.length - 1);
-    latest.delete('runStatus');
-    latest.delete('runResult');
 
     const live = { message: 'Streaming…', threadId: 'T1' };
     const earlier = getThreadStatus(canonical, live, root);
@@ -287,7 +287,9 @@ export async function runTests() {
     assert(itemRunSettled(aliases[0], root) === false,
       'the latest owner becomes open');
     assert(getThreadDisplayContent(aliases[0], root).text === '',
-      'the cancellation is cleared while the continued run is active');
+      'the cancellation is left behind while the continued run is active');
+    assert(nested.get(1).get('runResult') === '[The run was cancelled before it finished.]',
+      'the record the parent may already have read is untouched by the Continue');
 
     latest.set('runStatus', 'rest');
     latest.set('runResult', 'The router calls it.');
@@ -297,6 +299,71 @@ export async function runTests() {
       'the latest owner shows the continued answer');
     passed++;
   } catch (e) { failed++; errors.push(`continued session: ${msg(e)}`); }
+
+  // --- 8b: an item the model has read is frozen wherever it stands ---
+  // The live view is a licence to absorb news the parent has not heard, never to
+  // correct something it has. Once a result has gone to the model the item is
+  // committed history: the run that follows gets a receipt of its own, and until
+  // it settles the parent has no item standing for it at all.
+  try {
+    const { root, canonical, aliases } = session([
+      { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
+      { toolUseId: 'tu-2', prompt: 'who calls it?', status: 'rest', result: 'The server calls it.' }
+    ]);
+    aliases[0].set('runResultFed', true);
+    const nested = canonical.get('items');
+    nested.push([item({ type: 'user', itemId: 'human-1', content: 'and the tests?' })]);
+
+    assert(getThreadDisplayContent(aliases[0], root).text === 'The server calls it.',
+      'a tile whose answer the model has read must not blank while the session works again');
+    assert(itemRunSettled(aliases[0], root) === true,
+      'and it must stay settled, or the parent parks on a run nobody asked it to wait for');
+
+    nested.get(nested.length - 1).set('runStatus', 'rest');
+    nested.get(nested.length - 1).set('runResult', 'Tests in auth_test.go.');
+    assert(getThreadDisplayContent(aliases[0], root).text === 'The server calls it.',
+      'and it still answers with its own run once the new one settles');
+    passed++;
+  } catch (e) { failed++; errors.push(`read item is frozen: ${msg(e)}`); }
+
+  // --- 8c: a receipt reports the run nobody called ---
+  // It selects that run by the message that started it, since there is no call to
+  // name it by, and it is settled by construction: it is only ever appended for a
+  // run that has already finished.
+  try {
+    const { root, canonical, aliases } = session([
+      { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
+      { toolUseId: 'tu-2', prompt: 'who calls it?', status: 'rest', result: 'The server calls it.' }
+    ]);
+    aliases[0].set('runResultFed', true);
+    const nested = canonical.get('items');
+    nested.push([item({
+      type: 'user', itemId: 'human-1', content: 'and the tests?',
+      runStatus: 'rest', runResult: 'Tests in auth_test.go.'
+    })]);
+    const receipt = item({
+      type: 'thread', itemId: 'R1', aliasOf: 'T1',
+      goal: 'Find the auth code', sessionName: 'hunt', runItemId: 'human-1'
+    });
+    root.push([receipt]);
+
+    const record = itemRunRecord(receipt, root);
+    assert(record?.result === 'Tests in auth_test.go.',
+      `a receipt reports the run it names; got ${JSON.stringify(record)}`);
+    assert(record?.call === 3,
+      `a run nobody called is numbered after the calls that were made; got call ${record?.call}`);
+    assert(itemRunSettled(receipt, root) === true, 'a receipt is settled by construction');
+    assert(getThreadDisplayContent(receipt, root).text === 'Tests in auth_test.go.',
+      'and its tile shows that run');
+    assert(canonicalThread(receipt, root) === canonical,
+      'selecting it opens the thread it is a view of');
+
+    const gone = item({ type: 'thread', itemId: 'R2', aliasOf: 'T1', runItemId: 'edited-away' });
+    root.push([gone]);
+    assert(itemRunRecord(gone, root) === null,
+      'a receipt whose record has been edited away reads nothing rather than borrowing somebody else\'s');
+    passed++;
+  } catch (e) { failed++; errors.push(`receipt item: ${msg(e)}`); }
 
   // --- 9: an alias is not mistaken for a thread that never finishes ---
   // An alias owns no transcript and no summary, so the thread-level question

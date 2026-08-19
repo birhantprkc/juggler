@@ -979,7 +979,7 @@ class Conversation {
   async cancelThread(threadYMap) {
     await this.interruptThread(threadYMap);
     this.atomicUpdate(() => {
-      settleRunCancelled(threadYMap);
+      settleRunCancelled(threadYMap, () => this._nextItemId());
     });
   }
 
@@ -1022,7 +1022,7 @@ class Conversation {
     });
     if (open.length === 0) return;
     this.atomicUpdate(() => {
-      for (const t of open) settleRunCancelled(t);
+      for (const t of open) settleRunCancelled(t, () => this._nextItemId());
     });
   }
 

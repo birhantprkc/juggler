@@ -833,6 +833,42 @@ type ConversationItem struct {
 	RunStatus    string          `json:"runStatus,omitempty"`
 	RunResult    string          `json:"runResult,omitempty"`
 
+	// Continuation marks the message a Continue appends to start a run with
+	// nothing new to say (continuationMarker). It carries no content and emits no
+	// wire message; it exists so that run has a record of its own to be stamped
+	// with, the way a call has its invocation message and typing has the user's
+	// text. Reusing the previous run's record instead would rewrite an outcome the
+	// parent may already have read.
+	Continuation bool `json:"continuation,omitempty"`
+
+	// RunItemID is the other run selector: the ItemID of the child message that
+	// STARTED the run this thread item stands for. It names the same thing
+	// RunToolUseID does — one run of the canonical transcript — for a run no call
+	// made, so there is no tool-use id to name it by. A receipt item (receiptItem)
+	// carries it; nothing else does.
+	//
+	// Every run has a starting message, which is what makes this a total
+	// selector: a delegated call appends its invocation message, typing into a
+	// stopped child appends a user message, and Continue appends a continuation
+	// marker.
+	RunItemID string `json:"runItemId,omitempty"`
+
+	// RunResultFed marks a thread item whose REAL result — not the pending
+	// placeholder — has been emitted to the provider (buildMessagesFromItems
+	// stamps it, under the same stampPending gate as a tool-action's
+	// resultFedTurn, so snapshot consumers never write).
+	//
+	// It answers the one question the document otherwise cannot: has the model
+	// already been given this item's answer? A pair may be emitted many times as
+	// a placeholder before it is ever emitted as an answer, so position in the
+	// transcript cannot tell the two apart. Once set, the item is a receipt for
+	// something already on the wire and its content may never move again — a
+	// later run of the same session is appended as a new item instead
+	// (settleThreadRun). Unlike a tool-action's resultFedTurn it records no turn
+	// and never expires: the question is whether the model has this item's
+	// answer, not whether it had it recently.
+	RunResultFed bool `json:"runResultFed,omitempty"`
+
 	// TransactionID identifies the LLM round-trip that produced this item.
 	// All items inserted/stamped during one round-trip share the same id;
 	// the corresponding input/output blob is stored on disk via

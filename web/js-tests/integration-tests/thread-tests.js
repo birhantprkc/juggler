@@ -1304,7 +1304,11 @@ export const continueStalledSubThreadTest = {
       { type: 'system-prompt', itemId: '$ITEM_1' },
       { type: 'user', content: 'Go' },
       { type: 'thread', itemId: '$ITEM_3', result: 'v2' },
-      { type: 'assistant', content: 'First pass done.' }
+      { type: 'assistant', content: 'First pass done.' },
+      // The continued run is one the root never asked for, and the root has
+      // already read the answer to the call it did make — so that run reports to
+      // a receipt appended here rather than rewriting the tile above.
+      { type: 'thread' }
     ]
   }
 };

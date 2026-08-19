@@ -160,6 +160,9 @@ export async function runTests() {
     for (const invisible of [
       { type: 'assistant', content: '   ' },
       { type: 'tool-action', toolName: 'memory', state: 'completed', result: { resultType: 'context' } },
+      // A Continue's marker is a run record, not a message: it paints nothing,
+      // so unlike the user message above it must not wedge a run in half.
+      { type: 'user', continuation: true },
     ]) {
       const { items } = build([tool('read'), tool('read'), item(invisible), tool('read')]);
       const entries = fold(items);

@@ -524,11 +524,146 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 	}
 }
 
-// TestContinueReopensOnlyTheTrailingSessionItem covers restarting a cancelled
-// session with Continue, which appends no user message. The latest run record is
-// reused so the latest parent item follows the session back into work, while an
-// earlier item remains a frozen receipt for its own call.
-func TestContinueReopensOnlyTheTrailingSessionItem(t *testing.T) {
+// TestAnsweredCallGetsAReceiptNotARewrite is the other half of
+// TestTrailingItemShowsTheResumedRun, and the reason receipts exist. The same
+// human resume, but this time the parent has already READ the call's answer:
+// rewriting it now would slide every message after it, cold-start a stateful
+// provider, and leave the parent's own reasoning standing after a result that
+// contradicts it. The new run gets an item of its own instead.
+func TestAnsweredCallGetsAReceiptNotARewrite(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.ensureItems()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.storeState(StateProcessing)
+
+	threadID, err := w.createThread(CreateThreadOptions{
+		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
+		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
+	})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	inChild := func(item ConversationItem) {
+		w.thread.itemID = threadID
+		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.resetThreadContext()
+	}
+
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go."})
+	w.settleThreadRun(threadID, false)
+
+	// The parent reads the answer. From here it is committed history.
+	before := w.buildMessages(nil)
+	wireBefore, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// A human picks the child back up and it answers again.
+	inChild(ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "who calls it?"})
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "The router calls it."})
+	w.settleThreadRun(threadID, false)
+
+	after := w.buildMessages(nil)
+	if len(after) != len(before)+1 {
+		t.Fatalf("a resume of an answered call must add exactly one message, got %d against %d:\n%v",
+			len(after), len(before), after)
+	}
+	wirePrefix, err := json.Marshal(after[:len(before)])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(wirePrefix) != string(wireBefore) {
+		t.Fatalf("the answer the parent had already read moved:\nbefore %s\nafter  %s", wireBefore, wirePrefix)
+	}
+	tail := after[len(after)-1]
+	if tail["type"] != ItemTypeUser {
+		t.Fatalf("the new run must arrive as news, not as a second answer to the same call: %v", tail)
+	}
+	if c, _ := tail["content"].(string); !strings.Contains(c, "The router calls it.") {
+		t.Errorf("the receipt must carry the resumed run's reply, got %q", c)
+	}
+
+	// And the parent has a tile for it, pointing at the same thread, settled — it
+	// stands for work the parent never asked for, so it must not park anyone.
+	items := w.doc.GetItems()
+	receipt := items[len(items)-1]
+	if receipt.Type != ItemTypeThread || receipt.AliasOf != threadID || receipt.RunItemID != "human-1" {
+		t.Fatalf("expected a receipt item selecting the human's run, got %+v", receipt)
+	}
+	if !itemRunSettled(items, receipt) {
+		t.Error("a receipt must read as settled, or the parent parks on work nobody asked it to wait for")
+	}
+
+}
+
+// TestUnreadReceiptCoalescesTheNextRun is the same rule read from the other end.
+// A receipt the parent has not read yet is not history, so the next run follows
+// it forward instead of stacking a second item — which is what keeps a user who
+// sends six prompts into a child from costing the parent six items to read.
+func TestUnreadReceiptCoalescesTheNextRun(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.ensureItems()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.storeState(StateProcessing)
+
+	threadID, err := w.createThread(CreateThreadOptions{
+		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
+		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
+	})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	inChild := func(item ConversationItem) {
+		w.thread.itemID = threadID
+		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.resetThreadContext()
+	}
+
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go."})
+	w.settleThreadRun(threadID, false)
+	answered := w.buildMessages(nil) // the parent reads the call's answer
+
+	// Two more runs, with nothing read in between.
+	inChild(ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "who calls it?"})
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "The router calls it."})
+	w.settleThreadRun(threadID, false)
+	inChild(ConversationItem{Type: ItemTypeUser, ItemID: "human-2", Content: "and the tests?"})
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-3", Content: "Tests in auth_test.go."})
+	w.settleThreadRun(threadID, false)
+
+	items := w.doc.GetItems()
+	receipts := 0
+	for _, it := range items {
+		if it.Type == ItemTypeThread && it.RunItemID != "" {
+			receipts++
+		}
+	}
+	if receipts != 1 {
+		t.Fatalf("two unread runs must leave one receipt, got %d", receipts)
+	}
+	if last := items[len(items)-1]; last.RunItemID != "human-2" {
+		t.Errorf("the receipt must have followed the session to its latest run, selects %q", last.RunItemID)
+	}
+
+	got := w.buildMessages(nil)
+	if len(got) != len(answered)+1 {
+		t.Fatalf("two unread runs must cost the parent one message, got %d against %d", len(got), len(answered))
+	}
+	if c, _ := got[len(got)-1]["content"].(string); !strings.Contains(c, "Tests in auth_test.go.") {
+		t.Errorf("the receipt must report the latest run, got %q", c)
+	}
+}
+
+// TestContinueMovesOnlyTheTrailingSessionItem covers restarting a cancelled
+// session with Continue, which has no user message of its own and opens a run on
+// a continuation marker instead. The latest parent item follows the session back
+// into work, while an earlier item remains a frozen receipt for its own call.
+func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
@@ -600,6 +735,76 @@ func TestContinueReopensOnlyTheTrailingSessionItem(t *testing.T) {
 	content, _ := got[1]["content"].(string)
 	if !strings.Contains(content, "The router calls it.") || strings.Contains(content, runCancelledNote) {
 		t.Errorf("continued result = %q, want the new reply without the cancellation", content)
+	}
+}
+
+// TestContinueAfterTheCallWasAnsweredLeavesItAlone is the gesture the old
+// reopen-the-record shape could not survive. Continue used to clear the trailing
+// run record to make it look open — and when the parent had already read that
+// record's result, clearing it rewrote committed history twice over: back to the
+// pending placeholder on the click, then to a different run's answer under the
+// same tool_use id when the new run settled.
+func TestContinueAfterTheCallWasAnsweredLeavesItAlone(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.ensureItems()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.storeState(StateProcessing)
+
+	threadID, err := w.createThread(CreateThreadOptions{
+		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
+		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
+	})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	inChild := func(item ConversationItem) {
+		w.thread.itemID = threadID
+		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.resetThreadContext()
+	}
+
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go."})
+	w.settleThreadRun(threadID, false)
+
+	answered := w.buildMessages(nil) // the parent reads the call's answer
+	wireBefore := mustJSON(t, answered)
+
+	// Continue, with nothing typed.
+	w.storeState(StateIdle)
+	sendMsg(t, w, SendMessageMessage{ThreadItemID: threadID, IsContinuation: true})
+	w.resetThreadContext()
+
+	if got := mustJSON(t, w.buildMessages(nil)); got != wireBefore {
+		t.Fatalf("clicking Continue moved the answer the parent had already read:\nbefore %s\nafter  %s",
+			wireBefore, got)
+	}
+
+	// The child is working again, on a run of its own.
+	child := w.doc.GetItemsFromArray(w.doc.GetThreadItemsArray(threadID))
+	marker := child[len(child)-1]
+	if !marker.Continuation || marker.RunStatus != "" {
+		t.Fatalf("Continue must open a run on a marker of its own, got %+v", marker)
+	}
+	items := w.doc.GetItems()
+	if !itemRunSettled(items, items[len(items)-1]) {
+		t.Error("a call the parent has already read must stay settled — it must not park on a run the human started")
+	}
+
+	// When it answers, that answer is news rather than a correction.
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "The router calls it."})
+	w.settleThreadRun(threadID, false)
+
+	after := w.buildMessages(nil)
+	if len(after) != len(answered)+1 {
+		t.Fatalf("the continued run must add exactly one message, got %d against %d", len(after), len(answered))
+	}
+	if got := mustJSON(t, after[:len(answered)]); got != wireBefore {
+		t.Fatalf("the continued run rewrote the call's answer:\nbefore %s\nafter  %s", wireBefore, got)
+	}
+	if c, _ := after[len(after)-1]["content"].(string); !strings.Contains(c, "The router calls it.") {
+		t.Errorf("the receipt must carry the continued run's reply, got %q", c)
 	}
 }
 

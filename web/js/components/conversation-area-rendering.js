@@ -500,13 +500,18 @@ function createMessageElement(tagName, options) {
 }
 
 /**
- * Create a user message element.
+ * Create a user message element, or null for a message that paints nothing.
  * @param {Message} message
  * @param {number} [itemIndex]
- * @returns {HTMLElement} Created element.
+ * @returns {HTMLElement|null} Created element, or null.
  */
 function createUserBubble(message, itemIndex) {
   const msg = /** @type {import('../../sdk/lib/message.js').UserMessage} */ (message);
+  // A Continue's marker is a run record, not a message: it holds the outcome of
+  // the run that click started (worker/sessions.go continuationMarker) and says
+  // nothing. Painting it would put an empty bubble where a Continue has always
+  // left the transcript alone. Mirrored by rendersNothing in utils/item-grouping.js.
+  if (msg.get('continuation')) return null;
   /** @type {Record<string, string>} */
   const attributes = { content: msg.get('content') || '' };
   const attachments = normalizeAttachments(msg.get('attachments'));
