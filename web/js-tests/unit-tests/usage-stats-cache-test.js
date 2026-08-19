@@ -157,6 +157,27 @@ export async function runTests(_ctx) {
     assert(usageStatsCache.get(p)?.stats?.[0]?.usedPercent === 33, 'a thrown fetch must not clobber the cache');
   });
 
+  await run('a provider error is exposed and cleared by a successful refresh', async () => {
+    const p = 'claude-login-error';
+    const stub = stubFetch(() => ({
+      ok: true,
+      json: async () => ({
+        usage: [],
+        errors: { [p]: 'claude CLI usage poll skipped: sign-in not yet confirmed' },
+      }),
+    }));
+    try {
+      await usageStatsCache.refresh(p, { force: true });
+    } finally {
+      stub.restore();
+    }
+    assert(usageStatsCache.getError(p).includes('sign-in not yet confirmed'),
+      'the provider error must be available to usage displays');
+
+    await refreshWith(p, []);
+    assert(usageStatsCache.getError(p) === '', 'a successful refresh must clear the previous error');
+  });
+
   await run('a falsy provider name is a no-op that resolves null', async () => {
     const snap = await usageStatsCache.refresh('', { force: true });
     assert(snap === null, 'empty provider name resolves null without fetching');

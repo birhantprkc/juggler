@@ -16,6 +16,7 @@
  * debounced to one call per REFRESH_INTERVAL_MS and de-dupes concurrent callers.
  */
 
+import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { fetchJson } from './http.js';
 
 /**
@@ -45,6 +46,8 @@ const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 /** @type {Map<string, UsageStats|null>} provider name → latest snapshot (null = fetched, none reported). */
 const _byProvider = new Map();
+/** @type {Map<string, string>} provider name → latest fetch error. */
+const _errors = new Map();
 /** @type {Map<string, number>} provider name → last live-fetch timestamp. */
 const _lastFetch = new Map();
 /** @type {Map<string, Promise<UsageStats|null>>} provider name → in-flight fetch. */
@@ -59,6 +62,16 @@ const usageStatsCache = {
   get(providerName) {
     if (!providerName) return null;
     return _byProvider.get(providerName) || null;
+  },
+
+  /**
+   * Latest usage fetch error for one provider.
+   * @param {string} providerName
+   * @returns {string} The server-reported error, or ''.
+   */
+  getError(providerName) {
+    if (!providerName) return '';
+    return _errors.get(providerName) || '';
   },
 
   /**
@@ -98,6 +111,11 @@ const usageStatsCache = {
         /** @type {UsageStats[]} */
         const list = Array.isArray(data?.usage) ? data.usage : [];
         const snapshot = list.find(u => u && u.provider === providerName) || null;
+        const fetchError = typeof data?.errors?.[providerName] === 'string'
+          ? data.errors[providerName].trim()
+          : '';
+        if (fetchError) _errors.set(providerName, fetchError);
+        else _errors.delete(providerName);
         // Retain the last known-good snapshot when this fetch came back empty.
         // The upstream usage endpoint refreshes only every few minutes and hands
         // an empty/placeholder payload to polls in between; blanking the cached
@@ -115,6 +133,8 @@ const usageStatsCache = {
         _lastFetch.set(providerName, Date.now());
         return _byProvider.get(providerName) || null;
       } catch (err) {
+        const message = extractErrorMessage(err);
+        _errors.set(providerName, message);
         console.warn('[usageStatsCache] refresh failed:', err);
         return _byProvider.get(providerName) || null;
       } finally {

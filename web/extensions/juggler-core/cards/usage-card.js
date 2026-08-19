@@ -46,6 +46,17 @@ function providerLabel(providerName) {
 }
 
 /**
+ * Keep the card's error state useful without pouring an upstream command line
+ * into the sidebar. The full error remains available as a tooltip.
+ * @param {string} error
+ * @returns {string} Short user-facing error.
+ */
+function usageErrorLabel(error) {
+  if (/sign-in not yet confirmed|not logged in/i.test(error)) return 'Not logged in';
+  return 'Couldn’t get usage';
+}
+
+/**
  * The Usage info card.
  */
 export default class UsageCard extends InfoCardType {
@@ -81,6 +92,7 @@ export default class UsageCard extends InfoCardType {
       if (disposed) return;
       const providerName = activeProvider(session);
       const usage = usageStatsCache.get(providerName);
+      const error = usageStatsCache.getError(providerName);
       const stats = usage?.stats || [];
       const hasStats = stats.length > 0;
       const subtitle = providerName
@@ -88,7 +100,9 @@ export default class UsageCard extends InfoCardType {
         : '';
       const body = hasStats
         ? stats.map(renderUsageRow).join('')
-        : '<p class="info-card__body">No usage data</p>';
+        : error
+          ? `<p class="info-card__body" title="${escapeHtml(error)}">${usageErrorLabel(error)}</p>`
+          : '<p class="info-card__body">No usage data</p>';
       const html = `${subtitle}${body}`;
       if (html !== lastHTML) {
         contentEl.innerHTML = html;
