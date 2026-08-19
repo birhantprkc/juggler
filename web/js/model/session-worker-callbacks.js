@@ -33,7 +33,8 @@ const CONTEXT_SYNC_WAIT_MS = 3000;
 const CONTEXT_SYNC_POLL_MS = 100;
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { FormattingHelpers } from '../../sdk/lib/formatting-helpers.js';
-import { generateToolDefinitions, resolveToolName } from '../services/tool-generator.js';
+import { resolveToolName } from '../services/tool-generator.js';
+import { buildToolInventory } from '../services/thread-tool-inventory.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { buildApprovalButtons } from '../services/approval-options.js';
 import { assembleSystemPrompt, systemPositionItems as systemPositionItemsOf, contextPositionOf } from '../services/system-prompt-builder.js';
@@ -330,8 +331,6 @@ export function setupWorkerCallbacks(session) {
     const req = /** @type {*} */ (request);
 
     try {
-      let tools = await generateToolDefinitions();
-
       // Let the strategy of the thread this turn belongs to filter the tools
       // (e.g. plan restricts to read-only while planning; a sub-agent is offered
       // only what its brief needs). Resolved per thread rather than from root,
@@ -340,16 +339,17 @@ export function setupWorkerCallbacks(session) {
       // the approval gate — which resolves the OWNING thread (findThreadForTool
       // → handleNewToolAction) — would then be the only thing standing between
       // the sub-agent and a tool it was never meant to see.
+      //
+      // buildToolInventory is shared with the System Prompt panel's Tools
+      // section, so what the user is shown is produced by the same call that
+      // decides what to send.
       const conv = session.conversations.get(conversationId);
       const thread = req.threadItemId
         ? conv?.getAllMessageThreads?.().find((/** @type {any} */ mt) => mt.threadItemId === req.threadItemId)
         : conv?.rootMessageThread;
-      const strategy = (thread || conv?.rootMessageThread)?.strategy;
-      if (strategy?.filterTools) {
-        tools = /** @type {typeof tools} */ (strategy.filterTools(tools));
-      }
+      const { offered } = await buildToolInventory(thread || conv?.rootMessageThread);
 
-      workerManager.sendToolsResult(conversationId, req.requestId, tools);
+      workerManager.sendToolsResult(conversationId, req.requestId, offered);
     } catch (error) {
       console.error(`[Session] Error generating tools for ${conversationId}:`, error);
       workerManager.sendToolsResult(conversationId, req.requestId, []);

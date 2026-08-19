@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"juggler/internal/userpaths"
 )
@@ -24,11 +25,17 @@ type ServerConfig struct {
 	Command   string            `json:"command,omitempty"`
 	Args      []string          `json:"args,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
-	Transport string            `json:"transport,omitempty"` // "stdio" (default), "http"/"streamable", or "sse"
+	Transport string            `json:"transport,omitempty"` // "stdio" (default), "http", or "sse"
 	URL       string            `json:"url,omitempty"`       // http/sse transports only
 	Headers   map[string]string `json:"headers,omitempty"`   // http/sse transports only; e.g. {"Authorization": "Bearer …"}
 	Enabled   *bool             `json:"enabled,omitempty"`   // manager-level kill switch; default true
 	LazyTools bool              `json:"lazyTools,omitempty"` // phase 4; parsed but unused in phase 1
+
+	// Type is the spelling the de-facto .mcp.json format uses for the same
+	// choice Transport makes, and is what a config copied from another agent
+	// carries. It is folded onto Transport by normalize() at parse time and
+	// never written back, so no other code in this package reads it.
+	Type string `json:"type,omitempty"`
 
 	// Tools is a per-server visibility filter: it hides individual tools from the
 	// model (and blocks calls to them) without disabling the whole server. Nil
@@ -54,7 +61,36 @@ type ToolFilter struct {
 // IsEnabled reports whether the server should be started. Absent means enabled.
 func (c ServerConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
-// transportKind returns the effective transport, defaulting to stdio.
+// canonicalTransport folds the spellings a config can arrive with onto the three
+// kinds buildTransport implements. Streamable HTTP is written four different ways
+// across the ecosystem and they all mean the same endpoint, so they all become
+// "http". An unrecognised value passes through (lowercased) rather than being
+// coerced to a default: startServer then names it back in "unsupported transport
+// %q", which is far more use than silently connecting to something else.
+func canonicalTransport(transport string) string {
+	switch t := strings.ToLower(strings.TrimSpace(transport)); t {
+	case "http", "streamable", "streamable-http", "streamablehttp":
+		return "http"
+	default:
+		return t
+	}
+}
+
+// normalize folds Type onto Transport and canonicalises the result, so every
+// later reader — and anything written back to disk — sees exactly one spelling.
+// Transport wins when both are set and disagree: it is Juggler's own key, so an
+// entry carrying both was edited here after being pasted from elsewhere.
+func (c *ServerConfig) normalize() {
+	if strings.TrimSpace(c.Transport) == "" {
+		c.Transport = c.Type
+	}
+	c.Type = ""
+	c.Transport = canonicalTransport(c.Transport)
+}
+
+// transportKind returns the effective transport, defaulting to stdio. Callers
+// see canonical values: every path that produces a ServerConfig normalizes it
+// first (readConfigFile, coerceServerConfig).
 func (c ServerConfig) transportKind() string {
 	if c.Transport == "" {
 		return "stdio"
@@ -87,7 +123,8 @@ func projectConfigPath(projectRoot string) string {
 
 // readConfigFile parses one mcp.json. A missing file is not an error (returns an
 // empty config); a malformed file returns the parse error so it surfaces loudly
-// rather than silently dropping servers.
+// rather than silently dropping servers. Every entry is normalized here, so this
+// is the only place transport aliases have to be understood.
 func readConfigFile(path string) (Config, error) {
 	if path == "" {
 		return Config{}, nil
@@ -105,6 +142,10 @@ func readConfigFile(path string) (Config, error) {
 	}
 	if cfg.Servers == nil {
 		cfg.Servers = map[string]ServerConfig{}
+	}
+	for name, sc := range cfg.Servers {
+		sc.normalize()
+		cfg.Servers[name] = sc
 	}
 	return cfg, nil
 }
@@ -151,7 +192,8 @@ func writeConfigFile(path string, servers map[string]ServerConfig) error {
 
 // coerceServerConfig converts one JSON-decoded server entry (map[string]any)
 // into a typed ServerConfig via a JSON round-trip, so the mcpSetConfig op can
-// accept the same shape the settings UI sends.
+// accept the same shape the settings UI sends. Normalized like a parsed file, so
+// an entry pasted into the API with "type" is stored under "transport".
 func coerceServerConfig(entry any) (ServerConfig, error) {
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -161,5 +203,6 @@ func coerceServerConfig(entry any) (ServerConfig, error) {
 	if err := json.Unmarshal(data, &sc); err != nil {
 		return ServerConfig{}, err
 	}
+	sc.normalize()
 	return sc, nil
 }

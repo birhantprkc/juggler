@@ -97,6 +97,70 @@ const SYSTEM_PROMPT_STYLES = `
 .system-prompt-section-body .ci-text-block {
   opacity: 0.85;
 }
+/* Tools section: a plain list, because its job is to be scanned for a name that
+   should be there and isn't. */
+.system-prompt-tools {
+  display: flex;
+  flex-direction: column;
+  /* Rows shrink to their text rather than stretching to the column. A row's
+     tooltip is its description, and a full-width row would hang that tooltip
+     off to the right of a short name, nowhere near the word it describes. */
+  align-items: flex-start;
+  gap: 0.1rem;
+}
+.system-prompt-tools > * {
+  max-width: 100%;
+}
+.system-prompt-tools-count {
+  color: var(--text-tertiary);
+  margin-bottom: 0.35rem;
+}
+.system-prompt-tools-group {
+  margin-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+.system-prompt-tools-group:first-child {
+  margin-top: 0;
+}
+.system-prompt-tool {
+  padding: 0 0 0 0.75rem;
+  border: none;
+  background: none;
+  font: inherit;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.system-prompt-tool:hover,
+.system-prompt-tool:focus-visible {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.system-prompt-tool-withheld {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+}
+.system-prompt-tool-withheld:hover,
+.system-prompt-tool-withheld:focus-visible {
+  color: var(--text-secondary);
+  text-decoration: line-through underline;
+}
+.system-prompt-tools-silent {
+  margin-top: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--warning, var(--text-tertiary));
+}
+.system-prompt-tools-drift {
+  margin-bottom: 0.35rem;
+  color: var(--warning, var(--text-tertiary));
+}
 /* Preset browser + manage-presets dropdowns -------------------------------
    Self-contained rows (no shared .menu-item dependency) so the layout reads
    like a tidy macOS menu: a leading check/icon column keeps every label on one
@@ -457,6 +521,13 @@ class SystemPromptContextItem extends ContextItem {
     const extSection = this._addPreviewSection(wrapper, 'extensions', 'Extension guidance', 'Loading…');
     this._fillExtensionGuidance(extSection);
 
+    // Section 5: Tools. The prompt is only half of what the model is handed —
+    // the other half is the tool list, and it is the half with no other home in
+    // the document. A tool that is missing here was never offered, whatever the
+    // model later claims about it.
+    const toolsSection = this._addPreviewSection(wrapper, 'tools', 'Tools', 'Loading…');
+    this._fillToolInventory(toolsSection);
+
     return wrapper;
   }
 
@@ -579,6 +650,242 @@ class SystemPromptContextItem extends ContextItem {
     } catch {
       section.remove();
     }
+  }
+
+  /**
+   * Fill the Tools section with the tools this thread offers the model.
+   *
+   * The list comes from `buildToolInventory`, the same call the turn path uses
+   * to decide what to send, so this cannot show one set while another is sent.
+   * Three things are surfaced that nothing else in the UI says out loud: which
+   * MCP server each tool came from, which tools the thread's strategy is holding
+   * back (a withheld tool looks exactly like a missing one from the outside),
+   * and any MCP server that is configured but not currently serving.
+   * @private
+   * @param {HTMLElement} section - The section element to fill or remove
+   * @returns {Promise<void>}
+   */
+  async _fillToolInventory(section) {
+    const body = section.querySelector('.system-prompt-section-body');
+    if (!body) return;
+    try {
+      const { buildToolInventory, groupToolsByOrigin, parseMcpToolName } =
+        await import('../../../js/services/thread-tool-inventory.js');
+      const inventory = await buildToolInventory(this.messageThread);
+      const servers = await this._loadMcpServerStatus();
+      const drift = await this._toolDriftSinceLastTurn(inventory.offered);
+
+      body.replaceChildren();
+      body.appendChild(this._buildToolInventoryView(
+        inventory, groupToolsByOrigin(inventory.offered), servers, parseMcpToolName, drift
+      ));
+    } catch (err) {
+      // Never leave "Loading…" sitting there: a panel that can't answer should
+      // say so, since silence here reads as "no tools".
+      body.replaceChildren(createTextBlock(
+        `Couldn't read the tool list.\n\n${err instanceof Error ? err.message : String(err)}`
+      ));
+    }
+  }
+
+  /**
+   * MCP server status, keyed by name. Best-effort: a server list we can't fetch
+   * simply means no status annotations, not a broken section.
+   * @private
+   * @returns {Promise<Map<string, {status?: string, error?: string, toolCount?: number}>>} Status by server name
+   */
+  async _loadMcpServerStatus() {
+    /** @type {Map<string, {status?: string, error?: string, toolCount?: number}>} */
+    const byName = new Map();
+    try {
+      const { mcpListServers } = await import('juggler/ops');
+      const res = await mcpListServers();
+      for (const s of (res?.servers || [])) byName.set(String(s.name), s);
+    } catch {
+      // No MCP ops available (or none configured) — leave the map empty.
+    }
+    return byName;
+  }
+
+  /**
+   * How this thread's live tool list differs from the one the last turn actually
+   * sent.
+   *
+   * This panel renders in the viewer while turns are built in the engine worker,
+   * and each holds its own MCP snapshot — so the list shown here is a
+   * reconstruction, and a reconstruction that can silently disagree with what
+   * was sent is worse than no panel at all. Comparing against the recorded blob
+   * turns that risk into a visible statement. A difference is usually not a bug:
+   * a server that finished connecting after the last turn genuinely does have
+   * tools the model has not been offered yet, which is exactly the state that
+   * makes a model insist a tool doesn't exist.
+   * @private
+   * @param {Array<any>} offered - Tools currently on offer for this thread
+   * @returns {Promise<{added: string[], removed: string[]}|null>} The difference, or null when there is nothing to compare against
+   */
+  async _toolDriftSinceLastTurn(offered) {
+    try {
+      const { findLastAssistantTxnId } = await import('../../../js/utils/transaction-anchor.js');
+      const txnId = findLastAssistantTxnId(this.messageThread?.items);
+      const convId = this.messageThread?.conversation?.id;
+      if (!txnId || !convId) return null;
+
+      const { default: workerManager } = await import('../../../js/services/worker-manager.js');
+      const blob = /** @type {any} */ (await workerManager.getTransaction(convId, txnId));
+      const sent = blob?.input?.tools;
+      if (!Array.isArray(sent)) return null;
+
+      const sentNames = new Set(sent.map((/** @type {any} */ t) => String(t?.name || '')));
+      const liveNames = new Set(offered.map((t) => String(t?.name || '')));
+      return {
+        added: [...liveNames].filter((n) => !sentNames.has(n)),
+        removed: [...sentNames].filter((n) => !liveNames.has(n))
+      };
+    } catch {
+      // No blob, no worker, no comparison — the list still stands on its own.
+      return null;
+    }
+  }
+
+  /**
+   * Render the inventory: a count line, one group per origin, then the withheld
+   * group and any silent MCP servers.
+   * @private
+   * @param {{offered: Array<any>, withheld: Array<any>, strategyName: string}} inventory - What is offered and what isn't
+   * @param {Array<{title: string, server: string|null, tools: Array<any>, tokens: number}>} groups - Offered tools, grouped
+   * @param {Map<string, {status?: string, error?: string, toolCount?: number}>} servers - MCP status by server name
+   * @param {(name: string) => {server: string, tool: string}|null} parseMcp - MCP name splitter
+   * @param {{added: string[], removed: string[]}|null} drift - Difference from the last turn's recorded tool list
+   * @returns {HTMLElement} The section body content
+   */
+  _buildToolInventoryView(inventory, groups, servers, parseMcp, drift) {
+    const wrap = createElement('div', 'system-prompt-tools');
+
+    const count = createElement('div', 'system-prompt-tools-count');
+    count.textContent = inventory.offered.length === 1
+      ? '1 tool available to the model'
+      : `${inventory.offered.length} tools available to the model`;
+    wrap.appendChild(count);
+
+    const changes = [];
+    if (drift?.added.length) changes.push(`${drift.added.length} added`);
+    if (drift?.removed.length) changes.push(`${drift.removed.length} gone`);
+    if (changes.length) {
+      const line = createElement('div', 'system-prompt-tools-drift');
+      line.textContent = `${changes.join(', ')} since the last turn — the model has not been offered this list yet.`;
+      line.title = [
+        drift?.added.length ? `Added: ${drift.added.join(', ')}` : '',
+        drift?.removed.length ? `Gone: ${drift.removed.join(', ')}` : ''
+      ].filter(Boolean).join('\n');
+      wrap.appendChild(line);
+    }
+
+    for (const group of groups) {
+      const heading = createElement('div', 'system-prompt-tools-group');
+      heading.textContent = group.title;
+      if (group.server) {
+        const status = servers.get(group.server)?.status;
+        if (status && status !== 'running') heading.textContent += ` — ${status}`;
+      }
+      wrap.appendChild(heading);
+
+      for (const tool of group.tools) {
+        const parts = group.server ? parseMcp(String(tool?.name || '')) : null;
+        wrap.appendChild(this._buildToolRow(
+          String(tool?.name || ''),
+          parts ? parts.tool : String(tool?.name || ''),
+          String(tool?.description || ''),
+          group.server
+        ));
+      }
+    }
+
+    // Configured MCP servers that contributed nothing. Without this the section
+    // is simply missing a group, which looks identical to never having set the
+    // server up at all.
+    for (const [name, status] of servers) {
+      if (groups.some((g) => g.server === name)) continue;
+      const row = createElement('div', 'system-prompt-tools-silent');
+      const detail = status?.error ? String(status.error).split('\n')[0] : '';
+      row.textContent = `MCP · ${name} — ${status?.status || 'not running'}${detail ? `: ${detail}` : ''}`;
+      wrap.appendChild(row);
+    }
+
+    if (inventory.withheld.length) {
+      const heading = createElement('div', 'system-prompt-tools-group');
+      heading.textContent = inventory.strategyName
+        ? `Withheld by ${inventory.strategyName}`
+        : 'Withheld';
+      wrap.appendChild(heading);
+      for (const tool of inventory.withheld) {
+        const name = String(tool?.name || '');
+        const row = this._buildToolRow(name, name, String(tool?.description || ''), parseMcp(name)?.server ?? null);
+        row.classList.add('system-prompt-tool-withheld');
+        wrap.appendChild(row);
+      }
+    }
+
+    return wrap;
+  }
+
+  /**
+   * One tool row, which doubles as a link to wherever that tool is configured:
+   * an MCP tool leads to its server's settings (where its per-tool checkbox
+   * lives), anything else to the extension that defines it. Reading a tool's
+   * name is usually the moment you want to go and do something about it.
+   * @private
+   * @param {string} toolName - The LLM-facing tool name
+   * @param {string} label - What to show (MCP tools drop the server prefix their heading already carries)
+   * @param {string} description - Tooltip text
+   * @param {string|null} server - Owning MCP server, or null for a built-in
+   * @returns {HTMLElement} The row element
+   */
+  _buildToolRow(toolName, label, description, server) {
+    const row = createElement('button', 'system-prompt-tool');
+    /** @type {HTMLButtonElement} */ (row).type = 'button';
+    row.textContent = label;
+    row.title = description
+      ? `${description}\n\n${server ? `Configure "${server}"` : 'Show where this tool is defined'}`
+      : (server ? `Configure "${server}"` : 'Show where this tool is defined');
+    row.addEventListener('click', () => { void this._openToolDefinition(toolName, server); });
+    return row;
+  }
+
+  /**
+   * Send the user to where a tool is configured.
+   *
+   * MCP tools all share one context-item id, so the extensions catalog would
+   * land every one of them on the MCP bridge itself — true, and no help at all
+   * when the question is "why isn't my server's tool here". Those go to the
+   * server's own settings instead; everything else goes to the extension that
+   * defines it, reusing the catalog deep-link the item badges already use.
+   * @private
+   * @param {string} toolName - The LLM-facing tool name
+   * @param {string|null} server - Owning MCP server, or null for a built-in
+   * @returns {Promise<void>}
+   */
+  async _openToolDefinition(toolName, server) {
+    const openSettings = /** @type {any} */ (globalThis).openSettings;
+    if (typeof openSettings !== 'function') return;
+
+    if (server) {
+      openSettings('mcp', { mcpServer: server });
+      return;
+    }
+
+    try {
+      const { default: contextItemRegistry } =
+        await import('../../../js/registries/context-item-registry.js');
+      const ItemClass = /** @type {any} */ (contextItemRegistry.getByToolName(toolName));
+      const id = ItemClass?.MANIFEST?.id;
+      if (id) {
+        openSettings('extensions', { capability: { itemType: 'context-item', id } });
+        return;
+      }
+    } catch {
+      // Fall through: the Extensions tab on its own is still a useful landing.
+    }
+    openSettings('extensions');
   }
 
   /**

@@ -75,6 +75,8 @@ import { runTests as runMessageTypeGuardTests } from '../unit-tests/message-type
 import { runTests as runModelFilterTests } from '../unit-tests/model-filter-test.js';
 import { runTests as runMonitorToolsTests } from '../unit-tests/monitor-tools-test.js';
 import { runTests as runToolSchemaTests } from '../unit-tests/tool-schema-test.js';
+import { runTests as runTransactionToolListTests } from '../unit-tests/transaction-tool-list-test.js';
+import { runTests as runThreadToolInventoryTests } from '../unit-tests/thread-tool-inventory-test.js';
 import { runTests as runMcpApprovalToolNameTests } from '../unit-tests/mcp-approval-toolname-test.js';
 import { runTests as runMcpEvaluateToolNameTests } from '../unit-tests/mcp-evaluate-toolname-test.js';
 import { runTests as runMcpSettingsTests } from '../unit-tests/mcp-settings-test.js';
@@ -307,6 +309,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:model-filter', run: runModelFilterTests },
   { name: 'unit:monitor-tools', run: runMonitorToolsTests },
   { name: 'unit:tool-schema', run: runToolSchemaTests },
+  { name: 'unit:transaction-tool-list', run: runTransactionToolListTests },
+  { name: 'unit:thread-tool-inventory', run: runThreadToolInventoryTests },
   { name: 'unit:mcp-approval-toolname', run: runMcpApprovalToolNameTests },
   { name: 'unit:mcp-evaluate-toolname', run: runMcpEvaluateToolNameTests },
   { name: 'unit:mcp-settings', run: runMcpSettingsTests },

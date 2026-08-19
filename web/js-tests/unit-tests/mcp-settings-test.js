@@ -20,6 +20,7 @@ import {
   setConfigEntryEnabled as mcpSetEnabledMap,
   configScopeOf as mcpScopeOf,
   isRemoteTransport,
+  ConfigTabController,
 } from '../../js/components/config-tab.js';
 import {
   formatMcpTokenCost,
@@ -309,6 +310,82 @@ export async function runTests(_ctx) {
   await run('extra: empty form yields no extra keys', () => {
     const out = mcpFormToConfigExtra({ toolsLoaded: false, toolAllow: null, toolDeny: [], defaultArgsText: '  ' });
     assert(!('tools' in out) && !('defaultArguments' in out), 'empty form should add nothing');
+  });
+
+  // --- deep link: a tool leads back to the server that provides it -----------
+  // The Tools list on the System Prompt item links each MCP tool to its server's
+  // settings. `show()` fires its first refresh WITHOUT awaiting it, so the link
+  // arrives before the config does — these pin that revealEntry waits, instead
+  // of opening a form seeded from an empty config, which on screen is
+  // indistinguishable from a config that failed to load.
+
+  /**
+   * A controller wired to a deliberately slow fake backend, reproducing the real
+   * ordering: the deep link is requested immediately after show().
+   * @param {number} delayMs - How long the fake config fetch takes
+   * @returns {ConfigTabController} A shown controller (caller must stopPolling)
+   */
+  const shownController = (delayMs) => {
+    const host = document.createElement('div');
+    const config = {
+      global: { linear: { transport: 'http', url: 'https://mcp.linear.app/mcp' } },
+      project: {},
+      hasProject: false,
+    };
+    const ctrl = new ConfigTabController(host, /** @type {any} */ ({
+      id: 'mcp',
+      noun: 'server',
+      formHostSelector: '#mcp-form',
+      pollMs: 100000,
+      loadError: 'Failed to load MCP servers.',
+      ops: {
+        list: async () => [{ name: 'linear', status: 'running' }],
+        getConfig: async () => {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          return config;
+        },
+      },
+    }));
+    ctrl.show();
+    return ctrl;
+  };
+
+  await run('deep link: revealEntry waits for the config before seeding the form', async () => {
+    const ctrl = shownController(20);
+    try {
+      assert(Object.keys(ctrl.config.global).length === 0, 'precondition: the config should not have landed yet');
+      const ok = await ctrl.revealEntry('linear');
+      assert(ok === true, 'revealEntry should report success for a known server');
+      assert(ctrl.editing?.name === 'linear', `editing was ${JSON.stringify(ctrl.editing?.name)}`);
+      assert(
+        ctrl.editing?.transport === 'http',
+        `form seeded with transport ${JSON.stringify(ctrl.editing?.transport)} — it did not wait for the config`
+      );
+      assert(ctrl.editing?.url === 'https://mcp.linear.app/mcp', 'the form did not carry the server url');
+    } finally {
+      ctrl.stopPolling();
+    }
+  });
+
+  await run('deep link: an unknown server opens no form and says so', async () => {
+    const ctrl = shownController(0);
+    try {
+      const ok = await ctrl.revealEntry('ghost');
+      assert(ok === false, 'revealEntry should report failure for an unknown server');
+      assert(!ctrl.editing, 'no form should open for a server that does not exist');
+    } finally {
+      ctrl.stopPolling();
+    }
+  });
+
+  await run('deep link: an empty name is refused', async () => {
+    const ctrl = shownController(0);
+    try {
+      assert(await ctrl.revealEntry('') === false, 'an empty name should be refused');
+      assert(!ctrl.editing, 'no form should open');
+    } finally {
+      ctrl.stopPolling();
+    }
   });
 
   return { passed, failed, errors };

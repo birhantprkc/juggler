@@ -21,6 +21,7 @@ import { formatNumber, formatTokens } from '../utils/format.js';
 import { escapeJsonContent } from '../../sdk/lib/html.js';
 import { createCopyButton } from '../utils/properties-panel-helpers.js';
 import { estimateValueTokens, LONG_TEXT_CHARS } from '../utils/token-estimate.js';
+import { groupToolsByOrigin, parseMcpToolName } from '../services/thread-tool-inventory.js';
 
 /**
  * @typedef {object} TransactionBlobInput
@@ -237,7 +238,7 @@ function _buildInputSection(blob) {
     rows.appendChild(_row('system prompt', _firstLine(systemPrompt), systemPrompt));
   }
   if (tools.length) {
-    rows.appendChild(_row('tools', `${tools.length} available`, tools));
+    rows.appendChild(_buildToolsRow(tools));
   }
 
   const displayMessages = _transformMessagesForDisplay(messages);
@@ -280,10 +281,12 @@ function _inputSummary(blob, parts) {
  * @param {string} kind - Row kind shown in the leading lozenge (e.g. 'tool-use').
  * @param {string} label - One-line preview, ellipsised by CSS when it overflows.
  * @param {unknown} value - The entry itself; rendered as the body, measured for the size.
- * @param {{open?: boolean}} [options] - `open` renders the row expanded.
+ * @param {{open?: boolean, body?: () => HTMLElement}} [options] - `open` renders the row
+ *   expanded; `body` replaces the generic value tree for entries that deserve a
+ *   shape of their own.
  * @returns {HTMLElement} The row element.
  */
-function _row(kind, label, value, { open = false } = {}) {
+function _row(kind, label, value, { open = false, body = undefined } = {}) {
   const row = document.createElement('details');
   row.className = 'tx-row';
 
@@ -319,7 +322,7 @@ function _row(kind, label, value, { open = false } = {}) {
   const build = () => {
     if (built) return;
     built = true;
-    row.appendChild(_buildEntryBody(value));
+    row.appendChild(body ? body() : _buildEntryBody(value));
   };
   row.addEventListener('toggle', () => {
     if (row.open) build();
@@ -330,6 +333,121 @@ function _row(kind, label, value, { open = false } = {}) {
   }
 
   return row;
+}
+
+// ============================================================================
+// Tool definitions
+// ============================================================================
+
+/**
+ * @typedef {object} ToolEntry
+ * @property {string} [name] - LLM-facing tool name.
+ * @property {string} [description] - Description advertised to the model.
+ * @property {unknown} [input_schema] - JSON Schema for the arguments.
+ * @property {string} [category] - 'read' | 'write' | 'meta', when the engine recorded one.
+ */
+
+/**
+ * The tools row: how many, and how much of the request they account for. Every
+ * tool the model was offered on this round-trip is listed underneath, because
+ * "was my tool actually offered" is otherwise unanswerable from the outside —
+ * a tool missing from this list never reached the model, whatever the model
+ * said about it.
+ * @param {ToolEntry[]} tools - Tool definitions as recorded in the blob.
+ * @returns {HTMLElement} The row element.
+ */
+function _buildToolsRow(tools) {
+  const groups = groupToolsByOrigin(tools);
+  const mcpCount = groups.reduce((n, g) => n + (g.server === null ? 0 : g.tools.length), 0);
+  const label = mcpCount
+    ? `${tools.length} tools · ${mcpCount} from MCP`
+    : `${tools.length} tools`;
+  return _row('tools', label, tools, { body: () => _buildToolList(groups) });
+}
+
+/**
+ * @param {ReturnType<typeof groupToolsByOrigin>} groups - Grouped tools.
+ * @returns {HTMLElement} The row body.
+ */
+function _buildToolList(groups) {
+  const body = document.createElement('div');
+  body.className = 'tx-row-body tx-tools';
+  for (const group of groups) {
+    const heading = document.createElement('div');
+    heading.className = 'tx-tool-group';
+
+    const title = document.createElement('span');
+    title.className = 'tx-tool-group-title';
+    title.textContent = group.title;
+    heading.appendChild(title);
+
+    const count = document.createElement('span');
+    count.className = 'tx-tool-group-count';
+    count.textContent = `${group.tools.length} · ~${formatTokens(group.tokens)}`;
+    count.title = 'Tools in this group, and their estimated share of the request';
+    heading.appendChild(count);
+
+    body.appendChild(heading);
+    for (const tool of group.tools) body.appendChild(_buildToolEntry(tool, group.server));
+  }
+  return body;
+}
+
+/**
+ * One tool: its name, what the model was told it does, and what it cost to say
+ * so. Opens to the schema the model was given, which is the level of detail
+ * that settles an argument about why a call came out malformed.
+ * @param {ToolEntry} tool - One tool definition.
+ * @param {string|null} server - Owning MCP server, or null for a built-in.
+ * @returns {HTMLElement} The tool element.
+ */
+function _buildToolEntry(tool, server) {
+  const name = String(tool?.name || '');
+  const parts = server === null ? null : parseMcpToolName(name);
+
+  const entry = document.createElement('details');
+  entry.className = 'tx-tool';
+
+  const summary = document.createElement('summary');
+  summary.className = 'tx-tool-summary';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'tx-tool-name';
+  // Inside an MCP group the server is already named by the heading, so the
+  // prefix is noise; the full name stays in the tooltip for copying out.
+  nameEl.textContent = parts ? parts.tool : name;
+  nameEl.title = name;
+  summary.appendChild(nameEl);
+
+  if (tool?.category) {
+    const cat = document.createElement('span');
+    cat.className = `tx-tool-category tx-tool-category-${tool.category}`;
+    cat.textContent = String(tool.category);
+    summary.appendChild(cat);
+  }
+
+  const desc = document.createElement('span');
+  desc.className = 'tx-tool-desc';
+  desc.textContent = _firstLine(String(tool?.description || ''));
+  desc.title = String(tool?.description || '');
+  summary.appendChild(desc);
+
+  const size = document.createElement('span');
+  size.className = 'tx-row-size';
+  size.textContent = `~${formatTokens(estimateValueTokens(tool))}`;
+  size.title = 'Estimated tokens (~4 characters per token)';
+  summary.appendChild(size);
+
+  entry.appendChild(summary);
+
+  let built = false;
+  entry.addEventListener('toggle', () => {
+    if (!entry.open || built) return;
+    built = true;
+    entry.appendChild(_buildEntryBody(tool?.input_schema ?? tool));
+  });
+
+  return entry;
 }
 
 /**

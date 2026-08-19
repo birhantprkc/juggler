@@ -27,3 +27,24 @@ export function findLastAssistantTxnId(items) {
   }
   return '';
 }
+
+/**
+ * The same anchor, named by item rather than by round-trip: the id of the most
+ * recent assistant message that has a transaction behind it. The transaction
+ * panel is a lens on a selected item, so anything wanting to *open* that
+ * round-trip needs the item, not the blob id.
+ * @param {Array<{get?: (key: string) => any}>} items - Y.Array items (or empty)
+ * @returns {string} itemId, or '' if no assistant with a txnId is found
+ */
+export function findLastAssistantItemId(items) {
+  if (!items) return '';
+  for (let i = items.length - 1; i >= 0; i--) {
+    const get = items[i]?.get?.bind(items[i]);
+    if (!get) continue;
+    if (get('type') !== 'assistant') continue;
+    if (!String(get('transactionId') || '')) continue;
+    const itemId = String(get('itemId') || '');
+    if (itemId) return itemId;
+  }
+  return '';
+}

@@ -46,9 +46,36 @@ class TokenDisplay extends HTMLElement {
     /** @type {boolean} @private */ this.processing = false;
     /** @type {boolean} @private */ this.approximate = false;
     /** @type {boolean} @private */ this._hasData = false;
+    /** @type {boolean} @private */ this._activationBound = false;
   }
 
-  connectedCallback() { this.render(); }
+  connectedCallback() {
+    if (!this._activationBound) {
+      this._activationBound = true;
+      this.addEventListener('click', () => this._activate());
+      this.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        this._activate();
+      });
+    }
+    this.render();
+  }
+
+  /**
+   * Ask for the round-trip behind these numbers. The pill is where people look
+   * when they wonder what is filling the context, so it is also where they
+   * should be able to go and find out; the footer owns the answer, because only
+   * it knows which thread this is.
+   * @private
+   */
+  _activate() {
+    if (!this._hasData) return;
+    this.dispatchEvent(new CustomEvent('token-display:show-transaction', {
+      bubbles: true,
+      composed: true
+    }));
+  }
 
   /**
    * Set the full usage payload and re-render if anything changed.
@@ -88,8 +115,18 @@ class TokenDisplay extends HTMLElement {
       this.innerHTML = '';
       this.classList.remove('token-medium', 'token-high', 'cache-warn');
       this.removeAttribute('title');
+      this.removeAttribute('role');
+      this.removeAttribute('tabindex');
+      this.removeAttribute('aria-label');
       return;
     }
+
+    // Only a pill with numbers behind it is a control: with no data there is no
+    // round-trip to open, and a focusable element that does nothing is worse
+    // than one that isn't there.
+    this.setAttribute('role', 'button');
+    this.setAttribute('tabindex', '0');
+    this.setAttribute('aria-label', 'View transaction');
 
     // The cached count the render works from: null wherever there is nothing
     // trustworthy to say about the cache, whether because the provider did not

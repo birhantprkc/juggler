@@ -35,7 +35,7 @@
  * owner scopes to the run's own rows — and disappears entirely when the run is
  * settled.
  */
-import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
+import { findLastAssistantTxnId, findLastAssistantItemId } from '../utils/transaction-anchor.js';
 import providersCache from '../services/providers-cache.js';
 
 const TOKEN_UPDATE_DEBOUNCE_MS = 2000;
@@ -498,6 +498,23 @@ class ConversationFooter extends HTMLElement {
     if (continueBtn) {
       continueBtn.addEventListener('click', () => {
         this._messageThread.continue();
+      });
+    }
+
+    // The token pill asks to see the round-trip its numbers came from; only the
+    // footer knows which item that is, so it names it here and lets the tab do
+    // the selecting.
+    const tokenPill = this.querySelector('token-display');
+    if (tokenPill) {
+      tokenPill.addEventListener('token-display:show-transaction', (e) => {
+        e.stopPropagation();
+        const itemId = findLastAssistantItemId(this._messageThread?.items);
+        if (!itemId) return;
+        this.dispatchEvent(new CustomEvent('show-transaction-requested', {
+          bubbles: true,
+          composed: true,
+          detail: { itemId }
+        }));
       });
     }
 

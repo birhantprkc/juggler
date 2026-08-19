@@ -122,6 +122,12 @@ token-display {
     padding: 0.5rem 0;
 }
 
+/* The pill becomes a control only once it has numbers behind it — role=button
+   is set alongside these, so the affordance and the behaviour arrive together. */
+token-display[role="button"] {
+    cursor: pointer;
+}
+
 token-display .token-bar {
     width: 5rem;
     height: 0.5rem;
@@ -2647,6 +2653,83 @@ properties-panel-tx-sections > properties-panel-subsection + properties-panel-su
 .tx-row-body .properties-panel-json-display,
 .tx-out-block .properties-panel-json-display {
     margin: 0;
+}
+
+/* The tool list: one line per tool the model was offered, grouped by where it
+   came from, so a missing tool is visibly missing rather than buried in a
+   schema dump. */
+.tx-tools {
+    display: flex;
+    flex-direction: column;
+}
+
+.tx-tool-group {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.5rem 0.25rem 0.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-tertiary);
+}
+
+.tx-tool-group-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tx-tool-group-count {
+    flex-shrink: 0;
+}
+
+.tx-tool-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0.25rem 0.2rem 0.75rem;
+    cursor: pointer;
+    list-style: none;
+    font-size: 0.75rem;
+}
+
+.tx-tool-summary::-webkit-details-marker {
+    display: none;
+}
+
+.tx-tool-summary:hover {
+    background: var(--bg-raised);
+}
+
+.tx-tool-name {
+    flex-shrink: 0;
+    max-width: 14rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+.tx-tool-category {
+    flex-shrink: 0;
+    font-size: 0.625rem;
+    color: var(--text-tertiary);
+}
+
+.tx-tool-category-write {
+    color: var(--warning, var(--text-tertiary));
+}
+
+.tx-tool-desc {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-tertiary);
 }
 
 /* Transaction metadata bar in properties panel */

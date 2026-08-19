@@ -477,6 +477,16 @@ export class McpTab {
     this.controller.stopPolling();
   }
 
+  /**
+   * Deep-link target: open the edit form for one server, so a tool elsewhere in
+   * the UI can lead back to the server that provides it.
+   * @param {string} name - MCP server name
+   * @returns {Promise<boolean>} True if that server exists and its form opened
+   */
+  revealEntry(name) {
+    return this.controller.revealEntry(name);
+  }
+
   /** Panel closed: reset the controller to a clean list view. */
   close() {
     this._visible = false;

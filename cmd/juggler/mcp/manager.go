@@ -307,10 +307,18 @@ func (m *Manager) startServer(s *serverState) {
 	switch s.cfg.transportKind() {
 	case "stdio":
 		if strings.TrimSpace(s.cfg.Command) == "" {
+			// An entry with a url and no transport is a remote server whose
+			// transport line was left out, not a stdio server missing its
+			// command — say so, because "no command configured" sends the reader
+			// looking for the wrong mistake entirely.
+			if strings.TrimSpace(s.cfg.URL) != "" {
+				m.failStart(s, `has a "url" but no transport — add "transport": "http" (or "sse") to this entry`)
+				return
+			}
 			m.failStart(s, "no command configured")
 			return
 		}
-	case "http", "streamable", "sse":
+	case "http", "sse":
 		if strings.TrimSpace(s.cfg.URL) == "" {
 			m.failStart(s, "no url configured")
 			return
@@ -396,10 +404,11 @@ func (m *Manager) connect(name string, gen int, cfg ServerConfig) {
 }
 
 // buildTransport constructs the SDK transport for a server from its configured
-// transport kind. stdio spawns a child process and routes its stderr into the
-// server's log ring; http/streamable and sse connect to a remote URL, with any
-// configured headers injected on every request. startServer has already
-// validated that the required Command/URL is present for the kind.
+// transport kind, which normalize() has already reduced to one of three
+// canonical values. stdio spawns a child process and routes its stderr into the
+// server's log ring; http and sse connect to a remote URL, with any configured
+// headers injected on every request. startServer has already validated that the
+// required Command/URL is present for the kind.
 func (m *Manager) buildTransport(name string, cfg ServerConfig) (mcp.Transport, error) {
 	switch cfg.transportKind() {
 	case "stdio":
@@ -412,7 +421,7 @@ func (m *Manager) buildTransport(name string, cfg ServerConfig) (mcp.Transport, 
 		// remains the sole owner of the ring buffer.
 		cmd.Stderr = &logWriter{ch: m.reqCh, server: name}
 		return &mcp.CommandTransport{Command: cmd}, nil
-	case "http", "streamable":
+	case "http":
 		return &mcp.StreamableClientTransport{
 			Endpoint:   cfg.URL,
 			HTTPClient: httpClientWithHeaders(cfg.Headers),

@@ -18,8 +18,8 @@ And here's the TL;DR:
 - **It is a proper GUI.** Using a code agent means editing big chunks of multi-line text and getting hosed with information you need to absorb — I find a terminal horrible for that. Juggler is all about visual navigation, inspection, and control.
 - **The session is a tree, not a doom-scroll.** It's a Yjs document, not a transcript. Create sub-threads, drill down, backtrack, compare, and edit.
 - **Sessions are persistent and stateful.** Because a session is a document on disk, you can quit or relaunch and it resumes every conversation exactly where you left it. That even includes states such as an agent waiting for user approval. You can restart, reconnect, and the approval dialog will be there waiting for you.
-- **Everything is inspectable.** Tool calls, approvals, thread structure, item properties, raw context — laid out in Finder-style Miller columns for fast navigation.
-- **It's plugins all the way down.** Context items, slash commands, LLM loop strategies, and their UIs are JavaScript extensions you can inspect, fork, or replace. MCP servers and skills plug into the same document, so anything you've already set up comes along.
+- **Everything is inspectable.** Tool calls, approvals, thread structure, item properties, raw context — laid out in Finder-style Miller columns for fast navigation. Select System Prompt to see exactly what the model is told and which tools it can call; click the footer's token count to read back what a past turn actually sent.
+- **It's plugins all the way down.** Context items, slash commands, LLM loop strategies, and their UIs are JavaScript extensions you can inspect, fork, or replace. MCP servers and skills plug into the same model: point Juggler at an [MCP server](docs/mcp.md) and its tools arrive as inspectable, approvable items like any other.
 - **It runs locally, remotely, or both at once.** Use the same session with the same UI in the native desktop app, and/or browsers. Multiple clients can attach to the same session.
 - **It talks to the usual model zoo.** Claude Code (via CLI or API), OpenAI (Codex plan or API), GitHub Copilot, Gemini, Mistral, Z.ai, Ollama, OpenRouter, Deepseek, etc. Bring the subscription you already pay for, or your own API keys.
 
@@ -84,7 +84,7 @@ The core app manages the document and orchestration. Almost all the objects that
 - **Strategies** — high-level LLM loops such as `plan`, `research`, or your own fever-dream inventions are plugins too.
 - **Commands** — slash commands like `/clear` and `/compact` are all just plugins that manipulate the session document.
 
-Every tool, even basics like read/write/bash, is a plugin you can swap out. MCP servers and skills plug into the same document, so anything you've already set up comes along.
+Every tool, even basics like read/write/bash, is a plugin you can swap out. MCP servers and skills plug into the same document: an MCP server's tools become context items indistinguishable from the built-in ones. Juggler keeps its own config for both rather than reading another agent's, so you declare your servers once — see [`docs/mcp.md`](docs/mcp.md).
 
 Not every LLM workflow wants to live as a headless Python script skulking in a terminal. If an orchestration idea needs its own UI, controls, or visualisation, Juggler is a platform for that.
 

@@ -387,7 +387,7 @@ class SettingsPanel extends HTMLElement {
   /**
    * Open the settings panel
    * @param {string} [tab] - Optional tab to switch to on open
-   * @param {{capability?: {itemType: string, id: string}}} [options] - Optional target to reveal inside the tab
+   * @param {{capability?: {itemType: string, id: string}, mcpServer?: string}} [options] - Optional target to reveal inside the tab
    */
   async open(tab, options = {}) {
     const isFirstLoad = !this._hasLoadedOnce;
@@ -410,6 +410,10 @@ class SettingsPanel extends HTMLElement {
 
     if (options.capability) {
       this._revealCapability(options.capability);
+    }
+
+    if (options.mcpServer) {
+      this._revealMcpServer(options.mcpServer);
     }
 
     // Load config (only fetches from API on first load). The first-load latch is
@@ -435,6 +439,18 @@ class SettingsPanel extends HTMLElement {
     const catalog = /** @type {any} */ (this.querySelector('plugin-catalog'));
     Promise.resolve(catalog?.revealCapability?.(capability.itemType, capability.id))
       .catch((error) => console.error('Failed to reveal capability in the extensions catalog:', error));
+  }
+
+  /**
+   * Deep-link into the MCP tab: open one server's edit form. The tab fetches its
+   * own config, so like the catalog it is handed the target and applies it when
+   * that fetch lands — open() must not wait on it.
+   * @param {string} name - MCP server name
+   * @private
+   */
+  _revealMcpServer(name) {
+    Promise.resolve(/** @type {any} */ (this._tabs.mcp)?.revealEntry?.(name))
+      .catch((error) => console.error('Failed to reveal the MCP server in settings:', error));
   }
 
   /**

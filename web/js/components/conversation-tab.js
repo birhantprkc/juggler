@@ -279,6 +279,7 @@ class ConversationTab extends HTMLElement {
       this.addEventListener('expand-thread-requested', /** @type {EventListener} */ (this._onExpandThreadRequested.bind(this)));
       this.addEventListener('promote-thread-requested', /** @type {EventListener} */ (this._onPromoteThreadRequested.bind(this)));
       this.addEventListener('request-item-selection', /** @type {EventListener} */ (this._onRequestItemSelection.bind(this)));
+      this.addEventListener('show-transaction-requested', /** @type {EventListener} */ (this._onShowTransactionRequested.bind(this)));
       this.addEventListener('properties-panel:toggle-transaction', /** @type {EventListener} */ (this._onToggleTransaction.bind(this)));
       this.addEventListener('restore-input-focus', /** @type {EventListener} */ (this._onRestoreInputFocus.bind(this)));
       this._itemSelectedListenerAttached = true;
@@ -1430,6 +1431,31 @@ class ConversationTab extends HTMLElement {
     } else {
       this._selection.openTransaction(columnIndex);
     }
+    this._selection.markManualInteraction();
+    this._rebuildColumns(true);
+  }
+
+  /**
+   * Show the transaction for a named item, selecting it on the way.
+   *
+   * The transaction column is a lens on the properties column beside it, so
+   * getting there means selecting the item first and opening the lens on the
+   * column that selection creates — one column to the right of the one the
+   * request came from. Used by the footer's token pill, whose numbers come from
+   * that round-trip and which otherwise had no way to show it.
+   * @param {CustomEvent} e
+   * @private
+   */
+  _onShowTransactionRequested(e) {
+    const { itemId } = e.detail;
+    if (!itemId || !this._conversation) return;
+    const target = /** @type {HTMLElement} */ (e.target);
+    const column = target.closest('conversation-area, properties-panel');
+    const columnIndex = column ? this._columns.indexOf(/** @type {HTMLElement} */ (column)) : -1;
+    if (columnIndex < 0) return;
+
+    this._selection.selectItem(columnIndex, itemId);
+    this._selection.openTransaction(columnIndex + 1);
     this._selection.markManualInteraction();
     this._rebuildColumns(true);
   }

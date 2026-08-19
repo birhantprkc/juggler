@@ -396,6 +396,9 @@ func TestManagerTransportValidation(t *testing.T) {
 	writeGlobalConfig(t, map[string]ServerConfig{
 		"missing-url": {Transport: "http"},
 		"bogus":       {Transport: "carrier-pigeon", URL: "http://example.invalid"},
+		// The shape a config pasted from another agent takes once its "type" key
+		// is dropped: a url and nothing else, which defaults to stdio.
+		"url-only": {URL: "http://example.invalid"},
 	})
 	m := NewManager()
 	m.Start()
@@ -415,6 +418,99 @@ func TestManagerTransportValidation(t *testing.T) {
 	}
 	check("missing-url", "no url configured")
 	check("bogus", "unsupported transport")
+	check("url-only", `has a "url" but no transport`)
+}
+
+// writeRawGlobalConfig writes mcp.json bytes verbatim, so a test can present the
+// exact JSON a user pastes rather than a marshalled ServerConfig.
+func writeRawGlobalConfig(t *testing.T, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("JUGGLER_CONFIG_DIR", dir)
+	if err := os.WriteFile(filepath.Join(dir, mcpFileName), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A config copied from another agent keys its remote servers with "type", which
+// is the spelling every other client uses. Left unfolded, such an entry defaults
+// to stdio and fails for a missing command, so the fold is what makes a pasted
+// config work at all.
+func TestConfigTypeIsAcceptedAsTransport(t *testing.T) {
+	writeRawGlobalConfig(t, `{
+	  "mcpServers": {
+	    "linear":     {"type": "http", "url": "https://mcp.linear.app/mcp"},
+	    "streamable": {"type": "streamable-http", "url": "https://example.invalid/mcp"},
+	    "legacy":     {"type": "sse", "url": "https://example.invalid/sse"},
+	    "shouty":     {"type": "  HTTP  ", "url": "https://example.invalid/mcp"},
+	    "both":       {"type": "sse", "transport": "http", "url": "https://example.invalid/mcp"},
+	    "local":      {"command": "some-server"},
+	    "nonsense":   {"type": "carrier-pigeon", "url": "https://example.invalid/mcp"}
+	  }
+	}`)
+
+	cfg, err := loadMergedConfig("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for name, want := range map[string]string{
+		"linear":     "http",
+		"streamable": "http",
+		"legacy":     "sse",
+		"shouty":     "http",
+		"both":       "http", // our own key wins over the pasted one
+		"local":      "stdio",
+		"nonsense":   "carrier-pigeon", // passed through so startServer can name it
+	} {
+		if got := cfg[name].transportKind(); got != want {
+			t.Errorf("server %q: transport %q, want %q", name, got, want)
+		}
+		if cfg[name].Type != "" {
+			t.Errorf("server %q: Type should be folded away, got %q", name, cfg[name].Type)
+		}
+	}
+}
+
+// Saving from the settings UI rewrites the whole file, so a folded entry must
+// come back out under "transport" alone — leaving both keys behind would give the
+// next reader two sources of truth to disagree about.
+func TestConfigWriteBackDropsTypeKey(t *testing.T) {
+	writeRawGlobalConfig(t, `{"mcpServers": {"linear": {"type": "streamable-http", "url": "https://mcp.linear.app/mcp"}}}`)
+
+	cfg, err := loadMergedConfig("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	path := globalConfigPath()
+	if err := writeConfigFile(path, cfg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if strings.Contains(string(data), `"type"`) {
+		t.Errorf("rewritten config still carries a type key:\n%s", data)
+	}
+	if !strings.Contains(string(data), `"transport": "http"`) {
+		t.Errorf("rewritten config lost the folded transport:\n%s", data)
+	}
+}
+
+// The setConfig op accepts whatever shape the caller sends, so an entry posted
+// with "type" (by hand or by a script) must be stored the same way a parsed file
+// would be.
+func TestCoerceServerConfigFoldsType(t *testing.T) {
+	sc, err := coerceServerConfig(map[string]any{"type": "streamable-http", "url": "https://example.invalid/mcp"})
+	if err != nil {
+		t.Fatalf("coerce: %v", err)
+	}
+	if sc.transportKind() != "http" {
+		t.Errorf("transport %q, want http", sc.transportKind())
+	}
+	if sc.Type != "" {
+		t.Errorf("Type should be folded away, got %q", sc.Type)
+	}
 }
 
 func TestConfigMergeProjectOverridesGlobal(t *testing.T) {

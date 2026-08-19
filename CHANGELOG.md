@@ -25,6 +25,14 @@ of changes; this project follows semantic versioning.
 - Some claude code improvements to avoid leaving processes running, and better resuming
 - Quitting no longer discards a draft you had only just typed; drafts also save on leaving the composer
 - Zoom and theme changed on a phone stay on that phone instead of following the desktop home
+- The System Prompt item now lists every tool the model can call, grouped by server
+- Tools a strategy withholds are shown struck through, so a missing tool isn't a mystery
+- A configured MCP server that isn't serving says so next to the tools it isn't providing
+- The transaction panel's tool list is now readable per tool, not one schema dump
+- Clicking the footer's token count opens the round-trip those numbers came from
+- MCP config accepts a pasted server block's "type" key as a synonym for "transport"
+- A remote MCP entry missing its transport now says so, instead of reporting a missing command
+- New MCP documentation covering config paths, remote servers, tokens and troubleshooting
 
 ## [0.5.6] - 2026-08-14
 

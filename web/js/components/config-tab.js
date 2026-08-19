@@ -36,7 +36,7 @@
  * @property {string} [command] - Executable to launch (stdio transport)
  * @property {string[]} [args] - Command arguments (each may contain spaces)
  * @property {Record<string,string>} [env] - Environment variables
- * @property {string} [transport] - "stdio" (default), "http"/"streamable", or "sse"
+ * @property {string} [transport] - "stdio" (default), "http", or "sse"
  * @property {string} [url] - Endpoint URL (http/sse transports)
  * @property {Record<string,string>} [headers] - Extra request headers (http/sse transports)
  * @property {boolean} [enabled] - Whether the entry is active
@@ -46,7 +46,9 @@
 
 /**
  * The transport kinds that connect to a remote URL rather than spawning a
- * subprocess.
+ * subprocess. "streamable" is one of the aliases the server folds onto "http"
+ * when it parses a config, and is accepted here so a form seeded from a value
+ * this UI never wrote still opens on the remote field group.
  * @param {string} [transport]
  * @returns {boolean} True for http/streamable/sse.
  */
@@ -232,6 +234,8 @@ export class ConfigTabController {
     this.busy = false;
     /** @type {string} Inline error from the most recent action. */
     this.error = '';
+    /** @type {Promise<void>|null} Resolves when the first refresh of this showing has landed. */
+    this.ready = null;
     /** @type {string} Name whose log disclosure is open ('' = none); log-capable tabs only. */
     this.logFor = '';
     /** @type {string|null} Cached log text for the open disclosure; null = loading. */
@@ -242,8 +246,29 @@ export class ConfigTabController {
 
   /** Fetch immediately and arm the background poll. Called when the tab shows. */
   show() {
-    this.refresh();
+    this.ready = this.refresh();
     this.pollId = setInterval(() => this.refresh(), this.spec.pollMs);
+  }
+
+  /**
+   * Open the edit form for a named entry, waiting for the config to arrive
+   * first.
+   *
+   * A deep link lands here immediately after `show()`, whose refresh is
+   * deliberately not awaited — so without this wait `openForm` would read an
+   * empty `this.config` and present an Edit form with every field blank, which
+   * looks exactly like a config that failed to load.
+   * @param {string} name - Entry name to edit
+   * @returns {Promise<boolean>} True if the entry existed and its form was opened
+   */
+  async revealEntry(name) {
+    if (!name) return false;
+    await this.ready;
+    const known = this.items.some((i) => i.name === name)
+      || !!this.config.global[name] || !!this.config.project[name];
+    if (!known) return false;
+    this.openForm('edit', { name });
+    return true;
   }
 
   /** Stop the background poll (tab hidden / panel closing). */
