@@ -200,6 +200,11 @@ func Register(d Descriptor) {
 				return 0, false
 			}
 		}
+		// Label this client's provider-boundary errors (notably the idle-stall
+		// message) with the id the user configured, not the shared "openai".
+		if d.Name != "" {
+			base.providerName = d.Name
+		}
 		// Resolve this model's reasoning-effort support once, so the per-turn
 		// request builder can map req.ThinkingLevel without re-classifying.
 		if d.ThinkingSpecFn != nil {

@@ -154,7 +154,7 @@ export async function runTests(_ctx) {
       assert(!!present, 'opening schedules popup presentation');
       present(0);
 
-      const surface = el._liveDropdown;
+      const surface = el._menu?.surface;
       const anchor = el.querySelector('.model-selector-button');
       assert(!!surface, 'opening creates a live model popup');
       assert(!!anchor && anchor.isConnected, 'the popup anchor starts connected');
@@ -164,7 +164,7 @@ export async function runTests(_ctx) {
 
       const surfaces = document.querySelectorAll('.provider-dropdown[data-model-selector="true"]');
       assert(surfaces.length === 1, `exactly one model popup remains, got ${surfaces.length}`);
-      assert(surfaces[0] === surface && el._liveDropdown === surface,
+      assert(surfaces[0] === surface && el._menu?.surface === surface,
         'the original live popup remains the presented surface');
       assert(anchor.isConnected && el.querySelector('.model-selector-button') === anchor,
         'the original popup anchor remains connected');
@@ -209,7 +209,7 @@ export async function runTests(_ctx) {
 
       const surfaces = document.querySelectorAll('.provider-dropdown[data-model-selector="true"]');
       assert(surfaces.length === 1, `exactly one model popup may exist, got ${surfaces.length}`);
-      assert(el._liveDropdown === surfaces[0], 'the live surface belongs to the current opening');
+      assert(el._menu?.surface === surfaces[0], 'the live surface belongs to the current opening');
       assert(!el.querySelector('.provider-dropdown.show'), 'no duplicate inline popup remains in the selector');
     } finally {
       el.close();

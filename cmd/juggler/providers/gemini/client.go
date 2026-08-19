@@ -472,11 +472,10 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 		// retry=true signals the outer loop to back off and try again; a non-nil
 		// err is terminal for the whole call.
 		retry, attemptErr := func() (retry bool, err error) {
-			streamCtx, cancel := context.WithCancel(ctx)
-			defer cancel()
-			idleTimeout := utils.EffectiveStreamIdleTimeout()
-			idle := utils.NewIdleWatchdog(idleTimeout, cancel)
-			defer idle.Stop()
+			// A fresh session per attempt, so a stall reports the window this
+			// attempt actually sat idle for.
+			sess, streamCtx := utils.NewStreamSession(ctx, "gemini", callback)
+			defer sess.Close()
 
 			// lastToolUseBlock receives standalone ThoughtSignature parts streamed after their FunctionCall.
 			var lastToolUseBlock *provider.ContentBlock
@@ -484,9 +483,6 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 			// Last prompt-token total re-emitted as a usage chunk, so a per-chunk
 			// UsageMetadata (Gemini repeats it) drives one footer update per change.
 			var lastEmittedInput int
-
-			// Running output-token estimate for the UI spinner.
-			progress := provider.NewProgressEmitter(callback)
 
 			// The actual streaming call
 			genaiStream := c.client.Models.GenerateContentStream(streamCtx, model, contents, config)
@@ -503,8 +499,8 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 					// Our watchdog cancelled streamCtx because the upstream went
 					// silent (parent ctx still alive). Surface as a transient stall
 					// so the worker's transient classifier retries the turn.
-					if idle.Fired() && ctx.Err() == nil {
-						return false, utils.StallError("gemini", idleTimeout)
+					if stall := sess.StallError(); stall != nil {
+						return false, stall
 					}
 					if gapiErr, ok := err.(*googleapi.Error); ok && (gapiErr.Code == http.StatusTooManyRequests || gapiErr.Code == http.StatusServiceUnavailable) {
 						// Retryable. Back off, then signal the outer loop to retry.
@@ -523,7 +519,7 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 					// Not a retryable error.
 					return false, fmt.Errorf("gemini API error: %w", err)
 				}
-				idle.Reset()
+				sess.Reset()
 
 				streamedResultsForCurrentAttempt = append(streamedResultsForCurrentAttempt, result)
 
@@ -586,10 +582,10 @@ func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents
 								if block.Type == provider.ContentBlockTypeToolUse {
 									lastToolUseBlock = block
 									if argsBytes, jerr := json.Marshal(block.ToolInput); jerr == nil {
-										progress.Add(string(argsBytes))
+										sess.Progress(string(argsBytes))
 									}
 								} else {
-									progress.Add(block.Content)
+									sess.Progress(block.Content)
 								}
 								chunk := provider.StreamChunk(*block)
 								if _, err := callback(chunk); err != nil {

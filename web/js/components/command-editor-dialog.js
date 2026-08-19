@@ -17,7 +17,7 @@ import { expandTemplate } from '../plugins/user-command-factory.js';
 import { reloadRegistries, REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
 import strategyRegistry from '../registries/strategy-registry.js';
-import { markPopupOpen } from '../utils/popup-manager.js';
+import { presentModal } from '../utils/modal-surface.js';
 import { focusWhenShown } from '../utils/focus.js';
 
 /**
@@ -74,8 +74,13 @@ export function openCommandEditor(options = {}) {
   const fm = def?.frontmatter || {};
 
   return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'command-editor-overlay';
+    const modal = presentModal({
+      className: 'command-editor-overlay',
+      dismissSelectors: ['.command-editor-backdrop', '#cmd-close'],
+      onClose: (result) => resolve(result ?? null),
+    });
+    const overlay = modal.root;
+    const close = modal.close;
     overlay.innerHTML = buildMarkup({
       editing,
       name: def?.name ?? options.name ?? '',
@@ -89,15 +94,6 @@ export function openCommandEditor(options = {}) {
       goal: fm.goal ?? '',
       template: def?.body ?? '',
     });
-    document.body.appendChild(overlay);
-
-    let releasePopup = () => {};
-    const close = (/** @type {string|{deleted: string}|null} */ result) => {
-      releasePopup();
-      overlay.remove();
-      resolve(result);
-    };
-    releasePopup = markPopupOpen(() => close(null));
 
     const $ = (/** @type {string} */ sel) => /** @type {any} */ (overlay.querySelector(sel));
 
@@ -160,9 +156,6 @@ export function openCommandEditor(options = {}) {
     previewArgs.addEventListener('input', updatePreview);
     runRadios.forEach((r) => r.addEventListener('change', updateRunUI));
     overlay.querySelectorAll('input[name="cmd-scope"]').forEach((r) => r.addEventListener('change', updatePathHint));
-
-    $('#cmd-close').addEventListener('click', () => close(null));
-    overlay.querySelector('.command-editor-backdrop')?.addEventListener('click', () => close(null));
 
     if (editing) {
       const del = $('#cmd-delete');
@@ -229,8 +222,13 @@ export function openCommandEditor(options = {}) {
  */
 export function openCommandManager() {
   return new Promise((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'command-editor-overlay';
+    let stopLiveRefresh = () => {};
+    const modal = presentModal({
+      className: 'command-editor-overlay',
+      dismissSelectors: ['.command-editor-backdrop', '#cmd-close'],
+      onClose: () => { stopLiveRefresh(); resolve(); },
+    });
+    const overlay = modal.root;
     overlay.innerHTML = `
       <div class="command-editor-backdrop"></div>
       <div class="command-editor-panel" role="dialog" aria-modal="true" aria-label="Slash commands">
@@ -246,12 +244,6 @@ export function openCommandManager() {
           </div>
         </footer>
       </div>`;
-    document.body.appendChild(overlay);
-
-    let releasePopup = () => {};
-    let stopLiveRefresh = () => {};
-    const close = () => { stopLiveRefresh(); releasePopup(); overlay.remove(); resolve(); };
-    releasePopup = markPopupOpen(close);
 
     const body = /** @type {HTMLElement} */ (overlay.querySelector('#cmd-manager-body'));
 
@@ -281,8 +273,6 @@ export function openCommandManager() {
     document.addEventListener(REGISTRIES_RELOADED, onRegistriesReloaded);
     stopLiveRefresh = () => document.removeEventListener(REGISTRIES_RELOADED, onRegistriesReloaded);
 
-    overlay.querySelector('.command-editor-backdrop')?.addEventListener('click', close);
-    overlay.querySelector('#cmd-close')?.addEventListener('click', close);
     overlay.querySelector('#cmd-manager-new')?.addEventListener('click', async () => {
       await openCommandEditor({});
       render();

@@ -186,6 +186,13 @@ type Client struct {
 	// construction from the descriptor's ThinkingSpecFn. Zero value ⇒ no
 	// reasoning control (the request omits the effort param).
 	thinkingSpec ThinkingSpec
+	// providerName is the registry id this client serves. One Client type backs
+	// every OpenAI-shaped provider (zai, deepseek, copilot, openrouter, ollama,
+	// …), so provider-boundary errors — the idle-stall message above all — must
+	// name the provider the user actually configured rather than "openai".
+	// Register stamps it from the descriptor; direct construction (tests)
+	// defaults to "openai".
+	providerName string
 }
 
 // enhanceError adds helpful, human-oriented hints to common API errors. It
@@ -349,6 +356,7 @@ func NewClient(cfg Config) (*Client, error) {
 		model:           cfg.Model,
 		quirks:          quirks,
 		maxOutputTokens: cfg.MaxOutputTokens,
+		providerName:    "openai",
 	}, nil
 }
 
@@ -661,12 +669,10 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	}
 	// Provider-boundary liveness: guard the SDK stream (no read deadline of its
 	// own) with an idle watchdog that cancels streamCtx if the upstream goes
-	// silent. Each event resets it; see utils.StreamIdleTimeout.
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	idleTimeout := utils.EffectiveStreamIdleTimeout()
-	idle := utils.NewIdleWatchdog(idleTimeout, cancel)
-	defer idle.Stop()
+	// silent. Each event resets it; see utils.StreamIdleTimeout. The session
+	// also carries the running output-token estimate behind the UI spinner.
+	sess, streamCtx := utils.NewStreamSession(ctx, c.providerName, callback)
+	defer sess.Close()
 
 	stream := c.client.Responses.NewStreaming(streamCtx, params, opts...)
 
@@ -674,9 +680,6 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	var cachedTokens *int
 	var textContent strings.Builder
 	var thinkingContent strings.Builder
-
-	// Running output-token estimate for the UI spinner.
-	progress := provider.NewProgressEmitter(callback)
 
 	// emitThinking streams a reasoning delta as live thinking and feeds the
 	// output-token progress estimate, so a model that reasons before answering
@@ -686,7 +689,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			return nil
 		}
 		thinkingContent.WriteString(text)
-		progress.Add(text)
+		sess.Progress(text)
 		_, err := callback(provider.StreamChunk{
 			Type:    provider.ContentBlockTypeThinking,
 			Content: text,
@@ -699,7 +702,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	// Process the stream - events are ResponseStreamEventUnion
 	for stream.Next() {
-		idle.Reset()
+		sess.Reset()
 		evt := stream.Current()
 
 		// Handle different event types using string comparison and As* methods
@@ -720,7 +723,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			delta := evt.AsResponseOutputTextDelta()
 			if delta.Delta != "" {
 				textContent.WriteString(delta.Delta)
-				progress.Add(delta.Delta)
+				sess.Progress(delta.Delta)
 				streamChunk := provider.StreamChunk{
 					Type:    provider.ContentBlockTypeText,
 					Content: delta.Delta,
@@ -735,7 +738,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			delta := evt.AsResponseFunctionCallArgumentsDelta()
 			if fc, exists := functionCalls[delta.ItemID]; exists {
 				fc.argsBuilder.WriteString(delta.Delta)
-				progress.Add(delta.Delta)
+				sess.Progress(delta.Delta)
 			}
 
 		case "response.reasoning_summary_text.delta":
@@ -787,8 +790,8 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	}
 
 	if err := stream.Err(); err != nil {
-		if idle.Fired() && ctx.Err() == nil {
-			return nil, utils.StallError("openai", idleTimeout)
+		if stall := sess.StallError(); stall != nil {
+			return nil, stall
 		}
 		return nil, err // Don't enhance - let retry wrapper handle it
 	}
@@ -809,15 +812,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 		stopReason = "tool_use"
 	}
 
-	// Estimate tokens from content when the API doesn't report usage.
-	inputTokensApproximate := false
-	if inputTokens == 0 {
-		inputTokens = provider.EstimateTokens(marshalMessagesForEstimate(req)) + estimateImageTokens(req)
-		inputTokensApproximate = true
-	}
-	if outputTokens == 0 {
-		outputTokens = provider.EstimateTokens(textContent.String())
-	}
+	inputTokens, inputTokensApproximate, outputTokens := estimateMissingUsage(req, inputTokens, outputTokens, textContent.String())
 
 	return &provider.StreamResult{
 		StopReason:             stopReason,
@@ -1284,12 +1279,10 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 
 	// Provider-boundary liveness: guard the SDK stream (no read deadline of its
 	// own) with an idle watchdog that cancels streamCtx if the upstream goes
-	// silent. Each event resets it; see utils.StreamIdleTimeout.
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	idleTimeout := utils.EffectiveStreamIdleTimeout()
-	idle := utils.NewIdleWatchdog(idleTimeout, cancel)
-	defer idle.Stop()
+	// silent. Each event resets it; see utils.StreamIdleTimeout. The session
+	// also carries the running output-token estimate behind the UI spinner.
+	sess, streamCtx := utils.NewStreamSession(ctx, c.providerName, callback)
+	defer sess.Close()
 
 	stream := c.client.Chat.Completions.NewStreaming(streamCtx, params, option.WithJSONSet(c.quirks.MaxTokensParamName, maxTokens))
 
@@ -1302,12 +1295,9 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 	var textContent strings.Builder
 	var thinkingContent strings.Builder
 
-	// Running output-token estimate for the UI spinner.
-	progress := provider.NewProgressEmitter(callback)
-
 	// Process the stream
 	for stream.Next() {
-		idle.Reset()
+		sess.Reset()
 		chunk := stream.Current()
 
 		if chunk.Usage.PromptTokens > 0 {
@@ -1352,7 +1342,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 			// leaves the spinner frozen on "Receiving" with no movement.
 			if reasoning := extraReasoningDelta(choice.Delta.JSON.ExtraFields); reasoning != "" {
 				thinkingContent.WriteString(reasoning)
-				progress.Add(reasoning)
+				sess.Progress(reasoning)
 				streamChunk := provider.StreamChunk{
 					Type:    provider.ContentBlockTypeThinking,
 					Content: reasoning,
@@ -1365,7 +1355,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 			// Stream text content immediately
 			if choice.Delta.Content != "" {
 				textContent.WriteString(choice.Delta.Content)
-				progress.Add(choice.Delta.Content)
+				sess.Progress(choice.Delta.Content)
 				streamChunk := provider.StreamChunk{
 					Type:    provider.ContentBlockTypeText,
 					Content: choice.Delta.Content,
@@ -1390,15 +1380,15 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 				}
 				if toolCall.Function.Arguments != "" {
 					acc.argsBuilder.WriteString(toolCall.Function.Arguments)
-					progress.Add(toolCall.Function.Arguments)
+					sess.Progress(toolCall.Function.Arguments)
 				}
 			}
 		}
 	}
 
 	if err := stream.Err(); err != nil {
-		if idle.Fired() && ctx.Err() == nil {
-			return nil, utils.StallError("openai", idleTimeout)
+		if stall := sess.StallError(); stall != nil {
+			return nil, stall
 		}
 		return nil, err // Don't enhance - let retry wrapper handle it
 	}
@@ -1412,16 +1402,7 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 		return nil, err
 	}
 
-	// Estimate tokens from content when the API doesn't report usage
-	// (e.g. OpenAI-compatible providers that ignore stream_options).
-	inputTokensApproximate := false
-	if inputTokens == 0 {
-		inputTokens = provider.EstimateTokens(marshalMessagesForEstimate(req)) + estimateImageTokens(req)
-		inputTokensApproximate = true
-	}
-	if outputTokens == 0 {
-		outputTokens = provider.EstimateTokens(textContent.String())
-	}
+	inputTokens, inputTokensApproximate, outputTokens := estimateMissingUsage(req, inputTokens, outputTokens, textContent.String())
 
 	return &provider.StreamResult{
 		StopReason:             mapOpenAIFinishReason(lastFinishReason),
@@ -1430,6 +1411,25 @@ func (c *Client) streamMessageChatCompletions(ctx context.Context, req provider.
 		OutputTokens:           outputTokens,
 		CachedTokens:           cachedTokens,
 	}, nil
+}
+
+// estimateMissingUsage fills in token counts the upstream did not report — the
+// case for OpenAI-compatible providers that ignore stream_options, and for any
+// gateway that omits the usage block. Input falls back to the marshalled
+// request plus its images and is flagged approximate so the UI can say so;
+// output falls back to the accumulated assistant text. Both stream paths share
+// it because both accumulate the same two inputs; anthropic and gemini have no
+// analogue (anthropic always gets usage, and gemini never accumulates text).
+func estimateMissingUsage(req provider.MessageRequest, inputTokens, outputTokens int, text string) (in int, approximate bool, out int) {
+	in, out = inputTokens, outputTokens
+	if in == 0 {
+		in = provider.EstimateTokens(marshalMessagesForEstimate(req)) + estimateImageTokens(req)
+		approximate = true
+	}
+	if out == 0 {
+		out = provider.EstimateTokens(text)
+	}
+	return in, approximate, out
 }
 
 // marshalMessagesForEstimate serializes message request content for token estimation.

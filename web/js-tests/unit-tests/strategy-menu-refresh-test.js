@@ -65,12 +65,12 @@ export async function runTests(_ctx) {
     document.body.appendChild(selector);
 
     try {
-      // Bind to thread A and render the open state. toggleDropdown's rAF would
-      // relocate the menu to <body>, mark it, and record it as this instance's
-      // live dropdown; rAF is unreliable in the hidden test window, so reproduce
-      // that end-state deterministically: open → render the inner <nav> → move
-      // it to <body> with the marker attribute → record it in `_liveDropdown`,
-      // exactly as the production rAF does.
+      // Bind to thread A and render the open state. presentInlineMenu's rAF
+      // would relocate the menu to <body>, mark it, and hand back a handle whose
+      // `surface` is this instance's live dropdown; rAF is unreliable in the
+      // hidden test window, so reproduce that end-state deterministically:
+      // open → render the inner <nav> → move it to <body> with the marker
+      // attribute → stand in for the handle, exactly as the production rAF does.
       selector.setMessageThread(/** @type {any} */ ({ currentStrategyId: idA }));
       selector._dropdownOpen = true;
       selector.render();
@@ -78,7 +78,7 @@ export async function runTests(_ctx) {
       assert(!!innerNav, 'inner <nav> is rendered when opening');
       innerNav.setAttribute('data-strategy-selector', 'true');
       document.body.appendChild(innerNav);
-      selector._liveDropdown = innerNav;
+      selector._menu = { surface: innerNav, close() {} };
 
       const buttonBefore = selector.querySelector('.strategy-selector-button');
       assert(!!buttonBefore, 'selector has an anchor button while open');

@@ -4,7 +4,7 @@
 
 import strategyRegistry from '../registries/strategy-registry.js';
 import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
-import { presentPopup } from '../utils/popup-surface.js';
+import { presentInlineMenu } from '../utils/popup-surface.js';
 import { CHECK_SVG } from '../utils/icons.js';
 import CycleBuffer from '../services/cycle-buffer.js';
 import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
@@ -56,15 +56,15 @@ class StrategySelector extends HTMLElement {
     this._strategies = [];
     /** @type {boolean} @private */
     this._dropdownOpen = false;
-    /** @type {(() => void)|null} @private - presentPopup release for the open dropdown. */
-    this._popupRelease = null;
     /**
-     * This selector's own dropdown while open (relocated to <body>), else null.
-     * Instance-scoped so render() never finds a sibling's surface: multiple
-     * selectors coexist (root + each open sub-thread column).
-     * @type {HTMLElement|null} @private
+     * The open dropdown's presentation handle (pending frame + popup release),
+     * else null. Its `surface` is THIS selector's own dropdown while open
+     * (relocated to <body>) — instance-scoped so render() never finds a
+     * sibling's surface: multiple selectors coexist (root + each open sub-thread
+     * column).
+     * @type {import('../utils/popup-surface.js').InlineMenu|null} @private
      */
-    this._liveDropdown = null;
+    this._menu = null;
     /** @type {(() => void)|null} @private */
     this._boundRegistriesReloaded = null;
     /**
@@ -162,11 +162,8 @@ class StrategySelector extends HTMLElement {
     this._bindItemsObserver(null);
     this._bindContainerObserver(null);
     // Tear down the open dropdown (surface, scrim, observer, dismissal wiring).
-    if (this._popupRelease) {
-      this._popupRelease();
-      this._popupRelease = null;
-    }
-    this._liveDropdown = null;
+    this._menu?.close();
+    this._menu = null;
     this._cycle.reset();
   }
 
@@ -521,24 +518,15 @@ class StrategySelector extends HTMLElement {
     this._dropdownOpen = true;
     this.render();
 
-    // presentPopup owns body-append, dismissal wiring, the reposition observer
-    // (which also re-anchors on the in-place content refresh in render()), and
-    // the anchored-vs-sheet decision.
-    requestAnimationFrame(() => {
-      const dropdown = /** @type {HTMLElement|null} */(this.querySelector('.strategy-dropdown'));
-      const button = /** @type {HTMLElement|null} */(this.querySelector('.strategy-selector-button'));
-      if (!dropdown || !button) return;
-      dropdown.setAttribute('data-strategy-selector', 'true');
-      this._liveDropdown = dropdown;
-      this._popupRelease = presentPopup({
-        surface: dropdown,
-        anchor: button,
-        id: 'strategy-selector',
-        onClose: () => this.closeDropdown(),
-        align: 'left',
-        gap: 8,
-        insideSelectors: ['strategy-selector', '.strategy-dropdown[data-strategy-selector="true"]'],
-      });
+    // presentInlineMenu owns the deferred relocation; presentPopup beneath it
+    // owns body-append, dismissal wiring, the reposition observer (which also
+    // re-anchors on the in-place content refresh in render()), and the
+    // anchored-vs-sheet decision.
+    this._menu = presentInlineMenu({
+      host: this,
+      surfaceSelector: '.strategy-dropdown',
+      anchorSelector: '.strategy-selector-button',
+      onClose: () => this.closeDropdown(),
     });
   }
 
@@ -546,12 +534,10 @@ class StrategySelector extends HTMLElement {
   closeDropdown() {
     if (this._dropdownOpen) {
       this._dropdownOpen = false;
-      // Release tears down the surface, scrim, observer and dismissal wiring.
-      if (this._popupRelease) {
-        this._popupRelease();
-        this._popupRelease = null;
-      }
-      this._liveDropdown = null;
+      // Close cancels a pending relocation, then tears down the surface, scrim,
+      // observer and dismissal wiring.
+      this._menu?.close();
+      this._menu = null;
       // Just update button state without full re-render to avoid focus disruption
       const button = this.querySelector('.strategy-selector-button');
       if (button) {
@@ -785,7 +771,7 @@ class StrategySelector extends HTMLElement {
     // whichever one is open — so a closed sibling re-rendering (its thread
     // rebuilds on every doc update) rebound the open menu's clicks to its own
     // thread, landing every selection on the wrong thread.
-    const liveDropdown = this._liveDropdown;
+    const liveDropdown = this._menu?.surface ?? null;
     const liveButton = /** @type {HTMLElement|null} */ (
       this.querySelector('.strategy-selector-button'));
 

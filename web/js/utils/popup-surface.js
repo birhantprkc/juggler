@@ -205,3 +205,91 @@ export function presentPopup({
     releaseDismiss();
   };
 }
+
+/**
+ * A presented inline menu. `surface` is the element now hosted on `<body>` —
+ * null before the deferred presentation has run and after `close()`, so a
+ * component's in-place refresh path can test it to decide between updating the
+ * live menu and re-rendering its own subtree.
+ * @typedef {object} InlineMenu
+ * @property {HTMLElement|null} surface - The live, relocated surface, or null.
+ * @property {() => void} close - Cancel a pending presentation or tear down a
+ *   live one. Idempotent.
+ */
+
+/**
+ * Present a menu a component rendered inside its OWN subtree, relocating it to
+ * `<body>` on the next frame.
+ *
+ * The dropdown selectors (model, strategy, permissions) render their menu as
+ * part of `render()` and then hand it to `presentPopup`, which must wait a frame
+ * for the markup to lay out. That deferral is the whole difficulty, and it has
+ * bitten three times: a component that re-renders — or closes — between
+ * scheduling the frame and the frame running leaves the callback holding
+ * detached nodes, and presenting those puts a second, unanchored menu on
+ * `<body>` that nothing can close. So this owns the frame handle as well as the
+ * popup release, cancels the frame on close, and looks the nodes up INSIDE the
+ * frame rather than capturing them at schedule time (a re-render between the
+ * two then yields the new menu instead of a stale one).
+ *
+ * The popup id, the marker attribute and the outside-click selectors are all
+ * derived from the host's tag name, so the three can't drift apart: a menu is
+ * "inside" its own host element or its own marked surface, and one host type
+ * owns at most one open menu (`presentPopup`'s id-based mutual exclusion).
+ * @param {object} opts
+ * @param {HTMLElement} opts.host - The custom element that rendered the menu.
+ * @param {string} opts.surfaceSelector - Selector for the menu within `host`.
+ * @param {string} opts.anchorSelector - Selector for the trigger within `host`.
+ * @param {() => void} opts.onClose - Called when the popup dismisses itself.
+ * @param {'left'|'right'} [opts.align='left'] - Anchored horizontal alignment.
+ * @param {(surface: HTMLElement) => void} [opts.onPresent] - Run against the
+ *   surface just before it is relocated (e.g. attach a delegated listener).
+ * @returns {InlineMenu} Handle owning the pending frame and the popup release.
+ */
+export function presentInlineMenu({ host, surfaceSelector, anchorSelector, onClose, align = 'left', onPresent }) {
+  const marker = `data-${host.localName}`;
+  /** @type {number|null} */
+  let frame = null;
+  /** @type {(() => void)|null} */
+  let release = null;
+  /** @type {HTMLElement|null} */
+  let live = null;
+  let cancelled = false;
+
+  frame = requestAnimationFrame(() => {
+    frame = null;
+    if (cancelled) return;
+    const surface = /** @type {HTMLElement|null} */ (host.querySelector(surfaceSelector));
+    const anchor = /** @type {HTMLElement|null} */ (host.querySelector(anchorSelector));
+    if (!surface || !anchor) return;
+    surface.setAttribute(marker, 'true');
+    live = surface;
+    onPresent?.(surface);
+    release = presentPopup({
+      surface,
+      anchor,
+      id: host.localName,
+      onClose,
+      align,
+      insideSelectors: [host.localName, `${surfaceSelector}[${marker}="true"]`],
+    });
+  });
+
+  return {
+    get surface() {
+      return live;
+    },
+    close() {
+      cancelled = true;
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+        frame = null;
+      }
+      if (release) {
+        release();
+        release = null;
+      }
+      live = null;
+    },
+  };
+}

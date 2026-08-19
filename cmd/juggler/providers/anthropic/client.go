@@ -488,11 +488,10 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 	// no deadline of its own, so guard it with an idle watchdog that cancels
 	// streamCtx if the upstream goes silent (half-open connection, server
 	// stalled mid-response). Each event resets it; see utils.StreamIdleTimeout.
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	idleTimeout := utils.EffectiveStreamIdleTimeout()
-	idle := utils.NewIdleWatchdog(idleTimeout, cancel)
-	defer idle.Stop()
+	// The session also carries the running output-token estimate behind the UI
+	// spinner.
+	sess, streamCtx := utils.NewStreamSession(ctx, "anthropic", callback)
+	defer sess.Close()
 
 	// Create streaming request - this preserves block generation order
 	stream := c.client.Messages.NewStreaming(streamCtx, params)
@@ -516,12 +515,9 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 	var cacheReadTokens, cacheWriteTokens *int
 	var stopReason string
 
-	// Running output-token estimate for the UI's mid-stream spinner.
-	progress := provider.NewProgressEmitter(callback)
-
 	// Process streaming events in order
 	for stream.Next() {
-		idle.Reset()
+		sess.Reset()
 		event := stream.Current()
 
 		if ctx.Err() != nil {
@@ -572,7 +568,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 				// Stream text immediately via callback (preserves UI responsiveness)
 				text := event.Delta.Text
 				currentTextBuilder.WriteString(text)
-				progress.Add(text)
+				sess.Progress(text)
 				if _, err := callback(provider.StreamChunk{
 					Type:    provider.ContentBlockTypeText,
 					Content: text,
@@ -584,7 +580,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 				// Accumulate tool input JSON (streamed incrementally)
 				if currentToolUse != nil {
 					currentToolUse.argsBuilder.WriteString(event.Delta.PartialJSON)
-					progress.Add(event.Delta.PartialJSON)
+					sess.Progress(event.Delta.PartialJSON)
 				}
 
 			case "thinking_delta":
@@ -592,7 +588,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 				if currentThinking != nil {
 					thinking := event.Delta.Thinking
 					currentThinking.contentBuilder.WriteString(thinking)
-					progress.Add(thinking)
+					sess.Progress(thinking)
 					if _, err := callback(provider.StreamChunk{
 						Type:    provider.ContentBlockTypeThinking,
 						Content: thinking,
@@ -663,10 +659,10 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 	if err := stream.Err(); err != nil {
 		// Distinguish a watchdog-induced idle stall (our streamCtx cancel, with
 		// the parent ctx still alive) from a caller cancel or a real API error.
-		// Word it so the worker's transient classifier retries (it matches
-		// "stream stalled" / "connection may have dropped").
-		if idle.Fired() && ctx.Err() == nil {
-			return nil, utils.StallError("anthropic", idleTimeout)
+		// The session words it so the worker's transient classifier retries (it
+		// matches "stream stalled" / "connection may have dropped").
+		if stall := sess.StallError(); stall != nil {
+			return nil, stall
 		}
 		return nil, fmt.Errorf("anthropic streaming error: %w", err)
 	}

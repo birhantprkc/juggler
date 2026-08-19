@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 
-import { presentPopup } from '../utils/popup-surface.js';
+import { presentInlineMenu } from '../utils/popup-surface.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { isFileEditingAllowed } from '../services/file-editing-permission.js';
@@ -43,17 +43,16 @@ class PermissionControls extends HTMLElement {
     this.messageThread = null;
     /** @type {boolean} @private */
     this.popupOpen = false;
-    /** @type {(() => void)|null} @private - presentPopup release for the open popup. */
-    this._popupRelease = null;
     /**
-     * This control's own popup while open (relocated to <body>), else null.
-     * Instance-scoped so updates/teardown never touch a sibling's surface:
-     * multiple controls coexist (root + each open sub-thread column) and all
-     * share the `[data-permission-controls="true"]` attribute, so a
-     * document-wide query would grab the wrong one.
-     * @type {HTMLElement|null} @private
+     * The open popup's presentation handle (pending frame + popup release),
+     * else null. Its `surface` is THIS control's own popup while open
+     * (relocated to <body>) — instance-scoped so updates/teardown never touch a
+     * sibling's surface: multiple controls coexist (root + each open sub-thread
+     * column) and all share the `[data-permission-controls="true"]` attribute,
+     * so a document-wide query would grab the wrong one.
+     * @type {import('../utils/popup-surface.js').InlineMenu|null} @private
      */
-    this._livePopup = null;
+    this._menu = null;
     /** @type {((event: any) => void)|null} @private */
     this.metadataObserver = null;
     /** @type {(() => void)|null} @private */
@@ -79,11 +78,8 @@ class PermissionControls extends HTMLElement {
   }
 
   disconnectedCallback() {
-    if (this._popupRelease) {
-      this._popupRelease();
-      this._popupRelease = null;
-    }
-    this._livePopup = null;
+    this._menu?.close();
+    this._menu = null;
     if (this.metadataObserver && this.messageThread) {
       this.messageThread.conversation.unobserveMetadata(this.metadataObserver);
       this.metadataObserver = null;
@@ -93,7 +89,6 @@ class PermissionControls extends HTMLElement {
       this.sessionUnsubscribe = null;
     }
     this._disposeActiveSections();
-    this._removeDetachedPopup();
   }
 
   /**
@@ -189,23 +184,15 @@ class PermissionControls extends HTMLElement {
     this.editingNewPath = false;
     this.render();
 
-    // presentPopup owns body-append, dismissal wiring, the reposition observer,
-    // and the anchored-vs-sheet decision.
-    requestAnimationFrame(() => {
-      const popup = /** @type {HTMLElement|null} */(this.querySelector('.permissions-popup'));
-      const button = /** @type {HTMLElement|null} */(this.querySelector('.permission-btn'));
-      if (!popup || !button) return;
-      popup.setAttribute('data-permission-controls', 'true');
-      this._livePopup = popup;
-      this._popupRelease = presentPopup({
-        surface: popup,
-        anchor: button,
-        id: 'permission-controls',
-        onClose: () => this.closePopup(),
-        align: 'right',
-        gap: 8,
-        insideSelectors: ['permission-controls', '.permissions-popup[data-permission-controls="true"]'],
-      });
+    // presentInlineMenu owns the deferred relocation; presentPopup beneath it
+    // owns body-append, dismissal wiring, the reposition observer, and the
+    // anchored-vs-sheet decision.
+    this._menu = presentInlineMenu({
+      host: this,
+      surfaceSelector: '.permissions-popup',
+      anchorSelector: '.permission-btn',
+      onClose: () => this.closePopup(),
+      align: 'right',
     });
   }
 
@@ -213,12 +200,10 @@ class PermissionControls extends HTMLElement {
   closePopup() {
     if (!this.popupOpen) return;
     this.popupOpen = false;
-    // Release tears down the surface, scrim, observer and dismissal wiring.
-    if (this._popupRelease) {
-      this._popupRelease();
-      this._popupRelease = null;
-    }
-    this._livePopup = null;
+    // Close cancels a pending relocation, then tears down the surface, scrim,
+    // observer and dismissal wiring.
+    this._menu?.close();
+    this._menu = null;
     this.editingPath = '';
     this.editingNewPath = false;
     this._disposeActiveSections();
@@ -263,14 +248,6 @@ class PermissionControls extends HTMLElement {
     this._renderAllowedPaths();
   }
 
-  /** @private */
-  _removeDetachedPopup() {
-    if (this._livePopup) {
-      this._livePopup.remove();
-      this._livePopup = null;
-    }
-  }
-
   render() {
     if (!this.shouldShowControls()) {
       this.innerHTML = '';
@@ -285,7 +262,7 @@ class PermissionControls extends HTMLElement {
       return;
     }
 
-    const existingPopup = this._livePopup;
+    const existingPopup = this._menu?.surface ?? null;
 
     // While open, the popup has been relocated out of this element to <body>
     // (see openPopup) and positioned against our button. A re-render here —
@@ -466,7 +443,7 @@ class PermissionControls extends HTMLElement {
    * @private
    */
   _renderAllowedPaths(popupArg) {
-    const popup = popupArg || this._livePopup;
+    const popup = popupArg || this._menu?.surface;
     if (!popup || !this.messageThread) return;
     const host = /** @type {HTMLElement|null} */ (popup.querySelector('[data-section="allowed-paths"]'));
     if (!host) return;

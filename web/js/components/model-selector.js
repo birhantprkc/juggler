@@ -2,7 +2,7 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import { presentPopup } from '../utils/popup-surface.js';
+import { presentPopup, presentInlineMenu } from '../utils/popup-surface.js';
 import wsService from '../services/websocket.js';
 import providersCache from '../services/providers-cache.js';
 import connectionStatus from '../services/connection-status.js';
@@ -82,23 +82,20 @@ class ModelSelector extends HTMLElement {
     this.loadingProviders = false;
     /** @type {import('../model/conversation.js').default|null} @private */
     this.conversation = null;
-    /** @type {(() => void)|null} @private - presentPopup release for the open dropdown. */
-    this._popupRelease = null;
-    /** @type {number|null} @private - Deferred presentation frame for the dropdown. */
-    this._popupFrame = null;
     /** @type {(() => void)|null} @private - presentPopup release for the mini thinking popover. */
     this._miniPopupRelease = null;
     /** @type {HTMLElement|null} @private - The mini thinking popover's surface while open. */
     this._miniSurface = null;
     /**
-     * This selector's own dropdown while open (relocated to <body>), else null.
-     * Instance-scoped so updates/teardown never touch a sibling's surface:
-     * multiple selectors coexist (root + each open sub-thread column) and all
-     * share the `[data-model-selector="true"]` attribute, so a document-wide
-     * query would grab the wrong one.
-     * @type {HTMLElement|null} @private
+     * The open dropdown's presentation handle (pending frame + popup release),
+     * else null. Its `surface` is THIS selector's own dropdown while open
+     * (relocated to <body>) — instance-scoped so updates/teardown never touch a
+     * sibling's surface: multiple selectors coexist (root + each open sub-thread
+     * column) and all share the `[data-model-selector="true"]` attribute, so a
+     * document-wide query would grab the wrong one.
+     * @type {import('../utils/popup-surface.js').InlineMenu|null} @private
      */
-    this._liveDropdown = null;
+    this._menu = null;
     /** @type {import('../services/websocket.js').WSEventCallback|null} @private */
     this._providersUpdateHandler = null;
     /**
@@ -186,16 +183,10 @@ class ModelSelector extends HTMLElement {
   }
 
   disconnectedCallback() {
-    // Cancel a not-yet-presented dropdown before tearing down any live surface.
-    if (this._popupFrame !== null) {
-      cancelAnimationFrame(this._popupFrame);
-      this._popupFrame = null;
-    }
-    // Tear down the open dropdown (surface, scrim, observer, dismissal wiring).
-    if (this._popupRelease) {
-      this._popupRelease();
-      this._popupRelease = null;
-    }
+    // Cancel a not-yet-presented dropdown, then tear down any live surface
+    // (scrim, observer, dismissal wiring) it left on document.body.
+    this._menu?.close();
+    this._menu = null;
     // Likewise the mini thinking popover, which lives on document.body too.
     this._closeThinkingMini();
     // Clean up WebSocket listener
@@ -205,11 +196,6 @@ class ModelSelector extends HTMLElement {
     if (this._connectionStatusOff) {
       this._connectionStatusOff();
       this._connectionStatusOff = null;
-    }
-    // Clean up this instance's dropdown if it was moved to document.body.
-    if (this._liveDropdown) {
-      this._liveDropdown.remove();
-      this._liveDropdown = null;
     }
     // Drop any gesture/pin state (clears the pin's backstop timer).
     this._cycle.reset();
@@ -331,7 +317,7 @@ class ModelSelector extends HTMLElement {
     // synchronously, so this method can run in the middle of applyConfigPair.
     // Replacing this element's innerHTML here would detach the anchor and also
     // create a second inline dropdown. Keep both live nodes and refresh them.
-    if (this.dropdownOpen && this._liveDropdown) {
+    if (this.dropdownOpen && this._menu?.surface) {
       this._updateDropdownContent();
       this._refreshButtonContent();
       return;
@@ -380,28 +366,16 @@ class ModelSelector extends HTMLElement {
       if (this.dropdownOpen) this._updateInfoColumn();
     }).catch(() => {});
 
-    // Present the dropdown once rendered. Store and validate the deferred frame:
-    // close/re-render can otherwise leave a stale callback that presents an old
-    // detached menu as a second, unanchored surface.
-    const dropdown = /** @type {HTMLElement|null} */(this.querySelector('.provider-dropdown'));
-    const button = /** @type {HTMLElement|null} */(this.querySelector('.model-selector-button'));
-    if (!dropdown || !button) return;
-    this._popupFrame = requestAnimationFrame(() => {
-      this._popupFrame = null;
-      if (!this.dropdownOpen || !this.contains(dropdown) || !this.contains(button)) return;
-      if (this._popupRelease || this._liveDropdown) return;
-      dropdown.setAttribute('data-model-selector', 'true');
-      this._liveDropdown = dropdown;
-      this._attachDropdownListener(dropdown);
-      this._popupRelease = presentPopup({
-        surface: dropdown,
-        anchor: button,
-        id: 'model-selector',
-        onClose: () => this.closeDropdown(),
-        align: 'left',
-        gap: 8,
-        insideSelectors: ['model-selector', '.provider-dropdown[data-model-selector="true"]'],
-      });
+    // Present the dropdown once rendered. presentInlineMenu owns the deferred
+    // frame and cancels it on close, so a close/re-render before it runs cannot
+    // leave a stale callback that presents an old detached menu as a second,
+    // unanchored surface.
+    this._menu = presentInlineMenu({
+      host: this,
+      surfaceSelector: '.provider-dropdown',
+      anchorSelector: '.model-selector-button',
+      onClose: () => this.closeDropdown(),
+      onPresent: (dropdown) => this._attachDropdownListener(dropdown),
     });
   }
 
@@ -413,7 +387,7 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   _updateDropdownContent() {
-    const dropdown = this._liveDropdown;
+    const dropdown = this._menu?.surface;
     if (!dropdown) return;
 
     this._updateInfoColumn(dropdown);
@@ -443,7 +417,7 @@ class ModelSelector extends HTMLElement {
    * @param {Element|null} [dropdownEl] - Optional already-resolved dropdown root.
    */
   _updateInfoColumn(dropdownEl) {
-    const dropdown = dropdownEl || this._liveDropdown;
+    const dropdown = dropdownEl || this._menu?.surface;
     if (!dropdown) return;
     const info = dropdown.querySelector('.model-menu-info');
     if (info) {
@@ -1066,17 +1040,10 @@ class ModelSelector extends HTMLElement {
       // scratch rather than diffing against a stale (removed) dropdown.
       this._lastListHTML = null;
       this._lastInfoHTML = null;
-      // Cancel a deferred presentation before it can resurrect this menu.
-      if (this._popupFrame !== null) {
-        cancelAnimationFrame(this._popupFrame);
-        this._popupFrame = null;
-      }
-      // Release tears down the surface, scrim, observer and dismissal wiring.
-      if (this._popupRelease) {
-        this._popupRelease();
-        this._popupRelease = null;
-      }
-      this._liveDropdown = null;
+      // Close cancels a deferred presentation before it can resurrect this
+      // menu, then tears down the surface, scrim, observer and dismissal wiring.
+      this._menu?.close();
+      this._menu = null;
       this.render();
     }
   }

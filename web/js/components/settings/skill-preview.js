@@ -30,7 +30,7 @@ import { escapeHtml } from '../../../sdk/lib/html.js';
 import { renderMarkdown } from '../../../sdk/lib/markdown.js';
 import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
 import { formatBytes } from '../../utils/format.js';
-import { markPopupOpen } from '../../utils/popup-manager.js';
+import { presentModal } from '../../utils/modal-surface.js';
 import { addFilePath } from '../../utils/properties-panel-helpers.js';
 import { fetchSkillBody } from '../../services/skills.js';
 
@@ -132,29 +132,11 @@ export async function openInstalledSkillPreview(skill) {
   const { scope, source, name } = skill;
   if (!scope || !source || !name) return;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'skills-drawer';
-  document.body.appendChild(overlay);
-
-  let closed = false;
-  /** @type {(() => void)|null} */
-  let release = null;
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    if (release) {
-      release();
-      release = null;
-    }
-    overlay.remove();
-  };
-  // Escape and the browser/mobile Back button dismiss via popup-manager,
-  // matching every other app modal.
-  release = markPopupOpen(close);
-  overlay.addEventListener('click', (e) => {
-    const el = /** @type {HTMLElement} */ (e.target);
-    if (el.closest('.skills-preview-close') || el.closest('.skills-preview-backdrop')) close();
+  const modal = presentModal({
+    className: 'skills-drawer',
+    dismissSelectors: ['.skills-preview-close', '.skills-preview-backdrop'],
   });
+  const overlay = modal.root;
 
   const title = escapeHtml(name);
   overlay.innerHTML = skillPreviewShell(
@@ -166,11 +148,11 @@ export async function openInstalledSkillPreview(skill) {
   try {
     detail = await fetchSkillBody(/** @type {any} */ (scope), /** @type {any} */ (source), name);
   } catch (err) {
-    if (closed) return;
+    if (modal.closed) return;
     overlay.innerHTML = skillPreviewShell(title, `<div class="skills-empty">${escapeHtml(extractErrorMessage(err))}</div>`);
     return;
   }
-  if (closed) return;
+  if (modal.closed) return;
   overlay.innerHTML = skillPreviewShell(title, installedPreviewBody(skill, detail));
   hydrateSkillFilePaths(overlay);
 }

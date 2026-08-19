@@ -2,7 +2,7 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import { markPopupOpen } from './popup-manager.js';
+import { presentModal } from './modal-surface.js';
 
 /**
  * Minimal click-to-expand image lightbox. Opens the given image full-size,
@@ -51,34 +51,26 @@ export function createImageThumb(opts) {
  * @returns {() => void} A function that closes this lightbox (idempotent).
  */
 export function openImageLightbox(src, alt) {
-  // Single-instance: replace any lightbox already open.
+  // Single-instance: replace any lightbox already open. Ordered before the new
+  // one exists, so the old modal's onClose can only ever clear its own handle.
   if (activeClose) activeClose();
 
-  const backdrop = document.createElement('div');
-  backdrop.className = 'image-lightbox';
+  // A click anywhere on the overlay (backdrop or image) closes it, so the root
+  // itself is the one dismiss target. Escape and the browser/mobile Back button
+  // are handled by presentModal via popup-manager, which also keeps the
+  // keystroke from cancelling a running turn behind the lightbox.
+  const modal = presentModal({
+    className: 'image-lightbox',
+    dismissSelectors: ['.image-lightbox'],
+    onClose: () => { activeClose = null; },
+  });
 
   const img = document.createElement('img');
   img.className = 'image-lightbox-img';
   img.src = src;
   img.alt = alt || '';
-  backdrop.appendChild(img);
+  modal.root.appendChild(img);
 
-  document.body.appendChild(backdrop);
-
-  // Mark a popup open so Escape (and the browser/mobile Back button) dismiss the
-  // lightbox via popup-manager instead of cancelling a running turn behind it.
-  const releasePopupOpen = markPopupOpen(() => close());
-
-  const close = () => {
-    if (activeClose !== close) return;
-    activeClose = null;
-    releasePopupOpen();
-    backdrop.remove();
-  };
-  activeClose = close;
-
-  // Click anywhere on the overlay (backdrop or image) closes it.
-  backdrop.addEventListener('click', close);
-
-  return close;
+  activeClose = () => modal.close();
+  return activeClose;
 }

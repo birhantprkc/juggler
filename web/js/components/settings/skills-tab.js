@@ -15,6 +15,7 @@ import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
 import { formatBytes } from '../../utils/format.js';
 import { CHECK_SVG, GITHUB_ICON_SVG, DROPDOWN_ARROW_SVG, REFRESH_SVG } from '../../utils/icons.js';
 import { markPopupOpen } from '../../utils/popup-manager.js';
+import { presentModal } from '../../utils/modal-surface.js';
 import { presentPopup } from '../../utils/popup-surface.js';
 import { addFilePath } from '../../utils/properties-panel-helpers.js';
 import { skillPreviewShell, openInstalledSkillPreview } from './skill-preview.js';
@@ -631,8 +632,12 @@ export class SkillsTab {
    */
   _promptInstallScope(entry) {
     return new Promise((resolve) => {
-      const host = document.createElement('div');
-      host.className = 'skills-scope-dialog';
+      const modal = presentModal({
+        className: 'skills-scope-dialog',
+        dismissSelectors: ['[data-scope-cancel]', '.skills-scope-backdrop'],
+        onClose: (value) => resolve(value ?? null),
+      });
+      const host = modal.root;
       const options = SCOPE_OPTIONS.map(
         (o) => `
           <button class="skills-scope-action" data-scope="${escapeHtml(o.value)}">
@@ -653,30 +658,9 @@ export class SkillsTab {
           </div>
         </modal-panel>
       `;
-      document.body.appendChild(host);
-      /** @type {(() => void)|null} */
-      let release = null;
-      let settled = false;
-      const finish = (/** @type {string|null} */ value) => {
-        if (settled) return;
-        settled = true;
-        if (release) release();
-        host.remove();
-        resolve(value);
-      };
-      // Escape and the browser/mobile Back button dismiss via popup-manager,
-      // matching every other app modal.
-      release = markPopupOpen(() => finish(null));
       host.addEventListener('click', (e) => {
-        const el = /** @type {HTMLElement} */ (e.target);
-        const pick = el.closest('[data-scope]');
-        if (pick) {
-          finish(/** @type {HTMLElement} */ (pick).dataset.scope || null);
-          return;
-        }
-        if (el.closest('[data-scope-cancel]') || el.closest('.skills-scope-backdrop')) {
-          finish(null);
-        }
+        const pick = /** @type {HTMLElement} */ (e.target).closest('[data-scope]');
+        if (pick) modal.close(/** @type {HTMLElement} */ (pick).dataset.scope || null);
       });
     });
   }
