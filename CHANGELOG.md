@@ -5,6 +5,9 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- A Windows build from source no longer leaves a console window open behind the app
+- The wails submodule clones over HTTPS, so building from source needs no SSH key
+
 ## [0.5.7] - 2026-08-19
 
 - Extensions can ship a sub-agent: a tool running under a strategy the tool itself owns

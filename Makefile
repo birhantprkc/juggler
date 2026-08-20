@@ -34,6 +34,18 @@ BIN_EXT := .exe
 else
 BIN_EXT :=
 endif
+# Extra linker args for the desktop app on a native Windows build. The app is a
+# GUI binary and must link -H windowsgui, or Windows gives it a console window
+# that sits open behind the app for its whole run (and its logging assumes no
+# console — see cmd/juggler-app/util.go). The cross-compile target
+# (build-windows) passes the same flag; this is the native-build half. The
+# server binary deliberately does NOT get it: see the console-subsystem note
+# below.
+ifeq ($(OS),Windows_NT)
+APP_LDFLAGS := -H windowsgui
+else
+APP_LDFLAGS :=
+endif
 MAC_APP_DIR=$(BUILD_DIR)/Juggler.app
 # The clickable bundle executable is the desktop app (juggler-app); the headless
 # server binary (juggler) sits alongside it in MacOS/ so the app's serverBinPath
@@ -142,7 +154,7 @@ ifeq ($(UNAME_S),Darwin)
 	@ln -sfn Juggler.app/Contents/MacOS/juggler-app $(BUILD_DIR)/juggler-app
 else
 	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)$(BIN_EXT) ./cmd/juggler
-	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/juggler-app$(BIN_EXT) ./cmd/juggler-app
+	@$(GOBUILD) -ldflags "$(LDFLAGS) $(APP_LDFLAGS)" -o $(BUILD_DIR)/juggler-app$(BIN_EXT) ./cmd/juggler-app
 endif
 	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/juggler-test$(BIN_EXT) ./cmd/juggler-test
 	@echo "✓ built juggler, juggler-app, juggler-test ($(VERSION))"
@@ -168,7 +180,7 @@ ifeq ($(UNAME_S),Darwin)
 else
 	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)$(BIN_EXT) ./cmd/juggler
 	@echo "Building juggler-app $(VERSION) [release]..."
-	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/juggler-app$(BIN_EXT) ./cmd/juggler-app
+	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS) $(APP_LDFLAGS)" -o $(BUILD_DIR)/juggler-app$(BIN_EXT) ./cmd/juggler-app
 endif
 
 ## build-windows: Cross-compile the Windows .exe binaries from any host. Wails

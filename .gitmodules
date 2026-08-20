@@ -1,6 +1,8 @@
 [submodule "3rdparty/wails"]
 	path = 3rdparty/wails
-	url = git@github.com:juggler-ai/wails.git
+	# HTTPS, not SSH: the fork is public and this must clone for anyone building
+	# from source, with no GitHub account or key set up.
+	url = https://github.com/juggler-ai/wails.git
 	branch = juggler-changes
 	# Depth-1 submodule clone: CI (and a fresh `submodule update --init`) only
 	# ever needs the pinned commit's tree to build, never the fork's history.

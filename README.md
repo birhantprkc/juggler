@@ -193,9 +193,10 @@ Linux desktop builds must be made natively on Linux. Use `make linux-tarball` to
 
 ### Windows
 
-The supported environment is Git Bash with GNU make. Install both with:
+The supported environment is Git Bash with GNU make. Install those and Go with:
 
 ```bash
+winget install Golang.Go
 winget install Git.Git
 winget install ezwinports.make
 ```
@@ -217,8 +218,10 @@ For a quick build without installing make:
 ```bash
 mkdir -p bin
 go build -o bin/juggler.exe ./cmd/juggler
-go build -o bin/juggler-app.exe ./cmd/juggler-app
+go build -ldflags "-H windowsgui" -o bin/juggler-app.exe ./cmd/juggler-app
 ```
+
+The desktop app needs `-H windowsgui` or Windows opens a console window behind it. The server is a console binary on purpose: run from a terminal it stays in the foreground with visible output and Ctrl+C.
 
 WSL2 also works, but it builds Linux binaries linked against GTK/WebKitGTK, not native Windows `.exe` files.
 
