@@ -19,6 +19,7 @@ import slashCommandHandler from '../services/slash-command-handler.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import { presentModal } from '../utils/modal-surface.js';
 import { focusWhenShown } from '../utils/focus.js';
+import { showConfirm } from './modal-dialog.js';
 
 /**
  * Set of built-in / extension command ids a user command may not shadow. User
@@ -161,7 +162,7 @@ export function openCommandEditor(options = {}) {
       const del = $('#cmd-delete');
       del.classList.remove('hidden');
       del.addEventListener('click', async () => {
-        const ok = await /** @type {any} */ (window).showConfirm(
+        const ok = await showConfirm(
           `Delete the /${def?.name} command?`, 'Delete command', { danger: true, confirmText: 'Delete' });
         if (!ok) return;
         await deleteUserCommand(/** @type {any} */ (def?.scope), /** @type {any} */ (def?.name));
@@ -353,7 +354,7 @@ function userGroup(title, defs, refresh) {
     del.className = 'modal-button danger';
     del.textContent = 'Delete';
     del.addEventListener('click', async () => {
-      const ok = await /** @type {any} */ (window).showConfirm(
+      const ok = await showConfirm(
         `Delete the /${def.name} command?`, 'Delete command', { danger: true, confirmText: 'Delete' });
       if (!ok) return;
       await deleteUserCommand(/** @type {any} */ (def.scope), def.name);

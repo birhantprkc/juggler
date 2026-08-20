@@ -16,6 +16,7 @@ import { formatBytes } from '../../utils/format.js';
 import { CHECK_SVG, GITHUB_ICON_SVG, DROPDOWN_ARROW_SVG, REFRESH_SVG } from '../../utils/icons.js';
 import { markPopupOpen } from '../../utils/popup-manager.js';
 import { presentModal } from '../../utils/modal-surface.js';
+import { showAlert, showConfirm, showPrompt } from '../modal-dialog.js';
 import { presentPopup } from '../../utils/popup-surface.js';
 import { addFilePath } from '../../utils/properties-panel-helpers.js';
 import { skillPreviewShell, openInstalledSkillPreview } from './skill-preview.js';
@@ -958,14 +959,7 @@ export class SkillsTab {
    * @private
    */
   async _promptAddSource() {
-    const showPrompt = /** @type {any} */ (window).showPrompt;
-    const msg = 'Paste a github.com/owner/repo URL or owner/repo:';
-    let url;
-    if (typeof showPrompt === 'function') {
-      url = await showPrompt(msg, '', 'Add skills source');
-    } else if (typeof window.prompt === 'function') {
-      url = window.prompt(`Add a skills source — ${msg}`);
-    }
+    const url = await showPrompt('Paste a github.com/owner/repo URL or owner/repo:', '', 'Add skills source');
     if (!url || !url.trim()) return;
     try {
       await addSource(url.trim());
@@ -997,26 +991,22 @@ export class SkillsTab {
   // ── small dialog helpers ──────────────────────────────────────────────────
 
   /**
-   * Show a confirm dialog (falling back to window.confirm).
+   * Show a confirm dialog titled for this tab.
    * @param {string} msg - The prompt text.
    * @returns {Promise<boolean>} True when confirmed.
    * @private
    */
   async _confirm(msg) {
-    const fn = /** @type {any} */ (window).showConfirm;
-    if (typeof fn === 'function') return !!(await fn(msg, 'Skills'));
-    return typeof window.confirm === 'function' ? window.confirm(msg) : true;
+    return !!(await showConfirm(msg, 'Skills'));
   }
 
   /**
-   * Show an alert dialog (falling back to window.alert).
+   * Show an alert dialog titled for this tab.
    * @param {string} msg - The message.
    * @private
    */
   async _alert(msg) {
-    const fn = /** @type {any} */ (window).showAlert;
-    if (typeof fn === 'function') await fn(msg, 'Skills');
-    else if (typeof window.alert === 'function') window.alert(msg);
+    await showAlert(msg, 'Skills');
   }
 }
 

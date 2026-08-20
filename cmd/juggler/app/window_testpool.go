@@ -30,6 +30,7 @@ import (
 	"juggler/cmd/juggler/osactivity"
 	"juggler/cmd/juggler/server"
 	"juggler/internal/jlog"
+	"juggler/internal/windowgeom"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -43,15 +44,6 @@ import (
 //go:embed icon.png
 var appIconPNG []byte
 
-const (
-	defaultWindowWidth  = 1400
-	defaultWindowHeight = 900
-)
-
-// saveDebounce collapses a burst of window move/resize events into a single
-// geometry write ~this long after the last change.
-const saveDebounce = 300 * time.Millisecond
-
 type windowApp struct {
 	srv       *server.Server
 	headless  bool
@@ -60,12 +52,12 @@ type windowApp struct {
 	win       *application.WebviewWindow
 	engineWin *application.WebviewWindow // hidden process-owned engine browser
 	saved     core.WindowState
-	lastPos   core.WindowState // last known non-maximised/non-fullscreen geometry
+	geom      *windowgeom.Tracker // tracks the frame to persist for this window
 
-	// saveCh debounces window-state writes. Trigger via triggerSave(); a
+	// saves debounces window-state writes. Trigger via triggerSave(); a
 	// background goroutine collapses bursts of move/resize events into a
 	// single session save ~300ms after the last change.
-	saveCh chan struct{}
+	saves *windowgeom.Debouncer
 
 	onWindowReady func(*application.App, *application.WebviewWindow)
 }
@@ -117,80 +109,41 @@ func (a *windowApp) startup() {
 }
 
 // currentState captures the window's current geometry/state. Must be called
-// on the main thread. Returns (zero, false) if the window isn't ready yet —
-// Wails' Size()/Position() return (0,0) when impl/nsWindow are nil (e.g.
-// during early startup before the window has been constructed, or after
-// destruction), and writing those zeros to disk would clobber the user's
-// real saved geometry. Also updates lastPos when the window is in a normal
-// (non-maximised/non-fullscreen) state, so the next maximise→quit cycle
-// remembers the correct restore geometry.
+// on the main thread — the tracker reads live native state, which Wails only
+// answers correctly there. See windowgeom.Tracker.Capture for when it declines
+// to report a frame at all.
 func (a *windowApp) currentState() (core.WindowState, bool) {
-	maximised := a.win.IsMaximised()
-	fullscreen := a.win.IsFullscreen()
-	if !maximised && !fullscreen {
-		x, y := a.win.Position()
-		w, h := a.win.Size()
-		// Width/height of zero means the native window isn't ready. Don't
-		// overwrite saved state with junk — leave the file alone until the
-		// next legitimate event.
-		if w <= 0 || h <= 0 {
-			return core.WindowState{}, false
-		}
-		a.lastPos = core.WindowState{X: x, Y: y, Width: w, Height: h, HasPos: true}
-	} else if !a.lastPos.HasPos {
-		// Maximised/fullscreen at startup with no prior normal-state sample
-		// to fall back to. Skip — we'd write junk for the underlying frame.
-		return core.WindowState{}, false
-	}
-	return core.WindowState{
-		X:          a.lastPos.X,
-		Y:          a.lastPos.Y,
-		Width:      a.lastPos.Width,
-		Height:     a.lastPos.Height,
-		HasPos:     a.lastPos.HasPos,
-		Maximised:  maximised,
-		Fullscreen: fullscreen,
-	}, true
+	return a.geom.Capture(a.win)
 }
 
 // triggerSave wakes the save loop. Non-blocking — coalesces bursts of move
 // or resize events into a single debounced write.
 func (a *windowApp) triggerSave() {
-	select {
-	case a.saveCh <- struct{}{}:
-	default:
-	}
+	a.saves.Trigger()
 }
 
-// saveLoop debounces window-state writes. Wails fires WindowDidMove /
-// WindowDidResize many times per drag; collapsing them avoids hammering the
-// disk while still capturing every distinct settled geometry.
+// saveLoop writes the settled geometry after each burst of move/resize events.
+// Runs for the process lifetime (no stop channel), hopping onto the main thread
+// for the capture itself.
 func (a *windowApp) saveLoop() {
-	var timerC <-chan time.Time
-	for {
-		select {
-		case <-a.saveCh:
-			timerC = time.After(saveDebounce)
-		case <-timerC:
-			timerC = nil
-			type result struct {
-				s  core.WindowState
-				ok bool
-			}
-			done := make(chan result, 1)
-			application.InvokeAsync(func() {
-				s, ok := a.currentState()
-				done <- result{s, ok}
-			})
-			r := <-done
-			if !r.ok {
-				continue
-			}
-			if err := saveWindowState(a.srv, r.s); err != nil {
-				jlog.Error("[window] failed to save window state: %v", err)
-			}
+	a.saves.Run(nil, func() {
+		type result struct {
+			s  core.WindowState
+			ok bool
 		}
-	}
+		done := make(chan result, 1)
+		application.InvokeAsync(func() {
+			s, ok := a.currentState()
+			done <- result{s, ok}
+		})
+		r := <-done
+		if !r.ok {
+			return
+		}
+		if err := saveWindowState(a.srv, r.s); err != nil {
+			jlog.Error("[window] failed to save window state: %v", err)
+		}
+	})
 }
 
 // persistNow writes window state synchronously on the main thread. Used at
@@ -253,11 +206,9 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 	osactivity.Begin()
 
 	saved := loadWindowState(srv)
+	place := windowgeom.Place(saved)
 
-	width, height := defaultWindowWidth, defaultWindowHeight
-	if saved.Width > 0 && saved.Height > 0 {
-		width, height = saved.Width, saved.Height
-	}
+	width, height := place.Width, place.Height
 
 	// Test windows live offscreen and exist only to keep macOS from throttling
 	// the WebKit process. There's no UI to look at, so make them tiny — unless
@@ -282,8 +233,8 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 		headless:      headless,
 		testMode:      testMode,
 		saved:         saved,
-		lastPos:       saved,
-		saveCh:        make(chan struct{}, 1),
+		geom:          windowgeom.NewTracker(saved),
+		saves:         windowgeom.NewDebouncer(),
 		onWindowReady: onWindowReady,
 	}
 	go wa.saveLoop()
@@ -355,16 +306,7 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 	initialPos := application.WindowCentered
 	startState := application.WindowStateNormal
 	if !headless || !testMode {
-		if saved.HasPos {
-			posX, posY = saved.X, saved.Y
-			initialPos = application.WindowXY
-		}
-		switch {
-		case saved.Maximised:
-			startState = application.WindowStateMaximised
-		case saved.Fullscreen:
-			startState = application.WindowStateFullscreen
-		}
+		posX, posY, initialPos, startState = place.X, place.Y, place.Position, place.State
 	}
 
 	// Pick the page the WebKit window should load:

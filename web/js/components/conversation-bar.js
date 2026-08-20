@@ -15,12 +15,8 @@
  * @property {boolean} [danger] - Show danger styling for destructive actions
  */
 
-// Augment Window interface with modal dialog methods
 /**
- * @typedef {object} WindowWithModals
- * @property {(message: string, title?: string) => Promise<void>} showAlert - Show alert dialog
- * @property {(message: string, title?: string, options?: ModalOptions) => Promise<boolean>} showConfirm - Show confirm dialog
- * @property {(message: string, defaultValue?: string, title?: string) => Promise<string|null>} showPrompt - Show prompt dialog
+ * @typedef {object} WindowWithConversationBar
  * @property {typeof ConversationBar} ConversationBar - ConversationBar class
  */
 
@@ -35,6 +31,7 @@ import keyShortcutManager from '../services/key-shortcut-manager.js';
 import { isAutoNameEnabled, refreshAutoNameSetting } from '../services/auto-name-setting.js';
 import { isTabHighlightEnabled, ATTENTION_PREFS_EVENT } from '../utils/attention-manager.js';
 import JugglerElement from './juggler-element.js';
+import { showAlert } from './modal-dialog.js';
 import './bin-modal.js';
 import './info-rail.js';
 
@@ -1041,7 +1038,7 @@ class ConversationBar extends JugglerElement {
       await this._session.restoreConversation(id);
     } catch (e) {
       console.error('[ConversationBar] restore from bin failed:', e);
-      await /** @type {WindowWithModals} */ (/** @type {any} */ (window)).showAlert(
+      await showAlert(
         `Couldn’t restore it from the bin: ${/** @type {any} */ (e)?.message || e}`,
         'Restore failed'
       );
@@ -1074,7 +1071,7 @@ class ConversationBar extends JugglerElement {
   async _duplicateConversation(conversationId) {
     if (!this._session) return;
     if (this._session.conversations.size >= MAX_CONVERSATIONS) {
-      await /** @type {WindowWithModals} */ (/** @type {any} */ (window)).showAlert(
+      await showAlert(
         CONVERSATION_LIMIT_MESSAGE,
         'Too many conversations'
       );
@@ -1169,7 +1166,7 @@ class ConversationBar extends JugglerElement {
     // model enforces the same limit (so duplicate/other paths can't exceed it);
     // pre-checking here keeps the "+" UX side-effect-free (no rename popover).
     if (this._session.conversations.size >= MAX_CONVERSATIONS) {
-      await /** @type {WindowWithModals} */ (/** @type {any} */ (window)).showAlert(
+      await showAlert(
         CONVERSATION_LIMIT_MESSAGE,
         'Too many conversations'
       );
@@ -1318,7 +1315,7 @@ class ConversationBar extends JugglerElement {
           return;
         }
         teardown();
-        await /** @type {WindowWithModals} */ (/** @type {any} */ (window)).showAlert(
+        await showAlert(
           `Failed to rename conversation: ${/** @type {any} */ (e)?.message || e}`,
           'Rename failed'
         );
@@ -1676,7 +1673,7 @@ class ConversationBar extends JugglerElement {
 customElements.define('conversation-bar', ConversationBar);
 
 // Export for modules
-/** @type {WindowWithModals} */ (/** @type {any} */ (window)).ConversationBar = ConversationBar;
+/** @type {WindowWithConversationBar} */ (/** @type {any} */ (window)).ConversationBar = ConversationBar;
 
 // Right-click menu for conversation tabs in the bar. Wired to the active bar's
 // own helpers so rename/duplicate/bin behave exactly like the built-in

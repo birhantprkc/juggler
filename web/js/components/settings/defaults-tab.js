@@ -16,6 +16,7 @@ import { setAutoNameEnabledCached } from '../../services/auto-name-setting.js';
 import strategyRegistry from '../../registries/strategy-registry.js';
 import { getDefaultStrategyId, setDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID } from '../../services/default-strategy.js';
 import { fetchJson } from '../../services/http.js';
+import { showAlert } from '../modal-dialog.js';
 
 /**
  * "Defaults" tab (id `defaults`): the default-model and cheap-model pickers, the
@@ -670,9 +671,7 @@ export class DefaultsTab {
       }
     } catch (err) {
       console.error('[SettingsPanel] Failed to save cheap model:', err);
-      if (window.showAlert) {
-        await window.showAlert('Failed to save cheap model.', 'Error');
-      }
+      await showAlert('Failed to save cheap model.', 'Error');
     }
   }
 
@@ -751,9 +750,7 @@ export class DefaultsTab {
       this.renderDefaultModelField();
     } catch (err) {
       console.error('[SettingsPanel] Failed to save default model:', err);
-      if (window.showAlert) {
-        await window.showAlert('Failed to save default model.', 'Error');
-      }
+      await showAlert('Failed to save default model.', 'Error');
     }
   }
 }

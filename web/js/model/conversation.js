@@ -2181,6 +2181,10 @@ class Conversation {
   /**
    * Show a message with an offer to jump to Provider Settings, falling back to a
    * toast warning if the confirm dialog isn't wired up.
+   *
+   * The view layer imports these dialogs as module functions; the model reaches
+   * for the `window.*` aliases on purpose, so a headless model never hard-depends
+   * on a component module and keeps working when no UI is mounted at all.
    * @param {string} message - Body text for the confirm dialog / toast
    * @param {string} title - Confirm-dialog title
    * @private

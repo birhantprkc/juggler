@@ -8,6 +8,8 @@
  * button instead of forcing a picker popup.
  */
 
+import { openSettings } from '../services/settings-launcher.js';
+
 class NoProjectOverlay extends HTMLElement {
   constructor() {
     super();
@@ -115,18 +117,14 @@ class NoProjectOverlay extends HTMLElement {
     const settingsLink = this.querySelector('.no-project-settings-link');
     if (settingsLink) {
       settingsLink.addEventListener('click', () => {
-        if ('openSettings' in window && typeof window.openSettings === 'function') {
-          /** @type {any} */ (window).openSettings('providers');
-        }
+        openSettings('providers');
       });
     }
 
     const shortcutsLink = this.querySelector('.no-project-shortcuts-link');
     if (shortcutsLink) {
       shortcutsLink.addEventListener('click', () => {
-        if ('openSettings' in window && typeof window.openSettings === 'function') {
-          /** @type {any} */ (window).openSettings('shortcuts');
-        }
+        openSettings('shortcuts');
       });
     }
   }

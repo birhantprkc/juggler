@@ -6,6 +6,7 @@ import { openExternalURL } from '../../sdk/lib/window-control.js';
 import { createButton } from '../../sdk/lib/html.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { startInstall, requestRestart } from '../services/updater-control.js';
+import { showConfirm } from './modal-dialog.js';
 
 /**
  * @typedef {object} UpdateAction
@@ -571,14 +572,11 @@ class UpdateNotice extends HTMLElement {
     try {
       let res = await requestRestart({ force: false });
       if (res.status === 'busy') {
-        const showConfirm = /** @type {any} */ (window).showConfirm;
-        const proceed = showConfirm
-          ? await showConfirm(
-            res.message || 'A conversation is still working. Restarting will stop and discard it.',
-            'Restart to update?',
-            { confirmText: 'Restart anyway', cancelText: 'Keep working', danger: true },
-          )
-          : window.confirm(res.message || 'A conversation is still working. Restart anyway?');
+        const proceed = await showConfirm(
+          res.message || 'A conversation is still working. Restarting will stop and discard it.',
+          'Restart to update?',
+          { confirmText: 'Restart anyway', cancelText: 'Keep working', danger: true },
+        );
         if (!proceed) return;
         res = await requestRestart({ force: true });
       }

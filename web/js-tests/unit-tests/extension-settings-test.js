@@ -134,8 +134,10 @@ export async function runTests(_ctx) {
         return { token: { __present: present } };
       },
     });
-    const originalConfirm = window.showConfirm;
-    window.showConfirm = async () => true;
+    // window.showModal is the presenter every dialog helper goes through, so
+    // standing in for it answers the imported showConfirm too.
+    const originalShowModal = /** @type {any} */ (window).showModal;
+    /** @type {any} */ (window).showModal = async () => true;
     const root = editor.render();
     document.body.appendChild(root);
     try {
@@ -152,7 +154,7 @@ export async function runTests(_ctx) {
       assert(requests[1].values.token === '', 'secret clear did not send an empty value');
       assert(root.querySelector('.extension-secret-status')?.textContent === 'Not set', 'clear status not shown');
     } finally {
-      window.showConfirm = originalConfirm;
+      /** @type {any} */ (window).showModal = originalShowModal;
       root.remove();
     }
   });

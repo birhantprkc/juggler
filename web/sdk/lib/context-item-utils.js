@@ -12,6 +12,7 @@
 
 import { renderMarkdown, decorateCodeBlocks } from './markdown.js';
 import { highlightCode } from './syntax-highlight.js';
+import { injectStylesOnce } from './inject-styles.js';
 
 /**
  * Format file size in human-readable format
@@ -343,11 +344,7 @@ export function normalizeFilePath(params) {
  * Safe to call from multiple modules — guarded by style ID.
  */
 export function injectFileContentStyles() {
-  if (typeof document === 'undefined') return;
-  if (document.getElementById('file-content-ci-styles')) return;
-  const style = document.createElement('style');
-  style.id = 'file-content-ci-styles';
-  style.textContent = `
+  injectStylesOnce('file-content-ci-styles', `
 .file-content-collapsed {
   display: flex;
   flex-direction: column;
@@ -389,6 +386,5 @@ export function injectFileContentStyles() {
   border-radius: 0.25rem;
   color: var(--accent-red);
 }
-`;
-  document.head.appendChild(style);
+`);
 }

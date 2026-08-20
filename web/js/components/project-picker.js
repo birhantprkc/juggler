@@ -18,6 +18,7 @@ import { presentPopup } from '../utils/popup-surface.js';
 import { closePopupById } from '../utils/popup-manager.js';
 import { hasNativeHost, pickDirectory } from '../../sdk/lib/window-control.js';
 import { focusWhenShown } from '../utils/focus.js';
+import { showAlert, showConfirm } from './modal-dialog.js';
 
 /**
  * @typedef {(path: string) => Promise<{valid: boolean, path?: string, error?: string, current?: boolean}>} ValidateFn
@@ -340,7 +341,7 @@ async function openInNewWindow(path) {
     await apiService.newWindow(path);
   } catch (err) {
     const msg = extractUserMessage(err);
-    await window.showAlert(msg, 'Open in new window');
+    await showAlert(msg, 'Open in new window');
   }
 }
 
@@ -441,7 +442,7 @@ export async function openProjectPicker(currentPath, session) {
   if (busy.length > 0) {
     const list = busy.map((n) => `• ${n}`).join('\n');
     const noun = busy.length === 1 ? 'conversation is' : 'conversations are';
-    const ok = await window.showConfirm(
+    const ok = await showConfirm(
       `${busy.length} ${noun} still working:\n\n${list}\n\nSwitching projects will stop and discard this work. Continue?`,
       'Switch project?',
       { confirmText: 'Switch project', cancelText: 'Stay', danger: true },
@@ -454,6 +455,6 @@ export async function openProjectPicker(currentPath, session) {
     // Server broadcasts `project-changed`; session listener triggers full reload.
   } catch (err) {
     const msg = extractUserMessage(err);
-    await window.showAlert(msg, 'Open project');
+    await showAlert(msg, 'Open project');
   }
 }

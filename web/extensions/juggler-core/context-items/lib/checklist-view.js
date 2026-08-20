@@ -17,6 +17,7 @@
 
 import { createElement } from 'juggler/ui';
 import { renderMarkdown } from 'juggler/ui';
+import { injectStylesOnce } from 'juggler/ui';
 
 const CHECKLIST_STYLES = `
 /* Shared checklist view (plan + todo) */
@@ -228,13 +229,8 @@ const CHECKLIST_STYLES = `
 `;
 
 // Inject styles once when loaded in a document-owning viewer. Engine workers
-// import this module for tool execution and must not touch DOM globals.
-if (typeof document !== 'undefined' && !document.getElementById('checklist-view-styles')) {
-  const style = document.createElement('style');
-  style.id = 'checklist-view-styles';
-  style.textContent = CHECKLIST_STYLES;
-  document.head.appendChild(style);
-}
+// import this module for tool execution; injectStylesOnce is a no-op there.
+injectStylesOnce('checklist-view-styles', CHECKLIST_STYLES);
 
 /** @type {Record<string, string>} */
 const INDICATOR_SVG = {

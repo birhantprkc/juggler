@@ -6,6 +6,7 @@ import { ContextBuilder } from '../services/context-builder.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { copyToClipboard } from '../../sdk/lib/clipboard.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { showAlert } from './modal-dialog.js';
 
 /**
  * ContextPreviewModal - Modal for previewing the full LLM context
@@ -16,11 +17,6 @@ import { markPopupOpen } from '../utils/popup-manager.js';
  * the exact token count lives on the conversation footer behind the modal.
  * @typedef {import('juggler/context-item').default} ContextItemInstance
  * @typedef {import('../services/api.js').Message} Message
- */
-
-/**
- * @typedef {object} WindowWithModals
- * @property {function(string, string=): Promise<void>} showAlert - Show an alert dialog
  */
 
 /**
@@ -444,7 +440,7 @@ class ContextPreviewModal extends HTMLElement {
       }
     } catch (err) {
       console.error('[ContextPreviewModal] Failed to copy to clipboard:', err);
-      await /** @type {WindowWithModals} */ (/** @type {any} */ (window)).showAlert(/** @type {Error} */ (err).message, 'Copy Failed');
+      await showAlert(/** @type {Error} */ (err).message, 'Copy Failed');
     }
   }
 

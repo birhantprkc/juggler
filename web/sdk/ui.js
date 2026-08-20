@@ -23,6 +23,9 @@ export {
   createLlmDescription,
 } from './lib/html.js';
 
+// One-shot stylesheet injection for modules that ship their own CSS
+export { injectStylesOnce } from './lib/inject-styles.js';
+
 // Output truncation / token budgets
 export { smartTruncate, getBudgetForCallCount } from './lib/smart-truncate.js';
 

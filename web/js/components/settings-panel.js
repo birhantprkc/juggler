@@ -11,6 +11,8 @@
 
 import { markPopupOpen } from '../utils/popup-manager.js';
 import { fetchJson } from '../services/http.js';
+import { registerSettingsOpener } from '../services/settings-launcher.js';
+import { showAlert } from './modal-dialog.js';
 import providersCache from '../services/providers-cache.js';
 import { ProvidersTab } from './settings/providers-tab.js';
 import { DefaultsTab } from './settings/defaults-tab.js';
@@ -561,9 +563,7 @@ class SettingsPanel extends HTMLElement {
       return true;
     } catch (error) {
       console.error('Failed to load config:', error);
-      if (window.showAlert) {
-        await window.showAlert('Failed to load configuration', 'Error');
-      }
+      await showAlert('Failed to load configuration', 'Error');
       return false;
     }
   }
@@ -572,9 +572,13 @@ class SettingsPanel extends HTMLElement {
 
 customElements.define('settings-panel', SettingsPanel);
 
-// Global helper to open settings panel
-// @ts-ignore - Adding custom property to window
-window.openSettings = function(tab, options) {
+/**
+ * Present the settings panel, creating it on first use.
+ * @param {string} [tab] - Tab id to open on
+ * @param {import('../services/settings-launcher.js').OpenSettingsOptions} [options] - What to reveal
+ * @returns {void}
+ */
+function presentSettings(tab, options) {
   let panel = document.querySelector('settings-panel');
   if (!panel) {
     panel = document.createElement('settings-panel');
@@ -582,4 +586,10 @@ window.openSettings = function(tab, options) {
   }
   // @ts-ignore - open method exists on SettingsPanel custom element
   panel.open(tab, options);
-};
+}
+
+// Everything in-app opens settings through services/settings-launcher.js; the
+// window alias remains for extensions.
+registerSettingsOpener(presentSettings);
+// @ts-ignore - Adding custom property to window
+window.openSettings = presentSettings;

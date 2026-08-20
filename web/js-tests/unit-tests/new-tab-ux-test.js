@@ -39,15 +39,17 @@ export async function runTests() {
   workerManager.terminateAll();
 
   // `_createConversation()` aborts at MAX_CONVERSATIONS by AWAITING a
-  // `window.showAlert(...)` modal — which only resolves on a user click and so
+  // `showAlert(...)` modal — which only resolves on a user click and so
   // never resolves headless, hanging the test until the 90s suite deadline.
   // The shared fixture session accumulates conv_*.yjs across the whole iframe
   // pool, so under load `session.load()` can come up already at the cap. Two
   // defences below: (1) stub the modal so it can NEVER block — a residual one
   // fails the test fast instead of hanging; (2) make room before creating so
   // the real new-tab scenario actually runs. Restored in `finally`.
-  /** @type {(msg: string, title?: string) => Promise<void>} */
-  const origShowAlert = /** @type {any} */ (window).showAlert;
+  // Intercepted at window.showModal — the presenter every dialog helper calls,
+  // and therefore the one seam that works for an imported showAlert too.
+  /** @type {any} */
+  const origShowModal = /** @type {any} */ (window).showModal;
 
   // Pin the auto-naming-OFF branch. With auto-naming ON (the default) a fresh
   // "+" tab keeps its "Untitled N" name for the LLM and focuses the composer; only
@@ -85,8 +87,8 @@ export async function runTests() {
   setAutoNameEnabledCached(false);
 
   let blockingModalMessage = '';
-  /** @type {any} */ (window).showAlert = async (/** @type {string} */ msg) => {
-    blockingModalMessage = msg;
+  /** @type {any} */ (window).showModal = async (/** @type {any} */ options) => {
+    blockingModalMessage = options?.message || '';
   };
 
   const container = document.createElement('div');
@@ -245,7 +247,7 @@ export async function runTests() {
     // The conversation created by the + click is auto-claimed (see
     // conversation-claims.js) and deleted by the executor's unit-suite
     // cleanup, so it never accumulates in the shared session.
-    /** @type {any} */ (window).showAlert = origShowAlert;
+    /** @type {any} */ (window).showModal = origShowModal;
     /** @type {any} */ (window).fetch = origFetch;
     setAutoNameEnabledCached(origAutoNameEnabled);
     container.remove();

@@ -24,6 +24,8 @@
  * @module components/config-tab
  */
 
+import { showConfirm } from './modal-dialog.js';
+
 // ---------------------------------------------------------------------------
 // Pure config helpers (unit-tested directly — see mcp-settings-test.js / acp-settings-test.js)
 // ---------------------------------------------------------------------------
@@ -585,12 +587,9 @@ export class ConfigTabController {
    * @param {string} name
    */
   async _confirmDelete(scope, name) {
-    const confirm = /** @type {any} */ (window).showConfirm;
-    if (typeof confirm === 'function') {
-      const { message, title } = this.spec.deleteConfirm(name);
-      const ok = await confirm(message, title, { confirmText: 'Remove', danger: true });
-      if (!ok) return;
-    }
+    const { message, title } = this.spec.deleteConfirm(name);
+    const ok = await showConfirm(message, title, { confirmText: 'Remove', danger: true });
+    if (!ok) return;
     this.error = '';
     const src = scope === 'project' ? this.config.project : this.config.global;
     try {

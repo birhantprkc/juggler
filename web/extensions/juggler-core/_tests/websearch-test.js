@@ -5,10 +5,20 @@
 
 /**
  * Unit tests for WebSearch action plugin
- * Tests parsing, domain filtering, and URL building in isolation
+ * Tests parsing, domain filtering, and URL building in isolation.
+ *
+ * The scraper and the domain filters are pure functions in
+ * `context-items/web-search/ddg-parser.js` and are exercised directly; only
+ * the request-shaping test needs an item instance.
  */
 
 import WebSearchContextItem from '../context-items/web-search-context-item.js';
+import {
+  parseDuckDuckGoResponse,
+  looksLikeNoResults,
+  matchesDomain,
+  filterResults
+} from '../context-items/web-search/ddg-parser.js';
 import {
   initializeRegistries,
   createTestSession,
@@ -50,16 +60,9 @@ const DUCKDUCKGO_HTML_RESPONSE = `
  * Test DuckDuckGo HTML parsing
  * @returns {{passed: boolean, error?: string}} Test result
  */
-/**
- * @param {any} session
- * @param {any} conversation
- * @returns {{passed: boolean, error?: string}} Test result
- */
-function testDuckDuckGoParsing(session, conversation) {
-  const action = new WebSearchContextItem({ id: "web-search", session, conversation, messageThread: conversation.rootMessageThread });
-
+function testDuckDuckGoParsing() {
   try {
-    const results = action.parseDuckDuckGoResponse(DUCKDUCKGO_HTML_RESPONSE);
+    const results = parseDuckDuckGoResponse(DUCKDUCKGO_HTML_RESPONSE);
 
     // Check count
     if (results.length !== 3) {
@@ -102,37 +105,30 @@ function testDuckDuckGoParsing(session, conversation) {
  * Test domain matching logic
  * @returns {{passed: boolean, error?: string}} Test result
  */
-/**
- * @param {any} session
- * @param {any} conversation
- * @returns {{passed: boolean, error?: string}} Test result
- */
-function testDomainMatching(session, conversation) {
-  const action = new WebSearchContextItem({ id: "web-search", session, conversation, messageThread: conversation.rootMessageThread });
-
+function testDomainMatching() {
   try {
     // Exact match
-    if (!action.matchesDomain('example.com', 'example.com')) {
+    if (!matchesDomain('example.com', 'example.com')) {
       throw new Error('Should match exact domain');
     }
 
     // Subdomain match
-    if (!action.matchesDomain('sub.example.com', 'example.com')) {
+    if (!matchesDomain('sub.example.com', 'example.com')) {
       throw new Error('Should match subdomain');
     }
 
     // Deep subdomain match
-    if (!action.matchesDomain('deep.sub.example.com', 'example.com')) {
+    if (!matchesDomain('deep.sub.example.com', 'example.com')) {
       throw new Error('Should match deep subdomain');
     }
 
     // Should NOT match
-    if (action.matchesDomain('notexample.com', 'example.com')) {
+    if (matchesDomain('notexample.com', 'example.com')) {
       throw new Error('Should not match different domain');
     }
 
     // Should NOT match prefix-only
-    if (action.matchesDomain('example.com.attacker.com', 'example.com')) {
+    if (matchesDomain('example.com.attacker.com', 'example.com')) {
       throw new Error('Should not match attacker domain with prefix');
     }
 
@@ -147,14 +143,7 @@ function testDomainMatching(session, conversation) {
  * Test domain filtering - allowed domains
  * @returns {{passed: boolean, error?: string}} Test result
  */
-/**
- * @param {any} session
- * @param {any} conversation
- * @returns {{passed: boolean, error?: string}} Test result
- */
-function testDomainFilteringAllowed(session, conversation) {
-  const action = new WebSearchContextItem({ id: "web-search", session, conversation, messageThread: conversation.rootMessageThread });
-
+function testDomainFilteringAllowed() {
   const results = [
     { title: 'Result 1', url: 'https://example.com/page1', description: 'desc1' },
     { title: 'Result 2', url: 'https://test.org/page2', description: 'desc2' },
@@ -163,7 +152,7 @@ function testDomainFilteringAllowed(session, conversation) {
 
   try {
     // Filter to only example.com (should include subdomains)
-    const filtered = action.filterResults(results, ['example.com'], []);
+    const filtered = filterResults(results, ['example.com'], []);
 
     if (filtered.length !== 2) {
       throw new Error(`Expected 2 results, got ${filtered.length}`);
@@ -188,14 +177,7 @@ function testDomainFilteringAllowed(session, conversation) {
  * Test domain filtering - blocked domains
  * @returns {{passed: boolean, error?: string}} Test result
  */
-/**
- * @param {any} session
- * @param {any} conversation
- * @returns {{passed: boolean, error?: string}} Test result
- */
-function testDomainFilteringBlocked(session, conversation) {
-  const action = new WebSearchContextItem({ id: "web-search", session, conversation, messageThread: conversation.rootMessageThread });
-
+function testDomainFilteringBlocked() {
   const results = [
     { title: 'Result 1', url: 'https://example.com/page1', description: 'desc1' },
     { title: 'Result 2', url: 'https://test.org/page2', description: 'desc2' },
@@ -204,7 +186,7 @@ function testDomainFilteringBlocked(session, conversation) {
 
   try {
     // Block example.com (should block subdomains too)
-    const filtered = action.filterResults(results, [], ['example.com']);
+    const filtered = filterResults(results, [], ['example.com']);
 
     if (filtered.length !== 1) {
       throw new Error(`Expected 1 result, got ${filtered.length}`);
@@ -260,31 +242,27 @@ function testDuckDuckGoParamsBuilding(session, conversation) {
 /**
  * Test empty results handling and blocked-vs-genuine classification.
  *
- * `parseDuckDuckGoResponse` no longer throws on an empty parse — it returns an
+ * `parseDuckDuckGoResponse` does not throw on an empty parse — it returns an
  * empty array — and `looksLikeNoResults` distinguishes DuckDuckGo's genuine
  * "no results" page (retained as an empty success) from a rate-limit/captcha
  * page (retried, then surfaced as an error by `search`).
- * @param {any} session
- * @param {any} conversation
  * @returns {{passed: boolean, error?: string}} Test result
  */
-function testEmptyResultsHandling(session, conversation) {
-  const action = new WebSearchContextItem({ id: "web-search", session, conversation, messageThread: conversation.rootMessageThread });
-
+function testEmptyResultsHandling() {
   try {
     // No result blocks -> empty array, not a throw.
-    const blocked = action.parseDuckDuckGoResponse('<html><body></body></html>');
+    const blocked = parseDuckDuckGoResponse('<html><body></body></html>');
     if (!Array.isArray(blocked) || blocked.length !== 0) {
       throw new Error(`Expected empty array for no result blocks, got ${JSON.stringify(blocked)}`);
     }
 
     // An empty/anomalous page has no "no results" marker -> treated as blocked.
-    if (action.looksLikeNoResults('<html><body></body></html>')) {
+    if (looksLikeNoResults('<html><body></body></html>')) {
       throw new Error('Empty body should not be classified as a genuine no-results page');
     }
 
     // DuckDuckGo's genuine empty result set carries a no-results marker.
-    if (!action.looksLikeNoResults('<div class="no-results">No results.</div>')) {
+    if (!looksLikeNoResults('<div class="no-results">No results.</div>')) {
       throw new Error('no-results marker should be classified as a genuine empty result set');
     }
 
@@ -319,12 +297,12 @@ export async function runTests(_ctx) {
   const conversation = await createTestConversation(session);
 
   const tests = [
-    { name: 'DuckDuckGo HTML parsing', fn: () => testDuckDuckGoParsing(session, conversation) },
-    { name: 'Domain matching logic', fn: () => testDomainMatching(session, conversation) },
-    { name: 'Domain filtering (allowed)', fn: () => testDomainFilteringAllowed(session, conversation) },
-    { name: 'Domain filtering (blocked)', fn: () => testDomainFilteringBlocked(session, conversation) },
+    { name: 'DuckDuckGo HTML parsing', fn: () => testDuckDuckGoParsing() },
+    { name: 'Domain matching logic', fn: () => testDomainMatching() },
+    { name: 'Domain filtering (allowed)', fn: () => testDomainFilteringAllowed() },
+    { name: 'Domain filtering (blocked)', fn: () => testDomainFilteringBlocked() },
     { name: 'DuckDuckGo params building', fn: () => testDuckDuckGoParamsBuilding(session, conversation) },
-    { name: 'Empty and blocked results handling', fn: () => testEmptyResultsHandling(session, conversation) }
+    { name: 'Empty and blocked results handling', fn: () => testEmptyResultsHandling() }
   ];
 
   let passed = 0;

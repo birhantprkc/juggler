@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { extensionConfigGet, extensionConfigSet } from '../../services/ops-api.js';
+import { showConfirm } from '../modal-dialog.js';
 
 /** @typedef {import('../../services/extensions.js').ExtensionSetting} ExtensionSetting */
 
@@ -310,11 +311,8 @@ export class ExtensionSettingsEditor {
       return;
     }
     if (value === '') {
-      const confirmFn = /** @type {any} */ (window).showConfirm;
-      if (typeof confirmFn === 'function') {
-        const confirmed = await confirmFn(`Clear ${setting.label}?`, 'Clear extension secret', { danger: true });
-        if (!confirmed) return;
-      }
+      const confirmed = await showConfirm(`Clear ${setting.label}?`, 'Clear extension secret', { danger: true });
+      if (!confirmed) return;
     }
     await this._save({ [setting.key]: value }, value ? `${setting.label} saved.` : `${setting.label} cleared.`);
   }

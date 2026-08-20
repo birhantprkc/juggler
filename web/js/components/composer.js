@@ -21,6 +21,7 @@ import {
 } from './skill-mention-provider.js';
 import { THREAD_ARROW_SVG, IMAGE_ATTACH_SVG, SEND_ARROW_SVG, KEBAB_SVG, CLOCK_SVG } from '../utils/icons.js';
 import { showNotice } from './modal-dialog.js';
+import { openSettings } from '../services/settings-launcher.js';
 import tooltipManager from '../services/tooltip-manager.js';
 import { CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
 import { isDesktopWindow } from '../../sdk/lib/window-control.js';
@@ -1922,7 +1923,7 @@ class Composer extends HTMLElement {
     manage.textContent = 'Manage skills…';
     manage.addEventListener('click', () => {
       this._closeSkillMenu();
-      /** @type {any} */ (window).openSettings?.('skills');
+      openSettings('skills');
     });
     menu.appendChild(manage);
 

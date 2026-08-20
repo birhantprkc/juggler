@@ -109,9 +109,11 @@ export async function runTests(_ctx) {
    */
   const withPanel = async (opts, body) => {
     const backend = installFetch(opts);
-    const priorAlert = window.showAlert;
-    // A failed load alerts; keep it from blocking on a real dialog.
-    /** @type {any} */ (window).showAlert = async () => {};
+    const priorShowModal = /** @type {any} */ (window).showModal;
+    // A failed load alerts; keep it from blocking on a real dialog. Every
+    // dialog helper presents through window.showModal, so standing in for it
+    // intercepts the alert whether the caller imported showAlert or not.
+    /** @type {any} */ (window).showModal = async () => {};
     const el = /** @type {any} */ (document.createElement('settings-panel'));
     document.body.appendChild(el);
     try {
@@ -119,7 +121,7 @@ export async function runTests(_ctx) {
     } finally {
       el.close();
       el.remove();
-      /** @type {any} */ (window).showAlert = priorAlert;
+      /** @type {any} */ (window).showModal = priorShowModal;
       backend.restore();
     }
   };

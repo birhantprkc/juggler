@@ -29,6 +29,7 @@ import { badgeForItem } from '../../js/utils/item-badge.js';
 import '../../js/components/properties-panel.js';
 import '../../js/components/settings-panel.js';
 import BaseRegistry from '../../js/registries/base-registry.js';
+import { registerSettingsOpener } from '../../js/services/settings-launcher.js';
 import {
   buildExtensionCards,
   computeNextDisabled,
@@ -464,12 +465,13 @@ export async function runTests(_ctx) {
 
     /** @type {any[]} */
     const calls = [];
-    const orig = /** @type {any} */ (window).openSettings;
-    /** @type {any} */ (window).openSettings = (/** @type {any[]} */ ...args) => calls.push(args);
+    // The badge opens settings through services/settings-launcher.js, so the
+    // registered opener — not the window alias — is the seam to stand in for.
+    const restoreOpener = registerSettingsOpener((/** @type {any[]} */ ...args) => calls.push(args));
     try {
       badge.click();
     } finally {
-      /** @type {any} */ (window).openSettings = orig;
+      restoreOpener();
     }
     assert(calls.length === 1 && calls[0][0] === 'extensions',
       'clicking opens the Extensions settings tab');

@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { presentPopup } from '../utils/popup-surface.js';
+import { openSettings } from './settings-launcher.js';
 
 /**
  * @typedef {object} EventListener
@@ -191,9 +192,7 @@ class UIEventManager {
     this._unregisterZoomIn = keyShortcutManager.register('zoom-in', () => { zoomIn(); return true; });
     this._unregisterZoomOut = keyShortcutManager.register('zoom-out', () => { zoomOut(); return true; });
     this._unregisterShowShortcuts = keyShortcutManager.register('show-shortcuts', () => {
-      if ('openSettings' in window && typeof window.openSettings === 'function') {
-        /** @type {any} */ (window).openSettings('shortcuts');
-      }
+      openSettings('shortcuts');
       return true;
     });
   }
@@ -337,9 +336,7 @@ class UIEventManager {
 
     // Open settings panel with connectivity tab when clicked
     const handler = () => {
-      if ('openSettings' in window && typeof window.openSettings === 'function') {
-        /** @type {any} */ (window).openSettings('connectivity');
-      }
+      openSettings('connectivity');
     };
     networkButton.addEventListener('click', handler);
     this._listeners.push({
@@ -363,9 +360,7 @@ class UIEventManager {
     }
 
     const handler = () => {
-      if ('openSettings' in window && typeof window.openSettings === 'function') {
-        /** @type {any} */ (window).openSettings('shortcuts');
-      }
+      openSettings('shortcuts');
     };
     helpButton.addEventListener('click', handler);
     this._listeners.push({
@@ -389,9 +384,7 @@ class UIEventManager {
 
     // Open settings panel when clicked
     const handler = () => {
-      if ('openSettings' in window && typeof window.openSettings === 'function') {
-        /** @type {any} */ (window).openSettings();
-      }
+      openSettings();
     };
     settingsButton.addEventListener('click', handler);
     this._listeners.push({

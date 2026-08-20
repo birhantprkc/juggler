@@ -5,7 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile, writeFile, stat } from 'juggler/ops';
-import { createElement } from 'juggler/ui';
+import { createElement, injectStylesOnce } from 'juggler/ui';
 import { parseMemory, appendEntry, removeMatching } from './memory/memory-format.js';
 
 /**
@@ -684,11 +684,6 @@ const MEMORY_STYLES = `
 .memory-delete:hover { opacity: 1; }
 `;
 
-if (typeof document !== 'undefined' && !document.getElementById('memory-styles')) {
-  const style = document.createElement('style');
-  style.id = 'memory-styles';
-  style.textContent = MEMORY_STYLES;
-  document.head.appendChild(style);
-}
+injectStylesOnce('memory-styles', MEMORY_STYLES);
 
 export default MemoryContextItem;

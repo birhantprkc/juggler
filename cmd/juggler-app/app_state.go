@@ -19,14 +19,15 @@ import (
 
 	"juggler/cmd/juggler/core"
 	"juggler/internal/webviewenv"
+	"juggler/internal/windowgeom"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 const (
-	defaultWindowWidth  = 1400
-	defaultWindowHeight = 900
+	defaultWindowWidth  = windowgeom.DefaultWidth
+	defaultWindowHeight = windowgeom.DefaultHeight
 	minWindowWidth      = 800
 	minWindowHeight     = 600
 )
@@ -37,10 +38,6 @@ const (
 // conversation and answers regardless), short enough that a wedged webview can't
 // make the app feel hung on Cmd+Q.
 const closeFlushTimeout = 4 * time.Second
-
-// saveDebounce collapses a burst of window move/resize events into a single
-// geometry write ~this long after the last change.
-const saveDebounce = 300 * time.Millisecond
 
 // themeColours maps the page theme name to the NSWindow background. Keep in
 // sync with --bg-primary in web/css/styles.css :root[data-theme=...].
@@ -80,14 +77,14 @@ type winEntry struct {
 	// File ▸ New Window.
 	currentTheme string
 
-	// lastPos is the last known normal (non-maximised/non-fullscreen) frame,
-	// owned by the save loop. It lets a maximised/fullscreen window still
-	// persist a sane restore frame alongside the maximised flag.
-	lastPos core.WindowState
+	// geom holds the frame this window persists, owned by the save loop. It
+	// lets a maximised/fullscreen window still record a sane restore frame
+	// alongside the maximised flag.
+	geom *windowgeom.Tracker
 
-	// saveCh debounces geometry writes (Wails fires move/resize many times per
+	// saves debounces geometry writes (Wails fires move/resize many times per
 	// drag); stopSave ends the per-window save loop when the window closes.
-	saveCh   chan struct{}
+	saves    *windowgeom.Debouncer
 	stopSave chan struct{}
 
 	// forceClose is set (via the registry goroutine) once the busy-work close
@@ -733,7 +730,7 @@ func (a *appState) buildLockedProjectWindow(spec windowSpec, message, inheritedT
 	if win == nil {
 		fatalf("Window.NewWithOptions returned nil for locked project %s", id)
 	}
-	e := &winEntry{id: id, win: win, spec: spec, currentTheme: startupTheme, saveCh: make(chan struct{}, 1), stopSave: make(chan struct{})}
+	e := &winEntry{id: id, win: win, spec: spec, currentTheme: startupTheme, geom: windowgeom.NewTracker(core.WindowState{}), saves: windowgeom.NewDebouncer(), stopSave: make(chan struct{})}
 	a.reg(func(st *regState) { st.windows[id] = e })
 	a.persistWorkspace()
 	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) { a.handleWindowClosed(e) })
@@ -802,25 +799,14 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// Place the window at the geometry saved in this project's session (passed in
 	// by the caller, read from the server), falling back to a centred default the
 	// first time a project is opened.
-	width, height := defaultWindowWidth, defaultWindowHeight
-	posX, posY := 0, 0
-	initialPos := application.WindowCentered
-	startState := application.WindowStateNormal
-	if hasSaved {
-		if saved.Width > 0 && saved.Height > 0 {
-			width, height = saved.Width, saved.Height
-		}
-		if saved.HasPos {
-			posX, posY = saved.X, saved.Y
-			initialPos = application.WindowXY
-		}
-		switch {
-		case saved.Maximised:
-			startState = application.WindowStateMaximised
-		case saved.Fullscreen:
-			startState = application.WindowStateFullscreen
-		}
+	frame := saved
+	if !hasSaved {
+		frame = core.WindowState{}
 	}
+	place := windowgeom.Place(frame)
+	width, height := place.Width, place.Height
+	posX, posY := place.X, place.Y
+	initialPos, startState := place.Position, place.State
 	// Don't stack a new window exactly on top of an open one (e.g. a second
 	// window for the same project, which shares the session's geometry): nudge it
 	// down-right until its top-left no longer coincides with another window.
@@ -898,7 +884,8 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 		win:          win,
 		spec:         spec,
 		serverURL:    serverURL,
-		saveCh:       make(chan struct{}, 1),
+		geom:         windowgeom.NewTracker(frame),
+		saves:        windowgeom.NewDebouncer(),
 		stopSave:     make(chan struct{}),
 		currentTheme: startupTheme,
 	}
@@ -940,38 +927,26 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 // triggerSave wakes the window's save loop. Non-blocking — coalesces a burst
 // of move/resize events into one debounced write.
 func (e *winEntry) triggerSave() {
-	select {
-	case e.saveCh <- struct{}{}:
-	default:
-	}
+	e.saves.Trigger()
 }
 
-// saveLoop debounces this window's geometry writes. A burst of move/resize
-// events collapses into one write ~300ms after the last change. It returns when
-// stopSave is closed; handleWindowClosed performs the authoritative final save
-// before closing it, so there's nothing left to flush here. Runs on its own
-// goroutine for the window's lifetime.
+// saveLoop writes this window's settled geometry after each burst of
+// move/resize events. It returns when stopSave is closed; handleWindowClosed
+// performs the authoritative final save before closing it, so there's nothing
+// left to flush here. Runs on its own goroutine for the window's lifetime.
 func (a *appState) saveLoop(e *winEntry) {
-	var timerC <-chan time.Time
-	for {
-		select {
-		case <-e.saveCh:
-			timerC = time.After(saveDebounce)
-		case <-timerC:
-			timerC = nil
-			if s, ok := a.currentWindowState(e); ok {
-				putWindowState(e.serverURL, s)
-			}
-		case <-e.stopSave:
-			return
+	e.saves.Run(e.stopSave, func() {
+		if s, ok := a.currentWindowState(e); ok {
+			putWindowState(e.serverURL, s)
 		}
-	}
+	})
 }
 
-// currentWindowState reads the window's geometry/state on the main thread.
-// Returns (zero, false) when the native window isn't ready (zero size) so we
-// never overwrite a good saved frame with junk. Mirrors the server's
-// windowApp.currentState, tracking lastPos for maximise/fullscreen restore.
+// currentWindowState reads the window's geometry/state, marshalling onto the
+// main thread because that is the only place Wails answers the native getters
+// correctly. Returns (zero, false) when there is nothing worth writing — see
+// windowgeom.Tracker.Capture — so a good saved frame is never overwritten with
+// junk from a window that isn't ready or has already gone.
 func (a *appState) currentWindowState(e *winEntry) (core.WindowState, bool) {
 	type res struct {
 		s  core.WindowState
@@ -979,29 +954,8 @@ func (a *appState) currentWindowState(e *winEntry) (core.WindowState, bool) {
 	}
 	done := make(chan res, 1)
 	application.InvokeAsync(func() {
-		maximised := e.win.IsMaximised()
-		fullscreen := e.win.IsFullscreen()
-		if !maximised && !fullscreen {
-			x, y := e.win.Position()
-			w, h := e.win.Size()
-			if w <= 0 || h <= 0 {
-				done <- res{core.WindowState{}, false}
-				return
-			}
-			e.lastPos = core.WindowState{X: x, Y: y, Width: w, Height: h, HasPos: true}
-		} else if !e.lastPos.HasPos {
-			done <- res{core.WindowState{}, false}
-			return
-		}
-		done <- res{core.WindowState{
-			X:          e.lastPos.X,
-			Y:          e.lastPos.Y,
-			Width:      e.lastPos.Width,
-			Height:     e.lastPos.Height,
-			HasPos:     e.lastPos.HasPos,
-			Maximised:  maximised,
-			Fullscreen: fullscreen,
-		}, true}
+		s, ok := e.geom.Capture(e.win)
+		done <- res{s, ok}
 	})
 	r := <-done
 	return r.s, r.ok

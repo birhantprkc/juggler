@@ -15,6 +15,7 @@ import StrategySwitcher from './services/strategy-switcher.js';
 import { ModelCycler, ThinkingCycler } from './services/model-cycler.js';
 import wsService from './services/websocket.js';
 import { fetchJson } from './services/http.js';
+import { openSettings } from './services/settings-launcher.js';
 import {
   reloadRegistries,
   initAllRegistries,
@@ -37,7 +38,7 @@ import { osOpenPath } from './services/ops-api.js';
 import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-installs on import)
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
 import { normalizeAttachments } from './utils/attachments.js';
-import { showNotice } from './components/modal-dialog.js';
+import { showAlert, showConfirm, showNotice } from './components/modal-dialog.js';
 
 
 
@@ -483,16 +484,12 @@ class JugglerApp {
       // A provider is configured — Juggler is usable, nothing to prompt.
       if (providersCache.hasAvailableProvider()) return;
 
-      const showConfirm = /** @type {any} */ (window).showConfirm;
-      if (typeof showConfirm !== 'function') return;
       const goToSettings = await showConfirm(
         'Juggler is a visual AI coding workbench. To get started, connect an AI provider — add an API key, or enable Claude Code if you have its CLI installed.',
         'Welcome to Juggler',
         { confirmText: 'Add a provider', cancelText: 'Later' }
       );
-      if (goToSettings && typeof (/** @type {any} */ (window).openSettings) === 'function') {
-        /** @type {any} */ (window).openSettings('providers');
-      }
+      if (goToSettings) openSettings('providers');
     } catch {
       /* onboarding is best-effort; never block or crash startup */
     }
@@ -836,10 +833,7 @@ class JugglerApp {
    */
   async _duplicateConversationGuarded(session, conversationId) {
     if (session.conversations.size >= MAX_CONVERSATIONS) {
-      await /** @type {any} */ (window).showAlert(
-        CONVERSATION_LIMIT_MESSAGE,
-        'Too many conversations'
-      );
+      await showAlert(CONVERSATION_LIMIT_MESSAGE, 'Too many conversations');
       return null;
     }
     return await session.duplicateConversation(conversationId);

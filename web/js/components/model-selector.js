@@ -16,6 +16,8 @@ import keyShortcutManager from '../services/key-shortcut-manager.js';
 import { formatTokens } from '../utils/format.js';
 import { formatPlan, isUsageStale, renderUsageRow } from '../utils/usage-renderer.js';
 import CycleBuffer from '../services/cycle-buffer.js';
+import { showConfirm } from './modal-dialog.js';
+import { openSettings } from '../services/settings-launcher.js';
 
 /** localStorage key holding the per-provider list view-state override map. */
 const VIEW_STATE_STORAGE_KEY = 'juggler-model-view-state';
@@ -1093,8 +1095,6 @@ class ModelSelector extends HTMLElement {
    * @private
    */
   async _showSelectionProblem(provider, modelName) {
-    const showConfirm = /** @type {any} */(window).showConfirm;
-    if (!showConfirm) return;
     const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
     const label = modelLabel(modelEntry?.displayName, modelName);
     const hint = (provider.authHint || '').trim();
@@ -1107,9 +1107,7 @@ class ModelSelector extends HTMLElement {
     });
     if (goToSettings) {
       this.closeDropdown();
-      if (/** @type {any} */(window).openSettings) {
-        /** @type {any} */(window).openSettings('providers');
-      }
+      openSettings('providers');
     }
   }
 

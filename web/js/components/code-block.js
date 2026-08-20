@@ -5,6 +5,7 @@
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import { copyToClipboard } from '../../sdk/lib/clipboard.js';
 import { highlightCode } from '../../sdk/lib/syntax-highlight.js';
+import { showAlert } from './modal-dialog.js';
 
 /**
  * Code block component with syntax highlighting and copy functionality.
@@ -43,7 +44,7 @@ class CodeBlock extends HTMLElement {
       this.showCopiedFeedback();
     } catch (error) {
       console.error('[CodeBlock] Failed to copy:', error);
-      /** @type {any} */ (window).showAlert?.(/** @type {Error} */ (error).message, 'Copy Failed');
+      await showAlert(/** @type {Error} */ (error).message, 'Copy Failed');
     }
   }
 

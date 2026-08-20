@@ -452,7 +452,10 @@ customElements.define('modal-dialog', ModalDialog);
  * @property {boolean} [danger] - Use danger styling for confirm button
  */
 
-// Global modal helper - attach to window for easy access
+// The one presenter every dialog below goes through, and the only place the
+// singleton `<modal-dialog>` is located or created. It stays on `window`
+// deliberately: extensions reach it by name, and a test that stands in for it
+// intercepts every dialog in the app, however the caller asked for one.
 // @ts-ignore - Extending window object
 window.showModal = async function(/** @type {ModalOptions} */ options) {
   let modal = document.querySelector('modal-dialog');
@@ -467,9 +470,10 @@ window.showModal = async function(/** @type {ModalOptions} */ options) {
   return await modal.show(options);
 };
 
-// Convenience methods. Exported so components can import them directly rather
-// than reaching through the untyped `window.*` global; the window aliases below
-// preserve existing global callers.
+// Convenience methods. The view layer imports these directly rather than
+// reaching through the untyped `window.*` global. The aliases stay for the
+// callers that cannot import a component: extensions, and the model layer,
+// which must keep working with no UI mounted.
 /**
  * Show a simple alert modal with an OK button.
  * @param {string} message - Body text
@@ -508,8 +512,14 @@ export async function showConfirm(message, title = 'Confirm', options = {}) {
 // @ts-ignore - Extending window object
 window.showConfirm = showConfirm;
 
-// @ts-ignore - Extending window object
-window.showPrompt = async function(/** @type {string} */ message, defaultValue = '', title = 'Input') {
+/**
+ * Show a prompt modal with a single text field.
+ * @param {string} message - Body text
+ * @param {string} [defaultValue] - Pre-filled value
+ * @param {string} [title] - Modal title
+ * @returns {Promise<string|null>} Entered text, or null if cancelled
+ */
+export async function showPrompt(message, defaultValue = '', title = 'Input') {
   // @ts-ignore - showModal is defined above
   return await window.showModal({
     title,
@@ -517,7 +527,9 @@ window.showPrompt = async function(/** @type {string} */ message, defaultValue =
     type: 'prompt',
     defaultValue
   });
-};
+}
+// @ts-ignore - Extending window object
+window.showPrompt = showPrompt;
 
 /**
  * Show choice modal with large buttons
@@ -527,8 +539,7 @@ window.showPrompt = async function(/** @type {string} */ message, defaultValue =
  * @param {boolean} [allowCustom] - Whether to show "Other" option for custom input
  * @returns {Promise<string|null>} Selected choice text, custom input, or null if cancelled
  */
-// @ts-ignore - Extending window object
-window.showChoice = async function(/** @type {string} */ message, /** @type {string[]} */ choices, title = 'Question', allowCustom = false) {
+export async function showChoice(message, choices, title = 'Question', allowCustom = false) {
   // @ts-ignore - showModal is defined above
   return await window.showModal({
     title,
@@ -537,7 +548,9 @@ window.showChoice = async function(/** @type {string} */ message, /** @type {str
     choices,
     allowCustom
   });
-};
+}
+// @ts-ignore - Extending window object
+window.showChoice = showChoice;
 
 /** @type {any} - The notice currently on screen, so a new one can replace it. */
 let activeNotice = null;

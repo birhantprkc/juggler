@@ -10,7 +10,7 @@ import fileViewerRegistry from '../registries/file-viewer-registry.js';
 import { reloadRegistries, REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import { fetchExtensions, fetchExtensionLocations } from '../services/extensions.js';
 import { fetchJson, httpErrorText } from '../services/http.js';
-import { showNotice } from './modal-dialog.js';
+import { showConfirm, showNotice } from './modal-dialog.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
 import JugglerElement from './juggler-element.js';
 import { renderMarkdown, looksLikeMarkdown } from '../../sdk/lib/markdown.js';
@@ -403,7 +403,7 @@ class PluginCatalog extends JugglerElement {
     if (!health.active) return true;
 
     const count = health.conversationIds.length || 1;
-    const confirmed = await /** @type {any} */ (window).showConfirm?.(
+    const confirmed = await showConfirm(
       `${count} conversation${count === 1 ? '' : 's'} ${count === 1 ? 'is' : 'are'} running. ` +
       'Changing extensions will stop them so the capability set can be safely rebuilt.',
       'Stop conversations and apply extension change?',

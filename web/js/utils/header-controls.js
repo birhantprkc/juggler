@@ -13,6 +13,8 @@ import keyShortcutManager from '../services/key-shortcut-manager.js';
 import wsService from '../services/websocket.js';
 import { hasNativeHost } from '../../sdk/lib/window-control.js';
 import { fetchJson } from '../services/http.js';
+import { showAlert } from '../components/modal-dialog.js';
+import { openSettings } from '../services/settings-launcher.js';
 
 /**
  * @typedef {import('../model/session.js').default} Session
@@ -144,7 +146,7 @@ export function setupHeaderControls(session) {
       await apiService.newWindow();
     } catch (err) {
       const { extractUserMessage } = await import('../../sdk/lib/error-utils.js');
-      await window.showAlert(extractUserMessage(err), 'New window');
+      await showAlert(extractUserMessage(err), 'New window');
     }
   };
   if (newWindowBtn) {
@@ -188,9 +190,7 @@ export function setupHeaderControls(session) {
   };
   if (clientsIndicator) {
     clientsIndicator.addEventListener('click', () => {
-      if (typeof (/** @type {any} */ (window).openSettings) === 'function') {
-        /** @type {any} */ (window).openSettings('connectivity');
-      }
+      openSettings('connectivity');
     });
     // Live updates as viewers join/leave.
     wsService.on('clients-changed', (/** @type {any} */ data) => updateClientsIndicator(data?.count));

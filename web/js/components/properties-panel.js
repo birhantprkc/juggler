@@ -21,6 +21,7 @@ import { findNeighborItemId } from '../services/context-item-utilities.js';
 import { renderTransactionDetail } from './transaction-detail-renderer.js';
 import { dispatchItemRenderer, renderContextItem } from '../services/renderers/item-renderers.js';
 import workerManager from '../services/worker-manager.js';
+import { openSettings } from '../services/settings-launcher.js';
 import { setupColumnResize } from '../utils/column-resize.js';
 import { formatDuration, formatRelativeDateTime, formatTokens } from '../utils/format.js';
 import { plain } from '../model/item-accessor.js';
@@ -674,8 +675,6 @@ class PropertiesPanel extends HTMLElement {
     badgeGroup.setAttribute('aria-label', label);
 
     const open = () => {
-      const openSettings = /** @type {any} */ (window).openSettings;
-      if (typeof openSettings !== 'function') return;
       openSettings('extensions', { capability: { itemType: 'context-item', id: pluginId } });
     };
 

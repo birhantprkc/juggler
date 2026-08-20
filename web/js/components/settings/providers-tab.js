@@ -13,6 +13,7 @@ import { openExternalURL } from '../../../sdk/lib/window-control.js';
 import wsService from '../../services/websocket.js';
 import providersCache from '../../services/providers-cache.js';
 import { fetchJson, httpErrorText } from '../../services/http.js';
+import { showAlert, showConfirm } from '../modal-dialog.js';
 
 // Standard refresh glyph for the OAuth "re-check sign-in" button. Fill is left to
 // CSS (currentColor) so it tracks the button's theme colour.
@@ -214,9 +215,7 @@ export class ProvidersTab {
       button.disabled = false;
       button.classList.remove('spinning');
       if (status) status.textContent = originalStatus;
-      if (window.showAlert) {
-        await window.showAlert(err instanceof Error ? err.message : 'Refresh failed', provider.displayName);
-      }
+      await showAlert(err instanceof Error ? err.message : 'Refresh failed', provider.displayName);
     }
   }
 
@@ -305,9 +304,7 @@ export class ProvidersTab {
       // Re-check against the new host (rebuilds this field with the saved value).
       await this._refreshOAuthProvider(provider, this._buildOAuthRefreshButton(provider));
     } catch (err) {
-      if (window.showAlert) {
-        await window.showAlert(httpErrorText(err, 'Failed to set host'), 'GitHub Copilot');
-      }
+      await showAlert(httpErrorText(err, 'Failed to set host'), 'GitHub Copilot');
     }
   }
 
@@ -344,9 +341,7 @@ export class ProvidersTab {
       setStatus(provider.authHint || 'Sign in to continue');
       button.disabled = false;
       button.textContent = originalText;
-      if (window.showAlert) {
-        await window.showAlert(httpErrorText(err, 'Sign-in failed'), 'GitHub Copilot');
-      }
+      await showAlert(httpErrorText(err, 'Sign-in failed'), 'GitHub Copilot');
     }
   }
 
@@ -387,15 +382,11 @@ export class ProvidersTab {
    * @private
    */
   async _copilotSignOut(provider, button) {
-    const confirmFn = /** @type {any} */ (window).showConfirm;
-    if (typeof confirmFn === 'function') {
-      const ok = await confirmFn(
-        'Sign out of the GitHub login stored by Juggler? Copilot becomes unavailable until you sign in again (any editor Copilot login on this machine will still be used).',
-        'Sign out',
-        {}
-      );
-      if (!ok) return;
-    }
+    const ok = await showConfirm(
+      'Sign out of the GitHub login stored by Juggler? Copilot becomes unavailable until you sign in again (any editor Copilot login on this machine will still be used).',
+      'Sign out'
+    );
+    if (!ok) return;
     button.disabled = true;
     try {
       const data = await fetchJson('/api/providers/copilot/signout', { method: 'POST' });
@@ -403,9 +394,7 @@ export class ProvidersTab {
       await this._refreshAfterAuthChange(provider, false);
     } catch (err) {
       button.disabled = false;
-      if (window.showAlert) {
-        await window.showAlert(httpErrorText(err, 'Sign out failed'), 'GitHub Copilot');
-      }
+      await showAlert(httpErrorText(err, 'Sign out failed'), 'GitHub Copilot');
     }
   }
 
@@ -929,12 +918,7 @@ export class ProvidersTab {
       if (toggle) {
         toggle.checked = !enabled;
       }
-      if (window.showAlert) {
-        await window.showAlert(
-          error instanceof Error ? error.message : 'Failed to update provider',
-          'Error'
-        );
-      }
+      await showAlert(error instanceof Error ? error.message : 'Failed to update provider', 'Error');
     }
   }
 
@@ -1027,12 +1011,7 @@ export class ProvidersTab {
       // providers-update is what refreshes every model selector.
     } catch (error) {
       console.error('Failed to save API key:', error);
-      if (window.showAlert) {
-        await window.showAlert(
-          error instanceof Error ? error.message : 'Failed to save API key',
-          'Error'
-        );
-      }
+      await showAlert(error instanceof Error ? error.message : 'Failed to save API key', 'Error');
     }
   }
 
@@ -1056,12 +1035,7 @@ export class ProvidersTab {
       // providers-update is what drops the key from every model selector.
     } catch (error) {
       console.error('Failed to delete API key:', error);
-      if (window.showAlert) {
-        await window.showAlert(
-          error instanceof Error ? error.message : 'Failed to delete API key',
-          'Error'
-        );
-      }
+      await showAlert(error instanceof Error ? error.message : 'Failed to delete API key', 'Error');
     }
   }
 }
