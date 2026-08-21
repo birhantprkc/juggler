@@ -35,6 +35,21 @@ export const DRAFT_SAVE_DEBOUNCE_MS = 750;
  */
 export const CLOSE_FLUSH_ACK_TIMEOUT_MS = 2500;
 
+/**
+ * How long a lookup on the send path may take before the composer gives up on
+ * it and sends anyway (milliseconds).
+ *
+ * The skill snapshot and the `@`-mention existence check both run between the
+ * user pressing Send and the message being dispatched, and `fetch` on its own
+ * will wait out the browser's full network timeout. Over a slow tunnel or a
+ * mobile link that turns Send into a control that appears to do nothing, so
+ * these two calls give up and degrade instead: an unresolved `$name` stays as
+ * prose, an unverified bareword `@foo` makes no context item, and the message
+ * still goes. Generous enough for a remote-access round trip, short enough that
+ * a dead link is over before the user reaches for the button again.
+ */
+export const SEND_LOOKUP_TIMEOUT_MS = 8000;
+
 // ===== Yjs Sync Constants =====
 
 /** Batching window for Yjs sync updates (milliseconds) */

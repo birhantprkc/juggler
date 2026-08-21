@@ -16,9 +16,12 @@
  * - **fall back**: pass `fallback` ⇒ failures resolve to that value instead.
  *   Add `errorPrefix` to also log a warning; omit it to fail silently.
  *
- * An `AbortError` is never a failure to absorb — it is always re-thrown, even
- * with a `fallback`, so callers that race requests can tell "superseded" from
- * "returned nothing" (see services/completions-api.js).
+ * A caller's `AbortError` is never a failure to absorb — it is always re-thrown,
+ * even with a `fallback`, so callers that race requests can tell "superseded"
+ * from "returned nothing" (see services/completions-api.js). A `timeoutMs`
+ * expiry is the opposite: it is this module's own abort, not the caller's, and
+ * takes the ordinary failure path so a dead link resolves to the `fallback`
+ * instead of throwing something no caller asked for.
  * @module services/http
  */
 
@@ -111,14 +114,36 @@ export async function extractHttpErrorDetail(response) {
  * @param {any} [options.body] - Request body; plain objects are JSON-encoded
  * @param {Record<string, string>} [options.headers] - Extra request headers
  * @param {AbortSignal} [options.signal] - Abort signal; an abort always re-throws
+ * @param {number} [options.timeoutMs] - Give up after this long; treated as a failure, not an abort
  * @param {string} [options.errorPrefix] - Prefix for the error message / warning
  * @param {T} [options.fallback] - Value to resolve with instead of throwing
  * @returns {Promise<any>} Parsed JSON, `null` for an empty body, or `fallback`
  * @throws {HttpError} On a non-OK response when no `fallback` was given
  */
 export async function fetchJson(url, options = {}) {
-  const { method, body, headers, signal, errorPrefix, fallback } = options;
+  const { method, body, headers, signal, timeoutMs, errorPrefix, fallback } = options;
   const usesFallback = Object.prototype.hasOwnProperty.call(options, 'fallback');
+
+  // A timeout is delivered as an abort, so track whether WE were the one who
+  // fired it: the catch below has to tell our expiry (ordinary failure —
+  // warn and fall back) from the caller's cancellation (always re-thrown).
+  // The caller's signal is chained onto ours so both still cancel the request.
+  let timedOut = false;
+  /** @type {AbortController|null} */
+  const timeoutController = timeoutMs ? new AbortController() : null;
+  /** @type {any} */
+  let timeoutId = null;
+  if (timeoutController) {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, timeoutMs);
+    if (signal) {
+      if (signal.aborted) timeoutController.abort();
+      else signal.addEventListener('abort', () => timeoutController.abort(), { once: true });
+    }
+  }
+  const effectiveSignal = timeoutController ? timeoutController.signal : signal;
 
   try {
     const isRawBody = body === undefined || typeof body === 'string'
@@ -127,7 +152,7 @@ export async function fetchJson(url, options = {}) {
     /** @type {RequestInit} */
     const init = {
       ...(method ? { method } : {}),
-      ...(signal ? { signal } : {}),
+      ...(effectiveSignal ? { signal: effectiveSignal } : {}),
       headers: {
         ...(body !== undefined && !isRawBody ? { 'Content-Type': 'application/json' } : {}),
         ...(headers || {}),
@@ -151,6 +176,16 @@ export async function fetchJson(url, options = {}) {
       return null; // empty or non-JSON body — nothing to hand back
     }
   } catch (error) {
+    // Our own expiry: report it as a plain timeout rather than an abort, so it
+    // reads as the request failing (which it did) and honours the fallback.
+    if (timedOut) {
+      const timeout = new Error(
+        errorPrefix ? `${errorPrefix}: timed out after ${timeoutMs}ms` : `Request timed out after ${timeoutMs}ms`
+      );
+      if (!usesFallback) throw timeout;
+      if (errorPrefix) console.warn(`${errorPrefix}:`, timeout.message);
+      return fallback;
+    }
     // A superseded request is not a failure the fallback should mask: callers
     // race completions and need to distinguish it from an empty result.
     if (/** @type {any} */ (error)?.name === 'AbortError') throw error;
@@ -159,5 +194,7 @@ export async function fetchJson(url, options = {}) {
       console.warn(`${errorPrefix}:`, error instanceof Error ? error.message : error);
     }
     return fallback;
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
   }
 }

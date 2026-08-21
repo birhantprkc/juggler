@@ -787,13 +787,24 @@ class WorkerManager {
   }
 
   /**
-   * Check if a worker is ready
+   * Whether a worker exists, has booted, and is reachable right now.
+   *
+   * Two independent facts, and callers need both: `entry.ready` says the worker
+   * announced itself, while the socket says we can still talk to it. The worker
+   * lives in the server process and outlives any link drop, so a disconnect
+   * never clears `entry.ready` — {@link resyncReadyConversations} relies on that
+   * to know which conversations to catch up on reconnect. But every caller of
+   * this method is guarding a send, and `sendWorkerMessage` discards frames
+   * while the socket is down (returning `false` that nobody reads). Reporting
+   * "ready" then would let those sends fall silently on the floor; reporting
+   * not-ready lets each caller refuse in its own way.
    * @param {string} conversationId - Conversation ID
-   * @returns {boolean} True if worker exists and is ready
+   * @returns {boolean} True if the worker is ready and the socket is up
    */
   isWorkerReady(conversationId) {
     const entry = this._workers.get(conversationId);
-    return entry ? entry.ready : false;
+    if (!entry || !entry.ready) return false;
+    return wsService.isConnected();
   }
 
   /**

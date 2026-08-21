@@ -117,6 +117,7 @@ import { runTests as runNewTabUxTests } from '../unit-tests/new-tab-ux-test.js';
 import { runTests as runBinUndoToastTests } from '../unit-tests/bin-undo-toast-test.js';
 import { runTests as runConversationFocusPolicyTests } from '../unit-tests/conversation-focus-policy-test.js';
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
+import { runTests as runComposerSendLatchTests } from '../unit-tests/composer-send-latch-test.js';
 import { runTests as runSidebarSwipeTests } from '../unit-tests/sidebar-swipe-test.js';
 import { runTests as runTabDragGhostTests } from '../unit-tests/tab-drag-ghost-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
@@ -328,6 +329,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:read-file-action', run: runReadFileActionTests },
   { name: 'unit:path-input-quotes', run: runPathInputQuotesTests },
   { name: 'unit:mobile-composer', run: runMobileComposerTests },
+  { name: 'unit:composer-send-latch', run: runComposerSendLatchTests },
   { name: 'unit:sidebar-swipe', run: runSidebarSwipeTests },
   { name: 'unit:tab-drag-ghost', run: runTabDragGhostTests },
   { name: 'unit:slash-completion', run: runSlashCompletionTests },

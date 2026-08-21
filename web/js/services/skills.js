@@ -25,6 +25,7 @@
  */
 
 import { fetchJson } from './http.js';
+import { SEND_LOOKUP_TIMEOUT_MS } from '../utils/constants.js';
 
 /**
  * @typedef {object} SkillFrontmatter
@@ -72,13 +73,23 @@ let cached = null;
  * Fetch the skill catalog from the backend (metadata only; cached after first
  * call so the system-prompt block stays byte-stable across turns). The cache is
  * dropped by {@link resetSkillsCache} on a registry reload.
+ *
+ * Time-boxed because the composer resolves `$name` mentions through this on the
+ * send path, and a page reload (which a reconnect performs) empties the cache —
+ * so the first send after a flaky connection recovers would otherwise wait out
+ * the browser's full network timeout with the message still in the box. A
+ * failure resolves to an empty list and is NOT cached, so the next call retries.
  * @returns {Promise<SkillMeta[]>} Discovered skills (may include invalid/shadowed ones)
  */
 export async function fetchSkills() {
   if (cached) {
     return cached;
   }
-  const result = await fetchJson('/api/skills', { errorPrefix: '[Skills] Failed to fetch skills', fallback: null });
+  const result = await fetchJson('/api/skills', {
+    errorPrefix: '[Skills] Failed to fetch skills',
+    fallback: null,
+    timeoutMs: SEND_LOOKUP_TIMEOUT_MS,
+  });
   if (result === null) return [];
   cached = Array.isArray(result) ? result : [];
   return cached;

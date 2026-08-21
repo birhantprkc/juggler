@@ -121,6 +121,19 @@ class Composer extends HTMLElement {
     /** @type {boolean} @private */
     this.confirmationPending = false;
 
+    // True from the moment a send is accepted until its `send-message` event
+    // has been dispatched. sendMessage() reads the box, then awaits the skill
+    // snapshot and the @-mention/dropped-file reads before dispatching, and the
+    // box is only cleared downstream by Conversation.sendMessage — so for the
+    // width of those awaits the text is still present and `is-empty` is still
+    // off, leaving the button and Enter live. On a slow link that window is
+    // seconds wide, and each press would otherwise dispatch its own send and
+    // land its own copy of the message (the worker appends unconditionally and
+    // queues the rest in pendingItems). This latch is the only thing making the
+    // send re-entrancy-safe; every entry point funnels through sendMessage().
+    /** @type {boolean} @private */
+    this._sending = false;
+
     // History navigation state
     /** @type {import('../model/session.js').default|null} @private */
     this.session = null;           // Session reference for accessing messages
@@ -1098,6 +1111,14 @@ class Composer extends HTMLElement {
       return 'empty, disabled, or confirmation pending';
     }
 
+    // Refuse a second send while the first is still resolving its mentions.
+    // Until it dispatches, the box still holds the text and the button is still
+    // live, so a repeat press arrives here with identical input; letting it
+    // through would post the message twice. See the `_sending` field.
+    if (this._sending) {
+      return 'send already in flight';
+    }
+
     // Reject an oversized message. A message is stored inline in the Yjs doc
     // and re-sent to the model every turn, so a huge paste bloats the doc and
     // the context. The cap is forgiving (a stack trace, a source file, a JSON
@@ -1112,108 +1133,122 @@ class Composer extends HTMLElement {
       return 'message too large';
     }
 
-    // While a turn is in flight (the conversation is processing, or the
-    // thread has busy items such as a running tool or an approval awaiting
-    // a decision) the message is QUEUED, not refused — Conversation.sendMessage
-    // forwards it to the worker, which parks it in pendingItems and drains it
-    // at the next boundary. So we don't block here; we just nudge the
-    // status into view so the user sees the queued bubble land.
-    const visibleConv = this.session ? this.session.getVisibleConversation() : null;
-    const busy = (visibleConv && visibleConv.isProcessing) ||
-            (this._messageThread && this._messageThread.hasBusyItems());
-    if (busy) {
-      this._scrollToStatus();
-    }
-
-    // Create context items for all @-mentions AND dropped text files before
-    // sending. Awaited here so these content items land BEFORE the user message.
-    //
-    // Where they land depends on whether this send will be QUEUED. On an idle
-    // send the reads go straight into the committed items array, landing just
-    // before the about-to-send message. But while a turn is in flight the
-    // message is parked in the worker's pendingItems queue and only promoted at
-    // the next turn boundary — so reads written into items now would be stranded
-    // above the whole in-flight turn's output, with the message promoted far
-    // below. When busy we therefore enqueue the reads onto the SAME pendingItems
-    // queue (ahead of the worker's queued user message), so promotePendingItems
-    // moves the reads and the message into items together, as a contiguous group.
-    //
-    // Dropped files go through the same path as mentions, differing only in that
-    // they carry inline content (a `dropped-file` snapshot) rather than a path
-    // the server re-reads.
-    // The prose actually sent: the typed text with any `$name` skill triggers
-    // removed (they become tool-calls, never prose). Reassigned in the thread
-    // block below; equals `message` when there is no thread or no `$name`.
-    let outgoingMessage = message;
-    // Agent Skills the user explicitly chose via `$name` mentions, forwarded to
-    // the worker (NOT loaded here). Resolved against THIS thread's FROZEN
-    // snapshot — never the live catalog — so we only ever forward names the
-    // `skill` tool will accept; unknown `$foo` is left verbatim as prose. The
-    // worker loads each as a real, visible `skill` TOOL-ACTION before the turn:
-    // that document-driven action is the only path that injects the SKILL.md
-    // body (a plain context-item call would merely re-seed the standing
-    // "## Skills" list), so the composer forwards names rather than loading.
-    /** @type {string[]} */
-    let skillNames = [];
-    if (this._messageThread) {
-      const mt = this._messageThread;
-
-      const snapshot = await getThreadSkillSnapshot(mt);
-      const extracted = extractSkillMentions(message, snapshot.map((s) => s.name));
-      skillNames = extracted.names;
-      outgoingMessage = extracted.text;
+    // Held for the whole resolve-and-dispatch body below. Released in the
+    // `finally` so a mention read that rejects (an unreadable path, a dropped
+    // connection) leaves the box usable rather than latched shut — sendMessage()
+    // is called un-awaited from the click and keydown handlers, so a throw here
+    // surfaces nowhere and would otherwise strand the flag set.
+    this._sending = true;
+    try {
+      // While a turn is in flight (the conversation is processing, or the
+      // thread has busy items such as a running tool or an approval awaiting
+      // a decision) the message is QUEUED, not refused — Conversation.sendMessage
+      // forwards it to the worker, which parks it in pendingItems and drains it
+      // at the next boundary. So we don't block here; we just nudge the
+      // status into view so the user sees the queued bubble land.
+      const visibleConv = this.session ? this.session.getVisibleConversation() : null;
+      const busy = (visibleConv && visibleConv.isProcessing) ||
+              (this._messageThread && this._messageThread.hasBusyItems());
+      if (busy) {
+        this._scrollToStatus();
+      }
 
       // Create context items for all @-mentions AND dropped text files before
-      // sending (from the trigger-stripped prose — stripping `$name` never
-      // affects an `@` token). Awaited here so these land BEFORE the user message.
-      const paths = await extractFileMentionsAsync(outgoingMessage);
-      const textFiles = this._pendingTextFiles;
-      this._pendingTextFiles = [];
-      if (paths.length > 0 || textFiles.length > 0) {
-        const runFile = busy
-          ? (/** @type {string} */ p) => mt.executeContextItemIntoPending('file-content', { path: p })
-          : (/** @type {string} */ p) => mt.executeContextItem('file-content', { path: p });
-        const runDropped = busy
-          ? (/** @type {{filename:string,content:string}} */ t) =>
-            mt.executeContextItemIntoPending('dropped-file', { filename: t.filename, content: t.content })
-          : (/** @type {{filename:string,content:string}} */ t) =>
-            mt.executeContextItem('dropped-file', { filename: t.filename, content: t.content });
-        this._lastMentionPromise = Promise.all([
-          ...paths.map(runFile),
-          ...textFiles.map(runDropped)
-        ]);
-        await this._lastMentionPromise;
-      }
-      renderAttachmentChips(this);
-    }
+      // sending. Awaited here so these content items land BEFORE the user message.
+      //
+      // Where they land depends on whether this send will be QUEUED. On an idle
+      // send the reads go straight into the committed items array, landing just
+      // before the about-to-send message. But while a turn is in flight the
+      // message is parked in the worker's pendingItems queue and only promoted at
+      // the next turn boundary — so reads written into items now would be stranded
+      // above the whole in-flight turn's output, with the message promoted far
+      // below. When busy we therefore enqueue the reads onto the SAME pendingItems
+      // queue (ahead of the worker's queued user message), so promotePendingItems
+      // moves the reads and the message into items together, as a contiguous group.
+      //
+      // Dropped files go through the same path as mentions, differing only in that
+      // they carry inline content (a `dropped-file` snapshot) rather than a path
+      // the server re-reads.
+      // The prose actually sent: the typed text with any `$name` skill triggers
+      // removed (they become tool-calls, never prose). Reassigned in the thread
+      // block below; equals `message` when there is no thread or no `$name`.
+      let outgoingMessage = message;
+      // Agent Skills the user explicitly chose via `$name` mentions, forwarded to
+      // the worker (NOT loaded here). Resolved against THIS thread's FROZEN
+      // snapshot — never the live catalog — so we only ever forward names the
+      // `skill` tool will accept; unknown `$foo` is left verbatim as prose. The
+      // worker loads each as a real, visible `skill` TOOL-ACTION before the turn:
+      // that document-driven action is the only path that injects the SKILL.md
+      // body (a plain context-item call would merely re-seed the standing
+      // "## Skills" list), so the composer forwards names rather than loading.
+      /** @type {string[]} */
+      let skillNames = [];
+      if (this._messageThread) {
+        const mt = this._messageThread;
 
-    // The Conversation calls clearInput() after successful validation, so the
-    // message survives in the textarea if the send fails.
-    // Forward any attachments staged on this composer (populated by the
-    // paste/drag/picker UI in a later step). Pass a copy and clear after
-    // dispatch so the next message starts empty.
-    // Only forward fully-uploaded attachments (a resolved AssetRef has an id);
-    // strip the UI-only preview/uploading fields before they leave the box.
-    const attachments = this._pendingAttachments
-      .filter((a) => a.id && !a._uploading)
-      .map(({ id, mime, filename, bytes, width, height }) => ({ id, mime, filename, bytes, width, height }));
-    for (const a of this._pendingAttachments) {
-      if (a._previewURL) URL.revokeObjectURL(a._previewURL);
+        const snapshot = await getThreadSkillSnapshot(mt);
+        const extracted = extractSkillMentions(message, snapshot.map((s) => s.name));
+        skillNames = extracted.names;
+        outgoingMessage = extracted.text;
+
+        // Create context items for all @-mentions AND dropped text files before
+        // sending (from the trigger-stripped prose — stripping `$name` never
+        // affects an `@` token). Awaited here so these land BEFORE the user message.
+        const paths = await extractFileMentionsAsync(outgoingMessage);
+        const textFiles = this._pendingTextFiles;
+        this._pendingTextFiles = [];
+        if (paths.length > 0 || textFiles.length > 0) {
+          const runFile = busy
+            ? (/** @type {string} */ p) => mt.executeContextItemIntoPending('file-content', { path: p })
+            : (/** @type {string} */ p) => mt.executeContextItem('file-content', { path: p });
+          const runDropped = busy
+            ? (/** @type {{filename:string,content:string}} */ t) =>
+              mt.executeContextItemIntoPending('dropped-file', { filename: t.filename, content: t.content })
+            : (/** @type {{filename:string,content:string}} */ t) =>
+              mt.executeContextItem('dropped-file', { filename: t.filename, content: t.content });
+          this._lastMentionPromise = Promise.all([
+            ...paths.map(runFile),
+            ...textFiles.map(runDropped)
+          ]);
+          await this._lastMentionPromise;
+        }
+        renderAttachmentChips(this);
+      }
+
+      // The Conversation calls clearInput() after successful validation, so the
+      // message survives in the textarea if the send fails.
+      // Forward any attachments staged on this composer (populated by the
+      // paste/drag/picker UI in a later step). Pass a copy and clear after
+      // dispatch so the next message starts empty.
+      // Only forward fully-uploaded attachments (a resolved AssetRef has an id);
+      // strip the UI-only preview/uploading fields before they leave the box.
+      const attachments = this._pendingAttachments
+        .filter((a) => a.id && !a._uploading)
+        .map(({ id, mime, filename, bytes, width, height }) => ({ id, mime, filename, bytes, width, height }));
+      for (const a of this._pendingAttachments) {
+        if (a._previewURL) URL.revokeObjectURL(a._previewURL);
+      }
+      this._pendingAttachments = [];
+      renderAttachmentChips(this);
+      this.dispatchEvent(new CustomEvent('send-message', {
+        detail: {
+          message: outgoingMessage,
+          threadItemId: this.threadItemId || null,
+          messageThread: this._messageThread || null,
+          attachments,
+          skills: skillNames
+        },
+        bubbles: true,
+        composed: true
+      }));
+      return null;
+    } finally {
+      // The listener chain runs synchronously inside dispatchEvent, so on an
+      // accepted send Conversation.sendMessage has already emptied the box by
+      // the time this runs and `is-empty` keeps the button inert. On a refused
+      // one the text is still there, deliberately, and the user can retry.
+      this._sending = false;
     }
-    this._pendingAttachments = [];
-    renderAttachmentChips(this);
-    this.dispatchEvent(new CustomEvent('send-message', {
-      detail: {
-        message: outgoingMessage,
-        threadItemId: this.threadItemId || null,
-        messageThread: this._messageThread || null,
-        attachments,
-        skills: skillNames
-      },
-      bubbles: true,
-      composed: true
-    }));
-    return null;
   }
 
   /**

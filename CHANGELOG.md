@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Pressing Send repeatedly on a slow connection no longer posts the message several times
+- A message sent while the connection is down stays in the box instead of vanishing
 - A Windows build from source no longer leaves a console window open behind the app
 - The wails submodule clones over HTTPS, so building from source needs no SSH key
 

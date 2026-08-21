@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { fetchJson } from './http.js';
+import { SEND_LOOKUP_TIMEOUT_MS } from '../utils/constants.js';
 
 /** @type {AbortController|null} */
 let _currentController = null;
@@ -13,6 +14,10 @@ let _pathController = null;
 /**
  * Check which of the given paths exist on disk. Resolves relative paths
  * against the current project working dir; "~" is expanded server-side.
+ *
+ * Runs on the send path, between the button press and the message going out, so
+ * it is time-boxed: a link too slow to answer yields an empty set (barewords
+ * simply make no context item) rather than holding the send open indefinitely.
  * @param {string[]} paths - Candidate paths to check
  * @returns {Promise<Set<string>>} The subset of inputs that exist
  */
@@ -20,7 +25,10 @@ export async function fetchExistingPaths(paths) {
   if (!paths || paths.length === 0) return new Set();
   const qs = paths.map(p => `paths=${encodeURIComponent(p)}`).join('&');
   /** @type {{existing: string[]}|null} */
-  const data = await fetchJson(`/api/completions/exists?${qs}`, { fallback: null });
+  const data = await fetchJson(`/api/completions/exists?${qs}`, {
+    fallback: null,
+    timeoutMs: SEND_LOOKUP_TIMEOUT_MS,
+  });
   return new Set(data?.existing || []);
 }
 

@@ -1505,6 +1505,17 @@ class Conversation {
       return 'provider unavailable';
     }
 
+    // Refuse an unreachable worker BEFORE the box is cleared below. A send is
+    // fire-and-forget over the socket: with the link down `sendWorkerMessage`
+    // drops the frame and returns a `false` nobody reads, so clearing first and
+    // discovering it afterwards would take the message and lose it. Checked
+    // ahead of the processing branches so a link drop reports itself as one
+    // rather than as a busy turn.
+    if (!workerManager.isWorkerReady(this.id)) {
+      this.showWarning('Still connecting to the engine — try again in a moment.', 5000);
+      return 'worker not ready';
+    }
+
     // When a turn is already in flight, a message is QUEUED rather than
     // refused — the worker parks it in pendingItems and drains it at the
     // next boundary (see worker/pending_items.go). The only path that still
@@ -1573,9 +1584,12 @@ class Conversation {
       return null;
     }
 
-    // Worker not ready yet (still starting, or spawn failed). Refuse rather than
-    // running anything on the main thread; the user can retry once it is up.
+    // Reachable at the top of this method but not now: the only gap is the
+    // `preemptProcessing` cancel above, which the socket can die across. The
+    // box has been cleared by this point, so hand the text back before
+    // refusing — the user retries with their message still in front of them.
     this.showWarning('Still connecting to the engine — try again in a moment.', 5000);
+    this.restorePendingMessage();
     return 'worker not ready';
   }
 
