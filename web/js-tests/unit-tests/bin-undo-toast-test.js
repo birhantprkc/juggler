@@ -122,8 +122,8 @@ export async function runTests() {
     assert(session.binned.length === 1 && session.binned[0] === 'conv_doomed',
       `expected conv_doomed to be binned, got ${JSON.stringify(session.binned)}`);
     assert(undoBtn?.hidden === false, 'the Undo stayed hidden after a bin');
-    assert((undoBtn?.textContent || '').trim() === 'Undo deletion',
-      `the Undo should say "Undo deletion", got "${(undoBtn?.textContent || '').trim()}"`);
+    assert((undoBtn?.textContent || '').trim() === 'Restore from Bin',
+      `the Undo should say "Restore from Bin", got "${(undoBtn?.textContent || '').trim()}"`);
 
     const binBtn = bar.querySelector('.conversation-bin-button');
     assert(!!binBtn && undoBtn?.nextElementSibling === binBtn,

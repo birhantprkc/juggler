@@ -576,10 +576,13 @@ class ConversationBar extends JugglerElement {
     }
     infoRail.setSession(this._session);
 
-    // Undo button, docked directly above the Bin — the thing it undoes went in
-    // there, so that's where the way back belongs. It names nothing: it appears
-    // the instant a tab flies into the Bin and only ever means "put that back",
-    // so a name would be one truncated line of sidebar to read for nothing.
+    // Restore button, docked directly above the Bin — the conversation it
+    // restores went in there, so that's where the way back belongs. It names
+    // the Bin rather than offering a bare "Undo" for two reasons: nothing was
+    // deleted, and this button lasts a few seconds while the Bin below it holds
+    // the conversation indefinitely, so the label has to leave the reader
+    // knowing where it went even when they miss the click. "Undo" would also
+    // promise a Ctrl+Z that belongs to the conversation's own edit history.
     // Created once and cached, hidden except for the few seconds after a bin
     // (see _showBinUndo).
     let undoToast = /** @type {HTMLButtonElement|null} */ (this._cachedElements.get('bin-undo'));
@@ -588,9 +591,9 @@ class ConversationBar extends JugglerElement {
       undoToast.className = 'conversation-bin-undo';
       undoToast.type = 'button';
       undoToast.title = 'Put the conversation you just binned back';
-      undoToast.setAttribute('aria-label', 'Undo moving the conversation to the bin');
+      undoToast.setAttribute('aria-label', 'Restore the conversation from the bin');
       undoToast.hidden = true;
-      undoToast.innerHTML = `${UNDO_ICON_SVG}<span>Undo deletion</span>`;
+      undoToast.innerHTML = `${UNDO_ICON_SVG}<span>Restore from Bin</span>`;
       undoToast.addEventListener('click', () => this._undoBin());
       this._cachedElements.set('bin-undo', undoToast);
       nav.appendChild(undoToast);
