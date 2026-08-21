@@ -426,8 +426,22 @@ func TestParser_ThinkingTurnPreservesSignature(t *testing.T) {
 		t.Errorf("expected signature preserved on Metadata, got %q", sig)
 	}
 	chunks = filterNonProgress(chunks)
-	if len(chunks) != 1 || chunks[0].Type != provider.ContentBlockTypeThinking || chunks[0].Content != "Hmm." {
-		t.Errorf("expected one thinking chunk streamed, got %+v", chunks)
+	// The text streams first, then the signature follows on a contentless
+	// chunk: it is complete only at content_block_stop, and the worker needs it
+	// to store the block's providerData. A block that reaches the next turn
+	// unsigned is dropped rather than replayed, so streaming the text alone
+	// would lose Claude's reasoning across every tool call.
+	if len(chunks) != 2 {
+		t.Fatalf("expected the thinking text and its signature streamed, got %+v", chunks)
+	}
+	if chunks[0].Type != provider.ContentBlockTypeThinking || chunks[0].Content != "Hmm." {
+		t.Errorf("expected the thinking text first, got %+v", chunks[0])
+	}
+	if chunks[1].Type != provider.ContentBlockTypeThinking || chunks[1].Content != "" {
+		t.Errorf("expected a contentless signature chunk, got %+v", chunks[1])
+	}
+	if sig, _ := chunks[1].Metadata["signature"].(string); sig != "sig-xyz" {
+		t.Errorf("streamed signature = %q, want sig-xyz", sig)
 	}
 }
 

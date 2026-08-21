@@ -463,6 +463,35 @@ func transformMessagesToResponsesInput(messages []provider.Message) responses.Re
 				inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(contentList, "user"))
 			}
 
+		case "thinking":
+			// Hand the model back its own reasoning so a chain of thought
+			// survives a tool call. These calls are stateless (store=false), so
+			// the encrypted blob is the reasoning — the id alone refers to
+			// nothing the backend still holds.
+			//
+			// Anything without both fields is skipped, which covers reasoning
+			// captured before this round trip existed and thinking produced by
+			// a different provider before a mid-conversation switch (an
+			// Anthropic signature means nothing here). Same call the Anthropic
+			// transform makes for a signatureless block.
+			if msg.ProviderData == nil {
+				continue
+			}
+			itemID, _ := msg.ProviderData["reasoningItemId"].(string)
+			encrypted, _ := msg.ProviderData["encryptedContent"].(string)
+			if itemID == "" || encrypted == "" {
+				continue
+			}
+			item := &responses.ResponseReasoningItemParam{
+				ID:               itemID,
+				EncryptedContent: openai.String(encrypted),
+				Summary:          []responses.ResponseReasoningItemSummaryParam{},
+			}
+			if msg.Content != "" {
+				item.Summary = append(item.Summary, responses.ResponseReasoningItemSummaryParam{Text: msg.Content})
+			}
+			inputItems = append(inputItems, responses.ResponseInputItemUnionParam{OfReasoning: item})
+
 		case "assistant":
 			// Assistant messages use output_text type, not input_text
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfOutputMessage(
@@ -645,10 +674,30 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 		}
 	}
 
-	// Reasoning effort. Omitted (ok=false) for non-reasoning models and absent/
-	// unsupported levels, keeping the request byte-identical to today.
-	if effort, ok := c.thinkingSpec.effortFor(req.ThinkingLevel); ok {
-		params.Reasoning.Effort = openai.ReasoningEffort(effort)
+	// Reasoning. The advertised level list is the gate for both fields: a model
+	// with no levels is not a reasoning model, and sending it a `reasoning`
+	// object risks a hard 400.
+	//
+	// The summary is what makes reasoning visible. The Responses API streams
+	// reasoning_summary_text events ONLY when a summary is asked for — with
+	// effort alone the model still reasons, but emits nothing to show for it,
+	// so the thinking handlers below never fire and the turn renders as a long
+	// silence followed by an answer. Requested for every reasoning model, not
+	// just one the user picked a level for, because the default turn (empty
+	// ThinkingLevel, so no effort) is the common case.
+	if len(c.thinkingSpec.Levels) > 0 {
+		params.Reasoning.Summary = shared.ReasoningSummaryAuto
+		// Effort is still omitted (ok=false) for an absent or unadvertised
+		// level, leaving the model on its own default.
+		if effort, ok := c.thinkingSpec.effortFor(req.ThinkingLevel); ok {
+			params.Reasoning.Effort = openai.ReasoningEffort(effort)
+		}
+		// Ask for the reasoning in a form that can be handed back. These calls
+		// are stateless (store=false), so the model cannot look up its own
+		// earlier reasoning by id — the encrypted blob travelling back in the
+		// next request's input is the only thing that carries a chain of
+		// thought across a tool call.
+		params.Include = append(params.Include, responses.ResponseIncludableReasoningEncryptedContent)
 	}
 
 	// Create streaming request
@@ -743,6 +792,30 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			if fc, exists := functionCalls[delta.ItemID]; exists {
 				fc.argsBuilder.WriteString(delta.Delta)
 				sess.Progress(delta.Delta)
+			}
+
+		case "response.output_item.done":
+			// A finished reasoning item carries the two things needed to hand
+			// this reasoning back next turn: its id and its encrypted content.
+			// Emitted as a contentless thinking chunk that the worker attaches
+			// to the thinking already on screen, the same way Anthropic's
+			// signature travels. The id is not optional — the SDK always
+			// serializes it, so an item replayed without one goes out as
+			// `"id":""` and is rejected.
+			done := evt.AsResponseOutputItemDone()
+			if done.Item.Type == "reasoning" {
+				reasoning := done.Item.AsReasoning()
+				if reasoning.EncryptedContent != "" && reasoning.ID != "" {
+					if _, err := callback(provider.StreamChunk{
+						Type: provider.ContentBlockTypeThinking,
+						Metadata: map[string]any{
+							"reasoningItemId":  reasoning.ID,
+							"encryptedContent": reasoning.EncryptedContent,
+						},
+					}); err != nil {
+						return nil, err
+					}
+				}
 			}
 
 		case "response.reasoning_summary_text.delta":

@@ -515,8 +515,11 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 				continue
 			}
 			w.tracker.InsertMessage(w.doc.GetItemsLength(), ConversationItem{
-				Type:          ItemTypeThinking,
-				ItemID:        generateItemID(),
+				Type:   ItemTypeThinking,
+				ItemID: generateItemID(),
+				// The block's signature / reasoning item id, kept so the next
+				// turn can replay this reasoning to the provider.
+				ProviderData:  block.Metadata,
 				Content:       content,
 				TransactionID: txnID,
 				Timestamp:     time.Now().Format(time.RFC3339),

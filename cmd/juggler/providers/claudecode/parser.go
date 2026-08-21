@@ -661,6 +661,16 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 			}
 			if pb.signature != "" {
 				block.Metadata = map[string]any{"signature": pb.signature}
+				// The signature is complete only at the end of the block, so it
+				// rides a contentless chunk the worker attaches to the thinking
+				// already on screen. Without it the block reaches the next turn
+				// unsigned and is dropped rather than replayed.
+				if _, err := callback(provider.StreamChunk{
+					Type:     provider.ContentBlockTypeThinking,
+					Metadata: block.Metadata,
+				}); err != nil {
+					return false, 0, err
+				}
 			}
 			result.Blocks = append(result.Blocks, block)
 		case "tool_use":

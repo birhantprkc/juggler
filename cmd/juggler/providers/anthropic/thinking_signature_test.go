@@ -26,10 +26,10 @@ func findThinkingBlock(msgs []APIMessage) *APIContentBlock {
 // TestTransformDropsSignaturelessThinking is the guard for the cross-provider
 // thinking regression. Now that buildMessages emits thinking messages (so
 // DeepSeek can echo its reasoning), a signatureless thinking block can reach the
-// Anthropic transform — either because the worker doesn't persist thinking
-// signatures, or because a conversation switched from a non-Anthropic provider
-// mid-stream. Anthropic rejects a signatureless thinking block with a 400, so
-// the transform must drop it rather than emit it.
+// Anthropic transform — either because a conversation switched from a
+// non-Anthropic provider mid-stream, or because the reasoning was stored before
+// signatures were persisted. Anthropic rejects a signatureless thinking block
+// with a 400, so the transform must drop it rather than emit it.
 func TestTransformDropsSignaturelessThinking(t *testing.T) {
 	msgs := TransformToAPIMessages([]provider.Message{
 		{Type: "user", Content: "What's the weather?"},

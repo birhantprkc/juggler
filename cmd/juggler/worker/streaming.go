@@ -74,6 +74,15 @@ process:
 		c := chunks[i]
 		if c.Type == current.Type && (current.Type == provider.ContentBlockTypeText || current.Type == provider.ContentBlockTypeThinking) {
 			current.Content += c.Content
+			// A thinking block's provider data (signature, reasoning item id)
+			// rides on a trailing contentless chunk, which lands here. Carry it
+			// onto the merged chunk or the merge is where it goes missing.
+			if len(c.Metadata) > 0 && current.Metadata == nil {
+				current.Metadata = make(map[string]any, len(c.Metadata))
+			}
+			for k, v := range c.Metadata {
+				current.Metadata[k] = v
+			}
 		} else {
 			coalesced = append(coalesced, current)
 			current = c
@@ -199,6 +208,16 @@ func (w *ConversationWorker) extractPlanTag() {
 }
 
 func (w *ConversationWorker) processThinkingChunk(chunk StreamChunk) {
+	// A thinking block's provider data (Anthropic signature, OpenAI reasoning
+	// item id + encrypted content) is known only once the block ends, so it
+	// arrives on a trailing contentless chunk. With no thinking block on screen
+	// there is nothing to attach it to: an item created for it would be empty,
+	// which renders as a blank tile and is dropped from the wire anyway
+	// (itemWireMessages emits nothing for contentless thinking). Let it go.
+	if chunk.Content == "" && len(chunk.Metadata) > 0 && w.streaming.thinkingMsgID == "" {
+		return
+	}
+
 	// Finalize any active text streaming when thinking starts
 	if w.streaming.textMsgID != "" && w.streaming.thinkingMsgID == "" {
 		w.streaming.textMsgID = ""
@@ -217,15 +236,23 @@ func (w *ConversationWorker) processThinkingChunk(chunk StreamChunk) {
 	if w.streaming.thinkingMsgID == "" {
 		w.streaming.thinkingMsgID = generateItemID()
 		msg := ConversationItem{
-			Type:      ItemTypeThinking,
-			ItemID:    w.streaming.thinkingMsgID,
-			Content:   w.streaming.thinkingContent,
-			Timestamp: time.Now().Format(time.RFC3339),
+			Type:         ItemTypeThinking,
+			ItemID:       w.streaming.thinkingMsgID,
+			Content:      w.streaming.thinkingContent,
+			ProviderData: chunk.Metadata,
+			Timestamp:    time.Now().Format(time.RFC3339),
 		}
 		w.insertTargetMessage(w.getTargetItemsLength(), msg)
 	} else {
 		// Update content using messageId lookup - avoids expensive GetItems() JSON conversion
 		_ = w.updateTargetItemByID(w.streaming.thinkingMsgID, "content", w.streaming.thinkingContent)
+		// Provider data is what lets the next turn replay this block: Anthropic
+		// rejects a signatureless thinking block, and the Responses API needs
+		// the reasoning item's id and encrypted content to carry the chain of
+		// thought across a tool call.
+		if len(chunk.Metadata) > 0 {
+			_ = w.updateTargetItemByID(w.streaming.thinkingMsgID, "providerData", chunk.Metadata)
+		}
 	}
 
 }

@@ -616,6 +616,21 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 				}
 			}
 
+			// The signature arrives in its own deltas alongside the thinking
+			// text and is complete only here, so it rides a contentless chunk
+			// that the worker attaches to the block already on screen. Anthropic
+			// rejects a signatureless thinking block passed back, so a block
+			// that reaches the next turn without this is one that gets dropped
+			// instead of replayed.
+			if block != nil && block.Type == provider.ContentBlockTypeThinking && len(block.Metadata) > 0 {
+				if _, err := callback(provider.StreamChunk{
+					Type:     provider.ContentBlockTypeThinking,
+					Metadata: block.Metadata,
+				}); err != nil {
+					return nil, fmt.Errorf("callback error: %w", err)
+				}
+			}
+
 		case "message_delta":
 			// Extract stop_reason and output token count
 			if event.Delta.StopReason != "" {
@@ -711,9 +726,12 @@ func (c *Client) finalizeCurrentBlock(
 			b := provider.ContentBlock{
 				Type:    provider.ContentBlockTypeThinking,
 				Content: (*thinking).contentBuilder.String(),
-				Metadata: map[string]any{
-					"signature": (*thinking).signature,
-				},
+			}
+			// Only a real signature is worth carrying: an empty one is stored
+			// as providerData, replayed, and then dropped again at the next
+			// transform, since Anthropic rejects a signatureless thinking block.
+			if (*thinking).signature != "" {
+				b.Metadata = map[string]any{"signature": (*thinking).signature}
 			}
 			*blocks = append(*blocks, b)
 			block = &b

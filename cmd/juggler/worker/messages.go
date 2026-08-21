@@ -278,6 +278,14 @@ type StreamChunk struct {
 	OutputTokens    int                       `json:"outputTokens,omitempty"`    // Running output-token estimate, only set for type=="progress"
 	CacheMissReason string                    `json:"cacheMissReason,omitempty"` // Consequential provider cache miss, only set for type=="status"
 
+	// Metadata carries opaque provider data belonging to the block this chunk
+	// is part of — an Anthropic thinking signature, an OpenAI reasoning item's
+	// id and encrypted content. It rides on a thinking chunk because the value
+	// is only known once the block ends, so a provider emits it as a trailing
+	// contentless chunk and the worker attaches it to the item already on
+	// screen. Persisted as the item's providerData and replayed on later turns.
+	Metadata map[string]any `json:"metadata,omitempty"`
+
 	// Set only for type=="usage" — a mid-stream anchor written as soon as
 	// the provider emits its first usage event (e.g. Anthropic message_start
 	// arrives ~100ms in with `input_tokens`). Lets the footer flip to "real

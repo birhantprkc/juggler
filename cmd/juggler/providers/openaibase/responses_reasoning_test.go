@@ -77,3 +77,98 @@ func TestResponsesReasoningSurfacedAsThinking(t *testing.T) {
 		t.Fatalf("final text = %q, want \"Done.\"", got)
 	}
 }
+
+// TestResponsesRequestsReasoningSummary is the guard for the half that makes
+// the test above mean anything in production. The Responses API streams
+// reasoning_summary_text events only for a request that asked for a summary, so
+// parsing them is worthless on its own: with effort alone (or with no reasoning
+// object at all, which is what a default turn sends) a reasoning model emits no
+// summary and the UI shows no thinking. The summary must ride on every
+// reasoning-model request, including one carrying no thinking level.
+func TestResponsesRequestsReasoningSummary(t *testing.T) {
+	reasoningOf := func(t *testing.T, body map[string]any) map[string]any {
+		t.Helper()
+		reasoning, ok := body["reasoning"].(map[string]any)
+		if !ok {
+			t.Fatalf("no reasoning object on the wire; body = %v", body)
+		}
+		return reasoning
+	}
+
+	// Reasoning model, no level picked: summary present, effort omitted so the
+	// model stays on its own default.
+	var body map[string]any
+	c, err := NewClient(Config{
+		APIKey:     "test",
+		Model:      "gpt-5-codex", // contains "codex" → Responses API path
+		BaseURL:    "https://example.test",
+		HTTPClient: captureBody(t, &body, "responses"),
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c.thinkingSpec = OpenAIThinkingSpec("gpt-5-codex")
+	if _, err := c.streamMessage(context.Background(), provider.MessageRequest{
+		Messages: []provider.Message{{Type: "user", Content: "hi"}},
+	}, func(provider.StreamChunk) (*provider.ToolResult, error) { return nil, nil }); err != nil {
+		t.Fatalf("streamMessage: %v", err)
+	}
+	reasoning := reasoningOf(t, body)
+	if got, _ := reasoning["summary"].(string); got != "auto" {
+		t.Fatalf("reasoning.summary = %q, want auto — without it no thinking is ever streamed", got)
+	}
+	if _, ok := reasoning["effort"]; ok {
+		t.Fatalf("reasoning.effort sent (%v) but no level was picked", reasoning["effort"])
+	}
+
+	// Reasoning model with a level: summary and effort travel together.
+	var levelBody map[string]any
+	c2, err := NewClient(Config{
+		APIKey:     "test",
+		Model:      "gpt-5-codex",
+		BaseURL:    "https://example.test",
+		HTTPClient: captureBody(t, &levelBody, "responses"),
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	c2.thinkingSpec = OpenAIThinkingSpec("gpt-5-codex")
+	if _, err := c2.streamMessage(context.Background(), provider.MessageRequest{
+		Messages:      []provider.Message{{Type: "user", Content: "hi"}},
+		ThinkingLevel: "high",
+	}, func(provider.StreamChunk) (*provider.ToolResult, error) { return nil, nil }); err != nil {
+		t.Fatalf("streamMessage: %v", err)
+	}
+	levelReasoning := reasoningOf(t, levelBody)
+	if got, _ := levelReasoning["summary"].(string); got != "auto" {
+		t.Fatalf("reasoning.summary = %q, want auto", got)
+	}
+	if got, _ := levelReasoning["effort"].(string); got != "high" {
+		t.Fatalf("reasoning.effort = %q, want high", got)
+	}
+
+	// A model advertising no levels is not a reasoning model: no reasoning
+	// object at all. Sending one is a hard 400 on some endpoints, and this is
+	// the shape every provider without a ThinkingSpecFn (openrouter,
+	// openaicompat) puts on the wire.
+	var plainBody map[string]any
+	c3, err := NewClient(Config{
+		APIKey:     "test",
+		Model:      "gpt-4o",
+		BaseURL:    "https://example.test",
+		HTTPClient: captureBody(t, &plainBody, "responses"),
+		Quirks:     Quirks{ForceResponsesAPI: true}, // gpt-4o alone wouldn't take this path
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := c3.streamMessage(context.Background(), provider.MessageRequest{
+		Messages:      []provider.Message{{Type: "user", Content: "hi"}},
+		ThinkingLevel: "high", // even an explicit level must not conjure one
+	}, func(provider.StreamChunk) (*provider.ToolResult, error) { return nil, nil }); err != nil {
+		t.Fatalf("streamMessage: %v", err)
+	}
+	if _, ok := plainBody["reasoning"]; ok {
+		t.Fatalf("reasoning sent (%v) to a model advertising no levels", plainBody["reasoning"])
+	}
+}

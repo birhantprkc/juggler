@@ -39,6 +39,35 @@ func toLLMResponseBlocks(blocks []provider.ContentBlock) []worker.LLMResponseBlo
 	return out
 }
 
+// appendStreamedBlock accumulates one streamed chunk into the turn's structured
+// blocks. Adjacent text/thinking deltas coalesce into a single block so the
+// transaction JSON records one block per logical content block rather than one
+// per delta; tool_use and other discrete chunks always start a fresh block.
+//
+// A block's provider data (an Anthropic thinking signature, an OpenAI reasoning
+// item's id and encrypted content) is known only once the block ends, so it
+// arrives on a trailing contentless chunk that coalesces into the block above.
+// Merging it across the join is what keeps it — appending "" to the content and
+// discarding the rest would drop the only copy.
+func appendStreamedBlock(blocks []provider.ContentBlock, chunk provider.StreamChunk) []provider.ContentBlock {
+	n := len(blocks)
+	if n == 0 ||
+		(chunk.Type != provider.ContentBlockTypeText && chunk.Type != provider.ContentBlockTypeThinking) ||
+		blocks[n-1].Type != chunk.Type {
+		return append(blocks, provider.ContentBlock(chunk))
+	}
+
+	last := &blocks[n-1]
+	last.Content += chunk.Content
+	if len(chunk.Metadata) > 0 && last.Metadata == nil {
+		last.Metadata = make(map[string]any, len(chunk.Metadata))
+	}
+	for k, v := range chunk.Metadata {
+		last.Metadata[k] = v
+	}
+	return blocks
+}
+
 // createWindowResolver returns the read-only window resolver injected into every
 // worker (worker.WindowResolverFunc). It maps a model identity to its context
 // window and output reserve through the same resolveModelCapabilities path the
@@ -243,18 +272,8 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 				})
 				return nil, nil
 			}
-			chunkHandler(worker.StreamChunk{Type: chunk.Type, Content: chunk.Content})
-			// Coalesce adjacent text/thinking deltas into a single block so the
-			// transaction JSON records one block per logical content block, not
-			// one per streamed delta. Tool_use and other discrete chunks always
-			// start a fresh block.
-			if n := len(blocks); n > 0 &&
-				(chunk.Type == provider.ContentBlockTypeText || chunk.Type == provider.ContentBlockTypeThinking) &&
-				blocks[n-1].Type == chunk.Type {
-				blocks[n-1].Content += chunk.Content
-			} else {
-				blocks = append(blocks, provider.ContentBlock(chunk))
-			}
+			chunkHandler(worker.StreamChunk{Type: chunk.Type, Content: chunk.Content, Metadata: chunk.Metadata})
+			blocks = appendStreamedBlock(blocks, chunk)
 			return nil, nil
 		}
 
