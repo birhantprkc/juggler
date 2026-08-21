@@ -17,6 +17,7 @@
 
 import actionExecutor from './action-executor.js';
 import { getBlockedToolReason, resolveToolName } from './tool-generator.js';
+import { withMcpToolMissReason } from './mcp-availability.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { extractErrorInfo, extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { buildApprovalButtons } from './approval-options.js';
@@ -229,7 +230,7 @@ async function prepareAction(rh, toolCall, toolInput, messageThread) {
   if (!ActionClass) {
     const errorMessage = blockedReason
       ? `Tool "${toolCall.name}" is not available: ${blockedReason}`
-      : `Unknown action: ${toolCall.name}`;
+      : await withMcpToolMissReason(`Unknown action: ${toolCall.name}`, toolCall.name);
 
     return {
       result: failToolAction(messageThread, toolCall, {

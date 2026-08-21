@@ -33,6 +33,7 @@ import {
   acpSetConfig,
 } from '../../services/ops-api.js';
 import { ConfigTabController, makeNameValidator } from '../config-tab.js';
+import { isMcpExtensionDisabled, MCP_DISABLED_NOTICE } from '../../services/mcp-availability.js';
 
 /** Polling interval (ms) for refreshing the MCP servers tab while it's open. */
 const MCP_POLL_MS = 2000;
@@ -353,6 +354,11 @@ const MCP_SPEC = {
   },
   addLabel: 'Add server',
   emptyText: 'No MCP servers yet. Add one to give the assistant extra tools — for example a filesystem, GitHub, or database server.',
+  // The rows below report the manager's view: servers run, discover tools, and
+  // show green dots whether or not anything publishes those tools to the model.
+  // With the extension off, every one of them is telling the truth and the whole
+  // page is still wrong, so the page says which.
+  notice: async () => (await isMcpExtensionDisabled() ? MCP_DISABLED_NOTICE : ''),
   // Importer seam: an "Import from…" button slots in next to Add later.
   toolbarExtra: (toolbar) => {
     const soon = document.createElement('span');

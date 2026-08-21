@@ -16,7 +16,13 @@
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import { splitToolsByStrategy, strategyDisplayName } from '../../js/services/thread-tool-inventory.js';
+import {
+  diffToolNames,
+  formatToolDrift,
+  splitToolsByStrategy,
+  strategyDisplayName,
+  toolDriftDetail,
+} from '../../js/services/thread-tool-inventory.js';
 
 /**
  * @typedef {object} TestResult
@@ -139,6 +145,67 @@ export async function runTests(_ctx) {
     }
     const inv = splitToolsByStrategy(ALL_TOOLS.slice(), new ReturnsSentinel());
     assert(inv.offered === sentinel, 'offered must be passed through untouched');
+  });
+
+  // =========================================================================
+  // Drift between a recorded tool list and the live one. Two surfaces make this
+  // comparison — the System Prompt panel looking back at the last turn, the
+  // transaction panel looking forward from an old one — and they share these
+  // helpers precisely so they can't come to word the same fact differently.
+  // =========================================================================
+
+  await run('drift: identical lists report nothing', () => {
+    const drift = diffToolNames(ALL_TOOLS.slice(), ALL_TOOLS.slice());
+    assert(drift.added.length === 0 && drift.removed.length === 0, `drift was ${JSON.stringify(drift)}`);
+    assert(formatToolDrift(drift) === '', `summary was ${JSON.stringify(formatToolDrift(drift))}`);
+    assert(toolDriftDetail(drift) === '', 'matching lists should have no detail');
+  });
+
+  // The reported case: a server finishes connecting after the turn was sent, so
+  // its tools are live but were never offered. Not a bug — but only visible if
+  // the UI says it.
+  await run('drift: a tool that arrived after the turn counts as added', () => {
+    const sent = [{ name: 'read' }];
+    const live = [{ name: 'read' }, { name: 'mcp__linear__create_issue' }];
+    const drift = diffToolNames(sent, live);
+    assert(JSON.stringify(drift.added) === JSON.stringify(['mcp__linear__create_issue']), `added ${JSON.stringify(drift.added)}`);
+    assert(drift.removed.length === 0, `removed ${JSON.stringify(drift.removed)}`);
+    assert(formatToolDrift(drift) === '1 added', `summary was ${JSON.stringify(formatToolDrift(drift))}`);
+  });
+
+  await run('drift: a tool that has since gone counts as removed', () => {
+    const drift = diffToolNames([{ name: 'read' }, { name: 'bash' }], [{ name: 'read' }]);
+    assert(JSON.stringify(drift.removed) === JSON.stringify(['bash']), `removed ${JSON.stringify(drift.removed)}`);
+    assert(formatToolDrift(drift) === '1 gone', `summary was ${JSON.stringify(formatToolDrift(drift))}`);
+  });
+
+  await run('drift: both directions are counted, added first', () => {
+    const drift = diffToolNames(
+      [{ name: 'read' }, { name: 'bash' }, { name: 'glob' }],
+      [{ name: 'read' }, { name: 'mcp__linear__list_issues' }]
+    );
+    assert(formatToolDrift(drift) === '1 added, 2 gone', `summary was ${JSON.stringify(formatToolDrift(drift))}`);
+    const detail = toolDriftDetail(drift);
+    assert(detail.includes('Added: mcp__linear__list_issues'), `detail was ${JSON.stringify(detail)}`);
+    assert(detail.includes('Gone: bash, glob'), `detail was ${JSON.stringify(detail)}`);
+  });
+
+  await run('drift: comparison is by name, not by schema', () => {
+    const drift = diffToolNames(
+      [{ name: 'read', input_schema: { properties: { a: {} } } }],
+      [{ name: 'read', input_schema: { properties: { a: {}, b: {} } } }]
+    );
+    assert(formatToolDrift(drift) === '', 'a re-shaped schema is not a tool appearing or disappearing');
+  });
+
+  await run('drift: a nameless entry does not masquerade as a change', () => {
+    const drift = diffToolNames([{}], [{}]);
+    assert(formatToolDrift(drift) === '', `summary was ${JSON.stringify(formatToolDrift(drift))}`);
+  });
+
+  await run('drift: null is tolerated by both formatters', () => {
+    assert(formatToolDrift(null) === '', 'null drift should format to nothing');
+    assert(toolDriftDetail(null) === '', 'null drift should have no detail');
   });
 
   await run('strategyDisplayName falls back through manifest name, id, then class', () => {

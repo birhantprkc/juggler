@@ -224,6 +224,128 @@ export async function runTests(_ctx) {
     assert(desc === 'Description of bash.', `description line was ${JSON.stringify(desc)}`);
   });
 
+  // =========================================================================
+  // Saying what the list is. An undated tool list invites the wrong conclusion:
+  // a server that connected after this turn is legitimately absent here, and
+  // without the header that reads as the tool having gone missing.
+  // =========================================================================
+
+  /**
+   * Open the tools row of a freshly-rendered blob.
+   * @param {HTMLElement} host - Container rendered into
+   * @returns {HTMLElement} The opened tools row
+   */
+  const openToolsRow = (host) => {
+    const row = [...host.querySelectorAll('.tx-row')]
+      .find((r) => r.querySelector('.tx-row-kind')?.textContent === 'tools');
+    assert(row, 'no tools row rendered');
+    /** @type {HTMLDetailsElement} */ (row).open = true;
+    row.dispatchEvent(new Event('toggle'));
+    return /** @type {HTMLElement} */ (row);
+  };
+
+  await run('the tool list says when it was sent, and that it is not the live list', () => {
+    const host = document.createElement('div');
+    const timestamp = new Date(2026, 1, 3, 14, 32, 5).toISOString();
+    renderTransactionDetail(host, {
+      id: 'txn_5',
+      timestamp,
+      input: { systemPrompt: '', messages: [], tools: [tool('bash'), tool('mcp__linear__create_issue')] },
+    });
+    const header = openToolsRow(host).querySelector('.tx-tools-sent')?.textContent || '';
+    assert(header.startsWith('2 tools, as sent at '), `header was ${JSON.stringify(header)}`);
+    assert(
+      header.includes(new Date(timestamp).toLocaleTimeString()),
+      `header should carry the send time, was ${JSON.stringify(header)}`
+    );
+    assert(header.endsWith('— not the live list.'), `header was ${JSON.stringify(header)}`);
+  });
+
+  await run('a single tool is counted in the singular, and a missing timestamp drops the clause', () => {
+    const host = document.createElement('div');
+    renderTransactionDetail(host, {
+      id: 'txn_6',
+      input: { systemPrompt: '', messages: [], tools: [tool('bash')] },
+    });
+    const header = openToolsRow(host).querySelector('.tx-tools-sent')?.textContent || '';
+    assert(header === '1 tool, as sent — not the live list.', `header was ${JSON.stringify(header)}`);
+  });
+
+  // The drift line: the same statement the System Prompt panel makes, from the
+  // other end. `offered` is a strategy's own output, so a thread whose strategy
+  // returns a fixed list gives a deterministic live list to compare against.
+  /**
+   * A thread whose live tool list is exactly `tools`.
+   * @param {Array<Record<string, unknown>>} tools - The tools this thread offers
+   * @returns {{strategy: object}} A stand-in message thread
+   */
+  const threadOffering = (tools) => ({
+    strategy: {
+      /**
+       * @returns {Array<Record<string, unknown>>} The fixed live list
+       */
+      filterTools() { return tools; },
+    },
+  });
+
+  /**
+   * Wait for the drift annotation, which lands a few microtasks after render.
+   * @param {HTMLElement} row - The opened tools row
+   * @returns {Promise<string>} The drift line's text ('' when there is none)
+   */
+  const driftText = async (row) => {
+    for (let i = 0; i < 50; i++) {
+      const line = row.querySelector('.tx-tools-drift');
+      if (line) return line.textContent || '';
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    return '';
+  };
+
+  await run('a tool that appeared since the turn is reported, not silently missing', async () => {
+    const host = document.createElement('div');
+    renderTransactionDetail(
+      host,
+      { id: 'txn_7', input: { systemPrompt: '', messages: [], tools: [tool('bash')] } },
+      undefined,
+      { messageThread: threadOffering([tool('bash'), tool('mcp__linear__create_issue')]) }
+    );
+    const row = openToolsRow(host);
+    const text = await driftText(row);
+    assert(text.startsWith('1 added since this turn'), `drift line was ${JSON.stringify(text)}`);
+    assert(
+      text.includes('the model has not been offered the current list yet'),
+      `drift line was ${JSON.stringify(text)}`
+    );
+    const title = row.querySelector('.tx-tools-drift')?.getAttribute('title') || '';
+    assert(title.includes('mcp__linear__create_issue'), `the tooltip should name the tool, was ${JSON.stringify(title)}`);
+  });
+
+  await run('a live list matching the recorded one says nothing at all', async () => {
+    const host = document.createElement('div');
+    renderTransactionDetail(
+      host,
+      { id: 'txn_8', input: { systemPrompt: '', messages: [], tools: [tool('bash')] } },
+      undefined,
+      { messageThread: threadOffering([tool('bash')]) }
+    );
+    const row = openToolsRow(host);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert(!row.querySelector('.tx-tools-drift'), 'no drift means no line');
+  });
+
+  await run('without a thread the list still renders, minus the comparison', async () => {
+    const host = document.createElement('div');
+    renderTransactionDetail(host, {
+      id: 'txn_9',
+      input: { systemPrompt: '', messages: [], tools: [tool('bash')] },
+    });
+    const row = openToolsRow(host);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert(row.querySelector('.tx-tools-sent'), 'the header must not depend on having a thread');
+    assert(!row.querySelector('.tx-tools-drift'), 'nothing to compare against means no drift line');
+  });
+
   await run('a blob with no tools renders no tools row', () => {
     const host = document.createElement('div');
     renderTransactionDetail(host, {

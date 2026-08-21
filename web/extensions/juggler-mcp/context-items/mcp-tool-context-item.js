@@ -145,8 +145,12 @@ async function refreshSnapshot() {
     for (const t of tools) index.set(mcpLLMName(t.server, t.name), t);
     discoveredTools = tools;
     toolByLLMName = index;
-  } catch {
+  } catch (err) {
     // Leave the last-known snapshot untouched; a later refresh will update it.
+    // Say so, though: a refresh that keeps failing looks exactly like a server
+    // with no tools — an empty list, forever, and no other trace anywhere. Debug
+    // level because the first call routinely loses a race with the API token.
+    console.debug('[MCP] Couldn\'t refresh the tool snapshot:', err);
   }
 }
 

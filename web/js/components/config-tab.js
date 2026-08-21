@@ -185,6 +185,7 @@ export function makeNameValidator({ article, noun, reserved, reservedMsg }) {
  * @property {string} addLabel - Toolbar add-button label.
  * @property {string} emptyText - Empty-state text.
  * @property {(toolbar: HTMLElement) => void} [toolbarExtra] - Append extra toolbar content.
+ * @property {() => Promise<string>} [notice] - Best-effort line shown above a non-empty list, for a condition the rows themselves can't show (e.g. entries that run but reach nothing). '' for none; a rejection is treated as ''.
  * @property {(name: string, existingNames?: string[]) => string} validateName - Name validator.
  * @property {(status: any) => string} dotClass - Status-dot class suffix.
  * @property {(status: any) => string} dotTitle - Status-dot tooltip.
@@ -236,6 +237,8 @@ export class ConfigTabController {
     this.busy = false;
     /** @type {string} Inline error from the most recent action. */
     this.error = '';
+    /** @type {string} Line shown above the list from the spec's notice hook ('' = none). */
+    this.notice = '';
     /** @type {Promise<void>|null} Resolves when the first refresh of this showing has landed. */
     this.ready = null;
     /** @type {string} Name whose log disclosure is open ('' = none); log-capable tabs only. */
@@ -300,8 +303,15 @@ export class ConfigTabController {
     if (this.busy) return;
     this.busy = true;
     try {
-      const [items, cfg] = await Promise.all([this.spec.ops.list(), this.spec.ops.getConfig()]);
+      const [items, cfg, notice] = await Promise.all([
+        this.spec.ops.list(),
+        this.spec.ops.getConfig(),
+        // Advisory only: a notice we can't fetch must never fail the refresh and
+        // blank the list the user came here for.
+        this.spec.notice ? this.spec.notice().catch(() => '') : Promise.resolve(''),
+      ]);
       this.items = items || [];
+      this.notice = notice || '';
       this.config = {
         global: (cfg && cfg.global) || {},
         project: (cfg && cfg.project) || {},
@@ -372,6 +382,16 @@ export class ConfigTabController {
       hint.textContent = this.spec.emptyText;
       host.appendChild(hint);
       return;
+    }
+
+    // Above the rows, because it is about all of them: every row can read
+    // "running" while nothing they serve arrives anywhere.
+    if (this.notice) {
+      const notice = document.createElement('div');
+      notice.className = 'key-source-hint mcp-notice';
+      notice.style.display = 'block';
+      notice.textContent = this.notice;
+      host.appendChild(notice);
     }
 
     const list = document.createElement('div');

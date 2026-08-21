@@ -91,6 +91,53 @@ export function parseMcpToolName(name) {
 }
 
 /**
+ * How two tool lists differ, by name.
+ *
+ * One surface holds the list a turn recorded, another holds the list the thread
+ * would send now, and the interesting question on both is the same: has the set
+ * moved since. Names are the comparable part — a schema edit is not a tool
+ * appearing or disappearing.
+ * @param {Array<Record<string, any>>} sent - The recorded list.
+ * @param {Array<Record<string, any>>} live - The current list.
+ * @returns {{added: string[], removed: string[]}} Names in `live` but not `sent`, and the reverse.
+ */
+export function diffToolNames(sent, live) {
+  const sentNames = new Set(sent.map((t) => String(t?.name || '')));
+  const liveNames = new Set(live.map((t) => String(t?.name || '')));
+  return {
+    added: [...liveNames].filter((n) => !sentNames.has(n)),
+    removed: [...sentNames].filter((n) => !liveNames.has(n))
+  };
+}
+
+/**
+ * The counted half of the drift statement — "3 added, 1 gone" — shared by every
+ * surface that makes it, so the two never come to word it differently. Each
+ * surface supplies its own trailing clause, because "since" points forwards from
+ * a recorded turn and backwards from the live list.
+ * @param {{added: string[], removed: string[]}|null|undefined} drift - A {@link diffToolNames} result.
+ * @returns {string} The summary, or '' when the lists match.
+ */
+export function formatToolDrift(drift) {
+  const changes = [];
+  if (drift?.added.length) changes.push(`${drift.added.length} added`);
+  if (drift?.removed.length) changes.push(`${drift.removed.length} gone`);
+  return changes.join(', ');
+}
+
+/**
+ * The names behind a drift summary, for the tooltip that answers "which ones?".
+ * @param {{added: string[], removed: string[]}|null|undefined} drift - A {@link diffToolNames} result.
+ * @returns {string} Multi-line detail, or '' when the lists match.
+ */
+export function toolDriftDetail(drift) {
+  return [
+    drift?.added.length ? `Added: ${drift.added.join(', ')}` : '',
+    drift?.removed.length ? `Gone: ${drift.removed.join(', ')}` : ''
+  ].filter(Boolean).join('\n');
+}
+
+/**
  * Bucket tools by origin: the built-ins together, then one group per MCP
  * server. Servers are ordered by name rather than by size — you come here
  * looking for a particular server, so a stable alphabetical position beats a

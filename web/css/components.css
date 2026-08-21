@@ -2663,6 +2663,20 @@ properties-panel-tx-sections > properties-panel-subsection + properties-panel-su
     flex-direction: column;
 }
 
+/* Header on the tool list: when this list was sent, and whether the thread's
+   live list has moved since. A tool that arrived after the turn is absent here
+   for a reason, and the header is what says so. */
+.tx-tools-header {
+    padding: 0.25rem 0.25rem 0.35rem;
+    font-size: 0.6875rem;
+    color: var(--text-tertiary);
+}
+
+.tx-tools-drift {
+    margin-top: 0.2rem;
+    color: var(--warning, var(--text-tertiary));
+}
+
 .tx-tool-group {
     display: flex;
     align-items: baseline;
@@ -6518,6 +6532,14 @@ settings-panel .mcp-import-soon {
 
 settings-panel .mcp-empty {
     line-height: 1.5;
+}
+
+/* A condition every row is blind to (e.g. the MCP extension being off), stated
+   once above the list rather than repeated on rows that all look healthy. */
+settings-panel .mcp-notice {
+    margin-bottom: 0.875rem;
+    line-height: 1.5;
+    color: var(--warning, var(--text-secondary));
 }
 
 settings-panel .mcp-list {

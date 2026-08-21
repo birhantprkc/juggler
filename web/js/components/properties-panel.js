@@ -446,7 +446,14 @@ class PropertiesPanel extends HTMLElement {
     // Bail if the user navigated away while the fetch was in flight.
     if (this._transactionMode !== mode) return;
 
-    renderTransactionDetail(body, /** @type {import('./transaction-detail-renderer.js').TransactionBlob|null} */ (blob));
+    // The thread comes along so the recorded tool list can say how the live one
+    // differs — the panel is where "was my tool even offered" gets answered.
+    renderTransactionDetail(
+      body,
+      /** @type {import('./transaction-detail-renderer.js').TransactionBlob|null} */ (blob),
+      undefined,
+      { messageThread: this._messageThread }
+    );
   }
 
   /**

@@ -367,7 +367,7 @@ class ToolExecutor {
     }
 
     // 4. Unknown tool
-    const result = responseHandler.createUnknownToolResult(toolCall, messageThread);
+    const result = await responseHandler.createUnknownToolResult(toolCall, messageThread);
     return this._toToolOutcome(toolCall, result);
   }
 

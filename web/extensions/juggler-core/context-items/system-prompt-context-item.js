@@ -161,6 +161,12 @@ const SYSTEM_PROMPT_STYLES = `
   margin-bottom: 0.35rem;
   color: var(--warning, var(--text-tertiary));
 }
+.system-prompt-tools-notice {
+  margin-bottom: 0.35rem;
+  line-height: 1.4;
+  white-space: normal;
+  color: var(--warning, var(--text-tertiary));
+}
 /* Preset browser + manage-presets dropdowns -------------------------------
    Self-contained rows (no shared .menu-item dependency) so the layout reads
    like a tidy macOS menu: a leading check/icon column keeps every label on one
@@ -652,10 +658,12 @@ class SystemPromptContextItem extends ContextItem {
    *
    * The list comes from `buildToolInventory`, the same call the turn path uses
    * to decide what to send, so this cannot show one set while another is sent.
-   * Three things are surfaced that nothing else in the UI says out loud: which
+   * Four things are surfaced that nothing else in the UI says out loud: which
    * MCP server each tool came from, which tools the thread's strategy is holding
    * back (a withheld tool looks exactly like a missing one from the outside),
-   * and any MCP server that is configured but not currently serving.
+   * any MCP server that is configured but not currently serving, and whether the
+   * MCP extension is switched off — in which case those servers are running,
+   * healthy, and publishing to nobody.
    * @private
    * @param {HTMLElement} section - The section element to fill or remove
    * @returns {Promise<void>}
@@ -666,13 +674,16 @@ class SystemPromptContextItem extends ContextItem {
     try {
       const { buildToolInventory, groupToolsByOrigin, parseMcpToolName } =
         await import('../../../js/services/thread-tool-inventory.js');
+      const { isMcpExtensionDisabled, MCP_DISABLED_NOTICE } =
+        await import('../../../js/services/mcp-availability.js');
       const inventory = await buildToolInventory(this.messageThread);
       const servers = await this._loadMcpServerStatus();
       const drift = await this._toolDriftSinceLastTurn(inventory.offered);
+      const mcpNotice = await isMcpExtensionDisabled() ? MCP_DISABLED_NOTICE : '';
 
       body.replaceChildren();
       body.appendChild(this._buildToolInventoryView(
-        inventory, groupToolsByOrigin(inventory.offered), servers, parseMcpToolName, drift
+        inventory, groupToolsByOrigin(inventory.offered), servers, parseMcpToolName, drift, mcpNotice
       ));
     } catch (err) {
       // Never leave "Loading…" sitting there: a panel that can't answer should
@@ -716,7 +727,7 @@ class SystemPromptContextItem extends ContextItem {
    * makes a model insist a tool doesn't exist.
    * @private
    * @param {Array<any>} offered - Tools currently on offer for this thread
-   * @returns {Promise<{added: string[], removed: string[]}|null>} The difference, or null when there is nothing to compare against
+   * @returns {Promise<{changes: string, detail: string}|null>} The difference as a summary and its per-name detail, or null when there is nothing to compare against
    */
   async _toolDriftSinceLastTurn(offered) {
     try {
@@ -730,12 +741,10 @@ class SystemPromptContextItem extends ContextItem {
       const sent = blob?.input?.tools;
       if (!Array.isArray(sent)) return null;
 
-      const sentNames = new Set(sent.map((/** @type {any} */ t) => String(t?.name || '')));
-      const liveNames = new Set(offered.map((t) => String(t?.name || '')));
-      return {
-        added: [...liveNames].filter((n) => !sentNames.has(n)),
-        removed: [...sentNames].filter((n) => !liveNames.has(n))
-      };
+      const { diffToolNames, formatToolDrift, toolDriftDetail } =
+        await import('../../../js/services/thread-tool-inventory.js');
+      const drift = diffToolNames(sent, offered);
+      return { changes: formatToolDrift(drift), detail: toolDriftDetail(drift) };
     } catch {
       // No blob, no worker, no comparison — the list still stands on its own.
       return null;
@@ -750,10 +759,11 @@ class SystemPromptContextItem extends ContextItem {
    * @param {Array<{title: string, server: string|null, tools: Array<any>, tokens: number}>} groups - Offered tools, grouped
    * @param {Map<string, {status?: string, error?: string, toolCount?: number}>} servers - MCP status by server name
    * @param {(name: string) => {server: string, tool: string}|null} parseMcp - MCP name splitter
-   * @param {{added: string[], removed: string[]}|null} drift - Difference from the last turn's recorded tool list
+   * @param {{changes: string, detail: string}|null} drift - Difference from the last turn's recorded tool list
+   * @param {string} [mcpNotice] - Line to show above the MCP servers (the extension being off), or '' when there is nothing to say
    * @returns {HTMLElement} The section body content
    */
-  _buildToolInventoryView(inventory, groups, servers, parseMcp, drift) {
+  _buildToolInventoryView(inventory, groups, servers, parseMcp, drift, mcpNotice = '') {
     const wrap = createElement('div', 'system-prompt-tools');
 
     const count = createElement('div', 'system-prompt-tools-count');
@@ -762,16 +772,17 @@ class SystemPromptContextItem extends ContextItem {
       : `${inventory.offered.length} tools available to the model`;
     wrap.appendChild(count);
 
-    const changes = [];
-    if (drift?.added.length) changes.push(`${drift.added.length} added`);
-    if (drift?.removed.length) changes.push(`${drift.removed.length} gone`);
-    if (changes.length) {
+    if (drift?.changes) {
       const line = createElement('div', 'system-prompt-tools-drift');
-      line.textContent = `${changes.join(', ')} since the last turn — the model has not been offered this list yet.`;
-      line.title = [
-        drift?.added.length ? `Added: ${drift.added.join(', ')}` : '',
-        drift?.removed.length ? `Gone: ${drift.removed.join(', ')}` : ''
-      ].filter(Boolean).join('\n');
+      line.textContent = `${drift.changes} since the last turn — the model has not been offered this list yet.`;
+      line.title = drift.detail;
+      wrap.appendChild(line);
+    }
+
+    // Servers below will read "running" whatever this says, so it goes first.
+    if (mcpNotice && servers.size) {
+      const line = createElement('div', 'system-prompt-tools-notice');
+      line.textContent = mcpNotice;
       wrap.appendChild(line);
     }
 
@@ -797,12 +808,16 @@ class SystemPromptContextItem extends ContextItem {
 
     // Configured MCP servers that contributed nothing. Without this the section
     // is simply missing a group, which looks identical to never having set the
-    // server up at all.
+    // server up at all. A running server that contributed nothing is the case
+    // worth spelling out: on its own "MCP · linear — running" reads as healthy,
+    // when what it means is that its tools stopped somewhere before the model.
     for (const [name, status] of servers) {
       if (groups.some((g) => g.server === name)) continue;
       const row = createElement('div', 'system-prompt-tools-silent');
       const detail = status?.error ? String(status.error).split('\n')[0] : '';
-      row.textContent = `MCP · ${name} — ${status?.status || 'not running'}${detail ? `: ${detail}` : ''}`;
+      const state = status?.status || 'not running';
+      const unreached = state === 'running' ? ', tools not offered' : '';
+      row.textContent = `MCP · ${name} — ${state}${unreached}${detail ? `: ${detail}` : ''}`;
       wrap.appendChild(row);
     }
 

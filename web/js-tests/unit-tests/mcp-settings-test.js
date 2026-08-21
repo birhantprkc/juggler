@@ -29,6 +29,7 @@ import {
   mcpSeedFormExtra,
   mcpFormToConfigExtra,
 } from '../../js/components/settings/subprocess-tabs.js';
+import { mcpToolMissReason, MCP_DISABLED_NOTICE } from '../../js/services/mcp-availability.js';
 
 /**
  * @typedef {object} TestResult
@@ -386,6 +387,138 @@ export async function runTests(_ctx) {
     } finally {
       ctrl.stopPolling();
     }
+  });
+
+  // --- the notice line: a condition every row is blind to --------------------
+  // With the MCP extension disabled, every server still starts, discovers its
+  // tools, and reports "running" — and the model is offered none of them. Each
+  // row is telling the truth and the page as a whole is wrong, so the notice
+  // states it once, above the list.
+
+  /**
+   * A shown controller whose list renders into a real host, with a notice hook.
+   * @param {() => Promise<string>} [notice] - The spec's notice hook
+   * @returns {{ctrl: ConfigTabController, formHost: HTMLElement}} The controller and its mount point
+   */
+  const listController = (notice) => {
+    const host = document.createElement('div');
+    const formHost = document.createElement('div');
+    formHost.id = 'notice-test-form';
+    host.appendChild(formHost);
+    const ctrl = new ConfigTabController(host, /** @type {any} */ ({
+      id: 'mcp',
+      noun: 'server',
+      formHostSelector: '#notice-test-form',
+      pollMs: 100000,
+      loadError: 'Couldn\'t load MCP servers.',
+      addLabel: 'Add server',
+      emptyText: 'No MCP servers yet.',
+      notice,
+      ops: {
+        list: async () => [{ name: 'linear', status: 'running', toolCount: 7 }],
+        getConfig: async () => ({ global: { linear: { transport: 'http' } }, project: {}, hasProject: false }),
+      },
+      dotClass: () => 'running',
+      dotTitle: () => 'running',
+      describe: () => '7 tools',
+      rowError: () => '',
+      validateName: () => '',
+    }));
+    return { ctrl, formHost };
+  };
+
+  await run('notice: a disabled extension is stated above the rows', async () => {
+    const { ctrl, formHost } = listController(async () => MCP_DISABLED_NOTICE);
+    try {
+      ctrl.show();
+      await ctrl.ready;
+      const notice = formHost.querySelector('.mcp-notice');
+      assert(notice, 'no notice rendered');
+      assert(notice.textContent === MCP_DISABLED_NOTICE, `notice was ${JSON.stringify(notice?.textContent)}`);
+      const list = formHost.querySelector('.mcp-list');
+      assert(list, 'the rows must still render');
+      assert(
+        notice.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+        'the notice must come before the rows it is about'
+      );
+    } finally {
+      ctrl.stopPolling();
+    }
+  });
+
+  await run('notice: nothing to say means no line', async () => {
+    const { ctrl, formHost } = listController(async () => '');
+    try {
+      ctrl.show();
+      await ctrl.ready;
+      assert(!formHost.querySelector('.mcp-notice'), 'an empty notice should render nothing');
+      assert(formHost.querySelector('.mcp-list'), 'the rows must still render');
+    } finally {
+      ctrl.stopPolling();
+    }
+  });
+
+  await run('notice: a failing hook never costs the user the list', async () => {
+    const { ctrl, formHost } = listController(async () => { throw new Error('no config endpoint'); });
+    try {
+      ctrl.show();
+      await ctrl.ready;
+      assert(!formHost.querySelector('.mcp-notice'), 'a failed notice should render nothing');
+      assert(formHost.querySelector('.mcp-list'), 'the rows must survive a failed notice');
+      assert(ctrl.error === '', `a notice failure is not a load failure, error was ${JSON.stringify(ctrl.error)}`);
+    } finally {
+      ctrl.stopPolling();
+    }
+  });
+
+  await run('notice: a tab with no notice hook behaves as before', async () => {
+    const { ctrl, formHost } = listController(undefined);
+    try {
+      ctrl.show();
+      await ctrl.ready;
+      assert(!formHost.querySelector('.mcp-notice'), 'no hook should mean no notice');
+      assert(formHost.querySelector('.mcp-list'), 'the rows must render');
+    } finally {
+      ctrl.stopPolling();
+    }
+  });
+
+  // --- mcpToolMissReason ----------------------------------------------------
+  // "No tool found" is one sentence for three different faults, and the model
+  // reads it and tries again. These pin that each fault says which it is.
+
+  await run('miss reason: a disabled extension is named as the cause', () => {
+    const why = mcpToolMissReason({ server: 'linear', tool: 'create_issue', disabled: true, status: { status: 'running' } });
+    assert(why === MCP_DISABLED_NOTICE, `reason was ${JSON.stringify(why)}`);
+  });
+
+  await run('miss reason: an unconfigured server says so', () => {
+    const why = mcpToolMissReason({ server: 'ghost', tool: 'x', disabled: false, status: null });
+    assert(why === 'No MCP server named "ghost" is configured.', `reason was ${JSON.stringify(why)}`);
+  });
+
+  await run('miss reason: a server switched off in settings says so', () => {
+    const why = mcpToolMissReason({ server: 'linear', tool: 'x', disabled: false, status: { status: 'stopped', enabled: false } });
+    assert(why.includes('turned off'), `reason was ${JSON.stringify(why)}`);
+  });
+
+  await run('miss reason: a failed server carries its own first error line', () => {
+    const why = mcpToolMissReason({
+      server: 'linear', tool: 'x', disabled: false,
+      status: { status: 'failed', error: 'spawn ENOENT\nstack line that must not appear' },
+    });
+    assert(why.includes('is failed: spawn ENOENT'), `reason was ${JSON.stringify(why)}`);
+    assert(!why.includes('stack line'), 'only the first line of the error belongs here');
+  });
+
+  // The case behind the report: everything healthy, tool still absent — because
+  // it was hidden by a filter, or arrived after the turn was sent.
+  await run('miss reason: a healthy server points at the filter and the timing', () => {
+    const why = mcpToolMissReason({ server: 'linear', tool: 'create_issue', disabled: false, status: { status: 'running' } });
+    assert(why.includes('is running'), `reason was ${JSON.stringify(why)}`);
+    assert(why.includes('"create_issue"'), 'the tool that missed should be named');
+    assert(why.includes('tool filter'), `reason was ${JSON.stringify(why)}`);
+    assert(why.includes('after the turn was sent'), `reason was ${JSON.stringify(why)}`);
   });
 
   return { passed, failed, errors };

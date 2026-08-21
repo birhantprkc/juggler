@@ -21,7 +21,14 @@ import { formatNumber, formatTokens } from '../utils/format.js';
 import { escapeJsonContent } from '../../sdk/lib/html.js';
 import { createCopyButton } from '../utils/properties-panel-helpers.js';
 import { estimateValueTokens, LONG_TEXT_CHARS } from '../utils/token-estimate.js';
-import { groupToolsByOrigin, parseMcpToolName } from '../services/thread-tool-inventory.js';
+import {
+  buildToolInventory,
+  diffToolNames,
+  formatToolDrift,
+  groupToolsByOrigin,
+  parseMcpToolName,
+  toolDriftDetail
+} from '../services/thread-tool-inventory.js';
 
 /**
  * @typedef {object} TransactionBlobInput
@@ -66,8 +73,11 @@ const LABEL_CHARS = 200;
  * @param {string} [emptyMessage] - What to say instead when there is no blob.
  *   The default covers a blob that should exist and doesn't; callers that know
  *   the item never had a round-trip say so instead.
+ * @param {{messageThread?: {strategy?: unknown}|null}} [options] - `messageThread`
+ *   is the thread this transaction belongs to; given it, the tool list can say
+ *   how the thread's live tools differ from the ones this turn sent.
  */
-export function renderTransactionDetail(parent, blob, emptyMessage = 'No transaction data.') {
+export function renderTransactionDetail(parent, blob, emptyMessage = 'No transaction data.', options = {}) {
   parent.innerHTML = '';
   if (!blob) {
     const empty = document.createElement('div');
@@ -81,7 +91,7 @@ export function renderTransactionDetail(parent, blob, emptyMessage = 'No transac
 
   const sections = document.createElement('properties-panel-tx-sections');
   sections.appendChild(_buildOutputSection(blob));
-  sections.appendChild(_buildInputSection(blob));
+  sections.appendChild(_buildInputSection(blob, options.messageThread || null));
   parent.appendChild(sections);
 }
 
@@ -206,9 +216,10 @@ function _buildOutputBlock(block) {
  * message opens by default: it is the one this round-trip was actually
  * responding to.
  * @param {TransactionBlob} blob
+ * @param {{strategy?: unknown}|null} [messageThread] - Thread this transaction belongs to, for the tool list's drift line.
  * @returns {HTMLElement} Input section element.
  */
-function _buildInputSection(blob) {
+function _buildInputSection(blob, messageThread = null) {
   const input = blob.input;
   const messages = input?.messages || [];
   const tools = input?.tools || [];
@@ -238,7 +249,7 @@ function _buildInputSection(blob) {
     rows.appendChild(_row('system prompt', _firstLine(systemPrompt), systemPrompt));
   }
   if (tools.length) {
-    rows.appendChild(_buildToolsRow(tools));
+    rows.appendChild(_buildToolsRow(tools, blob, messageThread));
   }
 
   const displayMessages = _transformMessagesForDisplay(messages);
@@ -354,24 +365,30 @@ function _row(kind, label, value, { open = false, body = undefined } = {}) {
  * a tool missing from this list never reached the model, whatever the model
  * said about it.
  * @param {ToolEntry[]} tools - Tool definitions as recorded in the blob.
+ * @param {TransactionBlob} blob - The blob, for when this list was sent.
+ * @param {{strategy?: unknown}|null} messageThread - Thread this transaction belongs to, or null.
  * @returns {HTMLElement} The row element.
  */
-function _buildToolsRow(tools) {
+function _buildToolsRow(tools, blob, messageThread) {
   const groups = groupToolsByOrigin(tools);
   const mcpCount = groups.reduce((n, g) => n + (g.server === null ? 0 : g.tools.length), 0);
   const label = mcpCount
     ? `${tools.length} tools · ${mcpCount} from MCP`
     : `${tools.length} tools`;
-  return _row('tools', label, tools, { body: () => _buildToolList(groups) });
+  return _row('tools', label, tools, { body: () => _buildToolList(groups, tools, blob, messageThread) });
 }
 
 /**
  * @param {ReturnType<typeof groupToolsByOrigin>} groups - Grouped tools.
+ * @param {ToolEntry[]} tools - The same tools, ungrouped, for the header.
+ * @param {TransactionBlob} blob - The blob, for when this list was sent.
+ * @param {{strategy?: unknown}|null} messageThread - Thread this transaction belongs to, or null.
  * @returns {HTMLElement} The row body.
  */
-function _buildToolList(groups) {
+function _buildToolList(groups, tools, blob, messageThread) {
   const body = document.createElement('div');
   body.className = 'tx-row-body tx-tools';
+  body.appendChild(_buildToolsHeader(tools, blob, messageThread));
   for (const group of groups) {
     const heading = document.createElement('div');
     heading.className = 'tx-tool-group';
@@ -391,6 +408,64 @@ function _buildToolList(groups) {
     for (const tool of group.tools) body.appendChild(_buildToolEntry(tool, group.server));
   }
   return body;
+}
+
+/**
+ * What this list is, said out loud: a record of one moment, not the tools the
+ * thread has now.
+ *
+ * This is the surface someone opens when they suspect a tool is missing, and an
+ * undated list invites the wrong conclusion — a server that finished connecting
+ * after this turn genuinely has tools that are absent here, and that is not a
+ * bug. The count and the send time state the first half; {@link _appendToolDrift}
+ * fills in the second when the two lists have actually moved apart.
+ * @param {ToolEntry[]} tools - Tool definitions as recorded in the blob.
+ * @param {TransactionBlob} blob - The blob, for its timestamp.
+ * @param {{strategy?: unknown}|null} messageThread - Thread this transaction belongs to, or null.
+ * @returns {HTMLElement} The header element.
+ */
+function _buildToolsHeader(tools, blob, messageThread) {
+  const header = document.createElement('div');
+  header.className = 'tx-tools-header';
+
+  const sent = document.createElement('div');
+  sent.className = 'tx-tools-sent';
+  const when = blob?.timestamp ? ` at ${new Date(blob.timestamp).toLocaleTimeString()}` : '';
+  sent.textContent = `${tools.length} ${tools.length === 1 ? 'tool' : 'tools'}, as sent${when} — not the live list.`;
+  header.appendChild(sent);
+
+  if (messageThread) void _appendToolDrift(header, tools, messageThread);
+  return header;
+}
+
+/**
+ * Add the drift line when the thread's live tool list has moved since this turn.
+ *
+ * The same statement the System Prompt panel makes, from the other end: there it
+ * reads "since the last turn", here "since this turn", and both mean the model
+ * has not been offered the current list. Best-effort and silent on failure — the
+ * recorded list is ground truth on its own, and a comparison we can't make is no
+ * reason to spoil it.
+ * @param {HTMLElement} header - Header element to append to.
+ * @param {ToolEntry[]} tools - Tool definitions as recorded in the blob.
+ * @param {{strategy?: unknown}} messageThread - Thread this transaction belongs to.
+ * @returns {Promise<void>}
+ */
+async function _appendToolDrift(header, tools, messageThread) {
+  try {
+    const inventory = await buildToolInventory(messageThread);
+    const drift = diffToolNames(/** @type {Array<Record<string, any>>} */ (tools), inventory.offered);
+    const changes = formatToolDrift(drift);
+    if (!changes) return;
+
+    const line = document.createElement('div');
+    line.className = 'tx-tools-drift';
+    line.textContent = `${changes} since this turn — the model has not been offered the current list yet.`;
+    line.title = toolDriftDetail(drift);
+    header.appendChild(line);
+  } catch {
+    // No inventory, no comparison. The list above still stands on its own.
+  }
 }
 
 /**

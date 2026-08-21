@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { generateToolDefinitions, getBlockedToolReason, resolveToolName } from './tool-generator.js';
+import { withMcpToolMissReason } from './mcp-availability.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { extractErrorInfo, extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { createContextWriter } from './context-writer.js';
@@ -196,7 +197,13 @@ class ResponseHandler {
         if (blockedReason) {
           return { toolId: tc.id, toolName: tc.name, valid: false, errorType: /** @type {const} */ ('blocked_tool'), error: blockedReason };
         }
-        return { toolId: tc.id, toolName: tc.name, valid: false, errorType: /** @type {const} */ ('unknown_tool'), error: `Unknown tool: ${tc.name}` };
+        return {
+          toolId: tc.id,
+          toolName: tc.name,
+          valid: false,
+          errorType: /** @type {const} */ ('unknown_tool'),
+          error: await withMcpToolMissReason(`Unknown tool: ${tc.name}`, tc.name)
+        };
       }
 
       // Validate against schema required fields
@@ -223,7 +230,7 @@ class ResponseHandler {
               toolName: tc.name,
               valid: false,
               errorType: blockedReason ? /** @type {const} */ ('blocked_tool') : /** @type {const} */ ('unknown_tool'),
-              error: blockedReason || `Unknown action: ${tc.name}`
+              error: blockedReason || await withMcpToolMissReason(`Unknown action: ${tc.name}`, tc.name)
             };
           }
           if (!prepared.valid) {
@@ -451,10 +458,15 @@ class ResponseHandler {
    * ToolExecutor. Adds tool-use and tool-result messages to show the error in UI.
    * @param {{id: string, name: string, input?: unknown}} toolCall - Tool call that failed
    * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @returns {ToolExecutionResult} Error result
+   * @returns {Promise<ToolExecutionResult>} Error result
    */
-  createUnknownToolResult(toolCall, messageThread) {
-    const errorMsg = `Unknown tool: "${toolCall.name}". This tool is not registered with any handler.`;
+  async createUnknownToolResult(toolCall, messageThread) {
+    // An `mcp__*` name that misses here has three quite different causes, and
+    // the model will keep calling the tool until it is told which one.
+    const errorMsg = await withMcpToolMissReason(
+      `Unknown tool: "${toolCall.name}". This tool is not registered with any handler.`,
+      toolCall.name
+    );
     return actions.failToolAction(messageThread, toolCall, {
       content: errorMsg,
       resultType: RESULT_TYPES.META_TOOL,
