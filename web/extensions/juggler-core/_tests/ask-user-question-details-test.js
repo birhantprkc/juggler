@@ -14,6 +14,7 @@
  * @module unit-tests/ask-user-question-details
  */
 
+import { labeledSubsection } from 'juggler/ui';
 import { assert } from '../../../js-tests/utilities/test-helpers.js';
 import AskUserQuestionContextItem from '../context-items/ask-user-question-context-item.js';
 
@@ -42,7 +43,7 @@ function renderSelectedLabels(questions, resultContent) {
     toolAction: { get: key => (key === 'result' ? { content: resultContent } : undefined) },
     toolName: 'askuserquestion',
     input: { questions },
-    helpers: {},
+    helpers: { labeledSubsection },
     conversation: null,
     messageThread: null,
     session: null,
@@ -83,7 +84,7 @@ function renderCustomAnswer(questions, resultContent, header) {
     toolAction: { get: key => (key === 'result' ? { content: resultContent } : undefined) },
     toolName: 'askuserquestion',
     input: { questions },
-    helpers: {},
+    helpers: { labeledSubsection },
     conversation: null,
     messageThread: null,
     session: null,

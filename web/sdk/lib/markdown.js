@@ -154,7 +154,7 @@ const ALLOWED_TAGS = new Set([
   'a', 'abbr', 'b', 'blockquote', 'br', 'circle', 'code', 'defs', 'del', 'div', 'ellipse', 'em', 'g',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'input', 'kbd', 'line', 'lineargradient', 'li',
   'ol', 'p', 'path', 'polygon', 'pre', 'radialgradient', 'rect', 's', 'small', 'span', 'stop', 'strong',
-  'sub', 'sup', 'svg', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
+  'style', 'sub', 'sup', 'svg', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
 ]);
 
 /**
@@ -166,14 +166,300 @@ const ALLOWED_TAGS = new Set([
 const ALLOWED_ATTRS = new Set([
   'href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel', 'type',
   'checked', 'disabled', 'align', 'colspan', 'rowspan', 'start', 'width', 'height',
+  // Inline declarations. Safe from script in every engine we run on (`expression()`
+  // and `javascript:` URLs in CSS are long dead), and layout-wise it can reach no
+  // further than the `<style>` blocks alongside it: both are confined to the
+  // contained box sanitizeRenderedHtml wraps authored HTML in.
+  'style',
+  // `data-*`: content the message styles itself with (the preview's checkbox
+  // states) and nothing the engine gives meaning to. Every one passes through;
+  // there is no `data-` attribute the browser will act on for us.
+  'data-task-state',
   // Declarative SVG geometry and paint attributes. We intentionally exclude
-  // `style`, `href`/`xlink:href` for SVG elements, `foreignObject`, animation,
+  // `href`/`xlink:href` for SVG elements, `foreignObject`, animation,
   // filters, and every event-handler attribute.
   'viewbox', 'xmlns', 'x', 'y', 'x1', 'x2', 'y1', 'y2', 'cx', 'cy', 'r', 'rx', 'ry',
   'd', 'points', 'transform', 'fill', 'fill-opacity', 'fill-rule', 'stroke',
   'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-opacity', 'opacity',
   'offset', 'stop-color', 'stop-opacity', 'gradientunits', 'gradienttransform',
 ]);
+
+/**
+ * Class on the box authored HTML is wrapped in, and the attribute carrying the
+ * per-render scope id.
+ *
+ * Two nested elements rather than one, because they hold opposite privileges:
+ * the outer box carries `contain`, and only the inner one carries the scope id.
+ * Authored CSS can therefore only ever name the inner element, so a
+ * `position: fixed` it sets on itself still resolves against the outer box —
+ * the worst a message can do is cover itself, not the window.
+ */
+const HTML_SCOPE_CLASS = 'markdown-html-scope';
+const HTML_SCOPE_ATTR = 'data-markdown-scope';
+
+/** Per-render id source, so two messages on screen never share a scope. */
+let htmlScopeSeq = 0;
+
+/** Leading document-root selectors, which a standalone fragment writes out of habit. */
+const ROOT_SELECTOR = /^\s*(?::root|html|body)(?:\s+(?::root|html|body))*\b/;
+
+/**
+ * A closing style tag surviving inside a CSS string would break out of the `<style>` we serialise into.
+ */
+const CLOSING_STYLE_TAG = /<\/(style)/gi;
+
+/**
+ * Keep `<style>` blocks whole across CommonMark's HTML-block rules.
+ *
+ * An HTML block that opens with a tag like `<div>` ends at the first blank
+ * line — but stylesheets are conventionally written with blank lines between
+ * their sections, so the `<style>` a message nests inside its markup is cut in
+ * half: everything from the first blank line to `</style>` falls out of the
+ * block and is parsed as markdown prose. (A `<style>` that *starts* its own
+ * block is type 1, which runs to the closing tag and is unaffected.)
+ *
+ * CSS is whitespace-blind between tokens, so collapsing the blank lines inside
+ * a `<style>` region changes nothing about the rules while keeping the block
+ * intact until `</style>`.
+ * @param {string} content - Markdown source that may contain style blocks.
+ * @returns {string} Content with blank lines inside `<style>` regions collapsed.
+ */
+function keepStyleBlocksIntact(content) {
+  if (!content.includes('<style')) return content;
+  return content.replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, (block) => block.replace(/\n[ \t]*\n+/g, '\n'));
+}
+
+/**
+ * Split a selector list on its top-level commas. `String.split(',')` would
+ * corrupt `:is(a, b)` and `[title="a,b"]`, both of which are ordinary things to
+ * write and neither of which is a comma we may cut on.
+ * @param {string} selectorText - A selector list.
+ * @returns {string[]} The individual complex selectors.
+ */
+function splitSelectorList(selectorText) {
+  /** @type {string[]} */
+  const parts = [];
+  let depth = 0;
+  let quote = '';
+  let start = 0;
+  for (let i = 0; i < selectorText.length; i++) {
+    const ch = selectorText[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = '';
+    } else if (ch === '"' || ch === '\'') {
+      quote = ch;
+    } else if (ch === '(' || ch === '[') {
+      depth++;
+    } else if (ch === ')' || ch === ']') {
+      depth--;
+    } else if (ch === ',' && depth === 0) {
+      parts.push(selectorText.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(selectorText.slice(start));
+  return parts;
+}
+
+/**
+ * Confine one selector to the scope element.
+ *
+ * `body`/`html`/`:root` are retargeted at the scope element itself rather than
+ * prefixed: a fragment written as if it were a whole page means "the thing I am
+ * in" by them, and `[scope] body` would match nothing. Everything else becomes a
+ * descendant of the scope, which is what makes the containment total — no
+ * combinator can walk back out of a descendant selector.
+ * @param {string} selector - One complex selector.
+ * @param {string} scope - Selector matching the scope element.
+ * @returns {string} The scoped selector.
+ */
+function scopeOneSelector(selector, scope) {
+  const trimmed = selector.trim();
+  if (!trimmed) return trimmed;
+  const rooted = trimmed.replace(ROOT_SELECTOR, '');
+  // `body.dark .x` keeps its compound and becomes `[scope].dark .x`.
+  if (rooted !== trimmed) return `${scope}${rooted}`;
+  return `${scope} ${trimmed}`;
+}
+
+/**
+ * `instanceof` against a CSSOM class the engine may not have.
+ * @param {CSSRule} rule - Rule to test.
+ * @param {string} className - Global CSSOM constructor name.
+ * @returns {boolean} True if rule is an instance of that class.
+ */
+function cssRuleIs(rule, className) {
+  const ctor = /** @type {any} */ (globalThis)[className];
+  return typeof ctor === 'function' && rule instanceof ctor;
+}
+
+/**
+ * Give every `@keyframes` in the sheet a scope-unique name and record the
+ * renames. Animation names are global no matter where the rule sits, so a
+ * message defining `@keyframes spin` would otherwise redefine the app's.
+ * @param {CSSRuleList} rules - Rules to walk.
+ * @param {string} suffix - Suffix making a name unique to this render.
+ * @param {Map<string, string>} renamed - Accumulates original → new name.
+ */
+function renameKeyframes(rules, suffix, renamed) {
+  for (const rule of Array.from(rules)) {
+    const grouping = /** @type {any} */ (rule);
+    if (cssRuleIs(rule, 'CSSKeyframesRule')) {
+      const original = grouping.name;
+      if (!original) continue;
+      grouping.name = `${original}${suffix}`;
+      renamed.set(original, grouping.name);
+    } else if (grouping.cssRules) {
+      renameKeyframes(grouping.cssRules, suffix, renamed);
+    }
+  }
+}
+
+/**
+ * Point every `animation-name` at the renamed keyframes. Reads the longhand, so
+ * it catches names set through the `animation` shorthand too.
+ * @param {CSSRule} rule - Style rule to fix up, along with any nested rules.
+ * @param {Map<string, string>} renamed - Original → new keyframes name.
+ */
+function remapAnimationNames(rule, renamed) {
+  const styleRule = /** @type {any} */ (rule);
+  const declarations = styleRule.style;
+  if (declarations) {
+    const names = declarations.getPropertyValue('animation-name');
+    if (names) {
+      const mapped = names.split(',').map((/** @type {string} */ name) => {
+        const trimmed = name.trim();
+        return renamed.get(trimmed) || trimmed;
+      }).join(', ');
+      if (mapped !== names) {
+        declarations.setProperty('animation-name', mapped, declarations.getPropertyPriority('animation-name'));
+      }
+    }
+  }
+  if (styleRule.cssRules) {
+    for (const child of Array.from(styleRule.cssRules)) remapAnimationNames(/** @type {CSSRule} */ (child), renamed);
+  }
+}
+/**
+ * Rewrite a rule list in place so every selector in it is confined to the scope.
+ * @param {CSSStyleSheet|CSSGroupingRule} owner - Sheet or grouping rule to rewrite.
+ * @param {string} scope - Selector matching the scope element.
+ * @param {Map<string, string>} renamed - Original → new keyframes name.
+ */
+function scopeRuleList(owner, scope, renamed) {
+  const rules = owner.cssRules;
+  // Backwards: deleting a rule reindexes everything after it.
+  for (let i = rules.length - 1; i >= 0; i--) {
+    const rule = /** @type {CSSRule} */ (rules[i]);
+    if (!rule) continue;
+    if (cssRuleIs(rule, 'CSSFontFaceRule') || cssRuleIs(rule, 'CSSImportRule')) {
+      // Both fetch on the message's behalf, which makes a rendered message a
+      // tracking beacon. `@import` is already dropped by replaceSync; this is
+      // for `@font-face`, which is not.
+      owner.deleteRule(i);
+      continue;
+    }
+    // Keyframe selectors are percentages, not selectors — leave them alone.
+    if (cssRuleIs(rule, 'CSSKeyframesRule')) continue;
+    if (cssRuleIs(rule, 'CSSStyleRule')) {
+      const styleRule = /** @type {CSSStyleRule} */ (rule);
+      styleRule.selectorText = splitSelectorList(styleRule.selectorText)
+        .map((selector) => scopeOneSelector(selector, scope))
+        .join(', ');
+      // Nested rules are relative to this one, so they are already scoped by it.
+      remapAnimationNames(styleRule, renamed);
+      continue;
+    }
+    // @media / @supports / @layer / @container: scope what they hold.
+    const grouping = /** @type {any} */ (rule);
+    if (grouping.cssRules && typeof grouping.deleteRule === 'function') {
+      scopeRuleList(/** @type {CSSGroupingRule} */ (rule), scope, renamed);
+    }
+  }
+}
+
+/**
+ * Confine a message's own CSS to that message.
+ *
+ * Parsing happens in the browser's CSS engine rather than by regex: a detached
+ * stylesheet is inert (it applies to nothing until adopted, and it drops
+ * `@import` on the floor), it discards anything it cannot parse, and
+ * re-serialising from the CSSOM guarantees the result is balanced — so no
+ * arrangement of stray braces can close the scope early and reach the app.
+ *
+ * Selectors are prefixed rather than wrapped in `@scope`, which is a nicety
+ * absent from several engines we run on; a prefix works everywhere and fails
+ * closed if it doesn't.
+ * @param {string} css - Authored CSS.
+ * @param {string} scope - Selector matching the scope element.
+ * @param {string} suffix - Suffix making keyframes names unique to this render.
+ * @returns {string} Scoped CSS, or "" if the engine can't parse or scope it.
+ */
+function scopeAuthoredCss(css, scope, suffix) {
+  if (!css.trim()) return '';
+  try {
+    // Parsing in a detached stylesheet: `@import` never resolves, nothing can
+    // observe the rules, and a constructable sheet can be fed straight to the
+    // CSSOM and re-serialised from it.
+    const SheetCtor = /** @type {typeof CSSStyleSheet} */ (/** @type {any} */ (globalThis).CSSStyleSheet);
+    const sheet = new SheetCtor();
+    sheet.replaceSync(css);
+    /** @type {Map<string, string>} */
+    const renamed = new Map();
+    renameKeyframes(sheet.cssRules, suffix, renamed);
+    scopeRuleList(sheet, scope, renamed);
+    return Array.from(sheet.cssRules).map((rule) => rule.cssText).join('\n');
+  } catch (e) {
+    // No constructable stylesheets, or the engine refused the rewrite. Dropping
+    // the CSS costs the message its styling; letting it through unscoped would
+    // cost the app its own.
+    console.warn('[Markdown] Dropped unscopable CSS:', e);
+    return '';
+  }
+}
+
+/**
+ * Box up authored HTML: lift its `<style>` blocks out, scope them, and put the
+ * content inside a contained wrapper the scoped CSS can reach and nothing else
+ * can. Called only when the message actually brought CSS, so ordinary markdown
+ * renders exactly as it did before.
+ * @param {HTMLTemplateElement} tpl - Template holding the sanitised content.
+ * @param {Element[]} styleEls - Style elements found in it.
+ * @returns {string} The wrapped HTML.
+ */
+function boxAuthoredHtml(tpl, styleEls) {
+  const scopeId = `md${++htmlScopeSeq}`;
+  const scopeSelector = `[${HTML_SCOPE_ATTR}="${scopeId}"]`;
+  const css = styleEls
+    .map((el) => {
+      const scoped = scopeAuthoredCss(el.textContent || '', scopeSelector, `-${scopeId}`);
+      el.remove();
+      return scoped;
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const box = document.createElement('div');
+  box.className = HTML_SCOPE_CLASS;
+  if (css) {
+    const styleEl = document.createElement('style');
+    // A `<style>` is a raw-text element: its content is serialised verbatim, so
+    // a closing tag inside the CSS would end the element and everything after it
+    // would parse as markup. Escaped as CSS rather than dropped — `\3c ` is a
+    // `<` in both a string and a url(), the only places this can legitimately appear.
+    styleEl.textContent = css.replace(CLOSING_STYLE_TAG, '\\3c /$1');
+    box.appendChild(styleEl);
+  }
+  const scope = document.createElement('div');
+  scope.setAttribute(HTML_SCOPE_ATTR, scopeId);
+  scope.appendChild(tpl.content);
+  box.appendChild(scope);
+
+  const out = /** @type {HTMLTemplateElement} */ (document.createElement('template'));
+  out.content.appendChild(box);
+  return out.innerHTML;
+}
 
 /**
  * The authoritative HTML sanitiser for rendered markdown. marked (with gfm and
@@ -190,6 +476,11 @@ const ALLOWED_ATTRS = new Set([
  * declarative inline-SVG subset for assistant illustrations; executable SVG and
  * external-resource features remain excluded. Runs last so nothing downstream
  * can reintroduce raw markup.
+ *
+ * CSS the content brought with it — a `<style>` block or an inline `style` — is
+ * kept, but only by being boxed: see {@link boxAuthoredHtml}. A message that
+ * illustrates a design gets to look like the design; it does not get to restyle
+ * the app around it.
  * @param {string} html - Rendered (and URL-scrubbed) HTML.
  * @returns {string} HTML containing only allowlisted tags and attributes.
  */
@@ -203,6 +494,10 @@ function sanitizeRenderedHtml(html) {
   // Assigning to a <template>'s innerHTML parses into an inert document fragment:
   // custom elements are NOT upgraded and scripts do NOT execute here.
   tpl.innerHTML = html;
+
+  /** @type {Element[]} Style blocks to lift out and scope once the walk is done. */
+  const styleEls = [];
+  let sawInlineStyle = false;
 
   /** @param {Node} parent */
   const walk = (parent) => {
@@ -222,18 +517,27 @@ function sanitizeRenderedHtml(html) {
         parent.replaceChild(document.createTextNode(el.outerHTML), el);
         continue;
       }
+      if (tag === 'style') {
+        // Its content is CSS, not markup, and it is worthless where it stands:
+        // hold it for boxAuthoredHtml, which is the only thing that may keep it.
+        styleEls.push(el);
+        continue;
+      }
       for (const attr of Array.from(el.attributes)) {
         const name = attr.name.toLowerCase();
         const svgUrl = (name === 'href' || name === 'src') && el.namespaceURI === 'http://www.w3.org/2000/svg';
         if (name.startsWith('on') || svgUrl || !ALLOWED_ATTRS.has(name)) {
           el.removeAttribute(attr.name);
+        } else if (name === 'style') {
+          sawInlineStyle = true;
         }
       }
       walk(el);
     }
   };
   walk(tpl.content);
-  return tpl.innerHTML;
+  if (!styleEls.length && !sawInlineStyle) return tpl.innerHTML;
+  return boxAuthoredHtml(tpl, styleEls);
 }
 
 /**
@@ -271,6 +575,10 @@ function taskBoxElement(state) {
  * instead keeps that blast radius at zero: this pass reads no untrusted input,
  * builds from a closed vocabulary of five states, and only ever removes an
  * input or strips a leading marker from already-sanitised text.
+ *
+ * Authored-HTML boxes are off limits: an `<input type="checkbox">` inside one is
+ * preview markup the message drew on purpose (see boxAuthoredHtml), not a task
+ * marker to swap for our own.
  * @param {string} html - Sanitised HTML from {@link sanitizeRenderedHtml}.
  * @returns {string} HTML with task markers replaced by tick boxes.
  */
@@ -284,6 +592,7 @@ function decorateTaskLists(html) {
   tpl.innerHTML = html;
 
   for (const li of Array.from(tpl.content.querySelectorAll('li'))) {
+    if (li.closest(`.${HTML_SCOPE_CLASS}`)) continue;
     // A loose list wraps each item's content in a <p>; a tight one leaves the
     // text directly on the <li>. The marker lives at the start of whichever it is.
     const firstEl = li.firstElementChild;
@@ -346,8 +655,9 @@ export function renderMarkdown(content, options = {}) {
   }
 
   try {
-    // Pre-process: escape XML tags if enabled
-    const processedContent = escapeXml ? escapeXmlTagsForMarkdown(content) : content;
+    // Pre-process: escape XML tags if enabled, and keep any <style> block from
+    // being cut in half by markdown's blank-line HTML-block boundary.
+    const processedContent = keepStyleBlocksIntact(escapeXml ? escapeXmlTagsForMarkdown(content) : content);
 
     marked.setOptions({
       breaks: true,

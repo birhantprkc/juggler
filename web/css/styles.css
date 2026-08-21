@@ -3048,6 +3048,28 @@ thread-column-actions {
     margin-bottom: 0;
 }
 
+/* The box a message's own HTML gets put in when it brings CSS with it (see
+   sanitizeRenderedHtml). `contain` is the wall: layout containment makes this
+   the containing block for any `position: fixed` inside, and gives the whole
+   box a single stacking context, so authored CSS can lay out its illustration
+   however it likes without reaching past the message it belongs to. The scope
+   element inside carries the id the CSS is rewritten against; this box, which
+   authored CSS has no way to name, carries the containment. */
+.markdown-html-scope {
+    contain: layout style;
+}
+
+/* Same flush-to-the-padding rule as above, one level down. Layout containment
+   means the inner block's margin can't collapse out through the box, so it
+   would otherwise show up as a gap the plain-markdown case doesn't have. */
+.markdown-html-scope > [data-markdown-scope] > :first-child {
+    margin-top: 0;
+}
+
+.markdown-html-scope > [data-markdown-scope] > :last-child {
+    margin-bottom: 0;
+}
+
 .markdown code {
     padding: 0.1875rem 0.1rem;
     border-radius: 0.1875rem;

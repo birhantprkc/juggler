@@ -108,6 +108,7 @@ import { runTests as runYjsCompatTests } from '../unit-tests/yjs-compat-test.js'
 import { runTests as runRenderPerformanceTests } from '../unit-tests/render-performance-tests.js';
 import { runTests as runThinkingStreamTests } from '../unit-tests/thinking-stream-test.js';
 import { runTests as runMarkdownSanitizerTests } from '../unit-tests/markdown-sanitizer-test.js';
+import { runTests as runMarkdownScopedCssTests } from '../unit-tests/markdown-scoped-css-test.js';
 import { runTests as runMarkdownTaskListTests } from '../unit-tests/markdown-task-list-test.js';
 import { runTests as runUserMessageMarkdownTests } from '../unit-tests/user-message-markdown-test.js';
 import { runTests as runExternalLinkTests } from '../unit-tests/external-link-test.js';
@@ -352,6 +353,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:render-performance', run: runRenderPerformanceTests },
   { name: 'unit:thinking-stream', run: runThinkingStreamTests },
   { name: 'unit:markdown-sanitizer', run: runMarkdownSanitizerTests },
+  { name: 'unit:markdown-scoped-css', run: runMarkdownScopedCssTests },
   { name: 'unit:markdown-task-list', run: runMarkdownTaskListTests },
   { name: 'unit:user-message-markdown', run: runUserMessageMarkdownTests },
   { name: 'unit:external-link', run: runExternalLinkTests },

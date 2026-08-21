@@ -37,6 +37,23 @@ export async function runTests(_ctx) {
   const { renderMarkdown, renderAssistantContent } = await import('../../sdk/lib/markdown.js');
 
   /**
+   * The class the sanitizer boxes authored HTML in. Pinned here rather than
+   * imported because it is a contract with styles.css, which is what puts the
+   * `contain` on the box: if the name moves, the containment silently stops.
+   */
+  const HTML_SCOPE_CLASS = 'markdown-html-scope';
+
+  /**
+   * @param {string} html - Rendered HTML.
+   * @returns {DocumentFragment} The parsed (inert) fragment.
+   */
+  const parse = (html) => {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    return tpl.content;
+  };
+
+  /**
    * @param {string} label
    * @param {() => void} fn
    */
@@ -155,6 +172,133 @@ export async function runTests(_ctx) {
     // on it is a live XSS sink and must be removed by the sanitizer.
     const html = renderMarkdown('<a href="#" onclick="alert(1)">x</a>', { escapeXml: false });
     assert(!/\bonclick=/i.test(html), `inline event handler must be stripped: ${html}`);
+  });
+
+  run('applies a message\'s own <style> instead of printing it', () => {
+    // A message illustrating a design carries its CSS in a <style>. Dropping the
+    // element to escaped text (the old behaviour for any unlisted tag) spilled
+    // the whole stylesheet into the reply as prose.
+    const html = renderAssistantContent('<div class="demo"><style>\n.demo p { color: red; }\n</style><p>x</p></div>');
+    assert(html.includes('<style>'), `style element should survive: ${html}`);
+    assert(!html.includes('&lt;style'), `style tag must not be printed as text: ${html}`);
+    assert(!/&lt;\/style/i.test(html), `closing style tag must not be printed as text: ${html}`);
+  });
+
+  run('confines authored CSS to the message that brought it', () => {
+    const html = renderAssistantContent('<style>p { color: red; } body { margin: 0; }</style><p>x</p>');
+    const scope = /data-markdown-scope="([^"]+)"/.exec(html);
+    assert(scope !== null, `content should be boxed in a scope element: ${html}`);
+    const selector = `[data-markdown-scope="${scope?.[1]}"]`;
+    assert(html.includes(`${selector} p`), `selector should be scoped: ${html}`);
+    // `body` means "the thing I am in", so it retargets onto the scope element
+    // rather than escaping to the real document body.
+    assert(!/(^|[^\]])\bbody\s*{/.test(html), `body selector must not survive unscoped: ${html}`);
+
+    // Two elements: the outer box holds the containment, the inner one holds the
+    // scope id. Authored CSS can only ever name the inner one, so a `position:
+    // fixed` it sets on itself still resolves against the contained box.
+    const box = parse(html).querySelector(`.${HTML_SCOPE_CLASS}`);
+    assert(box !== null, `content should sit in a contained box: ${html}`);
+    assert(!box?.hasAttribute('data-markdown-scope'), `the contained box must not be nameable by the CSS it holds: ${html}`);
+    assert(box?.querySelector('[data-markdown-scope]') !== null, `scope element should sit inside the box: ${html}`);
+  });
+
+  run('scopes selectors without breaking selector lists', () => {
+    const html = renderAssistantContent('<style>:is(h1, h2), p[title="a,b"] { color: red; }</style><p>x</p>');
+    assert(/:is\(\s*h1,\s*h2\s*\)/.test(html), `functional pseudo-class must keep its comma: ${html}`);
+    assert(/\[title="a,b"\]/.test(html), `attribute value must keep its comma: ${html}`);
+  });
+
+  run('renames keyframes so a message cannot redefine an app animation', () => {
+    const html = renderAssistantContent(
+      '<style>@keyframes spin { from { opacity: 0 } to { opacity: 1 } } .x { animation: spin 1s infinite; }</style><p>x</p>'
+    );
+    assert(!/@keyframes\s+spin\s*{/.test(html), `keyframes name must be made unique: ${html}`);
+    assert(/@keyframes\s+spin-md\d+/.test(html), `keyframes should be renamed per render: ${html}`);
+    assert(/animation-name:\s*spin-md\d+|animation:[^;]*spin-md\d+/.test(html), `animation reference should follow the rename: ${html}`);
+  });
+
+  run('drops CSS that fetches on the message\'s behalf', () => {
+    const html = renderAssistantContent(
+      '<style>@import url("https://example.com/x.css"); @font-face { font-family: t; src: url("https://example.com/t.woff2") }</style><p>x</p>'
+    );
+    assert(!/@import/i.test(html), `@import must not survive: ${html}`);
+    assert(!/@font-face/i.test(html), `@font-face must not survive: ${html}`);
+  });
+
+  run('a closing style tag inside CSS cannot break out of the style element', () => {
+    const html = renderAssistantContent('<style>p::after { content: "</style><img src=x onerror=alert(1)>"; }</style><p>x</p>');
+    // A literal `</style>` in a CSS string ends the element at the HTML parse —
+    // in every engine; that's why inline scripts write `<\/script>`. So the
+    // `<img>` here is real markup *after* the style block, and gets sanitized
+    // like any other markup; what matters is that nothing smuggles a live sink
+    // through the CSS itself, and the style content stays balanced CSS.
+    assert(!/\bonerror=/i.test(html), `event handler must not survive: ${html}`);
+    const style = parse(html).querySelector('style');
+    assert(style !== null, `style element should survive: ${html}`);
+    // cssText re-serialised from the CSSOM: balanced, no markup inside.
+    assert(!/<img/i.test(style?.textContent || ''), `style content must stay CSS, not markup: ${style?.textContent}`);
+  });
+
+  run('unbalanced braces cannot close the scope early', () => {
+    const html = renderAssistantContent('<style>.a { color: red; } } .escaped { display: none; }</style><p>x</p>');
+    // Re-serialising from the CSSOM guarantees balance, so nothing can be left
+    // sitting at the top level where it would apply to the whole app.
+    assert(!/(^|\s)\.escaped\s*{/.test(html), `stray rule must not survive unscoped: ${html}`);
+  });
+
+  run('keeps inline style attributes, boxed', () => {
+    const html = renderAssistantContent('<div style="color: red">x</div>');
+    assert(/style="color: ?red"/i.test(html), `inline style should survive: ${html}`);
+    assert(html.includes(HTML_SCOPE_CLASS), `inline style should still be boxed: ${html}`);
+  });
+
+  run('plain markdown is not boxed', () => {
+    // The wrapper only appears for content that brought CSS; everything else
+    // must render byte-for-byte as it did before.
+    const html = renderMarkdown('**bold** and a [link](https://example.com)');
+    assert(!html.includes(HTML_SCOPE_CLASS), `plain markdown should not gain a wrapper: ${html}`);
+    assert(!html.includes('data-markdown-scope'), `plain markdown should not gain a scope: ${html}`);
+  });
+
+  run('user content still gets its style tag escaped', () => {
+    // escapeXml is on for user/tool text: a <style> there is something the user
+    // typed *about*, not a stylesheet to run.
+    const html = renderMarkdown('<style>p { color: red }</style>');
+    assert(!/<style\b/i.test(html), `style must not become live CSS in escaped content: ${html}`);
+  });
+
+  run('scopes rules inside @media and @supports blocks', () => {
+    // The shape design previews actually arrive in: a wide/narrow split guarded
+    // by a media query, with prefers-reduced-motion for the animation.
+    const css = '@media (max-width: 46rem) { p { color: red } } ' +
+      '@supports (appearance: none) { input { margin: 0 } }';
+    const html = renderAssistantContent(`<style>${css}</style><p>x</p>`);
+    const sheet = parse(html).querySelector('style')?.textContent || '';
+    assert(/@media[^{]*\{[^}]*\[data-markdown-scope[^}]*\}/.test(sheet), `rule inside @media should be scoped: ${sheet}`);
+    assert(/@supports[^{]*\{[^}]*\[data-markdown-scope[^}]*\}/.test(sheet), `rule inside @supports should be scoped: ${sheet}`);
+    // A selector *outside* any block must not have leaked through unscoped.
+    assert(!/\n\s*p \{/.test(sheet) && !/^\s*p \{/.test(sheet), `no unscoped p rule may survive: ${sheet}`);
+  });
+
+  run('a stylesheet with blank lines is not cut in half by markdown blocks', () => {
+    // CommonMark ends an HTML block that opened with <div> at the first blank
+    // line, and stylesheets are conventionally written with blank lines between
+    // sections. Without the keepStyleBlocksIntact pre-pass the second half of
+    // this CSS falls out of the block and parses as prose.
+    const html = renderAssistantContent(
+      '<div class="d">\n<style>\n.d a { color: red; }\n\n.d b { color: blue; }\n</style>\n<p><a>x</a> <b>y</b></p>\n</div>'
+    );
+    const css = parse(html).querySelector('style')?.textContent || '';
+    assert(css.includes('.d a'), `rule before the blank line should survive: ${css}`);
+    assert(css.includes('.d b'), `rule after the blank line must survive too: ${css}`);
+  });
+
+  run('blank lines outside style blocks are untouched', () => {
+    // The pre-pass must not eat the blank lines markdown itself needs.
+    const html = renderAssistantContent('<style>.x { color: red }</style>\n\npara one\n\npara two');
+    const frag = parse(html);
+    assert(frag.querySelectorAll('p').length === 2, `two paragraphs should survive: ${frag.childNodes.length} top-level nodes`);
   });
 
   return { passed, failed, errors };

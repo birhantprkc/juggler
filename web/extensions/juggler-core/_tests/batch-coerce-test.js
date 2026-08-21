@@ -23,6 +23,7 @@
  * @module unit-tests/batch-coerce-test
  */
 
+import { labeledSubsection } from 'juggler/ui';
 import { assert } from '../../../js-tests/utilities/test-helpers.js';
 import BatchContextItem from '../context-items/batch-context-item.js';
 
@@ -142,45 +143,39 @@ export async function runTests(_ctx) {
   });
 
   // The properties-panel render path must coerce too — otherwise a stringified
-  // `searches` is iterated character-by-character, emitting one empty "Pattern"
-  // subsection per character (the "huge list of empty boxes" bug).
-  /** @returns {{labels: string[], addSubsection: Function}} Helpers recording rendered subsection labels. */
-  const recordingHelpers = () => {
-    /** @type {string[]} */
-    const labels = [];
+  // `searches` is iterated character-by-character, emitting one list entry per
+  // character (the "huge list of empty boxes" bug).
+
+  /**
+   * Render the details view for a batch call and read back what it produced:
+   * the subsection heading and the entries of its numbered list.
+   * @param {string} toolName - 'batch_grep' or 'batch_read'
+   * @param {object} input - Tool input, exactly as the model emitted it
+   * @returns {{heading: string, entries: string[]}} Heading text and list entries
+   */
+  const renderDetails = (toolName, input) => {
+    const wrapper = document.createElement('div');
+    item.renderToolActionDetails(wrapper, { toolName, input, helpers: { labeledSubsection } });
     return {
-      labels,
-      addSubsection: (/** @type {any} */ _wrapper, /** @type {string} */ label) => {
-        labels.push(label);
-      }
+      heading: wrapper.querySelector('.properties-panel-subtitle')?.textContent ?? '',
+      entries: Array.from(wrapper.querySelectorAll('.markdown li')).map((li) => li.textContent.trim())
     };
   };
 
   await run('renderToolActionDetails coerces a stringified searches array', () => {
-    const helpers = recordingHelpers();
-    item.renderToolActionDetails({}, {
-      toolName: 'batch_grep',
-      input: { searches: stringifiedSearches },
-      helpers
-    });
-    // Two real searches: one "Pattern" each, plus a "Glob" each (both fixtures
-    // set glob). No per-character explosion.
-    const patternCount = helpers.labels.filter((l) => l === 'Pattern').length;
-    assert(patternCount === 2,
-      `expected 2 Pattern subsections, got ${patternCount} (labels: ${helpers.labels.length})`);
+    const { heading, entries } = renderDetails('batch_grep', { searches: stringifiedSearches });
+    assert(heading === 'Searches (2)', `expected a "Searches (2)" heading, got "${heading}"`);
+    assert(entries.length === 2, `expected 2 listed searches, got ${entries.length}`);
+    assert(entries[0].includes('window/control'),
+      `expected the first pattern listed, got "${entries[0]}"`);
   });
 
   await run('renderToolActionDetails coerces a stringified files array', () => {
-    const helpers = recordingHelpers();
     const files = JSON.stringify([{ file_path: '/a.txt' }, { file_path: '/b.txt' }]);
-    item.renderToolActionDetails({}, {
-      toolName: 'batch_read',
-      input: { files },
-      helpers
-    });
-    const fileCount = helpers.labels.filter((l) => l === 'File').length;
-    assert(fileCount === 2,
-      `expected 2 File subsections, got ${fileCount} (labels: ${helpers.labels.length})`);
+    const { heading, entries } = renderDetails('batch_read', { files });
+    assert(heading === 'Files (2)', `expected a "Files (2)" heading, got "${heading}"`);
+    assert(entries.length === 2, `expected 2 listed files, got ${entries.length}`);
+    assert(entries[1].includes('/b.txt'), `expected the second path listed, got "${entries[1]}"`);
   });
 
   return { passed, failed, errors };
