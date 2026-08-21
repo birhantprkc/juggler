@@ -6,7 +6,7 @@
  * Unit tests: streaming thinking block in the properties panel.
  *
  * When a thinking block streams in, the properties-panel renderer registers a
- * live-updater closure that re-renders the markdown as content grows. Two
+ * live-updater closure that re-renders the content as it grows. Three
  * behaviours are asserted here:
  *
  *  1. Re-renders are COALESCED onto a single requestAnimationFrame, so a burst
@@ -16,6 +16,11 @@
  *  2. The scroll container STICKS TO THE BOTTOM so the user can watch the tail
  *     stream without scrolling — but stops following the moment the user
  *     scrolls up to read back, and resumes once they return to the bottom.
+ *  3. Markdown rendering is CONDITIONAL. One provider summarises its reasoning
+ *     as Markdown, the next streams raw prose, and both arrive as the same item
+ *     type; rendering prose as Markdown reflows it into the sans font and eats
+ *     stray `*`/`_`/`#` as formatting. Text with no Markdown construct is shown
+ *     verbatim instead, and the choice is re-made as the block grows.
  *
  * The viewer schedules the re-render on requestAnimationFrame; the test-pool
  * window is hidden, where rAF is throttled and never fires. We shim it to a
@@ -115,6 +120,14 @@ export async function runTests(_ctx) {
   const longText = (marker, lines) =>
     Array.from({ length: lines }, (_, i) => `${marker} line ${i}`).join('\n\n');
 
+  /**
+   * The body element the renderer writes into, whichever mode it chose.
+   * @param {HTMLElement} container - Mounted render target.
+   * @returns {HTMLElement} The `.markdown` or `.plain` block.
+   */
+  const bodyOf = (container) =>
+    /** @type {HTMLElement} */ (container.querySelector('.markdown, .plain'));
+
   try {
     await run('streaming deltas defer and coalesce to one render of the latest text', async () => {
       const container = mount();
@@ -123,7 +136,7 @@ export async function runTests(_ctx) {
         const msg = makeMessage('ALPHA');
         renderMessage(/** @type {any} */ (host), container, msg);
 
-        const md = /** @type {HTMLElement} */ (container.querySelector('.markdown'));
+        const md = bodyOf(container);
         assert(md && md.textContent.includes('ALPHA'), 'initial render shows ALPHA');
         assert(typeof host._liveUpdater === 'function', 'thinking render registers a live updater');
 
@@ -194,6 +207,45 @@ export async function runTests(_ctx) {
         await flushFrame();
         const dist = section.scrollHeight - section.clientHeight - section.scrollTop;
         assert(dist <= 2, `expected re-pinned to bottom, was ${dist}px from bottom`);
+      } finally { container.remove(); }
+    });
+
+    await run('raw reasoning is shown verbatim, a Markdown summary is rendered', async () => {
+      const container = mount();
+      try {
+        // Raw chain-of-thought, as GLM/DeepSeek/Anthropic stream it: the `*` is
+        // arithmetic and the underscores are an identifier, not emphasis.
+        const raw = 'Weighing 2 * 3 against foo_bar_baz before the #1 case.';
+        renderMessage(/** @type {any} */ (makeHost()), container, makeMessage(raw));
+
+        const body = bodyOf(container);
+        assert(body.className === 'plain', `prose must not be parsed as Markdown (was "${body.className}")`);
+        assert(body.textContent === raw, `verbatim text expected, got "${body.textContent}"`);
+        assert(!body.querySelector('em, strong'), 'no emphasis may be invented from stray punctuation');
+        assert(
+          !!container.querySelector('.properties-panel-thinking'),
+          'the body carries the thinking class the panel styles hang off'
+        );
+      } finally { container.remove(); }
+    });
+
+    await run('a summary that only turns Markdown mid-stream switches then', async () => {
+      const container = mount();
+      try {
+        const host = makeHost();
+        const msg = makeMessage('Considering the two options.');
+        renderMessage(/** @type {any} */ (host), container, msg);
+        assert(bodyOf(container).className === 'plain', 'opens as verbatim prose');
+
+        // The reasoning summary's first bold title arrives.
+        msg.setContent('Considering the two options.\n\n**Checking the flag**\n\nIt is set.');
+        /** @type {any} */ (host._liveUpdater)();
+        await flushFrame();
+
+        const body = bodyOf(container);
+        assert(body.className === 'markdown', `expected a switch to Markdown, was "${body.className}"`);
+        assert(!!body.querySelector('strong'), 'the title renders as a title');
+        assert(!body.textContent.includes('**'), 'the markers are consumed, not shown');
       } finally { container.remove(); }
     });
   } finally {

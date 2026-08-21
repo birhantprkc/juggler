@@ -1950,13 +1950,32 @@ properties-panel-section {
    icon circle so its first line centres on the icon — and thus on the lozenge,
    which is centred to the icon inside the badge. The badge itself keeps its
    default align-items:center so the circular icon and the lozenge stay
-   vertically centred to each other. */
+   vertically centred to each other. Header controls move to another line when
+   the column cannot hold them, rather than giving the column a wider intrinsic
+   size. */
 .properties-panel-header {
     display: flex;
+    flex-wrap: wrap;
     align-items: flex-start;
+    min-width: 0;
+    max-width: 100%;
     gap: 0.8rem;
     padding-bottom: 0.5rem;
     border-bottom: 1px solid var(--border-divider);
+}
+
+/* The shared conversation-row badge normally keeps its full width. In a panel
+   header it may shrink, and its lozenge may wrap, so a long extension-provided
+   type name cannot widen a narrow column. */
+.properties-panel-header .message-icon-badge {
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.properties-panel-header .context-item-type-badge {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 /* For a plugin-backed item the header badge doubles as a link into
@@ -1984,9 +2003,11 @@ properties-panel-section {
    uses in the conversation list — so the text sits on the lozenge label. */
 .properties-panel-title,
 .properties-panel-title-status {
+    min-width: 0;
     min-height: var(--message-icon-row-height);
     display: flex;
     align-items: center;
+    overflow-wrap: anywhere;
 }
 
 /* Right-edge elements stay vertically centred regardless of the row's
@@ -2022,6 +2043,25 @@ properties-panel-body pre {
     padding: 0.75rem;
     border-radius: 0.25rem;
     font-size: 0.875rem;
+}
+
+/* Thinking body, plain variant: reasoning that carries no Markdown is shown as
+   it arrived, so it needs the mono, whitespace-significant treatment the sans
+   panel body doesn't give it — the same shape a plain user-message bubble gets.
+   Sized to match the panel's other verbatim text rather than its prose. */
+.properties-panel-thinking .plain {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+}
+
+/* Thinking body, Markdown variant: a reasoning summary leads most paragraphs
+   with a bold title. Against body text at --font-weight-normal (200 in the dark
+   theme) full bold is a 400-point jump every few lines and the block reads as
+   shouting, so the titles carry at medium — enough to scan as structure. */
+.properties-panel-thinking .markdown :is(strong, b) {
+    font-weight: var(--font-weight-medium);
 }
 
 /* Subsection styling */

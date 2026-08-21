@@ -283,6 +283,30 @@ export async function runTests(_ctx) {
     assert(chip.textContent === '~20', `80 chars is ~20 tokens, got "${chip.textContent}"`);
   });
 
+  await run('a long header wraps inside a narrow properties column', () => {
+    const panel = /** @type {any} */ (document.createElement('properties-panel'));
+    const host = document.createElement('div');
+    host.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:12.5rem;padding:1rem;box-sizing:border-box;';
+    const header = panel._createHeader(
+      'A Needlessly Elaborate Property Panel Header',
+      { color: 'slate' },
+      panelWithItem({ type: 'assistant', content: 'z'.repeat(80) })._buildTokenChip()
+    );
+    host.appendChild(header);
+    document.body.appendChild(host);
+    try {
+      const badge = /** @type {HTMLElement} */ (header.querySelector('.context-item-type-badge'));
+      assert(header.scrollWidth <= header.clientWidth + 1,
+        `header overflowed its ${header.clientWidth}px column to ${header.scrollWidth}px`);
+      assert(badge.scrollWidth <= badge.clientWidth + 1,
+        `badge text overflowed its ${badge.clientWidth}px box to ${badge.scrollWidth}px`);
+      assert(badge.clientHeight > parseFloat(getComputedStyle(badge).lineHeight),
+        `long badge stayed on one ${badge.clientHeight}px line instead of wrapping`);
+    } finally {
+      host.remove();
+    }
+  });
+
   await run('the reported count replaces the estimate for a lone output item', () => {
     const panel = panelWithItem(
       { type: 'assistant', content: 'z'.repeat(80), transactionId: 'txn-1' },

@@ -21,7 +21,7 @@
  *    delta-patch closure with the panel's observer dispatch.
  */
 
-import { renderAssistantContent, renderMarkdown, decorateCodeBlocks } from '../../../sdk/lib/markdown.js';
+import { renderAssistantContent, renderMarkdown, decorateCodeBlocks, looksLikeMarkdown } from '../../../sdk/lib/markdown.js';
 import { stripThinkingTags } from '../../utils/content-utils.js';
 import { formatDuration } from '../../utils/format.js';
 import { badgeForItem } from '../../utils/item-badge.js';
@@ -208,11 +208,28 @@ export function renderMessage(host, container, message) {
     copyHeader.appendChild(copyBtn);
     content.appendChild(copyHeader);
     const markdownEl = document.createElement('div');
-    markdownEl.className = 'markdown';
     if (isThinking) {
+      content.classList.add('properties-panel-thinking');
+      // One item type, two wire shapes: a provider either summarises its
+      // reasoning as Markdown (OpenAI's reasoning summaries, Gemini's thought
+      // parts) or streams raw prose (Anthropic's thinking_delta, the
+      // reasoning_content of GLM/DeepSeek), and the server forwards whichever
+      // it gets verbatim. So decide per message the same way a user bubble
+      // does: render Markdown only when a construct is actually present,
+      // otherwise show the text as it arrived — mono, whitespace-significant,
+      // stray `*`/`_`/`#` left literal instead of eaten as formatting. The test
+      // runs on every re-render, so a block whose first construct only arrives
+      // mid-stream switches to Markdown at that point rather than being locked
+      // to a guess made on its opening words.
       const renderInto = (/** @type {string} */ text) => {
-        markdownEl.innerHTML = renderMarkdown(text, { escapeXml: true });
-        decorateCodeBlocks(markdownEl);
+        if (looksLikeMarkdown(text)) {
+          markdownEl.className = 'markdown';
+          markdownEl.innerHTML = renderMarkdown(text, { escapeXml: true });
+          decorateCodeBlocks(markdownEl);
+        } else {
+          markdownEl.className = 'plain';
+          markdownEl.textContent = text;
+        }
       };
       let lastRendered = stripThinkingTags(msgContent).trim();
       renderInto(lastRendered);
@@ -260,6 +277,7 @@ export function renderMessage(host, container, message) {
         return true;
       };
     } else {
+      markdownEl.className = 'markdown';
       markdownEl.innerHTML = renderAssistantContent(msgContent);
       decorateCodeBlocks(markdownEl);
     }
