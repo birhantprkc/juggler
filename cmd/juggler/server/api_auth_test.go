@@ -217,6 +217,50 @@ func TestAPIAuthRejectsRebindingHost(t *testing.T) {
 	}
 }
 
+// TestAPIAuthAllowsDotLocalhostHost covers per-instance hostnames: running
+// several instances and reaching each as <project>.localhost:<port> must work.
+// RFC 6761 reserves the .localhost TLD and requires it to resolve to loopback,
+// so such a name identifies this machine as surely as "localhost" and cannot be
+// pointed at an attacker's address.
+func TestAPIAuthAllowsDotLocalhostHost(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	for _, host := range []string{"myproject.localhost:8317", "myproject.localhost", "a.b.localhost:8317", "MyProject.LocalHost:8317"} {
+		*reached = false
+		req := httptest.NewRequest(http.MethodPost, "/api/ops/call", nil)
+		req.Host = host
+		req.Header.Set("X-Juggler-Token", testAPIToken)
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !*reached {
+			t.Fatalf("host %q: got %d reached=%v, want 200 reached=true", host, rec.Code, *reached)
+		}
+	}
+}
+
+// TestAPIAuthRejectsLocalhostLookalikeHosts pins the boundary of that
+// relaxation: only a label *under* .localhost is admitted. serveIndex embeds the
+// API token in the page for any host that can load it, so a name merely
+// containing or ending near "localhost" must stay refused.
+func TestAPIAuthRejectsLocalhostLookalikeHosts(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	for _, host := range []string{"notlocalhost:8317", "evil-localhost:8317", "localhost.attacker.com:8317", "attacker.com:8317"} {
+		*reached = false
+		req := httptest.NewRequest(http.MethodPost, "/api/ops/call", nil)
+		req.Host = host
+		req.Header.Set("X-Juggler-Token", testAPIToken)
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("host %q: got %d, want 403", host, rec.Code)
+		}
+		if *reached {
+			t.Fatalf("handler must not run for disallowed Host %q", host)
+		}
+	}
+}
+
 func TestAPIAuthAllowsIPHost(t *testing.T) {
 	s, reached := newAuthTestServer(t)
 
