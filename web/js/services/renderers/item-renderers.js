@@ -195,10 +195,7 @@ export function renderMessage(host, container, message) {
     copyBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       try {
-        const raw = isThinking
-          ? stripThinkingTags(message.get('content') || '').trim()
-          : (message.get('content') || '');
-        await copyToClipboard(raw);
+        await copyToClipboard(stripThinkingTags(message.get('content') || ''));
         copyBtn.classList.add('copied');
         setTimeout(() => copyBtn.classList.remove('copied'), 2000);
       } catch (err) {
@@ -231,7 +228,7 @@ export function renderMessage(host, container, message) {
           markdownEl.textContent = text;
         }
       };
-      let lastRendered = stripThinkingTags(msgContent).trim();
+      let lastRendered = stripThinkingTags(msgContent);
       renderInto(lastRendered);
 
       // Stream-follow: while a long thinking block streams in, keep the tail in
@@ -265,7 +262,7 @@ export function renderMessage(host, container, message) {
       const flush = () => {
         rafId = 0;
         if (!markdownEl.isConnected) return;
-        const latest = stripThinkingTags(message.get('content') || '').trim();
+        const latest = stripThinkingTags(message.get('content') || '');
         if (latest === lastRendered) return;
         lastRendered = latest;
         ensureScroller();
@@ -278,7 +275,7 @@ export function renderMessage(host, container, message) {
       };
     } else {
       markdownEl.className = 'markdown';
-      markdownEl.innerHTML = renderAssistantContent(msgContent);
+      markdownEl.innerHTML = renderAssistantContent(stripThinkingTags(msgContent));
       decorateCodeBlocks(markdownEl);
     }
     content.appendChild(markdownEl);

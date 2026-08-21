@@ -24,7 +24,7 @@ class ThinkingMessage extends BaseMessage {
    * @private
    */
   _tokenLabel(content) {
-    const clean = stripThinkingTags(content).trim();
+    const clean = stripThinkingTags(content);
     if (!clean.length) return 'Thinking';
     const n = Math.ceil(clean.length / 4);
     return `Thinking · ${formatTokens(n)} tokens`;

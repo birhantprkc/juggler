@@ -41,7 +41,7 @@ import { isGroupEntry } from '../utils/item-grouping.js';
 import { wrapWithIcon } from '../utils/icon-message-renderer.js';
 import { normalizeAttachments } from '../utils/attachments.js';
 import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
-import { stripLLMTags } from '../utils/content-utils.js';
+import { stripThinkingTags } from '../utils/content-utils.js';
 import { itemGoal } from '../model/thread-alias.js';
 
 /** @typedef {import('../../sdk/lib/message.js').Message} Message */
@@ -273,7 +273,7 @@ export function ensureThreadResult(area, messageList, footer) {
       existing.dataset.result = text;
       const body = /** @type {HTMLElement|null} */ (existing.querySelector('.thread-result-body'));
       if (body) {
-        body.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
+        body.innerHTML = renderAssistantContentWrapped(stripThinkingTags(text));
         decorateCodeBlocks(body);
       }
     }
@@ -323,7 +323,7 @@ export function ensureThreadResult(area, messageList, footer) {
 
   const body = document.createElement('div');
   body.className = 'thread-result-body markdown';
-  body.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
+  body.innerHTML = renderAssistantContentWrapped(stripThinkingTags(text));
   decorateCodeBlocks(body);
   content.appendChild(header);
   content.appendChild(body);

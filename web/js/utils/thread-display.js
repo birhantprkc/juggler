@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
-import { stripLLMTags } from './content-utils.js';
+import { stripThinkingTags } from './content-utils.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
 import { canonicalThread, itemGoal, itemRunRecord } from '../model/thread-alias.js';
@@ -224,7 +224,7 @@ export function paintThreadSummary(el, text, opts) {
   const showSummary = status ? !!status.showSummary : !!text;
   if (showSummary) {
     el.className = 'thread-summary';
-    el.innerHTML = renderAssistantContentWrapped(stripLLMTags(text));
+    el.innerHTML = renderAssistantContentWrapped(stripThinkingTags(text));
     decorateCodeBlocks(el);
     return;
   }
