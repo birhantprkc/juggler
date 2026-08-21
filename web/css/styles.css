@@ -49,6 +49,12 @@ select {
     --message-icon-size: 0.875rem;
     --message-icon-pad: 0.3rem;
     --message-icon-row-height: calc(var(--message-icon-size) + 2 * var(--message-icon-pad));
+    --message-icon-badge-gap: 1rem;
+
+    /* Left gutter that lines a block up with the type lozenge rather than the
+       tile edge: one icon column plus the badge group's gap. Applied by the
+       .message-row-body utility; see it for when a block wants this. */
+    --message-icon-indent: calc(var(--message-icon-row-height) + var(--message-icon-badge-gap));
 
     /* Z-Index Scale - use these instead of arbitrary values */
     --z-base: 1;           /* Default stacking */
@@ -2428,8 +2434,22 @@ tool-action-message {
 .message-icon-badge {
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: var(--message-icon-badge-gap);
     flex-shrink: 0;
+}
+
+/* An item's body: whatever it has to say or ask below its icon row — a thread's
+   summary, the approval buttons, a plugin's own form. Such a block is appended
+   as a sibling of .message-with-icon rather than into .message-content-box, so
+   that prose several lines long, or a column of option labels, gets the tile's
+   width instead of the sliver beside the badge. This lines its left edge up
+   with the lozenge, so it reads as belonging to the row above instead of
+   spilling back under the icon. Add the class to any such block; don't
+   re-derive the indent. */
+.message-row-body {
+    margin-left: var(--message-icon-indent);
+    min-width: 0;
+    max-width: 100%;
 }
 
 
@@ -2800,14 +2820,6 @@ thread-message .thread-goal {
     min-height: var(--message-icon-row-height);
     display: flex;
     align-items: center;
-}
-
-/* The body hangs off the lozenge, not the tile edge: one icon column plus the
-   badge group's gap of left gutter, so a long summary reads as belonging to
-   the header above it instead of spilling back under the icon. */
-thread-message .thread-body {
-    margin-left: calc(var(--message-icon-row-height) + 1rem);
-    min-width: 0;
 }
 
 /* Stop affordance on a running tile: sits at the right end of the status

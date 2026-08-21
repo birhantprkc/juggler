@@ -435,8 +435,7 @@ class ToolActionMessage extends HTMLElement {
             // Multi-question: form below the status row, no action-confirmation buttons
             this._appendCustomForm(article, customElement, statusConfig.customFormElement);
           } else {
-            const container = this._createApprovalContainer(customElement, item);
-            article.appendChild(this._wrapWithIcon(container));
+            this._appendApprovalRow(article, customElement, item);
           }
           this.appendChild(article);
           return;
@@ -447,18 +446,11 @@ class ToolActionMessage extends HTMLElement {
     }
 
     // Default fallback
-    const container = document.createElement('div');
-    container.className = 'action-approval-container';
-
     const label = document.createElement('div');
     label.className = 'pending-approval-label';
-    label.textContent = `${actionId}: Waiting for approval...`;
-    container.appendChild(label);
+    label.textContent = `${actionId}: Waiting for approval…`;
 
-    // Add approval buttons
-    this._appendApprovalButtons(container, item);
-
-    article.appendChild(this._wrapWithIcon(container));
+    this._appendApprovalRow(article, label, item);
     this.appendChild(article);
   }
 
@@ -691,8 +683,7 @@ class ToolActionMessage extends HTMLElement {
             if (statusConfig.customFormElement) {
               this._appendCustomForm(article, customElement, statusConfig.customFormElement, statusColor);
             } else {
-              const container = this._createApprovalContainer(customElement, item, result?.approvalOptions);
-              article.appendChild(this._wrapWithIcon(container, statusColor));
+              this._appendApprovalRow(article, customElement, item, result?.approvalOptions, statusColor);
             }
           } else {
             article.appendChild(this._wrapWithIcon(customElement, statusColor));
@@ -748,9 +739,10 @@ class ToolActionMessage extends HTMLElement {
    * Lay out a plugin-supplied form (an elicitation surface such as
    * AskUserQuestion's questions) under the item's status row. The status line
    * keeps the icon-row layout, but the form is appended as a sibling of that
-   * row rather than inside its content box, so it spans the item's full width:
-   * the badge gutter costs a third of a phone screen, and the form's option
-   * text is the content that most needs the room.
+   * row rather than inside its content box, so it hangs off the lozenge with
+   * only the icon column as left gutter: the full badge gutter costs a third
+   * of a phone screen, and the form's option text is the content that most
+   * needs the room.
    * @param {HTMLElement} article - The item's article element
    * @param {HTMLElement} statusElement - The rendered status line
    * @param {HTMLElement} formElement - The plugin's form element
@@ -758,28 +750,31 @@ class ToolActionMessage extends HTMLElement {
    * @private
    */
   _appendCustomForm(article, statusElement, formElement, colorOverride = undefined) {
-    const container = document.createElement('div');
-    container.className = 'action-approval-container';
-    container.appendChild(statusElement);
-    article.appendChild(this._wrapWithIcon(container, colorOverride));
-    formElement.classList.add('action-custom-form');
+    article.appendChild(this._wrapWithIcon(statusElement, colorOverride));
+    formElement.classList.add('action-custom-form', 'message-row-body');
     article.appendChild(formElement);
   }
 
   /**
-   * Create approval container with buttons
-   * @param {HTMLElement} contentElement - The content to wrap
+   * Lay out an item's status row with its approval buttons beneath it, the same
+   * shape a plugin form gets from `_appendCustomForm`. The buttons (and the
+   * review indicator above them) go in an `.action-approval-container` appended
+   * as a sibling of the icon row, so they hang off the lozenge rather than
+   * starting past it. Emits no container at all when the item carries no
+   * approval options, leaving a bare status row.
+   * @param {HTMLElement} article - The item's article element
+   * @param {HTMLElement} statusElement - The rendered status line
    * @param {ToolActionItem} item - The tool action item
-   * @param {any} [overrideOptions] - Override approval options
-   * @returns {HTMLElement} Container element with content and approval buttons
+   * @param {ActionConfirmationOptions|object} [overrideOptions] - Override approval options
+   * @param {string} [colorOverride] - Optional color override for the icon badge
    * @private
    */
-  _createApprovalContainer(contentElement, item, overrideOptions) {
+  _appendApprovalRow(article, statusElement, item, overrideOptions = undefined, colorOverride = undefined) {
+    article.appendChild(this._wrapWithIcon(statusElement, colorOverride));
     const container = document.createElement('div');
-    container.className = 'action-approval-container';
-    container.appendChild(contentElement);
+    container.className = 'action-approval-container message-row-body';
     this._appendApprovalButtons(container, item, overrideOptions);
-    return container;
+    if (container.children.length > 0) article.appendChild(container);
   }
 
   /**

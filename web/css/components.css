@@ -7326,24 +7326,21 @@ action-confirmation:focus {
     outline: none;
 }
 
-/* Container for approval UI: plugin view (diff) + approval buttons */
+/* What an item asks the user for — the approval buttons, or a plugin's own form
+   (the AskUserQuestion questions) — hangs below the status row. Both carry
+   `.message-row-body` for the gutter that lines them up with the lozenge; only
+   the spacing from the row above is theirs to set. */
+.action-approval-container,
+.action-custom-form {
+    margin-top: 0.5rem;
+}
+
+/* Approval UI: the review indicator, then the buttons. */
 .action-approval-container {
     display: flex;
     flex-direction: column;
     gap: 1rem;
-    max-width: 100%;
-    min-width: 0;
     overflow: hidden;
-}
-
-/* A plugin's own form (the AskUserQuestion questions) sits below the status row
-   as a sibling of `.message-with-icon`, not inside its content box, so it uses
-   the item's whole width. The margin restores the gap the content box's flow
-   used to give it. */
-.action-custom-form {
-    max-width: 100%;
-    min-width: 0;
-    margin-top: 0.5rem;
 }
 
 /* Pre-formatted message for actions without diff (e.g., execute command) */

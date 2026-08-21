@@ -200,7 +200,7 @@ class ThreadMessage extends HTMLElement {
       // because applyCollapsible inserts the Show more toggle as the summary's
       // next sibling and both must sit in the indented column.
       const body = document.createElement('div');
-      body.className = 'thread-body';
+      body.className = 'thread-body message-row-body';
       const summaryDiv = document.createElement('div');
       paintThreadSummary(summaryDiv, result, status ? { status } : undefined);
       body.appendChild(summaryDiv);
@@ -213,10 +213,12 @@ class ThreadMessage extends HTMLElement {
       // to conversation.cancelThread (subtree-scoped cancel + 'Cancelled'
       // summary). stopPropagation keeps the click from also selecting the tile.
       // It lives inside the status-message row (right-aligned) so it sits with
-      // the status line rather than floating loose in the tile.
+      // the status line rather than floating loose in the tile; with no such
+      // row to join it falls back to the body, which keeps it in the indented
+      // column rather than flush under the icon.
       if (stoppable) {
         const msgEl = summaryDiv.querySelector('.thread-status-message');
-        (msgEl || article).appendChild(this._buildStopButton(
+        (msgEl || body).appendChild(this._buildStopButton(
           status?.kind === 'unfinished'
             ? 'Stop waiting for this thread'
             : 'Stop this thread'

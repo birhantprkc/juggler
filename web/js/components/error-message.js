@@ -49,7 +49,7 @@ class ErrorMessage extends BaseMessage {
     }
 
     const actions = document.createElement('div');
-    actions.className = 'error-message-actions';
+    actions.className = 'error-message-actions message-row-body';
 
     const retryBtn = document.createElement('button');
     retryBtn.type = 'button';
