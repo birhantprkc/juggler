@@ -47,6 +47,7 @@ export {
   createCopyButton,
   createCopyableText,
   addSubsection,
+  labeledSubsection,
   addFilePath,
   addDiffViewer,
 } from '../js/utils/properties-panel-helpers.js';
@@ -61,6 +62,9 @@ export {
   decorateCodeBlocks,
   escapeXmlTagsForMarkdown,
 } from './lib/markdown.js';
+
+// Task-list markers (the `[ ]`/`[/]`/`[x]`/`[!]`/`[-]` vocabulary)
+export { taskMarker, taskStatusWord } from './lib/task-markers.js';
 
 // Misc formatting helpers
 export { FormattingHelpers } from './lib/formatting-helpers.js';

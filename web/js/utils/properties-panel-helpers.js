@@ -78,12 +78,15 @@ export function addSubsection(wrapper, label, text, className = 'properties-pane
 
 /**
  * Build a `<properties-panel-subsection>` with a leading `.properties-panel-subtitle`
- * heading, ready for the caller to append its body. Shared scaffolding for the
- * labeled-subsection variants.
- * @param {string} label
+ * heading, ready for the caller to append its body.
+ *
+ * Shared scaffolding for the labeled-subsection variants here, and exported for
+ * the panels whose body is an element rather than text — {@link addSubsection}
+ * only takes a string, so anything richer would otherwise hand-roll this.
+ * @param {string} label - Heading text
  * @returns {HTMLElement} The subsection element (label already appended).
  */
-function labeledSubsection(label) {
+export function labeledSubsection(label) {
   const section = document.createElement('properties-panel-subsection');
   const labelEl = document.createElement('h4');
   labelEl.className = 'properties-panel-subtitle';

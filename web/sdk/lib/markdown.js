@@ -9,6 +9,7 @@
 
 import { createCopyButton } from './copy-button.js';
 import { externalURLFromHref } from './window-control.js';
+import { TASK_STATES, TASK_LABELS, TASK_MARKER_RE } from './task-markers.js';
 
 /**
  * Escape XML/HTML tags that appear outside of code blocks
@@ -236,6 +237,95 @@ function sanitizeRenderedHtml(html) {
 }
 
 /**
+ * Build the tick box: an outer box element and an inner mark, so a theme can
+ * retint the box and the glyph independently (a single element can only carry
+ * one `mask`). Mirrors the `.option-tick` / `.icon-check` pairing used for
+ * AskUserQuestion's options.
+ * @param {string} state - One of the values in {@link TASK_STATES}.
+ * @returns {HTMLElement} The box element.
+ */
+function taskBoxElement(state) {
+  const box = document.createElement('span');
+  box.className = `tick-box task-box task-box--${state}`;
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', TASK_LABELS[state] || state);
+  const mark = document.createElement('span');
+  mark.className = 'tick-box-mark task-box-mark';
+  box.appendChild(mark);
+  return box;
+}
+
+/**
+ * Replace task-list markers with tick boxes, for the three states GFM has no
+ * syntax for as well as the two it does.
+ *
+ * marked hard-codes `/^\[[ xX]\] /` and emits an `<input type="checkbox">` for a
+ * match, so `[ ]` and `[x]` arrive here as that input while `[/]`, `[!]` and
+ * `[-]` arrive as the literal text marked declined to claim. Both shapes are
+ * normalised to the same markup.
+ *
+ * Runs AFTER {@link sanitizeRenderedHtml} deliberately. The boxes carry `role`
+ * and `aria-label`, which the allowlist does not permit — and widening the
+ * allowlist would grant those attributes to every element in every piece of
+ * rendered markdown, where they are an AT-spoofing surface. Adding them here
+ * instead keeps that blast radius at zero: this pass reads no untrusted input,
+ * builds from a closed vocabulary of five states, and only ever removes an
+ * input or strips a leading marker from already-sanitised text.
+ * @param {string} html - Sanitised HTML from {@link sanitizeRenderedHtml}.
+ * @returns {string} HTML with task markers replaced by tick boxes.
+ */
+function decorateTaskLists(html) {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    return html;
+  }
+  if (!html.includes('[') && !html.includes('type="checkbox"')) return html;
+
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+
+  for (const li of Array.from(tpl.content.querySelectorAll('li'))) {
+    // A loose list wraps each item's content in a <p>; a tight one leaves the
+    // text directly on the <li>. The marker lives at the start of whichever it is.
+    const firstEl = li.firstElementChild;
+    const host = firstEl && firstEl.tagName === 'P' ? firstEl : li;
+    const first = host.firstChild;
+    if (!first) continue;
+
+    /** @type {string|undefined} */
+    let state;
+
+    if (first.nodeType === 1 /* ELEMENT_NODE */
+        && /** @type {Element} */ (first).tagName === 'INPUT'
+        && /** @type {Element} */ (first).getAttribute('type') === 'checkbox') {
+      state = /** @type {Element} */ (first).hasAttribute('checked') ? 'completed' : 'pending';
+      host.removeChild(first);
+      // marked writes a space between the checkbox and the text; it would now
+      // sit inside the item's leading edge.
+      const next = host.firstChild;
+      if (next && next.nodeType === 3 /* TEXT_NODE */) {
+        next.nodeValue = (next.nodeValue || '').replace(/^[ \t]+/, '');
+      }
+    } else if (first.nodeType === 3 /* TEXT_NODE */) {
+      const match = TASK_MARKER_RE.exec(first.nodeValue || '');
+      const marker = match?.[1];
+      if (match && marker) {
+        state = TASK_STATES.get(marker);
+        if (state) first.nodeValue = (first.nodeValue || '').slice(match[0].length);
+      }
+    }
+
+    if (!state) continue;
+
+    host.insertBefore(taskBoxElement(state), host.firstChild);
+    // GitHub's own class names for the same construct.
+    li.classList.add('task-list-item', `task-list-item--${state}`);
+    li.parentElement?.classList.add('contains-task-list');
+  }
+
+  return tpl.innerHTML;
+}
+
+/**
  * Render markdown with syntax highlighting and safe XML handling
  * @param {string} content - Markdown content to render
  * @param {object} [options] - Rendering options
@@ -269,11 +359,17 @@ export function renderMarkdown(content, options = {}) {
     // default, so a link like [click](javascript:alert(1)) would render
     // as a live XSS sink. Belt-and-braces neutralisation post-parse:
     const raw = marked.parse(processedContent);
-    // Sanitise LAST: neutraliseDangerousUrls/externalizeLinks are string passes
-    // that scrub URLs; sanitizeRenderedHtml is the authoritative tag/attribute
-    // boundary that strips any raw markup (custom elements, script, stray HTML)
-    // marked emitted, so nothing unsafe reaches the caller's innerHTML.
-    return sanitizeRenderedHtml(externalizeLinks(neutraliseDangerousUrls(raw)));
+    // Sanitise LAST among the passes that handle marked's output:
+    // neutraliseDangerousUrls/externalizeLinks are string passes that scrub
+    // URLs; sanitizeRenderedHtml is the authoritative tag/attribute boundary
+    // that strips any raw markup (custom elements, script, stray HTML) marked
+    // emitted, so nothing unsafe reaches the caller's innerHTML.
+    const safe = sanitizeRenderedHtml(externalizeLinks(neutraliseDangerousUrls(raw)));
+    // Then swap task markers for tick boxes. This one runs on the far side of
+    // the boundary on purpose — see decorateTaskLists: it consumes no untrusted
+    // input, so it can add the `role`/`aria-label` the allowlist withholds
+    // without granting them to every other element in the document.
+    return decorateTaskLists(safe);
   } catch (e) {
     console.error('[Markdown] Parsing error:', e);
     // Fall back to escaped content

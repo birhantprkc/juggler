@@ -1859,6 +1859,34 @@ composer-box .skill-button .skill-glyph {
     mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z'/%3E%3C/svg%3E") center/contain no-repeat;
 }
 
+/* Tick box: a small square that either sits empty or fills with a colour and
+   shows a glyph. Two elements, because one element can carry only one `mask` —
+   so the box's fill and the glyph's colour stay independently themeable.
+
+   Geometry only. Each user brings its own size, colours, glyph and accessible
+   name, because what a tick *means* differs: a markdown task list spells
+   progress (five states), an answered question spells choice (two). Sharing the
+   meaning would make an unpicked option announce itself as "To do". */
+.tick-box {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: var(--tick-box-size, 0.875rem);
+    height: var(--tick-box-size, 0.875rem);
+    border: 0.0625rem solid var(--tick-box-border, transparent);
+    border-radius: var(--tick-box-radius, 0.1875rem);
+    background: var(--tick-box-fill, transparent);
+}
+
+/* Size only. The glyph's colour stays with each user: the markdown task box
+   paints it from a state variable, while `.icon-check` supplies its own via
+   `currentcolor`, and a `background-color` here would overwrite the latter. */
+.tick-box-mark {
+    width: var(--tick-box-mark-size, 0.75rem);
+    height: var(--tick-box-mark-size, 0.75rem);
+}
+
 /* ===================================================================
    Properties Panel Component - Right side detail view
    ================================================================== */
@@ -8190,31 +8218,26 @@ textarea[data-confirmation-pending="true"] {
     color: var(--text-secondary);
 }
 
-/* Tick box: empty outlined square by default; on a selected option it fills
-   with the accent colour and shows the check glyph (the inner .icon-check). */
+/* Empty outlined square by default; on a chosen option it fills with the accent
+   colour and reveals the check glyph. Geometry comes from `.tick-box` — only
+   the size, the palette and the baseline nudge are ours. */
 .ask-user-question-details .option-tick {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1rem;
-    height: 1rem;
+    --tick-box-size: 1rem;
+    --tick-box-radius: 0.25rem;
+    --tick-box-border: var(--border-color);
+    --tick-box-fill: var(--bg-secondary);
+
     margin-top: 0.0625rem;
-    border: 0.0625rem solid var(--border-color);
-    border-radius: 0.25rem;
-    background: var(--bg-secondary);
 }
 
 .ask-user-question-details .option-tick .icon-check {
-    width: 0.75rem;
-    height: 0.75rem;
     color: #fff;
     visibility: hidden;
 }
 
 .ask-user-question-details .option-tick.checked {
-    background: var(--accent-green, #166534);
-    border-color: var(--accent-green, #166534);
+    --tick-box-border: var(--accent-green, #166534);
+    --tick-box-fill: var(--accent-green, #166534);
 }
 
 .ask-user-question-details .option-tick.checked .icon-check {

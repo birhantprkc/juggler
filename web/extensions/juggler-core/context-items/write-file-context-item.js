@@ -6,6 +6,7 @@
 import EditBase from './edit-base.js';
 import { readFile, writeFile } from 'juggler/ops';
 import { formatDisplayPath, normalizeFilePath, basename } from 'juggler/item-utils';
+import { labeledSubsection } from 'juggler/ui';
 import { fileSourceFromText } from 'juggler/file-source';
 import { checkFileFreshness, recordWrittenHash, restageBaseline, acquirePathLock } from './read-history.js';
 
@@ -414,11 +415,7 @@ class WriteFileContextItem extends EditBase {
    * @private
    */
   _appendOutcomeBanner(wrapper, result) {
-    const section = document.createElement('properties-panel-subsection');
-    const label = document.createElement('h4');
-    label.className = 'properties-panel-subtitle';
-    label.textContent = 'Result';
-    section.appendChild(label);
+    const section = labeledSubsection('Result');
     const div = document.createElement('div');
     div.className = result.cancelled ? 'properties-panel-result cancelled' : 'properties-panel-result error';
     div.textContent = result.cancelled ? 'Cancelled' : (result.fullResult?.error || result.content || 'Error');

@@ -4,9 +4,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { createElement } from 'juggler/ui';
-import { createEmptyState } from 'juggler/item-utils';
-import { createChecklistView } from './lib/checklist-view.js';
+import { createElement, taskMarker, taskStatusWord } from 'juggler/ui';
+import { createEmptyState, createTextBlock } from 'juggler/item-utils';
+
+/**
+ * Indent every line after the first to the width of a numbered list marker, so
+ * multi-line todo text stays inside its own list item when rendered.
+ * @param {string} text - Todo content
+ * @returns {string} The text with continuation lines indented
+ */
+function indentContinuation(text) {
+  return String(text || '').replace(/\n/g, '\n   ');
+}
 
 /**
  * A single todo item.
@@ -217,30 +226,49 @@ class TodoContextItem extends ContextItem {
    */
   createContextText(contextParams) {
     const { helpers } = contextParams;
-    const todos = this.data.todos || [];
-    if (todos.length === 0) {
+
+    const content = TodoContextItem._renderTodoMarkdown(this.data.todos, { statusWords: true });
+    if (!content) {
       return '';
-    }
-
-    const total = todos.length;
-    const completed = this._countByStatus('completed');
-
-    let content = '# Todo list\n';
-    content += `Progress: ${completed}/${total} completed\n\n`;
-
-    for (let i = 0; i < todos.length; i++) {
-      const status = todos[i].status || 'pending';
-      let icon = '\u25CB'; // pending
-      if (status === 'completed') {
-        icon = '\u2713';
-      } else if (status === 'in_progress') {
-        icon = '\u25B6';
-      }
-      content += `${i + 1}. [${icon}] ${todos[i].content}\n`;
     }
 
     const itemHeader = `=== ${this.id} ===\n`;
     return itemHeader + helpers.xml('todo', content);
+  }
+
+  /**
+   * Render a todo list as markdown: a progress line and a numbered task list,
+   * each item a tick box carrying its status.
+   *
+   * One rendering serves both audiences: the viewer shows it through the
+   * standard markdown block and the LLM reads it in the context block, so the
+   * list the user reads and the list the model reads cannot drift apart. The
+   * option adds to the model's copy only, where it needs in words what the
+   * viewer draws as a distinct box.
+   * @param {TodoItem[]} todos - The list to render
+   * @param {object} [opts] - Rendering options
+   * @param {boolean} [opts.statusWords] - Append the status in words to an item (LLM text only)
+   * @returns {string} Markdown, or '' when the list is empty
+   * @private
+   */
+  static _renderTodoMarkdown(todos, opts = {}) {
+    const list = todos || [];
+    if (list.length === 0) return '';
+
+    const completed = list.filter((/** @type {TodoItem} */ t) => t.status === 'completed').length;
+    const lines = [
+      '# Todo list',
+      `Progress: ${completed}/${list.length} completed`,
+      ''
+    ];
+
+    for (const [i, todo] of list.entries()) {
+      const words = opts.statusWords ? taskStatusWord(todo.status) : '';
+      const note = words ? ` _(${words})_` : '';
+      lines.push(`${i + 1}. ${taskMarker(todo.status)} ${indentContinuation(todo.content)}${note}`);
+    }
+
+    return lines.join('\n') + '\n';
   }
 
   /**
@@ -263,7 +291,7 @@ class TodoContextItem extends ContextItem {
       return container;
     }
     const section = document.createElement('properties-panel-subsection');
-    section.appendChild(createChecklistView(todos, {}));
+    section.appendChild(createTextBlock(TodoContextItem._renderTodoMarkdown(todos)));
     container.appendChild(section);
     return container;
   }
@@ -474,7 +502,7 @@ class TodoContextItem extends ContextItem {
 
     if (todos.length > 0) {
       const section = document.createElement('properties-panel-subsection');
-      section.appendChild(createChecklistView(todos, {}));
+      section.appendChild(createTextBlock(TodoContextItem._renderTodoMarkdown(todos)));
       wrapper.appendChild(section);
       return { skipResultSection: true };
     }

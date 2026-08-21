@@ -18,6 +18,55 @@ import ContextItem from 'juggler/context-item';
 const DRAFT_SELECTIONS = new Map();
 
 /**
+ * Build one row of the answered-question list: a tick box and the option's
+ * label, with its description beneath when there is one.
+ *
+ * The tick is a real drawn box with a check glyph, never monospace "[x]"/"[ ]"
+ * text. It shares the `.tick-box` geometry with the markdown task-list box but
+ * keeps its own state class and accessible name: this box says whether the user
+ * *chose* something, which is not one of the five progress states a task list
+ * spells — announcing an unpicked option as "To do" would be a lie.
+ * @param {string} label - The option's label, or the user's own typed text
+ * @param {string} description - Explanatory line beneath the label; '' to omit
+ * @param {boolean} selected - Whether the user picked this option
+ * @param {string} [extraClass] - Extra class for the row, e.g. 'custom-answer'
+ * @returns {HTMLElement} The `<li>` row
+ */
+function optionRow(label, description, selected, extraClass = '') {
+  const item = document.createElement('li');
+  item.className = ['option-item', selected ? 'selected' : '', extraClass]
+    .filter(Boolean)
+    .join(' ');
+
+  const tick = document.createElement('span');
+  tick.className = selected ? 'tick-box option-tick checked' : 'tick-box option-tick';
+  tick.setAttribute('role', 'img');
+  tick.setAttribute('aria-label', selected ? 'Chosen' : 'Not chosen');
+  const tickIcon = document.createElement('span');
+  tickIcon.className = 'tick-box-mark icon-check';
+  tick.appendChild(tickIcon);
+  item.appendChild(tick);
+
+  const optionText = document.createElement('span');
+  optionText.className = 'option-text';
+
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'option-label';
+  labelSpan.textContent = label;
+  optionText.appendChild(labelSpan);
+
+  if (description) {
+    const descSpan = document.createElement('span');
+    descSpan.className = 'option-description';
+    descSpan.textContent = description;
+    optionText.appendChild(descSpan);
+  }
+
+  item.appendChild(optionText);
+  return item;
+}
+
+/**
  * @typedef {object} QuestionOption
  * @property {string} label - The display text for this option
  * @property {string} description - Explanation of what this option means
@@ -627,69 +676,16 @@ class AskUserQuestionContextItem extends ContextItem {
         : (selectedAnswer === null || selectedAnswer === undefined ? [] : [selectedAnswer]);
 
       for (const opt of q.options) {
-        const optionItem = document.createElement('li');
-        optionItem.className = 'option-item';
-
-        const isSelected = selectedLabels.includes(opt.label);
-        if (isSelected) {
-          optionItem.classList.add('selected');
-        }
-
-        // Tick box rendered as a real checkbox with a check glyph, not as
-        // monospace "[x]"/"[ ]" text.
-        const tick = document.createElement('span');
-        tick.className = isSelected ? 'option-tick checked' : 'option-tick';
-        const tickIcon = document.createElement('span');
-        tickIcon.className = 'icon-check';
-        tick.appendChild(tickIcon);
-        optionItem.appendChild(tick);
-
-        const optionText = document.createElement('span');
-        optionText.className = 'option-text';
-
-        const labelSpan = document.createElement('span');
-        labelSpan.className = 'option-label';
-        labelSpan.textContent = opt.label;
-        optionText.appendChild(labelSpan);
-
-        // Option description
-        if (opt.description) {
-          const descSpan = document.createElement('span');
-          descSpan.className = 'option-description';
-          descSpan.textContent = opt.description;
-          optionText.appendChild(descSpan);
-        }
-
-        optionItem.appendChild(optionText);
-        optionsList.appendChild(optionItem);
+        optionsList.appendChild(
+          optionRow(opt.label, opt.description || '', selectedLabels.includes(opt.label))
+        );
       }
 
       // The user's own typed answer is any selected value that isn't one of the
       // model's labels. Render it as one more ticked option carrying the text.
       const optionLabels = new Set(q.options.map(o => o.label));
       for (const custom of selectedLabels.filter(l => l && !optionLabels.has(l))) {
-        const optionItem = document.createElement('li');
-        optionItem.className = 'option-item selected custom-answer';
-
-        const tick = document.createElement('span');
-        tick.className = 'option-tick checked';
-        const tickIcon = document.createElement('span');
-        tickIcon.className = 'icon-check';
-        tick.appendChild(tickIcon);
-        optionItem.appendChild(tick);
-
-        const optionText = document.createElement('span');
-        optionText.className = 'option-text';
-        const labelSpan = document.createElement('span');
-        labelSpan.className = 'option-label';
-        labelSpan.textContent = custom;
-        optionText.appendChild(labelSpan);
-        const descSpan = document.createElement('span');
-        descSpan.className = 'option-description';
-        descSpan.textContent = 'Your own answer';
-        optionText.appendChild(descSpan);
-        optionItem.appendChild(optionText);
-        optionsList.appendChild(optionItem);
+        optionsList.appendChild(optionRow(custom, 'Your own answer', true, 'custom-answer'));
       }
 
       questionBlock.appendChild(optionsList);
@@ -728,13 +724,8 @@ class AskUserQuestionContextItem extends ContextItem {
         answers[key] = (multiByHeader.get(key) && value.includes(', ')) ? value.split(', ') : value;
       }
     }
-    const detailsEl = this._buildDetailsElement(questions, answers);
-    const section = document.createElement('properties-panel-subsection');
-    const labelEl = document.createElement('h4');
-    labelEl.className = 'properties-panel-subtitle';
-    labelEl.textContent = 'Questions';
-    section.appendChild(labelEl);
-    section.appendChild(detailsEl);
+    const section = ctx.helpers.labeledSubsection('Questions');
+    section.appendChild(this._buildDetailsElement(questions, answers));
     wrapper.appendChild(section);
     return { skipResultSection: true };
   }

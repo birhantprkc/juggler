@@ -28,6 +28,10 @@ export { FormattingHelpers } from './lib/formatting-helpers.js';
 // off the main thread — so it is safe to surface for real in the worker.
 export { highlightCode } from './lib/syntax-highlight.js';
 
+// Pure string lookups, and needed for real off the main thread: a context item
+// composes its LLM text (plan steps, todo items) inside the engine worker.
+export { taskMarker, taskStatusWord } from './lib/task-markers.js';
+
 /**
  * @param {string} text
  * @returns {string} HTML-escaped text
@@ -74,6 +78,7 @@ export const presentPopup = () => domUnavailable('presentPopup');
 export const createCopyButton = () => domUnavailable('createCopyButton');
 export const createCopyableText = () => domUnavailable('createCopyableText');
 export const addSubsection = () => domUnavailable('addSubsection');
+export const labeledSubsection = () => domUnavailable('labeledSubsection');
 export const addFilePath = () => domUnavailable('addFilePath');
 export const addDiffViewer = () => domUnavailable('addDiffViewer');
 export const openImageLightbox = () => domUnavailable('openImageLightbox');

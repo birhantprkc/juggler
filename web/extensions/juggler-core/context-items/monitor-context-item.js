@@ -317,11 +317,7 @@ class MonitorContextItem extends ContextItem {
     // while the binding is Active and append the growing delta non-destructively
     // — never rebuilding (which would reset scroll). Read-only: the poll mutates
     // no durable state, only this local DOM.
-    const outSection = document.createElement('properties-panel-subsection');
-    const outLabel = document.createElement('h4');
-    outLabel.className = 'properties-panel-subtitle';
-    outLabel.textContent = 'Output';
-    outSection.appendChild(outLabel);
+    const outSection = helpers.labeledSubsection('Output');
 
     const copyable = helpers.createCopyableText('', 'properties-panel-text', { ansi: true });
     outSection.appendChild(copyable);

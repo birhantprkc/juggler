@@ -10,6 +10,7 @@
  * Shared across all context item types.
  */
 
+import { createCopyButton } from './copy-button.js';
 import { renderMarkdown, decorateCodeBlocks } from './markdown.js';
 import { highlightCode } from './syntax-highlight.js';
 import { injectStylesOnce } from './inject-styles.js';
@@ -180,13 +181,23 @@ export function formatFileContentForLLM(params) {
 }
 
 /**
- * Create a text block element for rendering markdown content
+ * Create a text block element for rendering markdown content.
+ *
+ * Carries the standard hover-reveal copy button, which yields the markdown
+ * source rather than the rendered text — what the block shows is text someone
+ * will want to take elsewhere (a plan, a system prompt, a `.md` file), and the
+ * source is the form that survives the trip.
  * @param {string} content - Markdown content to render
  * @returns {HTMLElement} Text block element with rendered markdown
  */
 export function createTextBlock(content) {
   const textBlock = document.createElement('div');
-  textBlock.className = 'ci-text-block';
+  textBlock.className = 'ci-text-block properties-panel-copyable';
+
+  const copyHeader = document.createElement('div');
+  copyHeader.className = 'properties-panel-copy-header';
+  copyHeader.appendChild(createCopyButton(() => content || ''));
+  textBlock.appendChild(copyHeader);
 
   const markdownDiv = document.createElement('div');
   markdownDiv.className = 'markdown';

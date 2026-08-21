@@ -5,6 +5,21 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile, grep } from 'juggler/ops';
+import { createTextBlock } from 'juggler/item-utils';
+
+/**
+ * Wrap a value as markdown inline code, widening the fence when the value
+ * itself contains a backtick — a grep pattern very often does.
+ * @param {string} value - Raw value from the tool input
+ * @returns {string} The value as an inline code span
+ */
+function code(value) {
+  const text = String(value ?? '');
+  if (!text) return '';
+  const fence = '`'.repeat(Math.max(...[0, ...text.match(/`+/g)?.map(r => r.length) || []]) + 1);
+  const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
 
 /**
  * @typedef {object} BatchReadFile
@@ -406,26 +421,53 @@ class BatchContextItem extends ContextItem {
    */
   renderToolActionDetails(wrapper, ctx) {
     const { toolName, input, helpers } = ctx;
-    if (toolName === 'batch_grep') {
-      const coerced = BatchContextItem._coerceArray(input.searches);
-      const searches = /** @type {Array<{pattern?: string, path?: string, glob?: string}>} */ (Array.isArray(coerced) ? coerced : []);
-      for (const s of searches) {
-        helpers.addSubsection(wrapper, 'Pattern', s.pattern || '', 'properties-panel-code');
-        if (s.path) helpers.addSubsection(wrapper, 'Path', s.path, 'properties-panel-code');
-        if (s.glob) helpers.addSubsection(wrapper, 'Glob', s.glob, 'properties-panel-code');
-      }
-    } else if (toolName === 'batch_read') {
-      const coerced = BatchContextItem._coerceArray(input.files);
-      const files = /** @type {Array<{file_path?: string, offset?: number, limit?: number}>} */ (Array.isArray(coerced) ? coerced : []);
-      for (const f of files) {
-        let label = f.file_path || '';
-        if (f.offset !== undefined || f.limit !== undefined) {
-          const start = f.offset || 1;
-          label += f.limit ? ` (lines ${start}–${start + f.limit - 1})` : ` (from line ${start})`;
-        }
-        helpers.addSubsection(wrapper, 'File', label, 'properties-panel-code');
-      }
-    }
+
+    // One numbered list rather than a subsection per entry: a batch is a list
+    // of like things, and a ten-file read used to stack ten "File" headings.
+    const isGrep = toolName === 'batch_grep';
+    const coerced = BatchContextItem._coerceArray(isGrep ? input.searches : input.files);
+    const entries = Array.isArray(coerced) ? coerced : [];
+    if (entries.length === 0) return;
+
+    const lines = entries.map((/** @type {any} */ e, /** @type {number} */ i) =>
+      `${i + 1}. ${isGrep ? BatchContextItem._grepLine(e) : BatchContextItem._readLine(e)}`
+    );
+
+    const label = isGrep ? 'Searches' : 'Files';
+    const section = helpers.labeledSubsection(
+      entries.length === 1 ? label.slice(0, -1) : `${label} (${entries.length})`
+    );
+    section.appendChild(createTextBlock(lines.join('\n') + '\n'));
+    wrapper.appendChild(section);
+  }
+
+  /**
+   * One search as a markdown line: the pattern, then whatever narrows it.
+   * @param {{pattern?: string, path?: string, glob?: string}} search - A batch_grep entry
+   * @returns {string} Markdown for a single list item
+   * @private
+   */
+  static _grepLine(search) {
+    const scope = [
+      search.path ? `in ${code(search.path)}` : '',
+      search.glob ? `matching ${code(search.glob)}` : '',
+    ].filter(Boolean);
+    return code(search.pattern || '') + (scope.length ? ` — ${scope.join(', ')}` : '');
+  }
+
+  /**
+   * One file as a markdown line: the path, and the line range when it is not
+   * being read whole.
+   * @param {{file_path?: string, offset?: number, limit?: number}} file - A batch_read entry
+   * @returns {string} Markdown for a single list item
+   * @private
+   */
+  static _readLine(file) {
+    const path = code(file.file_path || '');
+    if (file.offset === undefined && file.limit === undefined) return path;
+    const start = file.offset || 1;
+    const range = file.limit ? `lines ${start}–${start + file.limit - 1}` : `from line ${start}`;
+    return `${path} (${range})`;
   }
 }
 

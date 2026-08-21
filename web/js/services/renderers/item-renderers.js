@@ -318,11 +318,9 @@ function renderMessageAttachments(host, wrapper, message) {
   const attachments = normalizeAttachments(message.get('attachments'));
   if (attachments.length === 0) return;
 
-  const section = document.createElement('properties-panel-subsection');
-  const label = document.createElement('h4');
-  label.className = 'properties-panel-subtitle';
-  label.textContent = attachments.length === 1 ? 'Attachment' : `Attachments (${attachments.length})`;
-  section.appendChild(label);
+  const section = panelHelpers.labeledSubsection(
+    attachments.length === 1 ? 'Attachment' : `Attachments (${attachments.length})`
+  );
 
   const list = document.createElement('div');
   list.className = 'properties-panel-attachments';
@@ -537,11 +535,7 @@ export function renderToolAction(host, container, toolAction) {
     // escapes don't appear as literal garbage. Plain-text tools opt out.
     const isTerminal = !!(ActionClass && /** @type {any} */ (ActionClass).rendersTerminalOutput?.());
 
-    const resultSection = document.createElement('properties-panel-subsection');
-    const resultLabelEl = document.createElement('h4');
-    resultLabelEl.className = 'properties-panel-subtitle';
-    resultLabelEl.textContent = resultLabel;
-    resultSection.appendChild(resultLabelEl);
+    const resultSection = panelHelpers.labeledSubsection(resultLabel);
 
     const r = toolAction.get('result');
     if (r) {

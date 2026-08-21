@@ -130,6 +130,25 @@ select {
     --accent-red: #f85149;
     --accent-purple: #bc8cff;
 
+    /* Markdown task-list states (`- [/] step`). Box fill and glyph are separate
+       variables so a theme can retint either without touching the geometry.
+       Every value derives from an accent the light theme also defines, so these
+       follow the theme automatically and need no second block below. Done, in
+       progress and failed are filled; skipped and pending are outlines, drawn in
+       text rather than border colour so an empty box is actually visible. */
+    --task-box-size: 0.875rem;
+    --task-box-gap: 0.4375rem;
+    --task-mark-on-fill: #fff;
+    --task-done-box: var(--accent-green);
+    --task-done-mark: var(--task-mark-on-fill);
+    --task-progress-box: var(--accent-yellow);
+    --task-progress-mark: var(--task-mark-on-fill);
+    --task-failed-box: var(--accent-red);
+    --task-failed-mark: var(--task-mark-on-fill);
+    --task-skipped-border: var(--text-secondary);
+    --task-skipped-mark: var(--text-secondary);
+    --task-pending-border: var(--text-secondary);
+
     /* showNotice toast — a prominent warm-yellow fill with near-black text. */
     --notice-bg: #e6b93f;
     --notice-text: #241c00;
@@ -3133,6 +3152,112 @@ thread-column-actions {
 
 .markdown li {
     margin: 0.375rem 0;
+}
+
+/* Task-list tick box (`1. [/] step`), drawn rather than left to the platform
+   control so a checklist rendered as markdown — a plan, a todo list, an
+   assistant reply — reads as tracked work instead of literal "[x]" text. GFM
+   spells two states; markdown.js recognises five and replaces the marker with
+   this markup, so there is no <input> here to restyle. */
+.markdown .task-box {
+    /* Geometry comes from the shared `.tick-box` primitive; the size is passed
+       through so it and the hanging indent below cannot drift apart. */
+    --tick-box-size: var(--task-box-size);
+
+    /* Seats the box on the text baseline at the 0.8125rem body size these
+       blocks use, rather than nudging a positioned element by a magic amount. */
+    vertical-align: -0.1875em;
+    margin-right: var(--task-box-gap);
+}
+
+/* The glyph is a masked element rather than a border trick: two rotated 1.5px
+   borders antialias into a smudge at this size. */
+.markdown .task-box-mark {
+    background-color: var(--tick-box-mark-color, transparent);
+}
+
+.markdown .task-box--pending {
+    --tick-box-border: var(--task-pending-border);
+}
+
+/* A step that is running is the one thing worth finding in a long list, so the
+   box breathes. Opacity only — it composites, so a plan left open costs nothing. */
+.markdown .task-box--in-progress {
+    --tick-box-border: var(--task-progress-box);
+    --tick-box-fill: var(--task-progress-box);
+    --tick-box-mark-color: var(--task-progress-mark);
+
+    animation: task-box-pulse 1.6s ease-in-out infinite;
+}
+
+.markdown .task-box--completed {
+    --tick-box-border: var(--task-done-box);
+    --tick-box-fill: var(--task-done-box);
+    --tick-box-mark-color: var(--task-done-mark);
+}
+
+.markdown .task-box--failed {
+    --tick-box-border: var(--task-failed-box);
+    --tick-box-fill: var(--task-failed-box);
+    --tick-box-mark-color: var(--task-failed-mark);
+}
+
+.markdown .task-box--skipped {
+    --tick-box-border: var(--task-skipped-border);
+    --tick-box-mark-color: var(--task-skipped-mark);
+}
+
+.markdown .task-box--in-progress .task-box-mark {
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M240-440v-80h480v80H240Z'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+.markdown .task-box--completed .task-box-mark {
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M382-240 154-468l57-57 171 171 367-367 57 57-424 424Z'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+.markdown .task-box--failed .task-box-mark {
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+.markdown .task-box--skipped .task-box-mark {
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 -960 960 960'%3E%3Cpath d='M647-440H160v-80h487L423-744l57-56 320 320-320 320-57-56 224-224Z'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+@keyframes task-box-pulse {
+    50% {
+        opacity: 0.35;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .markdown .task-box--in-progress {
+        animation: none;
+    }
+}
+
+/* Hanging indent, so a wrapped line — or a plan step's "Result:" continuation —
+   aligns with the text above it instead of flowing back under the box. The
+   inset is exactly the space the box occupies. */
+.markdown li.task-list-item {
+    padding-inline-start: calc(var(--task-box-size) + var(--task-box-gap));
+    text-indent: calc(-1 * (var(--task-box-size) + var(--task-box-gap)));
+}
+
+/* text-indent inherits, so anything else the item contains — a nested list, a
+   code block, a second paragraph — would start a step to the left. Reset them
+   all, then re-assert on the paragraph a *loose* list wraps the first line in,
+   which is the one block the indent is actually for. */
+.markdown li.task-list-item > * {
+    text-indent: 0;
+}
+
+.markdown li.task-list-item > p:first-child {
+    text-indent: calc(-1 * (var(--task-box-size) + var(--task-box-gap)));
+}
+
+/* A skipped step was passed over deliberately: still legible, no longer live. */
+.markdown li.task-list-item--skipped {
+    color: var(--text-secondary);
 }
 
 .markdown a {
