@@ -19,7 +19,10 @@ type ToolDefinition struct {
 type ModelConfig struct {
 	Provider string `json:"provider"`           // LLM provider name (e.g., "anthropic", "openai")
 	Model    string `json:"model"`              // LLM model name (e.g., "claude-sonnet-4-20250514")
-	Thinking string `json:"thinking,omitempty"` // Canonical thinking level ("off"/"low"/"medium"/"high"/"max"); empty ⇒ provider default
+	Thinking string `json:"thinking,omitempty"` // Thinking level in the provider's own vocabulary; empty ⇒ provider default
+	// ServiceTier is the optional serving class, named by the id the model
+	// advertised (e.g. "priority"); empty ⇒ standard serving.
+	ServiceTier string `json:"serviceTier,omitempty"`
 }
 
 // ShellStartRequest represents a request to start a streaming shell command

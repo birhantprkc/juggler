@@ -221,6 +221,9 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			// verbatim, and each provider ignores any value it doesn't advertise.
 			// Rides per-turn; deliberately NOT part of the conversation-cache key.
 			ThinkingLevel: req.ModelConfig.Thinking,
+			// The serving class, same contract: the provider's own tier id,
+			// per-turn, ignored by any provider that doesn't advertise it.
+			ServiceTier: req.ModelConfig.ServiceTier,
 		}
 
 		// Adapter that bridges Provider's StructuredStreamCallback to the
@@ -240,6 +243,7 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 					Type:            chunk.Type,
 					Content:         chunk.Content,
 					CacheMissReason: reason,
+					Notice:          streamNoticeFrom(chunk.Metadata),
 				})
 				return nil, nil
 			}
@@ -316,6 +320,20 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 // and the worker's inbound FIFO, so this is safe to call off the worker
 // goroutine. A nil sendCallback is passed so no client callback is registered
 // for this system-injected message.
+// streamNoticeFrom lifts a provider-composed durable notice off a status
+// chunk's metadata. Returns nil unless both halves are present: a notice with
+// no summary or no body would land in the transcript as an empty warning row,
+// which is worse than saying nothing.
+func streamNoticeFrom(metadata map[string]any) *worker.StreamNotice {
+	summary, _ := metadata["noticeSummary"].(string)
+	content, _ := metadata["noticeContent"].(string)
+	if summary == "" || content == "" {
+		return nil
+	}
+	source, _ := metadata["noticeSource"].(string)
+	return &worker.StreamNotice{Summary: summary, Content: content, Source: source}
+}
+
 type workerTurnSink struct {
 	convID  string
 	manager *worker.Manager

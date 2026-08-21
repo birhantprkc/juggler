@@ -281,6 +281,15 @@ type ConversationWorker struct {
 	// reported again.
 	lastCacheMissNotice string
 
+	// lastProviderNotice is the summary+content of the provider-composed notice
+	// most recently inserted. Unlike lastCacheMissNotice it is deliberately NOT
+	// cleared at idle: a cache miss is a per-turn event worth reporting each
+	// time it recurs, whereas the conditions behind these notices persist across
+	// turns (a plan that cannot use a serving tier still cannot use it on the
+	// next turn), so repeating one every reply would bury the transcript in
+	// identical warnings.
+	lastProviderNotice string
+
 	// turnCounter is incremented on every transition to idle. It is written
 	// into the durable `completedTurns` metadata key (NOT the ephemeral
 	// processingState blob) so the browser (and test harness) can observe that

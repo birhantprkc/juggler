@@ -36,6 +36,14 @@ type ModelWithContext struct {
 	// DefaultThinkingLevel is the level the provider uses when a turn carries
 	// none — presentation only, lets the UI label "Default (medium)".
 	DefaultThinkingLevel string `json:"defaultThinkingLevel,omitempty"`
+	// ServiceTiers lists the non-standard serving classes this model offers, in
+	// display order, each carrying the provider's own id, label and blurb.
+	// Standard serving is not a member — it is the absence of a tier.
+	// Empty/omitted ⇒ the UI hides the speed control for this model.
+	ServiceTiers []provider.ServiceTier `json:"serviceTiers,omitempty"`
+	// DefaultServiceTier is the tier the provider bills as this model's default
+	// — presentation only, and never applied on the user's behalf.
+	DefaultServiceTier string `json:"defaultServiceTier,omitempty"`
 	// StreamsLiveUsage is true when this model's provider reports authoritative
 	// per-step input usage mid-turn (see provider.ProviderInfo.StreamsLiveUsage).
 	// The footer meter grows against the live count only for models that set it;
@@ -165,6 +173,8 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 							InputModalities:      modelInfo.InputModalities,
 							ThinkingLevels:       modelInfo.ThinkingLevels,
 							DefaultThinkingLevel: modelInfo.DefaultThinkingLevel,
+							ServiceTiers:         modelInfo.ServiceTiers,
+							DefaultServiceTier:   modelInfo.DefaultServiceTier,
 							StreamsLiveUsage:     pInfo.StreamsLiveUsage,
 						})
 					}

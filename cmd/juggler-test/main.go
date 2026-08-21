@@ -1015,7 +1015,7 @@ func listModels() {
 	fmt.Println("  ./bin/juggler-test --model=claude-sonnet-4.5    # Use Claude Sonnet 4.5")
 	fmt.Println("  ./bin/juggler-test --model=gemini-2.0-flash     # Use Gemini 2.0 Flash")
 	fmt.Println("  ./bin/juggler-test --model=gpt-4o               # Use OpenAI GPT-4o")
-	fmt.Println("  ./bin/juggler-test --provider=openaicodex --model=gpt-5.2-codex")
+	fmt.Println("  ./bin/juggler-test --provider=openaicodex --model=gpt-5.6-luna")
 	fmt.Println()
 }
 

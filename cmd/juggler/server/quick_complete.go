@@ -169,6 +169,10 @@ func (s *Server) QuickComplete(ctx context.Context, req QuickCompleteRequest) (Q
 		// Native provider level, passed through verbatim; the provider ignores
 		// any value it doesn't advertise.
 		ThinkingLevel: req.Model.Thinking,
+		// ServiceTier is deliberately NOT forwarded. These are out-of-band
+		// micro-tasks the user never asked for and never sees the latency of —
+		// naming a tab at a premium serving rate spends real money to save time
+		// nobody is waiting on. Standard serving is always the right call here.
 	}
 
 	// Accumulate only text blocks; ignore thinking / status / progress / usage

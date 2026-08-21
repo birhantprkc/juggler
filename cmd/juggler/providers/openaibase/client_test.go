@@ -54,7 +54,7 @@ func TestBearerTokenClientUsesAuthorizationHeader(t *testing.T) {
 
 	_, err = client.ListModelsWithInfo(context.Background(), func(string) bool { return true }, func(string) (int, int) {
 		return 128000, 16384
-	}, nil, nil, "test")
+	}, nil, nil, nil, "test")
 	if err != nil {
 		t.Fatalf("ListModelsWithInfo: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestCustomHeaderOverridesUserAgent(t *testing.T) {
 	}
 	if _, err := client.ListModelsWithInfo(context.Background(), func(string) bool { return true }, func(string) (int, int) {
 		return 128000, 16384
-	}, nil, nil, "test"); err != nil {
+	}, nil, nil, nil, "test"); err != nil {
 		t.Fatalf("ListModelsWithInfo: %v", err)
 	}
 	if userAgent != "my-gateway-client/1.0" {

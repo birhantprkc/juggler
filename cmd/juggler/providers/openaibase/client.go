@@ -186,6 +186,10 @@ type Client struct {
 	// construction from the descriptor's ThinkingSpecFn. Zero value ⇒ no
 	// reasoning control (the request omits the effort param).
 	thinkingSpec ThinkingSpec
+	// serviceTierSpec is this model's non-standard serving classes, resolved
+	// once at construction from the descriptor's ServiceTierSpecFn. Zero value ⇒
+	// standard serving only (the request omits the service_tier param).
+	serviceTierSpec ServiceTierSpec
 	// providerName is the registry id this client serves. One Client type backs
 	// every OpenAI-shaped provider (zai, deepseek, copilot, openrouter, ollama,
 	// …), so provider-boundary errors — the idle-stall message above all — must
@@ -261,7 +265,7 @@ type ContextWindowFunc func(modelID string) (contextWindow int, maxOutputTokens 
 type ModalitiesFunc func(modelID string) []string
 
 // ListModelsWithInfo returns detailed model information using custom filter and context window functions
-func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterFunc, contextWindowFunc ContextWindowFunc, modalitiesFunc ModalitiesFunc, thinkingSpecFunc ThinkingSpecFunc, providerName string) ([]provider.ModelInfo, error) {
+func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterFunc, contextWindowFunc ContextWindowFunc, modalitiesFunc ModalitiesFunc, thinkingSpecFunc ThinkingSpecFunc, serviceTierSpecFunc ServiceTierSpecFunc, providerName string) ([]provider.ModelInfo, error) {
 	// Fetch models from API
 	page, err := c.client.Models.List(ctx)
 	if err != nil {
@@ -291,6 +295,14 @@ func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterF
 			defaultThinkingLevel = spec.Default
 		}
 
+		var serviceTiers []provider.ServiceTier
+		var defaultServiceTier string
+		if serviceTierSpecFunc != nil {
+			spec := serviceTierSpecFunc(model.ID)
+			serviceTiers = spec.Options()
+			defaultServiceTier = spec.Default
+		}
+
 		modelInfos = append(modelInfos, provider.ModelInfo{
 			ID:              model.ID,
 			DisplayName:     utils.ModelDisplayName(model.ID),
@@ -302,6 +314,8 @@ func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterF
 			InputModalities:      inputModalities,
 			ThinkingLevels:       thinkingLevels,
 			DefaultThinkingLevel: defaultThinkingLevel,
+			ServiceTiers:         serviceTiers,
+			DefaultServiceTier:   defaultServiceTier,
 		})
 	}
 
@@ -700,6 +714,15 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 		params.Include = append(params.Include, responses.ResponseIncludableReasoningEncryptedContent)
 	}
 
+	// Serving class. Omitted (ok=false) unless the human picked a tier this
+	// model advertises, so the standard-speed request stays byte-identical. The
+	// backend may serve a different tier than the one asked for without saying
+	// so — sentTier is what response.completed compares against.
+	sentTier, _ := c.serviceTierSpec.tierFor(req.ServiceTier)
+	if sentTier != "" {
+		params.ServiceTier = responses.ResponseNewParamsServiceTier(sentTier)
+	}
+
 	// Create streaming request
 	opts := []option.RequestOption{}
 	if c.quirks.ForceResponsesAPI {
@@ -860,6 +883,15 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 					Type:     provider.ContentBlockTypeUsage,
 					Metadata: map[string]any{"inputTokens": inputTokens, "cachedTokens": provider.TokenCount(cachedTokens)},
 				}); err != nil {
+					return nil, err
+				}
+			}
+			// The serving class the backend actually used. A tier is a request,
+			// not a guarantee: the response comes back 200 with a different tier
+			// and no explanation, so this echo is the only evidence the choice
+			// was declined.
+			if chunk, ok := c.serviceTierDowngrade(sentTier, string(completed.Response.ServiceTier)); ok {
+				if _, err := callback(chunk); err != nil {
 					return nil, err
 				}
 			}

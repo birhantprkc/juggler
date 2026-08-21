@@ -46,6 +46,46 @@ func TestResolveModelConfigDefaultKey(t *testing.T) {
 	}
 }
 
+// TestResolveModelConfigCarriesBothDials proves the two per-model dials survive
+// resolution together, at the conversation default and at a thread override.
+// They ride inside one modelConfig object, so a decoder that learned about one
+// and not the other would silently drop the other — and dropping the serving
+// tier means quietly reverting a choice the user pays extra for.
+func TestResolveModelConfigCarriesBothDials(t *testing.T) {
+	w := NewConversationWorker("conv-mc-dials", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{
+		"provider": "openaicodex", "model": "gpt-5.6-luna",
+		"thinking": "high", "serviceTier": "priority",
+	})
+
+	got := w.doc.ResolveEffectiveModelConfig("")
+	if got == nil || got.Thinking != "high" || got.ServiceTier != "priority" {
+		t.Fatalf("conversation default lost a dial: %+v", got)
+	}
+
+	threadID := insertThreadReturningID(t, w, "sub thread")
+	w.doc.SetThreadField(threadID, "modelConfig", map[string]any{
+		"provider": "openaicodex", "model": "gpt-5.6-sol",
+		"thinking": "xhigh", "serviceTier": "priority",
+	})
+
+	sub := w.doc.ResolveEffectiveModelConfig(threadID)
+	if sub == nil || sub.Model != "gpt-5.6-sol" || sub.Thinking != "xhigh" || sub.ServiceTier != "priority" {
+		t.Fatalf("thread override lost a dial: %+v", sub)
+	}
+
+	// Standard serving is the absence of the key, not an empty-string tier —
+	// a config written before the field existed must resolve to standard.
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{
+		"provider": "openaicodex", "model": "gpt-5.6-luna", "thinking": "high",
+	})
+	if got := w.doc.ResolveEffectiveModelConfig(""); got == nil || got.ServiceTier != "" {
+		t.Fatalf("absent serviceTier must resolve to standard serving, got %+v", got)
+	}
+}
+
 // TestResolveModelConfigLegacyMetadataKeyFallback pins the compatibility fallback:
 // a pre-rename session stored its conversation default under the legacy
 // `modelConfig` METADATA key (not `defaultModelConfig`). Resolution must fall back

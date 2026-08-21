@@ -290,15 +290,17 @@ func (cd *ConversationDocument) extractModelConfigFromMap(raw any) *ModelConfig 
 		provider, _ := v.Get("provider").(string)
 		model, _ := v.Get("model").(string)
 		thinking, _ := v.Get("thinking").(string)
+		serviceTier, _ := v.Get("serviceTier").(string)
 		if provider != "" && model != "" {
-			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking}
+			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking, ServiceTier: serviceTier}
 		}
 	case map[string]any:
 		provider, _ := v["provider"].(string)
 		model, _ := v["model"].(string)
 		thinking, _ := v["thinking"].(string)
+		serviceTier, _ := v["serviceTier"].(string)
 		if provider != "" && model != "" {
-			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking}
+			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking, ServiceTier: serviceTier}
 		}
 	}
 	return nil
@@ -409,8 +411,9 @@ func (cd *ConversationDocument) resolveEffectiveModelConfig(threadItemID string)
 		provider, _ := mc["provider"].(string)
 		model, _ := mc["model"].(string)
 		thinking, _ := mc["thinking"].(string)
+		serviceTier, _ := mc["serviceTier"].(string)
 		if provider != "" && model != "" {
-			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking}
+			return &ModelConfig{Provider: provider, Model: model, Thinking: thinking, ServiceTier: serviceTier}
 		}
 	}
 	return nil

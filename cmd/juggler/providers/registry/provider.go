@@ -124,6 +124,21 @@ type MessageRequest struct {
 	// contract as ToolChoice. Per-turn (not on Config) by design, so flicking
 	// the level never churns the conversation cache handle.
 	ThinkingLevel string
+
+	// ServiceTier selects the serving speed/priority class for this turn, named
+	// by the id the model advertised in ModelInfo.ServiceTiers (e.g. "priority"
+	// for OpenAI Codex's "Fast"), or "" for the provider's standard serving —
+	// no tier parameter is sent, byte-identical to pre-feature behaviour. It is
+	// orthogonal to ThinkingLevel: one buys latency, the other reasoning depth,
+	// and a model may advertise either, both, or neither. Providers ignore any
+	// value the model did not advertise. Per-turn (not on Config) for the same
+	// reason as ThinkingLevel — flicking it must not churn the cache handle.
+	//
+	// A tier is a REQUEST, not a guarantee: a backend may serve the standard
+	// tier anyway without erroring, so a provider that can observe the tier it
+	// was actually served should report the discrepancy rather than assume the
+	// request was honoured.
+	ServiceTier string
 }
 
 // ToolChoice constrains which tool (if any) the model must call on a turn.
@@ -454,6 +469,27 @@ type ModelInfo struct {
 	// Presentation only (lets the UI label "Default (medium)"). Empty when
 	// unknown.
 	DefaultThinkingLevel string
+	// ServiceTiers lists the non-standard serving classes this model offers, in
+	// display order. Standard serving is always available and is NOT a member —
+	// it is the empty MessageRequest.ServiceTier. Empty/nil ⇒ the model exposes
+	// no speed control and the UI hides the selector.
+	ServiceTiers []ServiceTier
+	// DefaultServiceTier names the tier the provider bills as this model's
+	// default. Presentation only, and deliberately NOT applied on the client's
+	// behalf: a tier costs materially more, so it is sent only when the human
+	// picked it. Empty when the provider declares none.
+	DefaultServiceTier string
+}
+
+// ServiceTier is one serving class a model offers beyond standard — a latency
+// tier bought at a higher price, not a capability. ID is the identity: it is
+// what MessageRequest.ServiceTier carries and what goes on the wire verbatim.
+// Name and Description are the provider's own words for it and are presentation
+// only, so the UI never has to invent marketing copy or guess a multiplier.
+type ServiceTier struct {
+	ID          string `json:"id"`                    // Wire identifier, e.g. "priority"
+	Name        string `json:"name,omitempty"`        // Provider's label, e.g. "Fast"
+	Description string `json:"description,omitempty"` // Provider's blurb, e.g. "1.5x speed, increased usage"
 }
 
 // UsageStat is one provider-specific quota/plan usage signal normalised for UI

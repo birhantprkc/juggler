@@ -75,6 +75,12 @@ type Descriptor struct {
 	// 400 on an unexpected reasoning param).
 	ThinkingSpecFn ThinkingSpecFunc
 
+	// ServiceTierSpecFn looks up a model's non-standard serving classes (the
+	// advertised tiers + the provider's declared default). nil ⇒ the provider
+	// exposes no speed control on any model, which is the case for every vendor
+	// that bills a single serving speed.
+	ServiceTierSpecFn ServiceTierSpecFunc
+
 	// ListModelsOverride, if non-nil, replaces the standard
 	// SDK Models.List + Filter + ContextWindowFn flow. Use for providers
 	// whose model catalog lives at a custom HTTP endpoint.
@@ -210,6 +216,11 @@ func Register(d Descriptor) {
 		if d.ThinkingSpecFn != nil {
 			base.thinkingSpec = d.ThinkingSpecFn(cfg.Model)
 		}
+		// Likewise resolve the serving classes once, so the request builder can
+		// gate req.ServiceTier without re-consulting the catalog per turn.
+		if d.ServiceTierSpecFn != nil {
+			base.serviceTierSpec = d.ServiceTierSpecFn(cfg.Model)
+		}
 		client := &openAICompatClient{
 			Client:     base,
 			desc:       d,
@@ -299,7 +310,7 @@ func (c *openAICompatClient) ListModelsWithInfo(ctx context.Context) ([]provider
 	if filter == nil {
 		filter = func(string) bool { return true }
 	}
-	return c.Client.ListModelsWithInfo(ctx, filter, c.desc.ContextWindowFn, c.desc.InputModalitiesFn, c.desc.ThinkingSpecFn, c.desc.DisplayProvider)
+	return c.Client.ListModelsWithInfo(ctx, filter, c.desc.ContextWindowFn, c.desc.InputModalitiesFn, c.desc.ThinkingSpecFn, c.desc.ServiceTierSpecFn, c.desc.DisplayProvider)
 }
 
 type usageOpenAICompatClient struct {

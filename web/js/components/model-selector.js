@@ -35,17 +35,51 @@ const VIEW_STATES = ['none', 'top', 'all'];
 const thinkingLabel = (level) => (level ? level.charAt(0).toUpperCase() + level.slice(1) : level);
 
 /**
- * Structural equality for a `{provider, model, thinking?}` config, with the
- * thinking level normalised (absent === ''). Shared by the CycleBuffer pin
+ * Structural equality for a `{provider, model, thinking?, serviceTier?}` config,
+ * with both dials normalised (absent === ''). Shared by the CycleBuffer pin
  * comparison and the commit's changed-vs-committed check.
  * @param {*} a - A model config (or null).
  * @param {*} b - A model config (or null).
- * @returns {boolean} True when both name the same provider, model and level.
+ * @returns {boolean} True when both name the same provider, model, level and tier.
  */
 function sameModelConfig(a, b) {
   return a === b || (!!a && !!b
     && a.provider === b.provider && a.model === b.model
-    && (a.thinking || '') === (b.thinking || ''));
+    && (a.thinking || '') === (b.thinking || '')
+    && (a.serviceTier || '') === (b.serviceTier || ''));
+}
+
+/**
+ * Build the next model config from a pair plus its two optional dials, omitting
+ * either when empty so standard serving and the default thinking level are the
+ * absence of a key rather than an empty string.
+ *
+ * Every write path goes through this. They each rebuild the object from
+ * scratch rather than spreading the previous one, so a dial that isn't named
+ * here is silently dropped — one function means adding a third dial can't leave
+ * one path behind.
+ * @param {string} provider
+ * @param {string} model
+ * @param {string} [thinking] - Native provider level; '' for the model's default.
+ * @param {string} [serviceTier] - Advertised tier id; '' for standard serving.
+ * @returns {{provider: string, model: string, thinking?: string, serviceTier?: string}} The config to write.
+ */
+function buildModelConfig(provider, model, thinking, serviceTier) {
+  /** @type {{provider: string, model: string, thinking?: string, serviceTier?: string}} */
+  const next = { provider, model };
+  if (thinking) next.thinking = thinking;
+  if (serviceTier) next.serviceTier = serviceTier;
+  return next;
+}
+
+/**
+ * The tier ids a model entry advertises. Standard serving is never a member —
+ * it is the absence of a tier.
+ * @param {ModelInfo} [modelEntry]
+ * @returns {string[]} Advertised tier ids in display order.
+ */
+function tierIds(modelEntry) {
+  return (modelEntry?.serviceTiers || []).map(t => t.id);
 }
 
 /**
@@ -56,6 +90,8 @@ function sameModelConfig(a, b) {
  * @property {string} [displayName] - Provider-supplied human label, when the provider exposes one
  * @property {string[]} [thinkingLevels] - Reasoning tiers the model supports, in display order, each named in the provider's own native vocabulary (the string is the identity, shown verbatim); absent/empty ⇒ no thinking control
  * @property {string} [defaultThinkingLevel] - Level used when a turn carries none (presentation only)
+ * @property {{id: string, name?: string, description?: string}[]} [serviceTiers] - Non-standard serving classes the model offers, in display order, each with the provider's own id, label and blurb; absent/empty ⇒ no speed control
+ * @property {string} [defaultServiceTier] - Tier the provider bills as this model's default (presentation only; never applied for the user)
  * @typedef {object} Provider
  * @property {string} name - Provider name (e.g., "anthropic")
  * @property {string} displayName - Display name (e.g., "Anthropic (API)")
@@ -831,6 +867,7 @@ class ModelSelector extends HTMLElement {
                 <div class="model-current-sub">${escapeHtml(subParts.join(' · '))}</div>
             </div>
             ${this._generateThinkingControl(resolved, modelEntry)}
+            ${this._generateServiceTierControl(resolved, modelEntry)}
             ${this._generateUsageSection(resolved.provider)}`;
   }
 
@@ -885,14 +922,95 @@ class ModelSelector extends HTMLElement {
     const eff = this._currentConfig;
     if (!eff || !eff.provider || !eff.model) return false;
 
-    /** @type {{provider: string, model: string, thinking?: string}} */
-    const next = { provider: eff.provider, model: eff.model };
-    if (level) next.thinking = level;
+    // Carry the serving tier through untouched: the two dials are independent,
+    // and dropping one here would quietly revert a paid choice.
+    const next = buildModelConfig(eff.provider, eff.model, level, eff.serviceTier);
 
     if (!this._writeOrDefer(next)) return false;
 
     this._currentConfig = next;
     return true;
+  }
+
+  /**
+   * Segmented control for the current model's serving class, rendered only when
+   * the model advertises `serviceTiers`. "Standard" (no explicit tier) is always
+   * offered first and, when picked, deletes the `serviceTier` key; the
+   * advertised tiers follow in the provider's declared order, each shown by the
+   * provider's own name and blurb — a tier costs materially more, so the
+   * description it is sold with is the honest label for it. Clicks are
+   * dispatched via `data-service-tier` in `_attachDropdownListener`.
+   * @param {import('../model/model-config.js').ResolvedConfig|null} resolved
+   * @param {ModelInfo} [modelEntry]
+   * @returns {string} HTML, or '' when the model exposes no speed control.
+   * @private
+   */
+  _generateServiceTierControl(resolved, modelEntry) {
+    const tiers = modelEntry?.serviceTiers || [];
+    if (tiers.length === 0) return '';
+
+    const ids = tierIds(modelEntry);
+    const active = resolved?.serviceTier && ids.includes(resolved.serviceTier) ? resolved.serviceTier : '';
+
+    const seg = (/** @type {string} */ id, /** @type {string} */ label, /** @type {string} */ title) => {
+      const isActive = id === active;
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+      return `<button type="button" class="tier-seg${isActive ? ' active' : ''}" data-service-tier="${escapeHtml(id)}" role="radio" aria-checked="${isActive}"${titleAttr}>${escapeHtml(label)}</button>`;
+    };
+
+    const segments = [
+      seg('', 'Standard', ''),
+      ...tiers.map(t => seg(t.id, t.name || t.id, t.description || '')),
+    ];
+
+    return `
+            <div class="model-speed">
+                <div class="model-speed-label">Speed</div>
+                <div class="tier-segmented" role="radiogroup" aria-label="Serving speed">${segments.join('')}</div>
+            </div>`;
+  }
+
+  /**
+   * Write a serving-tier choice into the same scope the model selection writes
+   * to. `tier === ''` means Standard → delete the `serviceTier` key (never store
+   * `serviceTier: ''`). Carries the thinking level through untouched, for the
+   * same reason `applyThinkingLevel` carries the tier. Pure write — the caller
+   * owns any re-render.
+   * @param {string} tier - '' for Standard, else an advertised tier id.
+   * @returns {boolean} True when the tier was written.
+   */
+  applyServiceTier(tier) {
+    const eff = this._currentConfig;
+    if (!eff || !eff.provider || !eff.model) return false;
+
+    const next = buildModelConfig(eff.provider, eff.model, eff.thinking, tier);
+
+    if (!this._writeOrDefer(next)) return false;
+
+    this._currentConfig = next;
+    return true;
+  }
+
+  /**
+   * Apply a serving-tier pick from the dropdown's segmented control and close
+   * the menu, matching how a thinking-level pick commits.
+   * @param {string} tier - '' for Standard, else an advertised tier id.
+   * @private
+   */
+  _setServiceTier(tier) {
+    if (this.applyServiceTier(tier)) this.closeDropdown();
+  }
+
+  /**
+   * The serving tiers the currently selected model advertises, in the
+   * provider's declared order. Empty for standard-only models (or when nothing
+   * is selected).
+   * @returns {string[]} Advertised tier ids in advertised order.
+   */
+  supportedServiceTiers() {
+    const prov = this.providers.find(p => p.name === this.provider);
+    const modelEntry = prov?.modelsWithContext?.find(m => m.id === this.model);
+    return tierIds(modelEntry);
   }
 
   /**
@@ -966,6 +1084,15 @@ class ModelSelector extends HTMLElement {
       if (seg) {
         e.stopPropagation();
         this._setThinkingLevel(seg.getAttribute('data-thinking-level') || '');
+        return;
+      }
+
+      // Serving-tier segment: apply the tier and close the dropdown.
+      // '' = Standard.
+      const tierSeg = target.closest('.tier-seg');
+      if (tierSeg) {
+        e.stopPropagation();
+        this._setServiceTier(tierSeg.getAttribute('data-service-tier') || '');
         return;
       }
 
@@ -1153,12 +1280,18 @@ class ModelSelector extends HTMLElement {
     // back to the default rather than store a level the model can't honour.
     const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
     const level = thinking && (modelEntry?.thinkingLevels || []).includes(thinking) ? thinking : '';
+    // The serving tier is carried across a model change only when the new model
+    // advertises it too — switching models must never silently start paying a
+    // premium rate the new model was never chosen for.
+    const carried = this._currentConfig?.serviceTier;
+    const tier = carried && tierIds(modelEntry).includes(carried) ? carried : '';
 
-    // Already selected at this exact level — just close the dropdown. The
-    // level is part of the identity, so the same model at a different level
-    // is a real change and falls through.
+    // Already selected at this exact level and tier — just close the dropdown.
+    // Both dials are part of the identity, so the same model at a different
+    // level or tier is a real change and falls through.
     if (this.provider === providerName && this.model === modelName
-      && (this._currentConfig?.thinking || '') === level) {
+      && (this._currentConfig?.thinking || '') === level
+      && (this._currentConfig?.serviceTier || '') === tier) {
       this.closeDropdown();
       return;
     }
@@ -1166,9 +1299,7 @@ class ModelSelector extends HTMLElement {
     // An explicit pick supersedes any in-flight post-commit pin.
     this._cycle.reset();
 
-    /** @type {{provider: string, model: string, thinking?: string}} */
-    const nextConfig = { provider: providerName, model: modelName };
-    if (level) nextConfig.thinking = level;
+    const nextConfig = buildModelConfig(providerName, modelName, level, tier);
 
     // Write to thread if bound, otherwise the conversation.
     if (this._messageThread) {
@@ -1204,16 +1335,15 @@ class ModelSelector extends HTMLElement {
    * The current effective `{provider, model, thinking?}` pair, with `thinking`
    * normalised to the levels the model actually advertises (an unsupported
    * stored level means the model's default, same as everywhere else).
-   * @returns {{provider: string, model: string, thinking?: string}|null} The
+   * @returns {{provider: string, model: string, thinking?: string, serviceTier?: string}|null} The
    *   pair, or null when no model is selected.
    */
   currentConfigPair() {
     const c = this._currentConfig;
     if (!c || !c.provider || !c.model) return null;
     const level = c.thinking && this.supportedThinkingLevels().includes(c.thinking) ? c.thinking : '';
-    return level
-      ? { provider: c.provider, model: c.model, thinking: level }
-      : { provider: c.provider, model: c.model };
+    const tier = c.serviceTier && this.supportedServiceTiers().includes(c.serviceTier) ? c.serviceTier : '';
+    return buildModelConfig(c.provider, c.model, level, tier);
   }
 
   /**
@@ -1238,7 +1368,7 @@ class ModelSelector extends HTMLElement {
    * provider (cycling just skips it, so the caller gets `false`) and never
    * closes the dropdown, which the gesture keeps open as its HUD — while open,
    * both dropdown columns and the collapsed button refresh in place.
-   * @param {{provider: string, model: string, thinking?: string}} pair
+   * @param {{provider: string, model: string, thinking?: string, serviceTier?: string}} pair
    * @returns {boolean} True when the pair was applied.
    */
   applyConfigPair(pair) {
@@ -1247,10 +1377,9 @@ class ModelSelector extends HTMLElement {
 
     const modelEntry = provider.modelsWithContext?.find(m => m.id === pair.model);
     const level = pair.thinking && (modelEntry?.thinkingLevels || []).includes(pair.thinking) ? pair.thinking : '';
+    const tier = pair.serviceTier && tierIds(modelEntry).includes(pair.serviceTier) ? pair.serviceTier : '';
 
-    /** @type {{provider: string, model: string, thinking?: string}} */
-    const nextConfig = { provider: pair.provider, model: pair.model };
-    if (level) nextConfig.thinking = level;
+    const nextConfig = buildModelConfig(pair.provider, pair.model, level, tier);
 
     if (!this._writeOrDefer(nextConfig)) return false;
 
@@ -1274,7 +1403,7 @@ class ModelSelector extends HTMLElement {
    * Persist a `{provider, model, thinking?}` choice into the bound scope — the
    * conversation/thread Y.Map the engine (and any running turn) reads. The
    * single write path shared by `applyConfigPair` and `applyThinkingLevel`.
-   * @param {{provider: string, model: string, thinking?: string}} config
+   * @param {{provider: string, model: string, thinking?: string, serviceTier?: string}} config
    * @returns {boolean} True when written; false when there is nothing bound.
    * @private
    */
@@ -1296,7 +1425,7 @@ class ModelSelector extends HTMLElement {
    * fields and HUD still update on every hop, and `commitCycle` flushes the
    * landing value once. Returns false only when nothing is bound to write to,
    * so callers still reject an inapplicable pair identically in both modes.
-   * @param {{provider: string, model: string, thinking?: string}} config
+   * @param {{provider: string, model: string, thinking?: string, serviceTier?: string}} config
    * @returns {boolean} True when the choice may be applied to the display.
    * @private
    */

@@ -189,10 +189,14 @@ type SerializedConversation struct {
 type ModelConfig struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
-	// Thinking is the optional canonical thinking/reasoning-effort level
-	// ("off","low","medium","high","max"); empty ⇒ provider default. It rides
-	// atomically with the (Provider, Model) pair through the thread tree.
+	// Thinking is the optional thinking/reasoning-effort level, named in the
+	// provider's own vocabulary; empty ⇒ provider default. It rides atomically
+	// with the (Provider, Model) pair through the thread tree.
 	Thinking string `json:"thinking,omitempty"`
+	// ServiceTier is the optional serving class, named by the id the model
+	// advertised (e.g. "priority"); empty ⇒ standard serving. Rides with the
+	// pair on the same terms as Thinking, and is orthogonal to it.
+	ServiceTier string `json:"serviceTier,omitempty"`
 }
 
 // WorkerConfig contains worker configuration
@@ -278,6 +282,13 @@ type StreamChunk struct {
 	OutputTokens    int                       `json:"outputTokens,omitempty"`    // Running output-token estimate, only set for type=="progress"
 	CacheMissReason string                    `json:"cacheMissReason,omitempty"` // Consequential provider cache miss, only set for type=="status"
 
+	// Notice is a durable warning this turn earned, already composed by the
+	// provider. Only set for type=="status". CacheMissReason above is the
+	// provider-cache special case, which owns its own lead text; anything else
+	// worth keeping in the transcript — a serving tier the backend declined —
+	// arrives here ready to insert.
+	Notice *StreamNotice `json:"notice,omitempty"`
+
 	// Metadata carries opaque provider data belonging to the block this chunk
 	// is part of — an Anthropic thinking signature, an OpenAI reasoning item's
 	// id and encrypted content. It rides on a thinking chunk because the value
@@ -293,6 +304,16 @@ type StreamChunk struct {
 	InputTokens  int   `json:"inputTokens,omitempty"`
 	CachedTokens int   `json:"cachedTokens,omitempty"`
 	CacheTTLMs   int64 `json:"cacheTTLMs,omitempty"`
+}
+
+// StreamNotice is a provider-composed durable warning bound for the transcript
+// as an ItemTypeNotice. The provider writes the whole thing because only it
+// knows what happened and in what words; the worker decides where it lands and
+// that it lands only once.
+type StreamNotice struct {
+	Summary string `json:"summary"`          // Terse lozenge label, e.g. "Standard speed"
+	Content string `json:"content"`          // Plain-English lead, then the underlying values verbatim
+	Source  string `json:"source,omitempty"` // What reported it, e.g. "openaicodex"
 }
 
 // llmCallResult is the in-process completion delivered from the provider

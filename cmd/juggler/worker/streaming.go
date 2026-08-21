@@ -140,6 +140,7 @@ func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 		// in the transcript as its own item instead of riding the spinner.
 		w.mergeProcessingPhase(chunk.Content)
 		w.insertCacheMissNotice(chunk.CacheMissReason)
+		w.insertProviderNotice(chunk.Notice)
 	default:
 		// Other chunk types (tool_use, etc.) - finalize any active streaming
 		w.finalizeStreaming()
@@ -344,6 +345,34 @@ func (w *ConversationWorker) insertCacheMissNotice(reason string) {
 		Summary:   "Cache miss",
 		Content:   cacheMissNoticeLead + "\n\nReason: " + reason,
 		Source:    "claudecode",
+		Timestamp: time.Now().Format(time.RFC3339),
+	})
+}
+
+// insertProviderNotice records a durable warning the provider composed in full
+// — a serving tier the backend declined, say — at the point in the conversation
+// where it happened.
+//
+// Deduplicated on the whole notice for the worker's lifetime, because the
+// conditions that produce one rarely hold for a single turn: a plan that cannot
+// use a tier cannot use it on the next turn either, and a warning repeated on
+// every reply stops being information and becomes wallpaper. Once is the
+// honest count.
+func (w *ConversationWorker) insertProviderNotice(notice *StreamNotice) {
+	if notice == nil || notice.Summary == "" || notice.Content == "" {
+		return
+	}
+	key := notice.Summary + "\x00" + notice.Content
+	if key == w.lastProviderNotice {
+		return
+	}
+	w.lastProviderNotice = key
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type:      ItemTypeNotice,
+		ItemID:    generateItemID(),
+		Summary:   notice.Summary,
+		Content:   notice.Content,
+		Source:    notice.Source,
 		Timestamp: time.Now().Format(time.RFC3339),
 	})
 }

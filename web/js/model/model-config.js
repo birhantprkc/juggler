@@ -6,7 +6,8 @@
  * Helpers for the `modelConfig` shape stored on threads / conversations. A
  * modelConfig is either null/undefined (inherit from parent / unset) or a
  * concrete { provider, model } pair, optionally carrying a `thinking` level
- * ('off'|'low'|'medium'|'high'|'max'; absent ⇒ provider default).
+ * (the provider's own native string; absent ⇒ provider default) and a
+ * `serviceTier` (an id the model advertised; absent ⇒ standard serving).
  *
  * `resolveConfig` annotates a config with its availability status against the
  * current provider list so UI code has one place to check.
@@ -19,12 +20,13 @@
  */
 
 /**
- * @typedef {{provider: string, model: string, thinking?: string}} ConcreteModelConfig
+ * @typedef {{provider: string, model: string, thinking?: string, serviceTier?: string}} ConcreteModelConfig
  * @typedef {ConcreteModelConfig | null | undefined} ModelConfigShape
  * @typedef {{
  *   provider: string,
  *   model: string,
  *   thinking?: string,
+ *   serviceTier?: string,
  *   status: 'ok'|'unconfigured'|'unknown-model'|'unavailable-provider'
  * }} ResolvedConfig
  */
@@ -38,10 +40,16 @@
 export function resolveConfig(cfg, providers) {
   if (!cfg) return null;
   const status = checkAvailability(cfg.provider, cfg.model, providers);
-  // Carry `thinking` through unchanged (may be undefined). It's a tweak on the
-  // concrete pair, not part of availability — the UI decides whether the
-  // selected model actually advertises the level.
-  return { provider: cfg.provider, model: cfg.model, thinking: cfg.thinking, status };
+  // Carry both dials through unchanged (either may be undefined). They are
+  // tweaks on the concrete pair, not part of availability — the UI decides
+  // whether the selected model actually advertises the level or the tier.
+  return {
+    provider: cfg.provider,
+    model: cfg.model,
+    thinking: cfg.thinking,
+    serviceTier: cfg.serviceTier,
+    status,
+  };
 }
 
 /**

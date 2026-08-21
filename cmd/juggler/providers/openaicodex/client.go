@@ -37,6 +37,7 @@ func Register() {
 		ListModelsOverride: listModels,
 		UsageStatsOverride: usageStats,
 		ThinkingSpecFn:     codexThinkingSpec,
+		ServiceTierSpecFn:  codexServiceTierSpec,
 		Quirks: openaibase.Quirks{
 			MaxTokensParamName:           "max_completion_tokens",
 			ForceResponsesAPI:            true,
@@ -67,10 +68,28 @@ type codexModel struct {
 	// fields, never from the slug.
 	DefaultReasoningLevel    string                `json:"default_reasoning_level"`
 	SupportedReasoningLevels []codexReasoningLevel `json:"supported_reasoning_levels"`
+
+	// ServiceTiers is the backend's declaration of the non-standard serving
+	// classes this model offers, carrying its own id, label and blurb (e.g.
+	// {"priority", "Fast", "1.5x speed, increased usage"}). It is the sole
+	// authority for what may be requested: a tier absent here is not offered
+	// and never sent. DefaultServiceTier is the backend's declared default and
+	// is displayed, never applied — see ServiceTierSpec.tierFor.
+	//
+	// The response also carries additional_speed_tiers, which the Codex client
+	// marks deprecated in favour of this field. It is deliberately not parsed.
+	ServiceTiers       []codexServiceTier `json:"service_tiers"`
+	DefaultServiceTier string             `json:"default_service_tier"`
 }
 
 type codexReasoningLevel struct {
 	Effort string `json:"effort"`
+}
+
+type codexServiceTier struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // reasoningSpecs is the latest complete API-declared reasoning catalog, keyed
@@ -93,6 +112,48 @@ func codexThinkingSpec(modelID string) openaibase.ThinkingSpec {
 		return snapshot[modelID]
 	}
 	return openaibase.ThinkingSpec{}
+}
+
+// serviceTierSpecs is the latest complete API-declared serving-class catalog,
+// keyed by model slug, on the same wholesale-replacement terms as
+// reasoningSpecs: a model that stops offering a tier must lose it immediately,
+// because continuing to offer it would spend the user's money on a request the
+// backend will decline.
+var serviceTierSpecs atomic.Value // stores map[string]openaibase.ServiceTierSpec
+
+func replaceServiceTierSpecs(specs map[string]openaibase.ServiceTierSpec) {
+	serviceTierSpecs.Store(specs)
+}
+
+// codexServiceTierSpec is the descriptor's ServiceTierSpecFn. Only a spec
+// populated from /models is returned: a saved or static model absent from the
+// live catalog gets no speed control and no service_tier on the wire.
+func codexServiceTierSpec(modelID string) openaibase.ServiceTierSpec {
+	if snapshot, ok := serviceTierSpecs.Load().(map[string]openaibase.ServiceTierSpec); ok {
+		return snapshot[modelID]
+	}
+	return openaibase.ServiceTierSpec{}
+}
+
+// serviceTierSpecFromCatalog builds a ServiceTierSpec from a model's
+// service_tiers, preserving the backend's order, ids and labels. A model that
+// declares no tiers yields the zero spec (standard serving only).
+func serviceTierSpecFromCatalog(model codexModel) openaibase.ServiceTierSpec {
+	tiers := make([]provider.ServiceTier, 0, len(model.ServiceTiers))
+	for _, tier := range model.ServiceTiers {
+		if tier.ID == "" {
+			continue
+		}
+		tiers = append(tiers, provider.ServiceTier{
+			ID:          tier.ID,
+			Name:        tier.Name,
+			Description: tier.Description,
+		})
+	}
+	if len(tiers) == 0 {
+		return openaibase.ServiceTierSpec{}
+	}
+	return openaibase.ServiceTierSpec{Tiers: tiers, Default: model.DefaultServiceTier}
 }
 
 // thinkingSpecFromCatalog builds a ThinkingSpec from a model's
@@ -135,6 +196,7 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 
 	infos := make([]provider.ModelInfo, 0, len(parsed.Models))
 	specs := make(map[string]openaibase.ThinkingSpec, len(parsed.Models))
+	tierSpecs := make(map[string]openaibase.ServiceTierSpec, len(parsed.Models))
 	for _, model := range parsed.Models {
 		if model.Slug == "" || model.Visibility != "list" {
 			continue
@@ -152,6 +214,8 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 		}
 		spec := thinkingSpecFromCatalog(model)
 		specs[model.Slug] = spec
+		tierSpec := serviceTierSpecFromCatalog(model)
+		tierSpecs[model.Slug] = tierSpec
 		infos = append(infos, provider.ModelInfo{
 			ID:                   model.Slug,
 			DisplayName:          utils.ModelDisplayName(model.Slug) + " (ChatGPT plan)",
@@ -160,12 +224,15 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 			FromAPI:              true,
 			ThinkingLevels:       spec.Options(),
 			DefaultThinkingLevel: spec.Default,
+			ServiceTiers:         tierSpec.Options(),
+			DefaultServiceTier:   tierSpec.Default,
 		})
 	}
 	if len(infos) == 0 {
 		return nil, fmt.Errorf("OpenAI Codex /models returned no visible models")
 	}
 	replaceReasoningSpecs(specs)
+	replaceServiceTierSpecs(tierSpecs)
 	return withStaticFallbackModels(infos), nil
 }
 
@@ -185,8 +252,9 @@ func withStaticFallbackModels(infos []provider.ModelInfo) []provider.ModelInfo {
 
 	for _, id := range ids {
 		// These compatibility entries contribute only static admission limits. The
-		// ChatGPT-plan /models response is the sole authority for reasoning levels,
-		// so a model absent from that response advertises no thinking control.
+		// ChatGPT-plan /models response is the sole authority for reasoning levels
+		// and serving classes, so a model absent from that response advertises
+		// neither a thinking control nor a speed control.
 		infos = append(infos, provider.ModelInfo{
 			ID:              id,
 			DisplayName:     utils.ModelDisplayName(id) + " (ChatGPT plan)",
