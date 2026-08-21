@@ -23,6 +23,41 @@ export function escapeHtml(text) {
 }
 
 /**
+ * The entities `escapeHtml` produces, keyed lowercase for lookup.
+ * @type {Record<string, string>}
+ */
+const HTML_ENTITY_VALUES = {
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&#x27;': "'"
+};
+
+/**
+ * Decode the HTML entities `escapeHtml` produces.
+ *
+ * For model-authored strings that are displayed as text rather than markup — a
+ * conversation name, a thread goal — which sometimes arrive HTML-escaped
+ * because the model treats every string it writes as reply markup. Nothing
+ * renders those through innerHTML, so the entities reach the user verbatim.
+ *
+ * One pass, so `&amp;lt;` decodes to `&lt;` and not to `<`. Pure string work
+ * with no `document`: this module also loads in the engine worker, which has
+ * no DOM.
+ * @param {string} text - Text that may contain escaped entities
+ * @returns {string} Text with the escapeHtml entity set decoded
+ */
+export function decodeHtmlEntities(text) {
+  if (text === null || text === undefined) return '';
+  return String(text).replace(
+    /&(?:amp|lt|gt|quot|#39|#x27);/gi,
+    (entity) => HTML_ENTITY_VALUES[entity.toLowerCase()] ?? entity
+  );
+}
+
+/**
  * Escape JSON string content for HTML display without surrounding quotes.
  * This is a specialized function for custom JSON formatters that manually build HTML.
  * @param {string} str - String to escape

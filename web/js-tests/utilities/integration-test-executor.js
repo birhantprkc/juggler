@@ -161,6 +161,7 @@ import { runTests as runExtensionReloadFailureTests } from '../unit-tests/extens
 import { runTests as runExtensionSettingsTests } from '../unit-tests/extension-settings-test.js';
 import { runTests as runUserCommandFactoryTests } from '../unit-tests/user-command-factory-test.js';
 import { runTests as runEngineApiVectorTests } from '../unit-tests/engineapi-vectors-test.js';
+import { runTests as runDecodeHtmlEntitiesTests } from '../unit-tests/decode-html-entities-test.js';
 import { runTests as runStrategyFallbackTests } from '../unit-tests/strategy-fallback-test.js';
 import { runTests as runStrategyHiddenTests } from '../unit-tests/strategy-hidden-test.js';
 import { runTests as runStrategyHookThreadScopeTests } from '../unit-tests/strategy-hook-thread-scope-test.js';
@@ -394,6 +395,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:extension-settings', run: runExtensionSettingsTests },
   { name: 'unit:user-command-factory', run: runUserCommandFactoryTests },
   { name: 'unit:engineapi-vectors', run: runEngineApiVectorTests },
+  { name: 'unit:decode-html-entities', run: runDecodeHtmlEntitiesTests },
   { name: 'unit:strategy-fallback', run: runStrategyFallbackTests },
   { name: 'unit:strategy-hidden', run: runStrategyHiddenTests },
   { name: 'unit:strategy-hook-thread-scope', run: runStrategyHookThreadScopeTests },

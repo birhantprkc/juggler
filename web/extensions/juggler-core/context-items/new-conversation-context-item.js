@@ -5,6 +5,7 @@
 
 import ContextItem from 'juggler/context-item';
 import { createUserMessage } from '../../../sdk/lib/message.js';
+import { decodeHtmlEntities } from '../../../sdk/lib/html.js';
 
 /**
  * NewConversationContextItem — the `new_conversation` tool.
@@ -124,7 +125,10 @@ class NewConversationContextItem extends ContextItem {
    */
   async execute(params) {
     const message = String(params.message || '');
-    const name = params.name ? String(params.name) : '';
+    // The name is displayed as text (tab titles use textContent), so decode any
+    // entities a model escaped it with rather than showing "&lt;" to the user.
+    // SanitizeName then makes it filesystem-safe server-side.
+    const name = params.name ? decodeHtmlEntities(String(params.name)) : '';
     // Default true: omitted or any non-false value starts the turn.
     const autostart = params.autostart !== false;
 

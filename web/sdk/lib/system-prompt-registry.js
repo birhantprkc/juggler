@@ -129,7 +129,8 @@ const systemPromptRegistry = new SystemPromptRegistry();
  */
 const GLOBAL_GUIDANCE =
   '## Responses\n' +
-  '- Reply in plain text, Markdown, HTML, or Markdown containing HTML, as best suits the response.\n\n' +
+  '- Reply in plain text, Markdown, HTML, or Markdown containing HTML, as best suits the response.\n' +
+  '- That covers your reply only. Strings you pass as tool arguments are plain text — never HTML-escape them.\n\n' +
   '## Code\n' +
 	'- Match the existing patterns, naming, and formatting of the surrounding code.\n' +
 	'- Read the relevant code before changing it.\n' +
