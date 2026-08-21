@@ -303,17 +303,6 @@ func (a *App) waitForExit() {
 		launchWindow()
 	}
 
-	// Watchdog for the Cocoa main thread. WebKit's CVDisplayLink path has a
-	// lock-ordering bug that wedges our UI process across sleep/wake or a
-	// display reconfiguration (see mainthread_watchdog_darwin.m). When that
-	// fires, every UI-thread operation hangs forever — including app.Quit().
-	// The watchdog detects the wedge via main-queue heartbeats and re-execs a
-	// fresh server in place (same PID, same port) so the viewer reconnects
-	// transparently; in test mode it just force-exits. No-op off macOS.
-	if a.server != nil {
-		startMainThreadWatchdog(a.server.GetAddr(), !a.flags.testMode)
-	}
-
 	devMode := a.devModeEnabled()
 	selected := selectedEngineHost{}
 	if !a.flags.testMode {

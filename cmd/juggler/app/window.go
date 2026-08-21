@@ -83,6 +83,14 @@ func awaitTeardown(teardownDone <-chan struct{}, budget time.Duration) {
 // startup failures route through it so the server cannot linger without a
 // functioning engine.
 func runHeadlessServerApp(srv *server.Server, selected selectedEngineHost, done <-chan struct{}, teardownDone <-chan struct{}, requestQuit func(), onWindowReady func(*application.App, *application.WebviewWindow)) {
+	// A Node-hosted server creates no native application, so nothing on this
+	// path ever pumps a main run loop: the engine runs in a child process and
+	// this goroutine just blocks on done. The main-thread watchdog is therefore
+	// not armed below — it probes by dispatching a block to the main queue, and
+	// with no run loop draining that queue every probe goes unanswered, which
+	// reads as a permanent wedge within seconds of launch. The NSWorkspace
+	// sleep/wake observers it installs can't be delivered either. That leaves a
+	// Node-hosted server exactly where every non-macOS platform already is.
 	if !engineHostRequiresNativeApp(selected.mode) {
 		onWindowReady(nil, nil)
 		startEngineHost(buildEngineHost(selected, nil, srv, requestQuit), srv, requestQuit)
@@ -158,6 +166,18 @@ func runHeadlessServerApp(srv *server.Server, selected selectedEngineHost, done 
 		jlog.Error("[server] quit did not complete within %v — forcing exit", quitGraceTimeout)
 		os.Exit(0)
 	}()
+
+	// Watchdog for the Cocoa main thread, armed here because this is the path
+	// that owns the native application. WebKit's CVDisplayLink path has a
+	// lock-ordering bug that wedges the main thread across sleep/wake or a
+	// display reconfiguration (see mainthread_watchdog_darwin.m); when it
+	// fires, every UI-thread operation hangs forever — including app.Quit().
+	// The watchdog spots it via main-queue heartbeats and re-execs a fresh
+	// server in place (same PID, same port) so the viewer reconnects
+	// transparently. Its heartbeat only means anything while the run loop
+	// app.Run() is about to enter is pumping the main queue, which is why it is
+	// armed alongside that loop rather than at startup. No-op off macOS.
+	startMainThreadWatchdog(srv.GetAddr(), true)
 
 	if err := app.Run(); err != nil {
 		jlog.Error("application.Run failed: %v", err)

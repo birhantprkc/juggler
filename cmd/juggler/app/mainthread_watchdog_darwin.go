@@ -101,6 +101,10 @@ func jugglerOnDidWake() {
 // retrying.
 func startMainThreadWatchdog(addr string, allowRelaunch bool) {
 	procStart := time.Now()
+	// Say so, once. The watchdog is silent while the main thread is healthy,
+	// which is indistinguishable from a watchdog that was never armed — and a
+	// wedge nothing is watching for is the failure this exists to prevent.
+	jlog.Debug("Main-thread watchdog armed (relaunch on wedge: %v).", allowRelaunch)
 	// App Nap is allowed when we're idle (energy savings). It's blocked on a
 	// per-request basis via the osactivity package, wrapping each LLM call
 	// (and any other in-flight HTTP work) so the OS knows when we're
