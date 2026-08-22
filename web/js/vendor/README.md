@@ -23,13 +23,25 @@ adds to its size.
 | `pdf.min.mjs` | [Mozilla PDF.js](https://github.com/mozilla/pdf.js) | 6.2.108 | `pdfjs-dist` npm tarball, `package/build/` | Apache-2.0 | 2026-08-09 |
 | `pdf.worker.min.mjs` | Mozilla PDF.js | 6.2.108 | `pdfjs-dist` npm tarball, `package/build/` | Apache-2.0 | 2026-08-09 |
 | `pdf-standard-fonts/` | Mozilla PDF.js | 6.2.108 | `pdfjs-dist` npm tarball, `package/standard_fonts/` | Apache-2.0 (fonts: Liberation + Foxit, see the `LICENSE_*` files alongside) | 2026-08-09 |
-| `marked.min.js` | [marked](https://github.com/markedjs/marked) | 15.0.12 | marked release build | MIT | before this file existed |
+| `marked.min.js` | [marked](https://github.com/markedjs/marked) | 18.0.10 | jsDelivr (`npm/marked@18.0.10/lib/marked.umd.js`) | MIT | 2026-08-22 |
 | `yjs.mjs` | [Yjs](https://github.com/yjs/yjs) | 13.6.x (bundled with its `lib0` dependencies) | Yjs release, bundled | MIT | before this file existed |
 | `y-generic-sync.js` | Yjs sync protocol helper | — | bundled alongside `yjs.mjs` | MIT | before this file existed |
 | `prism-*.js` | [Prism](https://github.com/PrismJS/prism) | 1.29.0 | jsDelivr (`npm/prismjs@1.29.0`), minified by Terser 5.37.0 | MIT | before this file existed |
 
 The rows marked "before this file existed" were backfilled from the version
 banners inside the files themselves; treat their vendored dates as unknown.
+
+## marked notes
+
+**Upstream has no `marked.min.js` any more.** It was a root-level file up to
+15.x; from 16.x the only minified browser build is `lib/marked.umd.js`, which is
+what the local `marked.min.js` now holds. The local name is kept so the
+`<script>` tags in `web/index.html` and `web/js-tests/headless-test.html` do not
+have to change.
+
+The build carries a `//# sourceMappingURL=marked.umd.js.map` line and we do not
+vendor the 167 KB map, so opening the inspector logs one 404 for it. The comment
+is left in place because vendored files land byte-for-byte.
 
 ## PDF.js notes
 

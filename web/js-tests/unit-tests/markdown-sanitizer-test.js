@@ -301,5 +301,26 @@ export async function runTests(_ctx) {
     assert(frag.querySelectorAll('p').length === 2, `two paragraphs should survive: ${frag.childNodes.length} top-level nodes`);
   });
 
+  run('a tilde beside a code span does not desync the spans after it', () => {
+    // A `~` immediately followed by a backtick can be read as one delimiter run,
+    // swallowing the opening backtick of the code span. Every span after it on
+    // the line then inverts, and a `<tag>` that should have been code content
+    // lands in the output as live markup for the sanitizer to strip — which
+    // reads as the rest of the line turning into visible HTML.
+    const html = renderMarkdown('see (`fn`, ~`:1097`) then `click` and `<menu class="x">` end');
+    const codes = Array.from(parse(html).querySelectorAll('code')).map((c) => c.textContent);
+    assert(codes.includes(':1097'), `the span after the tilde should be code: ${html}`);
+    assert(codes.includes('click'), `the next span should still be code: ${html}`);
+    assert(codes.includes('<menu class="x">'), `the tag must stay code content: ${html}`);
+    assert(!/<menu/i.test(html), `no raw <menu> may reach the output: ${html}`);
+  });
+
+  run('strikethrough still renders', () => {
+    // The tilde is load-bearing for gfm strikethrough, so pin it alongside.
+    const frag = parse(renderMarkdown('~~gone~~ and `kept`'));
+    assert(frag.querySelector('del')?.textContent === 'gone', `~~gone~~ should be a <del>: ${frag.textContent}`);
+    assert(frag.querySelector('code')?.textContent === 'kept', `the code span should survive: ${frag.textContent}`);
+  });
+
   return { passed, failed, errors };
 }
