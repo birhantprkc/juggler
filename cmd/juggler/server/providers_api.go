@@ -44,6 +44,13 @@ type ModelWithContext struct {
 	// DefaultServiceTier is the tier the provider bills as this model's default
 	// — presentation only, and never applied on the user's behalf.
 	DefaultServiceTier string `json:"defaultServiceTier,omitempty"`
+	// Hidden is true when the user turned this model off (models.hidden in the
+	// global settings). It is published rather than filtered out: the picker
+	// still needs to label a hidden model that a conversation is already using,
+	// which it can't do if the entry is missing from the list entirely.
+	// Everything that CHOOSES a model — the menu, the default resolver, the
+	// cheap-model resolver — skips these.
+	Hidden bool `json:"hidden,omitempty"`
 	// StreamsLiveUsage is true when this model's provider reports authoritative
 	// per-step input usage mid-turn (see provider.ProviderInfo.StreamsLiveUsage).
 	// The footer meter grows against the live count only for models that set it;
@@ -69,7 +76,7 @@ type ProviderStatus struct {
 	ModelsWithContext []ModelWithContext `json:"modelsWithContext"`
 }
 
-func modelContextFallbacks(pInfo provider.ProviderInfo) []ModelWithContext {
+func modelContextFallbacks(pInfo provider.ProviderInfo, settings core.GlobalSettings) []ModelWithContext {
 	if len(pInfo.ModelContextWindows) == 0 {
 		return nil
 	}
@@ -84,6 +91,7 @@ func modelContextFallbacks(pInfo provider.ProviderInfo) []ModelWithContext {
 			ID:               id,
 			ContextWindow:    pInfo.ModelContextWindows[id],
 			FromAPI:          false,
+			Hidden:           settings.IsModelHidden(pInfo.Name, id),
 			StreamsLiveUsage: pInfo.StreamsLiveUsage,
 		})
 	}
@@ -122,6 +130,15 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 	providerInfos := provider.ListProviderInfos()
 	providers := make([]ProviderStatus, len(providerInfos))
 	var wg sync.WaitGroup
+
+	// One settings read for the whole fan-out: the store is a single-writer
+	// actor, so calling into it from each goroutine would serialise them all
+	// against it for no gain, and a mid-fan-out change would be applied to some
+	// providers and not others.
+	var settings core.GlobalSettings
+	if s.settings != nil {
+		settings = s.settings.get()
+	}
 
 	for i, info := range providerInfos {
 		wg.Add(1)
@@ -175,6 +192,7 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 							DefaultThinkingLevel: modelInfo.DefaultThinkingLevel,
 							ServiceTiers:         modelInfo.ServiceTiers,
 							DefaultServiceTier:   modelInfo.DefaultServiceTier,
+							Hidden:               settings.IsModelHidden(pInfo.Name, modelInfo.ID),
 							StreamsLiveUsage:     pInfo.StreamsLiveUsage,
 						})
 					}
@@ -187,13 +205,13 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 					if !readyGated {
 						authHint = humanizeModelListError(pInfo.DisplayName, err)
 					}
-					modelsWithContext = modelContextFallbacks(pInfo)
+					modelsWithContext = modelContextFallbacks(pInfo, settings)
 				}
 			} else if authType == provider.AuthTypeOAuthBearer {
 				// OAuth providers can be discoverable in the UI even while their
 				// external CLI login has expired. Publish built-in model fallbacks so
 				// the menu can show disabled choices with the authHint.
-				modelsWithContext = modelContextFallbacks(pInfo)
+				modelsWithContext = modelContextFallbacks(pInfo, settings)
 			}
 
 			providers[idx] = ProviderStatus{
@@ -359,7 +377,10 @@ func preferredAvailableModel(providers []ProviderStatus) (core.ModelRef, bool) {
 
 	candidates := make([]ProviderStatus, 0, len(providers))
 	for _, p := range providers {
-		if p.Available && len(p.ModelsWithContext) > 0 {
+		// A provider qualifies only on models the user can actually choose, so
+		// one whose whole catalogue is hidden drops out rather than seeding new
+		// conversations with a model the menu refuses to offer.
+		if p.Available && firstVisibleModel(p) != "" {
 			candidates = append(candidates, p)
 		}
 	}
@@ -375,7 +396,18 @@ func preferredAvailableModel(providers []ProviderStatus) (core.ModelRef, bool) {
 		return candidates[i].Name < candidates[j].Name
 	})
 	best := candidates[0]
-	return core.ModelRef{Provider: best.Name, Model: best.ModelsWithContext[0].ID}, true
+	return core.ModelRef{Provider: best.Name, Model: firstVisibleModel(best)}, true
+}
+
+// firstVisibleModel returns the id of the provider's first model the user has
+// not hidden, or "" when every one of them is hidden.
+func firstVisibleModel(p ProviderStatus) string {
+	for _, m := range p.ModelsWithContext {
+		if !m.Hidden {
+			return m.ID
+		}
+	}
+	return ""
 }
 
 // resolveDefaultModel returns the concrete {provider, model, thinking?} a new
@@ -423,13 +455,16 @@ func (s *Server) liveModelMatch(providerName, wantID string) (string, bool) {
 		if !p.Available {
 			return "", false
 		}
+		// Hidden models are skipped in both passes: the cheap-model hint is
+		// resolved on the user's behalf, so it must never land on a model they
+		// turned off.
 		for _, m := range p.ModelsWithContext {
-			if m.ID == wantID {
+			if m.ID == wantID && !m.Hidden {
 				return m.ID, true
 			}
 		}
 		for _, m := range p.ModelsWithContext {
-			if strings.HasPrefix(m.ID, wantID) {
+			if strings.HasPrefix(m.ID, wantID) && !m.Hidden {
 				return m.ID, true
 			}
 		}

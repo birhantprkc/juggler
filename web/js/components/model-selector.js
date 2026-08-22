@@ -92,6 +92,7 @@ function tierIds(modelEntry) {
  * @property {string} [defaultThinkingLevel] - Level used when a turn carries none (presentation only)
  * @property {{id: string, name?: string, description?: string}[]} [serviceTiers] - Non-standard serving classes the model offers, in display order, each with the provider's own id, label and blurb; absent/empty ⇒ no speed control
  * @property {string} [defaultServiceTier] - Tier the provider bills as this model's default (presentation only; never applied for the user)
+ * @property {boolean} [hidden] - True when the user has turned this model off in settings (models.hidden); the menu omits it, except for the one the conversation is currently using
  * @typedef {object} Provider
  * @property {string} name - Provider name (e.g., "anthropic")
  * @property {string} displayName - Display name (e.g., "Anthropic (API)")
@@ -552,7 +553,7 @@ class ModelSelector extends HTMLElement {
   _cycleProviderView(providerName) {
     const provider = this.providers.find(p => p.name === providerName);
     if (!provider) return;
-    const all = provider.modelsWithContext || [];
+    const all = this._visibleModels(provider);
     const hasShortlist = getRecommendedModels(all).length < all.length;
     const order = hasShortlist ? ['none', 'top', 'all'] : ['none', 'all'];
     const current = this._resolveViewState(providerName, hasShortlist);
@@ -733,7 +734,7 @@ class ModelSelector extends HTMLElement {
     // shortlist derived from it should be version-ordered rather than API-ordered.
     // (Casts: the filter utils' generic Model typedef erases the richer
     // ModelInfo shape, but they return the same objects they were given.)
-    const allModels = /** @type {ModelInfo[]} */ (sortModelsByVersion(provider.modelsWithContext));
+    const allModels = /** @type {ModelInfo[]} */ (sortModelsByVersion(this._visibleModels(provider)));
     const recommendedModels = /** @type {ModelInfo[]} */ (getRecommendedModels(allModels));
     const hasShortlist = recommendedModels.length < allModels.length;
     const state = this._resolveViewState(provider.name, hasShortlist);
@@ -763,8 +764,14 @@ class ModelSelector extends HTMLElement {
           active: isCurrent,
         });
       }
+      // The only hidden model that reaches here is the one this conversation is
+      // already using. Say so, rather than showing it as an ordinary choice the
+      // menu would otherwise never offer.
+      const label = model.hidden
+        ? `${displayName} <span class="menu-item-note">hidden</span>`
+        : displayName;
       return this._selectionItem({
-        label: displayName,
+        label,
         active: isCurrent,
         classes: recommendedIds.has(model.id) ? 'recommended' : '',
         dataAttrs: `data-provider="${provider.name}" data-model="${model.id}"`,
@@ -775,6 +782,23 @@ class ModelSelector extends HTMLElement {
     const header = `<li class="menu-header provider-menu-header"><span class="menu-header-label">${provider.displayName}</span>${toggle}</li>`;
     const group = items.length ? `<menu class="menu-group">${items.join('')}</menu>` : '';
     return `${header}${group}`;
+  }
+
+  /**
+   * A provider's models minus the ones the user has hidden in settings.
+   *
+   * The one exception is the model this conversation is currently using: hiding
+   * a model must not strip the label off a conversation already on it, leaving
+   * the picker reading "No model" for something that is plainly running. That
+   * one comes through flagged, and the row renders as such.
+   * @private
+   * @param {Provider} provider
+   * @returns {ModelInfo[]} The models this menu may show for the provider.
+   */
+  _visibleModels(provider) {
+    const models = provider.modelsWithContext || [];
+    const ownsSelection = this.provider === provider.name && !!this.model;
+    return models.filter(m => !m.hidden || (ownsSelection && m.id === this.model));
   }
 
   /**
@@ -798,7 +822,7 @@ class ModelSelector extends HTMLElement {
     // OAuth providers with a stale/missing external login remain visible but
     // disabled so the user can see what will unlock after logging in.
     const menuProviders = this.providers
-      .filter(p => p.modelsWithContext && p.modelsWithContext.length > 0)
+      .filter(p => this._visibleModels(p).length > 0)
       .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
     if (menuProviders.length === 0) {

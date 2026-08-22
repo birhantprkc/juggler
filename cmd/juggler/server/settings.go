@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/server/handlers"
 	"juggler/internal/httpx"
 	"juggler/internal/jlog"
@@ -106,6 +108,34 @@ func validProxyURL(raw string) bool {
 	return err == nil && u.Host != ""
 }
 
+// cloneHiddenModels deep-copies a hidden-model map, so the copy can be mutated
+// without touching the settings the store still owns.
+func cloneHiddenModels(in map[string][]string) map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for providerName, ids := range in {
+		out[providerName] = slices.Clone(ids)
+	}
+	return out
+}
+
+// sameHiddenModels reports whether two hidden-model maps describe the same set.
+// Both come from normalised documents, so the lists are already sorted and
+// de-duplicated and a plain element-wise comparison is exact.
+func sameHiddenModels(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for providerName, ids := range a {
+		if !slices.Equal(ids, b[providerName]) {
+			return false
+		}
+	}
+	return true
+}
+
 // handlePutSettings validates and persists the posted settings. An unknown
 // update mode is rejected with 400 and the file is left unchanged. Flipping the
 // update mode off→on kicks an immediate check so the UI reflects availability
@@ -119,7 +149,19 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// Updates tab sending only {updates:{mode}}, or the Connectivity tab sending
 	// only {connectivity:{...}}) merges into the existing settings rather than
 	// zeroing the sections it omits. Absent JSON keys keep their current values.
+	//
+	// The same seeding gives models.hidden add-only merge semantics: unmarshalling
+	// an object into an existing non-nil map ADDS and replaces keys but never
+	// deletes the ones the body omits. So a client un-hiding a provider's last
+	// model must send that provider an explicit empty array — omitting the key
+	// leaves the old list in place. (normalizeModelSettings then drops the empty
+	// entry, so nothing accumulates on disk.)
 	incoming := s.settings.get()
+	// get() copies the struct but not the map inside it, and the merge above
+	// writes into that map in place — so without this clone a decode would reach
+	// straight into the stored settings, and a request rejected below (or one
+	// whose save fails) would leave its changes behind in memory anyway.
+	incoming.Models.Hidden = cloneHiddenModels(incoming.Models.Hidden)
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&incoming); err != nil {
 		handlers.WriteError(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
@@ -143,13 +185,32 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		handlers.WriteError(w, r, http.StatusBadRequest, "invalid proxy URL")
 		return
 	}
+	// Every hidden-model list must name a provider this build registers, so a
+	// typo'd or hand-posted key can't sit in the file hiding nothing.
+	for providerName := range incoming.Models.Hidden {
+		if _, ok := provider.GetProviderInfo(providerName); !ok {
+			handlers.WriteError(w, r, http.StatusBadRequest, "unknown provider in hidden models: "+providerName)
+			return
+		}
+	}
 	prevMode := s.updateMode()
+	prevHidden := s.settings.get().Models.Hidden
 	incoming.Updates.Mode = core.NormalizeUpdateMode(incoming.Updates.Mode)
 	incoming.Network.Proxy.Mode = core.NormalizeProxyMode(incoming.Network.Proxy.Mode)
 	if err := s.settings.set(incoming); err != nil {
 		jlog.Error("settings: save failed: %v", err)
 		handlers.WriteError(w, r, http.StatusInternalServerError, "failed to save settings")
 		return
+	}
+	// Read back the stored document: the save normalises the hidden-model lists
+	// (trimming, de-duping, dropping emptied providers), so this is what the
+	// client should see and what the comparison below must be made against.
+	incoming = s.settings.get()
+	// Hidden models change what the model menu offers and what the default and
+	// cheap-model resolvers may pick, so republish the provider list instead of
+	// leaving the change invisible until something else triggers a refresh.
+	if !sameHiddenModels(prevHidden, incoming.Models.Hidden) {
+		s.RefreshProviders()
 	}
 	// Apply the proxy policy live so a change takes effect without a restart; the
 	// atomic resolver makes already-built clients pick it up on their next request.

@@ -154,18 +154,59 @@ export function getRecommendedModels(models) {
 }
 
 /**
- * Sort a full model list newest-first by parsed version, for display when the
- * provider hands them back in no meaningful order (OpenAI and Gemini list
- * roughly at random). Returns a new array; stable for equal versions, so
- * same-version variants and unparseable/specialized models keep their API order
- * amongst themselves (the latter sinking to the bottom as version 0).
+ * Sort a full model list for display, for when the provider hands them back in
+ * no meaningful order (OpenAI and Gemini list roughly at random). Models are
+ * grouped by lineage so a product line's versions sit together — every
+ * `mistral-large`, then every `mistral-medium` — with lineages ordered by their
+ * newest member and each lineage internally newest-first.
+ *
+ * Grouping rather than a flat version sort is what makes a long list readable:
+ * ranking purely by version scatters a line's members among its rivals, so
+ * finding "the large one" means scanning the whole list. The tradeoff is
+ * deliberate — an older member of a strong lineage can precede a newer member of
+ * a weaker one (claude-opus-4-6 above claude-haiku-4-5), because the user is
+ * choosing a line first and a version second.
+ *
+ * Within a lineage, ties on version fall back to the release date, so dated
+ * snapshots of one line (mistral-large-2411 vs -2407) still read newest-first
+ * even though the date is deliberately not part of the version. Failing that,
+ * API order is preserved, so genuine same-generation variants keep the order the
+ * provider chose.
  * @param {Model[]} models - The full model list from a provider.
- * @returns {Model[]} A new array sorted newest-first.
+ * @returns {Model[]} A new array, grouped by lineage and newest-first within it.
  */
 export function sortModelsByVersion(models) {
-  return models
-    .map((model, order) => ({ model, order, generation: extractVersion(model.id) }))
-    .sort((a, b) => b.generation - a.generation || a.order - b.order)
+  const annotated = models.map((model, order) => ({
+    model,
+    order,
+    ...parseLineage(model.id),
+    // An undated id names the line itself rather than one snapshot of it, so it
+    // leads its dated siblings — the same preference curateLineage applies.
+    date: extractDateCode(model.id) || LATEST_GENERATION,
+  }));
+
+  // A lineage ranks by its newest member, so the line carrying the newest model
+  // heads the list and its older versions come with it.
+  /** @type {Map<string, number>} */
+  const lineageRank = new Map();
+  for (const entry of annotated) {
+    const best = lineageRank.get(entry.key);
+    if (best === undefined || entry.generation > best) {
+      lineageRank.set(entry.key, entry.generation);
+    }
+  }
+
+  return annotated
+    .sort((a, b) => {
+      if (a.key !== b.key) {
+        const rankDelta = (lineageRank.get(b.key) ?? 0) - (lineageRank.get(a.key) ?? 0);
+        // Equal-ranked lineages fall back to the key, so a provider whose models
+        // carry no versions at all (every lineage ties at 0) reads alphabetically
+        // rather than in the provider's arbitrary API order.
+        return rankDelta || (a.key < b.key ? -1 : 1);
+      }
+      return b.generation - a.generation || b.date - a.date || a.order - b.order;
+    })
     .map(entry => entry.model);
 }
 
@@ -236,10 +277,10 @@ function curateLineage(entries) {
 function parseLineage(modelId) {
   const generation = extractVersion(modelId);
 
-  const cleaned = modelId.toLowerCase()
-    .replace(/^models\//, '')
-    .replace(DATE_SUFFIX, ''); // strip a trailing date so it isn't a "qualifier"
-  const tokens = cleaned.split('-').filter(Boolean);
+  // Strip trailing dates and the `-latest` alias token so neither reads as a
+  // "qualifier" — and so an alias shares one lineage with the dated snapshots
+  // it stands for (`mistral-large-latest` and `mistral-large-2411` are one line).
+  const tokens = stripSuffixes(modelId).split('-').filter(Boolean);
 
   // The version token is the first token carrying a digit (5.6, 4o, o3, 4).
   // A pure-integer minor (the "1" of claude-opus-4-1) trails the major token
@@ -267,23 +308,45 @@ function parseLineage(modelId) {
 }
 
 /**
- * Check if model is specialized (transcribe, tts, image, etc.)
- * NOTE: codex variants are PREFERRED for coding (not excluded)
+ * Whole tokens that mark a model as built for something other than chat:
+ * transcription, speech, images, embeddings, moderation, OCR, reranking, safety
+ * classification. Matched as complete hyphen/slash-separated tokens rather than
+ * substrings, because a substring test is indiscriminate — `chat` matched
+ * `deepseek-chat`, DeepSeek's flagship, and dropped it from the shortlist.
+ * `chatgpt` is the token actually wanted there: OpenAI's consumer alias.
+ *
+ * NOT 'codex' — those are code-optimized and exactly what Juggler wants.
+ */
+const SPECIALIZED_TOKENS = new Set([
+  'transcribe', 'tts', 'audio', 'realtime', 'diarize',
+  'search', 'image', 'sora', 'chatgpt', 'robotics',
+  'embed', 'embedding', 'embeddings',
+  'moderation', 'moderations', 'ocr', 'rerank', 'reranker', 'guard',
+  'gemma', // Google's open-source models (not commercial API)
+]);
+
+/**
+ * Multi-token names that must match as a phrase. They can't join
+ * {@link SPECIALIZED_TOKENS} because their parts are innocent alone — `nano` is
+ * a budget tier, `use` and `deep` say nothing.
+ */
+const SPECIALIZED_PHRASES = [
+  'computer-use',
+  'deep-research',
+  'nano-banana', // Weird Google model
+];
+
+/**
+ * Check if model is specialized (transcribe, tts, image, embeddings, …).
  * @param {string} modelId
  * @returns {boolean} True if model is specialized for non-chat tasks
  */
 function isSpecializedModel(modelId) {
-  const specialized = [
-    'transcribe', 'tts', 'audio', 'realtime', 'diarize',
-    'search', 'image', 'sora', 'chat',
-    'computer-use', 'robotics', 'deep-research',
-    'nano-banana', // Weird Google model
-    'gemma' // Google's open-source models (not commercial API)
-    // NOT 'codex' - these are code-optimized and good for Juggler!
-  ];
-
   const lower = modelId.toLowerCase();
-  return specialized.some(suffix => lower.includes(suffix));
+  if (SPECIALIZED_PHRASES.some(phrase => lower.includes(phrase))) return true;
+  // Split on everything that separates tokens, including the `/` in an
+  // OpenRouter id (`deepseek/deepseek-chat-v3.1`).
+  return lower.split(/[^a-z0-9.]+/).some(token => SPECIALIZED_TOKENS.has(token));
 }
 
 /**
@@ -307,18 +370,80 @@ function isPreviewModel(modelId) {
 const DATE_SUFFIX = /-?\d{4}-?\d{2}-?\d{2}$/;
 
 /**
+ * A trailing `YYMM` snapshot code — the form Mistral stamps on every dated
+ * release (`-2411`, `-2505`). It is a DATE, not a version: read as a version it
+ * dwarfs every real one, so `mistral-medium-2505` outranks `mistral-large-2411`
+ * and product lines interleave by release date. Anchored to the end and
+ * restricted to a plausible year (`2x`) and month (`01`-`12`) so a genuine
+ * numeric token is never mistaken for a date.
+ */
+const DATE_CODE = /-2\d(?:0[1-9]|1[0-2])$/;
+
+/**
+ * A trailing `-latest` alias. It names whichever snapshot of its line is
+ * current, so it is the newest member of its lineage — but it carries no digits,
+ * and a versionless alias parses as version 0, sinking every alias below the
+ * dated snapshots it supersedes.
+ */
+const LATEST_SUFFIX = /-latest$/;
+
+/**
+ * The generation given to a `-latest` alias that carries no version of its own,
+ * placing it above every dated sibling in its lineage. MAX_SAFE_INTEGER rather
+ * than Infinity because the sort comparators subtract generations, and
+ * `Infinity - Infinity` is NaN. An alias that DOES carry a version
+ * (`gemini-1.5-pro-latest`) keeps that version instead — it names the newest
+ * snapshot of the 1.5 line, not the newest model in the lineage.
+ */
+const LATEST_GENERATION = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Strip every non-version suffix from an id: the `models/` prefix Gemini
+ * prepends, a trailing release date in either form, and a `-latest` alias token.
+ * What remains is brand, version and codename — the parts that identify a line.
+ * @param {string} modelId
+ * @returns {string} The lowercased id with dates and alias tokens removed.
+ */
+function stripSuffixes(modelId) {
+  return modelId.toLowerCase()
+    .replace(/^models\//, '')
+    .replace(DATE_SUFFIX, '')
+    .replace(DATE_CODE, '')
+    .replace(LATEST_SUFFIX, '');
+}
+
+/**
+ * Extract a trailing release date as a comparable number, so dated snapshots of
+ * one lineage order newest-first among themselves (they all parse to the same
+ * version, since the date is not one). `YYYYMMDD` returns itself; the bare
+ * `YYMM` form widens to `20YYMM00` so both forms compare on one scale.
+ * @param {string} modelId
+ * @returns {number} The date as a number, or 0 when the id carries none.
+ */
+function extractDateCode(modelId) {
+  const lower = modelId.toLowerCase();
+  const full = lower.match(DATE_SUFFIX);
+  if (full) return Number(full[0].replace(/\D/g, ''));
+  const short = lower.match(DATE_CODE);
+  if (short) return Number(`20${short[0].replace(/\D/g, '')}00`);
+  return 0;
+}
+
+/**
  * A pure parameter-count token — `32b`, `9b`, `1.5b`, `120m` — a model *size*,
  * not a version. Used to keep {@link extractVersion} from reading `9b` as v9.
  */
 const PARAM_SIZE_TOKEN = /^\d+(?:\.\d+)?[bm]$/;
 
 /**
- * Check if model has a date suffix (YYYY-MM-DD or YYYYMMDD).
+ * Check if model has a date suffix (YYYY-MM-DD, YYYYMMDD, or the bare YYMM
+ * snapshot code) — i.e. names one dated release rather than the line itself.
  * @param {string} modelId
  * @returns {boolean} True if model has date suffix
  */
 function hasDateSuffix(modelId) {
-  return DATE_SUFFIX.test(modelId);
+  const lower = modelId.toLowerCase();
+  return DATE_SUFFIX.test(lower) || DATE_CODE.test(lower);
 }
 
 /**
@@ -331,17 +456,16 @@ function hasDateSuffix(modelId) {
  *     all to "4" and defeated curation)
  *   - fused with letters, e.g. o3 → 3, gpt-4o → 4, o4-mini → 4
  *   - bare major, e.g. gpt-5 → 5, glm-4 → 4
+ *   - none at all, e.g. mistral-large-latest → LATEST_GENERATION: an alias with
+ *     no version of its own names the newest snapshot of its line, so it ranks
+ *     above every dated sibling rather than below them as a version 0
  * Parameter-size tokens (glm-4-32b → 4, not 4.32; gpt-oss-120b → 0) and trailing
- * dates are ignored.
+ * dates in either form (claude-…-20251201, mistral-large-2411) are ignored.
  * @param {string} modelId
  * @returns {number} The version number, or 0 when none is present
  */
 function extractVersion(modelId) {
-  const tokens = modelId.toLowerCase()
-    .replace(/^models\//, '')
-    .replace(DATE_SUFFIX, '')
-    .split('-')
-    .filter(Boolean);
+  const tokens = stripSuffixes(modelId).split('-').filter(Boolean);
 
   for (let i = 0; i < tokens.length; i++) {
     const token = /** @type {string} */ (tokens[i]);
@@ -365,5 +489,7 @@ function extractVersion(modelId) {
     }
   }
 
-  return 0;
+  // No digits anywhere: a bare `-latest` alias heads its lineage; anything else
+  // is unversioned and sorts last.
+  return LATEST_SUFFIX.test(modelId.toLowerCase()) ? LATEST_GENERATION : 0;
 }

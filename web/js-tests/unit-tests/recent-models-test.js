@@ -117,6 +117,26 @@ export async function runTests(_ctx) {
     assert(recentModels.get().length === 4, 'availability filtering must not mutate persisted recents');
   });
 
+  await run('getAvailable() skips models the user has hidden', async () => {
+    // Recents back selection UI (the Recent list and ⌥⌘M cycling), so a model
+    // turned off in settings must drop out of them even though the provider
+    // still publishes it.
+    await seed([
+      { provider: 'ready', model: 'kept' },
+      { provider: 'ready', model: 'turned-off' },
+    ]);
+    const list = recentModels.getAvailable([
+      {
+        name: 'ready',
+        available: true,
+        modelsWithContext: [{ id: 'kept' }, { id: 'turned-off', hidden: true }],
+      },
+    ]);
+    assert(list.length === 1 && list[0].model === 'kept',
+      `expected the hidden model to be skipped, got ${JSON.stringify(list)}`);
+    assert(recentModels.get().length === 2, 'hiding must not mutate persisted recents');
+  });
+
   await run('refresh() with a non-array payload yields an empty list', async () => {
     await seed([{ provider: 'a', model: 'm' }]);
     await seed(/** @type {any} */ ('not-an-array'));

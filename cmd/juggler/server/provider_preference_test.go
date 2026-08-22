@@ -15,6 +15,19 @@ func providerWith(name string, available bool, modelIDs ...string) ProviderStatu
 	return ProviderStatus{Name: name, Available: available, ModelsWithContext: models}
 }
 
+// hideModels marks the named models of p as hidden, as computeProviders does
+// from the user's models.hidden settings.
+func hideModels(p ProviderStatus, hidden ...string) ProviderStatus {
+	for i, m := range p.ModelsWithContext {
+		for _, id := range hidden {
+			if m.ID == id {
+				p.ModelsWithContext[i].Hidden = true
+			}
+		}
+	}
+	return p
+}
+
 func TestPreferredAvailableModel(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -76,6 +89,33 @@ func TestPreferredAvailableModel(t *testing.T) {
 			wantOK:       true,
 			wantProvider: "deepseek",
 			wantModel:    "deepseek-chat",
+		},
+		{
+			name: "hidden first model falls through to the next",
+			providers: []ProviderStatus{
+				hideModels(providerWith("claudecode", true, "opus", "sonnet"), "opus"),
+			},
+			wantOK:       true,
+			wantProvider: "claudecode",
+			wantModel:    "sonnet",
+		},
+		{
+			name: "provider with every model hidden is skipped entirely",
+			providers: []ProviderStatus{
+				hideModels(providerWith("claudecode", true, "opus", "sonnet"), "opus", "sonnet"),
+				providerWith("openai", true, "gpt-4"),
+			},
+			wantOK:       true,
+			wantProvider: "openai",
+			wantModel:    "gpt-4",
+		},
+		{
+			name: "all models of all providers hidden yields nothing",
+			providers: []ProviderStatus{
+				hideModels(providerWith("claudecode", true, "opus"), "opus"),
+				hideModels(providerWith("openai", true, "gpt-4"), "gpt-4"),
+			},
+			wantOK: false,
 		},
 	}
 

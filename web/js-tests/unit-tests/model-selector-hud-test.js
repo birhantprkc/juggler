@@ -220,5 +220,60 @@ export async function runTests(_ctx) {
     }
   });
 
+  await run('hidden models are kept out of the model list', async () => {
+    await seedRecents([]);
+    const el = makeSelector();
+    try {
+      el.providers[0].modelsWithContext[1].hidden = true;
+      el.provider = 'p';
+      el.model = 'm';
+      const host = document.createElement('div');
+      host.innerHTML = el._generateModelListContent();
+      const rows = [...host.querySelectorAll('.model-selection-item')]
+        .map(r => (r.textContent || '').trim());
+      assert(rows.some(t => t.includes('Model')), 'the visible model is still offered');
+      assert(!rows.some(t => t.includes('Other')), 'the hidden model must not be offered');
+    } finally {
+      el.remove();
+    }
+  });
+
+  await run('the model in use stays listed even when hidden, and says so', async () => {
+    // Hiding the model a conversation is already on must not strip its label:
+    // the picker would then read "No model" for something plainly running.
+    await seedRecents([]);
+    const el = makeSelector();
+    try {
+      el.providers[0].modelsWithContext[0].hidden = true;
+      el.provider = 'p';
+      el.model = 'm';
+      const host = document.createElement('div');
+      host.innerHTML = el._generateModelListContent();
+      const current = [...host.querySelectorAll('.model-selection-item')]
+        .find(r => (r.textContent || '').includes('Model'));
+      assert(!!current, 'the in-use model must still be listed');
+      const note = current?.querySelector('.menu-item-note');
+      assert((note?.textContent || '') === 'hidden', 'it is marked "hidden"');
+    } finally {
+      el.remove();
+    }
+  });
+
+  await run('a provider whose every model is hidden drops out of the menu', async () => {
+    await seedRecents([]);
+    const el = makeSelector();
+    try {
+      for (const m of el.providers[0].modelsWithContext) m.hidden = true;
+      el.provider = '';
+      el.model = '';
+      const host = document.createElement('div');
+      host.innerHTML = el._generateModelListContent();
+      assert(!host.querySelector('.provider-menu-header'),
+        'a provider with nothing left to offer must not render a header');
+    } finally {
+      el.remove();
+    }
+  });
+
   return { passed, failed, errors };
 }

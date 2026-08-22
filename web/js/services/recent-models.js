@@ -57,14 +57,17 @@ const recentModels = {
   /**
    * Cached recent models whose provider and model are present in the supplied
    * provider snapshot. Unavailable providers are excluded because these entries
-   * back selection UI rather than history display.
-   * @param {Array<{name: string, available: boolean, modelsWithContext?: Array<{id: string}>}>} providers
+   * back selection UI rather than history display — and so are models the user
+   * has hidden, so ⌥⌘M cycling and the Recent list never land on one.
+   * @param {Array<{name: string, available: boolean, modelsWithContext?: Array<{id: string, hidden?: boolean}>}>} providers
    * @returns {RecentModel[]} Selectable recent models.
    */
   getAvailable(providers) {
     const available = new Map(providers
       .filter(provider => provider.available)
-      .map(provider => [provider.name, new Set((provider.modelsWithContext || []).map(model => model.id))]));
+      .map(provider => [provider.name, new Set((provider.modelsWithContext || [])
+        .filter(model => !model.hidden)
+        .map(model => model.id))]));
     return _cache.filter(entry => available.get(entry.provider)?.has(entry.model));
   },
 

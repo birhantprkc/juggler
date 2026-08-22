@@ -179,6 +179,107 @@ func TestLoadGlobalSettingsEmptyProxyModeNormalises(t *testing.T) {
 	}
 }
 
+func TestSaveLoadGlobalSettingsHiddenModelsRoundTrip(t *testing.T) {
+	userpathstest.Isolate(t)
+	in := &GlobalSettings{
+		Updates: UpdateSettings{Mode: UpdateModeNotify},
+		Models: ModelSettings{Hidden: map[string][]string{
+			"mistral":    {"mistral-ocr-latest", "mistral-embed"},
+			"openrouter": {"z-ai/glm-4.6"},
+		}},
+	}
+	if err := SaveGlobalSettings(in); err != nil {
+		t.Fatalf("SaveGlobalSettings: %v", err)
+	}
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	// Sorted on the way out, so the file is stable across saves.
+	got := gs.Models.Hidden["mistral"]
+	if len(got) != 2 || got[0] != "mistral-embed" || got[1] != "mistral-ocr-latest" {
+		t.Fatalf("mistral hidden = %v, want sorted [mistral-embed mistral-ocr-latest]", got)
+	}
+	// A model id containing a slash survives intact — the reason the map is
+	// keyed by provider rather than flattened to "provider/model".
+	if got := gs.Models.Hidden["openrouter"]; len(got) != 1 || got[0] != "z-ai/glm-4.6" {
+		t.Fatalf("openrouter hidden = %v, want [z-ai/glm-4.6]", got)
+	}
+	if !gs.IsModelHidden("mistral", "mistral-embed") {
+		t.Fatal("IsModelHidden(mistral, mistral-embed) = false, want true")
+	}
+	if gs.IsModelHidden("mistral", "mistral-large-latest") {
+		t.Fatal("IsModelHidden(mistral, mistral-large-latest) = true, want false")
+	}
+	if gs.IsModelHidden("nosuchprovider", "mistral-embed") {
+		t.Fatal("IsModelHidden on an unknown provider = true, want false")
+	}
+	// Sections survive side by side.
+	if gs.Updates.Mode != UpdateModeNotify {
+		t.Fatalf("updates alongside models = %q, want notify", gs.Updates.Mode)
+	}
+}
+
+func TestNormalizeModelSettingsCleansLists(t *testing.T) {
+	userpathstest.Isolate(t)
+	in := &GlobalSettings{Models: ModelSettings{Hidden: map[string][]string{
+		"mistral": {" mistral-ocr-latest ", "mistral-embed", "mistral-embed", "", "   "},
+		"openai":  {},        // no ids left ⇒ the provider key goes entirely
+		"gemini":  {"", " "}, // only blanks ⇒ same
+	}}}
+	if err := SaveGlobalSettings(in); err != nil {
+		t.Fatalf("SaveGlobalSettings: %v", err)
+	}
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	got := gs.Models.Hidden["mistral"]
+	if len(got) != 2 || got[0] != "mistral-embed" || got[1] != "mistral-ocr-latest" {
+		t.Fatalf("hidden = %v, want trimmed+deduped+sorted [mistral-embed mistral-ocr-latest]", got)
+	}
+	if _, ok := gs.Models.Hidden["openai"]; ok {
+		t.Fatal("empty provider key kept, want dropped")
+	}
+	if _, ok := gs.Models.Hidden["gemini"]; ok {
+		t.Fatal("blanks-only provider key kept, want dropped")
+	}
+}
+
+func TestLoadGlobalSettingsKeepsUnknownProviderHiddenList(t *testing.T) {
+	userpathstest.Isolate(t)
+	if err := os.MkdirAll(userpaths.ConfigDir(), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A provider the build doesn't register (removed key, pro-only provider, a
+	// rename) must not have the user's curated list quietly destroyed.
+	if err := os.WriteFile(filepath.Join(userpaths.ConfigDir(), "settings.json"),
+		[]byte(`{"models":{"hidden":{"notaprovider":["some-model"]}}}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if got := gs.Models.Hidden["notaprovider"]; len(got) != 1 || got[0] != "some-model" {
+		t.Fatalf("unknown provider list = %v, want [some-model]", got)
+	}
+}
+
+func TestLoadGlobalSettingsMissingFileNoHiddenModels(t *testing.T) {
+	userpathstest.Isolate(t)
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if gs.Models.Hidden != nil {
+		t.Fatalf("missing file hidden = %v, want nil", gs.Models.Hidden)
+	}
+	if gs.IsModelHidden("mistral", "mistral-large-latest") {
+		t.Fatal("nothing is hidden on a fresh install")
+	}
+}
+
 func TestNormalizeProxyMode(t *testing.T) {
 	cases := map[string]string{
 		"":        ProxyModeSystem,

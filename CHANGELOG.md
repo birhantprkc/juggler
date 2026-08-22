@@ -5,13 +5,14 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- GPT models now describe their work beside the spinner instead of adding thinking items
+- Each provider now lets you hide models from the list that is shown
 - Tool lists and MCP errors now say why a tool never reached the model
 - Pressing Send repeatedly on a slow connection no longer posts the message several times
 - A message sent while the connection is down stays in the box instead of vanishing
 - A Windows build from source no longer leaves a console window open behind the app
 - The wails submodule clones over HTTPS, so building from source needs no SSH key
 - Instances reached at a `<project>.localhost` hostname now work instead of refusing every request
-- GPT models now describe their work beside the spinner instead of adding thinking items
 
 ## [0.5.7] - 2026-08-19
 

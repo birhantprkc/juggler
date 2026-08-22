@@ -124,3 +124,46 @@ func TestResolveCheapModelNoPrimary(t *testing.T) {
 		t.Fatal("expected no resolution with no pin and no primary")
 	}
 }
+
+func TestLiveModelMatchSkipsHiddenModels(t *testing.T) {
+	registerCheapTestProvider("cheaptest", "cheap-mini")
+	s := newCheapResolveServer(t, []ProviderStatus{{
+		Name:      "cheaptest",
+		Available: true,
+		ModelsWithContext: []ModelWithContext{
+			{ID: "cheap-mini", Hidden: true},
+			{ID: "cheap-mini-20250101"},
+			{ID: "big"},
+		},
+	}})
+
+	// An exact hit on a hidden model must not win: the cheap model is chosen on
+	// the user's behalf, so it can never land on one they turned off. The prefix
+	// pass then finds the dated sibling.
+	got, ok := s.liveModelMatch("cheaptest", "cheap-mini")
+	if !ok {
+		t.Fatal("expected the visible dated sibling to match")
+	}
+	if got != "cheap-mini-20250101" {
+		t.Fatalf("liveModelMatch = %q, want cheap-mini-20250101", got)
+	}
+}
+
+func TestLiveModelMatchAllCandidatesHidden(t *testing.T) {
+	registerCheapTestProvider("cheaptest", "cheap-mini")
+	s := newCheapResolveServer(t, []ProviderStatus{{
+		Name:      "cheaptest",
+		Available: true,
+		ModelsWithContext: []ModelWithContext{
+			{ID: "cheap-mini", Hidden: true},
+			{ID: "cheap-mini-20250101", Hidden: true},
+			{ID: "big"},
+		},
+	}})
+
+	// Nothing matching the hint is visible, so the hint doesn't resolve — it must
+	// not fall back to an unrelated model like "big".
+	if got, ok := s.liveModelMatch("cheaptest", "cheap-mini"); ok {
+		t.Fatalf("liveModelMatch = %q, want no match when every candidate is hidden", got)
+	}
+}

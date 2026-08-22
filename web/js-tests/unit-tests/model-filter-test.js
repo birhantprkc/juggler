@@ -228,6 +228,93 @@ export async function runTests(_ctx) {
     assert(!result.includes('gpt-5.6-preview'), 'preview 5.6 dropped (stable sibling exists)');
   });
 
+  // ---- Mistral YYMM snapshot codes are dates, not versions ----
+  await test('bare YYMM snapshot codes do not parse as versions', () => {
+    // Mistral stamps every dated release with a YYMM code. Read as a version it
+    // dwarfs every real one, so `mistral-medium-2505` (2505!) outranked
+    // `mistral-large-2411` and the product lines interleaved by release date.
+    const result = ids(getRecommendedModels(models([
+      'mistral-large-latest', 'mistral-large-2411', 'mistral-large-2407',
+      'mistral-medium-latest', 'mistral-medium-2505',
+      'mistral-small-latest', 'mistral-small-2503',
+      'codestral-latest', 'codestral-2501',
+    ])));
+    assert(result.includes('mistral-large-latest'), 'large alias kept');
+    assert(result.includes('mistral-medium-latest'), 'medium alias kept');
+    assert(!result.includes('mistral-medium-2505'), '2505 snapshot dropped, not ranked top');
+    assert(!result.includes('mistral-large-2411'), '2411 snapshot dropped in favour of the alias');
+    assert(
+      result.indexOf('mistral-large-latest') < result.indexOf('mistral-medium-latest'),
+      'large is not pushed below medium by a bigger date code'
+    );
+  });
+
+  // ---- a versionless -latest alias heads its lineage ----
+  await test('versionless -latest alias outranks its dated siblings', () => {
+    const result = ids(sortModelsByVersion(models([
+      'mistral-large-2407', 'mistral-large-2411', 'mistral-large-latest',
+    ])));
+    assert(result[0] === 'mistral-large-latest', `alias first, got ${result.join(',')}`);
+    assert(
+      result.indexOf('mistral-large-2411') < result.indexOf('mistral-large-2407'),
+      'dated snapshots order newest-first among themselves'
+    );
+  });
+
+  // ---- but an alias that carries a version keeps it ----
+  await test('-latest alias with its own version does not float to the top', () => {
+    // `gemini-1.5-pro-latest` names the newest snapshot of the 1.5 line, not the
+    // newest model — treating every alias as newest would rank it above gemini-3.
+    const result = ids(sortModelsByVersion(models([
+      'models/gemini-1.5-pro-latest', 'models/gemini-3-pro', 'models/gemini-2.5-flash',
+    ])));
+    assert(result[0] === 'models/gemini-3-pro', `gemini-3 first, got ${result.join(',')}`);
+    assert(
+      result.indexOf('models/gemini-3-pro') < result.indexOf('models/gemini-1.5-pro-latest'),
+      '1.5 alias keeps its version and stays below gemini-3 in the same lineage'
+    );
+  });
+
+  // ---- 'chat' is a token, not a substring: deepseek-chat is a flagship ----
+  await test('deepseek-chat survives curation', () => {
+    // Matching 'chat' as a substring dropped DeepSeek's flagship (and
+    // `deepseek/deepseek-chat-v3.1` on OpenRouter) from every shortlist.
+    const result = ids(getRecommendedModels(models([
+      'deepseek-chat', 'deepseek-reasoner', 'deepseek-coder', 'deepseek-v3.2', 'deepseek-r1',
+    ])));
+    assert(result.includes('deepseek-chat'), 'deepseek-chat kept');
+    const openrouter = ids(getRecommendedModels(models([
+      'deepseek/deepseek-chat-v3.1', 'openai/gpt-5.1', 'z-ai/glm-4.6',
+      'qwen/qwen3-coder', 'moonshotai/kimi-k2',
+    ])));
+    assert(openrouter.includes('deepseek/deepseek-chat-v3.1'), 'slash-namespaced chat model kept');
+  });
+
+  // ---- chatgpt (the consumer alias) is still excluded ----
+  await test('chatgpt alias excluded as a whole token', () => {
+    const result = ids(getRecommendedModels(models([
+      'chatgpt-4o-latest', 'gpt-5.6', 'gpt-5.5', 'gpt-5.2', 'gpt-5.1',
+    ])));
+    assert(!result.includes('chatgpt-4o-latest'), 'chatgpt alias dropped');
+  });
+
+  // ---- embeddings / moderation / OCR / rerank are not chat models ----
+  await test('embedding, moderation, OCR and rerank models excluded', () => {
+    const result = ids(getRecommendedModels(models([
+      'mistral-large-latest', 'mistral-medium-latest', 'mistral-small-latest',
+      'codestral-latest', 'ministral-8b-latest',
+      'mistral-embed', 'mistral-moderation-latest', 'mistral-ocr-latest',
+      'text-embedding-3-large', 'llama-guard-3', 'bge-reranker-v2',
+    ])));
+    assert(!result.includes('mistral-embed'), 'embed dropped');
+    assert(!result.includes('mistral-moderation-latest'), 'moderation dropped');
+    assert(!result.includes('mistral-ocr-latest'), 'ocr dropped');
+    assert(!result.includes('text-embedding-3-large'), 'embedding dropped');
+    assert(!result.includes('llama-guard-3'), 'guard dropped');
+    assert(!result.includes('bge-reranker-v2'), 'reranker dropped');
+    assert(result.includes('mistral-large-latest'), 'chat models still curated');
+  });
+
   // ---- specialized/non-chat models excluded ----
   await test('specialized models excluded from shortlist', () => {
     const result = ids(getRecommendedModels(models([
@@ -269,11 +356,61 @@ export async function runTests(_ctx) {
     const result = ids(sortModelsByVersion(models([
       'o3', 'gpt-4o', 'gpt-5-6', 'claude-opus-4-7-20251201', 'gpt-4.1',
     ])));
-    // gpt-5-6 (5.6) and opus 4.7 outrank gpt-4o/gpt-4.1 (4.x), which outrank o3 (3).
-    assert(result.indexOf('gpt-5-6') < result.indexOf('gpt-4o'), '5.6 before 4o');
-    assert(result.indexOf('claude-opus-4-7-20251201') < result.indexOf('gpt-4o'), 'opus 4.7 before 4o');
-    assert(result.indexOf('gpt-4o') < result.indexOf('o3'), 'gpt-4o (v4) before o3 (v3)');
+    // Within the gpt lineage: 5.6 > 4.1 > 4o(4).
+    assert(result.indexOf('gpt-5-6') < result.indexOf('gpt-4.1'), '5.6 before 4.1');
+    assert(result.indexOf('gpt-4.1') < result.indexOf('gpt-4o'), 'gpt-4.1 before gpt-4o (v4)');
+    // Across lineages: opus (4.7) outranks the o-series (3).
+    assert(result.indexOf('claude-opus-4-7-20251201') < result.indexOf('o3'), 'opus 4.7 before o3');
     assert(result[result.length - 1] === 'o3', 'o3 (v3) sorts last');
+  });
+
+  // ---- lineages group together, ordered by their newest member ----
+  await test('sortModelsByVersion groups a lineage together', () => {
+    const result = ids(sortModelsByVersion(models([
+      'claude-sonnet-4-5-20250929', 'claude-opus-4-8-20260101', 'claude-haiku-4-5',
+      'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7-20251201',
+    ])));
+    assert(
+      result.slice(0, 3).join(',') ===
+        'claude-opus-4-8-20260101,claude-opus-4-7-20251201,claude-opus-4-6',
+      `opus lineage leads, newest-first, got ${result.join(',')}`
+    );
+    assert(
+      result.slice(3, 5).join(',') === 'claude-sonnet-4-6,claude-sonnet-4-5-20250929',
+      'sonnet lineage follows intact'
+    );
+    assert(result[5] === 'claude-haiku-4-5', 'haiku last (lowest-ranked lineage)');
+  });
+
+  // ---- grouping deliberately outranks raw version across lineages ----
+  await test('an older model of a stronger lineage precedes a newer weaker one', () => {
+    // The tradeoff grouping buys: the user picks a line first and a version
+    // second, so opus 4.6 sits above haiku 4.5 rather than below it.
+    const result = ids(sortModelsByVersion(models([
+      'claude-haiku-4-5', 'claude-opus-4-8', 'claude-opus-4-6',
+    ])));
+    assert(
+      result.indexOf('claude-opus-4-6') < result.indexOf('claude-haiku-4-5'),
+      `opus 4.6 above haiku 4.5, got ${result.join(',')}`
+    );
+  });
+
+  // ---- an unversioned provider list reads alphabetically ----
+  await test('lineages that all tie on version fall back to alphabetical order', () => {
+    // Mistral's ids carry dates, not versions, so every lineage ties — the tie
+    // break by lineage key is what gives the reporter the grouping they asked
+    // for, rather than the provider's arbitrary API order.
+    const result = ids(sortModelsByVersion(models([
+      'mistral-small-latest', 'pixtral-large-latest', 'codestral-latest',
+      'mistral-large-latest', 'magistral-medium-latest', 'mistral-medium-latest',
+    ])));
+    assert(
+      result.join(',') === [
+        'codestral-latest', 'magistral-medium-latest', 'mistral-large-latest',
+        'mistral-medium-latest', 'mistral-small-latest', 'pixtral-large-latest',
+      ].join(','),
+      `expected alphabetical, got ${result.join(',')}`
+    );
   });
 
   // ---- sortModelsByVersion keeps equal-version variants in API order ----

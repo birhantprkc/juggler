@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"juggler/internal/userpaths"
 )
@@ -23,6 +25,68 @@ type GlobalSettings struct {
 	Updates      UpdateSettings       `json:"updates"`
 	Connectivity ConnectivitySettings `json:"connectivity"`
 	Network      NetworkSettings      `json:"network"`
+	Models       ModelSettings        `json:"models"`
+}
+
+// ModelSettings holds preferences about which models the user wants to see.
+// Additive; like GlobalSettings, unknown keys are tolerated on read.
+type ModelSettings struct {
+	// Hidden lists, per provider name, the model ids the user has turned off.
+	// It is a deny-list on purpose: a provider that publishes a new model shows
+	// it immediately, and only what the user explicitly hid stays hidden — the
+	// alternative (an allow-list) would silently swallow every future model.
+	//
+	// Keyed by provider rather than flattened to "provider/model" strings
+	// because model ids contain slashes of their own (OpenRouter's
+	// "z-ai/glm-4.6"), so a flat key could not be split back apart reliably.
+	Hidden map[string][]string `json:"hidden,omitempty"`
+}
+
+// IsModelHidden reports whether the user turned this model off. Lists are small
+// (a provider's whole catalogue is a few hundred at most, and the hidden subset
+// far fewer), so a linear scan beats maintaining a parallel index.
+func (gs *GlobalSettings) IsModelHidden(providerName, modelID string) bool {
+	for _, id := range gs.Models.Hidden[providerName] {
+		if id == modelID {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeModelSettings canonicalises the hidden-model lists: ids are trimmed,
+// blanks and duplicates dropped, each list sorted, and any provider left with no
+// ids removed entirely. Applied on read and on write, so a hand-edited file
+// behaves exactly like one the UI wrote, and the file stays diff-friendly.
+//
+// Provider names are NOT validated here: core has no view of the provider
+// registry, and a provider being temporarily unregistered (a build without it,
+// a key removed) must not destroy the list the user curated for it.
+func normalizeModelSettings(ms *ModelSettings) {
+	for providerName, ids := range ms.Hidden {
+		seen := make(map[string]struct{}, len(ids))
+		cleaned := make([]string, 0, len(ids))
+		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			cleaned = append(cleaned, id)
+		}
+		if len(cleaned) == 0 {
+			delete(ms.Hidden, providerName)
+			continue
+		}
+		sort.Strings(cleaned)
+		ms.Hidden[providerName] = cleaned
+	}
+	if len(ms.Hidden) == 0 {
+		ms.Hidden = nil
+	}
 }
 
 // NetworkSettings holds outbound-HTTP preferences. Unlike Connectivity (applied
@@ -167,6 +231,7 @@ func LoadGlobalSettings() (*GlobalSettings, error) {
 	}
 	gs.Updates.Mode = NormalizeUpdateMode(gs.Updates.Mode)
 	gs.Network.Proxy.Mode = NormalizeProxyMode(gs.Network.Proxy.Mode)
+	normalizeModelSettings(&gs.Models)
 	return gs, nil
 }
 
@@ -179,6 +244,7 @@ func SaveGlobalSettings(gs *GlobalSettings) error {
 	}
 	gs.Updates.Mode = NormalizeUpdateMode(gs.Updates.Mode)
 	gs.Network.Proxy.Mode = NormalizeProxyMode(gs.Network.Proxy.Mode)
+	normalizeModelSettings(&gs.Models)
 
 	dir := userpaths.ConfigDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

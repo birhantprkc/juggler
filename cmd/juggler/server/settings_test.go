@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/updatecheck"
 	"juggler/internal/userpaths/userpathstest"
 )
@@ -155,6 +156,114 @@ func TestHandlePutSettingsInvalidWANMode(t *testing.T) {
 	putSettings(t, s, `{"connectivity":{"wanOnLaunch":"bogus"}}`, http.StatusBadRequest)
 	if got := s.settings.get().Connectivity.WANOnLaunch; got != "p2p" {
 		t.Fatalf("rejected PUT changed wanOnLaunch to %q, want unchanged p2p", got)
+	}
+}
+
+func TestHandlePutSettingsHiddenModelsRoundTrip(t *testing.T) {
+	userpathstest.Isolate(t)
+	const providerName = "settings-hidden-models-provider"
+	provider.RegisterProvider(provider.ProviderInfo{Name: providerName}, func(provider.Config) (provider.Provider, error) {
+		return nil, nil
+	})
+	s := &Server{
+		settings:        newSettingsStore(),
+		testMode:        true,
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+	}
+
+	putSettings(t, s, `{"models":{"hidden":{"`+providerName+`":["b-model","a-model","a-model"]}}}`, http.StatusOK)
+	gs := s.settings.get()
+	// Stored de-duplicated and sorted, so the file is stable across saves.
+	if got := gs.Models.Hidden[providerName]; len(got) != 2 || got[0] != "a-model" || got[1] != "b-model" {
+		t.Fatalf("hidden after PUT = %v, want [a-model b-model]", got)
+	}
+	if !gs.IsModelHidden(providerName, "a-model") {
+		t.Fatal("IsModelHidden = false after hiding")
+	}
+
+	// GET reflects it.
+	rec := httptest.NewRecorder()
+	s.handleGetSettings(rec, httptest.NewRequest("GET", "/api/settings", nil))
+	var out core.GlobalSettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Models.Hidden[providerName]) != 2 {
+		t.Fatalf("GET hidden = %v, want two entries", out.Models.Hidden[providerName])
+	}
+
+	// Un-hiding is an explicit empty array. Merging into a non-nil map cannot
+	// express a deletion by omission, so this is the only gesture that clears it.
+	putSettings(t, s, `{"models":{"hidden":{"`+providerName+`":[]}}}`, http.StatusOK)
+	if got := s.settings.get().Models.Hidden[providerName]; len(got) != 0 {
+		t.Fatalf("hidden after clearing = %v, want empty", got)
+	}
+}
+
+func TestHandlePutSettingsHiddenModelsMergePreservesOtherSections(t *testing.T) {
+	userpathstest.Isolate(t)
+	const providerName = "settings-hidden-merge-provider"
+	provider.RegisterProvider(provider.ProviderInfo{Name: providerName}, func(provider.Config) (provider.Provider, error) {
+		return nil, nil
+	})
+	s := &Server{
+		settings:        newSettingsStore(),
+		testMode:        true,
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+	}
+
+	putSettings(t, s, `{"updates":{"mode":"notify"}}`, http.StatusOK)
+	putSettings(t, s, `{"models":{"hidden":{"`+providerName+`":["a-model"]}}}`, http.StatusOK)
+	if got := s.settings.get().Updates.Mode; got != core.UpdateModeNotify {
+		t.Fatalf("updates clobbered by models PUT: mode=%q", got)
+	}
+	// And a later updates-only PUT must not wipe the hidden list.
+	putSettings(t, s, `{"updates":{"mode":"off"}}`, http.StatusOK)
+	if got := s.settings.get().Models.Hidden[providerName]; len(got) != 1 || got[0] != "a-model" {
+		t.Fatalf("hidden clobbered by later updates PUT: %v", got)
+	}
+}
+
+func TestHandlePutSettingsUnknownProviderRejected(t *testing.T) {
+	userpathstest.Isolate(t)
+	const providerName = "settings-hidden-reject-provider"
+	provider.RegisterProvider(provider.ProviderInfo{Name: providerName}, func(provider.Config) (provider.Provider, error) {
+		return nil, nil
+	})
+	s := &Server{
+		settings:        newSettingsStore(),
+		testMode:        true,
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+	}
+	putSettings(t, s, `{"models":{"hidden":{"`+providerName+`":["a-model"]}}}`, http.StatusOK)
+
+	// A provider this build doesn't register is rejected, and nothing is stored.
+	putSettings(t, s, `{"models":{"hidden":{"nosuchprovider":["x"]}}}`, http.StatusBadRequest)
+	gs := s.settings.get()
+	if _, ok := gs.Models.Hidden["nosuchprovider"]; ok {
+		t.Fatal("rejected PUT stored an unknown provider key")
+	}
+	if got := gs.Models.Hidden[providerName]; len(got) != 1 || got[0] != "a-model" {
+		t.Fatalf("rejected PUT disturbed the valid list: %v", got)
+	}
+}
+
+func TestSameHiddenModels(t *testing.T) {
+	a := map[string][]string{"p": {"x", "y"}}
+	if !sameHiddenModels(a, map[string][]string{"p": {"x", "y"}}) {
+		t.Error("identical maps reported different")
+	}
+	if sameHiddenModels(a, map[string][]string{"p": {"x"}}) {
+		t.Error("shorter list reported same")
+	}
+	if sameHiddenModels(a, map[string][]string{"p": {"x", "y"}, "q": {"z"}}) {
+		t.Error("extra provider reported same")
+	}
+	if sameHiddenModels(a, map[string][]string{"q": {"x", "y"}}) {
+		t.Error("different provider key reported same")
+	}
+	if !sameHiddenModels(nil, map[string][]string{}) {
+		t.Error("nil and empty must compare equal")
 	}
 }
 

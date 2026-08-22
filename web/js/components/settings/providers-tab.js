@@ -14,6 +14,7 @@ import wsService from '../../services/websocket.js';
 import providersCache from '../../services/providers-cache.js';
 import { fetchJson, httpErrorText } from '../../services/http.js';
 import { showAlert, showConfirm } from '../modal-dialog.js';
+import { sortModelsByVersion } from '../../utils/model-filter.js';
 
 // Standard refresh glyph for the OAuth "re-check sign-in" button. Fill is left to
 // CSS (currentColor) so it tracks the button's theme colour.
@@ -160,6 +161,10 @@ export class ProvidersTab {
     // expired sign-in without relaunching Juggler.
     buttonGroup.appendChild(this._buildOAuthRefreshButton(provider));
     controlColumn.appendChild(buttonGroup);
+
+    // Which of this provider's models to offer in the model menu.
+    const visibility = this._buildModelVisibilityRow(provider);
+    if (visibility) controlColumn.appendChild(visibility);
 
     fieldGroup.appendChild(infoColumn);
     fieldGroup.appendChild(controlColumn);
@@ -504,6 +509,10 @@ export class ProvidersTab {
       controlColumn.appendChild(this._buildClaudeBinaryRow(provider, toggle));
     }
 
+    // Which of this provider's models to offer in the model menu.
+    const visibility = this._buildModelVisibilityRow(provider);
+    if (visibility) controlColumn.appendChild(visibility);
+
     fieldGroup.appendChild(infoColumn);
     fieldGroup.appendChild(controlColumn);
     container.appendChild(fieldGroup);
@@ -621,9 +630,164 @@ export class ProvidersTab {
       controlColumn.appendChild(this._buildOpenAICompatRows());
     }
 
+    // Which of this provider's models to offer in the model menu.
+    const visibility = this._buildModelVisibilityRow(provider);
+    if (visibility) controlColumn.appendChild(visibility);
+
     fieldGroup.appendChild(infoColumn);
     fieldGroup.appendChild(controlColumn);
     container.appendChild(fieldGroup);
+  }
+
+  /**
+   * Build the collapsible "which models to show" list for a provider: one
+   * checkbox per model, plus a filter box.
+   *
+   * The stored preference is a deny-list (`models.hidden` in the global
+   * settings), so a model the provider adds later shows up on its own and only
+   * what the user explicitly turned off stays off. Unchecking writes the id into
+   * that list; the server then flags the model `hidden` everywhere it publishes
+   * the catalogue, which is what actually keeps it out of the model menu and out
+   * of default/cheap-model resolution.
+   *
+   * The filter isn't decoration: OpenRouter publishes several hundred models, and
+   * an unfiltered checkbox list of that is unusable.
+   * @param {any} provider - Provider info object, including `modelsWithContext`
+   * @returns {HTMLElement|null} The row to append, or null when the provider
+   *   lists no models (nothing to choose between).
+   * @private
+   */
+  _buildModelVisibilityRow(provider) {
+    /** @type {Array<{id: string, displayName?: string, hidden?: boolean}>} */
+    const models = Array.isArray(provider.modelsWithContext) ? provider.modelsWithContext : [];
+    if (models.length === 0) return null;
+
+    // Seeded from the published flags, then kept in step locally: a save
+    // triggers a providers refresh, but the fields aren't rebuilt on that, so
+    // this Set is the live truth for the summary and the checkboxes.
+    const hidden = new Set(models.filter(m => m.hidden).map(m => m.id));
+
+    const details = document.createElement('details');
+    details.className = 'model-visibility';
+
+    const summary = document.createElement('summary');
+    summary.className = 'model-visibility-summary';
+    details.appendChild(summary);
+
+    const summaryLabel = document.createElement('span');
+    summaryLabel.className = 'model-visibility-label';
+    summaryLabel.textContent = 'Models';
+    summary.appendChild(summaryLabel);
+
+    // The count carries the state, so it's the part that stays legible when the
+    // label dims — hence its own element rather than one string.
+    const summaryCount = document.createElement('span');
+    summaryCount.className = 'model-visibility-count';
+    summary.appendChild(summaryCount);
+
+    const updateSummary = () => {
+      summaryCount.textContent = hidden.size === 0
+        ? `${models.length}`
+        : `${models.length - hidden.size} of ${models.length} shown`;
+    };
+    updateSummary();
+
+    const status = document.createElement('div');
+    status.className = 'model-visibility-status';
+    status.style.display = 'none';
+
+    const filter = document.createElement('input');
+    filter.type = 'text';
+    filter.className = 'settings-value-input model-visibility-filter';
+    filter.placeholder = 'Filter models';
+    filter.autocomplete = 'off';
+    filter.setAttribute('autocorrect', 'off');
+    filter.setAttribute('autocapitalize', 'off');
+    filter.setAttribute('aria-label', `Filter ${provider.displayName} models`);
+    filter.spellcheck = false;
+
+    const list = document.createElement('div');
+    list.className = 'model-visibility-list';
+
+    const empty = document.createElement('div');
+    empty.className = 'model-visibility-empty';
+    empty.textContent = 'Nothing.';
+    empty.style.display = 'none';
+
+    /** @type {Array<{row: HTMLElement, haystack: string}>} */
+    const rows = [];
+    // Same lineage grouping the model menu uses, so the two lists read alike.
+    for (const model of sortModelsByVersion(models)) {
+      const row = document.createElement('label');
+      row.className = 'model-visibility-row';
+
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'model-visibility-check';
+      box.checked = !hidden.has(model.id);
+
+      const name = document.createElement('span');
+      name.className = 'model-visibility-name';
+      name.textContent = model.id;
+
+      // Dims the name of a model that won't be offered, so the shown/hidden
+      // split is readable down the list without checking every box.
+      const applyRowState = () => row.classList.toggle('is-hidden', !box.checked);
+      applyRowState();
+
+      box.addEventListener('change', async () => {
+        const show = box.checked;
+        if (show) hidden.delete(model.id);
+        else hidden.add(model.id);
+        updateSummary();
+        applyRowState();
+        try {
+          // Always send this provider's COMPLETE list. The server merges the
+          // hidden map key by key, so an omitted provider keeps whatever it had
+          // and re-showing the last hidden model has to be an explicit [].
+          await fetchJson('/api/settings', {
+            method: 'PUT',
+            body: { models: { hidden: { [provider.name]: [...hidden] } } },
+          });
+          status.style.display = 'none';
+        } catch (err) {
+          // Put the checkbox back where it was: the stored list is unchanged, so
+          // leaving it flipped would misreport what the model menu will do.
+          if (show) hidden.add(model.id);
+          else hidden.delete(model.id);
+          box.checked = !show;
+          updateSummary();
+          applyRowState();
+          status.textContent = `Couldn't save which models to show. ${httpErrorText(err)}`;
+          status.style.display = '';
+        }
+      });
+
+      row.appendChild(box);
+      row.appendChild(name);
+      list.appendChild(row);
+      rows.push({ row, haystack: `${model.id} ${model.displayName || ''}`.toLowerCase() });
+    }
+
+    filter.addEventListener('input', () => {
+      const query = filter.value.trim().toLowerCase();
+      let matches = 0;
+      for (const { row, haystack } of rows) {
+        const hit = query === '' || haystack.includes(query);
+        row.style.display = hit ? '' : 'none';
+        if (hit) matches++;
+      }
+      empty.style.display = matches === 0 ? '' : 'none';
+    });
+
+    // The empty state lives inside the scroller so a filter that matches nothing
+    // leaves a box saying so, rather than an empty box with a note under it.
+    list.appendChild(empty);
+
+    details.appendChild(filter);
+    details.appendChild(list);
+    details.appendChild(status);
+    return details;
   }
 
   /**
