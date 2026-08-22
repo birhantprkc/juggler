@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -272,5 +273,72 @@ func TestRequestMaxOutputTokensFallsBackWhenUnset(t *testing.T) {
 	}
 	if gotMaxTokens <= 0 {
 		t.Fatalf("max_tokens = %v, want a non-zero fallback cap", gotMaxTokens)
+	}
+}
+
+// TestCapabilitySnapshotReservoirReachesTheWire pins the hand-off that decides
+// what a local model is actually allowed to say: the capability snapshot's
+// MaxOutputTokens — which the server fills with the derived safety reserve
+// whenever the context window is known but the model declares no output cap —
+// must arrive on the wire as max_tokens.
+//
+// The reserve and the wire value must never diverge, because admission charges
+// the first and the provider enforces the second. A regression here is close to
+// invisible: requests keep succeeding, replies are merely cut short, and the
+// only symptom is a model that stops mid-sentence. The 8192 case is the one
+// reported from the field — a server whose window was misdetected as 8192 was
+// silently held to 1638 output tokens, which a reasoning model can spend
+// entirely on thinking before it writes a word.
+func TestCapabilitySnapshotReserveReachesTheWire(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		window int64
+	}{
+		{"misdetected small window", 8192}, // reserve 1638
+		{"real LM Studio window", 131072},  // reserve 20000
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reserve := provider.ContextSafetyReserve(tc.window)
+
+			var gotMaxTokens float64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Errorf("decode request body: %v", err)
+				}
+				gotMaxTokens, _ = payload["max_tokens"].(float64)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, sseBody(`{"id":"x","object":"chat.completion.chunk","created":0,"model":"local","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			}))
+			defer srv.Close()
+
+			// Exactly what the conversation cache hands a local provider: a
+			// window, and the reserve the server derived from it.
+			c, err := NewClientFromProviderConfig(provider.Config{
+				APIKey: "test",
+				Model:  "local",
+				ModelCapabilities: provider.ModelCapabilities{
+					ContextWindowTokens: tc.window,
+					MaxOutputTokens:     reserve,
+				},
+			}, srv.URL, Quirks{}, false)
+			if err != nil {
+				t.Fatalf("NewClientFromProviderConfig: %v", err)
+			}
+
+			if _, err := c.streamMessage(context.Background(), provider.MessageRequest{
+				Messages: []provider.Message{{Type: "user", Content: "hello"}},
+			}, func(provider.StreamChunk) (*provider.ToolResult, error) { return nil, nil }); err != nil {
+				t.Fatalf("streamMessage: %v", err)
+			}
+
+			if int64(gotMaxTokens) != reserve {
+				t.Errorf("max_tokens = %v, want the derived reserve %d", gotMaxTokens, reserve)
+			}
+			if gotMaxTokens == fallbackMaxOutputTokens {
+				t.Errorf("max_tokens fell back to %d, discarding the known reserve %d",
+					fallbackMaxOutputTokens, reserve)
+			}
+		})
 	}
 }

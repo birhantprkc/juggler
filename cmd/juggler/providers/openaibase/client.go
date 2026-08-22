@@ -575,6 +575,13 @@ func transformMessagesToResponsesInput(messages []provider.Message) responses.Re
 // model's real limit (Config.MaxOutputTokens == 0). A conservative
 // unset-default; real per-model caps come through the descriptor's
 // ContextWindowFn.
+//
+// This is reached only when the model's CONTEXT WINDOW is also unknown: once a
+// window resolves, the capability snapshot always carries an output limit —
+// model-reported, catalogued, or the derived safety reserve filled in by the
+// server — so the snapshot wins and this constant never applies. It is the
+// last resort for a model nothing could be established about, not the ordinary
+// cap for a local server.
 const fallbackMaxOutputTokens = 8192
 
 func (c *Client) effectiveMaxOutputTokens(req provider.MessageRequest) int {

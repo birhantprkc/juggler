@@ -444,6 +444,23 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 
 	w.batcher.Flush()
 
+	// A turn the provider cut off at its output budget is not a blank turn,
+	// and must never be retried as one: the retry re-sends the same request
+	// against the same budget and is cut off at the same place, three times
+	// over, before the barren cap papers it over as "no further response".
+	// Worse, each round's thinking is persisted and replayed, so every attempt
+	// starts nearer the limit than the last. Surface it once, here, naming the
+	// budget that ended it.
+	if response.StopReason == "max_tokens" {
+		w.insertTruncationNotice(response)
+		w.batcher.Flush()
+		// Truncated before it emitted anything usable: there is nothing to
+		// react to and nothing a further turn could add, so rest.
+		if !w.turnProducedAction(response) {
+			return turnDone
+		}
+	}
+
 	// A turn that produced no action (no assistant text, no tool_use)
 	// leaves the user with nothing new to see. Some providers
 	// intermittently emit empty end_turn for transient reasons; retry

@@ -487,10 +487,11 @@ export class ProvidersTab {
       }));
     }
 
-    // llama.cpp: expose the llama-server host so users can point at a
-    // non-default (LAN / remote / custom port) instance without restarting the
-    // app. Saved as the `llamacpp_host` raw credential; backend re-fetches the
-    // model list (and its context window, queried live from /props) on change.
+    // llama.cpp: expose the server host so users can point at a non-default
+    // (LAN / remote / custom port) instance without restarting the app. The
+    // same field reaches an LM Studio server, which serves this API on 1234.
+    // Saved as the `llamacpp_host` raw credential; backend re-fetches the model
+    // list, and each model's context window, on change.
     if (provider.name === 'llamacpp') {
       controlColumn.appendChild(this._buildHostRow({
         inputId: 'llamacpp-host-input',

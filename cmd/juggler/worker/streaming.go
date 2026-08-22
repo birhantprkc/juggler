@@ -399,6 +399,61 @@ func (w *ConversationWorker) insertProviderNotice(notice *StreamNotice) {
 	})
 }
 
+// truncationNoticeLead states, in plain English, what a max_tokens stop
+// actually was. The measured numbers follow it; the lead never replaces them.
+const truncationNoticeLead = "The model hit its output limit before it finished, so this turn stops mid-reply."
+
+// insertTruncationNotice records that the provider ended a turn at its output
+// budget, at the point in the conversation where it happened.
+//
+// A truncation is not deduplicated the way a provider-composed notice is: two
+// turns cut short are two separate events, each worth seeing where it landed,
+// whereas a declined serving tier is one standing condition restated. The
+// strategy loop calls this at most once per turn, so there is no repetition to
+// suppress within a turn either.
+//
+// The budget quoted is the output reserve admission charged for this model —
+// the same number that went on the wire as max_tokens — so the note explains
+// the limit the user can actually act on rather than a provider-side default
+// nobody here can see.
+func (w *ConversationWorker) insertTruncationNotice(response *LLMResponse) {
+	_, reserve := w.resolveContextWindow()
+
+	var detail strings.Builder
+	detail.WriteString(truncationNoticeLead)
+	// The reported case: a reasoning model that never reached an answer. Worth
+	// saying outright, because the transcript shows thinking and then nothing,
+	// which reads like a crash rather than a budget.
+	if !hasAssistantText(response) {
+		detail.WriteString(" It spent the whole budget thinking, so there is no answer to show.")
+	}
+	detail.WriteString("\n\n")
+	switch {
+	case reserve > 0 && response.OutputTokens > 0:
+		fmt.Fprintf(&detail, "Output budget: %d tokens; this turn used %d. ", reserve, response.OutputTokens)
+	case reserve > 0:
+		fmt.Fprintf(&detail, "Output budget: %d tokens. ", reserve)
+	case response.OutputTokens > 0:
+		fmt.Fprintf(&detail, "This turn produced %d output tokens. ", response.OutputTokens)
+	}
+	detail.WriteString("Thinking counts against that budget, and Juggler derives the budget from the model's " +
+		"context window — so if the window shown in Settings is smaller than the one your server really serves, " +
+		"that is what shrank this reply.")
+
+	source := ""
+	if mc := w.resolveModelConfig(); mc != nil {
+		source = mc.Provider
+	}
+	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		Type:      ItemTypeNotice,
+		ItemID:    generateItemID(),
+		Summary:   "Reply cut off",
+		Content:   detail.String(),
+		Source:    source,
+		Timestamp: time.Now().Format(time.RFC3339),
+	})
+}
+
 func (w *ConversationWorker) finalizeStreaming() {
 	// Only clear IDs, not content - content is used for duplicate detection in processLLMResponse
 	w.streaming.textMsgID = ""

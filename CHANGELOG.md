@@ -14,6 +14,8 @@ of changes; this project follows semantic versioning.
 - A Windows build from source no longer leaves a console window open behind the app
 - The wails submodule clones over HTTPS, so building from source needs no SSH key
 - Instances reached at a `<project>.localhost` hostname now work instead of refusing every request
+- LM Studio models now report the context window they are loaded with, not a conservative 8K
+- A reply cut off at the output limit now says so, instead of being retried three times
 
 ## [0.5.7] - 2026-08-19
 

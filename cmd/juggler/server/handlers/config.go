@@ -188,10 +188,11 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Handle the llama-server host override (raw credential), same shape as the
-	// Ollama one above: fireCredsChanged refreshes the provider list so the
-	// model list (and its context window, queried live from /props) re-fetches
-	// against the new host.
+	// Handle the local OpenAI-compatible server host override (raw credential),
+	// same shape as the Ollama one above: fireCredsChanged refreshes the
+	// provider list so the model list, and each model's context window, re-fetch
+	// against the new host. The window is probed live, from whichever endpoint
+	// the server there answers.
 	if hostValue, ok := req[llamacppHostKey]; ok {
 		if hostStr, ok := hostValue.(string); ok {
 			if err := c.credStore.SetRawKey(llamacppHostKey, hostStr); err != nil {
