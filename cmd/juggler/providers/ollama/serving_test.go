@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"juggler/cmd/juggler/core"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // isolateConfig points the credentials store at a throwaway dir and clears

@@ -36,7 +36,7 @@ import (
 	"juggler/cmd/juggler/providers/openaicodex"
 	"juggler/cmd/juggler/providers/openaicompat"
 	"juggler/cmd/juggler/providers/openrouter"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/providers/streamidle"
 	"juggler/cmd/juggler/providers/zai"
 	jugglertest "juggler/cmd/juggler/testing"

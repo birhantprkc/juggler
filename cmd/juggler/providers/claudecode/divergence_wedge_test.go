@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestContinueSession_DeliversAcrossArgDivergence is the regression for the

@@ -20,7 +20,7 @@ import (
 	// the machine's local zone instead.
 	_ "time/tzdata"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 type usageCommandResult struct {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 func loadBlobMap(t *testing.T, s *TransactionStore, convID, txnID string) map[string]any {

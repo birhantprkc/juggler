@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestContextWindow pins the known windows and the unknown-model default: the

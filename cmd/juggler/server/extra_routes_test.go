@@ -23,7 +23,7 @@ func TestExtraRoutesHook(t *testing.T) {
 		return &Server{
 			router:        mux.NewRouter(),
 			staticVersion: "test",
-			extensionsAPI: handlers.NewExtensionsAPI(fstest.MapFS{}, "", ""),
+			serverAPIs:    serverAPIs{extensionsAPI: handlers.NewExtensionsAPI(fstest.MapFS{}, "", "")},
 			extraRoutes:   extra,
 		}
 	}

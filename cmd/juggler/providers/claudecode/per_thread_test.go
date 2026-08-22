@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestSubthread_InMemoryOnly pins the per-thread CLI contract: a sub-thread

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/worker"
 )
 

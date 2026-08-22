@@ -20,7 +20,7 @@ import (
 
 	"juggler/cmd/juggler/childcontain"
 	"juggler/cmd/juggler/core"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/jlog"
 )
 

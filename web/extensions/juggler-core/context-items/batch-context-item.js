@@ -5,7 +5,8 @@
 
 import ContextItem from 'juggler/context-item';
 import { readFile, grep } from 'juggler/ops';
-import { createTextBlock } from 'juggler/item-utils';
+import { createTextBlock, formatFileContentForLLM } from 'juggler/item-utils';
+import { formatGrepResults } from './search/grep-format.js';
 
 /**
  * Wrap a value as markdown inline code, widening the fence when the value
@@ -300,24 +301,28 @@ class BatchContextItem extends ContextItem {
     /** @type {string[]} */
     const parts = [];
     for (const r of results) {
-      parts.push(`=== file: ${r.file} ===`);
       if (!r.success) {
+        parts.push(`=== file: ${r.file} ===`);
         parts.push(`Error: ${r.error}`);
       } else if (r.result.exists === false) {
-        parts.push('File does not exist');
+        // Worded as read_file words it: the trailing instruction is what stops
+        // the model re-reading a path that will not appear.
+        parts.push(`=== file: ${r.file} ===`);
+        parts.push(`File does not exist: ${r.file}. Do not attempt to read it again.`);
       } else if (r.result.warning) {
+        parts.push(`=== file: ${r.file} ===`);
         parts.push(r.result.warning);
       } else {
-        const content = r.result.content || '';
-        const lineOffset = r.result.lineOffset || 1;
-        const lines = content.split('\n');
-        const maxLineNum = lineOffset + lines.length - 1;
-        const numWidth = String(maxLineNum).length;
-        const numbered = lines.map((/** @type {string} */ line, /** @type {number} */ idx) => {
-          const lineNum = lineOffset + idx;
-          return `${String(lineNum).padStart(numWidth, ' ')}  ${line}`;
-        }).join('\n');
-        parts.push(numbered);
+        // The shared helper supplies the <file> wrapper and its own path, so
+        // this branch needs no === header — and the model now sees one file
+        // format whether it read via read_file or batch_read.
+        parts.push(formatFileContentForLLM({
+          content: r.result.extracted?.text || r.result.content || '',
+          path: r.file,
+          lineOffset: r.result.lineOffset || 1,
+          lineCount: r.result.lineCount,
+          totalLines: r.result.totalLines
+        }));
       }
       parts.push('');
     }
@@ -338,40 +343,13 @@ class BatchContextItem extends ContextItem {
       if (!r.success) {
         parts.push(`Error: ${r.error}`);
       } else {
-        const matches = r.result.matches || [];
-        if (matches.length === 0) {
-          parts.push(`No matches found`);
-        } else {
-          const mode = r.outputMode || 'files_with_matches';
-          if (mode === 'files_with_matches') {
-            const files = [...new Set(matches.map((/** @type {{file: string}} */ m) => m.file))];
-            parts.push(files.join('\n'));
-          } else if (mode === 'count') {
-            /** @type {Record<string, number>} */
-            const counts = {};
-            for (const m of matches) {
-              counts[m.file] = (counts[m.file] || 0) + 1;
-            }
-            for (const [file, count] of Object.entries(counts)) {
-              parts.push(`${file}:${count}`);
-            }
-          } else {
-            // content mode
-            /** @type {Record<string, any[]>} */
-            const byFile = {};
-            for (const m of matches) {
-              let arr = byFile[m.file];
-              if (!arr) { arr = []; byFile[m.file] = arr; }
-              arr.push(m);
-            }
-            for (const [file, fileMatches] of Object.entries(byFile)) {
-              parts.push(`${file}:`);
-              for (const m of fileMatches) {
-                parts.push(`${m.line}: ${m.content}`);
-              }
-            }
-          }
-        }
+        // The same renderer the search tool uses. batch passes no
+        // head_limit/offset (its schema has neither), so the pagination
+        // footers stay inert and only the three output modes apply.
+        parts.push(formatGrepResults(r.result, {
+          pattern: r.pattern,
+          output_mode: r.outputMode || 'files_with_matches'
+        }));
       }
       parts.push('');
     }

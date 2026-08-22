@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestToolResultImageBecomesTrailingUserMessage: role="tool" messages are

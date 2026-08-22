@@ -9,7 +9,7 @@ import (
 	"slices"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestOpenAIThinkingSpec pins the per-family reasoning-effort classification.

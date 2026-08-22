@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/userpaths"
 	"juggler/internal/userpaths/userpathstest"
 )

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // responsesInputItems runs the Responses input transform and decodes the result

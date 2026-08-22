@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // messageTypeContextItem is the wire message type for a standing (non-system)

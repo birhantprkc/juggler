@@ -16,7 +16,7 @@ import (
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/providers/claudecode"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/server"
 	jugglertest "juggler/cmd/juggler/testing"
 	"juggler/internal/httpx"

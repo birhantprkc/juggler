@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // cliReapSweepInterval is how often a conversation sweeps its per-thread

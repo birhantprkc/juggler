@@ -51,7 +51,7 @@ func TestOverlayServedAndDiscovered(t *testing.T) {
 	s := &Server{
 		router:        mux.NewRouter(),
 		staticVersion: "test",
-		extensionsAPI: handlers.NewExtensionsAPI(builtinFS, "", ""),
+		serverAPIs:    serverAPIs{extensionsAPI: handlers.NewExtensionsAPI(builtinFS, "", "")},
 	}
 	s.setupRoutes()
 

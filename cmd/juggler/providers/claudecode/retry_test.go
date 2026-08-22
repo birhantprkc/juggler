@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // fastRetryBackoff shrinks the retry backoff to keep tests quick, restoring

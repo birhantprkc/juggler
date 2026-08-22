@@ -2,9 +2,7 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import { generateToolDefinitions, getBlockedToolReason, resolveToolName } from './tool-generator.js';
 import { withMcpToolMissReason } from './mcp-availability.js';
-import contextItemRegistry from '../registries/context-item-registry.js';
 import { extractErrorInfo, extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { createContextWriter } from './context-writer.js';
 import { RESULT_TYPES } from '../../sdk/lib/message.js';
@@ -134,122 +132,6 @@ class ResponseHandler {
   }
 
   // ========== END TOOL EXECUTOR API ==========
-
-  /**
-   * Validate tool calls without executing them.
-   * Checks tool existence, blocked status, and parameter validity.
-   * @param {Array<{id: string, name: string, input: object}>} toolCalls - Tool calls to validate
-   * @param {import('../model/message-thread.js').MessageThread} messageThread - Message thread
-   * @param {Array<{name: string, category?: string, input_schema?: object}>} [toolDefinitions] - Tool definitions
-   * @returns {Promise<import('juggler/strategy-type').ToolsValidationResult>} Validation results
-   */
-  async validateToolCalls(toolCalls, messageThread, toolDefinitions) {
-    // Empty input is valid
-    if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-      return { allValid: true, results: [], hasLLMErrors: false };
-    }
-
-    // Get all tool definitions to determine categories and schemas
-    const allTools = await generateToolDefinitions();
-    /** @type {Map<string, string>} */
-    const toolCategories = new Map(allTools.map((/** @type {any} */ t) => [t.name, t.category]));
-    /** @type {Map<string, object>} */
-    const toolSchemas = new Map(allTools.map((/** @type {any} */ t) => [t.name, t.input_schema]));
-
-    // Include strategy-provided tools
-    if (toolDefinitions) {
-      for (const t of toolDefinitions) {
-        if (t.name) {
-          if (t.category && !toolCategories.has(t.name)) {
-            toolCategories.set(t.name, t.category);
-          }
-          if (t.input_schema && !toolSchemas.has(t.name)) {
-            toolSchemas.set(t.name, t.input_schema);
-          }
-        }
-      }
-    }
-
-    // Validate each tool call
-    /** @type {import('juggler/strategy-type').ToolValidationResult[]} */
-    const results = await Promise.all(toolCalls.map(async (tc) => {
-      // Check malformed
-      if (!tc || typeof tc !== 'object') {
-        return { toolId: '', toolName: '', valid: false, errorType: /** @type {const} */ ('malformed'), error: 'Tool call is not an object' };
-      }
-      if (!tc.name || typeof tc.name !== 'string') {
-        return { toolId: tc.id || '', toolName: '', valid: false, errorType: /** @type {const} */ ('malformed'), error: 'Missing or invalid tool name' };
-      }
-      if (!tc.id || typeof tc.id !== 'string') {
-        return { toolId: '', toolName: tc.name, valid: false, errorType: /** @type {const} */ ('malformed'), error: 'Missing or invalid tool id' };
-      }
-      if (tc.input === undefined || tc.input === null || typeof tc.input !== 'object') {
-        return { toolId: tc.id, toolName: tc.name, valid: false, errorType: /** @type {const} */ ('malformed'), error: 'Missing or invalid tool input' };
-      }
-
-      // Resolve aliases (e.g., 'Bash' -> 'bash') for backwards compatibility
-      const resolvedName = resolveToolName(tc.name);
-      const category = toolCategories.get(resolvedName);
-
-      // Check unknown tool
-      if (!category) {
-        const blockedReason = getBlockedToolReason(resolvedName);
-        if (blockedReason) {
-          return { toolId: tc.id, toolName: tc.name, valid: false, errorType: /** @type {const} */ ('blocked_tool'), error: blockedReason };
-        }
-        return {
-          toolId: tc.id,
-          toolName: tc.name,
-          valid: false,
-          errorType: /** @type {const} */ ('unknown_tool'),
-          error: await withMcpToolMissReason(`Unknown tool: ${tc.name}`, tc.name)
-        };
-      }
-
-      // Validate against schema required fields
-      const schema = toolSchemas.get(resolvedName);
-      if (schema && /** @type {any} */ (schema).required) {
-        const required = /** @type {string[]} */ (/** @type {any} */ (schema).required);
-        for (const field of required) {
-          if (!(field in tc.input)) {
-            return { toolId: tc.id, toolName: tc.name, valid: false, errorType: /** @type {const} */ ('invalid_params'), error: `Missing required parameter: ${field}` };
-          }
-        }
-      }
-
-      // For action tools, also validate via prepareParameters
-      if (category === 'write') {
-        const itemDetails = this._findContextItemForTool(resolvedName);
-        if (!itemDetails) {
-          // It's an action - resolve and prepare through the shared pipeline so
-          // multi-tool classes get the same toolName-based routing as execution.
-          const { ActionClass, prepared, blockedReason } = await actions.resolveAndPrepare(this, tc, /** @type {Record<string, unknown>} */ (tc.input), messageThread);
-          if (!ActionClass) {
-            return {
-              toolId: tc.id,
-              toolName: tc.name,
-              valid: false,
-              errorType: blockedReason ? /** @type {const} */ ('blocked_tool') : /** @type {const} */ ('unknown_tool'),
-              error: blockedReason || await withMcpToolMissReason(`Unknown action: ${tc.name}`, tc.name)
-            };
-          }
-          if (!prepared.valid) {
-            return { toolId: tc.id, toolName: tc.name, valid: false, errorType: /** @type {const} */ ('invalid_params'), error: prepared.error || 'Validation failed' };
-          }
-        }
-      }
-
-      return { toolId: tc.id, toolName: tc.name, valid: true, errorType: null };
-    }));
-
-    const allValid = results.every(r => r.valid);
-
-    return {
-      allValid,
-      results,
-      hasLLMErrors: !allValid
-    };
-  }
 
   // ========== CENTRALIZED TOOL EXECUTION WRAPPER ==========
 
@@ -508,34 +390,12 @@ class ResponseHandler {
   }
 
   /**
-   * Check if a tool is provided by a context item
-   * @param {string} toolName - Tool name to check
-   * @returns {{itemType: string, class: unknown}|null} Context item details if found, null otherwise
-   * @private
-   */
-  _findContextItemForTool(toolName) {
-    const allItems = contextItemRegistry.getAll();
-    for (const { class: ItemClass } of allItems) {
-      if (ItemClass.getToolDefinitions) {
-        const tools = ItemClass.getToolDefinitions();
-        if (tools.some((/** @type {{name: string}} */ t) => t.name === toolName)) {
-          return {
-            itemType: ItemClass.MANIFEST?.id || 'unknown',
-            class: ItemClass
-          };
-        }
-      }
-    }
-    return null;
-  }
-
-  /**
    * Execute a context item-provided tool.
    * Always routes through executeContextItem() which handles mergeOrReplace correctly:
    * - For multi-instance items (file-content): creates new item if path differs
    * - For singleton items (todo, plan): reuses existing item
    * - Handles deduplication via mergeOrReplace
-   * @param {{itemType: string, class: unknown}} itemDetails - Context item details from _findContextItemForTool
+   * @param {{itemType: string, class: unknown}} itemDetails - Context item details from tool-executor's _findContextItemForTool
    * @param {any} toolCall - Tool call object
    * @param {import('./context-writer.js').ContextWriter} _ctx - ContextWriter (unused - executeContextItem handles execution)
    * @param {import('../model/message-thread.js').default} messageThread - Message thread

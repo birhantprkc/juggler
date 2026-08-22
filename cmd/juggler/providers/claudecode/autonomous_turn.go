@@ -34,7 +34,7 @@ import (
 	"context"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // subscribeTurns bridges the worker's TurnSink to the Client's internal

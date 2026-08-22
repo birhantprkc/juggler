@@ -7,7 +7,7 @@ package server
 import (
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestAppendStreamedBlockKeepsTrailingMetadata is the guard for the join that

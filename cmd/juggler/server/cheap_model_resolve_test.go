@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"juggler/cmd/juggler/core"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/userpaths/userpathstest"
 )
 
@@ -34,8 +34,8 @@ func newCheapResolveServer(t *testing.T, providers []ProviderStatus) *Server {
 		t.Fatalf("NewCheapModelStore: %v", err)
 	}
 	s := &Server{
-		providersReady:  make(chan struct{}),
-		cheapModelStore: store,
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+		serverStores:    serverStores{cheapModelStore: store},
 	}
 	s.providersList.Store(&providers)
 	s.markProvidersReady()

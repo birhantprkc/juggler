@@ -10,7 +10,7 @@ import (
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // thinkingWire marshals a thinking param and returns it as a generic map, so

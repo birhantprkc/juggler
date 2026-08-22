@@ -13,7 +13,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // stubCompactionDispatcher is the reducer-only hidden-call transport: it runs

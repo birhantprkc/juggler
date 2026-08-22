@@ -8,7 +8,7 @@ import (
 	"context"
 	"os"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // Client implements provider.Provider for the ACP backend. It is the config

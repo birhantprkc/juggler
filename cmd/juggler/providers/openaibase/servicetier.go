@@ -5,7 +5,7 @@
 package openaibase
 
 import (
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // ServiceTierSpec describes a model's non-standard serving classes. Each tier's

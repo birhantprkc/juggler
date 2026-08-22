@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"juggler/cmd/juggler/core"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/jlog"
 	"juggler/internal/userpaths"
 )

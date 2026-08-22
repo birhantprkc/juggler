@@ -5,7 +5,7 @@
 package acp
 
 import (
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // providerName is the registry id for the ACP provider.

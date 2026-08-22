@@ -18,7 +18,7 @@ import (
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/providers/openaibase"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // DefaultHost is the URL used when no explicit host is configured.

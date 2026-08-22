@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // waitForFakeCLIUp blocks until the fake CLI has emitted its first line to the

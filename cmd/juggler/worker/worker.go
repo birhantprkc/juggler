@@ -46,7 +46,208 @@ type threadContext struct {
 // ConversationWorker handles conversation orchestration.
 // All state is owned by a single goroutine - no mutexes needed.
 // Messages come in via the inbound channel and are processed sequentially.
+// elapsedAnchor is everything behind the spinner's elapsed digit. The whole
+// timer is one number the clients subtract from now(); the rest of this group
+// exists to keep that number honest — excluding time parked at an approval
+// prompt, and excluding wall-clock the process spent frozen.
+//
+// R21(c) gave these fields their own methods (updateElapsedAnchor,
+// updateApprovalWaitAnchor, detectFrozenGap); this gives them their own home.
+// Run goroutine only.
+type elapsedAnchor struct {
+	// processingStartedAt is the single anchor every client renders the spinner's
+	// elapsed digit against (mirrored into processingState.startedAt). The whole
+	// timer is just this one number: clients show `now - startedAt`, or nothing
+	// when it is absent. It is TURN-scoped (set once when a turn begins from idle,
+	// preserved across re-dispatches so the digit spans the whole turn, 0 = idle)
+	// and it is pushed FORWARD by each approval wait (see updateApprovalWaitAnchor)
+	// so the deliberation at a prompt is excluded from active-work time. The
+	// deduction is computed from in-memory state alone — no second doc field.
+	processingStartedAt int64
+	// approvalWaitStartedAt is the wall-clock millis at which the current turn
+	// parked PURELY on a human approval (a tool awaiting manual approval, nothing
+	// executing); 0 when not parked. It is in-memory turn bookkeeping, never
+	// persisted. On the resume edge the worker advances processingStartedAt by
+	// (now - approvalWaitStartedAt) so the wait is excluded. While parked the
+	// startedAt field is removed from the doc, so clients show no elapsed digit.
+	approvalWaitStartedAt int64
+	// wasBlockedOnApprovals is the previous reconcile tick's blockedOnlyByApprovals()
+	// value, so updateApprovalWaitAnchor can detect the park/resume edges. Auto-
+	// approved tools go Unevaluated→Approved without ever sitting pending, so this
+	// never goes true for them and their timer is left running untouched.
+	wasBlockedOnApprovals bool
+	// livenessTicker fires ~every livenessInterval while run() executes, giving
+	// detectFrozenGap a heartbeat. There is no OS event for "the wall clock jumped
+	// while we weren't running", so the only way to notice a suspended process is to
+	// observe that an expected tick arrived late. Created in run(), stopped on
+	// shutdown; nil in workers that never run (unit tests) — read via livenessC().
+	livenessTicker *time.Ticker
+	// lastLivenessMs is the wall-clock millis of the previous liveness tick (0 before
+	// the first). detectFrozenGap compares each tick against it: a gap far larger than
+	// livenessInterval means the process was frozen (sleep, hibernate, VM/host suspend,
+	// a stop-the-world pause) and that dead time is excluded from the elapsed digit.
+	// Owned solely by the run() goroutine.
+	lastLivenessMs int64
+}
+
+// engineRPC holds the worker's request/reply round-trips with the clients and
+// the engine — one slot each, named for the request it answers. The
+// correlation every one of them needs lives in reply_slot.go.
+type engineRPC struct {
+	// replySlots holds them all, in construction order, so a test can check the
+	// whole set rather than the ones someone thought to list.
+	replySlots        []*replySlot
+	contextReply      *replySlot
+	toolsReply        *replySlot
+	strategyHookReply *replySlot
+	// The subthread-delegation round-trip is engine-targeted: the worker asks
+	// the engine to build a SubthreadSpec for a delegating tool.
+	subthreadSpecReply *replySlot
+}
+
+// engineLiveness is the evidence the worker has that the attached engine is
+// actually running its tool-command handlers: the two most recent accepted
+// tool-execution reports (the finalize rule needs a wedge absent from BOTH),
+// the fence that rejects stale or duplicate reports, the engine those reports
+// came from, and when a trace last arrived.
+//
+// Run goroutine only (set in handleToolExecutionReport / handleEngineTrace,
+// read in finalizeToolsAbsentFromExecReport / escalateStaleToolCommand).
+type engineLiveness struct {
+	// Level-based tool-liveness (tool-execution-report, INV-B/C). lastExecReport and
+	// prevExecReport hold the two most recent ACCEPTED reports from the attached
+	// engine — the finalize rule requires a wedge to be absent from BOTH (the
+	// 2-consecutive belt). execReportSeq fences stale/duplicate reports (per engine
+	// client); execReportClient is the engine the stored reports came from, so the
+	// state is dropped when a different engine attaches. Run goroutine only (set in
+	// handleToolExecutionReport, read in finalizeToolsAbsentFromExecReport).
+	lastExecReport   *execReport
+	prevExecReport   *execReport
+	execReportSeq    int64
+	execReportClient string
+	// lastEngineTraceAt is when this worker last received an engine-trace for this
+	// conversation (handleEngineTrace). Purely diagnostic: it is the worker's only
+	// evidence that the engine is reaching its tool-command handlers at all, so
+	// escalateStaleToolCommand reports it — "never" separates an engine that never
+	// received the command (or is wedged before its handlers) from one that
+	// received it and declined to act, which the trace itself then explains. Zero
+	// until the first trace arrives. Run goroutine only.
+	lastEngineTraceAt time.Time
+}
+
+// undoCoalescer is the undo/history machinery: the two "collapse everything
+// added since this index into one entry" marks, and the two suppressions that
+// stop a history step from being read as fresh user intent.
+//
+// Both indices use -1 for "nothing in flight", so a zero value is NOT valid —
+// NewConversationWorker sets them explicitly. Run goroutine only.
+type undoCoalescer struct {
+	// suppressItemsChange, when true, makes handleItemsChange a no-op. Set
+	// for the duration of an undo/redo so the document mutations the
+	// UndoManager applies don't kick the reducer (which would otherwise see
+	// e.g. a restored thread + trailing user message and immediately
+	// dispatch ActionCallLLM, undoing the user's undo in front of their
+	// eyes). The flag is set on the event-loop goroutine and read on the
+	// same goroutine via the items observer, so a plain bool is sufficient.
+	suppressItemsChange bool
+	// suppressReconcileAfterHistoryNavUntilMs is set briefly after undo/redo.
+	// Browser/engine Yjs sync echoes can arrive after the synchronous
+	// UndoManager transaction and reintroduce a stale
+	// processingState.activity="awaiting_llm" marker. During this short recoil
+	// window, doc updates still apply/save, but they must not drive the thread
+	// reducer forward from whatever last item shape the history step exposed
+	// (user, completed tool, completed thread, meta result, etc.). Explicit
+	// send/continue intent clears the window immediately; otherwise it expires
+	// so later user actions delivered as Yjs sync (e.g. approval clicks) work.
+	suppressReconcileAfterHistoryNavUntilMs int64
+	// compactionMergeFromIdx, when >= 0, is the UndoStack index whose entry
+	// holds the viewer-side compaction insert. While set, every undo group
+	// the strategy adds during the compaction run will be collapsed into
+	// that single entry on idle, so the whole compaction (insert + every
+	// LLM turn + result) undoes as one user action. -1 means "no
+	// compaction in flight."
+	compactionMergeFromIdx int
+	// undoCoalesceFromIdx, when >= 0, is the UndoStack index captured at the
+	// start of a browser-driven multi-step command (e.g. /clear: wipe history +
+	// re-seed auto items). On the matching end marker, every undo group added
+	// since is collapsed into that single entry so the whole command undoes as
+	// one user action. -1 means "no coalescing in flight." Set/read only on the
+	// run() goroutine via the begin/end-undo-coalesce handlers.
+	undoCoalesceFromIdx int
+}
+
+// persistence is how the doc reaches disk: the save debounce, the dirty flag,
+// the synchronous flush seam, and the two out-of-doc stores whose bytes live
+// beside the doc rather than in it.
+//
+// txnStore and assetStore are nil until handleInit knows projectPath.
+type persistence struct {
+	// Persistence
+	saveTimer *time.Timer
+	saveChan  chan struct{} // Timer goroutine signals here; run loop does the actual save
+	dirty     atomic.Bool   // true when doc has unsaved changes since last successful save
+	// flushReq lets tests (or shutdown) force-save synchronously without
+	// waiting on the SaveDebounceTime timer. Each request carries a reply
+	// chan that the run loop signals after the save completes.
+	flushReq chan chan error
+	// Per-conversation transaction blob store (input/output context for each
+	// LLM round-trip). Initialized in handleInit once projectPath is known.
+	txnStore *TransactionStore
+	// Per-conversation content-addressed asset store (attached images, etc.).
+	// Bytes live out-of-doc under <convDir>/assets/; the doc holds only refs.
+	// Initialized in handleInit once projectPath is known.
+	assetStore *AssetStore
+}
+
+// toolDrive is the state driveToolActions runs on: per-toolUseId delivery
+// bookkeeping, how long to wait before re-dispatching a command still stuck at
+// the state it was last sent at, the running task-output delivery pumps, and
+// the per-thread strategy snapshot that makes a live strategy switch detectable.
+//
+// Run goroutine only.
+type toolDrive struct {
+	// tools holds the per-toolUseId tool-command delivery bookkeeping — the state a
+	// command was last dispatched at, its dispatch time, and the attempt count (see
+	// tool_command_state.go). driveToolActions consults it to re-dispatch only when
+	// the doc still demands a command and the last dispatch at that state has aged
+	// past redriveInterval, and to escalate past maxToolCommandAttempts. Run
+	// goroutine only.
+	tools *toolCommandTracker
+	// redriveInterval is how long driveToolActions waits before re-dispatching a
+	// tool-command still stuck at the state it was last sent at. A field (defaulting
+	// to defaultRedriveInterval) so tests can shrink it to force staleness.
+	redriveInterval time.Duration
+	// deliveryPumps tracks running task-output delivery pumps, keyed by the
+	// owning pendingRequests entry id. Each pump polls a background task and
+	// injects its new output into a thread as turn-boundary messages (see
+	// task_delivery.go) — a generic capability any plugin can request via a
+	// `deliverTaskOutput` pending request. Touched only on the run() goroutine
+	// (scanPendingRequests / handleDeliveryEnded / onShutdown); the pump goroutines
+	// communicate back via w.Send.
+	deliveryPumps map[string]*taskDeliveryPump
+	// lastReconciledStrategyIDs records each thread's effective strategy as of the
+	// last reconcile tick, keyed by threadItemID ("" = root; empty strategy
+	// normalized to "default"). Strategy is per-thread, so the switch detection is
+	// per-thread: driveToolActions compares each thread's current effective
+	// strategy against its recorded value to detect a live switch and re-evaluate
+	// that thread's tool-actions parked awaiting approval under the OLD policy (see
+	// reevaluatePendingToolsOnStrategyChange). strategyBaselineSet guards the first
+	// observation, which only records the baseline — never resetting freshly-loaded
+	// tools on startup.
+	lastReconciledStrategyIDs map[string]string
+	strategyBaselineSet       bool
+}
+
 type ConversationWorker struct {
+	// Grouped state, embedded so every call site still reads w.<field>.
+	// See each type for what it owns and which goroutine may touch it.
+	elapsedAnchor
+	engineRPC
+	engineLiveness
+	undoCoalescer
+	persistence
+	toolDrive
+
 	conversationID string
 	projectPath    string
 	authorID       string
@@ -91,18 +292,6 @@ type ConversationWorker struct {
 	stopped  chan struct{}
 
 	llmResponseChan chan llmCallResult
-
-	// One replySlot per request/reply round-trip with the clients (see
-	// reply_slot.go, which is where the correlation every one of them needs
-	// lives). replySlots holds them all, in construction order, so a test can
-	// check the whole set rather than the ones someone thought to list.
-	replySlots        []*replySlot
-	contextReply      *replySlot
-	toolsReply        *replySlot
-	strategyHookReply *replySlot
-	// The subthread-delegation round-trip is engine-targeted: the worker asks
-	// the engine to build a SubthreadSpec for a delegating tool.
-	subthreadSpecReply *replySlot
 	// turnDelegatingTools is the set of tool names offered this turn whose item
 	// declared delegatesToSubthread. Rebuilt each iteration from the tools list
 	// and read by processLLMResponse to route a call to the delegation path.
@@ -115,15 +304,6 @@ type ConversationWorker struct {
 	// Per-client outbound callbacks. Owned by a dedicated actor goroutine
 	// (see callback_registry.go); all ops route through callbacks.ch.
 	callbacks *callbackRegistry
-
-	// Persistence
-	saveTimer *time.Timer
-	saveChan  chan struct{} // Timer goroutine signals here; run loop does the actual save
-	dirty     atomic.Bool   // true when doc has unsaved changes since last successful save
-	// flushReq lets tests (or shutdown) force-save synchronously without
-	// waiting on the SaveDebounceTime timer. Each request carries a reply
-	// chan that the run loop signals after the save completes.
-	flushReq chan chan error
 
 	// LLM calling
 	llmCallFunc LLMCallFunc
@@ -192,15 +372,6 @@ type ConversationWorker struct {
 	// Thread execution context — set when running inside a child thread; zero value = root conversation.
 	thread threadContext
 
-	// Per-conversation transaction blob store (input/output context for each
-	// LLM round-trip). Initialized in handleInit once projectPath is known.
-	txnStore *TransactionStore
-
-	// Per-conversation content-addressed asset store (attached images, etc.).
-	// Bytes live out-of-doc under <convDir>/assets/; the doc holds only refs.
-	// Initialized in handleInit once projectPath is known.
-	assetStore *AssetStore
-
 	// currentTxnID is the transaction id of the LLM round-trip currently in
 	// flight (set at iteration start, cleared on iteration end). insertTargetMessage
 	// stamps this onto every newly inserted item, so any item produced during
@@ -221,44 +392,6 @@ type ConversationWorker struct {
 	// of the next attempt — which may itself spend minutes backing off — until
 	// real content flips it back; see clearRetryingStatus.
 	llmRetryStatusActive bool
-
-	// processingStartedAt is the single anchor every client renders the spinner's
-	// elapsed digit against (mirrored into processingState.startedAt). The whole
-	// timer is just this one number: clients show `now - startedAt`, or nothing
-	// when it is absent. It is TURN-scoped (set once when a turn begins from idle,
-	// preserved across re-dispatches so the digit spans the whole turn, 0 = idle)
-	// and it is pushed FORWARD by each approval wait (see updateApprovalWaitAnchor)
-	// so the deliberation at a prompt is excluded from active-work time. The
-	// deduction is computed from in-memory state alone — no second doc field.
-	processingStartedAt int64
-
-	// approvalWaitStartedAt is the wall-clock millis at which the current turn
-	// parked PURELY on a human approval (a tool awaiting manual approval, nothing
-	// executing); 0 when not parked. It is in-memory turn bookkeeping, never
-	// persisted. On the resume edge the worker advances processingStartedAt by
-	// (now - approvalWaitStartedAt) so the wait is excluded. While parked the
-	// startedAt field is removed from the doc, so clients show no elapsed digit.
-	approvalWaitStartedAt int64
-
-	// wasBlockedOnApprovals is the previous reconcile tick's blockedOnlyByApprovals()
-	// value, so updateApprovalWaitAnchor can detect the park/resume edges. Auto-
-	// approved tools go Unevaluated→Approved without ever sitting pending, so this
-	// never goes true for them and their timer is left running untouched.
-	wasBlockedOnApprovals bool
-
-	// livenessTicker fires ~every livenessInterval while run() executes, giving
-	// detectFrozenGap a heartbeat. There is no OS event for "the wall clock jumped
-	// while we weren't running", so the only way to notice a suspended process is to
-	// observe that an expected tick arrived late. Created in run(), stopped on
-	// shutdown; nil in workers that never run (unit tests) — read via livenessC().
-	livenessTicker *time.Ticker
-
-	// lastLivenessMs is the wall-clock millis of the previous liveness tick (0 before
-	// the first). detectFrozenGap compares each tick against it: a gap far larger than
-	// livenessInterval means the process was frozen (sleep, hibernate, VM/host suspend,
-	// a stop-the-world pause) and that dead time is excluded from the elapsed digit.
-	// Owned solely by the run() goroutine.
-	lastLivenessMs int64
 
 	// activityAsserted tracks whether this worker is currently holding an
 	// osactivity assertion (App Nap defeat). Set on the first non-idle
@@ -304,103 +437,12 @@ type ConversationWorker struct {
 	// dispatches the action at the top level.
 	needsReconcile bool
 
-	// tools holds the per-toolUseId tool-command delivery bookkeeping — the state a
-	// command was last dispatched at, its dispatch time, and the attempt count (see
-	// tool_command_state.go). driveToolActions consults it to re-dispatch only when
-	// the doc still demands a command and the last dispatch at that state has aged
-	// past redriveInterval, and to escalate past maxToolCommandAttempts. Run
-	// goroutine only.
-	tools *toolCommandTracker
-
-	// Level-based tool-liveness (tool-execution-report, INV-B/C). lastExecReport and
-	// prevExecReport hold the two most recent ACCEPTED reports from the attached
-	// engine — the finalize rule requires a wedge to be absent from BOTH (the
-	// 2-consecutive belt). execReportSeq fences stale/duplicate reports (per engine
-	// client); execReportClient is the engine the stored reports came from, so the
-	// state is dropped when a different engine attaches. Run goroutine only (set in
-	// handleToolExecutionReport, read in finalizeToolsAbsentFromExecReport).
-	lastExecReport   *execReport
-	prevExecReport   *execReport
-	execReportSeq    int64
-	execReportClient string
-
-	// lastEngineTraceAt is when this worker last received an engine-trace for this
-	// conversation (handleEngineTrace). Purely diagnostic: it is the worker's only
-	// evidence that the engine is reaching its tool-command handlers at all, so
-	// escalateStaleToolCommand reports it — "never" separates an engine that never
-	// received the command (or is wedged before its handlers) from one that
-	// received it and declined to act, which the trace itself then explains. Zero
-	// until the first trace arrives. Run goroutine only.
-	lastEngineTraceAt time.Time
-
-	// redriveInterval is how long driveToolActions waits before re-dispatching a
-	// tool-command still stuck at the state it was last sent at. A field (defaulting
-	// to defaultRedriveInterval) so tests can shrink it to force staleness.
-	redriveInterval time.Duration
-
-	// deliveryPumps tracks running task-output delivery pumps, keyed by the
-	// owning pendingRequests entry id. Each pump polls a background task and
-	// injects its new output into a thread as turn-boundary messages (see
-	// task_delivery.go) — a generic capability any plugin can request via a
-	// `deliverTaskOutput` pending request. Touched only on the run() goroutine
-	// (scanPendingRequests / handleDeliveryEnded / onShutdown); the pump goroutines
-	// communicate back via w.Send.
-	deliveryPumps map[string]*taskDeliveryPump
-
-	// lastReconciledStrategyIDs records each thread's effective strategy as of the
-	// last reconcile tick, keyed by threadItemID ("" = root; empty strategy
-	// normalized to "default"). Strategy is per-thread, so the switch detection is
-	// per-thread: driveToolActions compares each thread's current effective
-	// strategy against its recorded value to detect a live switch and re-evaluate
-	// that thread's tool-actions parked awaiting approval under the OLD policy (see
-	// reevaluatePendingToolsOnStrategyChange). strategyBaselineSet guards the first
-	// observation, which only records the baseline — never resetting freshly-loaded
-	// tools on startup.
-	lastReconciledStrategyIDs map[string]string
-	strategyBaselineSet       bool
-
-	// suppressItemsChange, when true, makes handleItemsChange a no-op. Set
-	// for the duration of an undo/redo so the document mutations the
-	// UndoManager applies don't kick the reducer (which would otherwise see
-	// e.g. a restored thread + trailing user message and immediately
-	// dispatch ActionCallLLM, undoing the user's undo in front of their
-	// eyes). The flag is set on the event-loop goroutine and read on the
-	// same goroutine via the items observer, so a plain bool is sufficient.
-	suppressItemsChange bool
-
-	// suppressReconcileAfterHistoryNavUntilMs is set briefly after undo/redo.
-	// Browser/engine Yjs sync echoes can arrive after the synchronous
-	// UndoManager transaction and reintroduce a stale
-	// processingState.activity="awaiting_llm" marker. During this short recoil
-	// window, doc updates still apply/save, but they must not drive the thread
-	// reducer forward from whatever last item shape the history step exposed
-	// (user, completed tool, completed thread, meta result, etc.). Explicit
-	// send/continue intent clears the window immediately; otherwise it expires
-	// so later user actions delivered as Yjs sync (e.g. approval clicks) work.
-	suppressReconcileAfterHistoryNavUntilMs int64
-
-	// compactionMergeFromIdx, when >= 0, is the UndoStack index whose entry
-	// holds the viewer-side compaction insert. While set, every undo group
-	// the strategy adds during the compaction run will be collapsed into
-	// that single entry on idle, so the whole compaction (insert + every
-	// LLM turn + result) undoes as one user action. -1 means "no
-	// compaction in flight."
-	compactionMergeFromIdx int
-
 	// autoCompactAnchorTxnID is the last root assistant-turn transaction id the
 	// proactive compaction trigger has already evaluated (folded or found under
 	// threshold). It debounces the turn-settle check so an unchanged anchor is
 	// never re-folded on every idle tick — the worker-side equivalent of the
 	// browser's _autoCompactCheckedTxnId. Set/read only on the run() goroutine.
 	autoCompactAnchorTxnID string
-
-	// undoCoalesceFromIdx, when >= 0, is the UndoStack index captured at the
-	// start of a browser-driven multi-step command (e.g. /clear: wipe history +
-	// re-seed auto items). On the matching end marker, every undo group added
-	// since is collapsed into that single entry so the whole command undoes as
-	// one user action. -1 means "no coalescing in flight." Set/read only on the
-	// run() goroutine via the begin/end-undo-coalesce handlers.
-	undoCoalesceFromIdx int
 
 	// Dedicated channel for stream chunks from the provider goroutine.
 	// Separate from inbound so streaming can't be starved or dropped.
@@ -458,25 +500,33 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 	tracker := NewOperationTracker(doc)
 
 	w := &ConversationWorker{
-		conversationID:            conversationID,
-		authorID:                  authorID,
-		doc:                       doc,
-		tracker:                   tracker,
-		tape:                      NewEventTape(),
-		callbacks:                 newCallbackRegistry(),
-		streamChunkChan:           make(chan StreamChunk, 4096),
-		done:                      make(chan struct{}),
-		stopped:                   make(chan struct{}),
-		llmResponseChan:           make(chan llmCallResult, 1),
-		tools:                     newToolCommandTracker(),
-		redriveInterval:           defaultRedriveInterval,
-		deliveryPumps:             make(map[string]*taskDeliveryPump),
-		lastReconciledStrategyIDs: make(map[string]string),
-		saveChan:                  make(chan struct{}, 1),
-		flushReq:                  make(chan chan error, 4),
-		docChangeChan:             make(chan struct{}, 1),
-		compactionMergeFromIdx:    -1,
-		undoCoalesceFromIdx:       -1,
+		conversationID:  conversationID,
+		authorID:        authorID,
+		doc:             doc,
+		tracker:         tracker,
+		tape:            NewEventTape(),
+		callbacks:       newCallbackRegistry(),
+		streamChunkChan: make(chan StreamChunk, 4096),
+		done:            make(chan struct{}),
+		stopped:         make(chan struct{}),
+		llmResponseChan: make(chan llmCallResult, 1),
+		docChangeChan:   make(chan struct{}, 1),
+		toolDrive: toolDrive{
+			tools:                     newToolCommandTracker(),
+			redriveInterval:           defaultRedriveInterval,
+			deliveryPumps:             make(map[string]*taskDeliveryPump),
+			lastReconciledStrategyIDs: make(map[string]string),
+		},
+		persistence: persistence{
+			saveChan: make(chan struct{}, 1),
+			flushReq: make(chan chan error, 4),
+		},
+		// Both marks mean "nothing in flight" at -1, so the zero value would
+		// read as "collapse everything from entry 0".
+		undoCoalescer: undoCoalescer{
+			compactionMergeFromIdx: -1,
+			undoCoalesceFromIdx:    -1,
+		},
 	}
 	// The client round-trips, each named for the request it answers. Created
 	// after w.done, which they share so a blocked test client is released when

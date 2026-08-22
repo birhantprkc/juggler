@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // hashRequestPrefix produces a stable fingerprint of the request prefix —

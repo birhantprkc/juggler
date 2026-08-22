@@ -11,7 +11,7 @@ import (
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/osactivity"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/worker"
 	"juggler/internal/jlog"
 )

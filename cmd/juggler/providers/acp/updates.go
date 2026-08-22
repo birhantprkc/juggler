@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // sessionUpdateParams is the payload of a session/update notification.

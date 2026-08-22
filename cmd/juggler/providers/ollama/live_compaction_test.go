@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestLiveOllamaFinalCompactionShape is a manual, daemon-backed check of the

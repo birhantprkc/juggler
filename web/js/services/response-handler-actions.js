@@ -181,7 +181,7 @@ async function executeActionCore(rh, toolCall, toolInput, messageThread, options
 
 /**
  * Resolve an action class and prepare its parameters — the pipeline shared by
- * execution (`prepareAction`) and pre-execution validation (`validateToolCalls`).
+ * execution (`prepareAction`).
  * When the class is unknown/blocked, `ActionClass` is null and `blockedReason`
  * carries the reason (if any); otherwise the instance is constructed with
  * `toolName` set (so a multi-tool class routes validate/approval to the invoked

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // newConvHarness builds a conversation with a live session pre-installed over

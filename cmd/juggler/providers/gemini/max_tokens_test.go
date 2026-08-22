@@ -8,7 +8,7 @@ import (
 	"math"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 func TestNewClientClampsMaxOutputTokensAboveInt32(t *testing.T) {

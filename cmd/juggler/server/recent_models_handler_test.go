@@ -54,7 +54,7 @@ func TestRecentModelsHandlerRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRecentModelsStore: %v", err)
 	}
-	s := &Server{recentModelsStore: store}
+	s := &Server{serverStores: serverStores{recentModelsStore: store}}
 
 	if got := getRecentModels(t, s); len(got) != 0 {
 		t.Fatalf("expected empty list initially, got %v", got)
@@ -94,7 +94,7 @@ func TestRecentModelsHandlerThinkingTriple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRecentModelsStore: %v", err)
 	}
-	s := &Server{recentModelsStore: store}
+	s := &Server{serverStores: serverStores{recentModelsStore: store}}
 
 	post := func(body string) {
 		t.Helper()

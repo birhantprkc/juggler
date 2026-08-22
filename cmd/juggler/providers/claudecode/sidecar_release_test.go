@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // runOneTurnWithSidecar drives a single text turn through the fake CLI so a

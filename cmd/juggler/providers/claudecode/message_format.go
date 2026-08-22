@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"juggler/cmd/juggler/providers/anthropic"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // mcpToolPrefix is the prefix Claude CLI adds to MCP tools based on server name.

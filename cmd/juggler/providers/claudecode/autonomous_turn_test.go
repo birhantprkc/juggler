@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // textTurnLines returns the stream-json lines the CLI emits for one complete

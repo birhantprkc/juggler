@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestHandleProviderTurn_FinalizesCost is the cost-accounting invariant: an

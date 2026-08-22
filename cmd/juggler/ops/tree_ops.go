@@ -16,7 +16,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/gitignore"
 )
 

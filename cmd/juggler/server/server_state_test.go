@@ -38,7 +38,7 @@ func newMockSender() *mockSender {
 // no session manager, no workers.
 func newTestServerState(t *testing.T) *Server {
 	t.Helper()
-	s := &Server{hub: newClientHub()}
+	s := &Server{wsFleet: wsFleet{hub: newClientHub()}}
 	s.projectState.Store(&projectState{viewers: newViewerGroup()})
 	return s
 }

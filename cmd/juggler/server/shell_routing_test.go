@@ -17,7 +17,7 @@ import (
 // s.SessionManager().GetProjectPath() for the command cwd) has a valid project.
 func newTestServerStateWithProject(t *testing.T) *Server {
 	t.Helper()
-	s := &Server{hub: newClientHub()}
+	s := &Server{wsFleet: wsFleet{hub: newClientHub()}}
 	mgr, err := core.NewSessionManagerForPath(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSessionManagerForPath: %v", err)

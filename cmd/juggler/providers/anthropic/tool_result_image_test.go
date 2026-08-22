@@ -8,7 +8,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestToolResultCarriesImageBlock: a tool-result with image parts emits an

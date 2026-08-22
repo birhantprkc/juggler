@@ -8,7 +8,7 @@ import (
 	"context"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // StreamSession is the scaffolding every SDK-streaming provider arms around its
@@ -39,9 +39,10 @@ import (
 //	    return nil, err
 //	}
 //
-// A session belongs to one goroutine for the life of one stream attempt. A
-// provider that retries internally (gemini) arms a fresh session per attempt,
-// so the idle window it reports is the one that actually elapsed.
+// A session belongs to one goroutine for the life of one stream attempt, and
+// every SDK provider arms exactly one: retries belong to the worker's turn
+// loop, where the wait is visible and interruptible. So a reported idle window
+// is always the one that actually elapsed.
 type StreamSession struct {
 	name     string
 	parent   context.Context

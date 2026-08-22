@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // newTierCapturingClient returns a Responses-API client whose outgoing request

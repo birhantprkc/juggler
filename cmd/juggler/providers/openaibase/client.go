@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/providers/utils"
 	"juggler/internal/httpx"
 	"juggler/internal/jlog"

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // captureHeaders returns an http.Client that records each request's

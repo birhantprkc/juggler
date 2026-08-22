@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestStreamStallsOnSilentCLI models a subprocess whose upstream connection

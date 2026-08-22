@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestEveryColdStartRoutesThroughTheWarning is the structural guard against

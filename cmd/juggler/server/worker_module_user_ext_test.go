@@ -17,7 +17,7 @@ import (
 // way createExtensionsAPI wires the real one. web.Files supplies the embedded
 // SDK version read at construction.
 func serverWithUserExt(userDir string) *Server {
-	return &Server{extensionsAPI: handlers.NewExtensionsAPI(web.Files, "", userDir)}
+	return &Server{serverAPIs: serverAPIs{extensionsAPI: handlers.NewExtensionsAPI(web.Files, "", userDir)}}
 }
 
 // TestReadWorkerModuleUserExtension checks that a ContextItem discovered under

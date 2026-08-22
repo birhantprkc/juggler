@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 const (

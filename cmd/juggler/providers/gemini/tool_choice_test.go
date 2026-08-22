@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"google.golang.org/genai"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 func TestGeminiFunctionCallingConfig(t *testing.T) {

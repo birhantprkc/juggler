@@ -179,8 +179,8 @@ func TestHandleReloadExtensions(t *testing.T) {
 	s := &Server{
 		router:        mux.NewRouter(),
 		staticVersion: "test",
-		extensionsAPI: handlers.NewExtensionsAPI(fstest.MapFS{}, "", t.TempDir()),
-		hub:           newClientHub(),
+		serverAPIs:    serverAPIs{extensionsAPI: handlers.NewExtensionsAPI(fstest.MapFS{}, "", t.TempDir())},
+		wsFleet:       wsFleet{hub: newClientHub()},
 	}
 	s.setupRoutes()
 

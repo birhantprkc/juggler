@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // XMLArg represents an argument in XML tool call format

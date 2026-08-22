@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/jlog"
 )
 

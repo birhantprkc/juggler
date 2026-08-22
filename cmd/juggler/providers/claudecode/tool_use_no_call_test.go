@@ -18,7 +18,7 @@ package claudecode
 import (
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // messageStartLine opens a new API call within the turn, resetting the parser's

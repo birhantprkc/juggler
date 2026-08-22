@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestConversationCacheCloseAllReopensUnderNewProject pins the invalidation
@@ -89,7 +89,7 @@ func TestSwitchProjectInvalidatesConversationCache(t *testing.T) {
 		return &capabilityCacheProvider{opened: &opened}, nil
 	})
 
-	s := &Server{hub: newClientHub()}
+	s := &Server{wsFleet: wsFleet{hub: newClientHub()}}
 	s.projectState.Store(&projectState{viewers: newViewerGroup()}) // start in no-project mode
 	s.switchToken = make(chan struct{}, 1)
 	s.switchToken <- struct{}{}

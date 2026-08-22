@@ -6,18 +6,8 @@
 import ContextItem from 'juggler/context-item';
 import { createElement, injectStylesOnce } from 'juggler/ui';
 import { createTextBlock } from 'juggler/item-utils';
-import { presentPopup } from 'juggler/ui';
 import { systemPromptRegistry, getDefaultIdentityText } from '../../../sdk/lib/system-prompt-registry.js';
-import {
-  ensureUserPresetsLoaded,
-  getDefaultPresetId,
-  setDefaultPreset,
-  saveUserPreset,
-  deleteUserPreset,
-  updateUserPreset
-} from '../../../js/services/system-prompt-presets.js';
-
-/** @typedef {import('../../../sdk/lib/system-prompt-registry.js').SystemPromptPreset} SystemPromptPreset */
+import { showPresetBrowser } from './system-prompt/preset-browser.js';
 
 // ============================================================================
 // Styles
@@ -292,16 +282,6 @@ const SYSTEM_PROMPT_STYLES = `
 }
 `;
 
-// Inline icons for the dropdown (Material Symbols paths, currentColor fill).
-/**
- * @param {string} path - SVG path data
- * @returns {string} SVG markup
- */
-const SP_ICON = (path) => `<svg viewBox="0 -960 960 960" aria-hidden="true"><path d="${path}"/></svg>`;
-const SP_ICON_CHECK = SP_ICON('M382-240 154-468l57-56 171 171 372-372 57 56-429 429Z');
-const SP_ICON_PLUS = SP_ICON('M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z');
-const SP_ICON_GEAR = SP_ICON('m370-80-16-128q-13-5-24.5-12T307-235l-119 50L78-375l103-78q-1-7-1-13.5v-27q0-6.5 1-13.5L78-585l110-190 119 50q11-8 23-15t24-12l16-128h220l16 128q13 5 24.5 12t22.5 15l119-50 110 190-103 78q1 7 1 13.5v27q0 6.5-2 13.5l103 78-110 190-118-50q-11 8-23 15t-24 12L590-80H370Zm112-260q58 0 99-41t41-99q0-58-41-99t-99-41q-59 0-99.5 41T342-480q0 58 40.5 99t99.5 41Z');
-
 injectStylesOnce('system-prompt-styles', SYSTEM_PROMPT_STYLES);
 
 // ============================================================================
@@ -371,7 +351,9 @@ class SystemPromptContextItem extends ContextItem {
   constructor(context) {
     super(context);
 
-    // presentPopup release for the open preset-browser dropdown (single teardown).
+    // presentPopup release for whichever preset surface is open — browser or
+    // manage. Owned here, written by system-prompt/preset-browser.js: one slot
+    // is what makes opening either close the other.
     /** @type {(() => void)|null} @private */
     this._dropdownRelease = null;
 
@@ -575,7 +557,7 @@ class SystemPromptContextItem extends ContextItem {
     const presetBtn = document.createElement('button');
     presetBtn.textContent = 'Select a preset';
     presetBtn.className = 'system-prompt-preset-btn';
-    presetBtn.onclick = (e) => { e.stopPropagation(); this._showPresetBrowser(presetBtn, container); };
+    presetBtn.onclick = (e) => { e.stopPropagation(); showPresetBrowser(this, presetBtn, container); };
     body.appendChild(presetBtn);
     section.appendChild(body);
     parent.appendChild(section);
@@ -896,335 +878,6 @@ class SystemPromptContextItem extends ContextItem {
       // Fall through: the Extensions tab on its own is still a useful landing.
     }
     openSettings('extensions');
-  }
-
-  /**
-   * Close the open preset dropdown, if any.
-   * @private
-   */
-  _closeDropdown() {
-    if (this._dropdownRelease) {
-      this._dropdownRelease();
-      this._dropdownRelease = null;
-    }
-  }
-
-  /**
-   * Show the preset browser dropdown: built-in and user presets grouped by
-   * category, each with a default indicator / "Set as default" action, plus
-   * footer actions to save the current prompt as a preset and to manage user
-   * presets.
-   * @private
-   * @param {HTMLElement} buttonElement - Trigger button
-   * @param {HTMLElement} container - Properties panel container
-   */
-  async _showPresetBrowser(buttonElement, container) {
-    // Toggle: a second click closes the open dropdown.
-    if (this._dropdownRelease) {
-      this._closeDropdown();
-      return;
-    }
-
-    // Pull in the user's saved presets + default id before rendering.
-    await ensureUserPresetsLoaded();
-
-    const dropdown = document.createElement('nav');
-    dropdown.className = 'dropdown-menu system-prompt-preset-dropdown show';
-    this._renderPresetMenu(dropdown, container);
-
-    // presentPopup owns body-append, dismissal wiring (outside-click via
-    // insideSelectors + Escape), the reposition observer, and the
-    // anchored-vs-sheet decision.
-    this._dropdownRelease = presentPopup({
-      surface: dropdown,
-      anchor: buttonElement,
-      id: 'system-prompt-preset-dropdown',
-      onClose: () => this._closeDropdown(),
-      insideSelectors: ['.system-prompt-preset-dropdown', '.system-prompt-preset-btn'],
-    });
-  }
-
-  /**
-   * Render (or re-render in place) the preset dropdown's menu contents. Called
-   * on open and after a default change so the indicator updates without closing.
-   * @private
-   * @param {HTMLElement} dropdown - The dropdown surface element
-   * @param {HTMLElement} container - Properties panel container
-   */
-  _renderPresetMenu(dropdown, container) {
-    const menu = document.createElement('menu');
-    const defaultId = getDefaultPresetId();
-    const selectedId = this.data.selectedPresetId;
-
-    for (const category of systemPromptRegistry.getCategories()) {
-      const presets = systemPromptRegistry.getPresetsByCategory(category);
-      if (presets.length === 0) continue;
-
-      menu.appendChild(this._buildCategoryHeader(category));
-
-      for (const preset of presets) {
-        menu.appendChild(this._buildPresetMenuItem(preset, defaultId, selectedId, dropdown, container));
-      }
-    }
-
-    // Footer actions.
-    menu.appendChild(createElement('li', 'sp-preset-separator'));
-
-    menu.appendChild(this._buildActionItem(SP_ICON_PLUS, 'Save current text as preset…', () => {
-      this._saveCurrentAsPreset(dropdown, container);
-    }));
-    menu.appendChild(this._buildActionItem(SP_ICON_GEAR, 'Manage presets…', () => {
-      this._closeDropdown();
-      this._showManagePresets(container);
-    }));
-
-    dropdown.replaceChildren(menu);
-  }
-
-  /**
-   * Build an uppercase section label row (capitalized; CSS upper-cases it).
-   * @private
-   * @param {string} label - Category label
-   * @returns {HTMLElement} The header row
-   */
-  _buildCategoryHeader(label) {
-    return createElement('li', 'sp-preset-category', label.charAt(0).toUpperCase() + label.slice(1));
-  }
-
-  /**
-   * Build one preset row: a leading check column marks the preset currently
-   * applied to this conversation; the name flexes; the trailing slot shows a
-   * "default" badge (for the new-conversation default) or a hover-revealed
-   * "Set default" button.
-   * @private
-   * @param {import('./system-prompt-context-item.js').SystemPromptPreset} preset
-   * @param {string} defaultId - The current default preset id
-   * @param {string} selectedId - The preset applied to this conversation
-   * @param {HTMLElement} dropdown - The dropdown surface (for in-place refresh)
-   * @param {HTMLElement} container - Properties panel container
-   * @returns {HTMLElement} The menu row
-   */
-  _buildPresetMenuItem(preset, defaultId, selectedId, dropdown, container) {
-    const isSelected = preset.id === selectedId;
-    const item = createElement('li', 'sp-preset-row' + (isSelected ? ' is-selected' : ''));
-
-    const icon = createElement('span', 'sp-preset-row-icon');
-    if (isSelected) icon.innerHTML = SP_ICON_CHECK;
-    item.appendChild(icon);
-
-    item.appendChild(createElement('span', 'sp-preset-row-name', preset.name));
-
-    if (preset.id === defaultId) {
-      item.appendChild(createElement('span', 'sp-preset-default-badge', 'default'));
-    } else {
-      const setBtn = document.createElement('button');
-      setBtn.className = 'sp-preset-setdefault-btn';
-      setBtn.textContent = 'Set default';
-      setBtn.title = `Make "${preset.name}" the default for new conversations`;
-      setBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        try {
-          await setDefaultPreset(preset.id);
-          this._renderPresetMenu(dropdown, container);
-        } catch (err) {
-          console.error('[SystemPrompt] set default failed:', err);
-        }
-      });
-      item.appendChild(setBtn);
-    }
-
-    item.addEventListener('click', () => this._applyPreset(preset, container));
-    return item;
-  }
-
-  /**
-   * Build a footer action row: leading icon (aligned to the preset rows' check
-   * column) + label.
-   * @private
-   * @param {string} iconSvg - Inline SVG markup for the leading icon
-   * @param {string} label - Row label
-   * @param {() => void} onClick - Click handler
-   * @returns {HTMLElement} The menu row
-   */
-  _buildActionItem(iconSvg, label, onClick) {
-    const item = createElement('li', 'sp-preset-row sp-preset-action');
-
-    const icon = createElement('span', 'sp-preset-row-icon');
-    icon.innerHTML = iconSvg;
-    item.appendChild(icon);
-
-    item.appendChild(createElement('span', 'sp-preset-row-name', label));
-
-    item.addEventListener('click', onClick);
-    return item;
-  }
-
-  /**
-   * Apply a preset: copy its full body into the doc as the prompt text (so the
-   * build is independent of the registry), record the source id, and close.
-   * @private
-   * @param {import('./system-prompt-context-item.js').SystemPromptPreset} preset
-   * @param {HTMLElement} container - Properties panel container
-   */
-  _applyPreset(preset, container) {
-    this.data.text = preset.content;
-    this.data.selectedPresetId = preset.id;
-    this.data.isModified = false;
-    this._persistData(true);
-
-    const textArea = container.querySelector('.system-prompt-textarea');
-    if (textArea) {
-      /** @type {HTMLTextAreaElement} */(textArea).value = this._getEffectiveText();
-    }
-    this._closeDropdown();
-  }
-
-  /**
-   * Prompt for a name and save the current prompt body as a new user preset,
-   * then select it.
-   * @private
-   * @param {HTMLElement} dropdown - The dropdown surface
-   * @param {HTMLElement} container - Properties panel container
-   * @returns {Promise<void>}
-   */
-  async _saveCurrentAsPreset(dropdown, container) {
-    const content = this._getEffectiveText();
-    if (!content.trim()) return;
-
-    // When the editor is already on a user preset, offer to update it in place
-    // instead of always creating a new one.
-    const currentId = this.data.selectedPresetId;
-    if (currentId && currentId.startsWith('user-')) {
-      const existing = systemPromptRegistry.getPreset(currentId);
-      if (existing) {
-        const showChoice = /** @type {any} */ (window).showChoice;
-        if (showChoice) {
-          const choice = await showChoice(
-            `"${existing.name}" is already a preset.`,
-            ['Update', 'Save as new\u2026', 'Cancel'],
-            'Save preset',
-            false
-          );
-          if (choice === 'Update') {
-            try {
-              await updateUserPreset(existing.id, existing.name, content);
-              this.data.selectedPresetId = existing.id;
-              this.data.isModified = false;
-              this._persistData(true);
-              this._renderPresetMenu(dropdown, container);
-            } catch (err) {
-              console.error('[SystemPrompt] update preset failed:', err);
-              const showConfirm = /** @type {any} */ (window).showConfirm;
-              const msg = err instanceof Error ? err.message : String(err);
-              if (showConfirm) await showConfirm(msg, 'Could not update preset', { confirmText: 'OK' });
-            }
-            return;
-          }
-          if (choice === 'Cancel' || choice === null) return;
-          // 'Save as new…' falls through to the name-prompt path below.
-        }
-      }
-    }
-
-    const showPrompt = /** @type {any} */ (window).showPrompt;
-    const name = showPrompt
-      ? await showPrompt('Name this preset:', '', 'Save system prompt preset')
-      : null;
-    if (!name || !name.trim()) return;
-    try {
-      const preset = await saveUserPreset(name.trim(), content);
-      this.data.selectedPresetId = preset.id;
-      this.data.isModified = false;
-      this._persistData(true);
-      this._renderPresetMenu(dropdown, container);
-    } catch (err) {
-      console.error('[SystemPrompt] save preset failed:', err);
-      const showConfirm = /** @type {any} */ (window).showConfirm;
-      const msg = err instanceof Error ? err.message : String(err);
-      if (showConfirm) await showConfirm(msg, 'Could not save preset', { confirmText: 'OK' });
-    }
-  }
-
-  /**
-   * Show the manage-presets popup: lists user presets with delete (built-ins
-   * are not user-deletable, so they are not listed here).
-   * @private
-   * @param {HTMLElement} container - Properties panel container
-   */
-  _showManagePresets(container) {
-    const surface = document.createElement('nav');
-    surface.className = 'dropdown-menu system-prompt-manage-dropdown show';
-
-    const render = () => {
-      const menu = document.createElement('menu');
-      menu.appendChild(this._buildCategoryHeader('Your presets'));
-
-      const userPresets = systemPromptRegistry.getPresetsByCategory('user');
-      if (userPresets.length === 0) {
-        menu.appendChild(createElement('li', 'sp-preset-empty', 'No saved presets yet.'));
-      }
-
-      for (const preset of userPresets) {
-        const item = createElement('li', 'sp-preset-row sp-preset-static');
-
-        // Empty leading slot keeps names aligned with the preset-browser rows.
-        item.appendChild(createElement('span', 'sp-preset-row-icon'));
-        item.appendChild(createElement('span', 'sp-preset-row-name', preset.name));
-
-        const editBtn = document.createElement('button');
-        editBtn.className = 'sp-preset-edit-btn';
-        editBtn.textContent = 'Edit';
-        editBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          // Load the preset content into the editor so the user can tweak it,
-          // then close this dialog.
-          this.data.text = preset.content;
-          this.data.selectedPresetId = preset.id;
-          this.data.isModified = false;
-          this._persistData(true);
-          const textArea = container.querySelector('.system-prompt-textarea');
-          if (textArea) {
-            /** @type {HTMLTextAreaElement} */(textArea).value = this._getEffectiveText();
-          }
-          this._closeDropdown();
-        });
-        item.appendChild(editBtn);
-
-        const delBtn = document.createElement('button');
-        delBtn.className = 'sp-preset-delete-btn';
-        delBtn.textContent = 'Delete';
-        delBtn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const showConfirm = /** @type {any} */ (window).showConfirm;
-          const ok = showConfirm
-            ? await showConfirm(`Delete preset "${preset.name}"? This cannot be undone.`, 'Delete preset', { confirmText: 'Delete', cancelText: 'Cancel', danger: true })
-            : true;
-          if (!ok) return;
-          try {
-            await deleteUserPreset(preset.id);
-            render();
-          } catch (err) {
-            console.error('[SystemPrompt] delete preset failed:', err);
-          }
-        });
-        item.appendChild(delBtn);
-        menu.appendChild(item);
-      }
-
-      surface.replaceChildren(menu);
-    };
-
-    render();
-
-    this._closeDropdown();
-    const presetBtn = /** @type {HTMLElement|null} */ (container.querySelector('.system-prompt-preset-btn'));
-    this._dropdownRelease = presentPopup({
-      surface,
-      anchor: presetBtn || container,
-      id: 'system-prompt-manage-dropdown',
-      onClose: () => this._closeDropdown(),
-      insideSelectors: ['.system-prompt-manage-dropdown', '.system-prompt-preset-btn'],
-    });
   }
 
   /**

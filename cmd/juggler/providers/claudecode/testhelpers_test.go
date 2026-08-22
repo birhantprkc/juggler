@@ -14,7 +14,7 @@ import (
 	"context"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // bashCall is a scriptCall for the "bash" tool whose tool_use and tools/call args

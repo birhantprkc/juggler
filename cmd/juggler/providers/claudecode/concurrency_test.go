@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // setCLIConcurrency swaps the process-wide turn throttle for one of capacity n

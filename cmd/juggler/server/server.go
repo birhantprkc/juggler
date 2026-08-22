@@ -84,16 +84,11 @@ func unmarshalWS[T any](data []byte, label string) (T, bool) {
 	return v, true
 }
 
-// Server represents the HTTP server
-type Server struct {
-	router            *mux.Router
-	upgrader          websocket.Upgrader
-	addr              string
-	listener          net.Listener // Bound listener (set after BindPort())
-	devMode           bool         // Inspector / right-click menu + front-end JUGGLER_DEV_MODE (no source checkout needed)
-	assetsFromDisk    bool         // Serve web assets from the on-disk web/ tree with live reload (requires a source checkout)
-	testMode          bool         // Set when test routes are registered; disables network calls in provider listing
-	bootProjectPath   string
+// serverAPIs are the handler groups the /api surface is split across, each
+// owning one slice of it and constructed once in New. Embedded in Server, so
+// every call site still reads s.opsAPI — the grouping is for the declaration,
+// not the callers.
+type serverAPIs struct {
 	opsAPI            *handlers.OpsAPI
 	completionsAPI    *handlers.CompletionsAPI
 	gitStatusAPI      *handlers.GitStatusAPI
@@ -102,30 +97,33 @@ type Server struct {
 	skillsAPI         *handlers.SkillsAPI
 	skillsRegistryAPI *handlers.SkillsRegistryAPI
 	configAPI         *handlers.ConfigAPI
+	sessionAPI        *handlers.SessionAPI // Kept so RegisterTestRoutes can wire test-mode hooks
+}
+
+// serverStores are the JSON-backed preference stores under ~/.juggler, all
+// user-global rather than per-project. Embedded in Server.
+//
+// The global settings document is deliberately NOT here: it is written later in
+// New than these five, and keeping it out is what lets this group be assigned as
+// one literal without a later write being at risk of being wiped.
+type serverStores struct {
 	defaultModelStore *core.DefaultModelStore
 	cheapModelStore   *core.CheapModelStore
 	recentsStore      *core.RecentsStore
 	recentModelsStore *core.RecentModelsStore
-
 	// systemPromptPresetStore persists user-saved system-prompt presets and the
 	// chosen session-default preset id (~/.juggler/system-prompt-presets.json).
 	systemPromptPresetStore *core.SystemPromptPresetStore
-	indexTemplate           *template.Template // Template for index.html with cache busting
-	staticVersion           string             // Random version string for cache-busted static paths
-	apiToken                string             // Per-instance token gating the sensitive /api surface + viewer WS (see api_auth.go)
-	startTime               time.Time          // Server start time for health/instance endpoint
-	shutdownChan            chan struct{}
-	shutdownOnce            sync.Once
-	workerManager           *worker.Manager      // Go worker manager
-	sessionAPI              *handlers.SessionAPI // Kept so RegisterTestRoutes can wire test-mode hooks
-	extraRoutes             func(r *mux.Router)  // Optional Config.ExtraRoutes hook, invoked at the end of setupRoutes
-	exitWithParent          bool                 // Config.ExitWithParent: server self-terminates when its parent (the viewer) dies; reported on /api/health/instance
+}
 
-	// conversationCache holds the per-conversation Provider.Conversation
-	// handles: one handle per (convID, providerName, model), opened lazily
-	// on first LLM call, closed on conversation delete or server shutdown.
-	conversationCache *conversationCache
-
+// providerRefresh is the provider/model snapshot and the actor that recomputes
+// it. Embedded in Server.
+//
+// New assigns this group field-by-field rather than as a literal, because only
+// some of it is set there: providersList and providersReadyOnce start zero and
+// computeProvidersFunc is a test seam. A literal covering part of a group is
+// the wipe hazard documented in New.
+type providerRefresh struct {
 	// providersList holds the most recent push-only provider/model snapshot.
 	// Populated by RefreshProviders at startup and after each credential
 	// mutation; consumed by handleProviders / handleGetContextWindow and
@@ -145,6 +143,56 @@ type Server struct {
 	// rather than the still-empty cache. providersReadyOnce guards the close.
 	providersReady     chan struct{}
 	providersReadyOnce sync.Once
+}
+
+// wsFleet is the WebSocket side of the server: how a connection is upgraded,
+// who is connected, and what is accounted. Embedded in Server.
+//
+// New assigns this group field-by-field: hub and stats are created after the
+// upgrader, and engineClient is only ever set on an engine-role upgrade.
+type wsFleet struct {
+	upgrader websocket.Upgrader
+	// hub owns the set of all connected WebSocket clients — used for full-fleet
+	// broadcasts (project-changed, providers-update, shutdown notices).
+	hub *clientHub
+	// engineClient is the headless engine WS connection, or nil. Set on
+	// engine-role upgrade and cleared on disconnect.
+	engineClient atomic.Pointer[WSClient]
+	// stats, when non-nil (JUGGLER_WS_STATS set), accounts WebSocket payload
+	// bytes per direction / message type and periodically logs a table plus the
+	// modeled permessage-deflate ratio. Diagnostic only; nil in normal runs.
+	stats *wsStats
+}
+
+// Server represents the HTTP server
+type Server struct {
+	serverAPIs
+	serverStores
+	providerRefresh
+	wsFleet
+
+	router          *mux.Router
+	addr            string
+	listener        net.Listener // Bound listener (set after BindPort())
+	devMode         bool         // Inspector / right-click menu + front-end JUGGLER_DEV_MODE (no source checkout needed)
+	assetsFromDisk  bool         // Serve web assets from the on-disk web/ tree with live reload (requires a source checkout)
+	testMode        bool         // Set when test routes are registered; disables network calls in provider listing
+	bootProjectPath string
+
+	indexTemplate  *template.Template // Template for index.html with cache busting
+	staticVersion  string             // Random version string for cache-busted static paths
+	apiToken       string             // Per-instance token gating the sensitive /api surface + viewer WS (see api_auth.go)
+	startTime      time.Time          // Server start time for health/instance endpoint
+	shutdownChan   chan struct{}
+	shutdownOnce   sync.Once
+	workerManager  *worker.Manager     // Go worker manager
+	extraRoutes    func(r *mux.Router) // Optional Config.ExtraRoutes hook, invoked at the end of setupRoutes
+	exitWithParent bool                // Config.ExitWithParent: server self-terminates when its parent (the viewer) dies; reported on /api/health/instance
+
+	// conversationCache holds the per-conversation Provider.Conversation
+	// handles: one handle per (convID, providerName, model), opened lazily
+	// on first LLM call, closed on conversation delete or server shutdown.
+	conversationCache *conversationCache
 
 	// quickCompleteSem is a counting semaphore bounding concurrent out-of-band
 	// QuickComplete calls (the /api/llm/complete endpoint + the auto-namer), so
@@ -168,18 +216,6 @@ type Server struct {
 	// Per-project state, swapped atomically on project change.
 	projectState atomic.Pointer[projectState]
 	switchToken  chan struct{} // size-1 token; serializes SwitchProject
-
-	// hub owns the set of all connected WebSocket clients — used for full-fleet
-	// broadcasts (project-changed, providers-update, shutdown notices).
-	hub *clientHub
-	// engineClient is the headless engine WS connection, or nil. Set on
-	// engine-role upgrade and cleared on disconnect.
-	engineClient atomic.Pointer[WSClient]
-
-	// stats, when non-nil (JUGGLER_WS_STATS set), accounts WebSocket payload
-	// bytes per direction / message type and periodically logs a table plus the
-	// modeled permessage-deflate ratio. Diagnostic only; nil in normal runs.
-	stats *wsStats
 
 	// updateChecker polls the remote version manifest (juggler.studio) and holds
 	// the latest "new version available" decision in memory. Created in New; its
@@ -308,6 +344,36 @@ func New(cfg Config) (*Server, error) {
 	// before it (this exact bug shipped once: sessionAPI was set on the
 	// skeleton, wiped by the literal, and the test-mode ownership guard ran
 	// unwired through a full green suite).
+	//
+	// The same hazard applies to the embedded groups, which is why only the two
+	// lock-free ones are assigned as literals below, each exactly once and
+	// covering every field it declares. A group written in more than one place
+	// must be assigned field-by-field, or the second write wipes the first.
+	skillsAPI := handlers.NewSkillsAPI(s.ProjectPath)
+	s.serverAPIs = serverAPIs{
+		opsAPI: handlers.NewOpsAPI(s.ProjectPath),
+		completionsAPI: handlers.NewCompletionsAPI(s.ProjectPath, func() ops.PathSearcher {
+			if fw := s.FileWatcher(); fw != nil {
+				return fw.Index()
+			}
+			return nil
+		}),
+		gitStatusAPI:      handlers.NewGitStatusAPI(s.ProjectPath),
+		extensionsAPI:     extensionsAPI,
+		userCommandsAPI:   handlers.NewUserCommandsAPI(s.ProjectPath),
+		skillsAPI:         skillsAPI,
+		skillsRegistryAPI: handlers.NewSkillsRegistryAPI(s.ProjectPath, skillsAPI),
+		configAPI:         configAPI,
+		sessionAPI:        sessionAPI,
+	}
+	s.serverStores = serverStores{
+		defaultModelStore:       defaultModelStore,
+		cheapModelStore:         cheapModelStore,
+		recentsStore:            recents,
+		recentModelsStore:       recentModels,
+		systemPromptPresetStore: systemPromptPresetStore,
+	}
+
 	s.router = router
 	s.upgrader = upgrader
 	s.addr = fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
@@ -316,30 +382,11 @@ func New(cfg Config) (*Server, error) {
 	s.bootProjectPath = cfg.ProjectPath
 	s.extraRoutes = cfg.ExtraRoutes
 	s.exitWithParent = cfg.ExitWithParent
-	s.opsAPI = handlers.NewOpsAPI(s.ProjectPath)
-	s.completionsAPI = handlers.NewCompletionsAPI(s.ProjectPath, func() ops.PathSearcher {
-		if fw := s.FileWatcher(); fw != nil {
-			return fw.Index()
-		}
-		return nil
-	})
-	s.gitStatusAPI = handlers.NewGitStatusAPI(s.ProjectPath)
-	s.extensionsAPI = extensionsAPI
-	s.userCommandsAPI = handlers.NewUserCommandsAPI(s.ProjectPath)
-	s.skillsAPI = handlers.NewSkillsAPI(s.ProjectPath)
-	s.skillsRegistryAPI = handlers.NewSkillsRegistryAPI(s.ProjectPath, s.skillsAPI)
-	s.configAPI = configAPI
-	s.defaultModelStore = defaultModelStore
-	s.cheapModelStore = cheapModelStore
-	s.systemPromptPresetStore = systemPromptPresetStore
-	s.recentsStore = recents
-	s.recentModelsStore = recentModels
 	s.staticVersion = staticVersion
 	s.apiToken = mintAPIToken()
 	s.startTime = time.Now()
 	s.shutdownChan = make(chan struct{})
 	s.workerManager = wm
-	s.sessionAPI = sessionAPI
 	s.conversationCache = newConversationCache(s.ProjectPath)
 	s.refreshRequests = make(chan struct{}, 1)
 	s.providersReady = make(chan struct{})

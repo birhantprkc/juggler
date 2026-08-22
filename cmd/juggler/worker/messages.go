@@ -50,7 +50,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // ErrCancelled is returned when an operation is interrupted by user cancellation

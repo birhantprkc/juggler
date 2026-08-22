@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // continuationCovers reports whether req.Messages contains a tool-result

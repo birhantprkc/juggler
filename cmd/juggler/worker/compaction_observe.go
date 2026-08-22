@@ -7,7 +7,7 @@ package worker
 import (
 	"errors"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // Compaction observability. Three surfaces, three audiences:

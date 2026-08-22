@@ -8,7 +8,7 @@ import (
 	"bytes"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // toolResultWithImage is a tool-result whose id has no matching tool-use, so it

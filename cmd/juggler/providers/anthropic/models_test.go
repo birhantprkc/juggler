@@ -7,7 +7,7 @@ package anthropic
 import (
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestGetMaxOutputTokens pins the per-model output ceiling. The provider used to

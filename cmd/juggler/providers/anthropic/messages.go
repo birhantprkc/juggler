@@ -8,7 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // APIContentBlock represents an Anthropic API content block.

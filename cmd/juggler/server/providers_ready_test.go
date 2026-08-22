@@ -17,8 +17,8 @@ import (
 // gate needs, with the gate left OPEN (no refresh completed yet).
 func newReadyTestServer() *Server {
 	return &Server{
-		providersReady: make(chan struct{}),
-		shutdownChan:   make(chan struct{}),
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+		shutdownChan:    make(chan struct{}),
 	}
 }
 

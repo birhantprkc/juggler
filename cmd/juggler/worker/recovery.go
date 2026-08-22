@@ -11,7 +11,7 @@ import (
 	"math"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 const (

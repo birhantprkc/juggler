@@ -7,7 +7,7 @@ package server
 import (
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 func TestResolveModelCapabilities(t *testing.T) {

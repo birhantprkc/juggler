@@ -5,7 +5,7 @@
 package claudecode
 
 import (
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // init starts the model-info cache actor. Per-conversation session state

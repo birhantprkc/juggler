@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/atomicio"
 	"juggler/internal/jlog"
 	"juggler/internal/userpaths"

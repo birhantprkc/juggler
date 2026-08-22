@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -18,12 +19,11 @@ import (
 	"strings"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/providers/utils"
 	"juggler/internal/httpx"
 	"juggler/internal/jlog"
 
-	"google.golang.org/api/googleapi"
 	"google.golang.org/genai"
 )
 
@@ -424,209 +424,181 @@ func (c *Client) streamMessage(ctx context.Context, req provider.MessageRequest,
 		return nil, err
 	}
 
-	return c.callStreamWithRetry(ctx, c.model, contents, config, callback)
+	return c.streamOnce(ctx, c.model, contents, config, callback)
 }
 
-// callStreamWithRetry encapsulates the retry logic for Gemini API calls.
-func (c *Client) callStreamWithRetry(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+// streamOnce runs one Gemini streaming attempt and maps its outcome onto the
+// provider contract.
+//
+// It does not retry. The worker's turn loop owns retries, so the wait is
+// UI-visible ("Retrying attempt 2/3"), interruptible by a cancel or a new
+// message, and charged to a single budget — none of which a provider-local
+// ladder offers, while a hidden one multiplies with the worker's rather than
+// bounding it. classifyStreamError does the provider's half of that bargain:
+// it names the failure in the vocabulary the worker's classifier reads.
+func (c *Client) streamOnce(ctx context.Context, model string, contents []*genai.Content, config *genai.GenerateContentConfig, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	for ci, content := range contents {
+		for pi, p := range content.Parts {
+			hasSig := len(p.ThoughtSignature) > 0
+			jlog.Debug("[gemini REQUEST] content[%d] role=%s part[%d] text=%d thought=%v funcCall=%v sig=%v",
+				ci, content.Role, pi, len(p.Text), p.Thought, p.FunctionCall != nil, hasSig)
+		}
+	}
+
 	var inputTokens, outputTokens int
 	var cachedTokens *int
-	var sentAnyContent bool
 	var lastFinishReason genai.FinishReason
-	var streamedResultsFromSuccess []*genai.GenerateContentResponse
+	var sentAnyContent bool
+	streamedResults := []*genai.GenerateContentResponse{}
 
-	const maxRetries = 5
-	const initialDelay = 1 * time.Second
+	// The stream runs under a provider-boundary idle watchdog: the genai SDK
+	// stream blocks on a socket read with no deadline of its own, so the
+	// watchdog cancels streamCtx if the upstream goes silent.
+	sess, streamCtx := utils.NewStreamSession(ctx, "gemini", callback)
+	defer sess.Close()
 
-	var lastErr error
+	// lastToolUseBlock receives standalone ThoughtSignature parts streamed after their FunctionCall.
+	var lastToolUseBlock *provider.ContentBlock
 
-	for i := 0; i <= maxRetries; i++ {
-		// Ensure the context hasn't been cancelled by the user
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	// Last prompt-token total re-emitted as a usage chunk, so a per-chunk
+	// UsageMetadata (Gemini repeats it) drives one footer update per change.
+	var lastEmittedInput int
+
+	genaiStream := c.client.Models.GenerateContentStream(streamCtx, model, contents, config)
+	for result, err := range genaiStream {
+		if err != nil {
+			// Content already delivered has visible side effects (UI text inserts,
+			// tool_use blocks the frontend will execute), so replaying this turn
+			// would duplicate them. Say so, and name it as nothing to retry.
+			// Checked before the stall test on purpose: a stall arriving after
+			// content is deliberately terminal, not transient.
+			if sentAnyContent {
+				return nil, fmt.Errorf("gemini stream error after %d chunks (cannot retry mid-stream): %w", len(streamedResults), err)
+			}
+			// Our watchdog cancelled streamCtx because the upstream went silent
+			// (parent ctx still alive). Surface the canonical stall text.
+			if stall := sess.StallError(); stall != nil {
+				return nil, stall
+			}
+			return nil, classifyStreamError(err)
 		}
+		sess.Reset()
 
-		// Log the SDK request payload only on the first attempt
-		if i == 0 {
-			for ci, content := range contents {
-				for pi, p := range content.Parts {
-					hasSig := len(p.ThoughtSignature) > 0
-					jlog.Debug("[gemini REQUEST] content[%d] role=%s part[%d] text=%d thought=%v funcCall=%v sig=%v",
-						ci, content.Role, pi, len(p.Text), p.Thought, p.FunctionCall != nil, hasSig)
+		streamedResults = append(streamedResults, result)
+
+		if result.UsageMetadata != nil {
+			if result.UsageMetadata.PromptTokenCount > 0 {
+				inputTokens = int(result.UsageMetadata.PromptTokenCount)
+			}
+			if result.UsageMetadata.CandidatesTokenCount > 0 {
+				outputTokens = int(result.UsageMetadata.CandidatesTokenCount)
+			}
+			// UsageMetadata presence is the report: CachedContentTokenCount
+			// is authoritative (possibly zero) whenever the block arrives,
+			// so capture it as an explicit reported value. Last write wins —
+			// the final chunk carries the call's totals.
+			cachedTokens = provider.Reported(int(result.UsageMetadata.CachedContentTokenCount))
+			// Re-emit the authoritative prompt total (incl. cached) as a
+			// transient usage chunk so the footer meter anchors on it
+			// mid-turn. PromptTokenCount recurs on every chunk, so emit only
+			// when it changes.
+			if inputTokens > 0 && inputTokens != lastEmittedInput {
+				lastEmittedInput = inputTokens
+				cached := int(result.UsageMetadata.CachedContentTokenCount)
+				if _, err := callback(provider.StreamChunk{
+					Type:     provider.ContentBlockTypeUsage,
+					Metadata: map[string]any{"inputTokens": inputTokens, "cachedTokens": cached},
+				}); err != nil {
+					return nil, err
 				}
 			}
-		} else {
-			jlog.Debug("Retrying Gemini StreamMessage (attempt %d/%d) after error: %v", i, maxRetries, lastErr)
 		}
 
-		streamedResultsForCurrentAttempt := []*genai.GenerateContentResponse{} // Reset for each attempt
+		if result.PromptFeedback != nil && result.PromptFeedback.BlockReason != "" {
+			return nil, fmt.Errorf("gemini blocked request: %s", result.PromptFeedback.BlockReason)
+		}
 
-		var currentInputTokens, currentOutputTokens int
-		var currentCachedTokens *int
-		var currentLastFinishReason genai.FinishReason
-		var currentSentAnyContent bool
+		for _, cand := range result.Candidates {
+			if cand.FinishReason != "" {
+				lastFinishReason = cand.FinishReason
+			}
 
-		// runAttempt streams one attempt under a provider-boundary idle watchdog:
-		// the genai SDK stream blocks on a socket read with no deadline of its
-		// own, so the watchdog cancels streamCtx if the upstream goes silent.
-		// retry=true signals the outer loop to back off and try again; a non-nil
-		// err is terminal for the whole call.
-		retry, attemptErr := func() (retry bool, err error) {
-			// A fresh session per attempt, so a stall reports the window this
-			// attempt actually sat idle for.
-			sess, streamCtx := utils.NewStreamSession(ctx, "gemini", callback)
-			defer sess.Close()
-
-			// lastToolUseBlock receives standalone ThoughtSignature parts streamed after their FunctionCall.
-			var lastToolUseBlock *provider.ContentBlock
-
-			// Last prompt-token total re-emitted as a usage chunk, so a per-chunk
-			// UsageMetadata (Gemini repeats it) drives one footer update per change.
-			var lastEmittedInput int
-
-			// The actual streaming call
-			genaiStream := c.client.Models.GenerateContentStream(streamCtx, model, contents, config)
-			for result, err := range genaiStream {
-				if err != nil {
-					lastErr = err
-					// Retry is only safe if NO callback chunks were emitted yet:
-					// callbacks have visible side effects (UI text inserts, tool_use
-					// blocks the frontend will execute), and re-running the stream
-					// would duplicate them.
-					if currentSentAnyContent {
-						return false, fmt.Errorf("gemini stream error after %d chunks (cannot retry mid-stream): %w", len(streamedResultsForCurrentAttempt), err)
+			if cand.Content != nil {
+				for _, part := range cand.Content.Parts {
+					if part.FunctionCall != nil || len(part.ThoughtSignature) > 0 {
+						jlog.Debug("[gemini RESPONSE part] funcCall=%v sigLen=%d thought=%v textLen=%d",
+							part.FunctionCall != nil, len(part.ThoughtSignature), part.Thought, len(part.Text))
 					}
-					// Our watchdog cancelled streamCtx because the upstream went
-					// silent (parent ctx still alive). Surface as a transient stall
-					// so the worker's transient classifier retries the turn.
-					if stall := sess.StallError(); stall != nil {
-						return false, stall
-					}
-					if gapiErr, ok := err.(*googleapi.Error); ok && (gapiErr.Code == http.StatusTooManyRequests || gapiErr.Code == http.StatusServiceUnavailable) {
-						// Retryable. Back off, then signal the outer loop to retry.
-						delay := min(
-							// Exponential backoff
-							initialDelay*time.Duration(1<<i),
-							// Cap delay at 60 seconds
-							60*time.Second)
-						select {
-						case <-time.After(delay):
-							return true, nil
-						case <-ctx.Done():
-							return false, ctx.Err()
-						}
-					}
-					// Not a retryable error.
-					return false, fmt.Errorf("gemini API error: %w", err)
-				}
-				sess.Reset()
-
-				streamedResultsForCurrentAttempt = append(streamedResultsForCurrentAttempt, result)
-
-				if result.UsageMetadata != nil {
-					if result.UsageMetadata.PromptTokenCount > 0 {
-						currentInputTokens = int(result.UsageMetadata.PromptTokenCount)
-					}
-					if result.UsageMetadata.CandidatesTokenCount > 0 {
-						currentOutputTokens = int(result.UsageMetadata.CandidatesTokenCount)
-					}
-					// UsageMetadata presence is the report: CachedContentTokenCount
-					// is authoritative (possibly zero) whenever the block arrives,
-					// so capture it as an explicit reported value. Last write wins —
-					// the final chunk carries the call's totals.
-					currentCachedTokens = provider.Reported(int(result.UsageMetadata.CachedContentTokenCount))
-					// Re-emit the authoritative prompt total (incl. cached) as a
-					// transient usage chunk so the footer meter anchors on it
-					// mid-turn. PromptTokenCount recurs on every chunk, so emit only
-					// when it changes.
-					if currentInputTokens > 0 && currentInputTokens != lastEmittedInput {
-						lastEmittedInput = currentInputTokens
-						cached := int(result.UsageMetadata.CachedContentTokenCount)
-						if _, err := callback(provider.StreamChunk{
-							Type:     provider.ContentBlockTypeUsage,
-							Metadata: map[string]any{"inputTokens": currentInputTokens, "cachedTokens": cached},
-						}); err != nil {
-							return false, err
-						}
-					}
-				}
-
-				if result.PromptFeedback != nil && result.PromptFeedback.BlockReason != "" {
-					return false, fmt.Errorf("gemini blocked request: %s", result.PromptFeedback.BlockReason)
-				}
-
-				for _, cand := range result.Candidates {
-					if cand.FinishReason != "" {
-						currentLastFinishReason = cand.FinishReason
-					}
-
-					if cand.Content != nil {
-						for _, part := range cand.Content.Parts {
-							if part.FunctionCall != nil || len(part.ThoughtSignature) > 0 {
-								jlog.Debug("[gemini RESPONSE part] funcCall=%v sigLen=%d thought=%v textLen=%d",
-									part.FunctionCall != nil, len(part.ThoughtSignature), part.Thought, len(part.Text))
+					// Gemini streams ThoughtSignature as a standalone Part after its FunctionCall.
+					if len(part.ThoughtSignature) > 0 && part.FunctionCall == nil && part.Text == "" {
+						if lastToolUseBlock != nil {
+							if lastToolUseBlock.Metadata == nil {
+								lastToolUseBlock.Metadata = map[string]any{}
 							}
-							// Gemini streams ThoughtSignature as a standalone Part after its FunctionCall.
-							if len(part.ThoughtSignature) > 0 && part.FunctionCall == nil && part.Text == "" {
-								if lastToolUseBlock != nil {
-									if lastToolUseBlock.Metadata == nil {
-										lastToolUseBlock.Metadata = map[string]any{}
-									}
-									lastToolUseBlock.Metadata["thoughtSignature"] = base64.StdEncoding.EncodeToString(part.ThoughtSignature)
-									jlog.Debug("[gemini RESPONSE] attached standalone ThoughtSignature (len=%d) to tool_use %s",
-										len(part.ThoughtSignature), lastToolUseBlock.ToolUseID)
-								}
-								continue
-							}
-							for _, block := range mapGeminiPart(part) {
-								if block.Type == provider.ContentBlockTypeToolUse {
-									lastToolUseBlock = block
-									if argsBytes, jerr := json.Marshal(block.ToolInput); jerr == nil {
-										sess.Progress(string(argsBytes))
-									}
-								} else {
-									sess.Progress(block.Content)
-								}
-								chunk := provider.StreamChunk(*block)
-								if _, err := callback(chunk); err != nil {
-									return false, err
-								}
-								currentSentAnyContent = true
-							}
+							lastToolUseBlock.Metadata["thoughtSignature"] = base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+							jlog.Debug("[gemini RESPONSE] attached standalone ThoughtSignature (len=%d) to tool_use %s",
+								len(part.ThoughtSignature), lastToolUseBlock.ToolUseID)
 						}
+						continue
+					}
+					for _, block := range mapGeminiPart(part) {
+						if block.Type == provider.ContentBlockTypeToolUse {
+							lastToolUseBlock = block
+							if argsBytes, jerr := json.Marshal(block.ToolInput); jerr == nil {
+								sess.Progress(string(argsBytes))
+							}
+						} else {
+							sess.Progress(block.Content)
+						}
+						chunk := provider.StreamChunk(*block)
+						if _, err := callback(chunk); err != nil {
+							return nil, err
+						}
+						sentAnyContent = true
 					}
 				}
 			}
-			return false, nil // stream completed successfully
-		}()
-
-		if attemptErr != nil {
-			return nil, attemptErr
 		}
-		if retry {
-			continue
-		}
-
-		// Streaming completed without an error — promote the current attempt's
-		// values to the top-level variables read by processStreamResult below.
-		// Clear lastErr so a successful retry after an earlier 429/503 is not
-		// misreported as a failure by the post-loop check.
-		lastErr = nil
-		inputTokens = currentInputTokens
-		cachedTokens = currentCachedTokens
-		outputTokens = currentOutputTokens
-		lastFinishReason = currentLastFinishReason
-		sentAnyContent = currentSentAnyContent
-		streamedResultsFromSuccess = streamedResultsForCurrentAttempt
-
-		break // Success — exit retry loop
 	}
 
-	if lastErr != nil {
-		return nil, fmt.Errorf("gemini API call failed after %d retries: %w", maxRetries, lastErr)
-	}
+	return c.processStreamResult(lastFinishReason, sentAnyContent, streamedResults, inputTokens, outputTokens, cachedTokens)
+}
 
-	return c.processStreamResult(lastFinishReason, sentAnyContent, streamedResultsFromSuccess, inputTokens, outputTokens, cachedTokens)
+// statusOverloaded is the non-standard 529 a Google frontend returns for a
+// momentarily saturated model; net/http has no constant for it.
+const statusOverloaded = 529
+
+// classifyStreamError names a failed Gemini stream in the vocabulary the
+// worker's retry classifier reads. That classifier is text-based — the turn
+// loop's rate-limit check and providerutils.TransientMessage both match
+// substrings — while the genai SDK reports capacity failures as a typed
+// genai.APIError whose message wording carries no guarantee: a 503 was retried
+// only when the body happened to say "overloaded". Mapping the status code onto
+// the canonical marker makes that judgement structural rather than a
+// coincidence of phrasing, and %w keeps the provider's own text in the message
+// the user reads.
+func classifyStreamError(err error) error {
+	var apiErr genai.APIError
+	if !errors.As(err, &apiErr) {
+		return fmt.Errorf("gemini API error: %w", err)
+	}
+	switch apiErr.Code {
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("gemini rate limit: %w", err)
+	case http.StatusBadGateway:
+		return fmt.Errorf("gemini bad gateway: %w", err)
+	case http.StatusServiceUnavailable:
+		return fmt.Errorf("gemini service unavailable: %w", err)
+	case http.StatusGatewayTimeout:
+		return fmt.Errorf("gemini gateway timeout: %w", err)
+	case statusOverloaded:
+		return fmt.Errorf("gemini overloaded: %w", err)
+	}
+	return fmt.Errorf("gemini API error: %w", err)
 }
 
 // processStreamResult handles the final processing of a successful stream result.

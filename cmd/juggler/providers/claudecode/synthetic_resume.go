@@ -31,7 +31,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/providers/anthropic"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // syntheticVersion goes into the "version" field of each entry. The CLI

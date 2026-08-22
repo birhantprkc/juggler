@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/providers/anthropic"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/jlog"
 )
 

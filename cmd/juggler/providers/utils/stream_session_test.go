@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestStreamSessionStallErrorClassifiesSilence proves the stall half of the

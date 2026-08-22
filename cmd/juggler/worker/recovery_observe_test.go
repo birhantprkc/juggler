@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // enableEventTape turns the worker event tape on for the duration of a test.

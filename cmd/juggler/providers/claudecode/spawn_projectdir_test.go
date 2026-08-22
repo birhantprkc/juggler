@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestSpawn_UsesConfigProjectDir pins the fix for the spawned-CLI working

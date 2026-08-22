@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // isolateConfig points the credentials store at a throwaway dir so tests never

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // sseBody packs chat.completion.chunk JSON objects into a Server-Sent Events

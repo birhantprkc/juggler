@@ -19,7 +19,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/server/handlers"
 	"juggler/cmd/juggler/worker"
 	"juggler/internal/jlog"

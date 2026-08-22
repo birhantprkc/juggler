@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"juggler/cmd/juggler/providers/openaibase"
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/providers/utils"
 )
 

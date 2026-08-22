@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 
 	ycrdt "github.com/skyterra/y-crdt"
 )

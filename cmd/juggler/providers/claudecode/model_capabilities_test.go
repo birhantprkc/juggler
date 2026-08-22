@@ -7,7 +7,7 @@ package claudecode
 import (
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 func TestConservativeAliasCapabilities(t *testing.T) {

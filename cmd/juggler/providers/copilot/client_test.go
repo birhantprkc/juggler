@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	provider "juggler/cmd/juggler/providers/registry"
+	"juggler/cmd/juggler/providers/provider"
 )
 
 func TestRegisterProviderInfo(t *testing.T) {
