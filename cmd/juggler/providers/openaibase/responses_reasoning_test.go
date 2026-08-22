@@ -14,16 +14,15 @@ import (
 	"juggler/cmd/juggler/providers/provider"
 )
 
-// TestResponsesReasoningSurfacedAsThinking proves the Responses API path
-// (o-series / gpt-5-codex) surfaces the model's reasoning the same way the
-// Chat Completions path surfaces `reasoning_content`: as live thinking that
-// also drives the output-token progress estimate. Without it a model that
-// reasons before answering left the spinner frozen on "Receiving".
-func TestResponsesReasoningSurfacedAsThinking(t *testing.T) {
+// TestResponsesReasoningSummariesAreActivitySnapshots proves summary deltas are
+// accumulated independently by summary_index and emitted as complete, replaceable
+// Activity snapshots while still driving the output-token progress estimate.
+func TestResponsesReasoningSummariesAreActivitySnapshots(t *testing.T) {
 	body := sseBody(
-		`{"type":"response.reasoning_summary_text.delta","delta":"Weighing the options.","item_id":"r1","output_index":0,"sequence_number":1,"summary_index":0}`,
-		`{"type":"response.reasoning_summary_text.delta","delta":" Settling on an answer.","item_id":"r1","output_index":0,"sequence_number":2,"summary_index":0}`,
-		`{"type":"response.output_text.delta","delta":"Done.","item_id":"m1","output_index":1,"content_index":0,"sequence_number":3}`,
+		`{"type":"response.reasoning_summary_text.delta","delta":"Weighing ","item_id":"r1","output_index":0,"sequence_number":1,"summary_index":0}`,
+		`{"type":"response.reasoning_summary_text.delta","delta":"Another thought.","item_id":"r1","output_index":0,"sequence_number":2,"summary_index":1}`,
+		`{"type":"response.reasoning_summary_text.delta","delta":"the options.","item_id":"r1","output_index":0,"sequence_number":3,"summary_index":0}`,
+		`{"type":"response.output_text.delta","delta":"Done.","item_id":"m1","output_index":1,"content_index":0,"sequence_number":4}`,
 	)
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		header := make(http.Header)
@@ -45,14 +44,15 @@ func TestResponsesReasoningSurfacedAsThinking(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	var thinking, text strings.Builder
+	var activities []provider.StreamChunk
+	var text strings.Builder
 	var sawProgress bool
 	result, err := c.streamMessage(context.Background(), provider.MessageRequest{
 		Messages: []provider.Message{{Type: "user", Content: "hello"}},
 	}, func(chunk provider.StreamChunk) (*provider.ToolResult, error) {
 		switch chunk.Type {
-		case provider.ContentBlockTypeThinking:
-			thinking.WriteString(chunk.Content)
+		case provider.ContentBlockTypeActivity:
+			activities = append(activities, chunk)
 		case provider.ContentBlockTypeProgress:
 			sawProgress = true
 		case provider.ContentBlockTypeText:
@@ -67,8 +67,20 @@ func TestResponsesReasoningSurfacedAsThinking(t *testing.T) {
 	if result.InputTokens == 0 || !result.InputTokensApproximate {
 		t.Fatalf("fallback input usage = %+v, want positive approximate count", result)
 	}
-	if got := thinking.String(); got != "Weighing the options. Settling on an answer." {
-		t.Fatalf("reasoning was not surfaced as thinking; got %q", got)
+	if len(activities) != 3 {
+		t.Fatalf("activity chunks = %d, want 3: %+v", len(activities), activities)
+	}
+	if got := activities[0].Content; got != "Weighing " {
+		t.Fatalf("first snapshot = %q, want %q", got, "Weighing ")
+	}
+	if got := activities[1].Content; got != "Another thought." {
+		t.Fatalf("second summary snapshot = %q, want %q", got, "Another thought.")
+	}
+	if got := activities[2].Content; got != "Weighing the options." {
+		t.Fatalf("updated first summary snapshot = %q, want complete accumulated text", got)
+	}
+	if got, _ := activities[2].Metadata["summaryIndex"].(int64); got != 0 {
+		t.Fatalf("summaryIndex = %d, want 0", got)
 	}
 	if !sawProgress {
 		t.Fatal("reasoning did not drive a progress chunk — the spinner would stay frozen on \"Receiving\"")

@@ -17,6 +17,8 @@ import {
   isUserMessage,
   isAssistantMessage,
   isThinkingMessage,
+  isProviderStateMessage,
+  isConversationalItemType,
   isToolActionMessage,
   isErrorMessage,
   isGuidanceMessage,
@@ -31,6 +33,8 @@ import {
 } from '../../sdk/lib/message.js';
 
 import { assert } from '../utilities/test-helpers.js';
+import { positionElements } from '../../js/components/conversation-area-rendering.js';
+import { dispatchItemRenderer } from '../../js/services/renderers/item-renderers.js';
 
 /**
  * @typedef {object} TestResult
@@ -68,6 +72,7 @@ export async function runTests(_ctx) {
   const userMsg = { ...createUserMessage('hello'), itemId: 'MSG_1' };
   const assistantMsg = { ...createAssistantMessage('world'), itemId: 'MSG_2' };
   const thinkingMsg = /** @type {any} */ ({ type: MESSAGE_TYPES.THINKING, content: 'hmm', itemId: 'MSG_3' });
+  const providerStateMsg = /** @type {any} */ ({ type: MESSAGE_TYPES.PROVIDER_STATE, providerData: { secret: 'opaque' }, itemId: 'MSG_PROVIDER' });
   const toolActionMsg = { ...createToolActionMessage({ toolUseId: 'tu_1', toolName: 'read', toolInput: {} }), itemId: 'MSG_4' };
   const errorMsg = { ...createErrorMessage({ message: 'something broke' }), itemId: 'MSG_5' };
   const guidanceMsg = { ...createGuidanceMessage({ content: 'guidance' }), itemId: 'MSG_6' };
@@ -89,6 +94,30 @@ export async function runTests(_ctx) {
   test('isThinkingMessage identifies thinking messages with itemId', () => {
     assert(isThinkingMessage(thinkingMsg), 'should be true for thinking message');
     assert(!isThinkingMessage(assistantMsg), 'should be false for assistant message');
+  });
+
+  test('isProviderStateMessage identifies durable hidden provider state', () => {
+    assert(isProviderStateMessage(providerStateMsg), 'should be true for provider-state message');
+    assert(!isProviderStateMessage(thinkingMsg), 'should be false for thinking message');
+    assert(isConversationalItemType(MESSAGE_TYPES.PROVIDER_STATE), 'provider-state should be conversation history');
+  });
+
+  test('provider-state is hidden from conversation and properties rendering', () => {
+    const hidden = {
+      get: (key) => providerStateMsg[key],
+      toJSON: () => providerStateMsg,
+    };
+    const messageList = document.createElement('div');
+    const footer = document.createElement('div');
+    messageList.appendChild(footer);
+    positionElements({}, messageList, footer, [hidden], new Map());
+    assert(messageList.children.length === 1 && messageList.firstElementChild === footer,
+      'provider-state should create no conversation element');
+
+    const properties = document.createElement('div');
+    dispatchItemRenderer(/** @type {any} */ ({}), properties, hidden);
+    assert(properties.childElementCount === 0 && !properties.textContent?.includes('opaque'),
+      'provider-state properties should expose nothing');
   });
 
   test('isToolActionMessage identifies tool-action messages with itemId', () => {

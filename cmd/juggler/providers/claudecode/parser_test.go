@@ -21,15 +21,16 @@ func recordingCallback(out *[]provider.StreamChunk) provider.StructuredStreamCal
 	}
 }
 
-// filterNonProgress drops transient progress, usage, and status chunks so
-// tests asserting on content-bearing chunks don't have to thread the running
-// token estimate, the mid-stream input-token anchor, or the phase/liveness
-// labels (e.g. message_start's "Generating response") through every fixture.
-// Those chunks are covered by their own tests.
+// filterNonProgress drops transient progress, usage, status, and activity chunks
+// so tests asserting on content-bearing chunks don't have to thread the running
+// token estimate, the mid-stream input-token anchor, retry/cache notices, or
+// replaceable provider descriptions through every fixture. Those chunks are
+// covered by their own tests.
 func filterNonProgress(chunks []provider.StreamChunk) []provider.StreamChunk {
 	out := make([]provider.StreamChunk, 0, len(chunks))
 	for _, c := range chunks {
-		if c.Type == provider.ContentBlockTypeProgress || c.Type == provider.ContentBlockTypeUsage || c.Type == provider.ContentBlockTypeStatus {
+		if c.Type == provider.ContentBlockTypeProgress || c.Type == provider.ContentBlockTypeUsage ||
+			c.Type == provider.ContentBlockTypeStatus || c.Type == provider.ContentBlockTypeActivity {
 			continue
 		}
 		out = append(out, c)
@@ -192,19 +193,35 @@ func TestParser_SystemInitCapturesSessionID(t *testing.T) {
 	}
 }
 
-// lastStatusChunk returns the content of the last status chunk in the slice,
-// or "" if there is none.
-func lastStatusChunk(chunks []provider.StreamChunk) string {
+// lastActivityChunk returns the content of the last activity snapshot in the
+// slice, or "" if there is none.
+func lastActivityChunk(chunks []provider.StreamChunk) string {
 	got := ""
 	for _, ch := range chunks {
-		if ch.Type == provider.ContentBlockTypeStatus {
+		if ch.Type == provider.ContentBlockTypeActivity {
 			got = ch.Content
 		}
 	}
 	return got
 }
 
-func TestParser_SystemInitEmitsWaitingPhase(t *testing.T) {
+func TestEmitActivitySnapshots(t *testing.T) {
+	for _, description := range []string{
+		activityStarting,
+		activityReconnecting,
+		activityProcessingHistory,
+		activityWaiting,
+		activityGenerating,
+	} {
+		var chunks []provider.StreamChunk
+		emitActivity(recordingCallback(&chunks), description)
+		if len(chunks) != 1 || chunks[0].Type != provider.ContentBlockTypeActivity || chunks[0].Content != description {
+			t.Errorf("emitActivity(%q) = %+v, want one activity snapshot", description, chunks)
+		}
+	}
+}
+
+func TestParser_SystemInitEmitsWaitingActivity(t *testing.T) {
 	c := newParserClient()
 	lines := []string{mustJSON(t, map[string]any{
 		"type":       "system",
@@ -217,17 +234,17 @@ func TestParser_SystemInitEmitsWaitingPhase(t *testing.T) {
 	}
 	// The CLI has booted; the spinner should flip from "Starting…" to a
 	// "waiting on the model" liveness beat. With no per-turn label set, it
-	// falls back to the generic phaseWaiting.
-	if got := lastStatusChunk(chunks); got != phaseWaiting {
-		t.Errorf("system/init should emit a %q status chunk, got %q (all chunks: %+v)", phaseWaiting, got, chunks)
+	// falls back to the generic activityWaiting.
+	if got := lastActivityChunk(chunks); got != activityWaiting {
+		t.Errorf("system/init should emit a %q activity snapshot, got %q (all chunks: %+v)", activityWaiting, got, chunks)
 	}
 }
 
-func TestParser_SystemInitEmitsColdStartHistoryPhase(t *testing.T) {
+func TestParser_SystemInitEmitsColdStartHistoryActivity(t *testing.T) {
 	c := newParserClient()
 	// A cold start carrying prior history sets this before reading the stream;
 	// system/init should surface it so the long cache-miss wait is labelled.
-	c.turnWaitingPhase = phaseProcessingHistory
+	c.turnWaitingDescription = activityProcessingHistory
 	lines := []string{mustJSON(t, map[string]any{
 		"type":       "system",
 		"subtype":    "init",
@@ -237,12 +254,12 @@ func TestParser_SystemInitEmitsColdStartHistoryPhase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("system/init: %v", err)
 	}
-	if got := lastStatusChunk(chunks); got != phaseProcessingHistory {
-		t.Errorf("system/init should emit the per-turn label %q, got %q", phaseProcessingHistory, got)
+	if got := lastActivityChunk(chunks); got != activityProcessingHistory {
+		t.Errorf("system/init should emit the per-turn label %q, got %q", activityProcessingHistory, got)
 	}
 }
 
-func TestParser_MessageStartEmitsGeneratingPhase(t *testing.T) {
+func TestParser_MessageStartEmitsGeneratingActivity(t *testing.T) {
 	c := newParserClient()
 	lines := []string{mustJSON(t, map[string]any{
 		"type": "stream_event",
@@ -256,8 +273,8 @@ func TestParser_MessageStartEmitsGeneratingPhase(t *testing.T) {
 		t.Fatalf("message_start: %v", err)
 	}
 	// The mid-wait beat: ingestion is done and generation has begun.
-	if got := lastStatusChunk(chunks); got != phaseGenerating {
-		t.Errorf("message_start should emit a %q status chunk, got %q (all chunks: %+v)", phaseGenerating, got, chunks)
+	if got := lastActivityChunk(chunks); got != activityGenerating {
+		t.Errorf("message_start should emit a %q activity snapshot, got %q (all chunks: %+v)", activityGenerating, got, chunks)
 	}
 }
 
@@ -716,9 +733,13 @@ func TestParser_MalformedToolInputSkipped(t *testing.T) {
 	if pause || count != 0 {
 		t.Errorf("skipped block should neither pause nor count, got pause=%v count=%d", pause, count)
 	}
+	retryStatuses := 0
 	for _, ch := range chunks {
 		if ch.Type == provider.ContentBlockTypeToolUse {
 			t.Errorf("malformed tool input must not emit a tool_use chunk (it would execute with empty args), got input=%+v", ch.ToolInput)
+		}
+		if ch.Type == provider.ContentBlockTypeStatus && strings.Contains(ch.Content, "Invalid tool input") {
+			retryStatuses++
 		}
 	}
 	for _, b := range res.Blocks {
@@ -729,8 +750,8 @@ func TestParser_MalformedToolInputSkipped(t *testing.T) {
 	if res.cliServedThisCall != 1 {
 		t.Errorf("skipped block should be tallied as CLI-served, got %d", res.cliServedThisCall)
 	}
-	if lastStatusChunk(chunks) == "" {
-		t.Error("skipped block should emit a status chunk so the user sees the retry")
+	if retryStatuses != 1 {
+		t.Errorf("skipped block should emit one malformed-tool retry status, got %d (all chunks: %+v)", retryStatuses, chunks)
 	}
 }
 

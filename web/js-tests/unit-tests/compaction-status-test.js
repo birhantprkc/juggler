@@ -74,6 +74,43 @@ export async function runTests(_ctx) {
     assert(llmState.getStatusMessage(convId).trim() !== '', 'an unlabelled compacting frame must fall back to a default label, never an empty spinner');
   });
 
+  test('provider activity outranks startup and receiving labels', () => {
+    publish({
+      status: 'streaming',
+      startedAt: Date.now() - 3000,
+      phase: 'Starting provider',
+      description: 'Reading the room',
+      outputTokens: 12,
+    });
+    const message = llmState.getStatusMessage(convId);
+    assert(message.startsWith('Reading the room ·'), `status message = "${message}", want provider activity first`);
+    assert(!message.includes('Starting provider') && !message.includes('Receiving'),
+      `provider activity should replace generic labels, got "${message}"`);
+  });
+
+  test('provider activity strips surrounding Markdown markers', () => {
+    publish({
+      status: 'streaming',
+      startedAt: Date.now(),
+      description: ' ***Reviewing the changes*** ',
+      outputTokens: 12,
+    });
+    const message = llmState.getStatusMessage(convId);
+    assert(message.startsWith('Reviewing the changes ·'), `status message retained Markdown wrappers: "${message}"`);
+  });
+
+  test('elapsed ticks preserve provider activity', () => {
+    (/** @type {any} */ (llmState))._updateElapsedTime(convId);
+    const message = llmState.getStatusMessage(convId);
+    assert(message.startsWith('Reviewing the changes ·'), `elapsed tick lost provider activity: "${message}"`);
+  });
+
+  test('replacement processing state clears provider activity', () => {
+    publish({ status: 'streaming', startedAt: Date.now() - 3000, outputTokens: 13 });
+    const message = llmState.getStatusMessage(convId);
+    assert(message.startsWith('Receiving ·'), `replacement state retained provider activity: "${message}"`);
+  });
+
   test('idle ends the compaction spinner', () => {
     publish({ status: 'idle' });
     assert(!llmState.isConversationProcessing(convId), 'idle must stop processing so the spinner clears');

@@ -461,8 +461,8 @@ func transformMessagesToResponsesInput(messages []provider.Message) responses.Re
 	// from the messages.
 	for _, msg := range messages {
 		role := provider.MessageTypeToRole(msg.Type)
-		if role == "" {
-			continue // Skip UI-only messages
+		if role == "" && msg.Type != "provider-state" {
+			continue // Skip UI-only and foreign provider-state messages
 		}
 
 		if msg.Type != "tool-result" {
@@ -477,17 +477,10 @@ func transformMessagesToResponsesInput(messages []provider.Message) responses.Re
 				inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(contentList, "user"))
 			}
 
-		case "thinking":
-			// Hand the model back its own reasoning so a chain of thought
-			// survives a tool call. These calls are stateless (store=false), so
-			// the encrypted blob is the reasoning — the id alone refers to
-			// nothing the backend still holds.
-			//
-			// Anything without both fields is skipped, which covers reasoning
-			// captured before this round trip existed and thinking produced by
-			// a different provider before a mid-conversation switch (an
-			// Anthropic signature means nothing here). Same call the Anthropic
-			// transform makes for a signatureless block.
+		case "provider-state", "thinking":
+			// New conversations carry Responses continuation state in a hidden,
+			// ordered provider-state message. Thinking remains accepted for legacy
+			// conversations that stored the same fields on the visible summary.
 			if msg.ProviderData == nil {
 				continue
 			}
@@ -501,7 +494,16 @@ func transformMessagesToResponsesInput(messages []provider.Message) responses.Re
 				EncryptedContent: openai.String(encrypted),
 				Summary:          []responses.ResponseReasoningItemSummaryParam{},
 			}
-			if msg.Content != "" {
+			if summaries, ok := msg.ProviderData["summary"].([]any); ok {
+				for _, raw := range summaries {
+					if summary, ok := raw.(map[string]any); ok {
+						if text, _ := summary["text"].(string); text != "" {
+							item.Summary = append(item.Summary, responses.ResponseReasoningItemSummaryParam{Text: text})
+						}
+					}
+				}
+			}
+			if len(item.Summary) == 0 && msg.Content != "" {
 				item.Summary = append(item.Summary, responses.ResponseReasoningItemSummaryParam{Text: msg.Content})
 			}
 			inputItems = append(inputItems, responses.ResponseInputItemUnionParam{OfReasoning: item})
@@ -752,10 +754,14 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 	var cachedTokens *int
 	var textContent strings.Builder
 	var thinkingContent strings.Builder
+	type summaryKey struct {
+		itemID       string
+		summaryIndex int64
+	}
+	summaries := make(map[summaryKey]*strings.Builder)
 
-	// emitThinking streams a reasoning delta as live thinking and feeds the
-	// output-token progress estimate, so a model that reasons before answering
-	// shows movement instead of a frozen "Receiving" spinner.
+	// emitThinking is reserved for raw Responses reasoning text. Summaries use
+	// Activity snapshots below; Chat Completions reasoning remains Thinking.
 	emitThinking := func(text string) error {
 		if text == "" {
 			return nil
@@ -818,22 +824,25 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			}
 
 		case "response.output_item.done":
-			// A finished reasoning item carries the two things needed to hand
-			// this reasoning back next turn: its id and its encrypted content.
-			// Emitted as a contentless thinking chunk that the worker attaches
-			// to the thinking already on screen, the same way Anthropic's
-			// signature travels. The id is not optional — the SDK always
-			// serializes it, so an item replayed without one goes out as
-			// `"id":""` and is rejected.
+			// A finished reasoning item is durable hidden continuation state. Keep
+			// it ordered at the point the backend emitted it rather than attaching
+			// it to a visible/transient summary.
 			done := evt.AsResponseOutputItemDone()
 			if done.Item.Type == "reasoning" {
 				reasoning := done.Item.AsReasoning()
 				if reasoning.EncryptedContent != "" && reasoning.ID != "" {
+					summary := make([]any, 0, len(reasoning.Summary))
+					for _, part := range reasoning.Summary {
+						summary = append(summary, map[string]any{"type": "summary_text", "text": part.Text})
+					}
 					if _, err := callback(provider.StreamChunk{
-						Type: provider.ContentBlockTypeThinking,
+						Type: provider.ContentBlockTypeProviderState,
 						Metadata: map[string]any{
+							"provider":         "openai-responses",
+							"itemType":         "reasoning",
 							"reasoningItemId":  reasoning.ID,
 							"encryptedContent": reasoning.EncryptedContent,
+							"summary":          summary,
 						},
 					}); err != nil {
 						return nil, err
@@ -842,10 +851,28 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 			}
 
 		case "response.reasoning_summary_text.delta":
-			// Reasoning summary delta (o-series / gpt-5-codex): the model's
-			// thinking, surfaced the same way as the Chat Completions
-			// `reasoning_content` path.
-			if err := emitThinking(evt.AsResponseReasoningSummaryTextDelta().Delta); err != nil {
+			// Summary deltas are indexed independently. Accumulate each slot and
+			// emit its complete current value as a replaceable Activity snapshot.
+			delta := evt.AsResponseReasoningSummaryTextDelta()
+			key := summaryKey{itemID: delta.ItemID, summaryIndex: delta.SummaryIndex}
+			acc := summaries[key]
+			if acc == nil {
+				acc = &strings.Builder{}
+				summaries[key] = acc
+			}
+			acc.WriteString(delta.Delta)
+			sess.Progress(delta.Delta)
+			if _, err := callback(provider.StreamChunk{
+				Type:    provider.ContentBlockTypeActivity,
+				Content: acc.String(),
+				Metadata: map[string]any{
+					"provider":     "openai-responses",
+					"kind":         "reasoning-summary",
+					"itemId":       delta.ItemID,
+					"outputIndex":  delta.OutputIndex,
+					"summaryIndex": delta.SummaryIndex,
+				},
+			}); err != nil {
 				return nil, err
 			}
 

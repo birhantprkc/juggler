@@ -247,6 +247,12 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 				})
 				return nil, nil
 			}
+			// Activity chunks are complete, replaceable snapshots for live UI state.
+			// Forward them to the worker but never retain them in the response.
+			if chunk.Type == provider.ContentBlockTypeActivity {
+				chunkHandler(worker.StreamChunk{Type: chunk.Type, Content: chunk.Content, Metadata: chunk.Metadata})
+				return nil, nil
+			}
 			// Progress chunks carry a running output-token estimate for the
 			// UI's mid-stream spinner. Transient — never accumulated.
 			if chunk.Type == provider.ContentBlockTypeProgress {

@@ -892,7 +892,7 @@ func threadArrayHasRunTurns(arr *ycrdt.YArray) bool {
 			continue
 		}
 		switch t, _ := m.Get("type").(string); t {
-		case ItemTypeAssistant, ItemTypeThinking, ItemTypeToolAction,
+		case ItemTypeAssistant, ItemTypeThinking, ItemTypeProviderState, ItemTypeToolAction,
 			ItemTypeMetaToolResult, ItemTypeThread, ItemTypeCompactionSummary:
 			return true
 		}

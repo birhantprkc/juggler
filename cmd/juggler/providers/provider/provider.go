@@ -14,13 +14,13 @@ import (
 // Message represents a unified conversation message using discriminated union via Type field.
 // This matches the frontend Message type exactly - the frontend sends these directly to Go providers.
 type Message struct {
-	Type string `json:"type"` // "user", "assistant", "thinking", "tool-use", "tool-result", "context-item", "context-item-updated", "guidance", "system-reminder", "error", "system"
+	Type string `json:"type"` // "user", "assistant", "thinking", "provider-state", "tool-use", "tool-result", "context-item", "context-item-updated", "guidance", "system-reminder", "error", "system"
 
 	// Content field - used by user, assistant, context-item, context-item-updated, system-reminder, tool-result
 	Content string `json:"content,omitempty"`
 
-	// Thinking-specific fields
-	ProviderData map[string]any `json:"providerData,omitempty"` // Opaque provider data (e.g., Anthropic thinking signatures)
+	// Provider-specific fields
+	ProviderData map[string]any `json:"providerData,omitempty"` // Opaque continuation data (e.g., thinking signatures or hidden provider state)
 
 	// Tool-use specific fields
 	ToolUseID string         `json:"toolUseId,omitempty"` // ID for matching tool-use with tool-result
@@ -194,6 +194,8 @@ type ContentBlockType string
 const (
 	ContentBlockTypeText             ContentBlockType = "text"
 	ContentBlockTypeThinking         ContentBlockType = "thinking"
+	ContentBlockTypeActivity         ContentBlockType = "activity"       // Transient replaceable provider activity snapshot; never conversation history
+	ContentBlockTypeProviderState    ContentBlockType = "provider_state" // Durable hidden provider continuation state, ordered with response blocks
 	ContentBlockTypeRedactedThinking ContentBlockType = "redacted_thinking"
 	ContentBlockTypeToolUse          ContentBlockType = "tool_use"
 	ContentBlockTypeToolResult       ContentBlockType = "tool_result"

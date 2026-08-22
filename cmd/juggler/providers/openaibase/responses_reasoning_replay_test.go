@@ -40,11 +40,15 @@ func TestResponsesReplaysReasoningItem(t *testing.T) {
 	items := responsesInputItems(t, []provider.Message{
 		{Type: "user", Content: "What's the weather?"},
 		{
-			Type:    "thinking",
-			Content: "I should call the weather tool.",
+			Type: "provider-state",
 			ProviderData: map[string]any{
+				"provider":         "openai-responses",
+				"itemType":         "reasoning",
 				"reasoningItemId":  "rs_abc",
 				"encryptedContent": "gAAAAA-blob",
+				"summary": []any{
+					map[string]any{"type": "summary_text", "text": "I should call the weather tool."},
+				},
 			},
 		},
 		{Type: "tool-use", ToolUseID: "call_1", ToolName: "get_weather", ToolInput: map[string]any{"city": "London"}},
@@ -124,8 +128,8 @@ func TestResponsesSkipsUnreplayableThinking(t *testing.T) {
 }
 
 // TestResponsesCapturesReasoningItem covers the capture half: a finished
-// reasoning item on the stream must reach the worker as thinking metadata, or
-// there is nothing to replay in the first place.
+// reasoning item on the stream must reach the worker as hidden provider state,
+// or there is nothing to replay in the first place.
 func TestResponsesCapturesReasoningItem(t *testing.T) {
 	body := sseBody(
 		`{"type":"response.reasoning_summary_text.delta","delta":"Weighing the options.","item_id":"rs_abc","output_index":0,"sequence_number":1,"summary_index":0}`,
@@ -156,7 +160,7 @@ func TestResponsesCapturesReasoningItem(t *testing.T) {
 	if _, err := c.streamMessage(context.Background(), provider.MessageRequest{
 		Messages: []provider.Message{{Type: "user", Content: "hello"}},
 	}, func(chunk provider.StreamChunk) (*provider.ToolResult, error) {
-		if chunk.Type == provider.ContentBlockTypeThinking && len(chunk.Metadata) > 0 {
+		if chunk.Type == provider.ContentBlockTypeProviderState && len(chunk.Metadata) > 0 {
 			captured = chunk.Metadata
 		}
 		return nil, nil

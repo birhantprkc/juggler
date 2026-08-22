@@ -412,16 +412,15 @@ func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResul
 			}
 		} else if msg.Subtype == "init" {
 			// The CLI has booted and loaded the session — the slow spawn/resume
-			// phase is over and we now wait on the model. Flip the spinner from
-			// "Starting"/"Reconnecting" to the per-turn waiting label (a plain
-			// "Waiting for response", or "Processing conversation history" on a
-			// cold start with prior history) as a liveness beat that proves the
-			// cold start made progress.
-			waiting := c.turnWaitingPhase
+			// work is over and we now wait on the model. Replace the spinner's
+			// "Starting"/"Reconnecting" description with the per-turn activity
+			// (a plain "Waiting for response", or "Processing conversation history"
+			// on a cold start with prior history).
+			waiting := c.turnWaitingDescription
 			if waiting == "" {
-				waiting = phaseWaiting
+				waiting = activityWaiting
 			}
-			emitPhase(callback, waiting)
+			emitActivity(callback, waiting)
 		}
 
 	case "result":
@@ -554,8 +553,8 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 		// response" the moment work starts, instead of looking stuck right up
 		// until the first token. Harmless on the later message_start of a
 		// multi-call turn: by then output tokens have streamed, so the frontend
-		// shows "Receiving" and ignores the phase label.
-		emitPhase(callback, phaseGenerating)
+		// shows the token flow alongside the latest activity description.
+		emitActivity(callback, activityGenerating)
 
 		// A juggler "turn" can contain multiple Anthropic API calls (the LLM
 		// internally chains tool-use round-trips). The claudecode CLI emits

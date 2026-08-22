@@ -525,6 +525,18 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 				Timestamp:     time.Now().Format(time.RFC3339),
 			})
 			inserted = true
+		case provider.ContentBlockTypeProviderState:
+			if len(block.Metadata) == 0 {
+				continue
+			}
+			w.tracker.InsertMessage(w.doc.GetItemsLength(), ConversationItem{
+				Type:          ItemTypeProviderState,
+				ItemID:        generateItemID(),
+				ProviderData:  block.Metadata,
+				TransactionID: txnID,
+				Timestamp:     time.Now().Format(time.RFC3339),
+			})
+			inserted = true
 		case provider.ContentBlockTypeText:
 			if block.Content == "" {
 				continue

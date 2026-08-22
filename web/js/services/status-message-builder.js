@@ -33,7 +33,8 @@ const RESTATE_AFTER_MS = Object.freeze({
  * @property {number} [outputTokens] - Tokens received from LLM
  * @property {number} [cachedTokens] - Prompt tokens served from cache (OpenAI)
  * @property {number} [elapsedTime] - Elapsed time in milliseconds
- * @property {string} [phase] - Provider-emitted phase label shown before the first token (e.g. "Starting Claude Code", "Waiting for response")
+ * @property {string} [phase] - Provider-emitted retry, cache, or notice status
+ * @property {string} [description] - Current provider activity snapshot
  */
 
 /**
@@ -112,19 +113,43 @@ export class StatusMessageBuilder {
   }
 
   /**
+   * Remove matched Markdown wrappers from a provider-authored activity label.
+   * Footer status is deliberately plain text, but models often send a whole
+   * summary wrapped in emphasis or code markers.
+   * @param {string} description - Provider activity snapshot
+   * @returns {string} Plain status label
+   * @private
+   */
+  static _plainActivity(description) {
+    let text = description.trim();
+    const wrappers = ['**', '__', '~~', '`', '*', '_'];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const wrapper of wrappers) {
+        if (text.length > wrapper.length * 2 && text.startsWith(wrapper) && text.endsWith(wrapper)) {
+          text = text.slice(wrapper.length, -wrapper.length).trim();
+          changed = true;
+          break;
+        }
+      }
+    }
+    return text;
+  }
+
+  /**
    * Builds status message for streaming response
    * @param {StreamingStatusData} data - Streaming status information
    * @returns {string} Formatted status message
    */
   static buildStreamingStatus(data) {
-    // Before any output token has streamed, lead with the provider's phase
-    // label (e.g. "Starting Claude Code", "Waiting for response") so a slow
-    // cold start shows what's actually happening rather than a static
-    // "Receiving" that looks jammed. Once tokens arrive, "Receiving" with the
-    // running count is the more useful label and takes over. Labels stay
-    // unadorned here; the busy marker is added at the render seam.
+    // A provider activity snapshot is the most specific account of the current
+    // work, so it outranks startup phase and the generic fallback even after
+    // output begins. Startup phase remains useful only before the first token.
+    // Labels stay unadorned here; the busy marker is added at the render seam.
     const hasOutput = data.outputTokens !== undefined && data.outputTokens > 0;
-    const lead = (!hasOutput && data.phase) ? data.phase : 'Receiving';
+    const description = data.description ? this._plainActivity(data.description) : '';
+    const lead = description || ((!hasOutput && data.phase) ? data.phase : 'Receiving');
     const parts = [lead];
 
     // Append token counts when available; the lead label stays so the user

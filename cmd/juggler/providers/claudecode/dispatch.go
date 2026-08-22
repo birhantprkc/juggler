@@ -20,29 +20,29 @@ import (
 	"juggler/internal/jlog"
 )
 
-// Phase labels surfaced on the UI spinner during the otherwise-silent window
-// between starting a turn and the model's first streamed token. Cold starts
-// spend that window spawning the CLI, loading a synthetic-resume session, and
-// running the MCP handshake — minutes, sometimes — with nothing else to show.
+// Activity descriptions surfaced on the UI spinner during the otherwise-silent
+// window between starting a turn and the model's first streamed token. Cold
+// starts spend that window spawning the CLI, loading a synthetic-resume session,
+// and running the MCP handshake — minutes, sometimes — with nothing else to show.
 const (
-	phaseStarting          = "Starting Claude Code"
-	phaseReconnecting      = "Reconnecting Claude Code"
-	phaseProcessingHistory = "Processing conversation history"
-	phaseWaiting           = "Waiting for response"
-	phaseGenerating        = "Generating response"
+	activityStarting          = "Starting Claude Code"
+	activityReconnecting      = "Reconnecting Claude Code"
+	activityProcessingHistory = "Processing conversation history"
+	activityWaiting           = "Waiting for response"
+	activityGenerating        = "Generating response"
 )
 
-// emitPhase forwards a transient liveness/phase label to the UI spinner as a
-// status chunk. This is the cold-start feedback path: before the first token
-// nothing else streams, so without these the spinner sits on a static
-// "Receiving..." for the whole wait and looks jammed. Best-effort — a dropped
-// label (e.g. a cancelled callback) never affects turn correctness, and status
-// chunks are not counted as streamed content so they never block a retry.
-func emitPhase(callback provider.StructuredStreamCallback, msg string) {
+// emitActivity forwards a transient, replaceable description to the UI spinner.
+// This is the cold-start feedback path: before the first token nothing else
+// streams, so without these the spinner sits on a static "Receiving..." for the
+// whole wait and looks jammed. Best-effort — a dropped description (e.g. a
+// cancelled callback) never affects turn correctness, and activity snapshots are
+// not counted as streamed content so they never block a retry.
+func emitActivity(callback provider.StructuredStreamCallback, msg string) {
 	if callback == nil {
 		return
 	}
-	_, _ = callback(provider.StreamChunk{Type: provider.ContentBlockTypeStatus, Content: msg})
+	_, _ = callback(provider.StreamChunk{Type: provider.ContentBlockTypeActivity, Content: msg})
 }
 
 // startFreshSession spawns a new CLI invocation in streaming-input mode
@@ -63,8 +63,8 @@ func (c *Client) startFreshSession(ctx context.Context, req provider.MessageRequ
 
 	// Cold start: the CLI must spawn and load the (synthetic) session before
 	// it emits anything. Surface that immediately so the spinner reflects the
-	// real phase; the parser flips it to phaseWaiting on system/init.
-	emitPhase(callback, phaseStarting)
+	// real activity; the parser flips it to activityWaiting on system/init.
+	emitActivity(callback, activityStarting)
 
 	args := []string{"-p", "--input-format", "stream-json"}
 	args = append(args, c.commonArgs(req.SystemPrompt)...)
@@ -74,13 +74,13 @@ func (c *Client) startFreshSession(ctx context.Context, req provider.MessageRequ
 		// Cold start carrying prior history: the slow segment is the API
 		// re-ingesting the whole conversation (a guaranteed cache miss). Label
 		// the post-boot wait so it reads as expensive-but-working rather than
-		// jammed. A true first turn (plan == nil) keeps the generic phaseWaiting.
-		c.turnWaitingPhase = phaseProcessingHistory
+		// jammed. A true first turn (plan == nil) keeps the generic activityWaiting.
+		c.turnWaitingDescription = activityProcessingHistory
 		path, err := writeSyntheticSession(c.workingDir, plan)
 		if err != nil {
 			jlog.Debug("synthetic resume: write failed (%v) — falling back to history-less cold start", err)
 			plan = nil
-			c.turnWaitingPhase = phaseWaiting
+			c.turnWaitingDescription = activityWaiting
 		} else {
 			jlog.Debug("synthetic resume: wrote %s (%d entries) — spawning with --resume %s",
 				path, len(plan.historyToFile), plan.sessionUUID)
@@ -214,11 +214,11 @@ func (c *Client) runPersistentResumeTurn(ctx context.Context, req provider.Messa
 
 	// Spinner feedback for the pre-first-token wait. A live CLI goes straight
 	// to waiting on the model; a cold session must respawn first (and the
-	// respawn's system/init will itself flip the spinner to phaseWaiting).
+	// respawn's system/init will itself flip the spinner to activityWaiting).
 	if c.activeSession.hasLiveCLI() {
-		emitPhase(callback, phaseWaiting)
+		emitActivity(callback, activityWaiting)
 	} else {
-		emitPhase(callback, phaseReconnecting)
+		emitActivity(callback, activityReconnecting)
 	}
 
 	// Ensure the persistent CLI is alive. ensurePersistentCLI is a no-op if it
@@ -273,9 +273,9 @@ func (c *Client) runResumeNudge(ctx context.Context, req provider.MessageRequest
 
 	// Spinner feedback for the pre-first-token wait (see runPersistentResumeTurn).
 	if c.activeSession.hasLiveCLI() {
-		emitPhase(callback, phaseWaiting)
+		emitActivity(callback, activityWaiting)
 	} else {
-		emitPhase(callback, phaseReconnecting)
+		emitActivity(callback, activityReconnecting)
 	}
 
 	if err := c.ensurePersistentCLI(req); err != nil {
@@ -355,7 +355,7 @@ func (c *Client) continueSession(ctx context.Context, req provider.MessageReques
 
 	// Tool results are fed; the model now resumes the paused turn. Surface the
 	// wait so the spinner isn't a static "Receiving..." while it thinks.
-	emitPhase(callback, phaseWaiting)
+	emitActivity(callback, activityWaiting)
 
 	turn, _, err := c.readUntilPauseOrComplete(ctx, callback)
 	return c.finalizeTurn(req, turn, err)

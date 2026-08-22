@@ -89,7 +89,7 @@ func (c *Client) runWarmAppendResume(ctx context.Context, req provider.MessageRe
 
 	// Spinner feedback for the pre-first-token wait: the warm file is loaded by
 	// a freshly-spawned --resume process, whose system/init flips the spinner.
-	emitPhase(callback, phaseReconnecting)
+	emitActivity(callback, activityReconnecting)
 
 	if err := c.ensurePersistentCLI(req); err != nil {
 		return c.coldStartFallback(ctx, req, callback, fmt.Sprintf("warm-append-spawn-failed: %v", err))

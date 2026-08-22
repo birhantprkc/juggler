@@ -11,7 +11,7 @@ of changes; this project follows semantic versioning.
 - A Windows build from source no longer leaves a console window open behind the app
 - The wails submodule clones over HTTPS, so building from source needs no SSH key
 - Instances reached at a `<project>.localhost` hostname now work instead of refusing every request
-- GPT-5 and Codex models now show their thinking as it arrives
+- GPT models now describe their work beside the spinner instead of adding thinking items
 
 ## [0.5.7] - 2026-08-19
 

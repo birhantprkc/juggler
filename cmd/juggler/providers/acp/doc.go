@@ -38,8 +38,8 @@
 //
 //  1. StructuredStreamCallback goes (almost) idle. Emitting a real tool_use
 //     chunk to the worker's callback would make the worker execute a phantom
-//     juggler tool. So agent tool activity is surfaced as *transient status
-//     chunks* (ContentBlockTypeStatus — display-only, never stored, never
+//     juggler tool. So agent tool activity is surfaced as transient activity
+//     snapshots (ContentBlockTypeActivity — display-only, never stored, never
 //     executed), not tool_use blocks. Persisted tool_use/tool_result display
 //     blocks are Phase 2 and require a worker seam that accepts display-only
 //     tool blocks.

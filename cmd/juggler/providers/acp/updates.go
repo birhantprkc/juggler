@@ -53,9 +53,9 @@ const (
 // reports ok=false when the variant carries nothing to surface.
 //
 // The tool-ownership inversion (see doc.go) governs the tool variants: the
-// agent already ran the tool, so tool_call / tool_call_update become
-// *transient status chunks* (ContentBlockTypeStatus), never tool_use chunks —
-// a tool_use chunk would make the worker execute a phantom juggler tool.
+// agent already ran the tool, so tool_call / tool_call_update become transient
+// activity snapshots (ContentBlockTypeActivity), never tool_use chunks — a
+// tool_use chunk would make the worker execute a phantom juggler tool.
 func toStreamChunk(u sessionUpdate) (provider.StreamChunk, bool) {
 	switch u.SessionUpdate {
 	case updAgentMessageChunk:
@@ -74,7 +74,7 @@ func toStreamChunk(u sessionUpdate) (provider.StreamChunk, bool) {
 
 	case updToolCall:
 		return provider.StreamChunk{
-			Type:    provider.ContentBlockTypeStatus,
+			Type:    provider.ContentBlockTypeActivity,
 			Content: toolCallSummary(u),
 		}, true
 
@@ -84,13 +84,13 @@ func toStreamChunk(u sessionUpdate) (provider.StreamChunk, bool) {
 			return provider.StreamChunk{}, false
 		}
 		return provider.StreamChunk{
-			Type:    provider.ContentBlockTypeStatus,
+			Type:    provider.ContentBlockTypeActivity,
 			Content: toolCallSummary(u),
 		}, true
 
 	case updPlan:
 		return provider.StreamChunk{
-			Type:    provider.ContentBlockTypeStatus,
+			Type:    provider.ContentBlockTypeActivity,
 			Content: "Updated plan",
 		}, true
 
@@ -102,8 +102,8 @@ func toStreamChunk(u sessionUpdate) (provider.StreamChunk, bool) {
 }
 
 // isOutputText reports whether a chunk's content should count toward the turn's
-// output-token estimate (agent-generated text and thinking do; transient status
-// does not).
+// output-token estimate (agent-generated text and thinking do; transient
+// activity does not).
 func isOutputText(t provider.ContentBlockType) bool {
 	return t == provider.ContentBlockTypeText || t == provider.ContentBlockTypeThinking
 }
@@ -124,8 +124,8 @@ func isTerminalToolStatus(status string) bool {
 	}
 }
 
-// toolCallSummary builds a short human label for a tool_call/update status
-// chunk, e.g. "⚙ edit: Write foo.go" — display only, never parsed.
+// toolCallSummary builds a short human label for a tool_call/update activity
+// snapshot, e.g. "⚙ edit: Write foo.go" — display only, never parsed.
 func toolCallSummary(u sessionUpdate) string {
 	var b strings.Builder
 	b.WriteString("⚙ ")

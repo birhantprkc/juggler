@@ -63,6 +63,22 @@ func TestAppendStreamedBlockMergesOntoExistingMetadata(t *testing.T) {
 	}
 }
 
+func TestAppendStreamedBlockKeepsProviderStateDistinct(t *testing.T) {
+	blocks := appendStreamedBlock(nil, provider.StreamChunk{Type: provider.ContentBlockTypeThinking, Content: "raw reasoning"})
+	blocks = appendStreamedBlock(blocks, provider.StreamChunk{
+		Type:     provider.ContentBlockTypeProviderState,
+		Metadata: map[string]any{"reasoningItemId": "rs_1"},
+	})
+	blocks = appendStreamedBlock(blocks, provider.StreamChunk{Type: provider.ContentBlockTypeText, Content: "answer"})
+
+	if len(blocks) != 3 || blocks[1].Type != provider.ContentBlockTypeProviderState {
+		t.Fatalf("blocks = %+v, want distinct ordered provider-state block", blocks)
+	}
+	if got, _ := blocks[1].Metadata["reasoningItemId"].(string); got != "rs_1" {
+		t.Fatalf("provider-state reasoningItemId = %q, want rs_1", got)
+	}
+}
+
 // TestAppendStreamedBlockStartsFreshBlockForDiscreteChunks pins that only
 // text/thinking deltas coalesce: a tool_use chunk between two thinking chunks
 // must not absorb them, or the transaction JSON would misreport the turn.

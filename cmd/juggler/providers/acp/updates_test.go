@@ -16,7 +16,7 @@ func TestToStreamChunk(t *testing.T) {
 		update   sessionUpdate
 		wantOK   bool
 		wantType provider.ContentBlockType
-		wantText string // exact for text/thinking; substring for status
+		wantText string // exact for text/thinking; substring for activity
 	}{
 		{
 			name:     "agent message",
@@ -38,17 +38,17 @@ func TestToStreamChunk(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:     "tool_call becomes status not tool_use",
+			name:     "tool_call becomes activity not tool_use",
 			update:   sessionUpdate{SessionUpdate: updToolCall, ToolCallID: "t1", Title: "Write foo.go", Kind: "edit"},
 			wantOK:   true,
-			wantType: provider.ContentBlockTypeStatus,
+			wantType: provider.ContentBlockTypeActivity,
 			wantText: "Write foo.go",
 		},
 		{
 			name:     "tool_call_update terminal surfaces",
 			update:   sessionUpdate{SessionUpdate: updToolCallUpdate, ToolCallID: "t1", Title: "Write foo.go", Status: "completed"},
 			wantOK:   true,
-			wantType: provider.ContentBlockTypeStatus,
+			wantType: provider.ContentBlockTypeActivity,
 			wantText: "completed",
 		},
 		{
@@ -57,10 +57,10 @@ func TestToStreamChunk(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:     "plan becomes status",
+			name:     "plan becomes activity",
 			update:   sessionUpdate{SessionUpdate: updPlan},
 			wantOK:   true,
-			wantType: provider.ContentBlockTypeStatus,
+			wantType: provider.ContentBlockTypeActivity,
 			wantText: "plan",
 		},
 		{
@@ -87,7 +87,7 @@ func TestToStreamChunk(t *testing.T) {
 			if chunk.Type != tc.wantType {
 				t.Fatalf("type = %q, want %q", chunk.Type, tc.wantType)
 			}
-			if tc.wantType == provider.ContentBlockTypeStatus {
+			if tc.wantType == provider.ContentBlockTypeActivity {
 				if !contains(chunk.Content, tc.wantText) {
 					t.Fatalf("content %q does not contain %q", chunk.Content, tc.wantText)
 				}

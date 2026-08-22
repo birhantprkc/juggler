@@ -32,6 +32,7 @@ import {
   isUserMessage,
   isAssistantMessage,
   isThinkingMessage,
+  isProviderStateMessage,
   isToolActionMessage,
   isErrorMessage,
   isNoticeMessage,
@@ -439,6 +440,10 @@ export function positionElements(area, messageList, footer, items, currentElemen
  * @returns {HTMLElement[]} Created elements (zero or more).
  */
 function createBubblesForEvent(area, message, itemIndex) {
+  // Durable provider continuation state is conversation history, not a
+  // user-facing message or a standing context item.
+  if (isProviderStateMessage(message)) return [];
+
   /** @type {HTMLElement[]} */
   const elements = [];
 

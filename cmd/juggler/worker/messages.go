@@ -960,6 +960,7 @@ const (
 	ItemTypeUser           = "user"
 	ItemTypeAssistant      = "assistant"
 	ItemTypeThinking       = "thinking"
+	ItemTypeProviderState  = "provider-state"
 	ItemTypeToolAction     = "tool-action"
 	ItemTypeError          = "error"
 	ItemTypeMetaToolResult = "meta-tool-result"
@@ -997,7 +998,7 @@ const (
 // first conversational item.
 func isConversationalItemType(t string) bool {
 	switch t {
-	case ItemTypeUser, ItemTypeAssistant, ItemTypeThinking, ItemTypeToolAction,
+	case ItemTypeUser, ItemTypeAssistant, ItemTypeThinking, ItemTypeProviderState, ItemTypeToolAction,
 		ItemTypeThread, ItemTypeMetaToolResult, ItemTypeError,
 		ItemTypeSystemReminder, ItemTypeGuidance, ItemTypeCompactionSummary,
 		ItemTypeNotice:

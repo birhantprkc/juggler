@@ -53,15 +53,15 @@ type Client struct {
 	// a time), so a plain int is safe — no mutex (project concurrency rule).
 	consecutiveStalls int
 
-	// turnWaitingPhase is the spinner label the parser emits at system/init —
+	// turnWaitingDescription is the spinner label the parser emits at system/init —
 	// the moment the freshly-spawned CLI has booted and the otherwise-silent
-	// prompt-ingestion wait begins. dispatchTurn resets it to phaseWaiting each
-	// turn; startFreshSession overrides it to phaseProcessingHistory for a cold
+	// prompt-ingestion wait begins. dispatchTurn resets it to activityWaiting each
+	// turn; startFreshSession overrides it to activityProcessingHistory for a cold
 	// start that carries prior history, so the long cache-miss wait reads as
 	// purposeful instead of a generic "Waiting…". Mutated only under the `own`
 	// token (single turn at a time) and read on the same turn goroutine, so a
 	// plain string is safe — no mutex (project concurrency rule).
-	turnWaitingPhase string
+	turnWaitingDescription string
 
 	// thinkingLevel is the canonical thinking level of the turn currently being
 	// dispatched (normalized; "" ⇒ provider default). Set at the top of
@@ -363,11 +363,12 @@ var cliRetryBackoff = 750 * time.Millisecond
 // than cold-starting the whole history.
 func (c *Client) dispatchTurnWithRetry(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	for attempt := 0; ; attempt++ {
-		// Whether this attempt streamed any real content. Status chunks (the
-		// rate-limit notices) are not content and don't block a retry.
+		// Whether this attempt streamed any real content. Status chunks (retry
+		// notices) and replaceable activity snapshots are not content and don't
+		// block a retry.
 		streamed := false
 		wrapped := func(chunk provider.StreamChunk) (*provider.ToolResult, error) {
-			if chunk.Type != provider.ContentBlockTypeStatus {
+			if chunk.Type != provider.ContentBlockTypeStatus && chunk.Type != provider.ContentBlockTypeActivity {
 				streamed = true
 			}
 			return callback(chunk)
@@ -428,8 +429,8 @@ func (c *Client) dispatchTurnWithRetry(ctx context.Context, req provider.Message
 // before dispatch and restarted after it.
 func (c *Client) dispatchTurn(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	// Default spinner label for the post-boot wait; startFreshSession overrides
-	// it for a cold start that carries prior history (see turnWaitingPhase).
-	c.turnWaitingPhase = phaseWaiting
+	// it for a cold start that carries prior history (see turnWaitingDescription).
+	c.turnWaitingDescription = activityWaiting
 
 	// Thinking level rides per-turn, but the CLI reads MAX_THINKING_TOKENS once
 	// at spawn. If a live CLI is already running under a different level, recycle

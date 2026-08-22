@@ -105,6 +105,24 @@ func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 	case provider.ContentBlockTypeThinking:
 		w.clearRetryingStatus()
 		w.processThinkingChunk(chunk)
+	case provider.ContentBlockTypeActivity:
+		// Provider activity is a complete, replaceable snapshot. It lives only in
+		// processingState and is never inserted into conversation history.
+		w.patchProcessingState(func(state map[string]any) {
+			state["description"] = chunk.Content
+		})
+	case provider.ContentBlockTypeProviderState:
+		// Hidden continuation data is durable and ordered with the provider's
+		// visible output, even when it has no content of its own.
+		w.finalizeStreaming()
+		if len(chunk.Metadata) > 0 {
+			w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+				Type:         ItemTypeProviderState,
+				ItemID:       generateItemID(),
+				ProviderData: chunk.Metadata,
+				Timestamp:    time.Now().Format(time.RFC3339),
+			})
+		}
 	case provider.ContentBlockTypeProgress:
 		// Transient mid-stream progress: a running output-token estimate
 		// from the provider. Merge into processingState so every peer
@@ -127,24 +145,28 @@ func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 			w.mergeProcessingTokens(0, chunk.InputTokens, chunk.CachedTokens)
 		}
 	case provider.ContentBlockTypeStatus:
-		// Provider-emitted phase/liveness label: cold-start progress
-		// ("Starting Claude Code", "Waiting for response") and the CLI's
-		// own rate-limit notices. Before the first token streams, nothing
-		// else updates the spinner — surface the phase so a long cold start
-		// shows what's happening instead of a static "Receiving..." that
-		// looks jammed. Transient: cleared by the next sendStatus, hidden by
-		// the frontend once output tokens begin to flow.
+		// Provider-emitted retry, cache, or notice status. These exceptional
+		// conditions replace any ordinary activity description and remain visible
+		// as the turn's current phase until output takes precedence.
 		//
 		// A status chunk may ALSO carry a consequential cache miss. That is not
 		// transient — it is an event worth reading after the fact — so it lands
 		// in the transcript as its own item instead of riding the spinner.
+		w.clearProcessingDescription()
 		w.mergeProcessingPhase(chunk.Content)
 		w.insertCacheMissNotice(chunk.CacheMissReason)
 		w.insertProviderNotice(chunk.Notice)
 	default:
-		// Other chunk types (tool_use, etc.) - finalize any active streaming
+		// Other chunk types (tool_use, etc.) end any provider activity.
+		w.clearProcessingDescription()
 		w.finalizeStreaming()
 	}
+}
+
+func (w *ConversationWorker) clearProcessingDescription() {
+	w.patchProcessingState(func(state map[string]any) {
+		delete(state, "description")
+	})
 }
 
 func (w *ConversationWorker) processTextChunk(chunk StreamChunk) {

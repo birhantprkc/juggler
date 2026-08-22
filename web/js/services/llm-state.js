@@ -24,7 +24,8 @@ const cancelFrame = typeof cancelAnimationFrame === 'function'
  * @property {string} [reason] - Reason for retry
  * @property {string} [message] - Error or custom message
  * @property {number} [payloadSize] - Payload size in bytes (for uploading status)
- * @property {string} [phase] - Provider-emitted phase label shown before the first token (e.g. "Starting Claude Code")
+ * @property {string} [phase] - Provider-emitted retry, cache, or notice status
+ * @property {string} [description] - Current provider activity snapshot
  * @property {number} [startTime] - Start time in milliseconds (for elapsed time calculation)
  * @property {number} [elapsedTime] - Elapsed time in milliseconds (calculated from startTime)
  */
@@ -391,10 +392,11 @@ class LLMState {
     const mergedInput = data.inputTokens !== undefined ? data.inputTokens : (sameStatus ? existingStatusData?.inputTokens : undefined);
     const mergedOutput = data.outputTokens !== undefined ? data.outputTokens : (sameStatus ? existingStatusData?.outputTokens : undefined);
     const mergedCached = data.cachedTokens !== undefined ? data.cachedTokens : (sameStatus ? existingStatusData?.cachedTokens : undefined);
-    // Phase merges like the token counts: preserved across the rAF tick's
-    // otherwise-empty `data`, reset on a status transition (a new phase starts
-    // fresh) so a stale "Waiting…" can't linger into processing_tools.
+    // Provider labels merge like the token counts: preserved across the rAF
+    // tick's otherwise-empty `data`, reset on a status transition so lifecycle
+    // state replacement naturally clears stale provider activity.
     const mergedPhase = data.phase !== undefined ? data.phase : (sameStatus ? existingStatusData?.phase : undefined);
+    const mergedDescription = data.description !== undefined ? data.description : (sameStatus ? existingStatusData?.description : undefined);
 
     /** @type {StatusData} */
     const statusData = {
@@ -404,6 +406,7 @@ class LLMState {
       outputTokens: mergedOutput,
       cachedTokens: mergedCached,
       phase: mergedPhase,
+      description: mergedDescription,
       startTime: startTime,
       elapsedTime: elapsedTime
     };
@@ -535,6 +538,7 @@ class LLMState {
       outputTokens: statusData.outputTokens,
       cachedTokens: statusData.cachedTokens,
       phase: statusData.phase,
+      description: statusData.description,
       elapsedTime: elapsedTime,
       // Preserve retry-specific fields
       attempt: statusData.attempt,
@@ -598,7 +602,7 @@ class LLMState {
   /**
    * Handle processing state change from Yjs metadata
    * @param {string} conversationId - Conversation ID
-   * @param {{status: string, message?: string, code?: string, threadItemId?: string, startedAt?: number, inputTokens?: number, outputTokens?: number, cachedTokens?: number, phase?: string}|null} state - Processing state
+   * @param {{status: string, message?: string, code?: string, threadItemId?: string, startedAt?: number, inputTokens?: number, outputTokens?: number, cachedTokens?: number, phase?: string, description?: string}|null} state - Processing state
    * @private
    */
   _handleProcessingStateChange(conversationId, state) {
@@ -629,10 +633,13 @@ class LLMState {
       inputTokens: typeof state.inputTokens === 'number' ? state.inputTokens : undefined,
       outputTokens: typeof state.outputTokens === 'number' ? state.outputTokens : undefined,
       cachedTokens: typeof state.cachedTokens === 'number' ? state.cachedTokens : undefined,
-      // Provider phase label (cold-start progress); the worker writes it into
-      // processingState from "status" stream chunks. Undefined until the
-      // provider emits one — the formatter then falls back to "Receiving".
-      phase: typeof state.phase === 'string' ? state.phase : undefined
+      // Provider startup and activity snapshots are separate from the scalar
+      // processingState.activity operation claim.
+      phase: typeof state.phase === 'string' ? state.phase : undefined,
+      // Each processingState value is a complete lifecycle snapshot. An absent
+      // description therefore clears the prior activity; elapsed ticks preserve
+      // it separately by passing the stored value back to updateStatus().
+      description: typeof state.description === 'string' ? state.description : ''
     };
 
     // Map worker status to LLMState actions

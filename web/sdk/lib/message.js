@@ -17,7 +17,7 @@
  */
 
 /**
- * @typedef {'user' | 'assistant' | 'thinking' | 'tool-use' | 'tool-result' | 'tool-action' | 'meta-tool-result' | 'guidance' | 'system-reminder' | 'error' | 'notice' | 'thread'} MessageType
+ * @typedef {'user' | 'assistant' | 'thinking' | 'provider-state' | 'tool-use' | 'tool-result' | 'tool-action' | 'meta-tool-result' | 'guidance' | 'system-reminder' | 'error' | 'notice' | 'thread'} MessageType
  */
 
 /**
@@ -32,6 +32,7 @@
  *   USER: 'user',
  *   ASSISTANT: 'assistant',
  *   THINKING: 'thinking',
+ *   PROVIDER_STATE: 'provider-state',
  *   TOOL_USE: 'tool-use',
  *   TOOL_RESULT: 'tool-result',
  *   TOOL_ACTION: 'tool-action',
@@ -47,6 +48,7 @@ export const MESSAGE_TYPES = Object.freeze({
   USER: 'user',
   ASSISTANT: 'assistant',
   THINKING: 'thinking',
+  PROVIDER_STATE: 'provider-state',
   TOOL_USE: 'tool-use',
   TOOL_RESULT: 'tool-result',
   TOOL_ACTION: 'tool-action',
@@ -78,6 +80,7 @@ const CONVERSATIONAL_ITEM_TYPES = new Set([
   MESSAGE_TYPES.USER,
   MESSAGE_TYPES.ASSISTANT,
   MESSAGE_TYPES.THINKING,
+  MESSAGE_TYPES.PROVIDER_STATE,
   MESSAGE_TYPES.TOOL_ACTION,
   MESSAGE_TYPES.THREAD,
   MESSAGE_TYPES.META_TOOL_RESULT,
@@ -188,6 +191,12 @@ export const ACTION_STATES = Object.freeze({
 /** @typedef {YMapItem & {type: 'thinking', content: string, providerData?: Record<string, unknown>, itemId?: string, transactionId?: string}} ThinkingMessage */
 
 /**
+ * Opaque durable continuation state written by a provider. It participates in
+ * conversation history and provider replay, but has no user-facing rendering.
+ * @typedef {YMapItem & {type: 'provider-state', providerData: Record<string, unknown>, itemId?: string, transactionId?: string}} ProviderStateMessage
+ */
+
+/**
  * Tool lifecycle state for tool-action messages.
  * @typedef {'pending' | 'approved' | 'running' | 'completed' | 'cancelled'} ToolState
  */
@@ -278,7 +287,7 @@ export const ACTION_STATES = Object.freeze({
  */
 
 /**
- * @typedef {UserMessage | AssistantMessage | ThinkingMessage | ToolUseMessage | ToolResultMessage | ToolActionMessage | ContextItemMessage | GuidanceMessage | SystemReminderMessage | ErrorMessage | NoticeMessage | ThreadMessage} Message
+ * @typedef {UserMessage | AssistantMessage | ThinkingMessage | ProviderStateMessage | ToolUseMessage | ToolResultMessage | ToolActionMessage | ContextItemMessage | GuidanceMessage | SystemReminderMessage | ErrorMessage | NoticeMessage | ThreadMessage} Message
  */
 
 // ============================================================================
@@ -323,6 +332,15 @@ export function isAssistantMessage(msg) {
  */
 export function isThinkingMessage(msg) {
   return _getType(msg) === MESSAGE_TYPES.THINKING;
+}
+
+/**
+ * Type guard for hidden ProviderStateMessage items.
+ * @param {Message} msg - Message to check
+ * @returns {msg is ProviderStateMessage} True if message is provider continuation state
+ */
+export function isProviderStateMessage(msg) {
+  return _getType(msg) === MESSAGE_TYPES.PROVIDER_STATE;
 }
 
 /**

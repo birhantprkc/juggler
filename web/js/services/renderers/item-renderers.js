@@ -708,6 +708,8 @@ export const itemRendererRegistry = {
   'user': renderMessage,
   'assistant': renderMessage,
   'thinking': renderMessage,
+  // Opaque provider continuation state is deliberately absent from properties.
+  'provider-state': () => { /* Deliberately hidden. */ },
   'tool-action': renderToolAction,
   'thread': renderThread,
 };

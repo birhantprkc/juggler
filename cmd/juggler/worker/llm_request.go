@@ -407,6 +407,12 @@ func itemWireMessages(item ConversationItem, siblings []ConversationItem) []map[
 		}
 		return []map[string]any{m}
 
+	case ItemTypeProviderState:
+		if len(item.ProviderData) == 0 {
+			return nil
+		}
+		return []map[string]any{{"type": "provider-state", "providerData": item.ProviderData}}
+
 	case ItemTypeToolAction:
 		if item.ToolUseID == "" || item.ToolName == "" {
 			return nil
