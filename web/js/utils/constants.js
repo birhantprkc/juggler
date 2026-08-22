@@ -52,8 +52,21 @@ export const SEND_LOOKUP_TIMEOUT_MS = 8000;
 
 // ===== Yjs Sync Constants =====
 
-/** Batching window for Yjs sync updates (milliseconds) */
+/**
+ * Shortest batching window for inbound Yjs sync updates (milliseconds), and the
+ * one used whenever applying a batch is cheap — which is every case except a
+ * long message streaming in.
+ */
 export const YJS_SYNC_BATCH_MS = 50;
+
+/**
+ * Longest the batching window is allowed to stretch to under load
+ * (milliseconds). Applying a batch runs the whole UI fan-out synchronously, so
+ * the window widens as that gets more expensive (see DocumentSyncManager); this
+ * caps how far. Four frames a second still reads as live text arriving, and
+ * leaves a wide margin under the browser suite's wait timeouts.
+ */
+export const YJS_SYNC_BATCH_MAX_MS = 250;
 
 // ===== Conversation naming =====
 

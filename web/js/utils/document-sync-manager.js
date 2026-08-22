@@ -19,7 +19,34 @@
  */
 
 import * as Y from '../vendor/yjs.mjs';
-import { YJS_SYNC_BATCH_MS } from './constants.js';
+import { YJS_SYNC_BATCH_MS, YJS_SYNC_BATCH_MAX_MS } from './constants.js';
+
+/**
+ * Fraction of wall-clock time applying batches is allowed to consume, as a
+ * divisor: the next batching window is the last batch's cost times this, so
+ * cost/window settles at 1/COST_BUDGET_DIVISOR. At 8, a batch that takes 6ms or
+ * less to apply leaves the window at its YJS_SYNC_BATCH_MS floor, so everything
+ * short of a genuinely expensive render behaves exactly as it did before.
+ */
+const COST_BUDGET_DIVISOR = 8;
+
+/**
+ * Smoothing factor for the cost estimate (weight given to the newest sample).
+ * Batch costs are spiky — a structural render or a tab activation costs many
+ * times what a streaming token does — and pinning the window wide for one
+ * outlier would be worse than the stutter it avoids. This tracks a sustained
+ * change within a few batches while damping a single spike.
+ */
+const COST_SMOOTHING = 0.4;
+
+/**
+ * Idle gap (milliseconds) after which the cost estimate is discarded. Widening
+ * the window pays off only while updates arrive back-to-back; carrying a stale
+ * estimate across a quiet period would delay the first update of the next burst
+ * by up to the cap, which is exactly the update a user is most likely to be
+ * waiting on (their own message being echoed back).
+ */
+const COST_IDLE_RESET_MS = 1000;
 
 /**
  * Origin sentinel for Yjs transactions whose writes are pure derivations of
@@ -64,6 +91,16 @@ class DocumentSyncManager {
 
     /** @type {number|null} */
     this._batchTimer = null;
+
+    /**
+     * Smoothed cost of applying one batch (milliseconds), and when the last one
+     * was applied. Together these set the next batching window.
+     * @type {number}
+     */
+    this._batchCostMs = 0;
+
+    /** @type {number} */
+    this._lastBatchAt = 0;
 
     // Update handler for sync (bound to preserve 'this')
     /** @type {(update: Uint8Array, origin: any) => void} */
@@ -125,8 +162,36 @@ class DocumentSyncManager {
   }
 
   /**
-   * Apply a sync update from remote
-   * Batches rapid updates to reduce main thread blocking during streaming
+   * Apply a sync update from remote.
+   *
+   * Batches rapid updates to reduce main thread blocking during streaming, over
+   * a window that widens as applying a batch gets more expensive.
+   *
+   * The widening is what keeps a long streamed message from degrading. Applying
+   * a batch runs the entire UI fan-out synchronously inside Y.applyUpdate — the
+   * Yjs observers, the conversation:changed dispatch, and every component
+   * re-render they reach — and an assistant bubble re-renders by re-parsing its
+   * whole accumulated markdown and replacing its whole subtree. That is O(n) in
+   * the length of a message that grows to n, so at a fixed window it costs
+   * O(n²) over a turn and the stutter gets worse the longer the model talks.
+   * Batching on a window proportional to what the last batch actually cost
+   * bounds the total at a fixed fraction of wall-clock time instead.
+   *
+   * Measured cost, rather than message length, because length is a poor proxy
+   * for it: tables and fenced code blocks cost several times what the same
+   * weight of prose does, and the whole point is to track the real thing. It
+   * also calibrates itself to the machine, and it costs nothing off the main
+   * thread — the engine worker has no DOM to render into, so its batches stay
+   * cheap and its window stays at the floor.
+   *
+   * Deliberately here and not in the components that do the expensive work:
+   * conversation-area measures element heights and the reader's scroll anchor
+   * either side of the content update, synchronously, to glide the growing
+   * bubble and hold the reader's place. Deferring the render out from between
+   * those two measurements breaks both. Coalescing at the source keeps every
+   * consumer's timing assumptions intact, and keeps the trailing edge free:
+   * pending updates are always applied, only later, which matters because
+   * nothing downstream guarantees a final re-render once a turn ends.
    * @param {Uint8Array} update - The update bytes to apply
    */
   applySyncUpdate(update) {
@@ -137,8 +202,24 @@ class DocumentSyncManager {
       // module worker; window.* would throw off the main thread.
       this._batchTimer = setTimeout(() => {
         this._applyBatchedUpdates();
-      }, YJS_SYNC_BATCH_MS);
+      }, this._nextBatchDelay());
     }
+  }
+
+  /**
+   * How long to wait before applying the batch now being accumulated.
+   * @returns {number} Delay in milliseconds, between the floor and the cap.
+   * @private
+   */
+  _nextBatchDelay() {
+    // An update arriving after a quiet spell starts a new burst rather than
+    // continuing the last one, so it gets the floor regardless of how expensive
+    // the previous burst's batches were.
+    if (this._lastBatchAt && performance.now() - this._lastBatchAt > COST_IDLE_RESET_MS) {
+      this._batchCostMs = 0;
+    }
+    const target = this._batchCostMs * COST_BUDGET_DIVISOR;
+    return Math.min(YJS_SYNC_BATCH_MAX_MS, Math.max(YJS_SYNC_BATCH_MS, target));
   }
 
   /**
@@ -170,8 +251,19 @@ class DocumentSyncManager {
     // Merge all pending updates into one to reduce deserialization overhead
     const merged = Y.mergeUpdates(updates);
 
-    // Apply once with 'this' as origin to prevent echo
+    // Apply once with 'this' as origin to prevent echo. The observers, and so
+    // every re-render they trigger, run synchronously inside this call, which is
+    // what makes timing it a measurement of the whole UI tick and not just of
+    // Yjs. Layout and paint land after it, so this reads slightly low — it
+    // tracks the term that actually grows with message length.
+    const startedAt = performance.now();
     Y.applyUpdate(this.doc, merged, this);
+    const cost = performance.now() - startedAt;
+
+    this._batchCostMs = this._batchCostMs
+      ? this._batchCostMs * (1 - COST_SMOOTHING) + cost * COST_SMOOTHING
+      : cost;
+    this._lastBatchAt = performance.now();
   }
 
   // ========================================================================
