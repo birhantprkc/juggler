@@ -114,6 +114,21 @@ class ConversationBar extends JugglerElement {
 
     /** @type {string|null} @private Conversation the visible bin Undo toast would restore */
     this._binUndoId = null;
+
+    /**
+     * Conversation whose tab was last scrolled into view, so the scroll is only
+     * issued when the selection actually moves. render() runs on every Yjs
+     * transaction — up to ~100 times a second while a turn streams — and a
+     * smooth scrollIntoView restarted that often keeps the tab list in
+     * perpetual motion, which eats clicks: a `click` fires on the nearest
+     * common ancestor of its mousedown and mouseup targets, so a list that
+     * shifts mid-press delivers the event to the menu instead of the tab.
+     * @type {string|null} @private
+     */
+    this._lastScrolledTabId = null;
+
+    /** @type {number|null} @private Pending frame for a coalesced render (see _scheduleRender) */
+    this._renderFrame = null;
   }
 
   connectedCallback() {
@@ -134,7 +149,35 @@ class ConversationBar extends JugglerElement {
       this._llmStateUnsubscribe();
       this._llmStateUnsubscribe = null;
     }
+    if (this._renderFrame !== null) {
+      cancelAnimationFrame(this._renderFrame);
+      this._renderFrame = null;
+    }
     this._hideBinUndo();
+  }
+
+  /**
+   * Render at most once per frame.
+   *
+   * `conversation:changed` is emitted per applied Yjs transaction, so while a
+   * turn streams it arrives at the server's sync rate — one every 10ms, ~100 a
+   * second — and delivery is a synchronous listener loop with no batching of
+   * its own. Rendering the whole bar that often costs a forced layout each time
+   * (the info rail measures itself) and leaves the sidebar mutating under the
+   * pointer, which loses clicks. Coalescing to one pass per frame collapses a
+   * burst into the single render the display can actually show.
+   *
+   * Only the streaming firehose comes through here. Discrete events
+   * (create/delete/switch/reorder) still render synchronously, because callers
+   * and tests read tab state immediately after them.
+   * @private
+   */
+  _scheduleRender() {
+    if (this._renderFrame !== null) return;
+    this._renderFrame = requestAnimationFrame(() => {
+      this._renderFrame = null;
+      this.render();
+    });
   }
 
   /**
@@ -371,13 +414,17 @@ class ConversationBar extends JugglerElement {
         }
       }
 
-      // Re-render tab buttons whenever conversations change
+      // Re-render tab buttons whenever conversations change. The discrete events
+      // render immediately — callers read tab state straight after them — while
+      // conversation:changed, which streams in at the sync rate for the whole
+      // duration of a turn, is coalesced to one render per frame.
       if (event.type === 'conversation:created' ||
           event.type === 'conversation:deleted' ||
           event.type === 'conversation:switched' ||
-          event.type === 'conversation:reordered' ||
-          event.type === 'conversation:changed') {
+          event.type === 'conversation:reordered') {
         this.render();
+      } else if (event.type === 'conversation:changed') {
+        this._scheduleRender();
       }
     });
 
@@ -519,6 +566,12 @@ class ConversationBar extends JugglerElement {
   }
 
   render() {
+    // A render now satisfies any frame already queued by _scheduleRender.
+    if (this._renderFrame !== null) {
+      cancelAnimationFrame(this._renderFrame);
+      this._renderFrame = null;
+    }
+
     if (!this._session) {
       this.innerHTML = '<div class="conversation-bar-empty">No session loaded</div>';
       return;
@@ -566,8 +619,9 @@ class ConversationBar extends JugglerElement {
 
     // Ambient info cards (Tips, Git status, …), parked in the empty space above
     // the Bin. Created once and cached; it manages its own visibility and measures
-    // the sidebar's free space to decide how many cards fit (reconciled at the end
-    // of render()). Sits between the flex:1 tabs menu and the Bin, resting above it.
+    // the sidebar's free space to decide how many cards fit, reconciling off its
+    // own ResizeObserver rather than anything here. Sits between the flex:1 tabs
+    // menu and the Bin, resting above it.
     let infoRail = /** @type {any} */ (this._cachedElements.get('info-rail'));
     if (!infoRail) {
       infoRail = document.createElement('info-rail');
@@ -617,34 +671,29 @@ class ConversationBar extends JugglerElement {
     const sizeBytes = this._session.binSizeBytes || 0;
     const countEl = /** @type {HTMLElement|null} */ (binBtn.querySelector('.conversation-bin-count'));
     if (countEl) {
-      if (count > 0) {
-        countEl.textContent = String(count);
-        countEl.hidden = false;
-      } else {
-        countEl.textContent = '';
-        countEl.hidden = true;
-      }
+      // Compared before writing, like every other text in this pass: render()
+      // runs on every doc change, and a textContent write is a text-node swap.
+      const countText = count > 0 ? String(count) : '';
+      if (countEl.textContent !== countText) countEl.textContent = countText;
+      countEl.hidden = count <= 0;
     }
     // Approximate folder size, shown only when there's something in the bin
     // and the server has reported a non-zero tally (it refreshes lazily).
     const sizeEl = /** @type {HTMLElement|null} */ (binBtn.querySelector('.conversation-bin-size'));
     if (sizeEl) {
-      if (count > 0 && sizeBytes > 0) {
-        sizeEl.textContent = formatBytes(sizeBytes);
-        sizeEl.hidden = false;
-      } else {
-        sizeEl.textContent = '';
-        sizeEl.hidden = true;
-      }
+      const showSize = count > 0 && sizeBytes > 0;
+      const sizeText = showSize ? formatBytes(sizeBytes) : '';
+      if (sizeEl.textContent !== sizeText) sizeEl.textContent = sizeText;
+      sizeEl.hidden = !showSize;
     }
+    let binTitle = 'View binned conversations';
     if (count > 0) {
       const items = `${count} ${count === 1 ? 'conversation' : 'conversations'}`;
-      binBtn.title = sizeBytes > 0
+      binTitle = sizeBytes > 0
         ? `View binned conversations — ${items} (${formatBytes(sizeBytes)})`
         : `View binned conversations — ${items}`;
-    } else {
-      binBtn.title = 'View binned conversations';
     }
+    if (binBtn.title !== binTitle) binBtn.title = binTitle;
 
     // Convert Map to array for rendering
     const conversations = Array.from(this._session.conversations.values());
@@ -675,6 +724,14 @@ class ConversationBar extends JugglerElement {
     /** @type {Set<string>} */
     const currentConversationIds = new Set(conversations.map(c => c.id));
 
+    // Forget the last-scrolled tab once its conversation is gone (binned or
+    // deleted), so restoring it and selecting it again scrolls to it afresh.
+    // Done here rather than in the bin path because _flyTabToBin drops out
+    // early under prefers-reduced-motion and never runs.
+    if (this._lastScrolledTabId && !currentConversationIds.has(this._lastScrolledTabId)) {
+      this._lastScrolledTabId = null;
+    }
+
     // Update or create tab elements for each conversation, in Map order.
     for (const conv of conversations) {
       this._renderOrUpdateTab(conv, visibleId, tabsMenu);
@@ -701,11 +758,13 @@ class ConversationBar extends JugglerElement {
       }
     }
 
-    // Reconcile the ambient info rail LAST, once the tabs are laid out, so it can
-    // measure the real free space in the sidebar and show/hide cards accordingly.
-    if (infoRail && typeof infoRail.update === 'function') {
-      infoRail.update();
-    }
+    // The info rail is NOT reconciled from here. It measures itself off its own
+    // ResizeObserver, and its height is this column's leftover space (flex: 1 1 0),
+    // so laying out the tabs is exactly what makes it resize — the observer fires
+    // after layout and before paint, catching every case this call used to.
+    // Reconciling it per render would be a poll: render() runs on every doc
+    // change, and each reconcile tears down and rebuilds every card that doesn't
+    // fit, so the cards would remount (and refetch) once a frame while streaming.
   }
 
   /**
@@ -752,7 +811,9 @@ class ConversationBar extends JugglerElement {
 
       // Don't disturb the input while the user is mid-rename. The post-commit
       // teardown removes .is-renaming and a subsequent render() paints the name.
-      if (tabName && !tab.classList.contains('is-renaming')) {
+      // Compare before writing: assigning textContent replaces the text node
+      // even when the string is identical, and this runs on every render.
+      if (tabName && !tab.classList.contains('is-renaming') && tabName.textContent !== name) {
         tabName.textContent = name;
       }
     }
@@ -761,10 +822,14 @@ class ConversationBar extends JugglerElement {
     // would clear .is-running and restart the CSS pulse animation).
     tab.classList.toggle('active', isActive);
     tab.classList.add('has-close');
-    if (isActive) {
 
-      // Scroll active tab into view (preserving overall scroll position for other tabs)
-      // Use requestAnimationFrame to ensure DOM has updated before scrolling
+    // Scroll the active tab into view, but ONLY when the selection has actually
+    // moved — never on every render. The smooth scroll is an animation, and
+    // re-issuing it each pass would leave the tab list permanently in motion
+    // while a turn streams, which loses clicks aimed at other tabs (see
+    // _lastScrolledTabId). requestAnimationFrame lets the DOM settle first.
+    if (isActive && this._lastScrolledTabId !== conv.id) {
+      this._lastScrolledTabId = conv.id;
       requestAnimationFrame(() => {
         tab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
       });
@@ -803,7 +868,11 @@ class ConversationBar extends JugglerElement {
         this._binConversation(conv.id);
       });
     } else {
-      binButton.setAttribute('aria-label', `Move ${name} to bin`);
+      // Only when it changed — an attribute write invalidates on every render.
+      const binLabel = `Move ${name} to bin`;
+      if (binButton.getAttribute('aria-label') !== binLabel) {
+        binButton.setAttribute('aria-label', binLabel);
+      }
     }
 
     // Sync the running / awaiting-approval indicator classes for this conversation.

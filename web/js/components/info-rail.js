@@ -21,11 +21,15 @@
  * that grows into whatever the list doesn't use (`flex: 1 1 0`), so the rail's own
  * height IS the free space — no sibling geometry. Cards stack top-priority-first,
  * and a card is shown *whole or not at all*: any that don't fully fit are dropped
- * from the tail (never clipped). A single ResizeObserver on the rail catches every
- * way the leftover changes (list grows/shrinks, sidebar/window resize) and
- * reconciles synchronously — the observer runs after layout but before paint, so a
- * shrink never paints a half-clipped card. Surviving cards are reused across
- * reconciles, so tip rotation isn't reset as the sidebar resizes.
+ * from the tail (never clipped). A single ResizeObserver watches the rail (for the
+ * leftover space: list grows/shrinks, sidebar/window resize) and every mounted card
+ * (for content that grows after it was measured), and reconciles synchronously —
+ * the observer runs after layout but before paint, so a shrink never paints a
+ * half-clipped card. Surviving cards are reused across reconciles, so tip rotation
+ * isn't reset as the sidebar resizes.
+ *
+ * Nothing polls the rail. A dropped card is torn down, so a periodic re-fit would
+ * rebuild — and remount, and refetch — every card that doesn't fit, once per tick.
  *
  * Not an ARIA live region — rotating tip text would spam a screen reader.
  * @module components/info-rail
@@ -58,6 +62,12 @@ class InfoRail extends JugglerElement {
     this._session = undefined;
     /** @type {HTMLElement|null} @private The "i" menu heading the stack. */
     this._cardsButton = null;
+    /**
+     * Watches the rail's box (the free space) and every mounted card's box
+     * (content that grows after it was measured). The sole re-fit trigger.
+     * @type {ResizeObserver|null} @private
+     */
+    this._resizeObserver = null;
   }
 
   connectedCallback() {
@@ -75,14 +85,23 @@ class InfoRail extends JugglerElement {
     // The rail's own height IS the free space (CSS flex: 1 1 0). Observe it and
     // reconcile SYNCHRONOUSLY: a ResizeObserver callback runs after layout but
     // before paint, so dropping a card that no longer fits here means the clipped
-    // frame is never painted. This one observer covers every way the leftover
-    // changes — the list growing/shrinking, the sidebar drag, the window resizing.
+    // frame is never painted. This observer is the ONLY thing that drives a
+    // re-fit, and it covers every way the fit can change: the rail's own box for
+    // the leftover space (the tab list growing/shrinking, the sidebar drag, the
+    // window resizing), and each mounted card's box for content that grows after
+    // it was measured. Nothing polls the rail — a periodic re-fit would tear down
+    // and rebuild every card that doesn't fit, once per tick (see _reconcile).
+    //
     // Our own add/remove doesn't change the rail's height (overflow-hidden,
-    // flex-basis 0), so it can't feed back into a loop.
+    // flex-basis 0), so it can't feed back into a loop; a dropped card is
+    // unobserved before it leaves the DOM, so its removal queues no callback.
     if (typeof ResizeObserver !== 'undefined') {
-      const resizeObserver = new ResizeObserver(() => this._reconcile());
-      resizeObserver.observe(this);
-      this.addCleanup(() => resizeObserver.disconnect());
+      this._resizeObserver = new ResizeObserver(() => this._reconcile());
+      this._resizeObserver.observe(this);
+      this.addCleanup(() => {
+        this._resizeObserver?.disconnect();
+        this._resizeObserver = null;
+      });
     }
     this._reconcile();
   }
@@ -90,15 +109,6 @@ class InfoRail extends JugglerElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._teardownAll();
-  }
-
-  /**
-   * Re-evaluate which cards fit. Called by conversation-bar after it lays out the
-   * tabs, so the rail's height reflects the real leftover space.
-   * @returns {void}
-   */
-  update() {
-    this._reconcile();
   }
 
   /**
@@ -121,10 +131,13 @@ class InfoRail extends JugglerElement {
 
   /**
    * Tear down one card entry: stop its content, remove it from the DOM.
+   * Unobserved BEFORE it leaves the DOM, so the removal doesn't queue a resize
+   * callback that would reconcile again and rebuild the card we just dropped.
    * @param {{provider: InfoCardProvider, card: HTMLElement, teardown: () => void}} entry
    * @private
    */
   _teardownEntry(entry) {
+    this._resizeObserver?.unobserve(entry.card);
     try { entry.teardown(); } catch { /* card cleanup is best-effort */ }
     entry.card.remove();
   }
@@ -186,6 +199,14 @@ class InfoRail extends JugglerElement {
       const existing = new Map(this._mounted.map((e) => [e.provider.id, e]));
       /** @type {Array<{provider: InfoCardProvider, card: HTMLElement, teardown: () => void}>} */
       const next = [];
+      // Walk the stack placing each card after the "i" menu in priority order,
+      // but move ONLY the cards genuinely out of position — the same rule the
+      // conversation bar's tab reorder follows. Re-inserting a connected node is
+      // a remove+insert: it restarts the card's CSS animations, and a card that
+      // moves between a click's mousedown and mouseup swallows that click. This
+      // reconciles on every doc change while a turn streams, so an unconditional
+      // re-append would churn the whole stack ~100 times a second.
+      let expected = this._cardsButton ? this._cardsButton.nextSibling : this.firstChild;
       for (const provider of eligible) {
         let entry = existing.get(provider.id);
         if (entry) {
@@ -193,8 +214,14 @@ class InfoRail extends JugglerElement {
         } else {
           const built = this._buildCard(provider);
           entry = { provider, card: built.card, teardown: built.teardown };
+          // Watch the new card so content that grows past the space it was
+          // measured into triggers a re-fit rather than being clipped.
+          this._resizeObserver?.observe(entry.card);
         }
-        this.appendChild(entry.card); // re-append keeps DOM order == priority order
+        if (entry.card !== expected) {
+          this.insertBefore(entry.card, expected);
+        }
+        expected = entry.card.nextSibling;
         next.push(entry);
       }
       for (const stale of existing.values()) this._teardownEntry(stale);
