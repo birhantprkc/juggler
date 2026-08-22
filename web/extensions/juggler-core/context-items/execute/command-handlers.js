@@ -491,30 +491,70 @@ class DuHandler extends CommandHandler {
     return DuHandler._parseFlags(args, ctx);
   }
 }
+/**
+ * Base for a read-only command shaped `<cmd> [FLAGS] [FILE...]` — a whitelisted
+ * flag prefix followed by file operands that must lie inside the allowed roots.
+ *
+ * A subclass states its grammar in three pieces and inherits the rest:
+ *   - {@link flagMatcher}  — which flag words are recognised at all
+ *   - {@link valueFlags}   — which of those consume the NEXT word, and the
+ *                            pattern that word must match
+ *   - {@link maxOperands}  — an operand ceiling, for a command where a further
+ *                            operand changes what it does (see
+ *                            {@link XxdHandler}, whose second operand is an
+ *                            output file)
+ * Anything unrecognised returns null: the shape itself is unsafe, so no path
+ * grant can rescue it.
+ */
 class FlaggedFileReader extends CommandHandler {
   /** @returns {(arg: string) => boolean} flag matcher */
   static flagMatcher() { return () => false; }
 
   /**
-   * Walk the flag prefix, then return the trailing positional file paths, or
-   * null on any unrecognised flag / missing numeric value.
-   * @param {string[]} args args
-   * @returns {string[] | null} positional file paths, or null on reject
+   * Flags that consume the following word as a value, mapped to the pattern
+   * that value must match. A flag the matcher accepts but this map omits is
+   * boolean — which is how `head -c 100` swallows the count while `wc -c file`
+   * leaves the operand alone, though both spell the flag `-c`.
+   * @returns {Map<string, RegExp>} value-taking flags
    */
-  static pathArgs(args) {
+  static valueFlags() { return new Map(); }
+
+  /** @type {number} most file operands this command may carry */
+  static maxOperands = Infinity;
+
+  /**
+   * Walk the flag prefix, then return the trailing operands — or null on an
+   * unrecognised flag, a missing or ill-formed flag value, or more operands
+   * than {@link maxOperands}. A `--` word ends the flag prefix; a lone `-` is
+   * an operand (stdin), not a flag.
+   * @param {string[]} args args
+   * @returns {string[] | null} trailing operands, or null on reject
+   */
+  static operands(args) {
     const matcher = this.flagMatcher();
+    const values = this.valueFlags();
     let i = 0;
     while (i < args.length && checkedAt(args, i).startsWith('-') && checkedAt(args, i) !== '-') {
-      if (!matcher(checkedAt(args, i))) return null;
-      if (/^-[ncC]$/.test(checkedAt(args, i))) {
-        if (i + 1 >= args.length || !/^\d+$/.test(checkedAt(args, i + 1))) return null;
+      const a = checkedAt(args, i);
+      if (a === '--') { i++; break; }
+      if (!matcher(a)) return null;
+      const pattern = values.get(a);
+      if (pattern) {
+        if (i + 1 >= args.length || !pattern.test(checkedAt(args, i + 1))) return null;
         i += 2;
         continue;
       }
       i++;
     }
-    return args.slice(i);
+    const rest = args.slice(i);
+    return rest.length > this.maxOperands ? null : rest;
   }
+
+  /**
+   * @param {string[]} args args
+   * @returns {string[] | null} positional file paths, or null on reject
+   */
+  static pathArgs(args) { return this.operands(args); }
 
   /**
    * @param {string[]} args args
@@ -531,10 +571,45 @@ class FlaggedFileReader extends CommandHandler {
   }
 }
 
+/**
+ * A {@link FlaggedFileReader} that is also useful at the end of a pipeline.
+ * Input arrives on the pipe, so sink position accepts the flag prefix alone; a
+ * pre-supplied file operand there is refused, since it would be a read the
+ * upstream segment never vouched for.
+ */
+class PipedFileReader extends FlaggedFileReader {
+  /**
+   * @param {string[]} args args
+   * @returns {boolean} safe sink
+   */
+  static isSafeAsSink(args) {
+    const paths = this.operands(args);
+    return paths !== null && paths.length === 0;
+  }
+}
+
+/**
+ * A command whose operands are literal strings rather than paths: it computes
+ * on the argument text and never opens what it is given (`basename`, `dirname`,
+ * `seq`). Flags are still whitelisted, but there is nothing to contain, so the
+ * operands are not path-checked and {@link pathArgs} is empty rather than null.
+ */
+class ArgOnlyHandler extends FlaggedFileReader {
+  /**
+   * @param {string[]} args args
+   * @returns {string[] | null} [] when the flags parse, null when they don't
+   */
+  static pathArgs(args) {
+    return this.operands(args) === null ? null : [];
+  }
+}
+
 class TailHandler extends FlaggedFileReader {
   static commandName = 'tail';
   /** @returns {(a: string) => boolean} flag matcher */
   static flagMatcher() { return (/** @type {string} */ a) => /^-(?:n|c|C|f|q|v|\d+)$/.test(a) || /^-[fqv]+$/.test(a); }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-n', /^\d+$/], ['-c', /^\d+$/], ['-C', /^\d+$/]]); }
   /**
    * Safe as a sink with `-N`, `-n N`, `-c N`, or no args.
    * @param {string[]} args args
@@ -552,6 +627,8 @@ class HeadHandler extends FlaggedFileReader {
   static commandName = 'head';
   /** @returns {(a: string) => boolean} flag matcher */
   static flagMatcher() { return (/** @type {string} */ a) => /^-(?:n|c|C|q|v|\d+)$/.test(a) || /^-[qv]+$/.test(a); }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-n', /^\d+$/], ['-c', /^\d+$/], ['-C', /^\d+$/]]); }
   /**
    * @param {string[]} args args
    * @returns {boolean} safe sink
@@ -564,6 +641,11 @@ class HeadHandler extends FlaggedFileReader {
   }
 }
 
+/**
+ * `wc [-lwcmL] [FILE...]` — count lines, words, bytes. Every flag here selects
+ * a column to print; none takes a value, so `wc -c README.md` counts bytes in
+ * the file rather than reading `README.md` as a count.
+ */
 class WcHandler extends FlaggedFileReader {
   static commandName = 'wc';
   /** @returns {(a: string) => boolean} flag matcher */
@@ -577,6 +659,321 @@ class WcHandler extends FlaggedFileReader {
     if (args.length === 1 && /^-[lwcmL]+$/.test(checkedAt(args, 0))) return true;
     return false;
   }
+}
+
+/**
+ * `strings [-a] [-f] [-n N] [-t d|o|x] [-e ENC] [FILE...]` — print the printable
+ * runs in a binary. Read-only. An `@FILE` operand (read further arguments from
+ * a file) is refused: it names a file whose contents become arguments, which
+ * the static analysis here cannot see.
+ */
+class StringsHandler extends PipedFileReader {
+  static commandName = 'strings';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[afv]+$/.test(a) || /^-[nte]$/.test(a) || /^-\d+$/.test(a)
+			|| /^--(?:all|print-file-name)$/.test(a) || /^--(?:bytes|radix|encoding)=.+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-n', /^\d+$/], ['-t', /^[doxs]$/], ['-e', /^[sSbBlL]$/]]); }
+  /**
+   * @param {string[]} args args
+   * @returns {string[] | null} operands, or null when one is an `@FILE`
+   */
+  static operands(args) {
+    const rest = super.operands(args);
+    if (rest === null) return null;
+    return rest.some(a => a.startsWith('@')) ? null : rest;
+  }
+}
+
+/** `od [-abcdfiloxsvC] [-A RADIX] [-j N] [-N N] [-t TYPE] [-w N] [FILE...]` — dump. Read-only; no od flag writes. */
+class OdHandler extends PipedFileReader {
+  static commandName = 'od';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() { return (/** @type {string} */ a) => /^-[abcdfiloxsvC]+$/.test(a) || /^-[AjNtw]$/.test(a); }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() {
+    return new Map([['-A', /^[doxn]$/], ['-j', /^\w+$/], ['-N', /^\w+$/], ['-t', /^[acdfoux]\w*$/], ['-w', /^\d+$/]]);
+  }
+}
+
+/**
+ * `xxd [-b|-p|-u|-r] [-c N] [-g N] [-l N] [-s SEEK] [FILE]` — hex dump.
+ *
+ * Read-only in the one-operand form ONLY: `xxd INFILE OUTFILE` WRITES its
+ * second operand, so the operand ceiling is what keeps this command read-only
+ * (and is what makes `-r`, which turns a dump back into binary, harmless — with
+ * one operand it can only reach stdout).
+ */
+class XxdHandler extends PipedFileReader {
+  static commandName = 'xxd';
+  /** @type {number} a second operand would be an output file */
+  static maxOperands = 1;
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() { return (/** @type {string} */ a) => /^-[bipruv]$/.test(a) || /^-[cgls]$/.test(a); }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() {
+    return new Map([['-c', /^\d+$/], ['-g', /^\d+$/], ['-l', /^\d+$/], ['-s', /^[+-]?(?:0x)?[0-9a-fA-F]+$/]]);
+  }
+}
+
+/**
+ * `hexdump [-bcCdovx] [-n N] [-s SKIP] [FILE...]` — dump. The built-in display
+ * forms only: `-e FORMAT` is a formatting mini-language and `-f FORMAT_FILE`
+ * reads its format out of a file, so neither is whitelisted.
+ */
+class HexdumpHandler extends PipedFileReader {
+  static commandName = 'hexdump';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() { return (/** @type {string} */ a) => /^-[bcCdovx]+$/.test(a) || /^-[ns]$/.test(a); }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-n', /^\d+$/], ['-s', /^[+-]?(?:0x)?[0-9a-fA-F]+$/]]); }
+}
+
+/** `nl [-b STYLE] [-n FORMAT] [-w N] [-s SEP] [-v N] [-i N] [FILE...]` — number lines. Read-only. */
+class NlHandler extends PipedFileReader {
+  static commandName = 'nl';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-p$/.test(a) || /^-[bdfhinsvw]$/.test(a)
+			|| /^--(?:body-numbering|number-format|number-width|number-separator|starting-line-number|line-increment)=.+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() {
+    const style = /^(?:[atn]|p.*)$/;
+    return new Map([
+      ['-b', style], ['-f', style], ['-h', style],
+      ['-d', /^.{1,2}$/], ['-n', /^(?:ln|rn|rz)$/], ['-s', /^.+$/],
+      ['-i', /^\d+$/], ['-v', /^\d+$/], ['-w', /^\d+$/]
+    ]);
+  }
+}
+
+/** `tac [-b] [-r] [-s SEP] [FILE...]` — concatenate in reverse. Read-only. */
+class TacHandler extends PipedFileReader {
+  static commandName = 'tac';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[br]+$/.test(a) || a === '-s'
+			|| /^--(?:before|regex)$/.test(a) || /^--separator=.+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-s', /^.+$/]]); }
+}
+
+/** `rev [FILE...]` — reverse each line's characters. Read-only, and takes no flags. */
+class RevHandler extends PipedFileReader {
+  static commandName = 'rev';
+}
+
+/** `fold [-b] [-s] [-w N] [FILE...]` — wrap lines. Read-only. */
+class FoldHandler extends PipedFileReader {
+  static commandName = 'fold';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[bs]+$/.test(a) || a === '-w' || /^-\d+$/.test(a)
+			|| /^--(?:bytes|spaces)$/.test(a) || /^--width=\d+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-w', /^\d+$/]]); }
+}
+
+/** `expand [-i] [-t LIST] [FILE...]` — tabs to spaces. Read-only. */
+class ExpandHandler extends PipedFileReader {
+  static commandName = 'expand';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[it]$/.test(a) || a === '--initial' || /^--tabs=[\d,]+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-t', /^[\d,]+$/]]); }
+}
+
+/** `unexpand [-a] [--first-only] [-t LIST] [FILE...]` — spaces to tabs. Read-only. */
+class UnexpandHandler extends PipedFileReader {
+  static commandName = 'unexpand';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[at]$/.test(a) || /^--(?:all|first-only)$/.test(a) || /^--tabs=[\d,]+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-t', /^[\d,]+$/]]); }
+}
+
+/** `paste [-s] [-z] [-d LIST] [FILE...]` — merge lines. Read-only. */
+class PasteHandler extends PipedFileReader {
+  static commandName = 'paste';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[sz]+$/.test(a) || a === '-d'
+			|| /^--(?:serial|zero-terminated)$/.test(a) || /^--delimiters=.+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-d', /^.+$/]]); }
+}
+
+/** `join [-1 N] [-2 N] [-a N] [-v N] [-e STR] [-t CHAR] [-o FMT] [-i] FILE1 FILE2` — relational join. Read-only. */
+class JoinHandler extends PipedFileReader {
+  static commandName = 'join';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[12aveto]$/.test(a) || a === '-i'
+			|| /^--(?:header|ignore-case|check-order|nocheck-order)$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() {
+    return new Map([
+      ['-1', /^\d+$/], ['-2', /^\d+$/], ['-a', /^[12]$/], ['-v', /^[12]$/],
+      ['-e', /^.*$/], ['-t', /^.$/], ['-o', /^(?:auto|[\d.,]+)$/]
+    ]);
+  }
+}
+
+/** `column [-t] [-x] [-c N] [-s SEP] [FILE...]` — columnate lists. Read-only. */
+class ColumnHandler extends PipedFileReader {
+  static commandName = 'column';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[tx]+$/.test(a) || /^-[cs]$/.test(a)
+			|| a === '--table' || /^--(?:separator|output-width)=.+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-c', /^\d+$/], ['-s', /^.+$/]]); }
+}
+
+/**
+ * `cksum` / `md5sum` / `sha1sum` / `sha256sum` / `sha512sum` / `shasum` — hash
+ * file contents. Read-only throughout: the digest forms print, and `-c` VERIFIES
+ * a checksum list, which is another read. Nothing in this family writes.
+ */
+class ChecksumHandler extends PipedFileReader {
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[bctwz]+$/.test(a) || a === '-a'
+			|| /^--(?:binary|text|check|tag|warn|quiet|status|strict|zero)$/.test(a) || /^--algorithm=\d+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-a', /^\d+$/]]); }
+}
+
+class CksumHandler extends ChecksumHandler { static commandName = 'cksum'; }
+class Md5sumHandler extends ChecksumHandler { static commandName = 'md5sum'; }
+class Sha1sumHandler extends ChecksumHandler { static commandName = 'sha1sum'; }
+class Sha256sumHandler extends ChecksumHandler { static commandName = 'sha256sum'; }
+class Sha512sumHandler extends ChecksumHandler { static commandName = 'sha512sum'; }
+class ShasumHandler extends ChecksumHandler { static commandName = 'shasum'; }
+
+/** `comm [-123] [--output-delimiter=STR] FILE1 FILE2` — compare sorted files. Read-only. */
+class CommHandler extends PipedFileReader {
+  static commandName = 'comm';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[123z]+$/.test(a)
+			|| /^--(?:check-order|nocheck-order|total|zero-terminated)$/.test(a) || /^--output-delimiter=.*$/.test(a);
+  }
+}
+
+/** `cmp [-b] [-l] [-s] [-i N] [-n N] FILE1 [FILE2]` — compare byte by byte. Read-only. */
+class CmpHandler extends PipedFileReader {
+  static commandName = 'cmp';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[bls]+$/.test(a) || /^-[in]$/.test(a)
+			|| /^--(?:print-bytes|verbose|quiet|silent)$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-i', /^\d+(?::\d+)?$/], ['-n', /^\d+$/]]); }
+}
+
+/**
+ * `diff [FLAGS] FILE1 FILE2` — compare files. No diff flag writes; the format
+ * flags only shape stdout. Two exclusions are deliberate:
+ *   - `-l` pipes the output through `pr`, spawning another program.
+ *   - `--exclude-from=FILE` / `--starting-file=FILE` name further files to read,
+ *     which the positional operands cover without a value flag to police.
+ */
+class DiffHandler extends PipedFileReader {
+  static commandName = 'diff';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[abBdEiNpqrstTuvwyZ]+$/.test(a) || /^-[CU]$/.test(a) || /^-\d+$/.test(a)
+			|| /^--(?:brief|report-identical-files|recursive|new-file|text|ignore-case|ignore-all-space|ignore-blank-lines|ignore-space-change|ignore-trailing-space|ignore-tab-expansion|minimal|expand-tabs|initial-tab|side-by-side|suppress-common-lines|no-color|normal)$/.test(a)
+			|| /^--(?:unified|context)(?:=\d+)?$/.test(a) || /^--color(?:=\w+)?$/.test(a) || /^--(?:exclude|label)=.*$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-C', /^\d+$/], ['-U', /^\d+$/]]); }
+}
+
+/**
+ * `realpath [-emqsz] PATH...` — resolve paths to their canonical form. It reads
+ * directory metadata and follows symlinks, so its operands are contained like
+ * any other read. `--relative-to=DIR` / `--relative-base=DIR` carry a further
+ * path and are left out rather than policed.
+ */
+class RealpathHandler extends FlaggedFileReader {
+  static commandName = 'realpath';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[emqszLP]+$/.test(a)
+			|| /^--(?:canonicalize-existing|canonicalize-missing|quiet|strip|no-symlinks|zero|logical|physical)$/.test(a);
+  }
+}
+
+/**
+ * `df [-hkmiaHlPT] [PATH...]` — filesystem usage. Reads mount metadata only; a
+ * PATH operand names which filesystem to report on and is contained like any
+ * other read. Bare `df` reports every mount and takes no operand at all. The
+ * value-taking forms (`-B SIZE`, `-t TYPE`, `--output=LIST`) are left out to
+ * keep the surface small.
+ */
+class DfHandler extends FlaggedFileReader {
+  static commandName = 'df';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[hkmiaHlPT]+$/.test(a)
+			|| /^--(?:human-readable|si|inodes|all|local|portability|print-type|total)$/.test(a);
+  }
+}
+
+/**
+ * `basename PATH [SUFFIX]` / `basename -a [-s SUF] PATH...` — strip directory
+ * and suffix. Pure string manipulation: it never opens the path it is handed,
+ * so its operands are not reads and are not contained.
+ */
+class BasenameHandler extends ArgOnlyHandler {
+  static commandName = 'basename';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => /^-[az]+$/.test(a) || a === '-s'
+			|| /^--(?:multiple|zero)$/.test(a) || /^--suffix=.+$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-s', /^.+$/]]); }
+}
+
+/** `dirname PATH...` — strip the last component. Pure string manipulation, like {@link BasenameHandler}. */
+class DirnameHandler extends ArgOnlyHandler {
+  static commandName = 'dirname';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() { return (/** @type {string} */ a) => a === '-z' || a === '--zero'; }
+}
+
+/**
+ * `seq [-w] [-s STR] [-f FMT] [FIRST [INCR]] LAST` — print a number sequence.
+ * No filesystem access at all. A negative bound looks like a flag, so the
+ * matcher accepts one; either way the operands are numbers and nothing is
+ * contained.
+ */
+class SeqHandler extends ArgOnlyHandler {
+  static commandName = 'seq';
+  /** @returns {(a: string) => boolean} flag matcher */
+  static flagMatcher() {
+    return (/** @type {string} */ a) => a === '-w' || /^-[sf]$/.test(a) || /^-\d+(?:\.\d+)?$/.test(a)
+			|| a === '--equal-width' || /^--(?:separator|format)=.*$/.test(a);
+  }
+  /** @returns {Map<string, RegExp>} value-taking flags */
+  static valueFlags() { return new Map([['-s', /^.*$/], ['-f', /^.+$/]]); }
 }
 
 /**
@@ -2698,6 +3095,33 @@ export const COMMAND_HANDLERS = new Map(/** @type {Array<[string, typeof Command
   [TailHandler.commandName, TailHandler],
   [HeadHandler.commandName, HeadHandler],
   [WcHandler.commandName, WcHandler],
+  [StringsHandler.commandName, StringsHandler],
+  [OdHandler.commandName, OdHandler],
+  [XxdHandler.commandName, XxdHandler],
+  [HexdumpHandler.commandName, HexdumpHandler],
+  [NlHandler.commandName, NlHandler],
+  [TacHandler.commandName, TacHandler],
+  [RevHandler.commandName, RevHandler],
+  [FoldHandler.commandName, FoldHandler],
+  [ExpandHandler.commandName, ExpandHandler],
+  [UnexpandHandler.commandName, UnexpandHandler],
+  [PasteHandler.commandName, PasteHandler],
+  [JoinHandler.commandName, JoinHandler],
+  [ColumnHandler.commandName, ColumnHandler],
+  [CksumHandler.commandName, CksumHandler],
+  [Md5sumHandler.commandName, Md5sumHandler],
+  [Sha1sumHandler.commandName, Sha1sumHandler],
+  [Sha256sumHandler.commandName, Sha256sumHandler],
+  [Sha512sumHandler.commandName, Sha512sumHandler],
+  [ShasumHandler.commandName, ShasumHandler],
+  [CommHandler.commandName, CommHandler],
+  [CmpHandler.commandName, CmpHandler],
+  [DiffHandler.commandName, DiffHandler],
+  [RealpathHandler.commandName, RealpathHandler],
+  [DfHandler.commandName, DfHandler],
+  [BasenameHandler.commandName, BasenameHandler],
+  [DirnameHandler.commandName, DirnameHandler],
+  [SeqHandler.commandName, SeqHandler],
   [SortHandler.commandName, SortHandler],
   [UniqHandler.commandName, UniqHandler],
   [CutHandler.commandName, CutHandler],

@@ -26,6 +26,11 @@ import { textResponse, toolUseResponse } from '../utilities/integration-test-run
  * `seq 1 200000` emits ~1.4 MB across 200k lines — past the head+tail streaming
  * budget — so the result must come back truncated (not 1.4 MB). A second bash
  * command then runs to prove the engine/server wasn't wedged by the flood.
+ *
+ * Both commands are spelled through `env`, which the approval analyser has no
+ * handler for, so each one stops at an approval prompt and the operations below
+ * drive the tool through it. Spelled bare, `seq` and `echo` auto-approve and
+ * there is no prompt to wait for.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const largeOutputBoundedTest = {
@@ -35,7 +40,7 @@ export const largeOutputBoundedTest = {
 
   llmResponses: [
     toolUseResponse('call_1', 'bash',
-      { command: 'seq 1 200000' },
+      { command: 'env seq 1 200000' },
       'Running big command.'
     ),
     toolUseResponse('call_2', 'bash',
