@@ -236,6 +236,21 @@ func (c *Client) appendToolResultsToWarmSession(results []provider.Message, snap
 	return nil
 }
 
+// isMessageEntry reports whether a session entry type is one of the two that
+// carry conversation. Everything else the CLI writes into the file is a record
+// ABOUT the session rather than a turn in it, and a tail scan looking for the
+// call the CLI parked on must walk straight past it.
+//
+// Those records are not all uuid-less, so "has a uuid" cannot stand in for "is a
+// message": `attachment` (the total_tokens_reminder written after nearly every
+// user entry, plus tool/agent/skill listing deltas) and `system` (local_command
+// output) carry a uuid and a parentUuid exactly like a real turn. A scan that
+// stops on one reads the file as ending on something other than the tool_use the
+// CLI is parked on — which cold-starts a fully warm session.
+func isMessageEntry(entryType string) bool {
+	return entryType == "user" || entryType == "assistant"
+}
+
 // danglingToolUse is one trailing assistant tool_use entry awaiting a result:
 // the uuid an answering entry chains to, and the tool_use IDs it carries.
 type danglingToolUse struct {
@@ -255,26 +270,28 @@ type danglingToolUse struct {
 // block, or the user turn before it), so it never reaches back past the message
 // the results answer.
 //
-// Uuid-less lines are skipped on the way: the CLI interleaves bookkeeping
-// records — last-prompt (the pending prompt plus the leaf it hangs off),
-// ai-title, mode, queue-operation — so the physically-last line is routinely not
-// a message at all, and a transcript ending on a parked tool_use commonly has a
-// last-prompt written after it. The thread is reconstructed by walking
-// parentUuid, so those records sit outside the chain and skipping them is sound.
+// The CLI's own records are skipped on the way (isMessageEntry): it interleaves
+// last-prompt, ai-title, mode, queue-operation, attachment and system entries
+// into the file, so the physically-last line is routinely not a message at all,
+// and a transcript ending on a parked tool_use commonly has a last-prompt or an
+// attachment written after it. The thread is reconstructed by walking parentUuid
+// from the leaf, and the entry this appends becomes the new leaf, so skipping
+// them is sound.
 func trailingToolUses(lines [][]byte) ([]danglingToolUse, error) {
 	var run []danglingToolUse
 	var tailType string
 	for i := len(lines) - 1; i >= 0; i-- {
 		var probe struct {
 			UUID string `json:"uuid"`
+			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(lines[i], &probe); err != nil {
 			// An unparseable line is not something we can reason about: stop
 			// rather than reaching past it for an anchor that may not be real.
 			break
 		}
-		if probe.UUID == "" {
-			continue // one of the CLI's uuid-less bookkeeping records
+		if probe.UUID == "" || !isMessageEntry(probe.Type) {
+			continue // one of the CLI's own records, not a turn in the conversation
 		}
 		uuid, ids, err := parseToolUseEntry(lines[i])
 		if err != nil {
@@ -360,9 +377,10 @@ const teardownAbortResultText = "tool execution aborted: conversation session en
 // block fails the test, nothing is cut.
 //
 // The scan walks back over trailing assistant entries (a turn stranded on the
-// far side of the stale answer) to the newest user entry, skipping the CLI's
-// uuid-less bookkeeping records. Any user turn that does not qualify means real
-// conversation continued past this point, and nothing may be cut.
+// far side of the stale answer) to the newest user entry, skipping the CLI's own
+// records (isMessageEntry) — the attachment it writes straight after the very
+// tool_result being cut among them. Any user turn that does not qualify means
+// real conversation continued past this point, and nothing may be cut.
 func dropTeardownWreckage(lines [][]byte, appending map[string]bool) ([][]byte, bool) {
 	for i := len(lines) - 1; i >= 0; i-- {
 		var probe struct {
@@ -373,8 +391,8 @@ func dropTeardownWreckage(lines [][]byte, appending map[string]bool) ([][]byte, 
 			return nil, false
 		}
 		switch {
-		case probe.UUID == "":
-			continue // a bookkeeping record — outside the parentUuid chain
+		case probe.UUID == "" || !isMessageEntry(probe.Type):
+			continue // a record about the session — not a turn in it
 		case probe.Type == "assistant":
 			continue // a turn stranded on the far side of the stale answer
 		case probe.Type == "user" && (answersOnlyCalls(lines[i], appending) || isTeardownAbortEntry(lines[i])):

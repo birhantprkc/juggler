@@ -492,6 +492,161 @@ func TestAppendToolResultsToWarmSession_HealsCLIClosedCallTail(t *testing.T) {
 	}
 }
 
+// cliAttachmentEntry builds one of the CLI's `attachment` records — here the
+// total_tokens_reminder it writes straight after a user entry. Unlike
+// last-prompt or ai-title it carries a uuid AND a parentUuid, so it is
+// indistinguishable from a real turn to anything keying on "has a uuid".
+func cliAttachmentEntry(entryUUID, parentUUID, sessionUUID string, attachment map[string]any) map[string]any {
+	return map[string]any{
+		"type":       "attachment",
+		"uuid":       entryUUID,
+		"parentUuid": parentUUID,
+		"sessionId":  sessionUUID,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
+		"entrypoint": "sdk-cli",
+		"attachment": attachment,
+	}
+}
+
+// tokensReminder is the attachment the CLI appends after nearly every user
+// entry, so a journalled tool_result is almost never the file's last line.
+func tokensReminder() map[string]any {
+	return map[string]any{"type": "total_tokens_reminder", "text": "<total_tokens>14895227 tokens left</total_tokens>"}
+}
+
+// TestAppendToolResultsToWarmSession_HealsCLIClosedCallTailUnderAttachment is
+// the shape a reaped CLI actually leaves on disk: it closes the parked call in
+// its own words and then writes its total_tokens_reminder after that, burying
+// the stale answer one entry deep.
+//
+// The attachment carries a uuid, so a scan that treats every uuid-bearing entry
+// as a message stops on it, never reaches the stale result to cut it, and
+// reports a tail of "attachment" — cold-starting a warm conversation for 97k
+// tokens on a tool that was only ever waiting for an approval.
+func TestAppendToolResultsToWarmSession_HealsCLIClosedCallTailUnderAttachment(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-attachment-over-closed-call"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path,
+		newSyntheticEntry("user", []map[string]any{{
+			"type": "tool_result", "tool_use_id": "call_1",
+			"content": "(mcp__juggler__bash completed with no output)",
+		}}, "uuid-cli-closed-1", "uuid-asst-1", uuid, workingDir, time.Now()),
+		cliAttachmentEntry("uuid-attach-1", "uuid-cli-closed-1", uuid, tokensReminder()),
+	)
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "the answer")}, nil); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v (an attachment written over the CLI's own closing result must not force a cold start)", err)
+	}
+
+	entries := readJSONL(t, path)
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (user, tool_use, real result); got %d — the closing result and the attachment chained to it must both be cut", len(entries))
+	}
+	last := entries[2]
+	if last["parentUuid"] != "uuid-asst-1" {
+		t.Fatalf("appended entry parentUuid = %v, want uuid-asst-1 (chains to the tool_use, not to the wreckage)", last["parentUuid"])
+	}
+	msg, _ := last["message"].(map[string]any)
+	content, _ := msg["content"].([]any)
+	block, _ := content[0].(map[string]any)
+	if block["content"] != "the answer" {
+		t.Fatalf("appended block = %+v, want the real result for call_1", block)
+	}
+}
+
+// TestAppendToolResultsToWarmSession_SkipsTrailingUUIDBearingRecords appends
+// when the dangling tool_use is buried under the CLI's uuid-BEARING records.
+// attachment (listing deltas, token reminders) and system (local_command output)
+// entries are written into the parentUuid chain like turns but carry no
+// conversation, so the tail scan must walk past them to the parked call exactly
+// as it does for last-prompt and ai-title.
+func TestAppendToolResultsToWarmSession_SkipsTrailingUUIDBearingRecords(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-record-tail"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path,
+		cliAttachmentEntry("uuid-attach-1", "uuid-asst-1", uuid,
+			map[string]any{"type": "deferred_tools_delta", "addedNames": []string{"CronCreate"}}),
+		map[string]any{
+			"type": "system", "subtype": "local_command", "level": "info",
+			"uuid": "uuid-system-1", "parentUuid": "uuid-attach-1", "sessionId": uuid,
+			"content": "<local-command-stdout>ok</local-command-stdout>",
+		},
+	)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "the answer")}, nil); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v (uuid-bearing records after the tool_use must not force a cold start)", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if !strings.HasPrefix(string(after), string(before)) {
+		t.Fatalf("warm prefix was modified — cache would miss.\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	entries := readJSONL(t, path)
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 entries (user, tool_use, attachment, system, appended result); got %d — records that answer nothing must be kept, not cut", len(entries))
+	}
+	last := entries[4]
+	if last["type"] != "user" || last["parentUuid"] != "uuid-asst-1" {
+		t.Fatalf("appended entry = %+v, want a user tool_result chained to uuid-asst-1, not to a record", last)
+	}
+}
+
+// TestAppendToolResultsToWarmSession_RealUserTailUnderAttachmentStillRefuses
+// keeps the widened skip honest: walking past attachment and system entries must
+// not let the scan reach BACK past real conversation. A genuine tool_result for
+// a call we hold nothing for, with the CLI's attachment written after it, is
+// history — so we still cold-start and leave the file alone.
+func TestAppendToolResultsToWarmSession_RealUserTailUnderAttachmentStillRefuses(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-real-user-under-attachment"
+	path := seedWarmSession(t, workingDir, uuid, "call_1")
+	appendRawEntries(t, path,
+		newSyntheticEntry("user", []map[string]any{{
+			"type": "tool_result", "tool_use_id": "call_other", "content": "genuine output",
+		}}, "uuid-real-1", "uuid-asst-1", uuid, workingDir, time.Now()),
+		cliAttachmentEntry("uuid-attach-1", "uuid-real-1", uuid, tokensReminder()),
+	)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	if err := c.appendToolResultsToWarmSession([]provider.Message{toolResultMsg("call_1", "x")}, nil); err == nil {
+		t.Fatal("expected a refusal when real history follows the tool_use; got nil")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a refused append must leave the file untouched.\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 // TestAppendToolResultsToWarmSession_MixedResultTailStillRefuses keeps the
 // per-block strictness. A user turn that answers the call we hold a result for
 // AND carries something else is a turn the user really sent, so nothing is cut
