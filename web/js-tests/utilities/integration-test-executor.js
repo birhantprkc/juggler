@@ -151,6 +151,7 @@ import { runTests as runUsageStatsCacheTests } from '../unit-tests/usage-stats-c
 import { runTests as runThinkingCyclerTests } from '../unit-tests/thinking-cycler-test.js';
 import { runTests as runThinkingChipTests } from '../unit-tests/thinking-chip-test.js';
 import { runTests as runServiceTierControlTests } from '../unit-tests/service-tier-control-test.js';
+import { runTests as runServiceTierChipTests } from '../unit-tests/service-tier-chip-test.js';
 import { runTests as runTransactionPanelTests } from '../unit-tests/transaction-panel-test.js';
 import { runTests as runModelSelectorHudTests } from '../unit-tests/model-selector-hud-test.js';
 import { runTests as runFindTests } from '../unit-tests/find-test.js';
@@ -302,6 +303,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:thinking-cycler', run: runThinkingCyclerTests },
   { name: 'unit:thinking-chip', run: runThinkingChipTests },
   { name: 'unit:service-tier-control', run: runServiceTierControlTests },
+  { name: 'unit:service-tier-chip', run: runServiceTierChipTests },
   { name: 'unit:transaction-panel', run: runTransactionPanelTests },
   { name: 'unit:model-selector-hud', run: runModelSelectorHudTests },
   { name: 'unit:find', run: runFindTests },

@@ -3063,6 +3063,28 @@ composer-box .model-selector-button .model-name {
     border-color: var(--text-tertiary);
 }
 
+/* Serving-tier pill: same geometry as the thinking chip, but inert — no hit-area
+   expander and no pointer events, so a click passes through to the button and
+   opens the dropdown, where the Speed control lives. Sized to its label rather
+   than a fixed slot: a tier name doesn't change as a cycle steps through models. */
+.model-selector-button .service-tier-chip {
+    display: inline-block;
+    margin-left: 0.375rem;
+    padding: 0 0.3125rem;
+    border: 0.0625rem solid transparent;
+    border-radius: 0.375rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    line-height: 1.4;
+    text-transform: uppercase;
+    letter-spacing: 0.02rem;
+    text-align: center;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary, rgb(127 127 127 / 16%));
+    flex-shrink: 0;
+    pointer-events: none;
+}
+
 /* Model Selector - the two per-model dials in the info column: thinking level
    (also used by the mini popover) and serving speed. They are independent
    controls but present identically, so they share this styling. */

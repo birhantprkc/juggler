@@ -35,7 +35,7 @@ export class DefaultsTab {
     this.config = {};
     /** @type {any[]} @private */
     this.providers = [];
-    /** @type {{provider: string, model: string, thinking?: string, explicit?: boolean}} @private - Model new conversations are seeded with; explicit=false means automatic. thinking empty ⇒ the model's default level. */
+    /** @type {{provider: string, model: string, thinking?: string, serviceTier?: string, explicit?: boolean}} @private - Model new conversations are seeded with; explicit=false means automatic. thinking empty ⇒ the model's default level, serviceTier empty ⇒ standard serving. */
     this.defaultModel = { provider: '', model: '', explicit: false };
     /** @type {{provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} @private - Cheap model for out-of-band micro-tasks; explicit=false means Auto. */
     this.cheapModel = { explicit: false };
@@ -44,7 +44,7 @@ export class DefaultsTab {
   /**
    * Receive the shared loadConfig() payload: store config/providers/defaultModel
    * and (on a full render) build the fields.
-   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, thinking?: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}}} data
+   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, thinking?: string, serviceTier?: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}}} data
    * @param {boolean} renderFields
    */
   onConfigLoaded(data, renderFields) {
@@ -448,8 +448,9 @@ export class DefaultsTab {
       autoLabel: 'Automatic',
       current: this.defaultModel || { provider: '', model: '', explicit: false },
       statusText: (ref) => this._defaultModelStatusText(ref),
-      onSave: (value, thinking) => this._saveDefaultModel(value, thinking),
+      onSave: (value, thinking, serviceTier) => this._saveDefaultModel(value, thinking, serviceTier),
       withThinking: true,
+      withServiceTier: true,
     });
   }
 
@@ -489,13 +490,14 @@ export class DefaultsTab {
    * @param {string} opts.nameLabel - field label text.
    * @param {string} [opts.description] - optional description under the label.
    * @param {string} opts.autoLabel - text for the auto-option (e.g. "Automatic").
-   * @param {{provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} opts.current
+   * @param {{provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} opts.current
    * @param {(ref: any) => string} opts.statusText - builds the status hint.
-   * @param {(value: string, thinking?: string) => void} opts.onSave - persists "<provider> <model>" or "", plus an optional thinking level.
+   * @param {(value: string, thinking?: string, serviceTier?: string) => void} opts.onSave - persists "<provider> <model>" or "", plus an optional thinking level and serving tier.
    * @param {boolean} [opts.withThinking] - also render a thinking-level selector for the chosen model.
+   * @param {boolean} [opts.withServiceTier] - also render a serving-tier selector for the chosen model.
    * @private
    */
-  _renderModelField({ containerId, selectId, nameLabel, description, autoLabel, current, statusText, onSave, withThinking }) {
+  _renderModelField({ containerId, selectId, nameLabel, description, autoLabel, current, statusText, onSave, withThinking, withServiceTier }) {
     const container = this.host.querySelector(containerId);
     if (!container) return;
     container.innerHTML = '';
@@ -618,14 +620,56 @@ export class DefaultsTab {
       ts.className = 'default-model-select default-model-thinking-select';
       ts.id = `${selectId}-thinking`;
       ts.setAttribute('aria-label', `Thinking level for ${nameLabel}`);
-      ts.addEventListener('change', () => onSave(select.value, ts.value));
+      ts.addEventListener('change', () => onSave(select.value, ts.value, tierSelect ? tierSelect.value : undefined));
       thinkingSelect = ts;
       rebuildThinkingOptions(currentValue, (explicit && ref.thinking) || '');
     }
 
+    // Optional serving-tier selector, shown only when the chosen model
+    // advertises tiers. An empty value ⇒ standard serving, which is the absence
+    // of a tier rather than a tier of its own. Tiers are model-specific, so
+    // switching model resets it — and a tier costs materially more, so it is
+    // offered under the provider's own name for it, never a generic "fast".
+    /** @type {HTMLSelectElement|null} */
+    let tierSelect = null;
+    const rebuildServiceTierOptions = (/** @type {string} */ value, /** @type {string} */ selectedTier) => {
+      if (!tierSelect) return;
+      const entry = modelEntryFor(value);
+      const tiers = (entry && entry.serviceTiers) || [];
+      tierSelect.innerHTML = '';
+      if (tiers.length === 0) {
+        tierSelect.style.display = 'none';
+        return;
+      }
+      tierSelect.style.display = '';
+      const standardOpt = document.createElement('option');
+      standardOpt.value = '';
+      standardOpt.textContent = 'Standard speed';
+      if (!selectedTier) standardOpt.selected = true;
+      tierSelect.appendChild(standardOpt);
+      for (const tier of /** @type {Array<{id: string, name?: string, description?: string}>} */ (tiers)) {
+        const opt = document.createElement('option');
+        opt.value = tier.id;
+        opt.textContent = tier.name || tier.id;
+        if (tier.description) opt.title = tier.description;
+        if (tier.id === selectedTier) opt.selected = true;
+        tierSelect.appendChild(opt);
+      }
+    };
+    if (withServiceTier) {
+      const tiers = document.createElement('select');
+      tiers.className = 'default-model-select default-model-tier-select';
+      tiers.id = `${selectId}-service-tier`;
+      tiers.setAttribute('aria-label', `Serving speed for ${nameLabel}`);
+      tiers.addEventListener('change', () => onSave(select.value, thinkingSelect ? thinkingSelect.value : undefined, tiers.value));
+      tierSelect = tiers;
+      rebuildServiceTierOptions(currentValue, (explicit && ref.serviceTier) || '');
+    }
+
     select.addEventListener('change', () => {
       if (thinkingSelect) rebuildThinkingOptions(select.value, '');
-      onSave(select.value, thinkingSelect ? thinkingSelect.value : undefined);
+      if (tierSelect) rebuildServiceTierOptions(select.value, '');
+      onSave(select.value, thinkingSelect ? thinkingSelect.value : undefined, tierSelect ? tierSelect.value : undefined);
     });
 
     const status = document.createElement('div');
@@ -635,6 +679,7 @@ export class DefaultsTab {
 
     controlColumn.appendChild(select);
     if (thinkingSelect) controlColumn.appendChild(thinkingSelect);
+    if (tierSelect) controlColumn.appendChild(tierSelect);
     controlColumn.appendChild(status);
 
     row.appendChild(infoColumn);
@@ -730,10 +775,11 @@ export class DefaultsTab {
    * Persist the chosen default model. An empty value clears it (Automatic).
    * @param {string} value - "<provider> <model>" or "" for Automatic
    * @param {string} [thinking] - thinking level; empty/omitted ⇒ the model's default
+   * @param {string} [serviceTier] - advertised tier id; empty/omitted ⇒ standard serving
    * @private
    */
-  async _saveDefaultModel(value, thinking) {
-    /** @type {{provider: string, model: string, thinking?: string}} */
+  async _saveDefaultModel(value, thinking, serviceTier) {
+    /** @type {{provider: string, model: string, thinking?: string, serviceTier?: string}} */
     let body;
     if (!value) {
       body = { provider: '', model: '' };
@@ -741,12 +787,13 @@ export class DefaultsTab {
       const sep = value.indexOf(' ');
       body = { provider: value.slice(0, sep), model: value.slice(sep + 1) };
       if (thinking) body.thinking = thinking;
+      if (serviceTier) body.serviceTier = serviceTier;
     }
     try {
       await fetchJson('/api/default-model', { method: 'PUT', body });
       // Reflect the saved state locally and re-render so the status hint
       // and selection update without a full reload.
-      this.defaultModel = { provider: body.provider, model: body.model, thinking: body.thinking || '', explicit: !!(body.provider && body.model) };
+      this.defaultModel = { provider: body.provider, model: body.model, thinking: body.thinking || '', serviceTier: body.serviceTier || '', explicit: !!(body.provider && body.model) };
       this.renderDefaultModelField();
     } catch (err) {
       console.error('[SettingsPanel] Failed to save default model:', err);

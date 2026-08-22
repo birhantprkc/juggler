@@ -410,9 +410,11 @@ func firstVisibleModel(p ProviderStatus) string {
 	return ""
 }
 
-// resolveDefaultModel returns the concrete {provider, model, thinking?} a new
-// conversation should be seeded with, plus whether it came from an explicit
-// user default. An empty Thinking means the model's default level.
+// resolveDefaultModel returns the concrete {provider, model, thinking?,
+// serviceTier?} a new conversation should be seeded with, plus whether it came
+// from an explicit user default. An empty Thinking means the model's default
+// level, and an empty ServiceTier means standard serving. A derived default
+// (no stored ref) never carries a tier: only an explicit user choice does.
 func (s *Server) resolveDefaultModel(ctx context.Context) (core.ModelRef, bool) {
 	if stored, err := s.defaultModelStore.Load(); err == nil && stored.Provider != "" && stored.Model != "" {
 		return stored, true
@@ -573,7 +575,8 @@ func (s *Server) handleSetCheapModel(w http.ResponseWriter, r *http.Request) {
 // (explicit:false). The result is captured onto the conversation at creation
 // time, so a later change to the default never retargets an existing
 // conversation. `thinking` is included only when non-empty (absent = the
-// model's default level).
+// model's default level), and `serviceTier` likewise (absent = standard
+// serving).
 func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 	ref, explicit := s.resolveDefaultModel(r.Context())
 	body := map[string]any{
@@ -584,23 +587,33 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 	if ref.Thinking != "" {
 		body["thinking"] = ref.Thinking
 	}
+	if ref.ServiceTier != "" {
+		body["serviceTier"] = ref.ServiceTier
+	}
 	handlers.WriteJSON(w, r, 0, body)
 }
 
 // handleSetDefaultModel persists the model new conversations are seeded with.
-// Body: {"provider": "...", "model": "...", "thinking": "..."} — thinking is
-// optional; absent/empty means the model's default level. An empty
-// provider/model clears the stored value, reverting to automatic selection.
+// Body: {"provider": "...", "model": "...", "thinking": "...", "serviceTier": "..."}
+// — thinking and serviceTier are optional; absent/empty means the model's
+// default level and standard serving respectively. An empty provider/model
+// clears the stored value, reverting to automatic selection.
+//
+// A stored tier is spent money, so it rides only this explicit route: it is
+// written into each new conversation's config at seed time, where the user can
+// see and change it, and is never applied by the provider on the caller's
+// behalf (see openaibase.ServiceTierSpec.tierFor).
 func (s *Server) handleSetDefaultModel(w http.ResponseWriter, r *http.Request) {
 	req, ok := handlers.DecodeJSON[struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
-		Thinking string `json:"thinking"`
+		Provider    string `json:"provider"`
+		Model       string `json:"model"`
+		Thinking    string `json:"thinking"`
+		ServiceTier string `json:"serviceTier"`
 	}](w, r)
 	if !ok {
 		return
 	}
-	if err := s.defaultModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
+	if err := s.defaultModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking, ServiceTier: req.ServiceTier}); err != nil {
 		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save default model: %v", err))
 		return
 	}

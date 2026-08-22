@@ -34,13 +34,16 @@ func TestDefaultModelMissingFileIsAutomatic(t *testing.T) {
 	}
 }
 
-// TestDefaultModelRoundTrip locks Save/Load round-tripping, including the
-// optional Thinking level (empty = the model's default level).
+// TestDefaultModelRoundTrip locks Save/Load round-tripping, including the two
+// optional dials: Thinking (empty = the model's default level) and ServiceTier
+// (empty = standard serving).
 func TestDefaultModelRoundTrip(t *testing.T) {
 	s := newTestDefaultModelStore(t)
 	for _, ref := range []ModelRef{
 		{Provider: "anthropic", Model: "claude"},
 		{Provider: "anthropic", Model: "claude", Thinking: "high"},
+		{Provider: "openaicodex", Model: "gpt-5", ServiceTier: "priority"},
+		{Provider: "openaicodex", Model: "gpt-5", Thinking: "high", ServiceTier: "priority"},
 	} {
 		if err := s.Save(ref); err != nil {
 			t.Fatalf("Save(%+v): %v", ref, err)

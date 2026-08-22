@@ -1631,6 +1631,46 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
+   * Compact serving-tier pill for the model button, rendered only when an
+   * explicit tier the model still advertises is in effect. Standard serving is
+   * the absence of a tier, so there is no hollow "inherited" variant and the
+   * button is untouched for every model and every turn that isn't buying one —
+   * it grows only where materially more is being spent.
+   *
+   * The label is the provider's own name for the tier, verbatim: the tier ids
+   * and labels come straight from the catalog, so nothing here may assume a
+   * tier means "faster".
+   *
+   * Inert, unlike the thinking chip: it is not a click target of its own, so a
+   * click falls through to the button and opens the dropdown, whose info column
+   * already carries the full Speed control.
+   * @returns {string} HTML for the chip, or ''.
+   * @private
+   */
+  _serviceTierChipHTML() {
+    // Frozen at the committed snapshot while a gesture cycles, for the same
+    // reason as the thinking chip — the button must not track previewed hops.
+    const frozen = this._cycle.buffering ? this._committed : null;
+    const provider = frozen ? frozen.provider : this.provider;
+    const model = frozen ? frozen.model : this.model;
+    const config = frozen ? frozen.config : this._currentConfig;
+
+    const wanted = config?.serviceTier;
+    if (!wanted) return '';
+
+    const prov = this.providers.find(p => p.name === provider);
+    const modelEntry = prov?.modelsWithContext?.find(m => m.id === model);
+    // A stored tier counts only when the model still advertises it — a stale id
+    // means standard serving, the same gate the request path applies.
+    const active = (modelEntry?.serviceTiers || []).find(t => t.id === wanted);
+    if (!active) return '';
+
+    const label = active.name || active.id;
+    const title = active.description ? `${label} — ${active.description}` : label;
+    return `<span class="service-tier-chip" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+  }
+
+  /**
    * Open the mini thinking popover: just the thinking segmented control,
    * anchored to the button chip, for changing the current model's level without
    * opening the full dropdown. Reuses `_generateThinkingControl` for the markup
@@ -1737,13 +1777,14 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
-   * The collapsed button's inner markup: icon, label, thinking chip, override dot.
+   * The collapsed button's inner markup: icon, label, thinking chip, serving-tier
+   * chip, override dot.
    * @private
    * @param {{modelDisplay: string, hasOverride: boolean}} state - From `_buttonDisplayState`.
    * @returns {string} HTML for the button's content.
    */
   _buttonContentHTML(state) {
-    return `<span class="icon-auto-awesome"></span><span class="model-name">${state.modelDisplay}</span>${this._thinkingChipHTML()}${state.hasOverride ? '<span class="override-dot"></span>' : ''}`;
+    return `<span class="icon-auto-awesome"></span><span class="model-name">${state.modelDisplay}</span>${this._thinkingChipHTML()}${this._serviceTierChipHTML()}${state.hasOverride ? '<span class="override-dot"></span>' : ''}`;
   }
 
   /**

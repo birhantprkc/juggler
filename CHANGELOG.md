@@ -17,6 +17,7 @@ of changes; this project follows semantic versioning.
 - LM Studio models now report the context window they are loaded with, not a conservative 8K
 - A reply cut off at the output limit now says so, instead of being retried three times
 - A background command's properties now show its live output and exit code, and can stop it
+- A premium serving speed now shows on the model button and can be set as the default
 
 ## [0.5.7] - 2026-08-19
 
