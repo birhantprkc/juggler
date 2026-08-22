@@ -7,13 +7,18 @@
  *
  * The attention manager ({@link module:utils/attention-manager}) fires one
  * alert when a conversation needs the user — a tool-action enters
- * awaiting-approval — AND the user is NOT looking at that conversation. The
- * conversation the user is actively watching never alerts.
+ * awaiting-approval, or a turn completes and the conversation comes to rest —
+ * AND the user is NOT looking at that conversation. The conversation the user is
+ * actively watching never alerts, and an alert that does fire stands until the
+ * conversation is viewed.
  *
- * These tests exercise the awaiting-approval edge, which is deterministic:
+ * Both edges are deterministic. For awaiting-approval,
  * `response-handler._handleApprovalFlow` sets the tool-action to pending in the
  * doc and THEN calls `_llmState.pause()` synchronously, so the manager's status
- * observer fires with awaiting=true before `waitForApproval` resolves.
+ * observer fires with awaiting=true before `waitForApproval` resolves. For
+ * turn-end, the worker bumps the durable `completedTurns` counter and publishes
+ * idle in the same settle, so the edge has landed by the time
+ * `waitForTurnComplete` resolves.
  *
  * Driving the seam from `customAssertions`:
  *  - The headless harness doesn't load app.js, so `initAttention(session)` is
@@ -172,27 +177,26 @@ export const attentionSuppressedWhenLookingTest = {
 };
 
 /**
- * A standing visual alert auto-dismisses after the timeout even if the user
- * never returns to the conversation: once flagged, the conversation clears its
- * own marker after `alertTimeoutMs` with no view.
+ * The other alert edge: a turn that simply FINISHES while the user is elsewhere.
+ * Nothing is waiting on them — the conversation has come to rest, which is the
+ * whole news — so this is the edge that makes a background tab worth glancing at,
+ * and it is driven by the durable `completedTurns` counter the worker bumps at
+ * the idle transition rather than by any approval state.
  *
- * Driven through the `flashForTest` seam rather than a real awaiting turn on
- * purpose: the flash surface is gated on the `flash` pref, which lives in
- * localStorage and is therefore SHARED across the whole parallel iframe pool —
- * sibling attention tests toggling it would race a turn-driven flash. The seam
- * arms the real production flash + auto-dismiss timer directly, so this asserts
- * the new timeout behaviour deterministically. (The awaiting-edge → alert wiring
- * is covered by {@link attentionFiresWhenNotLookingTest}.)
+ * The same test pins the alert's lifetime: it holds until the conversation is
+ * viewed. Nothing expires it, so a turn that ended while the user was away is
+ * still marked whenever they get back — and returning to it (window focus, with
+ * that conversation on screen) is what clears it.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
-export const attentionAutoDismissTest = {
-  name: 'attention-auto-dismisses',
-  description: 'A standing alert clears itself after the timeout without being viewed',
+export const attentionFiresOnTurnEndTest = {
+  name: 'attention-fires-on-turn-end',
+  description: 'A turn completing unwatched alerts once and stays flagged until viewed',
   fixture: 'unit-test-fixture',
 
-  // Unused: this test drives the flash seam directly rather than running a turn,
-  // but the runner expects a responses array.
-  llmResponses: [textResponse('noop')],
+  // A plain text reply: one turn, no tools, no approval — so the only edge
+  // available is the turn coming to rest.
+  llmResponses: [textResponse('All done.')],
 
   operations: [],
 
@@ -200,44 +204,45 @@ export const attentionAutoDismissTest = {
    * @param {any} conversation
    * @param {{harness: any}} ctx
    */
-  customAssertions: async (conversation, ctx) => {
-    const session = ctx.harness.innerHarness.session;
+  customAssertions: async (conversation, { harness }) => {
+    const session = harness.innerHarness.session;
     const convId = conversation.id;
+    const prevNotify = getAttentionPrefs().notify;
 
-    /**
-     * Await a deterministic condition (no fixed sleep), matching the codebase's
-     * poll-until-state convention.
-     * @param {() => boolean} pred
-     * @param {string} label
-     */
-    const pollUntil = async (pred, label) => {
-      const start = Date.now();
-      while (Date.now() - start < 3000) {
-        if (pred()) return;
-        await new Promise(r => setTimeout(r, 10));
-      }
-      throw new Error(`Timeout waiting for ${label}`);
-    };
-
-    // A short auto-dismiss window keeps the test fast; "not looking" so a clear
-    // only comes from the timeout, never from a focus reconcile.
-    __attention.setAlertTimeoutForTest(150);
+    setNotifyEnabled(false);
     __attention.setFocusedForTest(false);
 
     try {
+      // Wire while idle so the first observation seeds the baseline silently.
       initAttention(session);
+      const baseline = __attention.alertCount;
 
-      // Raise the standing flash directly (production path, minus the pref gate).
-      __attention.flashForTest(convId);
+      await harness.driver.typeAndSend('Say something and stop');
+      harness.consumeResponse();
+      await harness.awaitPendingSend();
+      await harness.waitForTurnComplete();
+
+      const delta = __attention.alertCount - baseline;
+      if (delta !== 1) {
+        throw new Error(`expected exactly 1 attention alert for the completed turn, got ${delta}`);
+      }
+      if (__attention.lastAlert?.convId !== convId) {
+        throw new Error(`lastAlert.convId should be ${convId}, got ${__attention.lastAlert?.convId}`);
+      }
       if (!__attention.isFlagged(convId)) {
-        throw new Error('expected flashForTest to flag the conversation immediately');
+        throw new Error('the conversation must stay flagged after the turn-end alert');
       }
 
-      // With no view, the standing alert clears itself once the timeout elapses.
-      await pollUntil(() => !__attention.isFlagged(convId), 'auto-dismiss of standing alert');
+      // The user comes back to it: the window regains focus with this
+      // conversation on screen, which is the production clear path.
+      __attention.setFocusedForTest(true);
+      window.dispatchEvent(new Event('focus'));
+      if (__attention.isFlagged(convId)) {
+        throw new Error('viewing the conversation must clear its standing alert');
+      }
     } finally {
       __attention.setFocusedForTest(null);
-      __attention.setAlertTimeoutForTest(20000);
+      setNotifyEnabled(prevNotify);
     }
   }
 };
@@ -245,5 +250,5 @@ export const attentionAutoDismissTest = {
 export const tests = [
   attentionFiresWhenNotLookingTest,
   attentionSuppressedWhenLookingTest,
-  attentionAutoDismissTest
+  attentionFiresOnTurnEndTest
 ];

@@ -17,13 +17,14 @@
  *    not POST a reorder either — an order write is what other windows would
  *    follow.
  *
- * `tabHighlight` spans two modules, and the SECOND one is what a user actually
- * sees: the attention manager's one-shot flash and standing tint last a moment,
- * while `conversation-bar`'s `.is-awaiting` pulse runs for as long as an approval
- * is parked. Gating only the former looks, from the outside, like the setting
- * does nothing — so the bar's half is pinned here too, including the repaint of
- * tabs ALREADY pulsing when the preference changes (the pulse must stop then and
- * there, not whenever the approval resolves).
+ * `tabHighlight` spans two modules, and the SECOND one is the louder: the
+ * attention manager's standing tint waits quietly until the conversation is
+ * viewed, while `conversation-bar`'s `.is-awaiting` pulse runs, yellow and
+ * moving, for as long as an approval is parked. Gating only the former looks,
+ * from the outside, like the setting does nothing — so the bar's half is pinned
+ * here too, including the repaint of tabs ALREADY pulsing when the preference
+ * changes (the pulse must stop then and there, not whenever the approval
+ * resolves).
  *
  * The bump half runs `Session.prototype.bumpConversation` against a minimal
  * stand-in `this` (a conversations Map plus the real `_setConversationOrder`),
@@ -132,8 +133,9 @@ export async function runTests() {
   const tabs = [];
 
   // Flagging a conversation re-syncs the browser-tab title badge; switch the
-  // out-of-app signal off so this suite leaves the page title alone (the flags
-  // it raises outlive it until their auto-dismiss fires).
+  // out-of-app signal off so this suite leaves the page title alone while it
+  // raises flags on conversations that don't exist. An alert lasts until its
+  // conversation is viewed, so the flags themselves are dropped in the finally.
   setNotifyEnabled(false);
 
   try {
@@ -250,8 +252,14 @@ export async function runTests() {
     // needsExclusiveRun.
     setTabHighlightEnabled(prefs.tabHighlight);
     setTabReorderEnabled(prefs.tabReorder);
+    for (const tab of tabs) {
+      const id = tab.dataset.conversationId;
+      if (id) __attention.clearForTest(id);
+      tab.remove();
+    }
+    // Last, so restoring the out-of-app signal re-syncs a title badge against an
+    // empty flag set rather than the invented conversations above.
     setNotifyEnabled(prefs.notify);
-    for (const tab of tabs) tab.remove();
   }
 
   return { passed, failed, errors };

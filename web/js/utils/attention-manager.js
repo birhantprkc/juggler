@@ -32,8 +32,11 @@
  * that one above all — `conversation-bar._refreshTabStatus` reads
  * {@link isTabHighlightEnabled} for exactly that reason.
  *
- * A standing alert clears when you view the conversation, or auto-dismisses after
- * {@link alertTimeoutMs} so it never lingers when you don't return to it.
+ * A standing alert clears when you view the conversation, and only then. Being
+ * away is exactly the case it exists for, so a turn that finished while you were
+ * gone is still marked when you come back, however long that took; the alert is
+ * dropped when its conversation is binned or deleted, which is the one way a
+ * flag can outlive the thing it points at.
  *
  * Preference model mirrors {@link module:utils/theme-manager}: a per-window
  * choice in localStorage, so different windows can have different needs (one
@@ -191,19 +194,22 @@ export function isTabHighlightEnabled() {
 }
 
 /**
- * Turn conversation-tab highlighting on or off. Turning it off also strips the
- * alert marks from tabs flagged before the change, so the tab bar goes quiet
- * immediately rather than at the next auto-dismiss. The flags themselves stay —
- * those conversations still need the user, and jump-to-attention still finds
- * them. The awaiting pulse is repainted by the conversation bar, which listens
- * for the {@link ATTENTION_PREFS_EVENT} this fires.
+ * Turn conversation-tab highlighting on or off. Both directions are applied to
+ * tabs flagged before the change, so the tab bar answers the switch immediately:
+ * off strips their alert marks, on restores the standing tint (not the one-shot
+ * blink — that announced an edge that has passed). The flags themselves are
+ * untouched either way — those conversations still need the user, and
+ * jump-to-attention still finds them. The awaiting pulse is repainted by the
+ * conversation bar, which listens for the {@link ATTENTION_PREFS_EVENT} this
+ * fires.
  * @param {boolean} on
  * @returns {void}
  */
 export function setTabHighlightEnabled(on) {
   savePrefs({ tabHighlight: !!on });
-  if (!on) {
-    for (const convId of flagged) clearTabMarks(convId);
+  for (const convId of flagged) {
+    if (on) tabElement(convId)?.classList.add('needs-attention');
+    else clearTabMarks(convId);
   }
 }
 
@@ -265,19 +271,6 @@ const flagged = new Set();
  * @type {string|null}
  */
 let savedTitle = null;
-/**
- * Per-conversation auto-dismiss timers. A standing alert clears itself after
- * {@link alertTimeoutMs} so it never lingers when the user doesn't come back to
- * it; viewing the conversation cancels its timer early.
- * @type {Map<string, ReturnType<typeof setTimeout>>}
- */
-const dismissTimers = new Map();
-/**
- * How long a standing alert survives before auto-dismissing (ms). Overridable
- * via the test seam.
- * @type {number}
- */
-let alertTimeoutMs = 20000;
 
 /**
  * Whether this page is a plain browser tab rather than a native desktop-app
@@ -345,8 +338,8 @@ function clearTabMarks(convId) {
 
 /**
  * Flag a conversation as needing the user and, when the `tabHighlight` pref
- * allows, mark its sidebar tab: a brief one-shot animation plus a standing tint,
- * auto-dismissing after {@link alertTimeoutMs}. With the pref off the tab is
+ * allows, mark its sidebar tab: a brief one-shot animation plus a standing tint
+ * that lasts until the conversation is viewed. With the pref off the tab is
  * left untouched but the conversation is still flagged, so the chime, the
  * out-of-app signal and jump-to-attention behave identically. Also re-syncs the
  * browser-tab title badge, which honours the `notify` pref.
@@ -364,28 +357,19 @@ function flashConversation(convId) {
     tab.classList.add('attention-flash');
     // Drop the flash class once the blinks finish so the tab falls back to its
     // underlying state (the awaiting pulse, or idle) — the standing
-    // `needs-attention` marker persists until the alert is viewed or times out.
+    // `needs-attention` marker persists until the alert is viewed.
     tab.addEventListener('animationend', () => tab.classList.remove('attention-flash'), { once: true });
   }
-  // (Re)arm the auto-dismiss countdown; a fresh alert restarts the clock.
-  const existing = dismissTimers.get(convId);
-  if (existing) clearTimeout(existing);
-  dismissTimers.set(convId, setTimeout(() => clearFlash(convId), alertTimeoutMs));
   syncBrowserTitleBadge();
 }
 
 /**
- * Clear the visual alert for one conversation (it's been viewed or timed out),
- * cancelling its pending auto-dismiss timer.
+ * Clear the visual alert for one conversation — it's been viewed, or it has gone
+ * away.
  * @param {string} convId
  * @private
  */
 function clearFlash(convId) {
-  const timer = dismissTimers.get(convId);
-  if (timer) {
-    clearTimeout(timer);
-    dismissTimers.delete(convId);
-  }
   if (!flagged.delete(convId)) return;
   clearTabMarks(convId);
   syncBrowserTitleBadge();
@@ -554,9 +538,13 @@ export function initAttention(sess) {
   };
   wire();
 
-  sess.subscribe(/** @param {{type: string}} e */ (e) => {
+  sess.subscribe(/** @param {{type: string, data?: any}} e */ (e) => {
     if (e.type === 'conversation:created') wire();
     if (e.type === 'conversation:switched') reconcileVisible();
+    // An alert outlives everything but a view, so a binned or deleted
+    // conversation has to take its own with it — otherwise the title badge
+    // stands for a conversation that no longer exists and nothing can clear it.
+    if (e.type === 'conversation:deleted' && e.data?.id) clearFlash(e.data.id);
   });
 
   window.addEventListener('focus', reconcileVisible);
@@ -571,15 +559,17 @@ export function initAttention(sess) {
 
 /**
  * Test/debug seam. Not part of the supported API.
- * @type {{alertCount: number, lastAlert: any, setFocusedForTest: (v: boolean|null) => void, setAlertTimeoutForTest: (ms: number) => void, isFlagged: (convId: string) => boolean, flashForTest: (convId: string) => void}}
+ * @type {{alertCount: number, lastAlert: any, setFocusedForTest: (v: boolean|null) => void, isFlagged: (convId: string) => boolean, flashForTest: (convId: string) => void, clearForTest: (convId: string) => void}}
  */
 export const __attention = {
   alertCount: 0,
   lastAlert: null,
   setFocusedForTest(v) { focusOverride = v; },
-  setAlertTimeoutForTest(ms) { alertTimeoutMs = ms; },
   isFlagged(/** @type {string} */ convId) { return flagged.has(convId); },
   flashForTest(/** @type {string} */ convId) { flashConversation(convId); },
+  // A flag lasts until its conversation is viewed or goes away, so a test that
+  // raises one on a conversation it invented has to put it back itself.
+  clearForTest(/** @type {string} */ convId) { clearFlash(convId); },
 };
 // @ts-ignore — expose for integration tests to assert alert firing.
 if (typeof window !== 'undefined') window.__attention = __attention;

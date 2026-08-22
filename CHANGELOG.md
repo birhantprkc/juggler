@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- A tab marked while you were away stays marked until you look at it
 - GPT models now describe their work beside the spinner instead of adding thinking items
 - Each provider now lets you hide models from the list that is shown
 - Tool lists and MCP errors now say why a tool never reached the model
