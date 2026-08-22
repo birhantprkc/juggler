@@ -4,8 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { shell, shellStreaming, shellBackground, MAX_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS } from 'juggler/ops';
+import { shell, shellStreaming, shellBackground, shellKill, MAX_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { createHighlightedCode, createSummaryWithSubtitle } from 'juggler/ui';
+import { renderLiveTaskOutput } from '../../../sdk/lib/live-task-output.js';
 import { resolveAgainstCwd } from 'juggler/utils/path-containment';
 import { isCommandAutoApproved, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
 import { isShellCommandPermitted, isShellCommandCatastrophic } from './execute/command-permission.js';
@@ -34,6 +35,29 @@ function prettyTimeout(ms) {
   if (mins > 0) parts.push(`${mins} minute${mins === 1 ? '' : 's'}`);
   if (secs > 0 || mins === 0) parts.push(`${secs} second${secs === 1 ? '' : 's'}`);
   return parts.join(' ');
+}
+
+/**
+ * Describe a background task's state for the live output section's status line.
+ * A background run's exit is otherwise invisible: the tool-action's own outcome
+ * froze at "started OK" the moment the process was spawned.
+ * @param {import('../../../sdk/lib/live-task-output.js').TaskOutputState} state - Latest task state
+ * @returns {string} One line of status
+ */
+function describeTaskStatus(state) {
+  switch (state.status) {
+    case 'running':
+      return 'Running';
+    case 'completed':
+    case 'failed': {
+      const exit = `Exit ${Number(state.exitCode ?? 0)}`;
+      return state.error ? `${exit} — ${state.error}` : exit;
+    }
+    case 'not_found':
+      return 'Gone — reaped an hour after it ended, or lost to a server restart';
+    default:
+      return String(state.status || '');
+  }
 }
 
 /**
@@ -1073,13 +1097,45 @@ class ExecuteContextItem extends ContextItem {
     const ms = input.timeout ?? DEFAULT_EXEC_TIMEOUT_MS;
     helpers.addSubsection(wrapper, 'Timeout', prettyTimeout(ms), 'properties-panel-code');
 
+    if (!input.run_in_background) return;
+
     // Background runs spawn a durable, addressable process. Surface its task id
     // as a first-class property so the user can find the handle to read
-    // (TaskOutput) or kill (TaskStop) it — invisible before this row existed.
-    if (input.run_in_background) {
-      const taskId = ExecuteContextItem._backgroundTaskId(toolAction);
-      helpers.addSubsection(wrapper, 'Background task', taskId || '(starting…)', 'properties-panel-code');
-    }
+    // (TaskOutput) or kill (TaskStop) it.
+    const taskId = ExecuteContextItem._backgroundTaskId(toolAction);
+    helpers.addSubsection(wrapper, 'Background task', taskId || '(starting…)', 'properties-panel-code');
+
+    // No task id means the launch itself failed or hasn't landed — leave the
+    // generic result section to report it.
+    if (!taskId) return;
+
+    // The tool result for a background run is only the handle and how to read it
+    // — the process's actual output never enters the conversation. Show both: the
+    // text the model was handed, then the live buffer the server is accumulating.
+    const resultText = ExecuteContextItem._resultText(toolAction);
+    if (resultText) helpers.addSubsection(wrapper, 'Result', resultText, 'properties-panel-result');
+    // A background run has no delivery binding to cancel (the way Monitor does),
+    // so the panel is the only place a user can reach the process: kill it
+    // directly through the same op TaskStop calls.
+    renderLiveTaskOutput(wrapper, {
+      taskId,
+      helpers,
+      describeStatus: describeTaskStatus,
+      onStop: () => shellKill({ shell_id: taskId }),
+      stopLabel: 'Stop task'
+    });
+
+    return { skipResultSection: true };
+  }
+
+  /**
+   * A tool-action's stored outcome as a plain object (Y.Map or already-plain).
+   * @param {any} toolAction - The tool-action Y.Map.
+   * @returns {any} The plain outcome, or undefined when there is none.
+   */
+  static _resultPlain(toolAction) {
+    const resultMap = toolAction?.get?.('result');
+    return resultMap?.toJSON ? resultMap.toJSON() : resultMap;
   }
 
   /**
@@ -1090,9 +1146,17 @@ class ExecuteContextItem extends ContextItem {
    * @returns {string} The task id, or '' if not yet available.
    */
   static _backgroundTaskId(toolAction) {
-    const resultMap = toolAction?.get?.('result');
-    const plain = resultMap?.toJSON ? resultMap.toJSON() : resultMap;
-    return String(plain?.fullResult?.result?.task_id || '');
+    return String(ExecuteContextItem._resultPlain(toolAction)?.fullResult?.result?.task_id || '');
+  }
+
+  /**
+   * The result text the LLM was handed, as the generic result section resolves it.
+   * @param {any} toolAction - The tool-action Y.Map.
+   * @returns {string} The result text, or '' when there is none.
+   */
+  static _resultText(toolAction) {
+    const plain = ExecuteContextItem._resultPlain(toolAction);
+    return String(plain?.content || plain?.output || '');
   }
 }
 

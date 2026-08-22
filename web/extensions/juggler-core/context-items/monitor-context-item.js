@@ -4,9 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { shellBackground, shellOutput, MAX_EXEC_TIMEOUT_MS } from 'juggler/ops';
+import { shellBackground, MAX_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { createSummaryWithSubtitle } from 'juggler/ui';
-import { ansiToFragment, applyAnsi } from '../../../sdk/lib/ansi.js';
+import { renderLiveTaskOutput } from '../../../sdk/lib/live-task-output.js';
 import { renderTaskDeliveryControl } from '../../../sdk/lib/task-delivery-control.js';
 import { isShellCommandPermitted, isShellCommandCatastrophic } from './execute/command-permission.js';
 
@@ -313,68 +313,15 @@ class MonitorContextItem extends ContextItem {
     // --- Live "Output" section: parity with how bash shows captured output. ---
     // The monitor's stdout/stderr is NOT in the Yjs doc (the worker pump injects
     // it into the conversation as messages); the shell registry exposes the
-    // accumulated buffer via the `shellOutput` op. We poll it on an interval
-    // while the binding is Active and append the growing delta non-destructively
-    // — never rebuilding (which would reset scroll). Read-only: the poll mutates
-    // no durable state, only this local DOM.
-    const outSection = helpers.labeledSubsection('Output');
-
-    const copyable = helpers.createCopyableText('', 'properties-panel-text', { ansi: true });
-    outSection.appendChild(copyable);
-    wrapper.appendChild(outSection);
-
-    const pre = copyable.querySelector('pre');
-    let lastLen = 0;
-    let placeholderShown = true;
-    if (pre) pre.textContent = '(no output yet)';
-
-    // Append-only DOM growth: track how many chars we've already rendered and
-    // append just the new tail. A rare buffer shrink (head+tail capping rewrites
-    // the string) triggers a single full rebuild, after which appends resume.
-    // Never reads or writes scrollTop.
-    const applyOutput = (/** @type {string|undefined} */ raw) => {
-      if (!pre) return;
-      const text = String(raw ?? '');
-      if (text.length === 0) return;
-      if (placeholderShown) { pre.textContent = ''; placeholderShown = false; lastLen = 0; }
-      if (text.length < lastLen) {
-        applyAnsi(pre, text);
-        lastLen = text.length;
-        return;
-      }
-      if (text.length > lastLen) {
-        pre.appendChild(ansiToFragment(text.slice(lastLen)));
-        lastLen = text.length;
-      }
-    };
-
-    let timer = /** @type {ReturnType<typeof setInterval>|null} */ (null);
-    const stopPolling = () => {
-      if (timer !== null) { clearInterval(timer); timer = null; }
-    };
-
-    // One tick: read the buffer, append the delta, and stop once the binding is
-    // no longer Active (or the panel detaches). Self-cleans like the observer
-    // above — bails before touching the DOM if the section was removed mid-await.
-    const tick = async () => {
-      if (!outSection.isConnected) { stopPolling(); return; }
-      let res;
-      try {
-        res = await shellOutput({ task_id: taskId });
-      } catch {
-        return;
-      }
-      if (!outSection.isConnected) { stopPolling(); return; }
-      applyOutput(res?.output);
-      if (messageThread.getTaskDeliveryStatus(taskId) !== 'active') stopPolling();
-    };
-
-    // Fetch once immediately; only arm the interval while Active so a finished
-    // monitor gets exactly one (final) fetch and never polls forever.
-    void tick();
-    if (messageThread.getTaskDeliveryStatus(taskId) === 'active') {
-      timer = setInterval(() => { void tick(); }, 1000);
-    }
+    // accumulated buffer, which the shared section polls. A monitor's life is its
+    // delivery binding, not the task's own status, so it keeps reading while the
+    // binding is Active; the status is already on the control above, so no status
+    // line here. Read-only: the poll mutates no durable state, only local DOM.
+    renderLiveTaskOutput(wrapper, {
+      taskId,
+      helpers,
+      isRunning: () => messageThread.getTaskDeliveryStatus(taskId) === 'active'
+    });
   }
 }
 

@@ -2080,6 +2080,25 @@ properties-panel-subsection {
     margin: 0;
 }
 
+/* Live background-task output: the status line above the buffer, and the note
+   that the server dropped the buffer's middle. Both annotate the output rather
+   than being output, so they shed the boxed treatment .properties-panel-text
+   gives verbatim text and read as captions instead. */
+.live-task-output-status,
+.live-task-output-note {
+    background: none;
+    padding: 0;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* The Stop button shrinks to fit its label: .properties-panel-btn is
+   display:flex inside a column flex subsection, so it would otherwise stretch
+   the full width of the panel. */
+.live-task-output-stop {
+    align-self: flex-start;
+}
+
 /* User-message attachments: a vertical list of thumbnail + metadata rows. */
 .properties-panel-attachments {
     display: flex;

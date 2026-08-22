@@ -49,6 +49,7 @@ import { tests as queuedMessageTests } from '../integration-tests/queued-message
 import { tests as monitorDeliveryTests } from '../integration-tests/monitor-delivery-tests.js';
 import { tests as monitorKillTests } from '../integration-tests/monitor-kill-tests.js';
 import { tests as largeOutputTests } from '../integration-tests/large-output-tests.js';
+import { tests as backgroundOutputTests } from '../integration-tests/background-output-tests.js';
 import { tests as memoryTests } from '../integration-tests/memory-tests.js';
 import { tests as attentionAlertTests } from '../integration-tests/attention-alert-tests.js';
 import { tests as binGuardTests } from '../integration-tests/bin-guard-tests.js';
@@ -267,6 +268,7 @@ const ALL_TESTS = [
   ...monitorDeliveryTests,
   ...monitorKillTests,
   ...largeOutputTests,
+  ...backgroundOutputTests,
   ...memoryTests,
   ...attentionAlertTests,
   ...binGuardTests,
