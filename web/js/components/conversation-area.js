@@ -863,7 +863,13 @@ class ConversationArea extends HTMLElement {
             if (document.activeElement?.tagName === 'TEXTAREA') {
               /** @type {HTMLElement} */ (document.activeElement).blur();
             }
-            e.stopPropagation();
+            // A click on a link selects the item AND follows the link: the
+            // app's link safety net is a delegated handler on document, so
+            // stopping propagation here would leave the anchor to its default
+            // same-window navigation — off the app's page, with no way back.
+            if (!target.closest?.('a[href]')) {
+              e.stopPropagation();
+            }
             return;
           }
         }

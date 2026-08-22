@@ -93,6 +93,20 @@ export async function runTests(_ctx) {
     assert(decide('docs/guide') === null, `relative docs/guide must not be hijacked: ${decide('docs/guide')}`);
   });
 
+  run('dotted relative directory is not mistaken for a host', () => {
+    assert(decide('foo.bar/notes.md') === null,
+      `foo.bar is a directory, not a TLD: ${decide('foo.bar/notes.md')}`);
+    assert(decide('v1.2/notes.md') === null,
+      `v1.2 is a directory, not a host: ${decide('v1.2/notes.md')}`);
+  });
+
+  run('ccTLD and generic-TLD hosts still open externally', () => {
+    assert(decide('example.co.uk/page') === 'https://example.co.uk/page',
+      `ccTLD host should become https: ${decide('example.co.uk/page')}`);
+    assert(decide('example.dev/docs') === 'https://example.dev/docs',
+      `generic-TLD host should become https: ${decide('example.dev/docs')}`);
+  });
+
   run('in-page hash anchor is left alone', () => {
     assert(decide('#section') === null, 'hash anchor must not open externally');
   });

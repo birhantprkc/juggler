@@ -33,8 +33,8 @@ import { updateWindowTitle } from './utils/window-title.js';
 import { initAttention } from './utils/attention-manager.js';
 import scheduledSendService from './services/scheduled-send-service.js';
 import { initViewportFit } from './utils/viewport-fit.js';
-import { openExternalURL, externalURLFromHref, localFilePathFromHref, reportDraftsFlushed } from '../sdk/lib/window-control.js';
-import { osOpenPath } from './services/ops-api.js';
+import { reportDraftsFlushed } from '../sdk/lib/window-control.js';
+import { installLinkGuard } from './services/link-guard.js';
 import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-installs on import)
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
 import { normalizeAttachments } from './utils/attachments.js';
@@ -242,40 +242,9 @@ class JugglerApp {
     // indicators don't burn CPU re-rasterising frames nobody can see.
     this._initDocumentVisibilityPause();
 
-    // External-link safety net. Markdown-rendered content (LLM and message
-    // output) emits bare <a href> anchors at many render sites; a plain
-    // target=_blank is swallowed by the native WebView and a same-window
-    // navigation would tear the app off its page. One delegated handler hands
-    // external links to the system browser via the loopback opener (a no-op
-    // fallthrough to a new tab in a plain browser). externalURLFromHref also
-    // re-qualifies scheme-less bare-domain links (e.g. [repo](github.com/u/r),
-    // which the browser would otherwise resolve same-origin and navigate to).
-    // Runs in the bubble phase: explicit per-element handlers (settings,
-    // modals) call preventDefault first, so defaultPrevented skips them here
-    // — no double-open. Modifier/middle clicks and downloads are left alone.
-    document.addEventListener('click', (e) => {
-      if (e.defaultPrevented || e.button !== 0) return;
-      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      const target = /** @type {HTMLElement} */ (e.target);
-      const anchor = /** @type {HTMLAnchorElement|null} */ (target.closest?.('a[href]'));
-      if (!anchor || anchor.hasAttribute('download')) return;
-      const rawHref = anchor.getAttribute('href') || '';
-      const external = externalURLFromHref(rawHref, anchor.href);
-      if (external) {
-        e.preventDefault();
-        openExternalURL(external);
-        return;
-      }
-      // A same-origin link to an on-disk project file (markdown output routinely
-      // emits these, e.g. a report link). Navigating there 404s and tears the
-      // app off its page with no way back — open it with the OS default handler
-      // instead (the 'os' op resolves it against the project dir, server-side).
-      const filePath = localFilePathFromHref(rawHref, anchor.href);
-      if (filePath) {
-        e.preventDefault();
-        void osOpenPath({ path: filePath }).catch(() => {});
-      }
-    });
+    // Safety net for anchors in rendered markdown: without it a click on one
+    // navigates the app's window off its own page. See services/link-guard.js.
+    installLinkGuard(document);
 
     document.addEventListener('duplicate-conversation', () => {
       this._handleDuplicateConversation();

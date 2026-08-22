@@ -117,6 +117,16 @@ export async function pickDirectory() {
 }
 
 /**
+ * Top-level domains a scheme-less bare-domain href is recognised by: every
+ * two-letter ccTLD (`co.uk`, `example.io`, `example.de`) plus the common
+ * generic ones. A dotted first segment ending in anything else — `foo.bar/x`,
+ * `v1.2/notes.md` — is a directory, not a host, and stays relative.
+ * @type {RegExp}
+ */
+const KNOWN_TLD =
+  /^([a-z]{2}|com|org|net|edu|gov|mil|int|info|biz|dev|app|xyz|tech|online|site|blog|page|cloud|store|shop|news|wiki)$/i;
+
+/**
  * Decide whether a clicked anchor should be opened externally, and with what
  * URL — the safety net for links in rendered markdown (LLM/user/tool output).
  *
@@ -144,13 +154,21 @@ export function externalURLFromHref(rawHref, resolvedHref, currentOrigin) {
   if (!trimmed || trimmed.startsWith('#')) return null;
 
   // Scheme-less, non-absolute href: a candidate bare external domain. Only
-  // re-qualify when the first segment is a real-looking host AND there's a path
-  // after it (or a `www.` prefix), so single relative files like `readme.md`
-  // stay relative while `github.com/u/r` and `www.example.com` open externally.
+  // re-qualify when the first segment is a real-looking host — dotted, ending
+  // in a known TLD — AND there's a path after it (or a `www.` prefix), so
+  // relative paths like `readme.md`, `foo.bar/x` and `v1.2/notes.md` stay
+  // relative while `github.com/u/r` and `www.example.com` open externally.
+  // Guessing wrong in this direction is the cheap one: a relative path that
+  // isn't a real file makes the OS-open op a silent no-op, where a misread
+  // directory name would send the user's browser somewhere they never asked for.
   const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
   if (!hasScheme && !trimmed.startsWith('/') && !trimmed.startsWith('?')) {
     const firstSeg = trimmed.split(/[/?#]/, 1)[0] || '';
-    const looksDomain = /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$/i.test(firstSeg);
+    const host = firstSeg.replace(/:\d+$/, '');
+    const labels = host.split('.');
+    const looksDomain = labels.length > 1
+      && labels.every((label) => /^[a-z0-9-]+$/i.test(label))
+      && KNOWN_TLD.test(labels[labels.length - 1] || '');
     const hasPath = trimmed.length > firstSeg.length;
     const isWww = /^www\./i.test(firstSeg);
     return looksDomain && (hasPath || isWww) ? `https://${trimmed}` : null;

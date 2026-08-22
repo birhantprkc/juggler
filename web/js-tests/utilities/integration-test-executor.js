@@ -34,6 +34,7 @@ import { tests as rerunTests } from '../integration-tests/rerun-tests.js';
 import { tests as editTests } from '../integration-tests/edit-tests.js';
 import { tests as selectionRuleTests } from '../integration-tests/selection-rule-tests.js';
 import { tests as fileMentionTests } from '../integration-tests/file-mention-tests.js';
+import { tests as linkClickTests } from '../integration-tests/link-click-tests.js';
 import { tests as footerCacheTests } from '../integration-tests/footer-cache-tests.js';
 import { tests as footerUndoOfferTests } from '../integration-tests/footer-undo-offer-tests.js';
 import { tests as imageAttachmentTests } from '../integration-tests/image-attachment-tests.js';
@@ -112,6 +113,7 @@ import { runTests as runMarkdownScopedCssTests } from '../unit-tests/markdown-sc
 import { runTests as runMarkdownTaskListTests } from '../unit-tests/markdown-task-list-test.js';
 import { runTests as runUserMessageMarkdownTests } from '../unit-tests/user-message-markdown-test.js';
 import { runTests as runExternalLinkTests } from '../unit-tests/external-link-test.js';
+import { runTests as runLinkGuardTests } from '../unit-tests/link-guard-test.js';
 import { runTests as runAnsiTests } from '../unit-tests/ansi-test.js';
 import { runTests as runUIPrefScopeTests } from '../unit-tests/ui-pref-scope-test.js';
 import { runTests as runToolNameResolutionTests } from '../unit-tests/tool-name-resolution-test.js';
@@ -248,6 +250,7 @@ const ALL_TESTS = [
   ...editTests,
   ...selectionRuleTests,
   ...fileMentionTests,
+  ...linkClickTests,
   ...footerCacheTests,
   ...footerUndoOfferTests,
   ...imageAttachmentTests,
@@ -360,6 +363,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:markdown-task-list', run: runMarkdownTaskListTests },
   { name: 'unit:user-message-markdown', run: runUserMessageMarkdownTests },
   { name: 'unit:external-link', run: runExternalLinkTests },
+  { name: 'unit:link-guard', run: runLinkGuardTests },
   { name: 'unit:ansi', run: runAnsiTests },
   { name: 'unit:ui-pref-scope', run: runUIPrefScopeTests },
   { name: 'unit:tool-name-resolution', run: runToolNameResolutionTests },
