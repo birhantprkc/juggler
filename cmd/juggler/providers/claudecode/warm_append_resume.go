@@ -376,32 +376,46 @@ const teardownAbortResultText = "tool execution aborted: conversation session en
 // it carries). A user turn holding any other block is real history: if one
 // block fails the test, nothing is cut.
 //
-// The scan walks back over trailing assistant entries (a turn stranded on the
-// far side of the stale answer) to the newest user entry, skipping the CLI's own
-// records (isMessageEntry) — the attachment it writes straight after the very
-// tool_result being cut among them. Any user turn that does not qualify means
-// real conversation continued past this point, and nothing may be cut.
+// Wreckage is a RUN of qualifying user entries, not one: the CLI journals one
+// entry per content block, so a turn parked on several calls at once is closed
+// with one stale answer each. The cut goes back to the oldest of them, and the
+// first assistant entry behind one is the dangling tool_use they answer — the
+// anchor itself, never something to walk past.
+//
+// The scan walks back from the file's end, skipping the CLI's own records
+// (isMessageEntry) — the attachment it writes straight after the very
+// tool_result being cut among them. Before any wreckage is found it also walks
+// past assistant entries, a turn stranded on the far side of the stale answers.
+// Any user turn that does not qualify means real conversation continued past
+// this point: the scan stops, and nothing beyond wreckage already found is cut.
 func dropTeardownWreckage(lines [][]byte, appending map[string]bool) ([][]byte, bool) {
+	cut := -1
+scan:
 	for i := len(lines) - 1; i >= 0; i-- {
 		var probe struct {
 			UUID string `json:"uuid"`
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(lines[i], &probe); err != nil {
-			return nil, false
+			// An unparseable line is not something we can reason about: stop here
+			// and keep whatever run has already been positively classified.
+			break scan
 		}
 		switch {
 		case probe.UUID == "" || !isMessageEntry(probe.Type):
 			continue // a record about the session — not a turn in it
-		case probe.Type == "assistant":
-			continue // a turn stranded on the far side of the stale answer
+		case probe.Type == "assistant" && cut < 0:
+			continue // a turn stranded on the far side of the stale answers
 		case probe.Type == "user" && (answersOnlyCalls(lines[i], appending) || isTeardownAbortEntry(lines[i])):
-			return lines[:i], true
+			cut = i // one stale answer per parked call: keep walking for its siblings
 		default:
-			return nil, false
+			break scan
 		}
 	}
-	return nil, false
+	if cut < 0 {
+		return nil, false
+	}
+	return lines[:cut], true
 }
 
 // answersOnlyCalls reports whether a session entry is a user turn whose content

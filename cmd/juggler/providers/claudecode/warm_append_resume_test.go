@@ -560,6 +560,62 @@ func TestAppendToolResultsToWarmSession_HealsCLIClosedCallTailUnderAttachment(t 
 	}
 }
 
+// TestAppendToolResultsToWarmSession_HealsCLIClosedCallTailForParallelCalls is
+// the same wreckage left by a turn parked on TWO calls at once, which is what a
+// quit mid-turn usually catches.
+//
+// The CLI journals one entry per content block on the way down too, so it closes
+// each parked call in its own entry: the file ends on a RUN of stale answers, one
+// per call, under the usual attachment. A cut that stops at the newest of them
+// leaves the older one as the tail, and the tail scan reports a file ending in
+// "user" — cold-starting a warm conversation exactly as if nothing had been cut.
+func TestAppendToolResultsToWarmSession_HealsCLIClosedCallTailForParallelCalls(t *testing.T) {
+	userpathstest.Isolate(t)
+	workingDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatalf("mkdir workingDir: %v", err)
+	}
+	const uuid = "uuid-parallel-closed-calls"
+	path := seedWarmSession(t, workingDir, uuid, "call_1", "call_2")
+	appendRawEntries(t, path,
+		newSyntheticEntry("user", []map[string]any{{
+			"type": "tool_result", "tool_use_id": "call_1",
+			"content": "(mcp__juggler__bash completed with no output)",
+		}}, "uuid-cli-closed-1", "uuid-asst-1", uuid, workingDir, time.Now()),
+		newSyntheticEntry("user", []map[string]any{{
+			"type": "tool_result", "tool_use_id": "call_2",
+			"content": "(mcp__juggler__bash completed with no output)",
+		}}, "uuid-cli-closed-2", "uuid-asst-2", uuid, workingDir, time.Now()),
+		cliAttachmentEntry("uuid-attach-1", "uuid-cli-closed-2", uuid, tokensReminder()),
+	)
+
+	c := &Client{workingDir: workingDir, activeSession: &activeSession{sessionUUID: uuid}}
+	results := []provider.Message{toolResultMsg("call_1", "first answer"), toolResultMsg("call_2", "second answer")}
+	if err := c.appendToolResultsToWarmSession(results, nil); err != nil {
+		t.Fatalf("appendToolResultsToWarmSession: %v (both closing results must be cut, not just the last)", err)
+	}
+
+	entries := readJSONL(t, path)
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 entries (user, 2 tool_use, 2 real results); got %d — every one of the CLI's closing results must be cut", len(entries))
+	}
+	for i, want := range []struct{ parent, content string }{
+		{"uuid-asst-1", "first answer"},
+		{"uuid-asst-2", "second answer"},
+	} {
+		entry := entries[3+i]
+		if entry["parentUuid"] != want.parent {
+			t.Fatalf("appended entry %d parentUuid = %v, want %s (each result chains to the tool_use it answers)", i, entry["parentUuid"], want.parent)
+		}
+		msg, _ := entry["message"].(map[string]any)
+		content, _ := msg["content"].([]any)
+		block, _ := content[0].(map[string]any)
+		if block["content"] != want.content {
+			t.Fatalf("appended block %d = %+v, want the real result %q", i, block, want.content)
+		}
+	}
+}
+
 // TestAppendToolResultsToWarmSession_SkipsTrailingUUIDBearingRecords appends
 // when the dangling tool_use is buried under the CLI's uuid-BEARING records.
 // attachment (listing deltas, token reminders) and system (local_command output)
