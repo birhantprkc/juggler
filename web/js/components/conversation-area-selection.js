@@ -286,7 +286,16 @@ export function selectItem(area, itemId, origin = 'user', { allowReveal = true }
   // Rule A: selecting the last item re-arms auto-follow. The user's mental
   // model is "I want to see whatever shows up next"; only items further up
   // the list represent inspection that should pin the selection.
-  if (origin === 'user' && isTail) {
+  //
+  // A sub-thread tile is exempt. It opens its transcript in the next column, so
+  // selecting one is a request to read that run — and while the sub-thread is
+  // working its tile is necessarily the last row here, because nothing is
+  // appended to this column until the thread returns. Re-arming on it would
+  // hand the column back to auto-follow at the exact moment the user asked to
+  // watch the child, and the parent's next item would select the child column
+  // shut. The pin still lifts by the ordinary routes: a new user message
+  // (rule 3), drifting offscreen (rule C), or focusing a composer (rule B).
+  if (origin === 'user' && isTail && !isThreadTileItem(area, itemId)) {
     area._selectionOrigin = null;
   }
 
@@ -514,6 +523,17 @@ export function selectPreviousUserMessage(area) {
 function isUserMessageItem(area, itemId) {
   const el = area.querySelector(`[message-id="${itemId}"]`);
   return el?.tagName === 'USER-MESSAGE';
+}
+
+/**
+ * Check whether a selectable item is a sub-thread tile.
+ * @param {any} area - ConversationArea instance
+ * @param {string} itemId
+ * @returns {boolean} True if the item is a thread-message element.
+ */
+function isThreadTileItem(area, itemId) {
+  const el = area.querySelector(`[message-id="${itemId}"]`);
+  return el?.tagName === 'THREAD-MESSAGE';
 }
 
 /**

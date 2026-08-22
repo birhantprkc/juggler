@@ -129,6 +129,7 @@ import { runTests as runSlashCompletionTests } from '../unit-tests/slash-complet
 import { runTests as runSkillCompletionTests } from '../unit-tests/skill-completion-test.js';
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
+import { runTests as runThreadSelectionPinTests } from '../unit-tests/thread-selection-pin-test.js';
 import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
 import { runTests as runControlClickRevealTests } from '../unit-tests/control-click-reveal-test.js';
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
@@ -374,6 +375,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:conversation-focus-policy', run: runConversationFocusPolicyTests },
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
+  { name: 'unit:thread-selection-pin', run: runThreadSelectionPinTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },
   { name: 'unit:control-click-reveal', run: runControlClickRevealTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },

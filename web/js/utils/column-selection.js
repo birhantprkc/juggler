@@ -343,14 +343,27 @@ class ColumnSelectionState {
   /**
    * Check if the LLM processing state targets a new thread and auto-select it.
    * Respects a cooldown so manual user navigation isn't overridden.
+   *
+   * This is the one automatic path that rewrites the whole chain, so it is also
+   * the one that can pull a column out from under a reader — `userPinned` is how
+   * the columns say "someone is looking at this". A pin is not consumed:
+   * `_lastStatusThreadId` stays untouched so that when the pin lifts (a new user
+   * message, the offscreen demotion, focusing a composer) the next sync opens
+   * whatever is running by then, rather than the chain staying frozen because
+   * the one status change that mattered was spent while nobody could act on it.
    * @param {string|null} statusThreadId - Current LLM status thread ID
    * @param {any[]} rootItems - Root-level items for chain resolution
    * @param {ThreadPredicate} isThread - Predicate to check if an item is a thread
-   * @param {number} [nowMs] - Current timestamp (for testability)
+   * @param {{userPinned?: boolean, nowMs?: number}} [opts] - `userPinned`: the
+   *   user has a selection of their own somewhere in this tab. `nowMs`: current
+   *   timestamp (for testability).
    * @returns {boolean} True if auto-selection was applied
    */
-  maybeAutoSelectThread(statusThreadId, rootItems, isThread, nowMs = Date.now()) {
+  maybeAutoSelectThread(statusThreadId, rootItems, isThread, opts = {}) {
+    const { userPinned = false, nowMs = Date.now() } = opts;
     if (statusThreadId === this._lastStatusThreadId) return false;
+
+    if (userPinned) return false;
 
     if (nowMs - this.lastManualInteractionTime < AUTO_SELECT_COOLDOWN_MS) {
       // Only apply cooldown for threads the user is already viewing.

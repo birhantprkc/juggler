@@ -1942,7 +1942,9 @@ class ConversationTab extends HTMLElement {
     let autoSelected = false;
     if (llmState) {
       const statusThreadId = llmState.getStatusThreadId(conversation.id);
-      autoSelected = this._selection.maybeAutoSelectThread(statusThreadId, conversation.rootItems, isThreadMessage);
+      autoSelected = this._selection.maybeAutoSelectThread(
+        statusThreadId, conversation.rootItems, isThreadMessage,
+        { userPinned: this._hasUserPinnedSelection() });
     }
 
     // Rebuild all columns (root + any open threads/properties).
@@ -1958,6 +1960,22 @@ class ConversationTab extends HTMLElement {
       this._scrollSelectionsIntoView();
     }
 
+  }
+
+  /**
+   * Whether the user has a selection of their own open anywhere in this tab.
+   *
+   * Rule 4 is enforced per column (`_selectionOrigin === 'user'` suppresses that
+   * column's auto-follow), but a running sub-thread is a tab-level move: it
+   * rewrites the whole chain, so a pin in ANY column is a reason not to make it.
+   * Reading the columns rather than the selection state is deliberate — the
+   * columns own the pin, including the ways it expires.
+   * @returns {boolean} True when some conversation column holds a user selection.
+   * @private
+   */
+  _hasUserPinnedSelection() {
+    return this._columns.some(col => col.tagName === 'CONVERSATION-AREA' &&
+    /** @type {any} */ (col)._selectionOrigin === 'user');
   }
 
   /**
