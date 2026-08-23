@@ -1,0 +1,100 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+/**
+ * Footer status messages keep their numbers attached to their units.
+ *
+ * The footer's busy line wraps, and its content is mostly counts: "1,024
+ * tokens", "48 KB", "95% cached", "attempt 3/5". A wrap in any of those spaces
+ * strands the number on one line and its unit on the next, where it reads as a
+ * different quantity. Every such space is a non-breaking one, and the clause
+ * separator carries one too so the bullet never opens a line. Both are
+ * invisible in the source, so they are pinned here.
+ * @module unit-tests/status-message-format-test
+ */
+
+import { StatusMessageBuilder } from '../../js/services/status-message-builder.js';
+import { assert } from '../utilities/test-helpers.js';
+
+/** Non-breaking space, spelled out so the assertions below are readable. */
+const NBSP = '\u00A0';
+
+/**
+ * @typedef {object} TestResult
+ * @property {number} passed - Passing assertion count
+ * @property {number} failed - Failing assertion count
+ * @property {string[]} errors - Collected error messages
+ */
+
+/**
+ * Run status-message formatting tests.
+ * @param {object} _ctx - Test context (unused)
+ * @returns {Promise<TestResult>} Test results
+ */
+export async function runTests(_ctx) {
+  let passed = 0;
+  let failed = 0;
+  /** @type {string[]} */
+  const errors = [];
+
+  /**
+   * @param {string} name - Case name
+   * @param {() => void} fn - Assertions to run
+   */
+  function test(name, fn) {
+    try { fn(); passed++; }
+    catch (/** @type {any} */ e) { failed++; errors.push(`${name}: ${e.message}`); }
+  }
+
+  test('an output-only count is bound to its unit', () => {
+    const message = StatusMessageBuilder.buildStreamingStatus({ outputTokens: 1024 });
+    assert(message.includes(`1,024${NBSP}tokens`), `status message = "${message}", want a non-breaking space before "tokens"`);
+  });
+
+  test('a single token still reads singular, and still bound', () => {
+    const message = StatusMessageBuilder.buildStreamingStatus({ outputTokens: 1 });
+    assert(message.includes(`1${NBSP}token`), `status message = "${message}"`);
+  });
+
+  test('an input → output pair keeps the arrow with the count before it', () => {
+    const message = StatusMessageBuilder.buildStreamingStatus({ inputTokens: 2000, outputTokens: 30 });
+    assert(message.includes(`2,000${NBSP}→ 30${NBSP}tokens`), `status message = "${message}"`);
+  });
+
+  test('the cached clause holds together', () => {
+    const message = StatusMessageBuilder.buildStreamingStatus({ inputTokens: 2000, cachedTokens: 1800, outputTokens: 30 });
+    assert(message.includes(`(90%${NBSP}cached)${NBSP}→ 30${NBSP}tokens`), `status message = "${message}"`);
+  });
+
+  test('an upload size is bound to its unit', () => {
+    const message = StatusMessageBuilder.buildUploadingStatus({ payloadSize: 48 * 1024 });
+    assert(message.includes(`48${NBSP}KB`), `status message = "${message}"`);
+  });
+
+  test('a retry attempt is bound to its count', () => {
+    const message = StatusMessageBuilder.buildRetryStatus({ attempt: 3, maxRetries: 5 });
+    assert(message.includes(`attempt${NBSP}3/5`), `status message = "${message}"`);
+  });
+
+  test('the clause separator never opens a line', () => {
+    const message = StatusMessageBuilder.buildStreamingStatus({ inputTokens: 2000, cachedTokens: 1800, outputTokens: 30, elapsedTime: 4000 });
+    assert(!message.includes(' ·'), `status message = "${message}", want a non-breaking space before every bullet`);
+    assert(message.includes(`${NBSP}· `), `status message = "${message}", want clauses separated by a bullet`);
+  });
+
+  test('no count in any built message is left splittable from its unit', () => {
+    const messages = [
+      StatusMessageBuilder.buildStreamingStatus({ inputTokens: 2000, cachedTokens: 1800, outputTokens: 30, elapsedTime: 90000 }),
+      StatusMessageBuilder.buildStreamingStatus({ outputTokens: 5, elapsedTime: 3000 }),
+      StatusMessageBuilder.buildUploadingStatus({ payloadSize: 1_500_000, elapsedTime: 3000 }),
+      StatusMessageBuilder.buildRetryStatus({ attempt: 2, maxRetries: 3, elapsedTime: 3000 }),
+    ];
+    for (const message of messages) {
+      const splittable = message.match(/\d[,\d]*%? (tokens?|KB|cached|·|→)/);
+      assert(!splittable, `"${message}" can wrap between "${splittable?.[0]}" — use a non-breaking space`);
+    }
+  });
+
+  return { passed, failed, errors };
+}

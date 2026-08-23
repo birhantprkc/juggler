@@ -38,6 +38,14 @@ export async function runTests(_ctx) {
   const errors = [];
 
   /**
+   * Status clauses are joined with a non-breaking space before the bullet, so
+   * the divider never opens a wrapped line. Written out here so an assertion
+   * that looks like it uses a plain space is unambiguous.
+   * @type {string}
+   */
+  const SEP = '\u00A0·';
+
+  /**
    * @param {string} name - Case name
    * @param {() => void} fn - Assertions to run
    */
@@ -83,7 +91,7 @@ export async function runTests(_ctx) {
       outputTokens: 12,
     });
     const message = llmState.getStatusMessage(convId);
-    assert(message.startsWith('Reading the room ·'), `status message = "${message}", want provider activity first`);
+    assert(message.startsWith(`Reading the room${SEP}`), `status message = "${message}", want provider activity first`);
     assert(!message.includes('Starting provider') && !message.includes('Receiving'),
       `provider activity should replace generic labels, got "${message}"`);
   });
@@ -96,19 +104,19 @@ export async function runTests(_ctx) {
       outputTokens: 12,
     });
     const message = llmState.getStatusMessage(convId);
-    assert(message.startsWith('Reviewing the changes ·'), `status message retained Markdown wrappers: "${message}"`);
+    assert(message.startsWith(`Reviewing the changes${SEP}`), `status message retained Markdown wrappers: "${message}"`);
   });
 
   test('elapsed ticks preserve provider activity', () => {
     (/** @type {any} */ (llmState))._updateElapsedTime(convId);
     const message = llmState.getStatusMessage(convId);
-    assert(message.startsWith('Reviewing the changes ·'), `elapsed tick lost provider activity: "${message}"`);
+    assert(message.startsWith(`Reviewing the changes${SEP}`), `elapsed tick lost provider activity: "${message}"`);
   });
 
   test('replacement processing state clears provider activity', () => {
     publish({ status: 'streaming', startedAt: Date.now() - 3000, outputTokens: 13 });
     const message = llmState.getStatusMessage(convId);
-    assert(message.startsWith('Receiving ·'), `replacement state retained provider activity: "${message}"`);
+    assert(message.startsWith(`Receiving${SEP}`), `replacement state retained provider activity: "${message}"`);
   });
 
   test('idle ends the compaction spinner', () => {

@@ -10,6 +10,23 @@
 import { formatDuration } from '../utils/format.js';
 
 /**
+ * Non-breaking space. The footer status line wraps freely, so every space that
+ * binds a number to its unit ("1,024 tokens", "48 KB", "95% cached") is written
+ * with this — a count orphaned from its unit across a line break reads as a
+ * different number.
+ * @type {string}
+ */
+const NBSP = '\u00A0';
+
+/**
+ * Separator between status clauses ("Receiving · 1,024 tokens · 3s"). The space
+ * before the bullet is non-breaking so a wrap happens after it: the bullet
+ * stays on the line it divides rather than opening the next one.
+ * @type {string}
+ */
+const CLAUSE_SEPARATOR = `${NBSP}· `;
+
+/**
  * Elapsed thresholds at which a waiting label is restated more plainly.
  *
  * A wait of a few seconds and a wait of ten minutes are different situations,
@@ -109,7 +126,7 @@ export class StatusMessageBuilder {
     if (data.elapsedTime !== undefined) {
       parts.push(this._formatElapsedTime(data.elapsedTime));
     }
-    return parts.join(' · ');
+    return parts.join(CLAUSE_SEPARATOR);
   }
 
   /**
@@ -162,15 +179,18 @@ export class StatusMessageBuilder {
       if (input !== undefined && input > 0) {
         const totalTokens = input + output;
         const tokenWord = totalTokens === 1 ? 'token' : 'tokens';
+        const out = `${output.toLocaleString()}${NBSP}${tokenWord}`;
+        // The arrow binds to the count before it, so a wrap puts the arrow at
+        // the end of the line rather than dangling one at the start of the next.
         if (cached !== undefined && cached > 0) {
           const cachePercent = Math.round((cached / input) * 100);
-          parts.push(`${input.toLocaleString()} (${cachePercent}% cached) → ${output.toLocaleString()} ${tokenWord}`);
+          parts.push(`${input.toLocaleString()} (${cachePercent}%${NBSP}cached)${NBSP}→ ${out}`);
         } else {
-          parts.push(`${input.toLocaleString()} → ${output.toLocaleString()} ${tokenWord}`);
+          parts.push(`${input.toLocaleString()}${NBSP}→ ${out}`);
         }
       } else {
         const tokenWord = output === 1 ? 'token' : 'tokens';
-        parts.push(`${output.toLocaleString()} ${tokenWord}`);
+        parts.push(`${output.toLocaleString()}${NBSP}${tokenWord}`);
       }
     }
 
@@ -179,7 +199,7 @@ export class StatusMessageBuilder {
       parts.push(this._formatElapsedTime(data.elapsedTime));
     }
 
-    return parts.join(' · ');
+    return parts.join(CLAUSE_SEPARATOR);
   }
 
   /**
@@ -215,7 +235,7 @@ export class StatusMessageBuilder {
    */
   static buildUploadingStatus(data) {
     const sizeKB = Math.ceil(data.payloadSize / 1024);
-    return this._withElapsed(`Uploading context ${sizeKB.toLocaleString()} KB`, data);
+    return this._withElapsed(`Uploading context ${sizeKB.toLocaleString()}${NBSP}KB`, data);
   }
 
   /**
@@ -248,7 +268,7 @@ export class StatusMessageBuilder {
    * @returns {string} Formatted status message
    */
   static buildRetryStatus(data) {
-    return this._withElapsed(`Retrying attempt ${data.attempt}/${data.maxRetries}`, data);
+    return this._withElapsed(`Retrying attempt${NBSP}${data.attempt}/${data.maxRetries}`, data);
   }
 
   /**

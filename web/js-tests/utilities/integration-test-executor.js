@@ -58,6 +58,7 @@ import { runTests as runContextCacheImpactTests } from '../unit-tests/context-ca
 import { runTests as runCacheMissWarningTests } from '../unit-tests/cache-miss-warning-test.js';
 import { runTests as runTokenCacheUnknownTests } from '../unit-tests/token-cache-unknown-test.js';
 import { runTests as runCompactionStatusTests } from '../unit-tests/compaction-status-test.js';
+import { runTests as runStatusMessageFormatTests } from '../unit-tests/status-message-format-test.js';
 import { runTests as runContextItemPersistenceTests } from '../unit-tests/context-item-persistence-test.js';
 import { runTests as runContextItemSeedExecuteTests } from '../unit-tests/context-item-seed-execute-test.js';
 import { runTests as runConversationNameTests } from '../unit-tests/conversation-name-persistence-test.js';
@@ -295,6 +296,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:cache-miss-warning', run: runCacheMissWarningTests },
   { name: 'unit:token-cache-unknown', run: runTokenCacheUnknownTests },
   { name: 'unit:compaction-status', run: runCompactionStatusTests },
+  { name: 'unit:status-message-format', run: runStatusMessageFormatTests },
   { name: 'unit:key-shortcut-manager', run: runKeyShortcutManagerTests },
   // Exclusive: the Escape preference is one localStorage key on an origin every
   // lane shares, so writing it mid-run would change a sibling's answer.
