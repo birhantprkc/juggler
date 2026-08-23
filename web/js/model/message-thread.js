@@ -31,7 +31,7 @@ import { submitPendingRequest } from '../services/thread-orchestrator.js';
 import * as permissionsHelpers from './message-thread-permissions.js';
 import * as contextItemHelpers from './message-thread-context-items.js';
 import { recordTape } from '../utils/event-tape.js';
-import { normalizeDraft, normalizeAttachments, normalizeTextFiles, normalizePasteBlobs } from '../utils/attachments.js';
+import { normalizeDraft, normalizeAttachments, normalizeTextFiles, normalizePasteBlobs, normalizeScheduledSendMode } from '../utils/attachments.js';
 
 /**
  * @typedef {import('../../sdk/lib/message.js').Message} Message
@@ -228,7 +228,7 @@ export default class MessageThread {
   }
 
   /**
-   * @param {{text?: string, attachments?: import('../utils/attachments.js').AssetRef[], textFiles?: import('../utils/attachments.js').TextFileSnapshot[], pasteBlobs?: import('../utils/attachments.js').PasteBlob[], scheduledSendAt?: number|null}|null} value
+   * @param {{text?: string, attachments?: import('../utils/attachments.js').AssetRef[], textFiles?: import('../utils/attachments.js').TextFileSnapshot[], pasteBlobs?: import('../utils/attachments.js').PasteBlob[], scheduledSendAt?: number|null, scheduledSendMode?: import('../utils/attachments.js').ScheduledSendMode}|null} value
    */
   set draft(value) {
     const text = (value && typeof value.text === 'string') ? value.text : '';
@@ -237,15 +237,19 @@ export default class MessageThread {
     const pasteBlobs = normalizePasteBlobs(value && value.pasteBlobs);
     const rawWhen = value && value.scheduledSendAt;
     const scheduledSendAt = (typeof rawWhen === 'number' && Number.isFinite(rawWhen)) ? rawWhen : null;
+    const scheduledSendMode = normalizeScheduledSendMode(scheduledSendAt, value && value.scheduledSendMode);
     // A pending scheduled send keeps the draft alive even with no text/
     // attachments — the timer must survive a reload to fire on an empty box.
     // Paste blobs deliberately do NOT keep an otherwise-empty draft alive: they
     // are an append-only side table for the token characters, and with no text
     // there is no token left to resolve, so an empty box GCs them.
     const empty = !text && attachments.length === 0 && textFiles.length === 0 && scheduledSendAt === null;
-    /** @type {{text: string, attachments: import('../utils/attachments.js').AssetRef[], textFiles: import('../utils/attachments.js').TextFileSnapshot[], pasteBlobs: import('../utils/attachments.js').PasteBlob[], scheduledSendAt?: number}} */
+    /** @type {{text: string, attachments: import('../utils/attachments.js').AssetRef[], textFiles: import('../utils/attachments.js').TextFileSnapshot[], pasteBlobs: import('../utils/attachments.js').PasteBlob[], scheduledSendAt?: number, scheduledSendMode?: import('../utils/attachments.js').ScheduledSendMode}} */
     const record = { text, attachments, textFiles, pasteBlobs };
+    // The mode rides along only for the non-default wait, and only while armed:
+    // an absent field reads back as 'delay', so nothing has to clear it.
     if (scheduledSendAt !== null) record.scheduledSendAt = scheduledSendAt;
+    if (scheduledSendMode === 'turn-end') record.scheduledSendMode = scheduledSendMode;
     if (this.threadItemId) {
       const doc = this.conversation._doc.doc;
       doc.transact(() => {

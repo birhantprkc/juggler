@@ -27,6 +27,8 @@ import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
 import { formatBytes } from '../utils/format.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
+import scheduledSendService, { SCHEDULED_SEND_ARMED_EVENT } from '../services/scheduled-send-service.js';
+import { CLOCK_SVG } from '../utils/icons.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import { isAutoNameEnabled, refreshAutoNameSetting } from '../services/auto-name-setting.js';
 import { isTabHighlightEnabled, ATTENTION_PREFS_EVENT } from '../utils/attention-manager.js';
@@ -290,6 +292,11 @@ class ConversationBar extends JugglerElement {
     // all, so a change to it must repaint the tabs currently pulsing — the whole
     // point of the toggle is to quiet them now, not once their approval clears.
     this.onWindow(ATTENTION_PREFS_EVENT, () => this._refreshAllTabStatus());
+
+    // Arming or cancelling a scheduled send changes which tabs show a clock,
+    // and nothing else repaints them: the schedule lives on a draft, which the
+    // bar doesn't read.
+    this.onDocument(SCHEDULED_SEND_ARMED_EVENT, () => this._refreshAllTabStatus());
   }
 
   /**
@@ -835,6 +842,20 @@ class ConversationBar extends JugglerElement {
       });
     }
 
+    // Clock, shown while a send is scheduled on any of this conversation's
+    // threads. It has its own slot ahead of the trailing one because a send
+    // waiting for the end of the turn is armed WHILE that turn runs — so the
+    // clock and the activity blob have to be readable at the same time.
+    let schedule = /** @type {HTMLElement|null} */ (tab.querySelector('.conversation-tab-schedule'));
+    if (!schedule) {
+      schedule = document.createElement('span');
+      schedule.className = 'conversation-tab-schedule';
+      schedule.title = 'A send is scheduled';
+      schedule.setAttribute('aria-hidden', 'true');
+      schedule.innerHTML = CLOCK_SVG;
+      tab.appendChild(schedule);
+    }
+
     // The trailing slot holds two mutually-exclusive elements at the same size:
     // the activity blob (pulsing green circle, shown while the LLM loop runs)
     // and the bin button. CSS shows whichever fits the tab's state —
@@ -880,8 +901,9 @@ class ConversationBar extends JugglerElement {
   }
 
   /**
-   * Toggle status indicator classes (.is-running / .is-awaiting) on a single
-   * tab based on the current LLMState. Targeted update — no full re-render.
+   * Toggle the indicator classes (.is-running / .is-awaiting from the current
+   * LLMState, .has-scheduled-send from scheduledSendService) on a single tab.
+   * Targeted update — no full re-render.
    *
    * `.is-awaiting` pulses the whole tab yellow for as long as the approval is
    * parked, which makes it the tab bar's loudest demand for attention — so it is
@@ -898,6 +920,10 @@ class ConversationBar extends JugglerElement {
     const { awaiting, running } = this._conversationActivity(convId);
     tab.classList.toggle('is-awaiting', awaiting && isTabHighlightEnabled());
     tab.classList.toggle('is-running', running);
+    // Read from the service's set rather than the drafts: this runs on every
+    // render, and walking the thread tree here would allocate a MessageThread
+    // per thread once a frame while a turn streams.
+    tab.classList.toggle('has-scheduled-send', scheduledSendService.hasArmedSchedule(convId));
   }
 
   /**

@@ -334,6 +334,11 @@ conversation-bar .conversation-tab.has-close {
                       the user turns tab highlighting off, so such a tab is
                       indistinguishable from an idle one — see
                       conversation-bar._refreshTabStatus.
+    - .has-scheduled-send → a static clock in its own slot before the trailing
+                      one (a send is armed on one of the conversation's
+                      threads). Its own slot because an end-of-turn send is
+                      armed while the turn runs, so it shares the tab with the
+                      green blob.
     Idle tabs get nothing. */
 conversation-bar .conversation-tab.is-running .conversation-tab-activity {
     display: flex;
@@ -341,6 +346,10 @@ conversation-bar .conversation-tab.is-running .conversation-tab-activity {
 
 conversation-bar .conversation-tab.is-running .conversation-tab-bin {
     display: none;
+}
+
+conversation-bar .conversation-tab.has-scheduled-send .conversation-tab-schedule {
+    display: flex;
 }
 
 /* Awaiting approval: pulse the whole tab. The static value is also the
@@ -579,6 +588,24 @@ conversation-bar .conversation-tab-activity::before {
     background: #08dc3c;
     box-shadow: 0 0 0.5rem rgb(93 255 133 / 60%);
     animation: tab-running-pulse 1.4s ease-in-out infinite;
+}
+
+/* Scheduled-send clock. Static and muted — it reports a pending send, it isn't
+   asking for anything. Hidden by default; .has-scheduled-send flips it on (see
+   the status-indicators section). */
+conversation-bar .conversation-tab-schedule {
+    width: 0.875rem;
+    height: 0.875rem;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    opacity: 0.7;
+}
+
+conversation-bar .conversation-tab-schedule svg {
+    width: 0.875rem;
+    height: 0.875rem;
 }
 
 conversation-bar .conversation-tab-bin {
@@ -4708,6 +4735,29 @@ composer-box .schedule-send-btn .schedule-send-countdown {
 .schedule-send-menu .schedule-cancel-btn:hover {
     border-color: var(--accent-red);
     color: var(--accent-red);
+}
+
+/* The other wait, below the delay block: full-width and quiet, so the accent
+   "Schedule to send at HH:MM" stays the picker's primary action. */
+.schedule-send-menu .schedule-turn-end-btn {
+    width: 100%;
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    border: 0.0625rem solid var(--border-color);
+    border-radius: var(--radius-md, 0.25rem);
+    cursor: pointer;
+}
+
+.schedule-send-menu .schedule-turn-end-btn:hover:not(:disabled) {
+    border-color: var(--accent-blue);
+    color: var(--accent-blue);
+}
+
+.schedule-send-menu .schedule-turn-end-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* Armed picker: the target time sits above a full-width cancel button. */

@@ -40,19 +40,34 @@ const CLAIM_STORE_KEY = 'juggler.scheduledSend.claims';
 const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Fired on `document` when the set of conversations carrying an armed schedule
+ * changes. The conversation bar paints its per-tab clock from
+ * {@link ScheduledSendService.hasArmedSchedule}, and a tab must never walk the
+ * thread tree itself: the bar re-renders on every doc change (~100/s while a
+ * turn streams) and that walk allocates a MessageThread per thread. The sweep
+ * already visits every draft on its own interval, so the set is a by-product of
+ * work that was happening anyway.
+ */
+export const SCHEDULED_SEND_ARMED_EVENT = 'juggler:scheduled-send-armed-changed';
+
+/**
  * ScheduledSendService — the single owner of scheduled-send *firing*.
  *
- * A scheduled send is persisted as `scheduledSendAt` (epoch ms) on a thread's
- * draft record. The composer only arms/cancels/displays it; it never fires it
- * on a private timer, because such a timer runs only while that thread is the
- * one bound to the column — so a send would silently fail whenever the user was
- * looking at a different thread or tab.
+ * A scheduled send is persisted on a thread's draft record as an instant
+ * (`scheduledSendAt`, epoch ms) plus what it is waiting for
+ * (`scheduledSendMode`): a `delay` is due once that instant passes, while a
+ * `turn-end` wait is due once the conversation has no turn in flight (its
+ * instant is only the arming time). The composer only arms/cancels/displays a
+ * schedule; it never fires it on a private timer, because such a timer runs
+ * only while that thread is the one bound to the column — so a send would
+ * silently fail whenever the user was looking at a different thread or tab.
  *
  * Instead this session-wide poller sweeps EVERY conversation's threads on a
- * fixed interval and fires any whose target has passed, whether or not that
- * thread is currently visible anywhere. When the due thread *is* on screen it
- * delegates to that composer (so the send goes out with the live textarea's
- * exact contents); otherwise it sends straight from the persisted draft.
+ * fixed interval and fires any whose wait is over, whether or not that thread is
+ * currently visible anywhere. When the due thread *is* on screen it delegates to
+ * that composer (so the send goes out with the live textarea's exact contents);
+ * otherwise it sends straight from the persisted draft. The same sweep records
+ * which conversations still carry an armed schedule, for the bar's tab clock.
  *
  * Multi-window: the draft lives in the shared (Yjs-replicated) doc, so every
  * open window runs its own poller and would independently fire the same due
@@ -88,6 +103,15 @@ class ScheduledSendService {
      * @type {Set<string>} @private
      */
     this._firing = new Set();
+    /**
+     * Ids of the conversations that currently have a send armed on at least one
+     * of their threads — the conversation bar's tab clock reads this. Refreshed
+     * by every sweep and by {@link refreshArmedState} the moment a composer arms
+     * or cancels, so the local window paints at once and other windows follow on
+     * their next sweep.
+     * @type {Set<string>} @private
+     */
+    this._armedConversationIds = new Set();
     /**
      * Epoch ms of the most recent connect, or null while disconnected. The
      * poller only fires once this is CONNECT_SETTLE_MS in the past, so a window
@@ -131,6 +155,7 @@ class ScheduledSendService {
     this._connectedSince = null;
     this._session = null;
     this._firing.clear();
+    this._publishArmed(new Set());
   }
 
   /**
@@ -147,17 +172,51 @@ class ScheduledSendService {
   }
 
   /**
-   * One poll pass: fire every thread whose scheduled target has passed.
+   * Whether `conversationId` has a send armed on any of its threads — what the
+   * conversation bar paints its tab clock from.
+   * @param {string} conversationId
+   * @returns {boolean} True while a schedule is armed somewhere in that conversation.
+   */
+  hasArmedSchedule(conversationId) {
+    return this._armedConversationIds.has(conversationId);
+  }
+
+  /**
+   * Re-read which conversations carry an armed schedule, without firing
+   * anything. Called by the composer straight after it arms or cancels, so the
+   * tab clock appears (or goes) on the same gesture rather than at the next
+   * poll.
+   */
+  refreshArmedState() {
+    this._scan(false);
+  }
+
+  /**
+   * One poll pass: fire every thread whose wait is over.
    * @private
    */
   _sweep() {
-    const session = this._session;
-    if (!session) return;
-    // Never fire on a stale doc: skip while disconnected or within the
+    // Never fire on a stale doc: hold off while disconnected or within the
     // post-connect settle window, so a window that reconnects still holding a
     // pre-fire schedule waits for catch-up to disarm it rather than re-sending.
-    if (!this._isSyncSettled()) return;
+    // The armed set is still refreshed — it only paints.
+    this._scan(this._isSyncSettled());
+  }
+
+  /**
+   * Walk every thread of every conversation, recording which conversations have
+   * a schedule armed and — when `fire` is set — firing the ones whose wait is
+   * over. One walk serves both: it is the expensive part (a MessageThread per
+   * thread), and the two answers come from the same draft read.
+   * @param {boolean} fire - Whether a due schedule should be fired.
+   * @private
+   */
+  _scan(fire) {
+    const session = this._session;
+    if (!session) return;
     const now = Date.now();
+    /** @type {Set<string>} */
+    const armed = new Set();
     for (const conversation of session.conversations.values()) {
       let threads;
       try {
@@ -167,16 +226,42 @@ class ScheduledSendService {
         continue;
       }
       for (const thread of threads) {
-        let when;
+        let draft;
         try {
-          when = thread.draft.scheduledSendAt;
+          draft = thread.draft;
         } catch {
           continue;
         }
-        if (typeof when !== 'number' || !Number.isFinite(when) || when > now) continue;
+        const when = draft.scheduledSendAt;
+        if (typeof when !== 'number' || !Number.isFinite(when)) continue;
+        armed.add(conversation.id);
+        if (!fire) continue;
+        if (draft.scheduledSendMode === 'turn-end') {
+          // Waiting on the turn, not the clock. isTurnActive() reads the
+          // worker's own processingState (plus any frontend-driven tool action),
+          // so it holds in a window that never started the turn.
+          if (conversation.isTurnActive()) continue;
+        } else if (when > now) {
+          continue;
+        }
         void this._fire(thread);
       }
     }
+    this._publishArmed(armed);
+  }
+
+  /**
+   * Adopt `armed` as the armed-conversation set, announcing it only when it
+   * actually changed — this runs on every poll, and the bar repaints every tab
+   * on the event.
+   * @param {Set<string>} armed
+   * @private
+   */
+  _publishArmed(armed) {
+    const previous = this._armedConversationIds;
+    if (previous.size === armed.size && [...armed].every((id) => previous.has(id))) return;
+    this._armedConversationIds = armed;
+    document.dispatchEvent(new CustomEvent(SCHEDULED_SEND_ARMED_EVENT));
   }
 
   /**
@@ -196,9 +281,11 @@ class ScheduledSendService {
     // clears/keeps the schedule based on its outcome.
     if (this._firing.has(key)) return;
     this._firing.add(key);
-    // Cross-window: claim this exact (thread, target-instant) so only one
+    // Cross-window: claim this exact (thread, armed-instant) so only one
     // same-origin window fires it. `when` is read once, before any await, so a
-    // concurrent window claims the identical key. See the class doc.
+    // concurrent window claims the identical key. It is the armed instant, not
+    // the mode's due time — which is what keeps a turn-end wait claimable again
+    // after an earlier one on the same thread has fired. See the class doc.
     const when = thread.draft.scheduledSendAt;
     const claimKey = `${key}@${when}`;
     try {
@@ -277,6 +364,9 @@ class ScheduledSendService {
       console.error('[scheduledSend] fire failed:', err);
     } finally {
       this._firing.delete(key);
+      // Whatever the outcome, the schedule has usually just been cleared — drop
+      // the tab clock now rather than at the next poll.
+      this.refreshArmedState();
     }
   }
 

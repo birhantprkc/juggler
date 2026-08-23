@@ -49,6 +49,7 @@ import {
   expandTokenWithFeedback,
 } from './composer-paste-tokens.js';
 import {
+  clearScheduledSendState,
   fireScheduledSend,
   stopScheduledCountdown,
   syncScheduledSendFromDraft,
@@ -226,6 +227,11 @@ class Composer extends HTMLElement {
     // syncScheduledSendFromDraft.
     /** @type {number|null} @private epoch-ms target for the pending send, or null */
     this._scheduledSendAt = null;
+    // What the armed send is waiting for: a wall-clock instant ('delay') or the
+    // end of the conversation's current turn ('turn-end', where the target is
+    // just the arming time). Only meaningful while `_scheduledSendAt` is set.
+    /** @type {import('../utils/attachments.js').ScheduledSendMode} @private */
+    this._scheduledSendMode = 'delay';
     /** @type {number|null} @private setInterval id that refreshes the countdown label */
     this._scheduledCountdownId = null;
     /** @type {(() => void)|null} @private presentPopup release for the open delay picker */
@@ -875,7 +881,8 @@ class Composer extends HTMLElement {
       // Preserve any armed send across the keystroke-driven draft saves — the
       // user keeps typing while a send is scheduled, and each save must not
       // drop the timer.
-      scheduledSendAt: this._scheduledSendAt
+      scheduledSendAt: this._scheduledSendAt,
+      scheduledSendMode: this._scheduledSendMode
     };
   }
 
@@ -1298,9 +1305,7 @@ class Composer extends HTMLElement {
     // keystroke's _persistDraft would re-attach the stale target to a fresh,
     // unrelated draft and fire it. The draft was just nulled above, so this
     // resets in-memory state only (no re-persist needed).
-    stopScheduledCountdown(this);
-    this._scheduledSendAt = null;
-    updateScheduleButton(this);
+    clearScheduledSendState(this);
 
     // Clear input; callers manage focus explicitly.
     this.setText('');
@@ -2087,7 +2092,7 @@ class Composer extends HTMLElement {
 
   /**
    * Build and present the "⋮" actions sheet. Essential controls lead — Strategy,
-   * Attach image, Send after a delay, New Thread — always visible so they never
+   * Attach image, Send later, New Thread — always visible so they never
    * scroll off behind a long list. Below them, slash commands and skills each get their own
    * closed-by-default collapsible section (standing in for the inline `/` and `$`
    * buttons, which are hidden on touch), so the sheet opens short and each list is
@@ -2158,10 +2163,10 @@ class Composer extends HTMLElement {
       (this.querySelector('.attach-file-input'))?.click();
     });
 
-    // Schedule-send ("send after a delay") is a rarely-used control, so on touch
-    // it lives here rather than on the inline row. The row opens the same delay
-    // picker as the inline clock button (which stays visible only while armed).
-    addRow('Send after a delay', CLOCK_SVG, () => toggleSchedulePicker(this));
+    // Schedule-send ("send later") is a rarely-used control, so on touch it
+    // lives here rather than on the inline row. The row opens the same picker as
+    // the inline clock button (which stays visible only while armed).
+    addRow('Send later', CLOCK_SVG, () => toggleSchedulePicker(this));
 
     /**
      * Append a closed-by-default collapsible section of pre-built rows (native
@@ -2325,8 +2330,8 @@ class Composer extends HTMLElement {
                             <span class="more-actions-icon">${KEBAB_SVG}</span>
                         </button>
                         <button class="schedule-send-btn input-ctrl-btn"
-                                title="Send after a delay"
-                                aria-label="Send after a delay">
+                                title="Send later"
+                                aria-label="Send later">
                             <span class="schedule-send-icon">${CLOCK_SVG}</span>
                             <span class="schedule-send-countdown" hidden></span>
                         </button>

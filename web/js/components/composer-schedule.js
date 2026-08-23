@@ -3,25 +3,33 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * composer-schedule — the composer's scheduled send ("send after a delay"),
- * for composer.js.
+ * composer-schedule — the composer's scheduled send ("send later"), for
+ * composer.js.
  *
- * Clicking the clock button arms a send for a chosen wall-clock time — the
- * intended use is firing a queued command the instant the next LLM-provider
- * time slice opens, so precision is coarse (5-minute granularity). The target
- * is persisted on the thread's draft (epoch ms), so a reload or a conversation
- * switch finds it again. The composer only arms, cancels, and DISPLAYS a live
- * countdown; the firing itself is owned by scheduledSendService, which sweeps
- * every thread on an interval so a send goes out even while a different thread
- * or tab is on screen. When the due thread IS on screen the service calls the
- * composer's `_fireScheduledSend`, so the send carries the live textarea's
- * exact contents.
+ * Clicking the clock button arms a send for later. Two waits are offered:
+ *   • delay    — a chosen wall-clock time. The intended use is firing a queued
+ *                command the instant the next LLM-provider time slice opens, so
+ *                precision is coarse (5-minute granularity).
+ *   • turn-end — as soon as the conversation has no turn in flight. Distinct
+ *                from just pressing Send mid-turn: that queues the message and
+ *                the worker promotes it at the next turn boundary, steering the
+ *                run in progress. This one keeps out of the running turn
+ *                entirely and opens a fresh one once it has finished.
+ * Both are persisted on the thread's draft (an epoch-ms instant plus the mode),
+ * so a reload or a conversation switch finds them again.
+ *
+ * The composer only arms, cancels, and DISPLAYS the schedule; the firing itself
+ * is owned by scheduledSendService, which sweeps every thread on an interval so
+ * a send goes out even while a different thread or tab is on screen. When the
+ * due thread IS on screen the service calls the composer's `_fireScheduledSend`,
+ * so the send carries the live textarea's exact contents.
  *
  * Each function takes the Composer element as its first argument and reads or
  * writes its state through it, mirroring conversation-area-rendering.js.
  * @module components/composer-schedule
  */
 
+import scheduledSendService from '../services/scheduled-send-service.js';
 import { presentPopup } from '../utils/popup-surface.js';
 
 /**
@@ -100,29 +108,52 @@ function startScheduledCountdown(composer) {
 }
 
 /**
- * Arm a send for the absolute instant `targetAt` (epoch ms): record it,
- * persist it onto the thread's draft, start the countdown, and reflect it on
- * the clock button. scheduledSendService picks it up from the draft.
+ * Arm a send: record the instant and what it is waiting for, persist both onto
+ * the thread's draft, and reflect them on the clock button. A `delay` also
+ * starts the countdown label; a `turn-end` wait has nothing to count down, so
+ * its instant is only the arming time. scheduledSendService picks the schedule
+ * up from the draft.
  * @param {any} composer - Composer instance
  * @param {number} targetAt
+ * @param {import('../utils/attachments.js').ScheduledSendMode} mode
  */
-function armScheduledSend(composer, targetAt) {
+function armScheduledSend(composer, targetAt, mode) {
   composer._scheduledSendAt = targetAt;
+  composer._scheduledSendMode = mode;
   composer._persistDraft();
-  startScheduledCountdown(composer);
+  if (mode === 'delay') startScheduledCountdown(composer);
   updateScheduleButton(composer);
+  scheduledSendService.refreshArmedState();
 }
 
 /**
- * Cancel the pending send: stop the countdown, clear the target, and remove
- * it from the persisted draft.
+ * Drop the armed schedule: stop the countdown, forget the target and its mode,
+ * repaint the clock button, and have scheduledSendService re-read which
+ * conversations still carry a timer (what paints the tab clock).
+ *
+ * `persist` writes the cleared schedule back to the draft. The box-clearing
+ * path leaves it false: the whole draft has just been deleted there, so this is
+ * an in-memory reset only — without it the button would stay visually armed and
+ * the next keystroke's draft save would re-attach the stale target to a fresh,
+ * unrelated draft.
+ * @param {any} composer - Composer instance
+ * @param {{persist?: boolean}} [options]
+ */
+export function clearScheduledSendState(composer, { persist = false } = {}) {
+  stopScheduledCountdown(composer);
+  composer._scheduledSendAt = null;
+  composer._scheduledSendMode = 'delay';
+  if (persist) composer._persistDraft();
+  updateScheduleButton(composer);
+  scheduledSendService.refreshArmedState();
+}
+
+/**
+ * Cancel the pending send and remove it from the persisted draft.
  * @param {any} composer - Composer instance
  */
 function cancelScheduledSend(composer) {
-  stopScheduledCountdown(composer);
-  composer._scheduledSendAt = null;
-  composer._persistDraft();
-  updateScheduleButton(composer);
+  clearScheduledSendState(composer, { persist: true });
 }
 
 /**
@@ -134,27 +165,27 @@ function cancelScheduledSend(composer) {
  * @param {any} composer - Composer instance
  */
 export function fireScheduledSend(composer) {
-  stopScheduledCountdown(composer);
-  composer._scheduledSendAt = null;
-  composer._persistDraft();
-  updateScheduleButton(composer);
+  clearScheduledSendState(composer, { persist: true });
   composer.sendMessage();
 }
 
 /**
  * Re-derive the displayed scheduled-send state from the bound thread's
  * persisted draft. Stops any countdown left over from a previously-bound
- * thread, then restores the target and its countdown for the newly-bound
- * thread. Firing (including for an already-passed target) is left to
+ * thread, then restores the target, its mode and (for a delay) its countdown
+ * for the newly-bound thread. Firing — including for an already-passed target,
+ * or a turn-end wait whose turn has already finished — is left to
  * scheduledSendService. Called after the controls render and on every genuine
  * thread switch.
  * @param {any} composer - Composer instance
  */
 export function syncScheduledSendFromDraft(composer) {
   stopScheduledCountdown(composer);
-  const when = composer._messageThread ? composer._messageThread.draft.scheduledSendAt : null;
+  const draft = composer._messageThread ? composer._messageThread.draft : null;
+  const when = draft ? draft.scheduledSendAt : null;
   composer._scheduledSendAt = (typeof when === 'number' && Number.isFinite(when)) ? when : null;
-  if (composer._scheduledSendAt !== null) {
+  composer._scheduledSendMode = (composer._scheduledSendAt !== null && draft) ? draft.scheduledSendMode : 'delay';
+  if (composer._scheduledSendAt !== null && composer._scheduledSendMode === 'delay') {
     startScheduledCountdown(composer);
   }
   updateScheduleButton(composer);
@@ -184,7 +215,7 @@ export function updateScheduleButton(composer) {
     // to bring it back rather than implying nothing is set.
     btn.setAttribute('title', (empty && composer._scheduledSendAt !== null)
       ? 'Type a message to resume the timer'
-      : 'Send after a delay');
+      : 'Send later');
     if (label) {
       /** @type {HTMLElement} */ (label).hidden = true;
       label.textContent = '';
@@ -192,11 +223,17 @@ export function updateScheduleButton(composer) {
     return;
   }
   btn.classList.add('armed');
-  const remaining = Math.max(0, composer._scheduledSendAt - Date.now());
-  btn.setAttribute('title', `Sending at ${formatClockTime(composer._scheduledSendAt)} — click to change or cancel`);
+  const turnEnd = composer._scheduledSendMode === 'turn-end';
+  btn.setAttribute('title', turnEnd
+    ? 'Sending when this turn ends — click to cancel'
+    : `Sending at ${formatClockTime(composer._scheduledSendAt)} — click to change or cancel`);
   if (label) {
     /** @type {HTMLElement} */ (label).hidden = false;
-    label.textContent = formatDelayShort(remaining);
+    // A turn-end wait has no countdown — it ends when the turn does — so the
+    // badge names the wait instead.
+    label.textContent = turnEnd
+      ? 'turn'
+      : formatDelayShort(Math.max(0, composer._scheduledSendAt - Date.now()));
   }
 }
 
@@ -228,9 +265,10 @@ function closeSchedulePicker(composer) {
  * Build and present the delay picker, anchored to the clock button (or a
  * bottom sheet on a phone). Two shapes:
  *   • Armed — a single "Cancel timer" button (nothing else to decide).
- *   • Idle — full-width preset chips (15m…5h), hours + 5-minute steppers, and
- *     one full-width "Schedule to send at HH:MM" button that both previews the
- *     target time and confirms it.
+ *   • Idle — full-width preset chips (15m…5h), hours + 5-minute steppers, one
+ *     full-width "Schedule to send at HH:MM" button that both previews the
+ *     target time and confirms it, and below them the other wait: "Run at end
+ *     of turn", disabled unless a turn is actually running.
  * The picker never edits the textarea.
  * @param {any} composer - Composer instance
  */
@@ -260,11 +298,13 @@ function openSchedulePicker(composer) {
     });
   };
 
-  // --- Armed: show the target time, offer to cancel -----------------------
+  // --- Armed: show what it is waiting for, offer to cancel ----------------
   if (composer._scheduledSendAt) {
     const targetLine = document.createElement('div');
     targetLine.className = 'schedule-armed-target';
-    targetLine.textContent = `Sending at ${formatClockTime(composer._scheduledSendAt)}`;
+    targetLine.textContent = composer._scheduledSendMode === 'turn-end'
+      ? 'Sending when this turn ends'
+      : `Sending at ${formatClockTime(composer._scheduledSendAt)}`;
     menu.appendChild(targetLine);
 
     const cancelBtn = document.createElement('button');
@@ -376,9 +416,28 @@ function openSchedulePicker(composer) {
   scheduleBtn.addEventListener('click', () => {
     const totalMin = hours * 60 + minutes;
     if (totalMin <= 0) return;
-    armScheduledSend(composer, Date.now() + totalMin * 60000);
+    armScheduledSend(composer, Date.now() + totalMin * 60000, 'delay');
     closeSchedulePicker(composer);
   });
+
+  // The other wait: hold the message back until the running turn is done. Live
+  // only while a turn IS running — with nothing in flight the wait is already
+  // over, so arming it would just be a roundabout Send.
+  const conversation = composer._messageThread ? composer._messageThread.conversation : null;
+  const turnRunning = !!conversation && conversation.isTurnActive();
+  const turnEndBtn = document.createElement('button');
+  turnEndBtn.type = 'button';
+  turnEndBtn.className = 'schedule-turn-end-btn';
+  turnEndBtn.textContent = 'Run at end of turn';
+  turnEndBtn.disabled = !turnRunning;
+  turnEndBtn.title = turnRunning
+    ? 'Wait for the current turn to finish, then send — the running turn is left alone'
+    : 'Nothing is running';
+  turnEndBtn.addEventListener('click', () => {
+    armScheduledSend(composer, Date.now(), 'turn-end');
+    closeSchedulePicker(composer);
+  });
+  menu.appendChild(turnEndBtn);
 
   refresh();
   present();

@@ -96,6 +96,24 @@ export async function runTests(_ctx) {
     errors.push(`Draft scheduled-send target not persisted across reload. Expected ${scheduledSendAt}, got ${JSON.stringify(draft && draft.scheduledSendAt)}`);
   }
 
+  if (!draft || draft.scheduledSendMode !== 'delay') {
+    errors.push(`Draft scheduled-send mode should default to 'delay', got ${JSON.stringify(draft && draft.scheduledSendMode)}`);
+  }
+
+  // The other wait — "send at end of turn" — rides the same record as a mode
+  // beside the instant, and the instant is what disarms BOTH: clearing
+  // scheduledSendAt must leave no turn-end wait behind to fire against a later,
+  // unrelated draft.
+  const thread = reloaded.rootMessageThread;
+  thread.draft = { text: draftText, scheduledSendAt: Date.now(), scheduledSendMode: 'turn-end' };
+  if (thread.draft.scheduledSendMode !== 'turn-end') {
+    errors.push(`Turn-end scheduled-send mode did not round-trip, got ${JSON.stringify(thread.draft.scheduledSendMode)}`);
+  }
+  thread.draft = { text: draftText, scheduledSendAt: null, scheduledSendMode: 'turn-end' };
+  if (thread.draft.scheduledSendMode !== 'delay') {
+    errors.push(`Clearing the target left a turn-end wait armed, got ${JSON.stringify(thread.draft.scheduledSendMode)}`);
+  }
+
   if (errors.length === 0) {
     logger.info('[draft-persistence-test] Test PASSED - draft text + attachments + scheduled-send target persisted across reload');
     return { passed: 1, failed: 0, errors: [] };
