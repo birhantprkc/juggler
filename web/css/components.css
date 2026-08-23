@@ -3642,6 +3642,14 @@ model-tuning:empty {
     color: var(--text-secondary);
 }
 
+/* The chosen provider's quota meters, closing the card. They belong to the model
+   in effect rather than to the list, so they sit inside the card and take no
+   heading of their own — the card's own label already names what they describe.
+   Present only when the provider reports usage, so the gap goes with them. */
+.model-current-usage {
+    margin-top: 0.625rem;
+}
+
 /* Recently-used model rows. Stack name over provider so neither truncates: the
    model name wraps if long, and the provider/description drops to its own line
    rather than being ellipsised against the name on a single row — the left
@@ -3666,7 +3674,7 @@ model-tuning:empty {
 }
 
 /* Usage meters, rendered by utils/usage-renderer.js for the info rail's usage
-   card. */
+   card and the model picker's current-model card. */
 .usage-stat {
     margin-bottom: 0.5rem;
 }

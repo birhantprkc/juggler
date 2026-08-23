@@ -17,6 +17,12 @@
  * provider under a header whose tri-state toggle cycles none / top / all, then
  * the host's none row ("No model", "Inherit from parent", "Automatic").
  *
+ * The card also carries the chosen provider's quota meters, which are the one
+ * thing the picker fetches for itself: usage is pull-based, no host has it to
+ * hand, and the question is only worth asking while someone is looking at the
+ * answer. The cache behind it debounces and de-dupes, so opening the picker over
+ * and over costs one request every few minutes.
+ *
  * Recent belongs beside the list rather than on top of it. It answers a
  * different question — "back to the one I was just on" against "what else is
  * there" — and as the list's first section it was indistinguishable from a
@@ -33,10 +39,12 @@
  */
 
 import recentModels from '../../services/recent-models.js';
+import usageStatsCache from '../../services/usage-stats-cache.js';
 import { getRecommendedModels, sortModelsByVersion } from '../../utils/model-filter.js';
 import { buildModelConfig, sameModelConfig } from '../../model/model-config.js';
 import { modelLabel, modelLabelFromList } from '../../model/model-display.js';
 import { formatTokens } from '../../utils/format.js';
+import { renderUsageRow } from '../../utils/usage-renderer.js';
 import { escapeHtml } from '../../../sdk/lib/html.js';
 import { tierIds } from './model-tuning.js';
 import './model-tuning.js';
@@ -121,6 +129,10 @@ class ModelPicker extends HTMLElement {
       // listener, so a cycle gesture's Escape still cancels the gesture first.
       document.addEventListener('keydown', this._keyHandler, true);
     }
+    // Opening the picker is the one moment the user is looking at the meters, so
+    // it is the moment worth asking about them; the cache turns the repeats into
+    // no-ops.
+    void this._refreshUsage();
   }
 
   disconnectedCallback() {
@@ -157,8 +169,12 @@ class ModelPicker extends HTMLElement {
   /** @param {ModelConfigShape} value - The config currently in effect. */
   set value(value) {
     if (sameModelConfig(value, this._value)) return;
+    const providerChanged = value?.provider !== this._value?.provider;
     this._value = value;
     if (this._rendered) this.refresh();
+    // Switching provider puts a different account's quota under the card, and
+    // that provider may never have been asked.
+    if (providerChanged) void this._refreshUsage();
   }
 
   /** @returns {ModelConfigShape} The config currently in effect. */
@@ -605,6 +621,41 @@ class ModelPicker extends HTMLElement {
   }
 
   /**
+   * The chosen provider's quota meters, when it reports any.
+   *
+   * Silence is the empty state. A provider that reports no usage — or has not
+   * answered yet, or answered with an error the sidebar's usage card already
+   * spells out — leaves the card exactly as it was, rather than holding a block
+   * of space open for something that may never arrive.
+   * @param {string} providerName
+   * @returns {string} HTML for the meters, or '' when there are none to show.
+   * @private
+   */
+  _usageHTML(providerName) {
+    const stats = usageStatsCache.get(providerName)?.stats || [];
+    if (stats.length === 0) return '';
+    return `
+                <div class="model-current-usage">${stats.map(renderUsageRow).join('')}</div>`;
+  }
+
+  /**
+   * Pull the current provider's usage, then repaint the card if anything landed.
+   *
+   * The cache debounces to one live fetch per provider per few minutes and shares
+   * an in-flight one between callers, so opening the picker repeatedly — and the
+   * reconnect `presentPopup` causes when it moves the surface to `<body>` — costs
+   * a map lookup, not a request. Only the provider in effect is ever fetched:
+   * asking a CLI-backed provider the user isn't on can provoke a login.
+   * @private
+   */
+  async _refreshUsage() {
+    const providerName = this._value?.provider;
+    if (!providerName) return;
+    await usageStatsCache.refresh(providerName);
+    if (this._rendered) this.refresh();
+  }
+
+  /**
    * The detail column: the chosen model's identity card plus its dials.
    * @returns {string} HTML for the card; the `<model-tuning>` is wired separately.
    * @private
@@ -631,7 +682,7 @@ class ModelPicker extends HTMLElement {
             <div class="model-current">
                 <div class="model-current-label">Current model</div>
                 <div class="model-current-name">${escapeHtml(modelLabel(entry?.displayName, cfg.model))}</div>
-                <div class="model-current-sub">${escapeHtml(subParts.join(' · '))}</div>
+                <div class="model-current-sub">${escapeHtml(subParts.join(' · '))}</div>${this._usageHTML(cfg.provider)}
             </div>`;
   }
 

@@ -20,11 +20,15 @@
  *   4. Escape closes the picker and goes no further: popup-manager's Escape
  *      dismisses every overlay, which would take a hosting settings modal with
  *      it.
+ *   5. The current-model card carries the provider's quota meters, which the
+ *      picker pulls itself — and shows nothing at all when there are none, so a
+ *      provider that never reports usage costs the card no empty space.
  * @module unit-tests/model-picker-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
 import recentModels from '../../js/services/recent-models.js';
+import usageStatsCache from '../../js/services/usage-stats-cache.js';
 import { presentPopup } from '../../js/utils/popup-surface.js';
 import '../../js/components/model-picker/model-picker.js';
 
@@ -147,6 +151,48 @@ async function seedRecents(models) {
   } finally {
     window.fetch = originalFetch;
   }
+}
+
+/**
+ * Fill the usage cache for one provider without depending on the server.
+ *
+ * The cache is a module singleton with a multi-minute per-provider debounce, so
+ * the seed is forced and every caller uses a provider name of its own — a name
+ * shared with another test would carry that test's meters into this one.
+ * @param {string} provider - Provider name to seed.
+ * @param {any[]} stats - The meters the fake server reports.
+ * @returns {Promise<void>}
+ */
+async function seedUsage(provider, stats) {
+  const originalFetch = window.fetch;
+  window.fetch = /** @type {any} */ (async () => ({
+    ok: true,
+    json: async () => ({ usage: [{ provider, updatedAt: new Date().toISOString(), stats }], errors: {} }),
+  }));
+  try {
+    await usageStatsCache.refresh(provider, { force: true });
+  } finally {
+    window.fetch = originalFetch;
+  }
+}
+
+/**
+ * A picker showing one model belonging to `provider`, detached and rendered —
+ * detached so connecting it can't set off a usage fetch of its own.
+ * @param {string} provider - Provider name the single model belongs to.
+ * @returns {any} The rendered picker.
+ */
+function pickerOnProvider(provider) {
+  const el = /** @type {any} */ (document.createElement('model-picker'));
+  el.providers = [{
+    name: provider,
+    displayName: 'Metered',
+    available: true,
+    modelsWithContext: [{ id: 'm', displayName: 'Model', contextWindow: 1000 }],
+  }];
+  el.value = { provider, model: 'm' };
+  el.render();
+  return el;
 }
 
 /**
@@ -404,6 +450,30 @@ export async function runTests(_ctx) {
       } finally {
         picker.remove();
       }
+    });
+
+    await run('the card carries the chosen provider\'s usage meters', async () => {
+      await seedUsage('metered-provider', [
+        { name: 'Session (5h)', usedPercent: 42 },
+        { name: 'Week (7d)', usedPercent: 8 },
+      ]);
+      const picker = pickerOnProvider('metered-provider');
+      // Inside the card, not merely somewhere in the column: the meters describe
+      // the model in effect, and the sections either side of it are their own
+      // subjects.
+      const meters = picker.querySelectorAll('.model-current .model-current-usage .usage-stat');
+      assert(meters.length === 2, `expected both meters in the card — got ${meters.length}`);
+      assert((meters[0].querySelector('.usage-stat-pct')?.textContent || '') === '42%',
+        'the meter reports the percentage the provider gave');
+    });
+
+    await run('a provider with no usage to report leaves the card alone', () => {
+      // Never seeded, so the cache has nothing for it. An empty state here would
+      // be a block of space held open for something that may never come.
+      const picker = pickerOnProvider('unmetered-provider');
+      assert(!picker.querySelector('.model-current-usage'),
+        'a provider that reports no usage must add nothing to the card');
+      assert(!!picker.querySelector('.model-current-name'), 'the card itself still renders');
     });
 
     await run('clicking the picker\'s own background changes nothing', () => {
