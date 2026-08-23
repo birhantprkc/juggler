@@ -18,6 +18,7 @@ of changes; this project follows semantic versioning.
 - A reply cut off at the output limit now says so, instead of being retried three times
 - A background command's properties now show its live output and exit code, and can stop it
 - A premium serving speed now shows on the model button and can be set as the default
+- The composer and Settings now share one model picker, with type-to-filter and keyboard navigation
 
 ## [0.5.7] - 2026-08-19
 

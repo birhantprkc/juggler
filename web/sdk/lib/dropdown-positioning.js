@@ -26,6 +26,13 @@ export function positionDropdown(dropdown, button, gap = 4, options = {}) {
   const { align = 'left' } = options;
   const edge = 8; // minimum clearance from viewport edges (px)
 
+  // Anything inside the menu that is scrolled is only scrolled because the cap
+  // below bounds it, so clearing that cap to measure takes its overflow away and
+  // the browser drops the offset to zero. Repositioning must not move the user's
+  // place in a long list, so note where each scroller is before the measurement
+  // and put it back after every geometry write.
+  const scrollers = takeScrollOffsets(dropdown);
+
   // Measure the menu's natural height. A previous call may have applied an
   // inline `max-height`; clear it before measuring so the decision below is
   // based on actual content size, not a stale cap. The width clamp below may
@@ -98,6 +105,22 @@ export function positionDropdown(dropdown, button, gap = 4, options = {}) {
 
   dropdown.style.setProperty('--dropdown-x', `${x}px`);
   dropdown.style.setProperty('--dropdown-y', `${Math.max(edge, y)}px`);
+
+  for (const [el, top] of scrollers) el.scrollTop = top;
+}
+
+/**
+ * Record the scroll offset of the menu and everything scrolled inside it.
+ * @param {HTMLElement} dropdown
+ * @returns {[Element, number][]} Each scrolled element with its offset.
+ */
+function takeScrollOffsets(dropdown) {
+  /** @type {[Element, number][]} */
+  const offsets = [];
+  for (const el of [dropdown, ...Array.from(dropdown.querySelectorAll('*'))]) {
+    if (el.scrollTop > 0) offsets.push([el, el.scrollTop]);
+  }
+  return offsets;
 }
 
 /**

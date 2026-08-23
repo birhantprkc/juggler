@@ -536,6 +536,9 @@ func (s *Server) handleCheapModel(w http.ResponseWriter, r *http.Request) {
 		if stored.Thinking != "" {
 			body["thinking"] = stored.Thinking
 		}
+		if stored.ServiceTier != "" {
+			body["serviceTier"] = stored.ServiceTier
+		}
 	} else {
 		primary, _ := s.resolveDefaultModel(r.Context())
 		if ref, ok := s.resolveCheapModel(r.Context(), primary); ok {
@@ -546,22 +549,25 @@ func (s *Server) handleCheapModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSetCheapModel persists the cheap model used for out-of-band micro-tasks.
-// Body: {"provider": "...", "model": "...", "thinking": "..."} — thinking is
-// optional. An empty provider/model clears the stored value, reverting to Auto.
+// Body: {"provider": "...", "model": "...", "thinking": "...", "serviceTier": "..."}
+// — thinking and serviceTier are optional; absent/empty means the model's default
+// level and standard serving respectively. An empty provider/model clears the
+// stored value, reverting to Auto.
 func (s *Server) handleSetCheapModel(w http.ResponseWriter, r *http.Request) {
 	if s.cheapModelStore == nil {
 		handlers.WriteError(w, r, http.StatusServiceUnavailable, "Cheap model is not available")
 		return
 	}
 	req, ok := handlers.DecodeJSON[struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
-		Thinking string `json:"thinking"`
+		Provider    string `json:"provider"`
+		Model       string `json:"model"`
+		Thinking    string `json:"thinking"`
+		ServiceTier string `json:"serviceTier"`
 	}](w, r)
 	if !ok {
 		return
 	}
-	if err := s.cheapModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
+	if err := s.cheapModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking, ServiceTier: req.ServiceTier}); err != nil {
 		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save cheap model: %v", err))
 		return
 	}

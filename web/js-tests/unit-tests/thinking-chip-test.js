@@ -3,22 +3,20 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Composer-button thinking-chip render-rule unit tests.
+ * Model-chip thinking-pill render-rule unit tests.
  *
- * `ModelSelector._thinkingChipHTML` must always show the EFFECTIVE level for a
+ * `ModelChip.thinkingChipHTML` must always show the EFFECTIVE level for a
  * selected thinking-capable model: an explicit advertised level ⇒ solid chip;
  * no explicit level ⇒ hollow `.default` variant showing `defaultThinkingLevel`
  * (or "def" when the model declares none); non-thinking models ⇒ no chip at
- * all. Tested on a real (registered) model-selector instance created via
- * `document.createElement` but never appended — connectedCallback never runs,
- * so no network fetch, render, or WebSocket subscription happens — with
- * `providers`/`provider`/`model`/`_currentConfig` stubbed directly, following
- * the stubbed-instance pattern of other component unit tests.
+ * all. Tested on a real (registered) `<model-chip>` created via
+ * `document.createElement` but never appended, with `providers` and `config`
+ * set directly — the chip is controlled, so that is its whole input.
  * @module unit-tests/thinking-chip-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import '../../js/components/model-selector.js';
+import '../../js/components/model-picker/model-chip.js';
 
 /**
  * @typedef {object} TestResult
@@ -28,32 +26,32 @@ import '../../js/components/model-selector.js';
  */
 
 /**
- * Build a detached model-selector instance with one provider/model stubbed in.
+ * Build a detached model-chip with one provider/model set on it.
  * @param {object} opts - Scenario knobs.
  * @param {string[]} [opts.levels] - `thinkingLevels` the model advertises, as
  *   native level strings shown verbatim (omit for a non-thinking model).
  * @param {string} [opts.defaultLevel] - The model's `defaultThinkingLevel`.
  * @param {string} [opts.thinking] - Explicit level in the current config.
- * @returns {any} The stubbed (never-connected) element.
+ * @returns {any} The (never-connected) chip element.
  */
-function makeSelector({ levels, defaultLevel, thinking }) {
-  const el = /** @type {any} */ (document.createElement('model-selector'));
+function makeChip({ levels, defaultLevel, thinking }) {
+  const el = /** @type {any} */ (document.createElement('model-chip'));
   /** @type {any} */
   const modelEntry = { id: 'model-x', contextWindow: 200000 };
   if (levels) modelEntry.thinkingLevels = levels;
   if (defaultLevel) modelEntry.defaultThinkingLevel = defaultLevel;
-  el.providers = [{ name: 'prov', displayName: 'Prov', available: true, modelsWithContext: [modelEntry] }];
-  el.provider = 'prov';
-  el.model = 'model-x';
-  el._currentConfig = thinking
-    ? { provider: 'prov', model: 'model-x', thinking }
-    : { provider: 'prov', model: 'model-x' };
+  el.update({
+    providers: [{ name: 'prov', displayName: 'Prov', available: true, modelsWithContext: [modelEntry] }],
+    config: thinking
+      ? { provider: 'prov', model: 'model-x', thinking }
+      : { provider: 'prov', model: 'model-x' },
+  });
   return el;
 }
 
 /**
  * Parse chip HTML into an element for class/text assertions.
- * @param {string} html - The `_thinkingChipHTML()` return value.
+ * @param {string} html - The `thinkingChipHTML()` return value.
  * @returns {Element|null} The chip element, or null for empty HTML.
  */
 function chipOf(html) {
@@ -88,8 +86,8 @@ export async function runTests(_ctx) {
   };
 
   await run('explicit advertised level renders a solid chip', () => {
-    const el = makeSelector({ levels: ['low', 'medium', 'high'], defaultLevel: 'high', thinking: 'medium' });
-    const chip = chipOf(el._thinkingChipHTML());
+    const el = makeChip({ levels: ['low', 'medium', 'high'], defaultLevel: 'high', thinking: 'medium' });
+    const chip = chipOf(el.thinkingChipHTML());
     assert(chip !== null, 'a chip must render for an explicit level');
     assert(chip.classList.contains('thinking-chip') && !chip.classList.contains('default'),
       `explicit level ⇒ solid (no .default) — got class "${chip.className}"`);
@@ -99,8 +97,8 @@ export async function runTests(_ctx) {
   });
 
   await run('no explicit level renders the hollow .default variant with the model default', () => {
-    const el = makeSelector({ levels: ['low', 'high'], defaultLevel: 'high' });
-    const chip = chipOf(el._thinkingChipHTML());
+    const el = makeChip({ levels: ['low', 'high'], defaultLevel: 'high' });
+    const chip = chipOf(el.thinkingChipHTML());
     assert(chip !== null, 'a chip must render for a thinking model with a default level');
     assert(chip.classList.contains('thinking-chip') && chip.classList.contains('default'),
       `default level ⇒ hollow .default variant — got class "${chip.className}"`);
@@ -110,8 +108,8 @@ export async function runTests(_ctx) {
   });
 
   await run('no defaultThinkingLevel and no explicit level renders hollow def', () => {
-    const el = makeSelector({ levels: ['low', 'high'] });
-    const chip = chipOf(el._thinkingChipHTML());
+    const el = makeChip({ levels: ['low', 'high'] });
+    const chip = chipOf(el.thinkingChipHTML());
     assert(chip !== null, 'a thinking-capable model must always render a chip');
     assert(chip.classList.contains('thinking-chip') && chip.classList.contains('default'),
       `undeclared default ⇒ hollow .default variant — got class "${chip.className}"`);
@@ -121,21 +119,21 @@ export async function runTests(_ctx) {
   });
 
   await run('non-thinking model ⇒ no chip, even with a stale config level', () => {
-    const el = makeSelector({ thinking: 'high' });
-    assert(el._thinkingChipHTML() === '', 'a model without thinkingLevels must never grow a chip');
+    const el = makeChip({ thinking: 'high' });
+    assert(el.thinkingChipHTML() === '', 'a model without thinkingLevels must never grow a chip');
   });
 
   await run('a native level string is shown verbatim on the chip', () => {
     // codex-max advertises a native "xhigh" level: the chip shows it as-is.
-    const el = makeSelector({ levels: ['high', 'xhigh'], thinking: 'xhigh' });
-    const chip = chipOf(el._thinkingChipHTML());
+    const el = makeChip({ levels: ['high', 'xhigh'], thinking: 'xhigh' });
+    const chip = chipOf(el.thinkingChipHTML());
     assert(chip !== null && !chip.classList.contains('default'), 'an explicit advertised level ⇒ solid chip');
     assert(chip.textContent === 'xhigh', `the native level is shown, got "${chip.textContent}"`);
   });
 
   await run('a stale explicit level the model no longer advertises falls back to the hollow default', () => {
-    const el = makeSelector({ levels: ['low', 'high'], defaultLevel: 'high', thinking: 'medium' });
-    const chip = chipOf(el._thinkingChipHTML());
+    const el = makeChip({ levels: ['low', 'high'], defaultLevel: 'high', thinking: 'medium' });
+    const chip = chipOf(el.thinkingChipHTML());
     assert(chip !== null && chip.classList.contains('default'),
       'an unadvertised stored level means "default", so the chip goes hollow');
     assert(chip.textContent === 'high', `the fallback shows the model default, got "${chip.textContent}"`);

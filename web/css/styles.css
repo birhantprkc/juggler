@@ -338,7 +338,20 @@ select {
        chrome rule in the MENU UTILITY SYSTEM section. */
     --radius-popup: 1.5rem;          /* large rounded outer corner */
     --radius-popup-item: 0.875rem; /* inset interactive rows within a popup */
-    --popup-padding: 1rem;      /* internal breathing room around contents */
+
+    /* A popup's inset is NOT square, and the corner radius is why. The curve
+       eats the surface from the sides, so content held only --popup-padding in
+       reads as falling off the edge there while looking fine top and bottom —
+       and a row with its own --radius-popup-item corner gets that corner cut by
+       the surface's `overflow: hidden`. So the inline inset is a full radius and
+       the block inset stays tight: a popup can afford width, but height is what
+       the list inside it wants.
+
+       Every surface in the `.dropdown-menu, .pp-panel, modal-panel` family takes
+       both, and any surface that overrides its padding must keep the inline half
+       — that is the whole point of the token. */
+    --popup-padding: 1rem;             /* block: breathing room above and below */
+    --popup-padding-inline: 1.5rem;    /* inline: one --radius-popup, to clear the curve */
     --popup-shadow: 0 1rem 3rem var(--overlay-dark-50);
 
     /* Line height scale */
@@ -845,7 +858,7 @@ modal-panel {
     max-width: 25rem;
     z-index: var(--z-dropdown);
     margin: 0;
-    padding: var(--popup-padding);
+    padding: var(--popup-padding) var(--popup-padding-inline);
     list-style: none;
     overflow-y: auto;
     max-height: 80vh;
@@ -2013,7 +2026,7 @@ a:hover {
     .popup-sheet.strategy-dropdown,
     .popup-sheet.permissions-popup,
     .popup-sheet.pp-panel,
-    .popup-sheet.provider-dropdown[data-model-selector="true"] {
+    .popup-sheet.model-picker {
         position: fixed;
         inset: auto 0 0;
         top: auto;
@@ -2034,7 +2047,21 @@ a:hover {
        transform inline (transition: none) so the sheet tracks the finger; on
        release it restores this transition for the snap-back / dismiss glide. */
     .popup-sheet {
+        /* How far a full-bleed child (the grabber) must pull out to reach the
+           sheet's edge: exactly the inline padding the surface pays. Sheets that
+           lay themselves out internally pay none, so they stay at zero —
+           declared last for the picker, a .dropdown-menu that sets `padding: 0`. */
+        --sheet-bleed: 0rem;
+
         transition: transform 200ms ease;
+    }
+
+    .popup-sheet.dropdown-menu {
+        --sheet-bleed: var(--popup-padding-inline);
+    }
+
+    .popup-sheet.model-picker {
+        --sheet-bleed: 0rem;
     }
 
     /* Drag grabber — a real element (injected by presentPopup) so it can own
@@ -2051,10 +2078,17 @@ a:hover {
            when the sheet is a grid (e.g. the slash-commands menu's `auto 1fr`),
            stretched when it's a flex column (model selector), full-width when
            it's a plain block — so the centred line is always centred on the
-           whole popup, never on its first column. */
+           whole popup, never on its first column.
+
+           `width: auto` plus a negative --sheet-bleed rather than `width: 100%`,
+           because 100% is the CONTENT box: on a surface that pads itself the bar
+           would stop short of the sheet's edges, and this is a touch target —
+           the drag would die in the padding. The bleed is whatever inline
+           padding that surface took, so the bar reaches the sheet's own edge. */
         grid-column: 1 / -1;
         align-self: stretch;
-        width: 100%;
+        width: auto;
+        margin-inline: calc(var(--sheet-bleed, 0rem) * -1);
         height: 1.75rem;
         background: var(--bg-secondary);
         border-radius: 1rem 1rem 0 0;
@@ -2079,46 +2113,63 @@ a:hover {
         opacity: 0.6;
     }
 
-    /* Model selector: its desktop body is a fixed two-column flex box. Stack it
-       and let each column take natural height so it reads as one sheet. */
-    .popup-sheet.provider-dropdown[data-model-selector="true"].show {
+    /* Model picker: one column, in DOM order — the chosen model and its dials,
+       then Recent, then the list, then the actions. A flex column rather than
+       the desktop grid (whose second column and extra rows have nowhere to go
+       here), so the sections and the injected grabber stack in the order they
+       appear. Recent lands above the list, which is the order a phone wants
+       them in anyway: the shortlist first, the whole catalogue after. */
+    .popup-sheet.model-picker.show {
         display: flex;
         flex-direction: column;
     }
 
-    /* `display: contents` dissolves the info column so its sections become
-       children of the sheet itself, siblings of the model list and orderable
-       against it. Stacked as one column the desktop split — a pinned info
-       column beside an independently scrolling list — has nothing left to
-       divide. */
-    .popup-sheet .model-menu-info {
-        display: contents;
-    }
-
     /* The SHEET is the single scroll container: every section takes its natural
-       height and none scrolls on its own. A list with its own `flex: 1 1 auto`
-       scroller gets no height here — the info sections alone (actions, current
-       model, usage bars, recent) already meet the 85vh cap, so a shrinkable
-       list is squeezed to nothing and the sheet offers only the recent models.
+       height and none scrolls on its own. A column keeping its own
+       `flex: 1 1 auto` scroller gets no height here — the detail column alone
+       can meet the 85vh cap, squeezing the list to nothing.
 
-       Order sorts by what the sheet is for: recent models, then the full list —
-       both on the first screen — then the current-model card, its usage bars
-       and the two "…" actions, which are read rather than tapped. */
-    .popup-sheet .info-recent { order: 1; }
-    .popup-sheet .info-divider { order: 4; }
-    .popup-sheet .info-actions { order: 5; }
+       EVERY nested scroller must be listed. A flex item left on the desktop's
+       `min-height: 0` is free to shrink below its content, and with the overflow
+       here turned visible that content does not clip — it paints straight over
+       whatever follows. Leaving the list column out is what put the actions
+       under the model rows.
 
-    .popup-sheet .info-current {
-        flex: 0 0 auto;
+       Qualified with `.model-picker` for specificity, and it is load-bearing:
+       the picker's own rule is `.model-picker .model-picker-rows`, which has to
+       carry that prefix to survive the `.dropdown-menu menu` chrome reset. At
+       equal specificity the cascade would settle it on file order — and
+       components.css loads after this file — so an unqualified selector here
+       loses, and the list silently gives up its height on a phone. */
+    .popup-sheet.model-picker .model-picker-detail,
+    .popup-sheet.model-picker .model-picker-list,
+    .popup-sheet.model-picker .model-picker-rows {
+        min-height: auto;
         overflow: visible;
-        order: 3;
     }
 
-    /* Stacked, so the column divider runs across the sheet, not down it. */
-    .popup-sheet .model-menu-list {
-        flex: 0 0 auto;
-        overflow: visible;
-        order: 2;
+    /* Nothing scrolls on its own here, so the stable scrollbar gutter the desktop
+       list reserves is width taken from the rows for a bar that cannot appear —
+       and the padding that held their fill off that bar has nothing to hold it
+       off. A phone has no width to spare for either. */
+    .popup-sheet.model-picker .model-picker-rows {
+        scrollbar-gutter: auto;
+        padding-inline: 0;
+    }
+
+    /* Stacked, the sections are bands across the sheet rather than columns beside
+       each other, so every rule between them runs edge to edge — the list's below
+       and, out here, Recent's and the actions'. On the desktop those two are
+       inset to the left column's text line, which stacked would leave three
+       section rules of two different widths. The inset moves inside instead, so
+       the content still starts on the same line. */
+    .popup-sheet.model-picker .model-picker-recent,
+    .popup-sheet.model-picker .model-picker-footer {
+        margin-inline: 0;
+        padding-inline: var(--picker-gutter);
+    }
+
+    .popup-sheet .model-picker-list {
         border-left: none;
         border-top: 0.0625rem solid var(--border-divider);
     }

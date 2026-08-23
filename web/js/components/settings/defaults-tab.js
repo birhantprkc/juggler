@@ -9,14 +9,26 @@
 //   warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file or
 //   <https://www.gnu.org/licenses/agpl-3.0.html> for full terms.
 
-import { modelLabel, modelLabelFromList } from '../../model/model-display.js';
+import { modelLabelFromList } from '../../model/model-display.js';
+import { buildModelConfig } from '../../model/model-config.js';
+import { presentPopup } from '../../utils/popup-surface.js';
+import { closePopupById } from '../../utils/popup-manager.js';
+import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
 import { buildToggleRow } from './notifications-tab.js';
+import '../model-picker/model-chip.js';
+import '../model-picker/model-picker.js';
 import { isDefaultFileEditingOn, setDefaultFileEditingOn } from '../../services/file-editing-permission.js';
 import { setAutoNameEnabledCached } from '../../services/auto-name-setting.js';
 import strategyRegistry from '../../registries/strategy-registry.js';
 import { getDefaultStrategyId, setDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID } from '../../services/default-strategy.js';
 import { fetchJson } from '../../services/http.js';
 import { showAlert } from '../modal-dialog.js';
+
+/**
+ * Popup id shared by both model rows, so opening one row's picker closes the
+ * other's — two pickers over one modal would be two answers to one question.
+ */
+const MODEL_PICKER_POPUP_ID = 'settings-model-picker';
 
 /**
  * "Defaults" tab (id `defaults`): the default-model and cheap-model pickers, the
@@ -37,14 +49,14 @@ export class DefaultsTab {
     this.providers = [];
     /** @type {{provider: string, model: string, thinking?: string, serviceTier?: string, explicit?: boolean}} @private - Model new conversations are seeded with; explicit=false means automatic. thinking empty ⇒ the model's default level, serviceTier empty ⇒ standard serving. */
     this.defaultModel = { provider: '', model: '', explicit: false };
-    /** @type {{provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} @private - Cheap model for out-of-band micro-tasks; explicit=false means Auto. */
+    /** @type {{provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} @private - Cheap model for out-of-band micro-tasks; explicit=false means Auto. */
     this.cheapModel = { explicit: false };
   }
 
   /**
    * Receive the shared loadConfig() payload: store config/providers/defaultModel
    * and (on a full render) build the fields.
-   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, thinking?: string, serviceTier?: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, thinking?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}}} data
+   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, thinking?: string, serviceTier?: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}}} data
    * @param {boolean} renderFields
    */
   onConfigLoaded(data, renderFields) {
@@ -433,71 +445,61 @@ export class DefaultsTab {
   }
 
   /**
-   * Render the single "Default model" picker. The dropdown offers an
-   * "Automatic" option (server picks a preferred available model) plus every
-   * model grouped by provider. The current default is preselected; changing
-   * it persists immediately via PUT /api/default-model. The auto-resolved
-   * choice is shown as a hint under the combo box.
+   * Render the "Default model" row: the model new conversations are seeded
+   * with. The chip opens the shared picker, whose bottom row ("Automatic")
+   * clears the stored value and lets the server pick a preferred available
+   * model. Every change persists immediately via PUT /api/default-model, and the
+   * resolved choice is described in the status line under the chip.
    * @private
    */
   renderDefaultModelField() {
-    this._renderModelField({
+    this._renderModelRow({
       containerId: '#default-model-field-container',
-      selectId: 'default-model-select',
       nameLabel: 'Default model for new conversations',
-      autoLabel: 'Automatic',
       current: this.defaultModel || { provider: '', model: '', explicit: false },
       statusText: (ref) => this._defaultModelStatusText(ref),
-      onSave: (value, thinking, serviceTier) => this._saveDefaultModel(value, thinking, serviceTier),
-      withThinking: true,
-      withServiceTier: true,
+      onSave: (config) => this._saveDefaultModel(config),
     });
   }
 
   /**
-   * Render the "Cheap model" picker: the small/fast model used for out-of-band
-   * micro-tasks (auto-naming a conversation, plugin generateText). Offers an "Auto"
-   * option plus every model grouped by provider. Changing it persists
-   * immediately via PUT /api/cheap-model; "Auto" clears the stored value and
-   * the auto-derived choice is shown as a hint under the combo box.
+   * Render the "Cheap model" row: the small/fast model used for out-of-band
+   * micro-tasks (auto-naming a conversation, plugin generateText). "Automatic"
+   * clears the stored value and derives one from the model in use. Persists via
+   * PUT /api/cheap-model.
    * @private
    */
   renderCheapModelField() {
-    this._renderModelField({
+    this._renderModelRow({
       containerId: '#cheap-model-field-container',
-      selectId: 'cheap-model-select',
       nameLabel: 'Cheap model for background tasks',
       description:
         'A small, fast model used out-of-band for micro-tasks like auto-naming a ' +
-        'conversation. "Auto" derives one from the model in use.',
-      autoLabel: 'Auto',
+        'conversation. "Automatic" derives one from the model in use.',
       current: this.cheapModel || { explicit: false },
       statusText: (ref) => this._cheapModelStatusText(ref),
-      onSave: (value, thinking) => this._saveCheapModel(value, thinking),
-      withThinking: true,
+      onSave: (config) => this._saveCheapModel(config),
     });
   }
 
   /**
-   * Shared renderer for the Default/Cheap model pickers. Both offer an
-   * auto-option (clearing the stored value) plus every model grouped by
-   * provider, an "unavailable" fallback for a pinned-but-missing model, and a
-   * status hint under the combo box describing the current (or auto-resolved)
-   * choice.
+   * Shared renderer for the Default/Cheap model rows: a `<model-chip>` that
+   * opens the same `<model-picker>` the composer uses, and a status line
+   * describing the current (or auto-resolved) choice.
+   *
+   * The picker is the whole control here — model, thinking level and serving
+   * speed all come back on one `change` as a complete config, so these rows
+   * store exactly what a conversation stores.
    * @param {object} opts
    * @param {string} opts.containerId - CSS selector for the field container.
-   * @param {string} opts.selectId - id to assign the <select>.
-   * @param {string} opts.nameLabel - field label text.
-   * @param {string} [opts.description] - optional description under the label.
-   * @param {string} opts.autoLabel - text for the auto-option (e.g. "Automatic").
+   * @param {string} opts.nameLabel - Field label text.
+   * @param {string} [opts.description] - Optional description under the label.
    * @param {{provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} opts.current
-   * @param {(ref: any) => string} opts.statusText - builds the status hint.
-   * @param {(value: string, thinking?: string, serviceTier?: string) => void} opts.onSave - persists "<provider> <model>" or "", plus an optional thinking level and serving tier.
-   * @param {boolean} [opts.withThinking] - also render a thinking-level selector for the chosen model.
-   * @param {boolean} [opts.withServiceTier] - also render a serving-tier selector for the chosen model.
+   * @param {(ref: any) => string} opts.statusText - Builds the status line.
+   * @param {(config: import('../../model/model-config.js').ModelConfigShape) => void} opts.onSave - Persists the chosen config, or null for Automatic.
    * @private
    */
-  _renderModelField({ containerId, selectId, nameLabel, description, autoLabel, current, statusText, onSave, withThinking, withServiceTier }) {
+  _renderModelRow({ containerId, nameLabel, description, current, statusText, onSave }) {
     const container = this.host.querySelector(containerId);
     if (!container) return;
     container.innerHTML = '';
@@ -523,153 +525,28 @@ export class DefaultsTab {
     const controlColumn = document.createElement('div');
     controlColumn.className = 'provider-control';
 
-    const select = document.createElement('select');
-    select.className = 'default-model-select';
-    select.id = selectId;
-
     const ref = current || { explicit: false };
-    const explicit = !!ref.explicit;
-    const currentValue = explicit && ref.provider && ref.model
-      ? `${ref.provider} ${ref.model}`
-      : '';
-    let currentValueIsValid = false;
+    // Automatic is the ABSENCE of a config, which is exactly what the picker's
+    // none row and the chip's placeholder already mean.
+    const config = ref.explicit && ref.provider && ref.model
+      ? buildModelConfig(ref.provider, ref.model, ref.thinking, ref.serviceTier)
+      : null;
 
-    // Auto-option — clears the stored value; the server then derives/picks a
-    // model. The resolved choice is surfaced in the status hint below.
-    const autoOpt = document.createElement('option');
-    autoOpt.value = '';
-    autoOpt.textContent = autoLabel;
-    if (!explicit) autoOpt.selected = true;
-    select.appendChild(autoOpt);
-
-    for (const provider of this.providers) {
-      if (!provider.modelsWithContext || provider.modelsWithContext.length === 0) continue;
-      const group = document.createElement('optgroup');
-      group.label = provider.available
-        ? provider.displayName
-        : `${provider.displayName} (no API key)`;
-      for (const m of /** @type {Array<{id: string, displayName?: string}>} */ (provider.modelsWithContext)) {
-        const opt = document.createElement('option');
-        const val = `${provider.name} ${m.id}`;
-        opt.value = val;
-        opt.textContent = modelLabel(m.displayName, m.id);
-        if (val === currentValue) {
-          opt.selected = true;
-          currentValueIsValid = true;
-        }
-        group.appendChild(opt);
-      }
-      select.appendChild(group);
-    }
-
-    // An explicitly-set model that is no longer in the provider list: surface
-    // it as a selected "unavailable" option so the state stays visible.
-    if (currentValue && !currentValueIsValid) {
-      const orphanGroup = document.createElement('optgroup');
-      orphanGroup.label = 'Currently set (unavailable)';
-      const opt = document.createElement('option');
-      opt.value = currentValue;
-      opt.selected = true;
-      const refProvider = this.providers.find((/** @type {any} */ p) => p.name === ref.provider);
-      const modelId = ref.model || '';
-      opt.textContent = `${refProvider ? modelLabelFromList(this.providers, refProvider.name, modelId) : `${ref.provider} / ${modelId}`} — unavailable`;
-      orphanGroup.appendChild(opt);
-      select.insertBefore(orphanGroup, select.firstChild ? select.firstChild.nextSibling : null);
-    }
-
-    // Optional thinking-level selector: a second dropdown shown only when the
-    // chosen model advertises thinking levels. An empty value ⇒ the model's
-    // default level. Levels are model-specific, so switching model resets it.
-    /** @type {HTMLSelectElement|null} */
-    let thinkingSelect = null;
-    const modelEntryFor = (/** @type {string} */ value) => {
-      if (!value) return null;
-      const sep = value.indexOf(' ');
-      const provName = value.slice(0, sep);
-      const modelId = value.slice(sep + 1);
-      const p = this.providers.find((/** @type {any} */ pp) => pp.name === provName);
-      if (!p || !p.modelsWithContext) return null;
-      return p.modelsWithContext.find((/** @type {{id: string}} */ m) => m.id === modelId) || null;
-    };
-    const rebuildThinkingOptions = (/** @type {string} */ value, /** @type {string} */ selectedThinking) => {
-      if (!thinkingSelect) return;
-      const entry = modelEntryFor(value);
-      const levels = (entry && entry.thinkingLevels) || [];
-      thinkingSelect.innerHTML = '';
-      if (levels.length === 0) {
-        thinkingSelect.style.display = 'none';
-        return;
-      }
-      thinkingSelect.style.display = '';
-      const def = entry.defaultThinkingLevel || '';
-      const defaultOpt = document.createElement('option');
-      defaultOpt.value = '';
-      defaultOpt.textContent = def ? `Default thinking (${def})` : 'Default thinking';
-      if (!selectedThinking) defaultOpt.selected = true;
-      thinkingSelect.appendChild(defaultOpt);
-      for (const lvl of levels) {
-        const opt = document.createElement('option');
-        opt.value = lvl;
-        opt.textContent = `Thinking: ${lvl}`;
-        if (lvl === selectedThinking) opt.selected = true;
-        thinkingSelect.appendChild(opt);
-      }
-    };
-    if (withThinking) {
-      const ts = document.createElement('select');
-      ts.className = 'default-model-select default-model-thinking-select';
-      ts.id = `${selectId}-thinking`;
-      ts.setAttribute('aria-label', `Thinking level for ${nameLabel}`);
-      ts.addEventListener('change', () => onSave(select.value, ts.value, tierSelect ? tierSelect.value : undefined));
-      thinkingSelect = ts;
-      rebuildThinkingOptions(currentValue, (explicit && ref.thinking) || '');
-    }
-
-    // Optional serving-tier selector, shown only when the chosen model
-    // advertises tiers. An empty value ⇒ standard serving, which is the absence
-    // of a tier rather than a tier of its own. Tiers are model-specific, so
-    // switching model resets it — and a tier costs materially more, so it is
-    // offered under the provider's own name for it, never a generic "fast".
-    /** @type {HTMLSelectElement|null} */
-    let tierSelect = null;
-    const rebuildServiceTierOptions = (/** @type {string} */ value, /** @type {string} */ selectedTier) => {
-      if (!tierSelect) return;
-      const entry = modelEntryFor(value);
-      const tiers = (entry && entry.serviceTiers) || [];
-      tierSelect.innerHTML = '';
-      if (tiers.length === 0) {
-        tierSelect.style.display = 'none';
-        return;
-      }
-      tierSelect.style.display = '';
-      const standardOpt = document.createElement('option');
-      standardOpt.value = '';
-      standardOpt.textContent = 'Standard speed';
-      if (!selectedTier) standardOpt.selected = true;
-      tierSelect.appendChild(standardOpt);
-      for (const tier of /** @type {Array<{id: string, name?: string, description?: string}>} */ (tiers)) {
-        const opt = document.createElement('option');
-        opt.value = tier.id;
-        opt.textContent = tier.name || tier.id;
-        if (tier.description) opt.title = tier.description;
-        if (tier.id === selectedTier) opt.selected = true;
-        tierSelect.appendChild(opt);
-      }
-    };
-    if (withServiceTier) {
-      const tiers = document.createElement('select');
-      tiers.className = 'default-model-select default-model-tier-select';
-      tiers.id = `${selectId}-service-tier`;
-      tiers.setAttribute('aria-label', `Serving speed for ${nameLabel}`);
-      tiers.addEventListener('change', () => onSave(select.value, thinkingSelect ? thinkingSelect.value : undefined, tiers.value));
-      tierSelect = tiers;
-      rebuildServiceTierOptions(currentValue, (explicit && ref.serviceTier) || '');
-    }
-
-    select.addEventListener('change', () => {
-      if (thinkingSelect) rebuildThinkingOptions(select.value, '');
-      if (tierSelect) rebuildServiceTierOptions(select.value, '');
-      onSave(select.value, thinkingSelect ? thinkingSelect.value : undefined, tierSelect ? tierSelect.value : undefined);
+    const chip = /** @type {any} */ (document.createElement('model-chip'));
+    chip.update({
+      providers: this.providers,
+      placeholder: 'Automatic',
+      buttonTitle: nameLabel,
+      config,
+    });
+    chip.addEventListener('chip-toggle', () => this._openModelPicker(chip, config, onSave));
+    // The pill promises its mini popover, so an open picker gets out of the way
+    // first. Closing leaves the chip's DOM alone, so the pill is still the
+    // anchor the popover then attaches to.
+    chip.addEventListener('mini-requested', () => closePopupById(MODEL_PICKER_POPUP_ID));
+    // The chip's own mini popover changes the thinking level without the picker.
+    chip.addEventListener('change', (/** @type {Event} */ e) => {
+      onSave(/** @type {CustomEvent} */ (e).detail);
     });
 
     const status = document.createElement('div');
@@ -677,9 +554,7 @@ export class DefaultsTab {
     status.style.display = 'block';
     status.textContent = statusText(ref);
 
-    controlColumn.appendChild(select);
-    if (thinkingSelect) controlColumn.appendChild(thinkingSelect);
-    if (tierSelect) controlColumn.appendChild(tierSelect);
+    controlColumn.appendChild(chip);
     controlColumn.appendChild(status);
 
     row.appendChild(infoColumn);
@@ -688,35 +563,100 @@ export class DefaultsTab {
   }
 
   /**
-   * Persist the chosen cheap model. An empty value clears it (Auto).
-   * @param {string} value - "<provider> <model>" or "" for Auto
-   * @param {string} [thinking] - thinking level; empty/omitted ⇒ the model's default
+   * Open the shared picker against one settings row.
+   *
+   * The settings panel is a modal, so two things matter here: the picker's own
+   * Escape handling closes only the picker (popup-manager's Escape dismisses
+   * every overlay, modal included), and one popup id across both rows means
+   * opening the second row's picker closes the first.
+   * @param {any} chip - The `<model-chip>` the picker anchors to.
+   * @param {import('../../model/model-config.js').ModelConfigShape} value - The config in effect.
+   * @param {(config: import('../../model/model-config.js').ModelConfigShape) => void} onSave
    * @private
    */
-  async _saveCheapModel(value, thinking) {
-    /** @type {{provider: string, model: string, thinking?: string}} */
-    let body;
-    if (!value) {
-      body = { provider: '', model: '' };
-    } else {
-      const sep = value.indexOf(' ');
-      body = { provider: value.slice(0, sep), model: value.slice(sep + 1) };
-      if (thinking) body.thinking = thinking;
-    }
+  _openModelPicker(chip, value, onSave) {
+    // Second press on the same chip dismisses rather than re-opening.
+    if (closePopupById(MODEL_PICKER_POPUP_ID)) return;
+
+    const picker = /** @type {any} */ (document.createElement('model-picker'));
+    picker.providers = this.providers;
+    picker.value = value;
+    picker.noneLabel = 'Automatic';
+
+    /** @type {(() => void)|null} */
+    let release = null;
+    const close = () => {
+      if (release) {
+        release();
+        release = null;
+      }
+    };
+
+    picker.addEventListener('change', (/** @type {Event} */ e) => {
+      close();
+      onSave(/** @type {CustomEvent} */ (e).detail);
+    });
+    picker.addEventListener('close', close);
+
+    release = presentPopup({
+      surface: picker,
+      anchor: chip.button || chip,
+      id: MODEL_PICKER_POPUP_ID,
+      onClose: close,
+      insideSelectors: ['model-chip', '.model-picker'],
+    });
+  }
+
+  /**
+   * The request body for a model row: the whole config, or the empty pair that
+   * clears the stored value back to Automatic. Both dials ride along, since a
+   * stored default that dropped one would seed something the user never chose.
+   * @param {import('../../model/model-config.js').ModelConfigShape} config
+   * @returns {{provider: string, model: string, thinking?: string, serviceTier?: string}} The PUT body.
+   * @private
+   */
+  _modelRowBody(config) {
+    if (!config?.provider || !config?.model) return { provider: '', model: '' };
+    /** @type {{provider: string, model: string, thinking?: string, serviceTier?: string}} */
+    const body = { provider: config.provider, model: config.model };
+    if (config.thinking) body.thinking = config.thinking;
+    if (config.serviceTier) body.serviceTier = config.serviceTier;
+    return body;
+  }
+
+  /**
+   * Persist the chosen cheap model. A null config clears it (Automatic).
+   *
+   * Applied optimistically — the row repaints before the request lands, and is
+   * put back as it was if the save fails, so the chip never shows a choice the
+   * server rejected.
+   * @param {import('../../model/model-config.js').ModelConfigShape} config
+   * @private
+   */
+  async _saveCheapModel(config) {
+    const previous = this.cheapModel;
+    const body = this._modelRowBody(config);
+    this.cheapModel = {
+      provider: body.provider,
+      model: body.model,
+      thinking: body.thinking || '',
+      serviceTier: body.serviceTier || '',
+      explicit: !!(body.provider && body.model),
+    };
+    this.renderCheapModelField();
     try {
       await fetchJson('/api/cheap-model', { method: 'PUT', body });
-      // Reflect the saved state locally. When cleared to Auto, re-fetch so the
-      // auto-derived hint under the combo box refreshes; otherwise update in place.
-      if (body.provider && body.model) {
-        this.cheapModel = { provider: body.provider, model: body.model, thinking: body.thinking || '', explicit: true };
-        this.renderCheapModelField();
-      } else {
+      // Cleared to Automatic: re-fetch so the auto-derived name in the status
+      // line is the one the server actually resolved.
+      if (!body.provider || !body.model) {
         this.cheapModel = await fetchJson('/api/cheap-model', { fallback: null }) || { explicit: false };
         this.renderCheapModelField();
       }
     } catch (err) {
       console.error('[SettingsPanel] Failed to save cheap model:', err);
-      await showAlert('Failed to save cheap model.', 'Error');
+      this.cheapModel = previous;
+      this.renderCheapModelField();
+      await showAlert(`Couldn't save the cheap model.\n\n${extractErrorMessage(err)}`, 'Error');
     }
   }
 
@@ -772,32 +712,31 @@ export class DefaultsTab {
   }
 
   /**
-   * Persist the chosen default model. An empty value clears it (Automatic).
-   * @param {string} value - "<provider> <model>" or "" for Automatic
-   * @param {string} [thinking] - thinking level; empty/omitted ⇒ the model's default
-   * @param {string} [serviceTier] - advertised tier id; empty/omitted ⇒ standard serving
+   * Persist the chosen default model. A null config clears it (Automatic).
+   *
+   * Applied optimistically, and reverted if the save fails — same contract as
+   * the cheap model's row.
+   * @param {import('../../model/model-config.js').ModelConfigShape} config
    * @private
    */
-  async _saveDefaultModel(value, thinking, serviceTier) {
-    /** @type {{provider: string, model: string, thinking?: string, serviceTier?: string}} */
-    let body;
-    if (!value) {
-      body = { provider: '', model: '' };
-    } else {
-      const sep = value.indexOf(' ');
-      body = { provider: value.slice(0, sep), model: value.slice(sep + 1) };
-      if (thinking) body.thinking = thinking;
-      if (serviceTier) body.serviceTier = serviceTier;
-    }
+  async _saveDefaultModel(config) {
+    const previous = this.defaultModel;
+    const body = this._modelRowBody(config);
+    this.defaultModel = {
+      provider: body.provider,
+      model: body.model,
+      thinking: body.thinking || '',
+      serviceTier: body.serviceTier || '',
+      explicit: !!(body.provider && body.model),
+    };
+    this.renderDefaultModelField();
     try {
       await fetchJson('/api/default-model', { method: 'PUT', body });
-      // Reflect the saved state locally and re-render so the status hint
-      // and selection update without a full reload.
-      this.defaultModel = { provider: body.provider, model: body.model, thinking: body.thinking || '', serviceTier: body.serviceTier || '', explicit: !!(body.provider && body.model) };
-      this.renderDefaultModelField();
     } catch (err) {
       console.error('[SettingsPanel] Failed to save default model:', err);
-      await showAlert('Failed to save default model.', 'Error');
+      this.defaultModel = previous;
+      this.renderDefaultModelField();
+      await showAlert(`Couldn't save the default model.\n\n${extractErrorMessage(err)}`, 'Error');
     }
   }
 }

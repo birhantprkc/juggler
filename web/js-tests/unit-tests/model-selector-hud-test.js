@@ -3,13 +3,16 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Model-selector cycling HUD behavior regressions.
+ * Model-selector cycling HUD behavior regressions, plus the list rules the HUD
+ * is a view of. The rows live in `<model-picker>`; the freeze/refresh mechanics
+ * live in the `<model-selector>` host that presents it.
  * @module unit-tests/model-selector-hud-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
 import recentModels from '../../js/services/recent-models.js';
 import '../../js/components/model-selector.js';
+import '../../js/components/model-picker/model-picker.js';
 
 /**
  * @typedef {object} TestResult
@@ -17,6 +20,20 @@ import '../../js/components/model-selector.js';
  * @property {number} failed - Number of failed tests.
  * @property {string[]} errors - Failure messages.
  */
+
+/**
+ * The provider list both the selector and the standalone pickers are given.
+ * @returns {any[]} A fresh provider list.
+ */
+const PROVIDERS = () => [{
+  name: 'p',
+  displayName: 'Provider',
+  available: true,
+  modelsWithContext: [
+    { id: 'm', displayName: 'Model', contextWindow: 1000, thinkingLevels: ['low', 'high'] },
+    { id: 'other', displayName: 'Other', contextWindow: 1000 },
+  ],
+}];
 
 /**
  * Seed the recent-model cache without depending on the server.
@@ -40,19 +57,27 @@ async function seedRecents(models) {
 function makeSelector() {
   const el = /** @type {any} */ (document.createElement('model-selector'));
   el.fetchProviders = async () => {};
-  el.refresh = async () => {};
   el._refreshProvidersInBackground = () => {};
-  el._refreshUsageStats = async () => {};
-  el.providers = [{
-    name: 'p',
-    displayName: 'Provider',
-    available: true,
-    modelsWithContext: [
-      { id: 'm', displayName: 'Model', contextWindow: 1000, thinkingLevels: ['low', 'high'] },
-      { id: 'other', displayName: 'Other', contextWindow: 1000 },
-    ],
-  }];
+  el.providers = PROVIDERS();
   document.body.appendChild(el);
+  return el;
+}
+
+/**
+ * Build a detached, rendered `<model-picker>` — the same element the selector
+ * presents, driven directly so the list rules can be asserted without a popup.
+ * @param {object} opts - Scenario knobs.
+ * @param {any[]} [opts.providers] - Provider list; defaults to the shared one.
+ * @param {any} [opts.value] - The config in effect.
+ * @param {string} [opts.noneLabel] - Label for the bottom row.
+ * @returns {any} The rendered picker.
+ */
+function makePicker({ providers, value, noneLabel } = {}) {
+  const el = /** @type {any} */ (document.createElement('model-picker'));
+  el.providers = providers || PROVIDERS();
+  el.value = value || null;
+  if (noneLabel) el.noneLabel = noneLabel;
+  el.render();
   return el;
 }
 
@@ -86,21 +111,12 @@ export async function runTests(_ctx) {
       { provider: 'p', model: 'm', thinking: 'high' },
       { provider: 'p', model: 'other' },
     ]);
-    const el = makeSelector();
-    try {
-      el.provider = 'p';
-      el.model = 'm';
-      el._currentConfig = { provider: 'p', model: 'm', thinking: 'high' };
-      const host = document.createElement('div');
-      host.innerHTML = el._generateRecentSection();
-      const rows = host.querySelectorAll('.recent-model');
-      assert(rows.length === 3, `expected three Recent rows, got ${rows.length}`);
-      assert(!rows[0].classList.contains('active'), 'same model at Default must not highlight');
-      assert(rows[1].classList.contains('active'), 'the exact high-thinking pair must highlight');
-      assert(!rows[2].classList.contains('active'), 'a different model must not highlight');
-    } finally {
-      el.remove();
-    }
+    const picker = makePicker({ value: { provider: 'p', model: 'm', thinking: 'high' } });
+    const rows = picker.querySelectorAll('.recent-model');
+    assert(rows.length === 3, `expected three Recent rows, got ${rows.length}`);
+    assert(!rows[0].classList.contains('active'), 'same model at Default must not highlight');
+    assert(rows[1].classList.contains('active'), 'the exact high-thinking pair must highlight');
+    assert(!rows[2].classList.contains('active'), 'a different model must not highlight');
   });
 
   await run('Recent hides entries that are not selectable', async () => {
@@ -109,34 +125,21 @@ export async function runTests(_ctx) {
       { provider: 'p', model: 'removed' },
       { provider: 'p', model: 'm' },
     ]);
-    const el = makeSelector();
-    try {
-      const host = document.createElement('div');
-      host.innerHTML = el._generateRecentSection();
-      const rows = host.querySelectorAll('.recent-model');
-      assert(rows.length === 1, `expected one selectable Recent row, got ${rows.length}`);
-      assert(rows[0].getAttribute('data-provider') === 'p'
-        && rows[0].getAttribute('data-model') === 'm',
-      'Recent must contain only a model present on an available provider');
-    } finally {
-      el.remove();
-    }
+    const picker = makePicker();
+    const rows = picker.querySelectorAll('.recent-model');
+    assert(rows.length === 1, `expected one selectable Recent row, got ${rows.length}`);
+    assert(rows[0].getAttribute('data-provider') === 'p'
+      && rows[0].getAttribute('data-model') === 'm',
+    'Recent must contain only a model present on an available provider');
   });
 
   await run('synchronous model observers preserve the open HUD and anchor', async () => {
-    const originalRAF = window.requestAnimationFrame;
-    /** @type {FrameRequestCallback[]} */
-    const frames = [];
-    window.requestAnimationFrame = (callback) => {
-      frames.push(callback);
-      return frames.length;
-    };
-
+    await seedRecents([]);
     const el = makeSelector();
     try {
+      el._currentConfig = { provider: 'p', model: 'm' };
       el.provider = 'p';
       el.model = 'm';
-      el._currentConfig = { provider: 'p', model: 'm' };
       const thread = {
         _modelConfig: el._currentConfig,
         get modelConfig() { return this._modelConfig; },
@@ -150,129 +153,80 @@ export async function runTests(_ctx) {
       el._messageThread = thread;
       el.render();
       el.open();
-      const present = frames.shift();
-      assert(!!present, 'opening schedules popup presentation');
-      present(0);
 
-      const surface = el._menu?.surface;
+      const surface = el._picker;
       const anchor = el.querySelector('.model-selector-button');
-      assert(!!surface, 'opening creates a live model popup');
-      assert(!!anchor && anchor.isConnected, 'the popup anchor starts connected');
-      assert(surface.parentElement === document.body, 'the live popup is hosted by document.body');
+      assert(!!surface, 'opening creates a live model picker');
+      assert(!!anchor && anchor.isConnected, 'the picker anchor starts connected');
+      assert(surface.parentElement === document.body, 'the live picker is hosted by document.body');
 
       assert(el.applyConfigPair({ provider: 'p', model: 'other' }), 'the next model applies');
 
-      const surfaces = document.querySelectorAll('.provider-dropdown[data-model-selector="true"]');
-      assert(surfaces.length === 1, `exactly one model popup remains, got ${surfaces.length}`);
-      assert(surfaces[0] === surface && el._menu?.surface === surface,
-        'the original live popup remains the presented surface');
+      const surfaces = document.querySelectorAll('.model-picker');
+      assert(surfaces.length === 1, `exactly one model picker remains, got ${surfaces.length}`);
+      assert(surfaces[0] === surface && el._picker === surface,
+        'the original live picker remains the presented surface');
       assert(anchor.isConnected && el.querySelector('.model-selector-button') === anchor,
-        'the original popup anchor remains connected');
-      assert(!el.querySelector('.provider-dropdown.show'), 'no duplicate inline popup is created');
+        'the original anchor remains connected');
+      assert(!el.querySelector('.model-picker'), 'no duplicate picker is left inside the selector');
       assert(!!surface.querySelector('.model-selection-item.active[data-model="other"]'),
-        'the live popup highlights the newly selected model');
+        'the live picker highlights the newly selected model');
       assert(anchor.textContent.includes('Other'), 'the anchor label updates in place');
     } finally {
       el.close();
       el.remove();
-      window.requestAnimationFrame = originalRAF;
     }
   });
 
-  await run('stale deferred opens cannot create a duplicate model popup', async () => {
-    const originalRAF = window.requestAnimationFrame;
-    const originalCancel = window.cancelAnimationFrame;
-    /** @type {Map<number, FrameRequestCallback>} */
-    const frames = new Map();
-    let nextFrame = 1;
-    window.requestAnimationFrame = (callback) => {
-      const id = nextFrame++;
-      frames.set(id, callback);
-      return id;
-    };
-    window.cancelAnimationFrame = () => {};
-
+  await run('reopening never leaves a second picker behind', async () => {
+    await seedRecents([]);
     const el = makeSelector();
     try {
       el.open();
-      const staleOpen = frames.get(1);
-      assert(!!staleOpen, 'first open scheduled presentation');
       el.close();
       el.open();
-      const currentOpen = frames.get(2);
-      assert(!!currentOpen, 'second open scheduled presentation');
-
-      // Deliberately deliver the cancelled frame to simulate a callback already
-      // queued by the browser, then deliver the current opening.
-      staleOpen(0);
-      currentOpen(0);
-
-      const surfaces = document.querySelectorAll('.provider-dropdown[data-model-selector="true"]');
-      assert(surfaces.length === 1, `exactly one model popup may exist, got ${surfaces.length}`);
-      assert(el._menu?.surface === surfaces[0], 'the live surface belongs to the current opening');
-      assert(!el.querySelector('.provider-dropdown.show'), 'no duplicate inline popup remains in the selector');
+      const surfaces = document.querySelectorAll('.model-picker');
+      assert(surfaces.length === 1, `exactly one model picker may exist, got ${surfaces.length}`);
+      assert(el._picker === surfaces[0], 'the live surface belongs to the current opening');
     } finally {
       el.close();
       el.remove();
-      document.querySelectorAll('.provider-dropdown[data-model-selector="true"]').forEach(node => node.remove());
-      window.requestAnimationFrame = originalRAF;
-      window.cancelAnimationFrame = originalCancel;
+      document.querySelectorAll('.model-picker').forEach(node => node.remove());
     }
   });
 
   await run('hidden models are kept out of the model list', async () => {
     await seedRecents([]);
-    const el = makeSelector();
-    try {
-      el.providers[0].modelsWithContext[1].hidden = true;
-      el.provider = 'p';
-      el.model = 'm';
-      const host = document.createElement('div');
-      host.innerHTML = el._generateModelListContent();
-      const rows = [...host.querySelectorAll('.model-selection-item')]
-        .map(r => (r.textContent || '').trim());
-      assert(rows.some(t => t.includes('Model')), 'the visible model is still offered');
-      assert(!rows.some(t => t.includes('Other')), 'the hidden model must not be offered');
-    } finally {
-      el.remove();
-    }
+    const providers = PROVIDERS();
+    providers[0].modelsWithContext[1].hidden = true;
+    const picker = makePicker({ providers, value: { provider: 'p', model: 'm' } });
+    const rows = [...picker.querySelectorAll('.model-selection-item')]
+      .map(r => (r.textContent || '').trim());
+    assert(rows.some(t => t.includes('Model')), 'the visible model is still offered');
+    assert(!rows.some(t => t.includes('Other')), 'the hidden model must not be offered');
   });
 
   await run('the model in use stays listed even when hidden, and says so', async () => {
     // Hiding the model a conversation is already on must not strip its label:
     // the picker would then read "No model" for something plainly running.
     await seedRecents([]);
-    const el = makeSelector();
-    try {
-      el.providers[0].modelsWithContext[0].hidden = true;
-      el.provider = 'p';
-      el.model = 'm';
-      const host = document.createElement('div');
-      host.innerHTML = el._generateModelListContent();
-      const current = [...host.querySelectorAll('.model-selection-item')]
-        .find(r => (r.textContent || '').includes('Model'));
-      assert(!!current, 'the in-use model must still be listed');
-      const note = current?.querySelector('.menu-item-note');
-      assert((note?.textContent || '') === 'hidden', 'it is marked "hidden"');
-    } finally {
-      el.remove();
-    }
+    const providers = PROVIDERS();
+    providers[0].modelsWithContext[0].hidden = true;
+    const picker = makePicker({ providers, value: { provider: 'p', model: 'm' } });
+    const current = [...picker.querySelectorAll('.model-selection-item')]
+      .find(r => (r.textContent || '').includes('Model'));
+    assert(!!current, 'the in-use model must still be listed');
+    const note = current?.querySelector('.menu-item-note');
+    assert((note?.textContent || '') === 'hidden', 'it is marked "hidden"');
   });
 
   await run('a provider whose every model is hidden drops out of the menu', async () => {
     await seedRecents([]);
-    const el = makeSelector();
-    try {
-      for (const m of el.providers[0].modelsWithContext) m.hidden = true;
-      el.provider = '';
-      el.model = '';
-      const host = document.createElement('div');
-      host.innerHTML = el._generateModelListContent();
-      assert(!host.querySelector('.provider-menu-header'),
-        'a provider with nothing left to offer must not render a header');
-    } finally {
-      el.remove();
-    }
+    const providers = PROVIDERS();
+    for (const m of providers[0].modelsWithContext) m.hidden = true;
+    const picker = makePicker({ providers });
+    assert(!picker.querySelector('.provider-menu-header'),
+      'a provider with nothing left to offer must not render a header');
   });
 
   return { passed, failed, errors };

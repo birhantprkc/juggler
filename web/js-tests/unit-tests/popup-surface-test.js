@@ -15,12 +15,17 @@
  * through a handle the host had already released), and the popup's open-state
  * token leaked, which suppresses Escape app-wide for the rest of the session.
  *
+ * Placement (`positionDropdown`, which this presents with) is covered here for
+ * the same reason: what it does to the surface has to survive being done on
+ * every content change, repeatedly, under the user's hands.
+ *
  * `requestAnimationFrame` is shimmed onto macrotasks: the test window is hidden
  * and may never paint.
  * @module unit-tests/popup-surface-test
  */
 
 import { presentInlineMenu } from '../../js/utils/popup-surface.js';
+import { positionDropdown } from '../../sdk/lib/dropdown-positioning.js';
 import {
   registerOpenPopup,
   isAnyPopupOpen,
@@ -44,6 +49,27 @@ function mountHost() {
     + '<nav class="menu dropdown-menu show"><menu><li>item</li></menu></nav>';
   document.body.appendChild(host);
   return host;
+}
+
+/**
+ * Mount a menu whose inner list scrolls only because the menu's height is
+ * capped — the shape every anchored picker has.
+ * @returns {{menu: HTMLElement, list: HTMLElement, button: HTMLElement}} The mounted parts.
+ */
+function mountScrollingMenu() {
+  const button = document.createElement('button');
+  button.style.cssText = 'position:fixed;left:10px;top:10px;width:80px;height:20px;';
+  document.body.appendChild(button);
+
+  const menu = document.createElement('nav');
+  menu.className = 'dropdown-menu show';
+  menu.style.cssText = 'display:flex;flex-direction:column;width:12rem;padding:0;';
+  const list = document.createElement('div');
+  list.style.cssText = 'flex:1 1 auto;min-height:0;overflow-y:auto;';
+  list.innerHTML = '<div style="height:200rem"></div>';
+  menu.appendChild(list);
+  document.body.appendChild(menu);
+  return { menu, list, button };
 }
 
 /**
@@ -125,6 +151,25 @@ export async function runTests() {
         document.querySelectorAll('.menu[data-section="true"], .popup-sheet-scrim')
           .forEach((el) => el.remove());
         __resetPopupManagerForTests();
+      }
+    });
+
+    await run('placing a menu leaves a long list where the user left it', () => {
+      // Placement measures the menu at its natural height, which means clearing
+      // the `max-height` that bounds it — and a scroller inside only has
+      // somewhere to scroll BECAUSE of that bound. Repositioning happens on
+      // every content change, so losing the offset here means a list that
+      // snaps back to the top while the user is reading it.
+      const { menu, list, button } = mountScrollingMenu();
+      try {
+        list.scrollTop = 300;
+        assert(list.scrollTop === 300, 'the list must be scrollable for this to mean anything');
+        positionDropdown(menu, button, 8);
+        assert(list.scrollTop === 300,
+          `placement must not scroll the list — landed at ${list.scrollTop}`);
+      } finally {
+        menu.remove();
+        button.remove();
       }
     });
 

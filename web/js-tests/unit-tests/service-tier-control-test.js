@@ -7,9 +7,9 @@
  *
  * Two properties matter here and neither is visible by inspection:
  *
- *   1. The control renders only for a model that advertises `serviceTiers`,
- *      shows the provider's own labels, and treats standard serving as the
- *      ABSENCE of a tier rather than an empty-string one.
+ *   1. `<model-tuning>` renders the Speed control only for a model that
+ *      advertises `serviceTiers`, shows the provider's own labels, and treats
+ *      standard serving as the ABSENCE of a tier rather than an empty-string one.
  *   2. The two per-model dials share one `modelConfig` object, and every write
  *      path rebuilds that object from scratch. So setting the thinking level
  *      must preserve `serviceTier` and setting the tier must preserve
@@ -25,6 +25,7 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import '../../js/components/model-selector.js';
+import '../../js/components/model-picker/model-tuning.js';
 
 /**
  * @typedef {object} TestResult
@@ -67,15 +68,23 @@ function makeSelector({ tiers, levels, thinking, serviceTier }) {
 }
 
 /**
- * Parse control HTML into a container for querying.
- * @param {string} html - The `_generateServiceTierControl()` return value.
- * @returns {Element|null} The control's root element, or null for empty HTML.
+ * Build a detached `<model-tuning>` for one model, and return its rendered
+ * Speed control.
+ * @param {object} opts - Scenario knobs.
+ * @param {Array<{id: string, name?: string, description?: string}>} [opts.tiers] - Tiers the model advertises.
+ * @param {string[]} [opts.levels] - `thinkingLevels` the model advertises.
+ * @param {string} [opts.serviceTier] - Explicit tier in the value.
+ * @returns {Element|null} The `.model-speed` root, or null when none rendered.
  */
-function controlOf(html) {
-  if (!html) return null;
-  const tmp = document.createElement('div');
-  tmp.innerHTML = html;
-  return tmp.firstElementChild;
+function speedControlOf({ tiers, levels, serviceTier }) {
+  const el = /** @type {any} */ (document.createElement('model-tuning'));
+  /** @type {any} */
+  const modelEntry = { id: 'model-x', contextWindow: 200000 };
+  if (tiers) modelEntry.serviceTiers = tiers;
+  if (levels) modelEntry.thinkingLevels = levels;
+  el.modelEntry = modelEntry;
+  el.value = serviceTier ? { serviceTier } : {};
+  return el.querySelector('.model-speed');
 }
 
 /**
@@ -103,15 +112,12 @@ export async function runTests(_ctx) {
   };
 
   await run('a model with no serviceTiers renders no speed control', () => {
-    const el = makeSelector({ levels: ['low', 'high'] });
-    const html = el._generateServiceTierControl({ provider: 'prov', model: 'model-x' }, el.providers[0].modelsWithContext[0]);
-    assert(html === '', 'a standard-only model must not grow a speed control');
+    assert(speedControlOf({ levels: ['low', 'high'] }) === null,
+      'a standard-only model must not grow a speed control');
   });
 
   await run('an advertised tier renders Standard plus the provider label and blurb', () => {
-    const el = makeSelector({ tiers: [FAST] });
-    const root = controlOf(el._generateServiceTierControl(
-      { provider: 'prov', model: 'model-x' }, el.providers[0].modelsWithContext[0]));
+    const root = speedControlOf({ tiers: [FAST] });
     assert(root !== null, 'an advertising model must render the control');
     const segs = [...root.querySelectorAll('.tier-seg')];
     assert(segs.length === 2, `Standard + one tier = 2 segments, got ${segs.length}`);
@@ -127,9 +133,7 @@ export async function runTests(_ctx) {
   });
 
   await run('standard is active when no tier is chosen', () => {
-    const el = makeSelector({ tiers: [FAST] });
-    const root = controlOf(el._generateServiceTierControl(
-      { provider: 'prov', model: 'model-x' }, el.providers[0].modelsWithContext[0]));
+    const root = speedControlOf({ tiers: [FAST] });
     const segs = [...root.querySelectorAll('.tier-seg')];
     assert(segs[0].classList.contains('active'), 'absent tier ⇒ Standard is the active segment');
     assert(segs[0].getAttribute('aria-checked') === 'true', 'the active segment reports aria-checked');
@@ -137,9 +141,7 @@ export async function runTests(_ctx) {
   });
 
   await run('a stale tier the model no longer advertises falls back to Standard', () => {
-    const el = makeSelector({ tiers: [FAST] });
-    const root = controlOf(el._generateServiceTierControl(
-      { provider: 'prov', model: 'model-x', serviceTier: 'flex' }, el.providers[0].modelsWithContext[0]));
+    const root = speedControlOf({ tiers: [FAST], serviceTier: 'flex' });
     const segs = [...root.querySelectorAll('.tier-seg')];
     assert(segs[0].classList.contains('active'),
       'an unadvertised stored tier means standard serving, not a phantom selection');
