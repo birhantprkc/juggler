@@ -158,6 +158,27 @@ type wsFleet struct {
 	// engineClient is the headless engine WS connection, or nil. Set on
 	// engine-role upgrade and cleared on disconnect.
 	engineClient atomic.Pointer[WSClient]
+	// engineHeartbeatAt is when the engine's JS realm last proved it is running,
+	// as unix nanoseconds. An open socket is not proof (see engine_liveness.go),
+	// so this — not engineClient alone — is what IsEngineConnected answers from.
+	engineHeartbeatAt atomic.Int64
+	// engineLivenessWindowNs overrides engineLivenessWindow when non-zero.
+	// Test-only seam, so a test need not wait out the production window.
+	engineLivenessWindowNs atomic.Int64
+	// engineSilenceReported latches the log line for a live→silent transition, so
+	// a wedged engine costs one line rather than one per poll. Reset on connect.
+	engineSilenceReported atomic.Bool
+	// engineEvictedAt is when the supervisor last closed a silent engine's socket,
+	// as unix nanoseconds, or 0 when no eviction is outstanding. It is what
+	// distinguishes an engine we killed and are waiting on from one that simply
+	// never connected.
+	engineEvictedAt atomic.Int64
+	// engineRecoveries counts recovery-hook calls since the last healthy engine,
+	// capped by maxEngineRecoveries.
+	engineRecoveries atomic.Int32
+	// engineRecovery reloads the engine host when eviction alone did not bring it
+	// back. Installed by the app layer, which owns the window; nil elsewhere.
+	engineRecovery atomic.Pointer[EngineRecovery]
 	// stats, when non-nil (JUGGLER_WS_STATS set), accounts WebSocket payload
 	// bytes per direction / message type and periodically logs a table plus the
 	// modeled permessage-deflate ratio. Diagnostic only; nil in normal runs.

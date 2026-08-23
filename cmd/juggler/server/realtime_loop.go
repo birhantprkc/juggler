@@ -45,6 +45,11 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 		if wsClient, ok := client.(*WSClient); ok {
 			s.engineClient.Store(wsClient)
 		}
+		// A connection that has just been opened is proof the realm was running a
+		// moment ago: seed the liveness stamp so the first heartbeat has a window
+		// to arrive in, and re-arm the silence report for this incarnation.
+		s.noteEngineAlive()
+		s.engineSilenceReported.Store(false)
 		s.workerManager.SetEngineClient(client.ClientID(), func(convID string, msg []byte) {
 			envelope := worker.FormatWorkerMessage(convID, msg)
 			if envelope != nil {
@@ -114,7 +119,19 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 
 			s.stats.record(statsIn, msgBytes, role)
 
+			// Anything the engine says proves its realm is running, so all inbound
+			// engine traffic refreshes the liveness stamp — the heartbeat below only
+			// covers the case where the engine has nothing else to say.
+			if role == ClientRoleEngine {
+				s.noteEngineAlive()
+			}
+
 			switch generic.Type {
+			case "engine-heartbeat":
+				// Liveness only; the stamp above is the whole effect. Sent from the
+				// engine's module worker, the realm that must be running for a tool to
+				// execute, so it cannot be answered by a transport whose page has
+				// stopped (see engine_liveness.go).
 			case "shell-start":
 				shellReq, ok := unmarshalWS[ShellStartRequest](msgBytes, "shell-start")
 				if !ok {

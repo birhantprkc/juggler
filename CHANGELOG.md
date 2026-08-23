@@ -20,6 +20,7 @@ of changes; this project follows semantic versioning.
 - A premium serving speed now shows on the model button and can be set as the default
 - The composer and Settings now share one model picker, with type-to-filter and keyboard navigation
 - A message can now be scheduled for the end of the current turn, not just a delay
+- A stalled tool engine is now noticed and revived, instead of failing every tool until restart
 
 ## [0.5.7] - 2026-08-19
 

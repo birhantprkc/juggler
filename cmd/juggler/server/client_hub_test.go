@@ -13,7 +13,7 @@ import (
 // buffered send channel, so the hub's broadcasts can be read without a real
 // connection.
 func testRoleClient(id string, role ClientRole, origin string) *WSClient {
-	return &WSClient{ID: id, Role: role, info: ClientInfo{Origin: origin}, send: make(chan wsMessage, 256)}
+	return &WSClient{ID: id, Role: role, info: ClientInfo{Origin: origin}, send: make(chan wsMessage, 256), closed: make(chan struct{})}
 }
 
 // nextClientsChanged reads the next clients-changed broadcast to a client,

@@ -18,6 +18,13 @@ import actionExecutor from './services/action-executor.js';
 import workerManager from './services/worker-manager.js';
 
 /**
+ * How often the engine tells the server its realm is still running. Must stay
+ * well inside the server's engineLivenessWindow (engine_liveness.go) so an
+ * ordinary scheduling hiccup or one dropped beat never reads as death.
+ */
+const ENGINE_HEARTBEAT_MS = 5000;
+
+/**
  * Headless engine app that handles tool execution and context rendering.
  * No UI - just responds to worker requests and executes tools.
  */
@@ -27,6 +34,8 @@ class EngineApp {
     this._llmState = null;
     /** @type {ConnectionManager|null} @private */
     this._connectionManager = null;
+    /** @type {ReturnType<typeof setInterval>|null} @private */
+    this._heartbeatTimer = null;
 
     this.init();
   }
@@ -90,6 +99,8 @@ class EngineApp {
     // Connect with engine role
     await this._connectionManager.setup();
 
+    this._startHeartbeat();
+
     console.info('[Engine] Engine initialized and connected');
     if (typeof window !== 'undefined') {
       /** @type {any} */ (window).__engineReady = true;
@@ -99,6 +110,26 @@ class EngineApp {
     // window flag above is the signal.
     const onReady = /** @type {any} */ (globalThis).__onEngineReady;
     if (typeof onReady === 'function') onReady();
+  }
+
+  /**
+   * Start announcing that this realm is running.
+   *
+   * The server treats an engine as attached only while it keeps hearing from it
+   * (cmd/juggler/server/engine_liveness.go), because the socket alone proves
+   * nothing: WebKit runs the WebSocket in the network process, so a hidden
+   * WebView whose page has been suspended still answers at the transport while
+   * executing no tools. This timer runs in the module worker, so it stops
+   * exactly when the thing it vouches for stops — which is the point.
+   *
+   * Every other message the engine sends refreshes the same stamp; this only
+   * covers an engine with nothing to say.
+   * @private
+   */
+  _startHeartbeat() {
+    if (this._heartbeatTimer) return;
+    wsService.sendEngineHeartbeat();
+    this._heartbeatTimer = setInterval(() => wsService.sendEngineHeartbeat(), ENGINE_HEARTBEAT_MS);
   }
 
   /**

@@ -871,12 +871,16 @@ func (w *ConversationWorker) resetRunningToolsForReattach() {
 // claim → execute-start → execute-done, and cancel HIT/MISS. A wedge shows up as
 // a lifecycle that stops early (e.g. execute-start with no execute-done means the
 // tool is stranded inside executeToolAction). Logged raw so new fields the engine
-// adds appear without a Go change. Purely diagnostic — no behaviour depends on it.
+// adds appear without a Go change.
 // Logged at Trace: this is a file-only durable record (3–4 events per tool, plus
 // a failed tool's full error blob), kept out of the console even under --verbose.
-// Recover it with the file log when diagnosing a wedge. The receipt time is also
-// stamped on the worker (lastEngineTraceAt), which escalateStaleToolCommand
-// reports as its evidence that the engine is reaching its handlers at all.
+// Recover it with the file log when diagnosing a wedge.
+//
+// The payload is diagnostic, but the RECEIPT is not: the arrival time is stamped
+// on the worker (lastEngineTraceAt) and is the evidence that the engine is
+// reaching its handlers at all. driveToolActions requires it before failing a
+// tool for going unhandled, so that a command which never reached the engine is
+// never reported as the tool's fault (see engineSpokeSince).
 func (w *ConversationWorker) handleEngineTrace(payload json.RawMessage) {
 	w.lastEngineTraceAt = time.Now()
 	w.log.Trace("[engine-trace] conv=%s %s", w.conversationID, string(payload))

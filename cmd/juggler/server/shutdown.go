@@ -66,9 +66,19 @@ func (s *Server) GetStaticVersion() string {
 	return s.staticVersion
 }
 
-// IsEngineConnected returns true if the engine browser is connected
+// IsEngineConnected returns true if the engine browser is connected AND its JS
+// realm has proved itself within the liveness window. Callers all mean "is there
+// an engine that can execute a tool", and an open socket does not answer that —
+// see engine_liveness.go for why the transport can outlive the realm.
 func (s *Server) IsEngineConnected() bool {
-	return s.engineClient.Load() != nil
+	if s.engineClient.Load() == nil {
+		return false
+	}
+	if !s.engineLive() {
+		s.reportEngineSilence()
+		return false
+	}
+	return true
 }
 
 // ActiveConversationIDs returns conversation IDs that are actively running a

@@ -16,11 +16,20 @@ import (
 	"juggler/internal/jlog"
 )
 
-// handleEngineStatus reports whether the engine WebSocket client is connected.
+// handleEngineStatus reports whether the engine is usable, and separately
+// whether its socket is merely open. The two differ exactly when the engine has
+// wedged — the case worth diagnosing — so both are published rather than folded
+// into one flag.
 func (s *Server) handleEngineStatus(w http.ResponseWriter, r *http.Request) {
-	handlers.WriteJSON(w, r, 0, map[string]any{
+	body := map[string]any{
 		"connected": s.IsEngineConnected(),
-	})
+		"socket":    s.engineClient.Load() != nil,
+	}
+	if c := s.engineClient.Load(); c != nil {
+		body["silentFor"] = s.engineSilence().Round(time.Second).String()
+		body["queuedWrites"] = c.QueuedWrites()
+	}
+	handlers.WriteJSON(w, r, 0, body)
 }
 
 // handleHealth returns server health status

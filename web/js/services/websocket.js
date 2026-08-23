@@ -760,6 +760,23 @@ class WebSocketService {
   }
 
   /**
+   * Tell the server this engine's realm is still running.
+   *
+   * The server cannot infer that from the socket: in WebKit the WebSocket lives
+   * in the network process, so a suspended or wedged engine keeps completing
+   * handshakes and answering pings while executing nothing. This beat is sent
+   * from the module worker — the realm a tool would actually run in — so it
+   * cannot be answered on behalf of an engine that has stopped.
+   *
+   * Silent: a beat that misses because the link is down is not news, and the
+   * reconnect path reports that already.
+   * @returns {boolean} True if sent
+   */
+  sendEngineHeartbeat() {
+    return this._sendJson({ type: 'engine-heartbeat' }, 'engine-heartbeat', { silent: true });
+  }
+
+  /**
    * Bridge a cross-window event from the engine to every viewer via the
    * server. Viewer-side WS handler replays the payload into a local
    * BroadcastChannel(channel) so in-page subscribers fire.

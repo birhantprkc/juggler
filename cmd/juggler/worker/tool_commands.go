@@ -17,6 +17,11 @@ import (
 // this the worker escalates the tool to a terminal error so a parked turn unblocks
 // instead of hanging forever, rather than re-driving indefinitely. At the default
 // redriveInterval (~5s) this is ~30s of silence before escalation.
+//
+// The cap only applies to an engine that is ANSWERING. Exhausting it against an
+// engine that has said nothing at all means the commands never landed, which is
+// not the tool's fault and would repeat for every later tool; that case is held
+// instead, up to engineUnprovenHold (see engineUnproven).
 const maxToolCommandAttempts = 6
 
 // defaultRedriveInterval is how long driveToolActions waits before re-dispatching
@@ -25,6 +30,13 @@ const maxToolCommandAttempts = 6
 // immediately; this interval only bounds recovery of a silently-dropped command.
 // Exposed as the redriveInterval worker field, which tests shrink.
 const defaultRedriveInterval = 5 * time.Second
+
+// engineUnprovenHold bounds how long a tool is held while the engine has
+// answered nothing at all. Long enough for the server to notice the engine has
+// gone silent, evict it, and for a reconnect or an engine-window reload to bring
+// one back; short enough that the turn is released well inside ToolExecTimeout,
+// with a message naming the engine rather than the tool.
+const engineUnprovenHold = 60 * time.Second
 
 // driveToolActions commands the engine — the single tool executor — to advance
 // every non-terminal tool-action in the conversation. It is the worker side of
@@ -106,6 +118,16 @@ func (w *ConversationWorker) driveToolActions() {
 			continue // already dispatched at this state and not yet stale
 		}
 		if n := w.tools.recordDispatch(c.id, c.state, now); n > maxToolCommandAttempts {
+			// Attempts are exhausted, but they only bound how long we wait on an
+			// engine that is ANSWERING. An engine that has said nothing at all since
+			// this phase began was never reached, so failing the tool would blame it
+			// for a command it never received — and would go on doing so for every
+			// later tool. Keep re-driving instead until the hold ceiling, giving the
+			// engine's own recovery (eviction → reconnect → reload) time to land.
+			if w.engineUnproven(c.id, now) {
+				toDispatch = append(toDispatch, c)
+				continue
+			}
 			escalate = append(escalate, c)
 			continue
 		}
@@ -264,6 +286,38 @@ func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
 	w.tools.clear(id)
 }
 
+// engineSpokeSince reports whether the engine has said anything about THIS
+// conversation since t. Every engine-side handler traces — the acting path
+// (execute-claim / execute-start / execute-done) and every declining path
+// (evaluate-noact / execute-noact) alike — so silence since we started asking
+// means the command never reached a handler at all.
+//
+// Measured from the phase start rather than as an absolute age, so a
+// conversation that sat idle for an hour is not mistaken for a dead engine: what
+// matters is whether the engine has answered since we began commanding it.
+func (w *ConversationWorker) engineSpokeSince(t time.Time) bool {
+	return !w.lastEngineTraceAt.IsZero() && w.lastEngineTraceAt.After(t)
+}
+
+// engineUnproven reports whether a tool's command should keep being re-driven
+// past the attempts cap rather than failing the tool: the engine has answered
+// nothing since this delivery phase began, and the hold ceiling has not yet
+// elapsed.
+//
+// The ceiling is what keeps doc.go's rule intact — degrade to a recoverable
+// error, never an infinite wait. It only changes WHO is blamed and how long we
+// wait first, not whether the turn is eventually released.
+func (w *ConversationWorker) engineUnproven(id string, now time.Time) bool {
+	phaseStart := w.tools.phaseStartedAt(id)
+	if phaseStart.IsZero() {
+		return false
+	}
+	if w.engineSpokeSince(phaseStart) {
+		return false // the engine is answering; the tool really is stuck
+	}
+	return now.Sub(phaseStart) < engineUnprovenHold
+}
+
 // engineLivenessSummary describes, for a diagnostic log line, who the worker
 // believes the engine is and how long it has been since that engine last spoke
 // about THIS conversation (an engine-trace). Together they narrow a tool the
@@ -318,17 +372,27 @@ func (w *ConversationWorker) escalateStaleToolCommand(id, expectState string) {
 	}
 
 	engine, lastTrace := w.engineLivenessSummary()
-	w.log.Error("[worker] tool-command for %s (%s) in %s stayed at state=%q unhandled %d×; failing the tool to unblock the turn (engine=%s lastEngineTrace=%s)",
-		id, toolName, w.conversationID, expectState, maxToolCommandAttempts, engine, lastTrace)
+	// Two very different faults share this exit, and the message must say which:
+	// an engine that answered and could not carry out the command, versus one
+	// that answered nothing at all and has now been waited out. Reporting the
+	// second as a tool failure sends every investigation after the tool.
+	mute := !w.engineSpokeSince(w.tools.phaseStartedAt(id))
+	w.log.Error("[worker] tool-command for %s (%s) in %s stayed at state=%q unhandled %d× (mute=%v); failing the tool to unblock the turn (engine=%s lastEngineTrace=%s)",
+		id, toolName, w.conversationID, expectState, maxToolCommandAttempts, mute, engine, lastTrace)
 	w.tape.Record("tool-command-attempts-escalate", map[string]any{
 		"id": id, "tool": toolName, "state": expectState, "attempts": maxToolCommandAttempts,
-		"engine": engine, "lastEngineTrace": lastTrace,
+		"engine": engine, "lastEngineTrace": lastTrace, "mute": mute,
 	})
+	content := fmt.Sprintf("Couldn't run this tool: the engine acknowledged the request but never carried it out, after %d attempts. Failed so the turn can continue.",
+		maxToolCommandAttempts)
+	if mute {
+		content = fmt.Sprintf("Couldn't run this tool: the tool engine stopped responding and hasn't come back within %s. Nothing ran. (last engine activity: %s)",
+			engineUnprovenHold, lastTrace)
+	}
 	w.doc.UpdateToolActionFieldsRecursive(id, map[string]any{
 		"state": StateCompleted,
 		"result": map[string]any{
-			"content": fmt.Sprintf("[internal] The tool engine never handled this command after %d attempts; failing it so the turn can proceed.",
-				maxToolCommandAttempts),
+			"content": content,
 			"isError": true,
 		},
 		"runningStartedAt": nil,

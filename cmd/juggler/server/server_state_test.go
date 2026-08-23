@@ -46,8 +46,9 @@ func newTestServerState(t *testing.T) *Server {
 // testWSClient creates a WSClient suitable for testing (no real connection).
 func testWSClient(id string) *WSClient {
 	return &WSClient{
-		ID:   id,
-		send: make(chan wsMessage, 256),
+		ID:     id,
+		send:   make(chan wsMessage, 256),
+		closed: make(chan struct{}),
 	}
 }
 

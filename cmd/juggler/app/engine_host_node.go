@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync/atomic"
 
 	"juggler/cmd/juggler/server"
 	"juggler/internal/enginehost"
@@ -27,6 +28,9 @@ type nodeHost struct {
 	requestQuit func()
 	nodePath    string
 	version     string
+	// proc is the spawned engine process, kept so a wedged engine can be killed
+	// from the server's supervisor goroutine. Nil until Start succeeds.
+	proc atomic.Pointer[os.Process]
 }
 
 // newNodeHost constructs a nodeHost from a validated node probe (info.OK).
@@ -36,6 +40,21 @@ func newNodeHost(srv *server.Server, requestQuit func(), info enginehost.NodeInf
 
 // Describe implements engineHost.
 func (h *nodeHost) Describe() string { return "node " + h.version }
+
+// Recover kills the wedged node engine. There is no in-place reload for a
+// process — the graph is snapshotted at spawn — so this deliberately routes into
+// the same exit path any other node death takes: the Wait goroutine below logs
+// it and tears the server down. That is the honest outcome for a host that
+// cannot be revived, and node mode is the dev/debug host in any case.
+func (h *nodeHost) Recover() {
+	proc := h.proc.Load()
+	if proc == nil {
+		jlog.Error("[engine-node] cannot restart the node engine: no process handle")
+		return
+	}
+	jlog.Error("[engine-node] node engine stopped answering — killing it")
+	_ = proc.Kill()
+}
 
 // Start snapshots the engine graph and spawns the node process against it.
 func (h *nodeHost) Start(addr string) error {
@@ -70,6 +89,7 @@ func (h *nodeHost) Start(addr string) error {
 		spec.Cleanup()
 		return fmt.Errorf("spawn node engine host: %w", err)
 	}
+	h.proc.Store(cmd.Process)
 	go pipeToJlog(stderr)
 	go pipeToJlog(stdout)
 

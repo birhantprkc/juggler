@@ -29,6 +29,13 @@ type toolCommandState struct {
 	// staleness by shrinking the worker's redriveInterval, not by poking this.
 	lastDispatchedAt time.Time
 
+	// firstDispatchedAt stamps when the CURRENT delivery phase began — the first
+	// dispatch at this state. It is the reference point for "has the engine said
+	// anything since we started asking", which is what separates an engine that
+	// received the command and declined from one that was never there to receive
+	// it (see engineSpokeSince).
+	firstDispatchedAt time.Time
+
 	// attempts counts consecutive dispatches at the current dispatchedState; past
 	// maxToolCommandAttempts the tool is escalated to a terminal error. Reset to 1
 	// whenever the demanded state changes (a fresh delivery phase).
@@ -88,9 +95,19 @@ func (t *toolCommandTracker) recordDispatch(id, state string, now time.Time) int
 	s := t.entry(id)
 	if !s.dispatchedStateSet || s.dispatchedState != state {
 		s.dispatchedState, s.dispatchedStateSet, s.attempts = state, true, 1
+		s.firstDispatchedAt = now
 	} else {
 		s.attempts++
 	}
 	s.lastDispatchedAt = now
 	return s.attempts
+}
+
+// phaseStartedAt returns when the current delivery phase for id began, or the
+// zero time if id has never been dispatched.
+func (t *toolCommandTracker) phaseStartedAt(id string) time.Time {
+	if s := t.byID[id]; s != nil {
+		return s.firstDispatchedAt
+	}
+	return time.Time{}
 }

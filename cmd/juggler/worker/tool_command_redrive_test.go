@@ -15,8 +15,9 @@ import (
 // state has aged past redriveInterval; doc-state progression (the engine claimed
 // or evaluated the tool) suppresses re-drive immediately, and a command stuck at
 // the same state past maxToolCommandAttempts escalates to a terminal error so the
-// parked turn unblocks. Staleness is forced deterministically by shrinking the
-// worker's redriveInterval (the clock seam) — no sleeps.
+// parked turn unblocks — provided the engine is answering at all
+// (engine_liveness_test.go). Staleness is forced deterministically by shrinking
+// the worker's redriveInterval (the clock seam) — no sleeps.
 
 // TestToolCommandRedrive_AgeSuppressesThenRedrives exercises the three legs of the
 // one rule on an approved tool: a re-drive WITHIN redriveInterval is deduped (no
@@ -147,52 +148,11 @@ func TestToolCommandRedrive_RunningToolNotRedriven(t *testing.T) {
 	}
 }
 
-// TestToolCommandRedrive_PersistentSilenceEscalatesToError: an engine that never
-// claims the tool at all must, past maxToolCommandAttempts dispatches at the same
-// state, have the tool failed with a terminal error result so the parked turn
-// unblocks (degrade to a recoverable error, never an infinite wait), leaving no
-// residual command bookkeeping.
-func TestToolCommandRedrive_PersistentSilenceEscalatesToError(t *testing.T) {
-	h := newReattachHarness(t, "conv-redrive-escalate")
-	w := h.w
-	w.redriveInterval = 0 // every drive re-dispatches (and bumps the attempt count)
-
-	w.doc.InsertMessage(0, ConversationItem{
-		Type: ItemTypeToolAction, ItemID: "ta-1", ToolUseID: "tu-1",
-		ToolName: "bash", State: StateApproved,
-	})
-
-	// Drive repeatedly with the engine perpetually silent: attempts 1..N dispatch,
-	// the (N+1)th escalates the tool to a terminal error.
-	for i := 0; i <= maxToolCommandAttempts+1; i++ {
-		w.driveToolActions()
-		if it, ok := findToolItem(w.getTargetItems(), "tu-1"); ok && it.State == StateCompleted {
-			break // escalated
-		}
-	}
-	h.flush(t)
-
-	it, ok := findToolItem(w.getTargetItems(), "tu-1")
-	if !ok {
-		t.Fatal("tu-1 disappeared")
-	}
-	if it.State != StateCompleted {
-		t.Fatalf("persistent silence should terminate the tool: want state=completed, got %q", it.State)
-	}
-	if _, tracked := w.tools.byID["tu-1"]; tracked {
-		t.Fatal("escalated tool must leave no residual command bookkeeping")
-	}
-
-	// The terminal result must reach the provider as an isError tool-result so a
-	// parked CLI unblocks.
-	found, isErr := toolResultIsError(w.buildMessages(nil), "tu-1")
-	if !found {
-		t.Fatal("escalated tool produced no tool-result for the provider — turn would still hang")
-	}
-	if !isErr {
-		t.Fatal("escalated tool-result must be flagged isError")
-	}
-}
+// Escalation past maxToolCommandAttempts is covered by
+// TestEngineDeclining_ToolStillEscalates (engine_liveness_test.go), which pins
+// the same contract plus the distinction the attempts cap alone cannot make:
+// only an engine that is ANSWERING may have its tool failed. Silence with no
+// engine activity at all is a broken link, not a broken tool.
 
 func findToolItem(items []ConversationItem, toolUseID string) (ConversationItem, bool) {
 	for _, it := range items {

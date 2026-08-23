@@ -67,6 +67,7 @@ func (s *Server) StartBackgroundServices() {
 	})
 	s.RefreshProviders()
 	s.startUpdateChecker()
+	s.startEngineSupervisor()
 }
 
 func (s *Server) flushFileChangeBatch(changes []core.FileChange) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"juggler/cmd/juggler/server"
@@ -18,6 +19,7 @@ import (
 	"juggler/internal/webviewenv"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // engineConnectTimeout bounds how long the engine-readiness gate waits for the
@@ -84,12 +86,24 @@ type engineHost interface {
 	// Describe returns a short label for the boot log line ("webview",
 	// "node v22.3.0").
 	Describe() string
+	// Recover brings the engine back after its realm has stopped and closing the
+	// socket did not bring it home. Called from the server's engine supervisor,
+	// off the main thread, and only after the reconnect grace has lapsed — so it
+	// may be expensive, but it must not block for long.
+	Recover()
 }
 
 // webviewHost runs the engine inside the hidden WebKit/WebView2 webview — the
 // original and default host. The window's throttling/GPU/sandbox semantics are
 // the hard-won part and live unchanged in newEngineWindow.
-type webviewHost struct{ app *application.App }
+//
+// The window handle is kept, not discarded, because it is the only lever that
+// can revive a realm that has stopped: the page must be reloaded to get a fresh
+// worker. It is read from the supervisor goroutine, hence the atomic.
+type webviewHost struct {
+	app *application.App
+	win atomic.Pointer[application.WebviewWindow]
+}
 
 // Describe implements engineHost.
 func (h *webviewHost) Describe() string { return "webview" }
@@ -98,8 +112,33 @@ func (h *webviewHost) Describe() string { return "webview" }
 // the main (Wails) thread inside the ApplicationStarted callback.
 func (h *webviewHost) Start(addr string) error {
 	win := newEngineWindow(h.app, addr)
+
+	// A renderer crash is the one engine death WebKit tells us about. It reloads
+	// the page itself, so this changes no behaviour — it just stops the crash
+	// being invisible, since the engine's console goes nowhere and the reloaded
+	// page looks identical to one that never died. Registering a mac event is
+	// inert on other platforms, where no such signal exists.
+	win.OnWindowEvent(events.Mac.WebViewWebContentProcessDidTerminate, func(*application.WindowEvent) {
+		jlog.Error("[engine] the engine's renderer process died; WebKit is reloading the page")
+	})
+
+	h.win.Store(win)
 	win.Run()
 	return nil
+}
+
+// Recover reloads the engine page, which is what replaces a stopped realm: the
+// reload re-runs engine-worker-main.js, spawning a fresh module worker that
+// opens a new WebSocket. Reload marshals itself to the main thread and no-ops on
+// a window that was never run or is already destroyed.
+func (h *webviewHost) Recover() {
+	win := h.win.Load()
+	if win == nil {
+		jlog.Error("[engine] cannot reload the engine WebView: no window handle")
+		return
+	}
+	jlog.Info("[engine] reloading the engine WebView")
+	win.Reload()
 }
 
 // startEngineHost brings up a selected engine host and installs the server's
@@ -143,6 +182,12 @@ func startEngineHost(host engineHost, srv *server.Server, requestQuit func()) {
 		requestQuit()
 	}()
 	srv.SetEngineReadyGate(func() bool { return srv.WaitForEngineConnected(engineConnectTimeout) })
+
+	// Hand the server the lever for the failure its own supervisor can detect but
+	// not repair: an engine whose realm has stopped answering and which did not
+	// come back when its socket was closed. Without this, recovery ends at
+	// eviction and a dead realm stays dead until the user restarts the app.
+	srv.SetEngineRecovery(host.Recover)
 }
 
 type selectedEngineHost struct {
