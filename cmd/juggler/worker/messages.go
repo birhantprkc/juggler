@@ -49,7 +49,6 @@ import (
 	"fmt"
 	"time"
 
-	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/providers/provider"
 )
 
@@ -172,17 +171,17 @@ type InitMessage struct {
 	Config       WorkerConfig           `json:"config"`
 }
 
-// SerializedConversation contains the initial conversation state
+// SerializedConversation contains the initial conversation state. It carries
+// only what the worker cannot recover for itself: the identity of the
+// conversation and, for a brand-new one, its starting model. Everything else a
+// conversation is made of — strategy, permission rules, allowed paths — lives in
+// the Yjs doc and reaches the worker by sync, never through init.
 type SerializedConversation struct {
-	ID                string                `json:"id"`
-	Name              string                `json:"name"`
-	Created           string                `json:"created"`
-	ModelConfig       *ModelConfig          `json:"modelConfig,omitempty"`
-	CurrentStrategyID string                `json:"currentStrategyId"`
-	PermissionRules   []core.PermissionRule `json:"permissionRules,omitempty"`
-	AllowedPaths      []string              `json:"allowedPaths,omitempty"`
-	IsClone           bool                  `json:"isClone,omitempty"`
-	LoadFromDisk      bool                  `json:"loadFromDisk,omitempty"` // If true, load Yjs state from disk and extract metadata
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	Created      string       `json:"created"`
+	ModelConfig  *ModelConfig `json:"modelConfig,omitempty"`
+	LoadFromDisk bool         `json:"loadFromDisk,omitempty"` // If true, load Yjs state from disk and extract metadata
 }
 
 // ModelConfig represents LLM provider and model configuration

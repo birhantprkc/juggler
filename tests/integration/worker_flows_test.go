@@ -243,10 +243,9 @@ func TestReconnectDuringProcessingIntegration(t *testing.T) {
 	initPayload, _ := json.Marshal(worker.InitMessage{
 		Type: "init",
 		Conversation: worker.SerializedConversation{
-			ID:                ts.ConvID,
-			Name:              "Test",
-			CurrentStrategyID: "default",
-			ModelConfig:       &worker.ModelConfig{Provider: "test", Model: "test-model"},
+			ID:          ts.ConvID,
+			Name:        "Test",
+			ModelConfig: &worker.ModelConfig{Provider: "test", Model: "test-model"},
 		},
 		Config: worker.WorkerConfig{
 			ProjectPath: ts.TmpDir,
@@ -337,10 +336,9 @@ func TestMultipleViewerReconnectsDuringProcessing(t *testing.T) {
 		initPayload, _ := json.Marshal(worker.InitMessage{
 			Type: "init",
 			Conversation: worker.SerializedConversation{
-				ID:                ts.ConvID,
-				Name:              "Test",
-				CurrentStrategyID: "default",
-				ModelConfig:       &worker.ModelConfig{Provider: "test", Model: "test-model"},
+				ID:          ts.ConvID,
+				Name:        "Test",
+				ModelConfig: &worker.ModelConfig{Provider: "test", Model: "test-model"},
 			},
 			Config: worker.WorkerConfig{
 				ProjectPath: ts.TmpDir,
@@ -422,10 +420,9 @@ func TestReconnectSeesCurrentProcessingState(t *testing.T) {
 	initPayload, _ := json.Marshal(worker.InitMessage{
 		Type: "init",
 		Conversation: worker.SerializedConversation{
-			ID:                ts.ConvID,
-			Name:              "Test",
-			CurrentStrategyID: "default",
-			ModelConfig:       &worker.ModelConfig{Provider: "test", Model: "test-model"},
+			ID:          ts.ConvID,
+			Name:        "Test",
+			ModelConfig: &worker.ModelConfig{Provider: "test", Model: "test-model"},
 		},
 		Config: worker.WorkerConfig{
 			ProjectPath: ts.TmpDir,
@@ -511,10 +508,9 @@ func TestReconnectDuringToolExecution(t *testing.T) {
 	initPayload, _ := json.Marshal(worker.InitMessage{
 		Type: "init",
 		Conversation: worker.SerializedConversation{
-			ID:                ts.ConvID,
-			Name:              "Test",
-			CurrentStrategyID: "default",
-			ModelConfig:       &worker.ModelConfig{Provider: "test", Model: "test-model"},
+			ID:          ts.ConvID,
+			Name:        "Test",
+			ModelConfig: &worker.ModelConfig{Provider: "test", Model: "test-model"},
 		},
 		Config: worker.WorkerConfig{
 			ProjectPath: ts.TmpDir,

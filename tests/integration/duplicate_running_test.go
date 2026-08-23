@@ -146,9 +146,8 @@ func initRunningWorker(t *testing.T, mgr *worker.Manager, projectDir, convID str
 	initPayload, _ := json.Marshal(worker.InitMessage{
 		Type: "init",
 		Conversation: worker.SerializedConversation{
-			ID:                convID,
-			Name:              "fork source",
-			CurrentStrategyID: "default",
+			ID:   convID,
+			Name: "fork source",
 		},
 		Config: worker.WorkerConfig{ProjectPath: projectDir},
 	})

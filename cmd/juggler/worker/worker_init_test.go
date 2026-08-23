@@ -39,8 +39,7 @@ func TestInitResetsStaleProcessingState(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "test-conv",
-			CurrentStrategyID: "default",
+			ID: "test-conv",
 		},
 		Config: WorkerConfig{
 			ProjectPath: t.TempDir(),
@@ -99,9 +98,8 @@ func TestInitCancelsStaleToolActions(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "test-conv",
-			CurrentStrategyID: "default",
-			LoadFromDisk:      true,
+			ID:           "test-conv",
+			LoadFromDisk: true,
 		},
 		Config: WorkerConfig{
 			ProjectPath: tmpDir,
@@ -181,9 +179,8 @@ func TestInitPreservesAwaitingLLMForPendingTool(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "test-conv",
-			CurrentStrategyID: "default",
-			LoadFromDisk:      true,
+			ID:           "test-conv",
+			LoadFromDisk: true,
 		},
 		Config: WorkerConfig{ProjectPath: tmpDir},
 	})
@@ -250,9 +247,8 @@ func TestInitLeavesUnsummarisedThreadAlone(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "test-conv",
-			CurrentStrategyID: "default",
-			LoadFromDisk:      true,
+			ID:           "test-conv",
+			LoadFromDisk: true,
 		},
 		Config: WorkerConfig{ProjectPath: tmpDir},
 	})
@@ -300,10 +296,9 @@ func TestInitDuringProcessingDoesNotCancel(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "conv1",
-			Name:              "Test",
-			CurrentStrategyID: "default",
-			ModelConfig:       &ModelConfig{Provider: "test", Model: "test-model"},
+			ID:          "conv1",
+			Name:        "Test",
+			ModelConfig: &ModelConfig{Provider: "test", Model: "test-model"},
 		},
 		Config: WorkerConfig{
 			ProjectPath: tmpDir,

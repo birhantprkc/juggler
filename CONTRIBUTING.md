@@ -22,8 +22,9 @@ Juggler needs:
 
   (Fedora: `gtk4-devel webkitgtk6.0-devel libsoup3-devel`; Arch: `gtk4
   webkitgtk-6.0 libsoup3`.) Without them the build fails in pkg-config before
-  it compiles anything. Running the tests, or the server itself, on a machine
-  with no display additionally needs Xvfb — see
+  it compiles anything. Running the tests on a machine with no display
+  additionally needs Xvfb; the server itself needs no display when Node.js is
+  available — see
   [`docs/headless-linux.md`](docs/headless-linux.md).
 
 Clone with submodules so the vendored Wails fork is populated:

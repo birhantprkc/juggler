@@ -5,11 +5,39 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestSnapshotDeclaresModuleScope asserts the snapshot root carries a
+// package.json declaring "type": "module". The mirrored graph keeps the .js
+// extensions of the web assets it came from, so that manifest is the only thing
+// telling Node those files are ES modules; without it a Node that does not
+// detect module syntax by default kills the host with "Cannot use import
+// statement outside a module".
+func TestSnapshotDeclaresModuleScope(t *testing.T) {
+	s := &Server{} // zero value reads the embedded graph, matching TestSnapshotEngineGraph.
+	dir := t.TempDir()
+	if _, err := s.snapshotEngineGraph(dir); err != nil {
+		t.Fatalf("snapshotEngineGraph: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, engineSnapshotManifest))
+	if err != nil {
+		t.Fatalf("snapshot %s missing: %v", engineSnapshotManifest, err)
+	}
+	var manifest struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("snapshot %s is not valid JSON (%v): %s", engineSnapshotManifest, err, raw)
+	}
+	if manifest.Type != "module" {
+		t.Errorf("snapshot %s has type %q, want %q", engineSnapshotManifest, manifest.Type, "module")
+	}
+}
 
 // TestSnapshotEngineGraph snapshots the real embedded engine graph to disk and
 // asserts the transform is self-contained: the entry exists, the graph root and

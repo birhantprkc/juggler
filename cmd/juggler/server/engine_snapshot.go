@@ -24,6 +24,17 @@ const nodeHostGlueAsset = "/js/engine-host-node.mjs"
 // engineSnapshotEntry is the generated entry file's name at the snapshot root.
 const engineSnapshotEntry = "engine-host.mjs"
 
+// engineSnapshotManifest is the package.json written at the snapshot root, and
+// engineSnapshotManifestBody its contents. Every mirrored module keeps the .js
+// extension it has as a web asset, so this manifest is what tells Node to parse
+// the graph as ES modules. Without it Node has to fall back to module syntax
+// detection, which Node 22 releases before 22.7 only do behind a flag — there
+// the host dies with "Cannot use import statement outside a module".
+const (
+	engineSnapshotManifest     = "package.json"
+	engineSnapshotManifestBody = "{\"type\":\"module\"}\n"
+)
+
 // nodeLoaderHooksAsset is the checked-in ESM customization-hooks module the glue
 // registers (via module.register) so extension modules loaded at runtime through
 // `import('/worker-module?url=…')` are fetched from the server over HTTP instead
@@ -123,6 +134,13 @@ func (s *Server) snapshotEngineGraph(destDir string) (string, error) {
 			return "", err
 		}
 		queue = append(queue, deps...)
+	}
+
+	// Declare the snapshot root an ES module scope, so Node parses the mirrored
+	// .js modules as ESM rather than leaning on syntax detection.
+	manifestPath := filepath.Join(destDir, engineSnapshotManifest)
+	if err := os.WriteFile(manifestPath, []byte(engineSnapshotManifestBody), 0o644); err != nil {
+		return "", fmt.Errorf("write engine snapshot manifest: %w", err)
 	}
 
 	// Generate the entry: the checked-in Node glue, copied verbatim to the

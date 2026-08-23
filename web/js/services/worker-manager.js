@@ -1433,9 +1433,6 @@ class WorkerManager {
         name: conversation.name,
         created: conversation.created,
         modelConfig: workerInit.modelConfig,
-        currentStrategyId: workerInit.currentStrategyId,
-        permissionRules: workerInit.permissionRules,
-        allowedPaths: workerInit.allowedPaths,
         loadFromDisk: false  // New conversation - don't load from disk
       };
       await this._spawnWorker(conversation.id, initData);

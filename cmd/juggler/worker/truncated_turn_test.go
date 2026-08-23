@@ -22,7 +22,7 @@ func newTruncationWorker(t *testing.T, convID string) *ConversationWorker {
 
 	initPayload, err := json.Marshal(InitMessage{
 		Type:         "init",
-		Conversation: SerializedConversation{ID: convID, CurrentStrategyID: "default"},
+		Conversation: SerializedConversation{ID: convID},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
 	if err != nil {

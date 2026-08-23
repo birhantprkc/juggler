@@ -31,7 +31,7 @@ func newStrategyHookHarness(t *testing.T, strategyID string, replyFn func(w *Con
 
 	initPayload, _ := json.Marshal(InitMessage{
 		Type:         "init",
-		Conversation: SerializedConversation{ID: "conv-hooks", CurrentStrategyID: strategyID},
+		Conversation: SerializedConversation{ID: "conv-hooks"},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
 	w.handleInit(initPayload)

@@ -154,9 +154,8 @@ func TestWorkerManager(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "conv1",
-			Name:              "Test",
-			CurrentStrategyID: "default",
+			ID:   "conv1",
+			Name: "Test",
 		},
 		Config: WorkerConfig{
 			ProjectPath: "/test",
@@ -282,9 +281,8 @@ func TestClientCallbackCleanup(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "conv1",
-			Name:              "Test",
-			CurrentStrategyID: "default",
+			ID:   "conv1",
+			Name: "Test",
 		},
 		Config: WorkerConfig{
 			ProjectPath: "/test",
@@ -374,9 +372,8 @@ func TestModelValidation(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "conv1",
-			Name:              "Test",
-			CurrentStrategyID: "default",
+			ID:   "conv1",
+			Name: "Test",
 			// ModelConfig is nil - simulating new conversation
 		},
 		Config: WorkerConfig{
@@ -440,9 +437,8 @@ func TestProviderUnavailableSurfacedAsValidationError(t *testing.T) {
 	initPayload, _ := json.Marshal(InitMessage{
 		Type: "init",
 		Conversation: SerializedConversation{
-			ID:                "conv-pu",
-			CurrentStrategyID: "default",
-			ModelConfig:       &ModelConfig{Provider: "test", Model: "test-model"},
+			ID:          "conv-pu",
+			ModelConfig: &ModelConfig{Provider: "test", Model: "test-model"},
 		},
 		Config: WorkerConfig{ProjectPath: t.TempDir()},
 	})

@@ -417,15 +417,15 @@ class Conversation {
   }
 
   /**
-   * Get config data needed to initialize a worker.
-   * @returns {{modelConfig: any, currentStrategyId: string, permissionRules: any[], allowedPaths: string[]}} Worker init data
+   * Get config data needed to initialize a worker. The model is the only piece
+   * of conversation state init carries: strategy, permission rules and allowed
+   * paths all live in the Yjs doc and reach the worker by sync, so sending them
+   * here would only be a second, ignored copy of them.
+   * @returns {{modelConfig: any}} Worker init data
    */
   getWorkerInitData() {
     return {
-      modelConfig: this._rootMessageThread.modelConfig || null,
-      currentStrategyId: this._rootMessageThread.currentStrategyId,
-      permissionRules: this._rootMessageThread.getAllRules(),
-      allowedPaths: this._rootMessageThread.getAllowedPaths()
+      modelConfig: this._rootMessageThread.modelConfig || null
     };
   }
 

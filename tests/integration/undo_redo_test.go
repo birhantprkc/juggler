@@ -619,9 +619,8 @@ func initWorker(t *testing.T, manager *worker.Manager, tmpDir string) *worker.Co
 	initPayload, _ := json.Marshal(worker.InitMessage{
 		Type: "init",
 		Conversation: worker.SerializedConversation{
-			ID:                "test-conv",
-			Name:              "Test",
-			CurrentStrategyID: "default",
+			ID:   "test-conv",
+			Name: "Test",
 		},
 		Config: worker.WorkerConfig{
 			ProjectPath: tmpDir,

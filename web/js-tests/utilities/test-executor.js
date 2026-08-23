@@ -441,8 +441,14 @@ class TestExecutor {
       throw new Error('Failed to create conversation');
     }
 
-    // CRITICAL: Set this conversation as visible so actions don't get queued for approval
-    // In headless mode, there's no UI to switch tabs, so we must mark it visible explicitly
+    // Point the session's "conversation on screen" at the one under test.
+    // createConversation() doesn't activate what it creates, so without this the
+    // session still considers the bootstrap tab visible and the session-wide
+    // paths that act on the visible conversation — the watcher fan-out that
+    // refreshes its context items (Session.setServices) and the
+    // activeConversationId the session persists — would target the wrong
+    // conversation. It has no bearing on tool approval: that is decided by the
+    // rules and the auto-approve flag set below.
     this.session.visibleConversationId = convId;
 
     // Enable all permissions for headless test execution (no user to click approve)

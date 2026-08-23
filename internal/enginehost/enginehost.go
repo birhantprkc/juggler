@@ -30,7 +30,8 @@ import (
 const EnvVar = "JUGGLER_ENGINE_HOST"
 
 // MinNodeMajor is the lowest Node.js major version the node host accepts.
-// Node 22 is the first release where WebSocket is a stable global, so the
+// Node 22 is the first release line where WebSocket is a global enabled by
+// default (earlier lines keep it behind --experimental-websocket), so the
 // engine's services/websocket.js can dial without pulling in a polyfill — the
 // node host depends on that global existing. Exported so diagnostics can state
 // the version floor.

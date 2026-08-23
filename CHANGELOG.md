@@ -21,6 +21,8 @@ of changes; this project follows semantic versioning.
 - The composer and Settings now share one model picker, with type-to-filter and keyboard navigation
 - A message can now be scheduled for the end of the current turn, not just a delay
 - A stalled tool engine is now noticed and revived, instead of failing every tool until restart
+- The Docker image runs the engine in Node, so it needs no virtual display
+- The Node engine host now starts on every supported Node 22, not just 22.7 and later
 
 ## [0.5.7] - 2026-08-19
 

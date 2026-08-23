@@ -170,7 +170,7 @@ The default build uses your Mac's architecture. An `x86/amd64` build for an Inte
 
 ### Linux
 
-The server runs its engine in a hidden webview, so both the server and desktop app need the GTK4 and WebKitGTK development packages at build time. On Ubuntu 24.04 or Debian:
+The server links GTK4 and WebKitGTK through cgo, so both the server and desktop app need their development packages at build time. On Ubuntu 24.04 or Debian:
 
 ```bash
 sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev

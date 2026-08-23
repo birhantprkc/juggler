@@ -34,8 +34,8 @@ const defaultRedriveInterval = 5 * time.Second
 // engineUnprovenHold bounds how long a tool is held while the engine has
 // answered nothing at all. Long enough for the server to notice the engine has
 // gone silent, evict it, and for a reconnect or an engine-window reload to bring
-// one back; short enough that the turn is released well inside ToolExecTimeout,
-// with a message naming the engine rather than the tool.
+// one back; short enough that the turn is released while the user is still
+// watching, with a message naming the engine rather than the tool.
 const engineUnprovenHold = 60 * time.Second
 
 // driveToolActions commands the engine — the single tool executor — to advance

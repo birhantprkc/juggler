@@ -23,10 +23,9 @@ const (
 	// give up and surface a placeholder. Each loop iteration is a full
 	// round-trip, so this bounds both latency and cost when the model
 	// gets stuck thinking-only or the provider returns an empty stream.
-	MaxBarrenTurns  = 3
-	MaxLLMRetries   = 3
-	ToolExecTimeout = 2 * time.Minute
-	ContextTimeout  = 30 * time.Second
+	MaxBarrenTurns = 3
+	MaxLLMRetries  = 3
+	ContextTimeout = 30 * time.Second
 
 	// MaxLLMRetryWindow caps the total wall-clock time a retry sequence may
 	// spend failing before the error is surfaced instead of retried again.

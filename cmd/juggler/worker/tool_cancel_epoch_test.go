@@ -28,7 +28,7 @@ func newCancelEpochHarness(t *testing.T, convID string) *cancelEpochHarness {
 
 	initPayload, _ := json.Marshal(InitMessage{
 		Type:         "init",
-		Conversation: SerializedConversation{ID: convID, CurrentStrategyID: "default"},
+		Conversation: SerializedConversation{ID: convID},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
 	w.handleInit(initPayload)
