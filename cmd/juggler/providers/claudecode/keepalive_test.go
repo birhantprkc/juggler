@@ -86,16 +86,20 @@ const (
 	fakeModeScript = "script"
 )
 
-// TestMain is the helper-process trampoline. When the test binary is
-// re-exec'd by Client.spawnCLIPipes (with JUGGLER_FAKE_CLAUDE=1 in env),
-// runFakeClaude takes over and never returns to the test runner. Otherwise
-// we pass through to m.Run() as normal.
+// TestMain is the helper-process trampoline. When a test binary for this
+// package is spawned by Client.spawnCLIPipes (with JUGGLER_FAKE_CLAUDE=1 in
+// env), runFakeClaude takes over and never returns to the test runner.
+// Otherwise we settle which binary the fake is spawned as (prepareFakeCLI) and
+// pass through to m.Run() as normal.
 func TestMain(m *testing.M) {
 	if os.Getenv(envFakeClaude) == "1" {
 		runFakeClaude()
 		return
 	}
-	os.Exit(m.Run())
+	cleanupFakeCLI := prepareFakeCLI()
+	code := m.Run()
+	cleanupFakeCLI()
+	os.Exit(code)
 }
 
 type traceRecord struct {
@@ -544,7 +548,7 @@ func installFakeClaude(t *testing.T, mode, sessionID string) (tracePath string) 
 	t.Setenv(envFakeMode, mode)
 	t.Setenv(envFakeSession, sessionID)
 	t.Setenv(envFakeTrace, tracePath)
-	restore := SetBinaryPathForTesting(os.Args[0],
+	restore := SetBinaryPathForTesting(fakeCLIPath,
 		envFakeClaude+"=1",
 		envFakeMode+"="+mode,
 		envFakeSession+"="+sessionID,

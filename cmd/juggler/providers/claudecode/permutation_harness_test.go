@@ -485,7 +485,7 @@ func installScriptedFake(t *testing.T, script fakeScript) (tapePath string) {
 	}
 	dir := t.TempDir()
 	tapePath = dir + "/pairing.tape.jsonl"
-	restore := SetBinaryPathForTesting(os.Args[0],
+	restore := SetBinaryPathForTesting(fakeCLIPath,
 		envFakeClaude+"=1",
 		envFakeMode+"="+fakeModeScript,
 		envFakeSession+"=uuid-script",

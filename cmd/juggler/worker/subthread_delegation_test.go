@@ -75,6 +75,16 @@ func newDelegationHarnessSpecs(t *testing.T, specs []*SubthreadSpec, mocks []Moc
 			})
 			w.subthreadSpecReply.inject(w.done, resp)
 		}
+		// A spec carrying a StrategyID makes the child's first turn activate it,
+		// which blocks on this hook. Answer with no guidance so activation
+		// completes on the spot.
+		if head.Type == "run-strategy-hook" {
+			resp, _ := json.Marshal(StrategyHookResponse{
+				Type:      "strategy-hook-response",
+				RequestID: head.RequestID,
+			})
+			w.strategyHookReply.inject(w.done, resp)
+		}
 	})
 	w.SetEngineClientID("engine")
 

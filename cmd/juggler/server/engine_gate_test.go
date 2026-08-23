@@ -66,6 +66,13 @@ func TestLLMCaller_FailsFastWhenEngineDown(t *testing.T) {
 // proceeds past it (any later failure is NOT the engine-not-available error).
 func TestLLMCaller_ProceedsPastReadyGate(t *testing.T) {
 	s := newTestServerState(t)
+	// The providers-ready gate sits downstream of the engine gate under test,
+	// and newTestServerState leaves it a nil channel — which awaitProvidersReady
+	// can only escape by timing out. Open it so the call falls through to the
+	// credential lookup that ends it.
+	s.providersReady = make(chan struct{})
+	s.shutdownChan = make(chan struct{})
+	s.markProvidersReady()
 
 	var called atomic.Int32
 	s.SetEngineReadyGate(func() bool { called.Add(1); return true })
