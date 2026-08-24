@@ -62,28 +62,29 @@ func TestSignalNotifyDeliversBurstToBothChannelsIndependently(t *testing.T) {
 	defer signal.Stop(slow)
 	defer signal.Stop(fast)
 
+	// slow is never read inside the loop — it stands in for the graceful
+	// path sitting on its signal while the user keeps pressing. Each press
+	// is sent only once fast has seen the previous one, which proves the
+	// runtime's handler has already run for it: POSIX lets the kernel
+	// coalesce a non-realtime signal that is still pending, and on a loaded
+	// machine a press sent blind on a timer is swallowed there rather than
+	// by signal.Notify, which is what this asserts about.
 	for i := 0; i < 3; i++ {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR2); err != nil {
-			t.Fatalf("kill #%d: %v", i, err)
+			t.Fatalf("kill #%d: %v", i+1, err)
 		}
-		// Tiny pause so the runtime has time to deliver before the next
-		// kill — without it the kernel may coalesce identical pending
-		// signals (POSIX permits this for non-realtime signals). The
-		// emergency handler's worst case is realistic user keystrokes,
-		// which are tens of ms apart minimum.
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	deadline := time.After(2 * time.Second)
-	fastCount, slowCount := 0, 0
-	for fastCount < 3 || slowCount < 3 {
 		select {
 		case <-fast:
-			fastCount++
+		case <-time.After(2 * time.Second):
+			t.Fatalf("press #%d never arrived on the fast channel", i+1)
+		}
+	}
+
+	for i := 0; i < 3; i++ {
+		select {
 		case <-slow:
-			slowCount++
-		case <-deadline:
-			t.Fatalf("burst undercounted: fast=%d slow=%d (need 3 each) — signal.Notify dropping in burst", fastCount, slowCount)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("undrained channel holds only %d of 3 presses — signal.Notify drops when a receiver is slow, so Ctrl-C × 3 cannot escalate", i)
 		}
 	}
 }
