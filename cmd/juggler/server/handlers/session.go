@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -844,9 +845,22 @@ func (api *SessionAPI) HandleDeleteBinnedConversation(w http.ResponseWriter, r *
 	}
 }
 
-// HandleEmptyBin permanently removes every conversation in .juggler/bin/.
+// HandleEmptyBin permanently removes conversations from .juggler/bin/. Empties
+// the whole bin by default; with ?olderThanDays=N (a positive integer) it
+// removes only those whose last activity is more than N days old.
 func (api *SessionAPI) HandleEmptyBin(w http.ResponseWriter, r *http.Request) {
-	removed, err := api.manager().EmptyBin()
+	var removed []string
+	var err error
+	if raw := r.URL.Query().Get("olderThanDays"); raw != "" {
+		days, convErr := strconv.Atoi(raw)
+		if convErr != nil || days <= 0 {
+			WriteError(w, r, http.StatusBadRequest, fmt.Sprintf("olderThanDays must be a positive integer, got %q", raw))
+			return
+		}
+		removed, err = api.manager().EmptyBinOlderThan(days)
+	} else {
+		removed, err = api.manager().EmptyBin()
+	}
 	if err != nil {
 		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return

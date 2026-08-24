@@ -800,6 +800,83 @@ func (fs *FileSessionStore) emptyBinDeferred() (removed []string, trashPath stri
 	return ids, trashPath, nil
 }
 
+// EmptyBinOlderThan permanently removes (via OS trash) every binned
+// conversation whose last activity predates cutoff, returning the ids removed.
+// This is the synchronous form used by direct callers and tests; the server goes
+// through emptySelectionDeferred so the slow OS-trash step runs off the actor
+// goroutine.
+func (fs *FileSessionStore) EmptyBinOlderThan(cutoff time.Time) ([]string, error) {
+	removed, trashPath, err := fs.emptySelectionDeferred(cutoff)
+	if err != nil {
+		return nil, err
+	}
+	if trashPath != "" {
+		if err := trashOrRemove(trashPath); err != nil {
+			return removed, fmt.Errorf("empty bin: trash %q: %w", trashPath, err)
+		}
+	}
+	return removed, nil
+}
+
+// emptySelectionDeferred is emptyBinDeferred restricted to the conversations
+// whose last activity predates cutoff. Age is measured with lastActivityTime —
+// the same signal BinnedConvList reports — so what goes is exactly what the bin
+// listing shows as that old. Nothing records when a conversation was binned, so
+// this is age-of-conversation, not time-served in the bin.
+//
+// The qualifying folders are renamed into one staging directory rather than
+// trashed individually: like emptyBinDeferred this keeps the actor's work to
+// metadata only and leaves the caller a single directory to trash off the hot
+// path (one "moved to trash" sound, not one per conversation). trashPath is ""
+// when nothing qualifies.
+func (fs *FileSessionStore) emptySelectionDeferred(cutoff time.Time) (removed []string, trashPath string, err error) {
+	if fs.binIndex == nil || len(fs.binIndex.ByID) == 0 {
+		return nil, "", nil
+	}
+
+	ids := make([]string, 0, len(fs.binIndex.ByID))
+	for id, dir := range fs.binIndex.ByID {
+		t, tErr := lastActivityTime(dir)
+		// A folder with no resolvable timestamp is absent from the listing too,
+		// so leave it be rather than deleting something the user can't see.
+		if tErr != nil || !t.Before(cutoff) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, "", nil
+	}
+	sort.Strings(ids)
+
+	trashPath = fs.uniqueEmptyingPath()
+	if mkErr := os.MkdirAll(trashPath, 0o755); mkErr != nil {
+		return nil, "", fmt.Errorf("empty bin: staging dir: %w", mkErr)
+	}
+	// A folder that won't move (held open elsewhere) is left in the bin, where it
+	// stays listed and can be emptied again later, rather than failing the whole
+	// operation and stranding the folders that did move.
+	moved := make([]string, 0, len(ids))
+	var lastErr error
+	for _, id := range ids {
+		dir := fs.binIndex.ByID[id]
+		staged := filepath.Join(trashPath, filepath.Base(dir))
+		if renameErr := atomicio.RobustRename(dir, staged); renameErr != nil {
+			lastErr = renameErr
+			jlog.Error("[session] empty bin: couldn't move aside %q: %v", dir, renameErr)
+			continue
+		}
+		delete(fs.binIndex.ByID, id)
+		delete(fs.binIndex.Names, id)
+		moved = append(moved, id)
+	}
+	if len(moved) == 0 {
+		_ = os.Remove(trashPath)
+		return nil, "", fmt.Errorf("empty bin: move aside: %w", lastErr)
+	}
+	return moved, trashPath, nil
+}
+
 // uniqueEmptyingPath returns a sibling of .juggler/trash/ that does not yet
 // exist, used as the move-aside target when emptying the bin. The nanosecond
 // timestamp plus a disambiguating counter guarantees uniqueness even across

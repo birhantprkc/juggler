@@ -294,11 +294,16 @@ class APIService {
   }
 
   /**
-   * Permanently delete every binned conversation (via OS trash).
+   * Permanently delete binned conversations (via OS trash) — the whole bin, or
+   * only the conversations whose last activity is older than a cutoff.
+   * @param {number|null} [olderThanDays] - Positive day count to delete only
+   *   conversations last active more than that many days ago; omit or pass null
+   *   to empty the entire bin.
    * @returns {Promise<void>}
    */
-  async emptyBin() {
-    return await this.request('/session/binned-conversations', {
+  async emptyBin(olderThanDays = null) {
+    const qs = olderThanDays ? `?olderThanDays=${encodeURIComponent(String(olderThanDays))}` : '';
+    return await this.request(`/session/binned-conversations${qs}`, {
       method: 'DELETE'
     });
   }

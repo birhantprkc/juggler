@@ -586,6 +586,35 @@ func (m *SessionManager) EmptyBin() ([]string, error) {
 	return r.ids, nil
 }
 
+// EmptyBinOlderThan is EmptyBin restricted to binned conversations whose last
+// activity is more than days old (see emptySelectionDeferred for what "old"
+// measures). Splits the work the same way EmptyBin does: the actor renames the
+// qualifying folders aside, a background goroutine OS-trashes them.
+func (m *SessionManager) EmptyBinOlderThan(days int) ([]string, error) {
+	cutoff := time.Now().AddDate(0, 0, -days)
+	type emptied struct {
+		ids       []string
+		trashPath string
+	}
+	r, err := runWrite(m, func(s *sessionState) (emptied, error) {
+		ids, trashPath, e := s.store.emptySelectionDeferred(cutoff)
+		return emptied{ids: ids, trashPath: trashPath}, e
+	})
+	if err != nil {
+		return nil, err
+	}
+	if r.trashPath != "" {
+		go func(path string) {
+			if e := trashOrRemove(path); e != nil {
+				jlog.Error("[session] empty bin: failed to trash %q: %v", path, e)
+			}
+			m.kickBinSizeRecompute()
+		}(r.trashPath)
+	}
+	m.kickBinSizeRecompute()
+	return r.ids, nil
+}
+
 // GetRuntimeInfo returns the runtime info for this manager's project.
 func (m *SessionManager) GetRuntimeInfo() RuntimeInfo {
 	return GetRuntimeInfo(m.projectPath)

@@ -47,7 +47,7 @@ import { BUILTIN_DEFAULT_ID } from '../../sdk/lib/system-prompt-registry.js';
  * @property {function(string): Promise<void>} restoreConversation - Move conversation back from .juggler/bin/
  * @property {function(): Promise<{binned: Array<{id: string, name: string, lastModifiedAt: string}>}>} listBinnedConversations - List binned conversations
  * @property {function(string): Promise<void>} deleteBinnedConversation - Permanently delete a single binned conversation
- * @property {function(): Promise<void>} emptyBin - Permanently delete every binned conversation
+ * @property {function((number|null)=): Promise<void>} emptyBin - Permanently delete binned conversations: all of them, or only those last active more than N days ago
  * @property {function(string[]): Promise<null>} reorderConversations - Reorder conversations
  * @property {function(string, Uint8Array): Promise<void>} saveConversationBinary - Save conversation binary state
  */
@@ -2060,12 +2060,18 @@ class Session {
   }
 
   /**
-   * Permanently delete every binned conversation. The badge resets to 0
-   * optimistically; per-item `binned-deleted` broadcasts reconcile peers.
+   * Permanently delete binned conversations — the whole bin, or only those last
+   * active before a cutoff. Emptying everything resets the badge to 0
+   * optimistically; per-item `binned-deleted` broadcasts reconcile peers. A
+   * partial empty leaves the counts alone: how many rows matched is the server's
+   * to say, and the caller's re-listing carries the true tally.
+   * @param {number|null} [olderThanDays] - Positive day count for a partial
+   *   empty; omit or pass null to empty the entire bin.
    * @returns {Promise<void>}
    */
-  async emptyBin() {
-    await this._apiService.emptyBin();
+  async emptyBin(olderThanDays = null) {
+    await this._apiService.emptyBin(olderThanDays);
+    if (olderThanDays) return;
     this.binnedCount = 0;
     this.binSizeBytes = 0;
   }

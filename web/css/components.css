@@ -1305,6 +1305,19 @@ bin-modal .bin-empty-now:not(:disabled):hover {
     color: #fff;
 }
 
+/* Empty Bin menu — the cutoff choices, anchored to the button above. It is
+   appended to <body> while the modal itself sits at --z-modal, so it needs the
+   same above-modal layer the path completions use. Rows are single-line labels;
+   keep them so rather than wrapping a cutoff across two lines. */
+.bin-empty-menu {
+    min-width: 13rem;
+    z-index: var(--z-above-modal);
+}
+
+.bin-empty-menu .menu-item {
+    white-space: nowrap;
+}
+
 /* Lazy-load overlay shown while the conversation's Yjs doc is hydrating. */
 conversation-tab .conversation-tab-loading-overlay {
     position: absolute;
