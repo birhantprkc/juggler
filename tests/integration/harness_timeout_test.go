@@ -43,7 +43,9 @@ func TestHarnessPollServerFailsFastOnWedgedServer(t *testing.T) {
 
 	var out struct{ Passed bool }
 	start := time.Now()
-	err := pollServer(addr, "/api/test/result", 2*time.Second, &out)
+	// A bare address with no liveness record: this listener is not a pool
+	// subprocess, and pollServer's death check tolerates a nil one.
+	err := pollServer(testServerEntry{addr: addr}, "/api/test/result", 2*time.Second, &out)
 	elapsed := time.Since(start)
 
 	if err == nil {

@@ -238,22 +238,36 @@ jobs:
           fi
 
       # Diagnostics on a browser-suite failure. Each spawned bin/juggler pipes
-      # its stderr — the WebKitGTK/libEGL/WebProcess-crash output that never
-      # reaches the go-test log — to /tmp/juggler-test-logs/juggler-stderr-*.log
-      # (see startJugglerSubprocess in tests/integration/main_test.go). That
-      # directory is a fixed path, not the run's throwaway log dir, so it
-      # survives the pool shutdown. Without this, a hung WebView surfaces only as
-      # an opaque "timeout polling /api/test/names" and every fix is a blind
-      # guess; dumping the real engine stderr here is what makes the failure
-      # diagnosable. Linux-only: it's the leg that drives WebKitGTK under Xvfb.
+      # its stderr — the WebKitGTK/libEGL/WebProcess-crash output, and the fatal
+      # line a server writes on its way out, neither of which reaches the go-test
+      # log — to <tempdir>/juggler-test-logs/juggler-stderr-*.log (see
+      # startJugglerSubprocess in tests/integration/main_test.go). That directory
+      # is a fixed path, not the run's throwaway log dir, so it survives the pool
+      # shutdown. Without this, a hung WebView surfaces only as an opaque
+      # "timeout polling /api/test/names" and every fix is a blind guess.
+      #
+      # Every OS, and every candidate temp dir: the harness uses Go's
+      # os.TempDir(), which is /tmp only on Linux — macOS gives $TMPDIR under
+      # /var/folders and Windows %TEMP%. A /tmp-only glob therefore found nothing
+      # on the two legs that never ran this step anyway, which is how a macOS
+      # pool-server death once reached the log as a hundred bare "connection
+      # refused" lines and no cause at all.
       - name: Dump engine stderr on failure
-        if: ${{ failure() && runner.os == 'Linux' }}
+        if: ${{ failure() }}
         shell: bash
         run: |
           shopt -s nullglob
-          logs=(/tmp/juggler-test-logs/*.log)
+          logs=()
+          seen=""
+          for dir in /tmp "${TMPDIR}" "${TEMP}" "${RUNNER_TEMP}"; do
+            [ -n "${dir}" ] || continue
+            dir="${dir%/}"
+            case " ${seen} " in *" ${dir} "*) continue ;; esac
+            seen="${seen} ${dir}"
+            logs+=("${dir}"/juggler-test-logs/*.log)
+          done
           if [ ${#logs[@]} -eq 0 ]; then
-            echo "no subprocess stderr logs found in /tmp/juggler-test-logs/"
+            echo "no subprocess stderr logs found under /tmp, \$TMPDIR, \$TEMP or \$RUNNER_TEMP"
             exit 0
           fi
           for f in "${logs[@]}"; do

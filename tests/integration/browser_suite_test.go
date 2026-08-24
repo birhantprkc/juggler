@@ -284,18 +284,18 @@ func neturlEscape(s string) string {
 // the subset that must run with no sibling in flight (run isolated; see the
 // sequential phase in TestBrowser).
 func listBrowserTests(srv testServerEntry) (names, exclusive []string, err error) {
-	if err := postToServer(srv.addr, "/api/test/run", map[string]any{
+	if err := postToServer(srv, "/api/test/run", map[string]any{
 		"name": "__list__",
 	}); err != nil {
-		return nil, nil, fmt.Errorf("POST __list__: %w", err)
+		return nil, nil, fmt.Errorf("POST __list__: %w%s", err, prefixedPoolDeath(srv))
 	}
 
 	var payload struct {
 		Names     []string `json:"names"`
 		Exclusive []string `json:"exclusive"`
 	}
-	if err := pollServer(srv.addr, "/api/test/names", listDiscoveryTimeout, &payload); err != nil {
-		return nil, nil, fmt.Errorf("waiting for test names: %w", err)
+	if err := pollServer(srv, "/api/test/names", listDiscoveryTimeout, &payload); err != nil {
+		return nil, nil, fmt.Errorf("waiting for test names: %w%s", err, prefixedPoolDeath(srv))
 	}
 	return payload.Names, payload.Exclusive, nil
 }
@@ -319,11 +319,11 @@ func runOneBrowserTest(t *testing.T, srv testServerEntry) {
 	// actually isolate file IO. Tests collaborate on the shared fixture by
 	// using unique filename prefixes (see comments at the top of every
 	// *-tests.js file).
-	if err := postToServer(srv.addr, "/api/test/run", map[string]any{
+	if err := postToServer(srv, "/api/test/run", map[string]any{
 		"name":        name,
 		"projectPath": srv.fixture,
 	}); err != nil {
-		t.Fatalf("POST test run: %v", err)
+		t.Fatalf("POST test run: %v%s", err, prefixedPoolDeath(srv))
 	}
 
 	var result struct {
@@ -331,7 +331,13 @@ func runOneBrowserTest(t *testing.T, srv testServerEntry) {
 		Details string   `json:"details"`
 		Errors  []string `json:"errors"`
 	}
-	if err := pollServer(srv.addr, "/api/test/result?name="+name, testTimeout, &result); err != nil {
+	if err := pollServer(srv, "/api/test/result?name="+name, testTimeout, &result); err != nil {
+		// A dead server makes the queue audit unanswerable, so the audit's own
+		// "unavailable (connection refused)" would be the only clue. Report the
+		// death instead: it says what the audit cannot.
+		if death := poolDeath(srv); death != "" {
+			t.Fatalf("waiting for test result: %v\n%s", err, death)
+		}
 		t.Fatalf("waiting for test result: %v\n%s", err, queueAudit(srv.addr, name))
 	}
 
@@ -346,7 +352,7 @@ func runOneBrowserTest(t *testing.T, srv testServerEntry) {
 	}
 }
 
-// postToServer sends a JSON POST to addr+path and returns on non-2xx.
+// postToServer sends a JSON POST to srv's address and returns on non-2xx.
 //
 // Transport (dial) errors are retried with a short backoff up to
 // postConnectWindow: a pool server that has just printed its address may not be
@@ -355,7 +361,12 @@ func runOneBrowserTest(t *testing.T, srv testServerEntry) {
 // error means no request reached the server, so re-sending is safe and cannot
 // double-apply. Once a response IS received (any status), we stop retrying — a
 // non-2xx is a real server-side result, not a transient condition.
-func postToServer(addr, path string, body any) error {
+//
+// The retry is for a server that isn't listening YET. A server that has exited
+// will never listen again, so waiting out the window buys nothing and costs
+// every remaining test its full 10s — the difference between a dead pool
+// failing the run in seconds and grinding through it for minutes.
+func postToServer(srv testServerEntry, path string, body any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -363,11 +374,11 @@ func postToServer(addr, path string, body any) error {
 	client := &http.Client{Timeout: harnessHTTPTimeout}
 	deadline := time.Now().Add(postConnectWindow)
 	for {
-		resp, err := client.Post("http://"+addr+path, "application/json", bytes.NewReader(data))
+		resp, err := client.Post("http://"+srv.addr+path, "application/json", bytes.NewReader(data))
 		if err != nil {
 			// Transport failure: the request never landed. Retry until the
 			// connect window closes, then surface the last error.
-			if time.Now().Before(deadline) {
+			if time.Now().Before(deadline) && !srv.proc.dead() {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -381,16 +392,21 @@ func postToServer(addr, path string, body any) error {
 	}
 }
 
-// pollServer GET-polls addr+path every 200 ms until 200 OK is returned and the
-// response JSON decodes successfully into out, or until timeout elapses. Each
-// GET is bounded by the poll budget so a wedged server (one that accepts the
-// connection but never replies) can't block past `timeout` — see
-// harnessHTTPTimeout.
-func pollServer(addr, path string, timeout time.Duration, out any) error {
+// pollServer GET-polls srv's address every 200 ms until 200 OK is returned and
+// the response JSON decodes successfully into out, or until timeout elapses.
+// Each GET is bounded by the poll budget so a wedged server (one that accepts
+// the connection but never replies) can't block past `timeout` — see
+// harnessHTTPTimeout. An exited server ends the poll immediately: the answer it
+// owed can no longer arrive, so sitting out the full budget only delays the
+// failure that already happened.
+func pollServer(srv testServerEntry, path string, timeout time.Duration, out any) error {
 	client := &http.Client{Timeout: timeout}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := client.Get("http://" + addr + path)
+		if srv.proc.dead() {
+			return fmt.Errorf("polling %s: the server exited", path)
+		}
+		resp, err := client.Get("http://" + srv.addr + path)
 		if err == nil {
 			if resp.StatusCode == http.StatusOK {
 				decErr := json.NewDecoder(resp.Body).Decode(out)
@@ -405,6 +421,74 @@ func pollServer(addr, path string, timeout time.Duration, out any) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout polling %s after %s", path, timeout)
+}
+
+// poolStderrTailLines is how much of a dead subprocess's stderr poolDeath
+// quotes. The evidence that matters is always at the very end — the fatal line
+// the process wrote on its way out — and the file also holds the Wails startup
+// banner and any WebKit chatter from the whole run, which is not worth pasting
+// into a test failure.
+const poolStderrTailLines = 40
+
+// poolDeath returns "" while the subprocess behind srv is alive, and otherwise
+// an evidence block for a test failure message.
+//
+// Every lane lives in ONE subprocess, so its death fails every remaining test
+// with the same anonymous transport error: "connection refused" reads
+// identically whether the server force-exited on the macOS main-thread watchdog,
+// quit gracefully through its own shutdown path, or was killed by the OS. Those
+// want completely different fixes, and the exit status plus the last thing the
+// process said are what separate them — neither of which appears anywhere else.
+// The subprocess writes its stderr to a file under the platform temp dir that
+// no CI job reads (and whose path is not /tmp on macOS or Windows), so quoting
+// its tail HERE is the only way that line reaches whoever reads the failure.
+//
+// The full block is printed once per subprocess; every later test gets a
+// one-liner pointing at it, so a hundred cascaded failures stay readable.
+func poolDeath(srv testServerEntry) string {
+	if !srv.proc.dead() {
+		return ""
+	}
+	p := srv.proc
+	first := false
+	p.reported.Do(func() { first = true })
+	if !first {
+		return fmt.Sprintf("POOL SERVER: already dead (pid %d) — see the first failure for the post-mortem.", p.pid)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "POOL SERVER DIED: pid %d %s after %s of the run — every lane lives in this one "+
+		"subprocess, so every test from here on fails on a refused connection regardless of what it asserts.\n",
+		p.pid, p.status(), p.exitedAt.Sub(p.started).Round(time.Second))
+	if p.stderrPath == "" {
+		b.WriteString("Its stderr was discarded (JUGGLER_TEST_DISCARD_STDERR=1), so there is nothing to quote.\n")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "Last %d lines of %s:\n", poolStderrTailLines, p.stderrPath)
+	data, err := os.ReadFile(p.stderrPath)
+	if err != nil {
+		fmt.Fprintf(&b, "  (unreadable: %v)\n", err)
+		return b.String()
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > poolStderrTailLines {
+		lines = lines[len(lines)-poolStderrTailLines:]
+	}
+	for _, line := range lines {
+		fmt.Fprintf(&b, "  | %s\n", line)
+	}
+	return b.String()
+}
+
+// prefixedPoolDeath is poolDeath for appending to an error line: it opens with a
+// newline when there is something to say and is empty when the server is alive,
+// so a failure with a living server doesn't grow a trailing blank line.
+func prefixedPoolDeath(srv testServerEntry) string {
+	death := poolDeath(srv)
+	if death == "" {
+		return ""
+	}
+	return "\n" + death
 }
 
 // testAudit is the server's account of one test's queue/result transitions.

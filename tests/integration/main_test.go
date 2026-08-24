@@ -30,6 +30,62 @@ type testServerEntry struct {
 	addr    string
 	fixture string
 	cmd     *exec.Cmd
+	proc    *poolProc
+}
+
+// poolProc is the liveness record for one pool subprocess. Entries travel
+// through testServerPool by value, so this hangs off them as a pointer: every
+// lane holding a token of the same subprocess shares one record.
+//
+// It exists because a subprocess that dies mid-run is otherwise invisible. All
+// N lanes live in ONE subprocess, so its death fails every remaining test with
+// an anonymous "connection refused" — the same message whether the server
+// force-exited on the main-thread watchdog, quit gracefully, or was OOM-killed.
+// Nothing else in the harness can tell those apart: the exit status is the only
+// evidence, and it is destroyed unless someone waits for it.
+type poolProc struct {
+	pid        int
+	stderrPath string // empty when stderr was discarded
+	started    time.Time
+	exited     chan struct{} // closed once waitErr/exitedAt are set
+	waitErr    error         // result of the single cmd.Wait()
+	exitedAt   time.Time
+	reported   sync.Once // the full post-mortem is printed once per subprocess
+}
+
+// dead reports whether the subprocess has exited, without blocking.
+func (p *poolProc) dead() bool {
+	if p == nil {
+		return false
+	}
+	select {
+	case <-p.exited:
+		return true
+	default:
+		return false
+	}
+}
+
+// watch performs the one and only cmd.Wait() for this subprocess and records
+// its outcome. It runs after scannerDone closes: Wait closes the stdout pipe,
+// and the os/exec contract forbids doing that while a reader is still working
+// through it (the addr scanner reads until EOF, which the process exit itself
+// delivers).
+func (p *poolProc) watch(cmd *exec.Cmd, scannerDone <-chan struct{}) {
+	<-scannerDone
+	err := cmd.Wait()
+	p.waitErr = err
+	p.exitedAt = time.Now()
+	close(p.exited)
+}
+
+// status renders the exit as a human phrase: "exit status 1", "signal: killed",
+// or "exited cleanly (status 0)".
+func (p *poolProc) status() string {
+	if p.waitErr == nil {
+		return "exited cleanly (status 0)"
+	}
+	return p.waitErr.Error()
 }
 
 // testServerPool is a buffered channel acting as both a pool and a semaphore.
@@ -320,9 +376,11 @@ func startJugglerSubprocess(binary, fixture string, iframes int) (testServerEntr
 	if err != nil {
 		return testServerEntry{}, fmt.Errorf("stdout pipe: %w", err)
 	}
-	// Pipe stderr to a per-subprocess log in /tmp/juggler-test-logs/ so we can
-	// post-mortem batch hangs after the fact. Set JUGGLER_TEST_DISCARD_STDERR=1
-	// to skip.
+	// Pipe stderr to a per-subprocess log under the platform temp dir so we can
+	// post-mortem batch hangs after the fact — and so poolDeath can quote its
+	// tail into the failing test, which is the only place a reader ever sees it
+	// on CI. Set JUGGLER_TEST_DISCARD_STDERR=1 to skip.
+	stderrPath := ""
 	if os.Getenv("JUGGLER_TEST_DISCARD_STDERR") == "1" {
 		cmd.Stderr = io.Discard
 	} else {
@@ -330,7 +388,7 @@ func startJugglerSubprocess(binary, fixture string, iframes int) (testServerEntr
 		if err := os.MkdirAll(logDir, 0o755); err != nil {
 			return testServerEntry{}, fmt.Errorf("create log dir: %w", err)
 		}
-		stderrPath := filepath.Join(logDir, "juggler-stderr-"+filepath.Base(fixture)+".log")
+		stderrPath = filepath.Join(logDir, "juggler-stderr-"+filepath.Base(fixture)+".log")
 		stderrFile, err := os.Create(stderrPath)
 		if err != nil {
 			return testServerEntry{}, fmt.Errorf("stderr file: %w", err)
@@ -342,8 +400,17 @@ func startJugglerSubprocess(binary, fixture string, iframes int) (testServerEntr
 		return testServerEntry{}, fmt.Errorf("start: %w", err)
 	}
 
+	proc := &poolProc{
+		pid:        cmd.Process.Pid,
+		stderrPath: stderrPath,
+		started:    time.Now(),
+		exited:     make(chan struct{}),
+	}
+
 	addrCh := make(chan string, 1)
+	scannerDone := make(chan struct{})
 	go func() {
+		defer close(scannerDone)
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -352,13 +419,16 @@ func startJugglerSubprocess(binary, fixture string, iframes int) (testServerEntr
 			}
 		}
 	}()
+	// The single owner of cmd.Wait() for this subprocess, for the whole run: a
+	// second Wait elsewhere would race it and lose the exit status.
+	go proc.watch(cmd, scannerDone)
 
 	select {
 	case addr := <-addrCh:
-		return testServerEntry{addr: addr, fixture: fixture, cmd: cmd}, nil
+		return testServerEntry{addr: addr, fixture: fixture, cmd: cmd, proc: proc}, nil
 	case <-time.After(60 * time.Second):
 		signalGroup(cmd, syscall.SIGKILL)
-		cmd.Wait() //nolint:errcheck
+		<-proc.exited
 		return testServerEntry{}, fmt.Errorf("timeout waiting for JUGGLER_ADDR from %s", binary)
 	}
 }
@@ -370,11 +440,13 @@ func cleanupPool(entries []testServerEntry) {
 	for _, e := range entries {
 		signalGroup(e.cmd, syscall.SIGTERM)
 	}
+	// Wait on each subprocess's liveness record rather than calling cmd.Wait()
+	// here: the watch goroutine started at spawn already owns that call.
 	done := make(chan struct{})
 	go func() {
 		for _, e := range entries {
-			if e.cmd != nil {
-				e.cmd.Wait() //nolint:errcheck
+			if e.proc != nil {
+				<-e.proc.exited
 			}
 		}
 		close(done)
