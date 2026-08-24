@@ -1751,34 +1751,40 @@ func (w *ConversationWorker) checkForNewThreads() bool {
 // setThreadNeedsStrategyRun re-arms the one-shot doc-driven run trigger on a
 // thread, so checkForNewThreads picks it up and runs it again.
 func (w *ConversationWorker) setThreadNeedsStrategyRun(threadItemID string) {
-	threadYMap := w.doc.GetThreadYMap(threadItemID)
-	if threadYMap == nil {
-		return
-	}
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	if needsStrategyRun, _ := threadYMap.Get("needsStrategyRun").(bool); needsStrategyRun {
-		return
-	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		threadYMap.Set("needsStrategyRun", true)
-	}, w.doc.authorID)
+	w.writeThreadNeedsStrategyRun(threadItemID, true)
 }
 
+// clearThreadNeedsStrategyRun consumes the one-shot trigger, so a run that is
+// cancelled or completed isn't restarted on the next observer tick.
 func (w *ConversationWorker) clearThreadNeedsStrategyRun(threadItemID string) {
-	threadYMap := w.doc.GetThreadYMap(threadItemID)
+	w.writeThreadNeedsStrategyRun(threadItemID, false)
+}
+
+// writeThreadNeedsStrategyRun resolves the thread's Y.Map and writes the
+// trigger under ONE ycrdtMu hold — the rule SetThreadField states and
+// clearThreadResult re-resolves for: a pointer resolved under an earlier hold
+// can be tombstoned by an ApplySyncUpdate applied before the write lands, and
+// the write then disappears into a detached map. No-op when the flag already
+// reads as wanted, so repeated ticks don't churn undo history. The write is
+// tracked (undoable) because arming a run is a document edit, not display
+// state.
+func (w *ConversationWorker) writeThreadNeedsStrategyRun(threadItemID string, needed bool) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
 	if threadYMap == nil {
 		return
 	}
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	needsStrategyRun, _ := threadYMap.Get("needsStrategyRun").(bool)
-	if !needsStrategyRun {
+	if current, _ := threadYMap.Get("needsStrategyRun").(bool); current == needed {
 		return
 	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		threadYMap.Delete("needsStrategyRun")
-	}, w.doc.authorID)
+	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
+		if needed {
+			threadYMap.Set("needsStrategyRun", true)
+		} else {
+			threadYMap.Delete("needsStrategyRun")
+		}
+	})
 }
 
 // hasIncompleteThreads returns true if any thread item in the current target

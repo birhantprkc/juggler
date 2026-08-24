@@ -130,7 +130,7 @@ export async function runTests() {
     /** @type {any[]} */
     let currentItems = [];
     const conv = {
-      _llmState: { isConversationProcessing: () => false },
+      llmState: { isConversationProcessing: () => false },
       rootMessageThread: { get items() { return currentItems; } }
     };
 

@@ -113,6 +113,15 @@ class EngineApp {
   }
 
   /**
+   * The engine realm's session, for callers that reach the engine through
+   * `globalThis.engineApp` rather than being handed one. Null before setup.
+   * @returns {import('./model/session.js').default|null} The session, or null.
+   */
+  getSession() {
+    return this._connectionManager?.getSession?.() ?? null;
+  }
+
+  /**
    * Start announcing that this realm is running.
    *
    * The server treats an engine as attached only while it keeps hearing from it
@@ -145,7 +154,7 @@ class EngineApp {
     }
 
     if (data.type === 'session-metadata-changed') {
-      const session = this._connectionManager?.getSession?.();
+      const session = this.getSession();
       session?.applySessionMetadataPatch?.(data.metadata || {}, { remote: true });
       return;
     }

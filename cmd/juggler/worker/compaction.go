@@ -409,10 +409,10 @@ func (w *ConversationWorker) writeBoundedCompactionResult(threadID string, resul
 		return true
 	}
 	accounting := convertToYcrdt(compactionAccountingMap(result))
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 		m.Set("result", result.Summary)
 		m.Set("compactionAccounting", accounting)
-	}, w.doc.authorID)
+	})
 	return true
 }
 

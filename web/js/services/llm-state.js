@@ -102,20 +102,17 @@ class LLMState {
   }
 
   /**
-   * Register a conversation tab for UI updates
-   * Sets up Yjs metadata observer for processing state
-   * @param {string} conversationId - Conversation ID
-   * @param {HTMLElement} tabElement - The conversation-tab element
+   * Register a conversation and the tab element showing it, and start the Yjs
+   * metadata observer that turns worker processing-state frames into status.
+   * The conversation is passed in rather than read off the element: the caller
+   * IS the conversation, so asking its view for it back is a round trip through
+   * a component private.
+   * @param {import('../model/conversation.js').default} conversation - The conversation.
+   * @param {HTMLElement} tabElement - The conversation-tab element showing it.
    */
-  registerConversationTab(conversationId, tabElement) {
-    this._conversationTabs.set(conversationId, tabElement);
-
-    // Get conversation instance from tab
-    // @ts-ignore - _conversation is on conversation-tab
-    const conversation = tabElement._conversation;
-    if (conversation) {
-      this._setupMetadataObserver(conversationId, conversation);
-    }
+  registerConversationTab(conversation, tabElement) {
+    this._conversationTabs.set(conversation.id, tabElement);
+    this._setupMetadataObserver(conversation.id, conversation);
   }
 
   /**
@@ -648,10 +645,8 @@ class LLMState {
     switch (status) {
       case 'preparing': {
         // A turn was accepted, so the model divergence (if any) is resolved —
-        // clear Guard A's one-shot self-heal latch so a genuinely new divergence
-        // much later can heal again rather than being suppressed forever.
-        const conv = this._conversations.get(conversationId);
-        if (conv) conv._modelSelfHealAttempted = false;
+        // re-arm Guard A's one-shot self-heal latch.
+        this._conversations.get(conversationId)?.armSelfHeal?.();
         this.start(conversationId, state.startedAt);
         this.updateStatus(conversationId, 'preparing', tokenData);
         break;
@@ -692,25 +687,15 @@ class LLMState {
       case 'validation-error': {
         const conversation = this._conversations.get(conversationId);
 
-        // Guard A — self-heal the "no-model" divergence. The worker's doc
-        // resolved no model, yet this client is displaying a real one: the model
-        // write never reached the worker (the outbound-sync gap — see
-        // session.js). Re-broadcast our full doc state (which carries
-        // defaultModelConfig) so the worker's doc gets the model, then resend the
-        // pending message ONCE. A per-conversation latch prevents a loop if the
-        // resend also bounces; it is cleared on the next accepted turn
-        // ('preparing'). Ordering holds because the resync and the resend ride
-        // the same FIFO worker channel, so the model lands before re-validation.
-        if (conversation && state.code === 'no-model' && !conversation._modelSelfHealAttempted) {
-          const cfg = conversation.modelConfig;
-          const pending = conversation._pendingUserMessage;
-          if (cfg && cfg.provider && cfg.model && pending) {
-            conversation._modelSelfHealAttempted = true;
-            conversation.resyncToWorker();
-            conversation.resendToWorker(pending, state.threadItemId || null);
-            this.stop(conversationId);
-            break;
-          }
+        // Guard A — self-heal the "no-model" divergence: the worker's doc
+        // resolved no model, yet this client is displaying a real one. The
+        // conversation owns the resync + one-shot resend (see
+        // trySelfHealMissingModel); a true return means the turn is on its way
+        // again and there is nothing to warn about.
+        if (conversation && state.code === 'no-model'
+            && conversation.trySelfHealMissingModel(state.threadItemId || null)) {
+          this.stop(conversationId);
+          break;
         }
 
         // Not self-healable (no code match, no local model, nothing pending, or

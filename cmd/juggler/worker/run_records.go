@@ -618,12 +618,12 @@ func (w *ConversationWorker) stampRunOutcome(threadItemID, status, result string
 	if len(open) == 0 {
 		return false
 	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 		for _, m := range open {
 			m.Set("runStatus", status)
 			m.Set("runResult", result)
 		}
-	}, w.doc.authorID)
+	})
 	return true
 }
 
@@ -783,7 +783,7 @@ func (w *ConversationWorker) settleThreadRun(threadItemID string, cancelled bool
 		starterID, _ = open[len(open)-1].Get("itemId").(string)
 		starterCall, _ = open[len(open)-1].Get("runToolUseId").(string)
 	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 		for _, m := range open {
 			m.Set("runStatus", status)
 			m.Set("runResult", result)
@@ -792,7 +792,7 @@ func (w *ConversationWorker) settleThreadRun(threadItemID string, cancelled bool
 			threadYMap.Set("result", result)
 		}
 		w.reportRunToParentLocked(threadItemID, threadYMap, starterID, starterCall)
-	}, w.doc.authorID)
+	})
 	ycrdtMu.Unlock()
 
 	w.log.Info("[worker] Thread %s run settled: %s (%d chars)", threadItemID, status, len(result))

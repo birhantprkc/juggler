@@ -928,7 +928,7 @@ class Session {
    */
   _isConvBusy(conv) {
     if (!conv) return false;
-    if (conv._llmState?.isConversationProcessing?.(conv.id)) return true;
+    if (conv.llmState?.isConversationProcessing?.(conv.id)) return true;
     const state = conv.getMetadata('processingState');
     const status = state && state.status;
     return !!status && status !== 'idle' && status !== 'error' && status !== 'validation-error';
@@ -1042,6 +1042,39 @@ class Session {
    */
   getServices() {
     return this._services;
+  }
+
+  /**
+   * Subscribe to status changes for EVERY conversation in this session — the
+   * feed the tab indicators and the attention alerts paint from. The callback
+   * receives the conversation id that changed; query that conversation's
+   * `llmState` for the new state.
+   *
+   * The service is session-wide, so this works from an empty session and stays
+   * correct as conversations come and go: a subscriber needs no re-wire when
+   * the first conversation arrives. Callers must subscribe after
+   * {@link setServices} — which connection-manager calls before anything can
+   * see the session — or they get an inert unsubscribe.
+   * @param {(conversationId: string) => void} fn - Called with the changed id.
+   * @returns {() => void} Unsubscribe function.
+   */
+  onLLMStatusChange(fn) {
+    const llmState = /** @type {any} */ (this._services)?.llmState;
+    if (typeof llmState?.addStatusObserver !== 'function') return () => {};
+    return llmState.addStatusObserver(fn);
+  }
+
+  /**
+   * Retain a conversation id that exists on disk but could not be loaded, so
+   * `saveImmediately` keeps it in `conversationOrder` and the next reload
+   * retries it rather than silently dropping it. Idempotent.
+   * @param {string} id - The conversation id to retain.
+   * @returns {void}
+   */
+  retainUnloadedConversationId(id) {
+    if (!Array.isArray(this._unloadedConversationIds)) return;
+    if (this._unloadedConversationIds.includes(id)) return;
+    this._unloadedConversationIds.push(id);
   }
 
   /**
@@ -1523,7 +1556,7 @@ class Session {
 
       // Serialize conversations (filter out transient, corrupt, and worker-managed conversations)
       const conversationsJson = Array.from(this.conversations.values())
-        .filter(conv => !conv._isTransient)
+        .filter(conv => !conv.isTransient)
         .filter(conv => !corruptConversationIds.has(conv.id)) // Skip corrupt conversations
         .filter(conv => {
           // Skip conversations with active workers - they handle their own saves

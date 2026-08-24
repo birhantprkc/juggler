@@ -382,6 +382,17 @@ class Conversation {
   }
 
   /**
+   * Whether the root items Y.Array exists in this client's document yet. The
+   * worker creates it and it arrives over sync, so a caller that must not race
+   * that (see WorkerManager._waitForItemsArray) waits on this rather than
+   * reaching into the document.
+   * @returns {boolean} True once the root items array is present.
+   */
+  get hasRootItemsArray() {
+    return !!this._doc?.root?.get('items');
+  }
+
+  /**
    * Read-only accessor for the root items array.
    * Used for rendering bootstrap (e.g., connection-manager on reconnect).
    * @returns {Array<any>} Root items array
@@ -601,6 +612,15 @@ class Conversation {
   }
 
   /**
+   * Whether this conversation is a local scratch copy that is never persisted
+   * to the backend (and so never appears in the saved conversation order).
+   * @returns {boolean} True for a transient conversation.
+   */
+  get isTransient() {
+    return this._isTransient;
+  }
+
+  /**
    * Lazy-load lifecycle state (per-client view state, not Yjs).
    * @returns {'unloaded'|'loading'|'loaded'|'error'} Current state in the lazy-load FSM
    */
@@ -679,7 +699,7 @@ class Conversation {
     }
 
     // Register tab with LLM state for per-conversation busy indicators
-    this._llmState.registerConversationTab(this.id, tabElement);
+    this._llmState.registerConversationTab(this, tabElement);
   }
 
   /**
@@ -824,6 +844,20 @@ class Conversation {
     // Flush any pending Yjs updates so state is current after undo
     this._doc.flushPendingUpdates();
     return result;
+  }
+
+  /**
+   * Apply every sync update that has arrived but is still sitting in the
+   * document's batch timer, so the caller reads the freshest doc.
+   *
+   * The escape hatch for code that must act on state the worker pushed ahead of
+   * a command through the same ordered mailbox: applySyncUpdate batches behind a
+   * timer, so without this the item the command refers to may have arrived and
+   * not yet been applied.
+   * @returns {void}
+   */
+  flushPendingSyncs() {
+    this._doc?.flushPendingUpdates?.();
   }
 
   /**
@@ -1387,6 +1421,33 @@ class Conversation {
   // =========================================================================
   // Status Message API (delegates to _llmState)
   // =========================================================================
+
+  /**
+   * The shared LLM state service, for callers that need this conversation's
+   * live turn status — the status message and its thread, throughput, live
+   * input usage, "is it processing". Read-only: everything that CHANGES the
+   * status goes through the conversation's own methods, so a view can't start
+   * or stop a turn behind the model's back.
+   * @returns {import('../services/llm-state.js').default} The LLM state service.
+   */
+  get llmState() {
+    return this._llmState;
+  }
+
+  /**
+   * Subscribe to status changes for THIS conversation. The callback takes no
+   * argument — the conversation is the one you subscribed to — and fires after
+   * every start/stop/reset/updateStatus tick, including the per-usage-chunk
+   * ticks a streaming turn emits. Query {@link llmState} for the new state.
+   * @param {() => void} fn - Called on each status change for this conversation.
+   * @returns {() => void} Unsubscribe function.
+   */
+  onStatusChange(fn) {
+    if (typeof this._llmState?.addStatusObserver !== 'function') return () => {};
+    return this._llmState.addStatusObserver((/** @type {string} */ id) => {
+      if (id === this.id) fn();
+    });
+  }
 
   /**
    * Set a custom status message for this conversation
@@ -2269,6 +2330,41 @@ class Conversation {
         }
       }
     }
+  }
+
+  /**
+   * Guard A — try to self-heal a "no-model" validation error. The worker's doc
+   * resolved no model, yet this client is displaying a real one: the model write
+   * never reached the worker (the outbound-sync gap — see session.js).
+   * Re-broadcast our full doc state (which carries defaultModelConfig) so the
+   * worker's doc gets the model, then resend the pending message ONCE. A
+   * one-shot latch prevents a loop if the resend also bounces; it is cleared by
+   * {@link armSelfHeal} on the next accepted turn. Ordering holds because the
+   * resync and the resend ride the same FIFO worker channel, so the model lands
+   * before re-validation.
+   * @param {string|null} threadItemId - Thread the failed turn belonged to.
+   * @returns {boolean} True if a resync + resend was issued, false if the error
+   *   is not self-healable here (latch spent, no local model, nothing pending).
+   */
+  trySelfHealMissingModel(threadItemId) {
+    if (this._modelSelfHealAttempted) return false;
+    const cfg = this.modelConfig;
+    const pending = this._pendingUserMessage;
+    if (!cfg || !cfg.provider || !cfg.model || !pending) return false;
+    this._modelSelfHealAttempted = true;
+    this.resyncToWorker();
+    this.resendToWorker(pending, threadItemId);
+    return true;
+  }
+
+  /**
+   * Re-arm the self-heal latch, so a genuinely new divergence much later can
+   * heal again rather than being suppressed forever. Called when a turn is
+   * accepted, which is the proof the divergence (if any) is resolved.
+   * @returns {void}
+   */
+  armSelfHeal() {
+    this._modelSelfHealAttempted = false;
   }
 
   /**

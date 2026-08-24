@@ -90,6 +90,22 @@ func (cd *ConversationDocument) txOrigin() interface{} {
 	return docInternalOrigin
 }
 
+// transactTracked runs fn as one transaction attributed to the local author, so
+// the UndoManager captures it and the edit can be undone. It is the one name
+// for "an undoable document write", and the counterpart to txOrigin(): queue
+// plumbing and derived display state must NOT come through here, or undo starts
+// peeling off bookkeeping instead of the user's last edit.
+//
+// Equivalent to ycrdt.Transact(cd.doc, fn, cd.authorID, true) — the method form
+// is that call with local=true — so the two spellings in this package differ
+// only in whether the tracker layer wanted the free function.
+//
+// Does NOT take ycrdtMu: callers already hold it, since resolving the target
+// and writing it must happen under one hold.
+func (cd *ConversationDocument) transactTracked(fn func(*ycrdt.Transaction)) {
+	cd.doc.Transact(fn, cd.authorID)
+}
+
 // NewConversationDocument creates a new conversation document.
 func NewConversationDocument(conversationID, authorID string) *ConversationDocument {
 	doc := ycrdt.NewDoc("", true, ycrdt.DefaultGCFilter, nil, false)

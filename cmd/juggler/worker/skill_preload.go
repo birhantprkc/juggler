@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	ycrdt "github.com/skyterra/y-crdt"
 )
 
 // User-directed Agent Skill preloads.
@@ -83,18 +81,7 @@ func (w *ConversationWorker) injectSkillPreloads(names []string) {
 // so a skill chosen while a turn is in flight promotes ahead of the queued user
 // message and executes before that message's turn (mirrors enqueuePendingMessage).
 func (w *ConversationWorker) enqueuePendingSkill(threadItemID, name string) {
-	item := newSkillToolAction(name)
-
-	ycrdtMu.Lock()
-	arr := w.doc.ensurePendingArrayLocked(threadItemID)
-	if arr == nil {
-		ycrdtMu.Unlock()
-		return
+	if w.appendPendingItem(threadItemID, newSkillToolAction(name)) {
+		w.batcher.Flush()
 	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		arr.Insert(arr.GetLength(), ycrdt.ArrayAny{conversationItemToYMap(item)})
-	}, w.doc.txOrigin())
-	ycrdtMu.Unlock()
-
-	w.batcher.Flush()
 }

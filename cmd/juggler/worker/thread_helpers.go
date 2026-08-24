@@ -311,10 +311,10 @@ func (w *ConversationWorker) cancelToolsInArray(arr *ycrdt.YArray, includeApprov
 				epoch, _ := docNumberToInt64(m.Get("runningEpoch"))
 				executingIDs = append(executingIDs, toolCancelRef{ToolUseID: item.ToolUseID, RunningEpoch: epoch})
 			}
-			w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+			w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 				m.Set("state", StateCancelled)
 				m.Set("result", interruptedResult)
-			}, w.doc.authorID)
+			})
 		case ItemTypeThread:
 			if nested, ok := m.Get("items").(*ycrdt.YArray); ok {
 				executingIDs = append(executingIDs, w.cancelToolsInArray(nested, includeApproved, includePending)...)
@@ -415,10 +415,10 @@ func (w *ConversationWorker) finalizeStuckRunningToolOnField(toolUseID, epochFie
 			"writer":    "worker-finalize",
 			"reason":    reason,
 		})
-		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 			m.Set("state", StateCancelled)
 			m.Set("result", interruptedResult)
-		}, w.doc.authorID)
+		})
 		wrote = true
 		return true
 	})

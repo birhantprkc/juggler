@@ -374,7 +374,7 @@ func (w *ConversationWorker) resumeSession(threadItemID string, opts CreateThrea
 		spec, _ := m.Get("resultSpec").(string)
 		sessionName, _ = m.Get("sessionName").(string)
 		if (opts.Goal != "" && opts.Goal != goal) || (opts.ResultSpec != "" && opts.ResultSpec != spec) {
-			w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+			w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 				if opts.Goal != "" && opts.Goal != goal {
 					m.Set("goal", opts.Goal)
 					goal = opts.Goal
@@ -382,7 +382,7 @@ func (w *ConversationWorker) resumeSession(threadItemID string, opts CreateThrea
 				if opts.ResultSpec != "" && opts.ResultSpec != spec {
 					m.Set("resultSpec", opts.ResultSpec)
 				}
-			}, w.doc.authorID)
+			})
 		}
 	}
 	ycrdtMu.Unlock()

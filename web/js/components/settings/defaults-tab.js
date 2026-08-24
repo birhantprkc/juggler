@@ -85,7 +85,7 @@ export class DefaultsTab {
    * @private
    */
   _getSession() {
-    return /** @type {any} */ (window).jugglerApp?._connectionManager?.getSession?.() || null;
+    return /** @type {any} */ (window).jugglerApp?.getSession?.() || null;
   }
 
   /**

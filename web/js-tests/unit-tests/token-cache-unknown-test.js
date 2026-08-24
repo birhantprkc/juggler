@@ -83,7 +83,14 @@ async function mountFooterWithBlob(blob) {
       container: {},
       items: anchoredItems('txn_1'),
       threadItemId: null,
-      conversation: { id: 'CONV_1', contextWindow: BUDGET, isProcessing: false },
+      // onStatusChange is the footer's live-usage subscription; a real
+      // conversation hands back an unsubscribe, so the stand-in does too.
+      conversation: {
+        id: 'CONV_1',
+        contextWindow: BUDGET,
+        isProcessing: false,
+        onStatusChange: () => () => {},
+      },
     });
 
     const td = /** @type {HTMLElement} */ (footer.querySelector('token-display'));

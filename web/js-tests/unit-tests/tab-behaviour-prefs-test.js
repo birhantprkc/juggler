@@ -75,7 +75,7 @@ function fakeBar(convId, awaiting) {
     ? [{ get: (/** @type {string} */ k) => ({ type: 'tool-action', state: 'pending' }[k]) }]
     : [];
   const conv = {
-    _llmState: { isConversationProcessing: () => false },
+    llmState: { isConversationProcessing: () => false },
     rootMessageThread: { items },
   };
   const bar = /** @type {any} */ (document.createElement('conversation-bar'));

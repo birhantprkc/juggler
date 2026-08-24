@@ -46,6 +46,7 @@ import { modelLabel, modelLabelFromList } from '../../model/model-display.js';
 import { formatTokens } from '../../utils/format.js';
 import { renderUsageRow } from '../../utils/usage-renderer.js';
 import { escapeHtml } from '../../../sdk/lib/html.js';
+import JugglerElement from '../juggler-element.js';
 import { tierIds } from './model-tuning.js';
 import './model-tuning.js';
 
@@ -78,7 +79,7 @@ const RECENT_LIMIT = 6;
  * @typedef {import('../../model/model-config.js').ModelConfigShape} ModelConfigShape
  */
 
-class ModelPicker extends HTMLElement {
+class ModelPicker extends JugglerElement {
   constructor() {
     super();
     /** @type {PickerProvider[]} @private */
@@ -105,8 +106,6 @@ class ModelPicker extends HTMLElement {
      * @type {Record<string, 'none'|'top'|'all'>} @private
      */
     this._viewState = this._loadViewState();
-    /** @type {((e: KeyboardEvent) => void)|null} @private - Document-capture key handler while open. */
-    this._keyHandler = null;
     /** @type {boolean} @private - Whether the first render has run. */
     this._rendered = false;
     /** @type {string|null} @private - Last row markup written, so an identical refresh leaves the scroll alone. */
@@ -121,25 +120,17 @@ class ModelPicker extends HTMLElement {
     // The surface is relocated to <body> by presentPopup, which disconnects and
     // reconnects it — render once and keep the built DOM across the move.
     if (!this._rendered) this.render();
-    if (!this._keyHandler) {
-      this._keyHandler = (e) => this._onKey(e);
-      // Capture, so the query is claimed before it reaches the composer textarea
-      // or popup-manager's Escape → closeAllPopups (which would take a settings
-      // modal down with it). Registered after hold-to-cycle's own capture
-      // listener, so a cycle gesture's Escape still cancels the gesture first.
-      document.addEventListener('keydown', this._keyHandler, true);
-    }
+    // Capture, so the query is claimed before it reaches the composer textarea
+    // or popup-manager's Escape → closeAllPopups (which would take a settings
+    // modal down with it). Registered after hold-to-cycle's own capture
+    // listener, so a cycle gesture's Escape still cancels the gesture first.
+    // presentPopup's relocation disconnects and reconnects this element, so the
+    // base class drains the listener on the way out and this re-registers it.
+    this.onDocument('keydown', /** @type {EventListener} */ ((e) => this._onKey(/** @type {KeyboardEvent} */ (e))), true);
     // Opening the picker is the one moment the user is looking at the meters, so
     // it is the moment worth asking about them; the cache turns the repeats into
     // no-ops.
     void this._refreshUsage();
-  }
-
-  disconnectedCallback() {
-    if (this._keyHandler) {
-      document.removeEventListener('keydown', this._keyHandler, true);
-      this._keyHandler = null;
-    }
   }
 
   /**

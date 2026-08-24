@@ -523,7 +523,7 @@ class ConversationArea extends HTMLElement {
    */
   _snapshotLiveStatus() {
     const conv = this._conversation;
-    const llmState = conv?._llmState;
+    const llmState = conv?.llmState;
     if (!llmState || !conv?.id) return null;
     const message = llmState.getStatusMessage(conv.id) || '';
     if (!message) return null;
@@ -1220,7 +1220,7 @@ class ConversationArea extends HTMLElement {
    * @param {string|null} selectedId
    * @private
    */
-  _applySelectedClass(selectedId) {
+  applySelectedClass(selectedId) {
     selection.applySelectedClass(this, selectedId);
   }
 
@@ -1229,7 +1229,7 @@ class ConversationArea extends HTMLElement {
    * @param {boolean} [smooth=false]
    * @private
    */
-  _scrollItemIntoView(itemId, smooth = false) {
+  scrollItemIntoView(itemId, smooth = false) {
     scroll.scrollItemIntoView(this, itemId, smooth);
   }
 
@@ -1364,9 +1364,9 @@ class ConversationArea extends HTMLElement {
         this._localSelectedItemId = null;
         this._selectionOrigin = null;
         selection.teardownSelectionVisibilityWatcher(this);
-        this._applySelectedClass(null);
+        this.applySelectedClass(null);
       } else {
-        this._applySelectedClass(this._localSelectedItemId);
+        this.applySelectedClass(this._localSelectedItemId);
       }
     }
 
@@ -1590,7 +1590,7 @@ class ConversationArea extends HTMLElement {
     // parked on a tool call or waiting on the network — the truth of those
     // moments rather than a missing reading.
     const throughput = isProcessing
-      ? (this._conversation?._llmState?.getThroughput?.(this._conversation.id) ?? 0)
+      ? (this._conversation?.llmState?.getThroughput?.(this._conversation.id) ?? 0)
       : 0;
     const statusMessage = hasPendingApprovals
       ? StatusMessageBuilder.withBusyMarker('Waiting for user approval')

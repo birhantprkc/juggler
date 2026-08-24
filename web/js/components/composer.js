@@ -50,7 +50,7 @@ import {
 } from './composer-paste-tokens.js';
 import {
   clearScheduledSendState,
-  fireScheduledSend,
+  fireScheduledSend as fireArmedSend,
   stopScheduledCountdown,
   syncScheduledSendFromDraft,
   toggleSchedulePicker,
@@ -1420,6 +1420,16 @@ class Composer extends HTMLElement {
   }
 
   /**
+   * The thread this composer is bound to, for callers that need to tell one
+   * on-screen composer from another — scheduled-send-service matches the armed
+   * thread against every mounted composer this way.
+   * @returns {import('../model/message-thread.js').MessageThread|null} The bound thread, or null.
+   */
+  getMessageThread() {
+    return this._messageThread;
+  }
+
+  /**
    * Set the message thread for this composer
    * @param {import('../model/message-thread.js').MessageThread} messageThread
    */
@@ -1786,12 +1796,13 @@ class Composer extends HTMLElement {
   // ── Scheduled send ────────────────────────────────────────────────────────
   //
   // Arming, the countdown and the delay picker live in composer-schedule.js.
-  // The fire path stays a method: scheduled-send-service.js calls
-  // `box._fireScheduledSend()` on the composer element when the wait is up.
+  // The fire path stays a method: it is what scheduled-send-service.js calls on
+  // the composer element when the wait is up, so it is public API, not a
+  // private the service reaches past.
 
   /** Send the composed message now, ending an armed scheduled send. */
-  _fireScheduledSend() {
-    fireScheduledSend(this);
+  fireScheduledSend() {
+    fireArmedSend(this);
   }
 
   /**

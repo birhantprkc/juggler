@@ -296,6 +296,16 @@ class JugglerApp {
   }
 
   /**
+   * The live session, for the handful of callers that reach the app through
+   * `window.jugglerApp` (settings tabs, the plugin catalog, the registry
+   * reloader) rather than being handed one. Null before the session loads.
+   * @returns {import('./model/session.js').default|null} The session, or null.
+   */
+  getSession() {
+    return this._connectionManager?.getSession() ?? null;
+  }
+
+  /**
    * Initialize all service instances
    * @private
    */

@@ -29,7 +29,7 @@ import '../../js/components/conversation-bar.js';
 
 /**
  * Minimal stand-in for the session surface `render()` and `_binConversation`
- * touch. Conversations are bare `{id, name}` records — no `_llmState`, so the
+ * touch. Conversations are bare `{id, name}` records — no `llmState`, so the
  * bar's busy-guard reads them as idle and every bin is allowed.
  * @returns {any} Stub session with call logs on `.binned` / `.restored`.
  */

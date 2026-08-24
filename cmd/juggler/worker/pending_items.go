@@ -63,6 +63,28 @@ func (cd *ConversationDocument) ensurePendingArrayLocked(threadItemID string) *y
 	return arr
 }
 
+// appendPendingItem appends one item to the end of the thread's pending queue,
+// creating the queue if the thread hasn't got one yet. Reports false (and
+// writes nothing) when the thread is gone. Untracked (txOrigin): the queue is
+// plumbing the strategy loop drains, not an undoable edit — the promotion into
+// the thread is what the user undoes.
+//
+// The two enqueue paths differ only in the item they build and what they record
+// afterwards, so the doc write lives here and each caller keeps its own tape
+// record and flush.
+func (w *ConversationWorker) appendPendingItem(threadItemID string, item ConversationItem) bool {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	arr := w.doc.ensurePendingArrayLocked(threadItemID)
+	if arr == nil {
+		return false
+	}
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		arr.Insert(arr.GetLength(), ycrdt.ArrayAny{conversationItemToYMap(item)})
+	}, w.doc.txOrigin())
+	return true
+}
+
 // enqueuePendingMessage appends a user message (text + attachments, as one
 // inseparable unit) to the thread's pending queue. Called when a send arrives
 // while a turn is already in flight; the strategy loop drains the queue at its
@@ -72,17 +94,9 @@ func (w *ConversationWorker) enqueuePendingMessage(threadItemID string, input Us
 		return
 	}
 	item := newUserItem(input)
-
-	ycrdtMu.Lock()
-	arr := w.doc.ensurePendingArrayLocked(threadItemID)
-	if arr == nil {
-		ycrdtMu.Unlock()
+	if !w.appendPendingItem(threadItemID, item) {
 		return
 	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
-		arr.Insert(arr.GetLength(), ycrdt.ArrayAny{conversationItemToYMap(item)})
-	}, w.doc.txOrigin())
-	ycrdtMu.Unlock()
 
 	w.tape.Record("pending-enqueue", map[string]any{
 		"threadItemId": threadItemID,

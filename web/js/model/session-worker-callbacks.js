@@ -236,7 +236,7 @@ export function setupWorkerCallbacks(session) {
       const deadline = Date.now() + CONTEXT_SYNC_WAIT_MS;
       while (missing.length > 0 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, CONTEXT_SYNC_POLL_MS));
-        /** @type {any} */ (conv)._doc?.flushPendingUpdates?.();
+        conv.flushPendingSyncs?.();
         missing = missingContextIds();
       }
       if (missing.length > 0) {

@@ -88,12 +88,10 @@ interface Window {
 interface HTMLElementTagNameMap {
 	'conversation-area': HTMLElement & {
 		conversation: unknown;
-		transactions: unknown[];
 		scrollToBottom(force?: boolean): void;
-		updateSpinner(show: boolean): void;
-		showError(error: string): void;
-		hideRetryNotification(): void;
-		showRetryNotification(error: string, onRetry: () => void): void;
+		scrollItemIntoView(itemId: string, smooth?: boolean): void;
+		applySelectedClass(selectedId: string | null): void;
+		getMessageThread(): unknown;
 		renderFromItems(items: unknown[], insertedMessageIds?: string[]): void;
 		composer?: HTMLElement;
 	};

@@ -391,15 +391,11 @@ class ConversationBar extends JugglerElement {
     void refreshAutoNameSetting();
 
     // Subscribe to LLM status changes so we can update per-tab indicator classes
-    // without re-rendering the whole bar. Pull the (shared) llmState off any
-    // conversation; new conversations registered later use the same instance.
-    const anyConv = session.conversations.values().next().value;
-    const llmState = anyConv?._llmState;
-    if (llmState && typeof llmState.addStatusObserver === 'function') {
-      this._llmStateUnsubscribe = llmState.addStatusObserver(
-        (/** @type {string} */ convId) => this._refreshTabStatus(convId)
-      );
-    }
+    // without re-rendering the whole bar. The feed is session-wide, so an empty
+    // session subscribes just as well as a loaded one.
+    this._llmStateUnsubscribe = session.onLLMStatusChange(
+      (/** @type {string} */ convId) => this._refreshTabStatus(convId)
+    );
 
     // Subscribe to session changes
     this._unsubscribe = session.subscribe(/** @param {SessionEvent} event */ (event) => {
@@ -531,14 +527,6 @@ class ConversationBar extends JugglerElement {
    */
   _handleConversationCreated(conversation) {
     this._createConversationTab(conversation);
-    // If the session was empty when setSession() ran, the llmState observer
-    // hasn't been wired up yet. Wire it now using this first conversation.
-    if (!this._llmStateUnsubscribe && conversation._llmState
-        && typeof conversation._llmState.addStatusObserver === 'function') {
-      this._llmStateUnsubscribe = conversation._llmState.addStatusObserver(
-        (/** @type {string} */ convId) => this._refreshTabStatus(convId)
-      );
-    }
     // A switch normally arrives as its own `conversation:switched` event, which
     // shows the tab. When the session was already pointed at this conversation
     // before its element existed, that event has been and gone — reconcile now,
@@ -961,7 +949,7 @@ class ConversationBar extends JugglerElement {
    */
   _conversationActivity(convId) {
     const conv = this._session?.conversations.get(convId);
-    const llm = conv?._llmState;
+    const llm = conv?.llmState;
     if (!conv || !llm) return { awaiting: false, running: false };
     const rootThread = /** @type {any} */ (conv).rootMessageThread;
     const awaiting = !!rootThread && hasPendingApprovalInTree(rootThread.items);

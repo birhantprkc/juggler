@@ -1490,14 +1490,14 @@ class WorkerManager {
    */
   async _waitForItemsArray(conversation, timeoutMs = 2000) {
     const deadline = Date.now() + timeoutMs;
-    conversation._doc.flushPendingUpdates();
-    while (!conversation._doc.root.get('items')) {
+    conversation.flushPendingSyncs();
+    while (!conversation.hasRootItemsArray) {
       if (Date.now() >= deadline) {
         console.warn(`[WorkerManager] items array not synced within ${timeoutMs}ms for ${conversation.id}; SYSTEM_1 may create a local array`);
         return false;
       }
       await new Promise(r => setTimeout(r, 10));
-      conversation._doc.flushPendingUpdates();
+      conversation.flushPendingSyncs();
     }
     return true;
   }
@@ -1599,7 +1599,7 @@ class WorkerManager {
       // initial yjs-sync (with the loaded items array and all messages) may
       // have arrived but not yet been applied. Flush so callers that read
       // conv.rootItems immediately after this call see the synced state.
-      conversation._doc.flushPendingUpdates();
+      conversation.flushPendingSyncs();
 
       // 6. Activate Yjs sync. All yjs-sync was captured from the start, so the
       // doc is already complete here.

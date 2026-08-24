@@ -15,6 +15,7 @@ import { buildDisplayItems, isGroupId, groupMemberIndices } from '../utils/item-
 import { isItemSelectable } from '../services/context-item-utilities.js';
 import { recordTape } from '../utils/event-tape.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
+import JugglerElement from './juggler-element.js';
 import { handleEscapeKey } from '../services/escape-behaviour.js';
 // Columns are created via createElement('conversation-area' | 'properties-panel')
 // in _buildConversationColumn. Import the defining modules so the custom elements
@@ -39,7 +40,7 @@ import './properties-panel.js';
  *
  * CRITICAL: No shared state between tabs. Each tab is completely independent.
  */
-class ConversationTab extends HTMLElement {
+class ConversationTab extends JugglerElement {
   constructor() {
     super();
 
@@ -88,33 +89,22 @@ class ConversationTab extends HTMLElement {
     /** @type {boolean} @private - Suppresses Rule 15 autofocus during keyboard navigation */
     this._isKeyboardNavigating = false;
 
-    /** @type {((e: KeyboardEvent) => void)|null} @private - Bound keydown handler for cleanup */
-    this._keydownHandler = null;
-
-    /** @type {(() => void)|null} @private - Bound tool-grouping pref handler for cleanup */
-    this._groupingPrefHandler = null;
+    /** @type {boolean} @private - Whether the document keydown listener is live (see _setupKeyboardNavigation) */
+    this._keyboardNavWired = false;
   }
 
   connectedCallback() {
     this.render();
-    if (!this._groupingPrefHandler) {
-      this._groupingPrefHandler = () => this._onToolGroupingChanged();
-      window.addEventListener(TOOL_GROUPING_EVENT, this._groupingPrefHandler);
-    }
+    this.onWindow(TOOL_GROUPING_EVENT, () => this._onToolGroupingChanged());
   }
 
   disconnectedCallback() {
+    super.disconnectedCallback();
+    // Re-assignable (setConversation disposes and re-subscribes mid-life), so
+    // it stays a field rather than an addCleanup registration.
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = null;
-    }
-    if (this._keydownHandler) {
-      document.removeEventListener('keydown', this._keydownHandler);
-      this._keydownHandler = null;
-    }
-    if (this._groupingPrefHandler) {
-      window.removeEventListener(TOOL_GROUPING_EVENT, this._groupingPrefHandler);
-      this._groupingPrefHandler = null;
     }
   }
 
@@ -141,7 +131,7 @@ class ConversationTab extends HTMLElement {
       if (selectedId) {
         const items = col._isGroupColumn
           ? (col._groupItems ?? [])
-          : (col._messageThread?.items ?? []);
+          : (col.getMessageThread()?.items ?? []);
         let nextId = selectedId;
         if (enabled) {
           const { memberToGroup } = buildDisplayItems(items, { enabled: true });
@@ -231,7 +221,7 @@ class ConversationTab extends HTMLElement {
           if (insertedItemIds?.length) {
             for (const col of this._columns) {
               if (col.tagName === 'CONVERSATION-AREA') {
-                const items = /** @type {any} */ (col)._messageThread?.items
+                const items = /** @type {any} */ (col).getMessageThread()?.items
                   ?? this._conversation.rootItems;
                 /** @type {any} */ (col).onItemsInserted(insertedItemIds, items);
               }
@@ -803,7 +793,7 @@ class ConversationTab extends HTMLElement {
     if (!this._conversation) return;
     for (const col of this._columns) {
       if (col.tagName !== 'CONVERSATION-AREA') continue;
-      const items = /** @type {any} */ (col)._messageThread?.items
+      const items = /** @type {any} */ (col).getMessageThread()?.items
         ?? this._conversation.rootItems;
       /** @type {any} */ (col).onItemsInserted(insertedItemIds, items);
     }
@@ -892,9 +882,15 @@ class ConversationTab extends HTMLElement {
    * @private
    */
   _setupKeyboardNavigation() {
-    if (this._keydownHandler) return; // already set up
+    // render() runs many times per connect, so the listener needs a guard the
+    // base class's drain can clear — otherwise a re-connect would find the flag
+    // still set and never re-register.
+    if (this._keyboardNavWired) return;
+    this._keyboardNavWired = true;
+    this.addCleanup(() => { this._keyboardNavWired = false; });
 
-    this._keydownHandler = (e) => {
+    /** @param {KeyboardEvent} e */
+    const onKeydown = (e) => {
       // Only handle if this is the active tab
       if (!this.classList.contains('active')) return;
 
@@ -1048,7 +1044,7 @@ class ConversationTab extends HTMLElement {
       }
     };
 
-    document.addEventListener('keydown', this._keydownHandler);
+    this.onDocument('keydown', /** @type {EventListener} */ (onKeydown));
   }
 
   /**
@@ -1188,7 +1184,7 @@ class ConversationTab extends HTMLElement {
       const col = /** @type {HTMLElement} */ (this._columns[i]); // bounded by i < this._columns.length
       const itemId = this._selection.selections[i];
       if (col?.tagName === 'CONVERSATION-AREA' && itemId) {
-        /** @type {any} */ (col)._scrollItemIntoView(itemId);
+        /** @type {any} */ (col).scrollItemIntoView(itemId);
       }
     }
   }
@@ -1856,7 +1852,7 @@ class ConversationTab extends HTMLElement {
       const col = /** @type {HTMLElement} */ (newColumns[i]); // bounded by i < newColumns.length
       if (col.tagName !== 'CONVERSATION-AREA') continue;
       const selectedId = this._selection.selections[i] || null;
-      /** @type {any} */ (col)._applySelectedClass(selectedId);
+      /** @type {any} */ (col).applySelectedClass(selectedId);
     }
   }
 
@@ -1938,7 +1934,7 @@ class ConversationTab extends HTMLElement {
     if (loadState !== 'loaded') return;
 
     // Auto-select thread chain when processing state targets a new thread
-    const llmState = conversation._llmState;
+    const llmState = conversation.llmState;
     let autoSelected = false;
     if (llmState) {
       const statusThreadId = llmState.getStatusThreadId(conversation.id);
@@ -2002,7 +1998,7 @@ class ConversationTab extends HTMLElement {
           // (shared) thread would nominate items it doesn't show.
           const items = threadCol._isGroupColumn
             ? (threadCol._groupItems ?? [])
-            : (threadCol._messageThread?.items ?? []);
+            : (threadCol.getMessageThread()?.items ?? []);
           if (items.length > 0) {
             const itemIds = items.map(/** @type {(i: any) => string|undefined} */ (i) => i?.get?.('itemId')).filter(Boolean);
             threadCol.onItemsInserted(/** @type {string[]} */ (itemIds), items);

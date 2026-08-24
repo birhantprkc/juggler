@@ -401,7 +401,7 @@ export async function handleRunContextHook(wm, conversationId, data) {
   const hook = /** @type {string} */ (data.hook);
   const conversation = await ensureEngineConversationLoaded(wm, conversationId);
   if (!conversation) return;
-  flushPendingSyncs(conversation);
+  conversation.flushPendingSyncs?.();
 
   // A context hook is fire-and-forget and can still be running when the next
   // turn's hook arrives. Open a fresh abort scope for this run and abort the
@@ -461,34 +461,27 @@ async function runContextHookGuarded(ItemClass, hook, ctx, conversationId) {
 }
 
 /**
- * The worker's tool commands are the ONLY driver of the tool lifecycle (the
- * engine has no reactive tool observer), so the engine must read the freshest
- * doc before resolving a command's toolUseId: flush batched-but-unapplied syncs
- * (applySyncUpdate defers behind a setTimeout) so the tool-action the command
- * refers to — pushed ahead of the command through the same ordered mailbox, but
- * not yet applied — is visible. This is the engine half of the command-driven
- * ordering invariant (the worker pushes state ahead of the command; the engine
- * applies pending syncs before acting).
- * @param {any} c - Conversation instance
- */
-function flushPendingSyncs(c) {
-  c?._doc?.flushPendingUpdates?.();
-}
-
-/**
  * Ensure the engine's copy of a conversation is loaded, then flush its batched-
  * but-unapplied syncs so any state the worker pushed ahead of this command is
  * visible. The shared preamble for every worker-driven engine command
  * (render-context-items, build-subthread-spec, evaluate-tool,
  * execute-tool, cancel-tool). Returns the loaded conversation, or null if it
  * could not be loaded.
+ *
+ * The flush matters because the worker's tool commands are the ONLY driver of
+ * the tool lifecycle (the engine has no reactive tool observer), so the engine
+ * must read the freshest doc before resolving a command's toolUseId: the
+ * tool-action the command refers to was pushed ahead of the command through the
+ * same ordered mailbox, and applySyncUpdate defers behind a setTimeout. This is
+ * the engine half of the command-driven ordering invariant (the worker pushes
+ * state ahead of the command; the engine applies pending syncs before acting).
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @returns {Promise<any>} The loaded conversation, or null
  */
 async function loadAndFlush(wm, conversationId) {
   const c = await ensureEngineConversationLoaded(wm, conversationId);
-  if (c) flushPendingSyncs(c);
+  c?.flushPendingSyncs?.();
   return c;
 }
 

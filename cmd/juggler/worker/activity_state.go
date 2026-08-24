@@ -84,7 +84,7 @@ func (w *ConversationWorker) patchProcessingStateIf(
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
 	var applied bool
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 		raw := w.doc.metadata.Get("processingState")
 		existing, _ := fromYcrdt(raw).(map[string]any)
 		if !cond(existing) {
@@ -97,7 +97,7 @@ func (w *ConversationWorker) patchProcessingStateIf(
 		mutate(updated)
 		w.doc.metadata.Set("processingState", toYcrdt(updated))
 		applied = true
-	}, w.doc.authorID)
+	})
 	return applied
 }
 

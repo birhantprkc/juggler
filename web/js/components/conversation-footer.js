@@ -172,14 +172,13 @@ class ConversationFooter extends HTMLElement {
       // we refresh the meter immediately — not through the 2s event debounce —
       // so the bar visibly grows as the turn proceeds. The callback is cheap
       // when nothing changed (token-display.setUsage no-ops on equal input).
-      const llmState = conversation?._llmState;
-      if (llmState && typeof llmState.addStatusObserver === 'function') {
-        this._statusUnsubscribe = /** @type {() => void} */ (llmState.addStatusObserver((/** @type {string} */ id) => {
+      if (conversation) {
+        this._statusUnsubscribe = conversation.onStatusChange(() => {
           // Only models that stream authoritative per-step usage drive the meter
           // from this feed; for the rest the meter stays on the blob anchor
           // refreshed by the (debounced) session events, so skip the per-tick work.
-          if (id === conversation.id && this._modelStreamsLiveUsage()) this._updateTokenDisplay();
-        }));
+          if (this._modelStreamsLiveUsage()) this._updateTokenDisplay();
+        });
       }
     }
     this._updateTokenDisplay();
@@ -404,7 +403,7 @@ class ConversationFooter extends HTMLElement {
     // arrives (getLiveInputUsage null) and once the turn ends (processing false),
     // so the end-of-turn number takes over seamlessly.
     if (processing && streamsLive) {
-      const live = conv?._llmState?.getLiveInputUsage?.(conv.id);
+      const live = conv?.llmState?.getLiveInputUsage?.(conv.id);
       if (live) {
         /** @type {any} */ (tokenDisplay).setUsage({
           total: live.inputTokens,

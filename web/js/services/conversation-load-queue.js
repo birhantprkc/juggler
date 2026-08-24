@@ -9,9 +9,9 @@
  * decides *when* to call workerManager.loadExistingConversation(). The conv's
  * loadState transitions through 'loading' → 'loaded' (or 'error') and the
  * session emits 'conversation:loadstate-changed' so listeners (tab bar,
- * conversation panel) can re-render. Failures push the id into
- * session._unloadedConversationIds so it survives saveImmediately and gets
- * retried on the next reload.
+ * conversation panel) can re-render. Failures retain the id on the session
+ * (session.retainUnloadedConversationId) so it survives saveImmediately and
+ * gets retried on the next reload.
  *
  * Worker-manager's _creating map dedupes concurrent loads for the same id,
  * so this queue does not need its own dedupe.
@@ -186,10 +186,7 @@ class ConversationLoadQueue {
         this._errored.add(id);
         // Retain the id so saveImmediately keeps it in
         // conversationOrder; the next reload will retry.
-        if (Array.isArray(this._session._unloadedConversationIds) &&
-                    !this._session._unloadedConversationIds.includes(id)) {
-          this._session._unloadedConversationIds.push(id);
-        }
+        this._session.retainUnloadedConversationId?.(id);
         const c = this._session.conversations.get(id);
         if (c) c.setLoadState('error');
         this._rejectWaiters(id, error);

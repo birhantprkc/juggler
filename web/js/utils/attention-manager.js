@@ -456,7 +456,7 @@ function onStatus(convId) {
   const conv = session?.conversations.get(convId);
   if (!conv) return;
 
-  const llm = /** @type {any} */ (conv)._llmState;
+  const llm = conv.llmState;
   const root = /** @type {any} */ (conv).rootMessageThread;
   const awaiting = !!root && hasPendingApprovalInTree(root.items);
   const turns = conv.completedTurns;
@@ -523,23 +523,11 @@ export function initAttention(sess) {
   prevTurns.clear();
   clearAllFlash();
 
-  /**
-   * Wire the (shared) LLMState observer; conversations may arrive later.
-   * @type {(() => void)|null}
-   */
-  let unsub = null;
-  const wire = () => {
-    if (unsub) return;
-    const anyConv = sess.conversations.values().next().value;
-    const llm = /** @type {any} */ (anyConv)?._llmState;
-    if (llm?.addStatusObserver) {
-      unsub = llm.addStatusObserver((/** @type {string} */ id) => onStatus(id));
-    }
-  };
-  wire();
+  // The status feed belongs to the session, not to any one conversation, so
+  // this is wired once and covers conversations that arrive later.
+  sess.onLLMStatusChange((id) => onStatus(id));
 
   sess.subscribe(/** @param {{type: string, data?: any}} e */ (e) => {
-    if (e.type === 'conversation:created') wire();
     if (e.type === 'conversation:switched') reconcileVisible();
     // An alert outlives everything but a view, so a binned or deleted
     // conversation has to take its own with it — otherwise the title badge

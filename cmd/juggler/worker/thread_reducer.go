@@ -620,8 +620,8 @@ func (w *ConversationWorker) clearThreadResult(threadItemID string) bool {
 	if threadYMap == nil {
 		return false
 	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 		threadYMap.Set("result", nil)
-	}, w.doc.authorID)
+	})
 	return true
 }

@@ -292,11 +292,11 @@ class ScheduledSendService {
       if (!(await this._claimFire(claimKey))) return;
 
       const box = this._findBoundComposer(thread);
-      if (box && typeof box._fireScheduledSend === 'function') {
+      if (box && typeof box.fireScheduledSend === 'function') {
         // On screen: the composer presses Send on its live contents and clears
         // its own scheduled state + draft (synchronously, before its send
         // dispatch), so a later sweep sees no target.
-        box._fireScheduledSend();
+        box.fireScheduledSend();
         return;
       }
 
@@ -382,7 +382,7 @@ class ScheduledSendService {
   _findBoundComposer(thread) {
     const boxes = Array.from(document.querySelectorAll('composer-box'));
     for (const box of boxes) {
-      const mt = /** @type {any} */ (box)._messageThread;
+      const mt = /** @type {any} */ (box).getMessageThread();
       if (mt && mt.conversationId === thread.conversation.id
           && (mt.threadItemId || null) === (thread.threadItemId || null)) {
         return box;

@@ -45,7 +45,7 @@ const updateTimers = new WeakMap();
  */
 export async function executeContextItem(mt, conv, itemTypeId, params, options = {}) {
   const { customId, toolName = itemTypeId } = options;
-  const session = conv._session;
+  const session = conv.session;
   /** @type {any} */
   const ItemClass = contextItemRegistry.get(itemTypeId);
   if (!ItemClass) {
@@ -167,7 +167,7 @@ export async function executeContextItem(mt, conv, itemTypeId, params, options =
  * @returns {Promise<{id: string|null, type: string, created: boolean, error?: string}>} Result
  */
 export async function executeContextItemIntoPending(mt, conv, itemTypeId, params) {
-  const session = conv._session;
+  const session = conv.session;
   /** @type {any} */
   const ItemClass = contextItemRegistry.get(itemTypeId);
   if (!ItemClass) {
@@ -235,13 +235,13 @@ export async function refreshContextItem(mt, conv, itemId) {
   }
   try {
     await /** @type {any} */ (contextItem).refresh();
-    conv._session.save();
+    conv.session.save();
   } catch (error) {
     console.error(`[ESSENTIAL] [ContextItemOrchestrator] Failed to refresh context item: ${error}`);
     if (error instanceof Error) {
       /** @type {Record<string, any>} */ (contextItem.data).error = error.message;
     }
-    conv._session.save();
+    conv.session.save();
   }
 }
 

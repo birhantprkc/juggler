@@ -389,7 +389,7 @@ class PluginCatalog extends JugglerElement {
    * @returns {import('../model/session.js').default|null} Active app session or null
    */
   _getSession() {
-    return /** @type {any} */ (window).jugglerApp?._connectionManager?.getSession?.() || null;
+    return /** @type {any} */ (window).jugglerApp?.getSession?.() || null;
   }
 
   /**

@@ -21,7 +21,7 @@
  * The composer only arms, cancels, and DISPLAYS the schedule; the firing itself
  * is owned by scheduledSendService, which sweeps every thread on an interval so
  * a send goes out even while a different thread or tab is on screen. When the
- * due thread IS on screen the service calls the composer's `_fireScheduledSend`,
+ * due thread IS on screen the service calls the composer's `fireScheduledSend`,
  * so the send carries the live textarea's exact contents.
  *
  * Each function takes the Composer element as its first argument and reads or
@@ -157,7 +157,7 @@ function cancelScheduledSend(composer) {
 }
 
 /**
- * Fire the pending send. Reached from the composer's `_fireScheduledSend`,
+ * Fire the pending send. Reached from the composer's `fireScheduledSend`,
  * which scheduledSendService calls when this box is bound to the due thread. Clears the schedule FIRST (and persists that,
  * so an empty box — where sendMessage() no-ops without clearing the draft —
  * doesn't leave the target behind to re-fire on the next sweep), then presses

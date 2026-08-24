@@ -114,7 +114,7 @@ export async function runTests() {
         initialItems: [createAssistantMessage('Working.')]
       }).threadId;
     }, author);
-    conversation._llmState._handleProcessingStateChange(conversation.id,
+    conversation.llmState._handleProcessingStateChange(conversation.id,
       { status: 'streaming', threadItemId: threadB });
 
     assert(rootCol.getSelectedItemId() === threadA,
@@ -133,7 +133,7 @@ export async function runTests() {
     assert(rootCol._selectionOrigin !== 'user',
       'a new user message should clear the pin (rule 3)');
 
-    conversation._llmState._handleProcessingStateChange(conversation.id,
+    conversation.llmState._handleProcessingStateChange(conversation.id,
       { status: 'streaming', threadItemId: threadB });
     assert(rootCol.getSelectedItemId() === threadB,
       'once the pin lifts, the running sub-thread opens — the pin defers the ' +
@@ -144,7 +144,7 @@ export async function runTests() {
     failed = 1;
     errors.push(e instanceof Error ? e.message : String(e));
   } finally {
-    conversation?._llmState?.stop?.(conversation.id);
+    conversation?.llmState?.stop?.(conversation.id);
     container.remove();
   }
 

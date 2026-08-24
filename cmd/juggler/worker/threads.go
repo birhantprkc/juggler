@@ -185,7 +185,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	if m, ok := raw.(*ycrdt.YMap); ok {
 		threadYMap = m
 		threadItemID, _ = m.Get("itemId").(string)
-		w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 			if opts.ResultSpec != "" {
 				m.Set("resultSpec", opts.ResultSpec)
 			}
@@ -238,7 +238,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 					}
 				}
 			}
-		}, w.doc.authorID)
+		})
 	}
 	ycrdtMu.Unlock()
 
@@ -318,9 +318,9 @@ func (w *ConversationWorker) promoteThreadSpawnCapable(threadItemID string) {
 	if already, _ := m.Get("canSpawnThreads").(bool); already {
 		return // already spawn-capable (e.g. a /thread-created thread)
 	}
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 		m.Set("canSpawnThreads", true)
-	}, w.doc.authorID)
+	})
 	w.log.Info("[worker] promoted thread %s to spawn-capable (user-steered)", threadItemID)
 }
 

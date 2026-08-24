@@ -240,10 +240,10 @@ func (w *ConversationWorker) claimAndDispatchPendingEntry(e pendingEntrySnapshot
 		ycrdtMu.Unlock()
 		return
 	}
-	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+	w.doc.transactTracked(func(t *ycrdt.Transaction) {
 		ymap.Set("status", "claimed")
 		ymap.Set("claimedBy", "worker")
-	}, w.doc.authorID)
+	})
 	ycrdtMu.Unlock()
 
 	switch e.kind {
@@ -437,9 +437,9 @@ func (w *ConversationWorker) updatePendingEntry(ownerThreadID, id string, mutate
 	if !ok {
 		return
 	}
-	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+	w.doc.transactTracked(func(t *ycrdt.Transaction) {
 		mutate(ymap)
-	}, w.doc.authorID)
+	})
 }
 
 // setPendingEntryThreadID records the threadItemId on a claimed entry so
@@ -504,8 +504,8 @@ func (w *ConversationWorker) gcPendingEntry(ownerThreadID, id string) {
 	if arr == nil {
 		return
 	}
-	w.doc.doc.Transact(func(t *ycrdt.Transaction) {
+	w.doc.transactTracked(func(t *ycrdt.Transaction) {
 		arr.Delete(ycrdt.Number(idx), ycrdt.Number(1))
-	}, w.doc.authorID)
+	})
 	w.log.Debug("[orchestrator] GC'd entry %s", id)
 }
