@@ -11,7 +11,7 @@
  */
 import * as Y from '../vendor/yjs.mjs';
 import { plainToYMap, convertToYType } from './item-accessor.js';
-import { itemRunSettled } from './thread-alias.js';
+import { itemRunSettled, promoteThreadView } from './thread-alias.js';
 import {
   createToolActionMessage,
   createErrorMessage,
@@ -526,10 +526,16 @@ export default class MessageThread {
   /**
    * Find an item by its itemId and delete it.
    *
-   * Deleting a thread takes its aliases with it, in one transaction. An alias is
-   * the parent's view of one call into that thread and holds no transcript of
-   * its own (see model/thread-alias.js), so one left behind is a tile with
-   * nothing to show and a call the wire can only answer with an error.
+   * Deleting one item deletes one item, threads included. A thread called more
+   * than once has one parent item per call, and they are separate items: the
+   * user selected one of them, so the others must still be there afterwards.
+   *
+   * Deleting the item that owns the transcript is the case that needs work. Its
+   * other views hold no transcript of their own (see model/thread-alias.js), so
+   * one left pointing at nothing is a tile with nothing to show and a call the
+   * wire can only answer with an error. The transcript is handed to the oldest
+   * of them instead (promoteThreadView), in the same transaction as the delete —
+   * so one undo puts it back exactly as it was.
    * @plugin-api
    * @param {string} id
    * @returns {boolean} true if the item was found and deleted
@@ -537,19 +543,15 @@ export default class MessageThread {
   deleteItemById(id) {
     const index = this.findIndexByItemId(id);
     if (index < 0) return false;
-    const items = this.items;
-    const target = items[index];
-    const indices = [index];
-    if (target?.get?.('type') === 'thread' && !target.get('aliasOf')) {
-      for (let i = 0; i < items.length; i++) {
-        if (i !== index && items[i]?.get?.('aliasOf') === id) indices.push(i);
-      }
-    }
-    if (indices.length === 1) {
+    const target = this.items[index];
+    if (target?.get?.('type') !== 'thread' || target.get('aliasOf')) {
       this.deleteAt(index);
       return true;
     }
-    this.transact(() => this.removeItemsAt(indices));
+    this.transact(() => {
+      promoteThreadView(target, this.yarray);
+      this.deleteAt(this.findIndexByItemId(id));
+    });
     return true;
   }
 

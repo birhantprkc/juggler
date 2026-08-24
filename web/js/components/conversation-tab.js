@@ -1696,7 +1696,7 @@ class ConversationTab extends JugglerElement {
         const parentMessageThread = (i === 1)
           ? conversation.rootMessageThread
           : newColumns[i - 1] && /** @type {any} */ (newColumns[i - 1]).getMessageThread?.();
-        /** @type {any} */ (col).showThreadHeader?.(goal, entry.threadYMap, parentMessageThread);
+        /** @type {any} */ (col).showThreadHeader?.(goal, entry.threadYMap, parentMessageThread, entry.viewItemId);
       }
     }
 

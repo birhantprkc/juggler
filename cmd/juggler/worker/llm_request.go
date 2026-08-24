@@ -646,6 +646,12 @@ func buildReceiptMessage(item ConversationItem, siblings []ConversationItem) map
 		label = item.Goal
 	}
 	canonical, ok := resolveAliasTarget(siblings, item)
+	if !ok && item.AliasOf == "" {
+		// A receipt that took the thread on when the item owning it was deleted
+		// (promoteThreadView) points nowhere because it IS the thread now, so the
+		// run it names is in its own transcript.
+		canonical, ok = item, true
+	}
 	if ok {
 		if label == "" {
 			label = canonical.Goal

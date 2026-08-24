@@ -1552,6 +1552,71 @@ export const threadSessionAliasTilesTest = {
   }
 };
 
+/**
+ * Deleting one tile of a resumed session deletes ONE tile.
+ *
+ * A session called twice leaves two items in the parent, and they are separate
+ * items: the user selected one of them and pressed Delete, so the other must
+ * still be there. The tile that opened the column is the one that goes, not the
+ * canonical the column resolves to — every tile opens the same column, so
+ * targeting the column's thread would delete a different item than the one that
+ * was clicked, and take its siblings with it.
+ *
+ * Deleting the thread that owns the transcript is the interesting half: the
+ * transcript moves to the view that remains rather than the view being swept up
+ * with it (promoteThreadView).
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const threadAliasDeleteRemovesOneTileTest = {
+  name: 'thread-alias-delete-removes-one-tile',
+  description: 'Deleting one tile of a resumed session removes that tile alone',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'create_thread',
+      { goal: 'Find the auth code', prompt: 'Where is auth?', session: 'hunt' }),
+    textResponse('Auth lives in auth.go.'),
+    toolUseResponse('call_2', 'create_thread',
+      { goal: 'Find the auth code', prompt: 'Who calls it?', session: 'hunt' }),
+    textResponse('The server calls it.'),
+    textResponse('Thanks.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Investigate auth' },
+    // Open the column through the SECOND tile, then delete from that column's
+    // header. The tile the user opened is the one that must go.
+    { type: 'click-dom', selector: 'thread-message', index: 1 },
+    {
+      type: 'click-dom', global: true, index: 0,
+      selector: 'conversation-area.thread-column thread-column-actions .properties-panel-btn.danger'
+    }
+  ],
+
+  customAssertions: (conversation) => {
+    const items = conversation.rootMessageThread.items;
+    const threads = items.filter((/** @type {any} */ it) => it.get?.('type') === 'thread');
+    if (threads.length !== 1) {
+      throw new Error(`thread-alias-delete-removes-one-tile: deleting one tile must leave the other; got ${threads.length} thread items`);
+    }
+    const survivor = threads[0];
+    if (survivor.get('aliasOf')) {
+      throw new Error('thread-alias-delete-removes-one-tile: the tile that remains must not point at an item that is gone');
+    }
+    // The first call's tile is the one that stayed, and it still owns the
+    // transcript both calls wrote into.
+    if (survivor.get('runToolUseId') !== 'call_1') {
+      throw new Error(`thread-alias-delete-removes-one-tile: the wrong tile was deleted; the survivor stands for ${JSON.stringify(survivor.get('runToolUseId'))}`);
+    }
+    const nested = survivor.get('items');
+    const text = (nested?.toArray() || [])
+      .map((/** @type {any} */ it) => String(it.get?.('content') || '')).join('\n');
+    if (!text.includes('Where is auth?') || !text.includes('Who calls it?')) {
+      throw new Error(`thread-alias-delete-removes-one-tile: the surviving tile must keep the whole transcript; got "${text.slice(0, 300)}"`);
+    }
+  }
+};
+
 export const tests = [
   threadCommandBasicTest,
   threadPlanIndicatorScopedTest,
@@ -1568,6 +1633,7 @@ export const tests = [
   threadResultVisibleInTranscriptTest,
   threadResultBlockFollowsTheRunTest,
   threadSessionAliasTilesTest,
+  threadAliasDeleteRemovesOneTileTest,
   threadUndoRedoPreservesResultTest,
   threadUndoRedoDeleteInterleaveTest,
   threadDeleteLastItemUndoRedoTest,

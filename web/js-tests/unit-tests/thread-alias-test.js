@@ -15,8 +15,8 @@
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import { isAlias, canonicalThread, itemGoal, itemRunRecord, itemRunSettled, threadRunRecords }
-  from '../../js/model/thread-alias.js';
+import { isAlias, canonicalThread, itemGoal, itemRunRecord, itemRunSettled, threadRunRecords,
+  promoteThreadView } from '../../js/model/thread-alias.js';
 import { getThreadDisplayContent, getThreadStatus } from '../../js/utils/thread-display.js';
 
 /**
@@ -401,6 +401,48 @@ export async function runTests() {
       'an alias carrying no selector has no run to wait on');
     passed++;
   } catch (e) { failed++; errors.push(`selectorless alias: ${msg(e)}`); }
+
+  // --- 10: deleting a thread hands the transcript to the next view ---
+  // Deleting one tile removes one tile. The thread's other views are separate
+  // items the user did not touch, so they cannot go with it — but the transcript
+  // has to survive somewhere, or they become tiles with nothing to show. The
+  // oldest surviving view takes it on and stops being a view; the rest point at
+  // it instead. Each keeps its OWN run selector, so every tile still answers for
+  // the one call it was made by and the wire emits the same pairs it did before.
+  try {
+    const { root, canonical, aliases } = session([
+      { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
+      { toolUseId: 'tu-2', prompt: 'who calls it?', status: 'rest', result: 'The server calls it.' },
+      { toolUseId: 'tu-3', prompt: 'and the tests?', status: 'rest', result: 'Tests in auth_test.go.' }
+    ]);
+    canonical.set('resultSpec', 'a file list');
+
+    const promoted = promoteThreadView(canonical, root);
+    assert(promoted === aliases[0], 'the oldest surviving view takes the thread on');
+    assert(!promoted.get('aliasOf'), 'a promoted view is the thread now, not a view of one');
+    assert(promoted.get('items')?.length === 3,
+      `the transcript moves with it; got ${promoted.get('items')?.length} items`);
+    assert(promoted.get('resultSpec') === 'a file list',
+      'and so does everything else the thread owned');
+    assert(promoted.get('runToolUseId') === 'tu-2',
+      'a promoted view keeps standing for the call it was made by');
+    assert(threadRunRecords(promoted).length === 3,
+      'the promoted thread records every call that was made into it');
+    assert(aliases[1].get('aliasOf') === promoted.get('itemId'),
+      'the views that remain point at it');
+    assert(canonicalThread(aliases[1], root) === promoted,
+      'so selecting one still opens the transcript');
+    assert(itemRunRecord(aliases[1], root)?.result === 'Tests in auth_test.go.',
+      'and each still reports its own run');
+
+    // A thread nobody else views has nothing to hand on: it is simply deleted.
+    const { root: soloRoot, canonical: solo } = session([
+      { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' }
+    ]);
+    assert(promoteThreadView(solo, soloRoot) === null,
+      'a thread nobody else views promotes nothing');
+    passed++;
+  } catch (e) { failed++; errors.push(`thread view promotion: ${msg(e)}`); }
 
   return { passed, failed, errors };
 }

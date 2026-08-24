@@ -638,8 +638,9 @@ class ConversationArea extends HTMLElement {
    * @param {string} goal - The thread's goal text
    * @param {*} threadYMap - The thread Y.Map for return operations
    * @param {import('../model/message-thread.js').default} [parentMessageThread] - The parent message thread where the thread item lives
+   * @param {string} [viewItemId] - The parent item this column was opened through
    */
-  showThreadHeader(goal, threadYMap, parentMessageThread) {
+  showThreadHeader(goal, threadYMap, parentMessageThread, viewItemId) {
     this._parentMessageThread = parentMessageThread || null;
     const displayGoal = itemGoal(threadYMap) || goal;
 
@@ -704,7 +705,11 @@ class ConversationArea extends HTMLElement {
     // Remove old dynamically-added delete controls and re-add via shared utility
     actionsEl?.querySelectorAll('.properties-panel-btn.danger').forEach(b => b.remove());
 
-    const threadItemId = threadYMap.get('itemId');
+    // Delete acts on the tile the user opened this column through, which for a
+    // thread called more than once is one of several views of the same
+    // transcript. Targeting the canonical the column resolves to would delete a
+    // different item than the one that was clicked.
+    const threadItemId = viewItemId || threadYMap.get('itemId');
     const parentThread = this._parentMessageThread;
     if (actionsEl && parentThread && threadItemId) {
       const idx = parentThread.findIndexByItemId(threadItemId);

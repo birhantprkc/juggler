@@ -390,6 +390,33 @@ func TestAliasAndCanonicalEmitOneRunEach(t *testing.T) {
 	}
 }
 
+// TestPromotedReceiptReadsItsOwnTranscript covers the shape deleting a thread
+// leaves behind when the only other item viewing it is a receipt: the receipt
+// takes the transcript on and stops pointing anywhere (promoteThreadView). It
+// still reports as a receipt — no call was ever made for it — but the run it
+// names is now in its OWN items, so resolving it by following aliasOf would find
+// nothing and tell the model the reply was gone while it sits right there.
+func TestPromotedReceiptReadsItsOwnTranscript(t *testing.T) {
+	promoted := threadWithRuns("map the auth flow",
+		invocation("call_1", "Explore", `{"prompt":"find it"}`, "auth lives in auth.go"),
+		humanRun("human_1", "and the tests?", runStatusRest, "tests in auth_test.go"))
+	promoted.ItemID = "receipt_human_1"
+	promoted.SessionName = "hunt"
+	promoted.RunItemID = "human_1"
+
+	got := appendThreadMessages(nil, promoted, []ConversationItem{promoted})
+	if len(got) != 1 {
+		t.Fatalf("a promoted receipt must still emit exactly one message, got %d: %v", len(got), got)
+	}
+	if got[0]["type"] != ItemTypeUser {
+		t.Errorf("a promoted receipt must report as user-role, got %v", got[0]["type"])
+	}
+	c, _ := got[0]["content"].(string)
+	if !strings.Contains(c, "tests in auth_test.go") {
+		t.Errorf("a promoted receipt must report the run it names from its own transcript, got %q", c)
+	}
+}
+
 // TestUnresolvableAliasIsAnswered guards the wire's one hard rule. An alias whose
 // thread has been deleted still stands for a call the model made, and a
 // tool_use no result closes is invalid — so the call is answered honestly rather

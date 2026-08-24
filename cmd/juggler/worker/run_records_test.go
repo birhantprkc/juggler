@@ -659,6 +659,68 @@ func TestUnreadReceiptCoalescesTheNextRun(t *testing.T) {
 	}
 }
 
+// TestIdenticalRunGetsNoSecondReceipt is the limit on receipts. A receipt earns
+// its place by being news; a run that came out exactly as the run the parent's
+// trailing item already shows is not news, and appending it would stand a second
+// tile next to the first saying the same words in the same order. A child that
+// stalls the same way three times running must cost the parent one item, not
+// three.
+//
+// The second half is the guard against over-reading that rule: an outcome that
+// differs at all is still news, and still gets its own item.
+func TestIdenticalRunGetsNoSecondReceipt(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.ensureItems()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.storeState(StateProcessing)
+
+	threadID, err := w.createThread(CreateThreadOptions{
+		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
+		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
+	})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	inChild := func(item ConversationItem) {
+		w.thread.itemID = threadID
+		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.resetThreadContext()
+	}
+
+	// The call is stopped having produced nothing, and the parent reads that.
+	// From here it is committed history.
+	w.settleThreadRun(threadID, true)
+	w.buildMessages(nil)
+	before := w.doc.GetItems()
+
+	// A human picks the child back up and it stops the same way again, so this
+	// run came out exactly as the one the parent is already reading.
+	inChild(ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "keep going"})
+	w.settleThreadRun(threadID, true)
+
+	after := w.doc.GetItems()
+	if len(after) != len(before) {
+		t.Fatalf("a run that came out as the one the parent already reads must add no item, got %d against %d:\n%+v",
+			len(after), len(before), after[len(before):])
+	}
+
+	// A run that came out differently is still news.
+	inChild(ConversationItem{Type: ItemTypeUser, ItemID: "human-2", Content: "and the tests?"})
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "Tests in auth_test.go."})
+	w.settleThreadRun(threadID, false)
+
+	final := w.doc.GetItems()
+	if len(final) != len(before)+1 {
+		t.Fatalf("a run with a different outcome must still get its own item, got %d against %d",
+			len(final), len(before))
+	}
+	if receipt := final[len(final)-1]; receipt.AliasOf != threadID || receipt.RunItemID != "human-2" {
+		t.Errorf("expected a receipt selecting the run that differed, got %+v", receipt)
+	}
+}
+
 // TestContinueMovesOnlyTheTrailingSessionItem covers restarting a cancelled
 // session with Continue, which has no user message of its own and opens a run on
 // a continuation marker instead. The latest parent item follows the session back

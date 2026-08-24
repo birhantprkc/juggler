@@ -192,6 +192,52 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`browser settle reports to the parent: ${msg(e)}`); }
 
+  // --- 3c: a run that came out as the one already shown appends nothing ---
+  // A receipt earns its place by being news. A run whose status and result match
+  // what the trailing item already shows is not news, and a tile standing next to
+  // an identical tile tells the reader nothing while costing the parent a message
+  // to read. Mirrors reportRunToParentLocked in worker/run_records.go.
+  try {
+    const doc = new Y.Doc();
+    const root = doc.getArray('items');
+    const t = new Y.Map();
+    doc.transact(() => {
+      root.insert(0, [t]);
+      t.set('type', 'thread');
+      t.set('itemId', 'T1');
+      t.set('goal', 'map auth');
+      t.set('runToolUseId', 'tu-1');
+      t.set('runResultFed', true); // the parent has read this call's answer
+      const arr = new Y.Array();
+      t.set('items', arr);
+      arr.insert(0, [
+        // The call was stopped having produced nothing — the bare note.
+        item({
+          type: 'user', itemId: 'inv-1', content: 'where is auth?',
+          runToolUseId: 'tu-1', runToolName: 'Explore',
+          runStatus: RUN_STATUS_CANCELLED, runResult: RUN_CANCELLED_NOTE
+        }),
+        item({ type: 'user', itemId: 'human-1', content: 'keep going' })
+      ]);
+    });
+
+    doc.transact(() => { settleRunCancelled(t, () => 'msg-new-1'); });
+    assert(root.length === 1,
+      `a stop that came out as the stop the parent already reads must append nothing; got ${root.length} items`);
+
+    // An outcome that differs at all is still news, and still gets its own item.
+    doc.transact(() => {
+      t.get('items').push([
+        item({ type: 'user', itemId: 'human-2', content: 'and the tests?' }),
+        item({ type: 'assistant', itemId: 'a-2', content: 'Tests in auth_test.go.' })
+      ]);
+      settleRunCancelled(t, () => 'msg-new-2');
+    });
+    assert(root.length === 2 && root.get(1).get('runItemId') === 'human-2',
+      `a run that came out differently must still get its own item; got ${root.length} items`);
+    passed++;
+  } catch (e) { failed++; errors.push(`identical run appends no receipt: ${msg(e)}`); }
+
   // --- 4: the terminal Result block is a compaction fold's alone ---
   // A fold's transcript is folded away, so its summary stands nowhere else and
   // the block IS the column. Every other thread ends on the reply its last run

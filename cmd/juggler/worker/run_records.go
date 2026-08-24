@@ -172,8 +172,10 @@ func threadRunSettled(item ConversationItem) bool {
 // reaching the end of the transcript, so a canonical and every alias after it
 // move together; and once a thread has been folded away, sessionsInCallingThread
 // no longer finds its name, so no later call can add an alias to a thread that
-// is no longer a sibling. Deletion is the one way to break the pairing, and the
-// browser deletes a thread's aliases with it.
+// is no longer a sibling. Deletion does not break the pairing either: deleting
+// the canonical hands the transcript to the oldest surviving view and re-points
+// the rest at it (promoteThreadView, browser side), so the set stays whole and
+// stays in one array.
 func resolveAliasTarget(siblings []ConversationItem, item ConversationItem) (ConversationItem, bool) {
 	if item.AliasOf == "" {
 		return ConversationItem{}, false
@@ -255,6 +257,40 @@ func runRecordByItemID(canonical ConversationItem, itemID string) (status, resul
 		if it.Type == ItemTypeUser && it.ItemID == itemID {
 			return it.RunStatus, it.RunResult, true
 		}
+	}
+	return "", "", false
+}
+
+// shownRunOutcomeLocked returns the outcome a parent thread item currently
+// displays, and whether the run it names is still in the transcript: the run its
+// RunItemID names, or — when it names none — the run its own call started. These
+// are the two selectors itemThreadRun reads for an item that has been frozen, so
+// the answer here is what that item's tile and its wire pair are saying now.
+//
+// Caller MUST hold ycrdtMu.
+func shownRunOutcomeLocked(nested *ycrdt.YArray, runItemID, toolUseID string) (status, result string, ok bool) {
+	if nested == nil || (runItemID == "" && toolUseID == "") {
+		return "", "", false
+	}
+	for i := 0; i < int(nested.GetLength()); i++ {
+		m, isMap := nested.Get(ycrdt.Number(i)).(*ycrdt.YMap)
+		if !isMap {
+			continue
+		}
+		if itemType, _ := m.Get("type").(string); itemType != ItemTypeUser {
+			continue
+		}
+		id, _ := m.Get("itemId").(string)
+		call, _ := m.Get("runToolUseId").(string)
+		if runItemID != "" && id != runItemID {
+			continue
+		}
+		if runItemID == "" && call != toolUseID {
+			continue
+		}
+		status, _ = m.Get("runStatus").(string)
+		result, _ = m.Get("runResult").(string)
+		return status, result, true
 	}
 	return "", "", false
 }
@@ -672,7 +708,9 @@ func trailingSessionItemLocked(arr *ycrdt.YArray, canonicalID string) *ycrdt.YMa
 // not ask for and no isError placeholder is ever emitted for one. Coalescing
 // falls out of the same rule — an unread receipt is re-pointed at the newer run
 // rather than joined by another, so a user who sends six prompts into a child
-// leaves the parent one item to read, not six.
+// leaves the parent one item to read, not six. A run that came out exactly as
+// the one the trailing item already shows is dropped for the same reason read
+// the other way: it is not news, so there is nothing for a receipt to carry.
 //
 // A thread item with no run selector at all is left alone: a user- or
 // strategy-created thread answers no call, so it has no committed pair to
@@ -680,7 +718,7 @@ func trailingSessionItemLocked(arr *ycrdt.YArray, canonicalID string) *ycrdt.YMa
 //
 // Caller MUST hold ycrdtMu and be inside the settling transaction, so the run's
 // outcome and the parent's view of it land as one change.
-func (w *ConversationWorker) reportRunToParentLocked(threadItemID string, threadYMap *ycrdt.YMap, starterID, starterCall string) {
+func (w *ConversationWorker) reportRunToParentLocked(threadItemID string, threadYMap *ycrdt.YMap, starterID, starterCall, status, result string) {
 	if starterID == "" {
 		return
 	}
@@ -708,6 +746,17 @@ func (w *ConversationWorker) reportRunToParentLocked(threadItemID string, thread
 		}
 		return
 	}
+	// A receipt earns its place by being news. A run that came out exactly as the
+	// run the trailing item already shows is not news: the receipt would stand
+	// next to a tile saying the same words, and cost the parent a second message
+	// telling it what it has just been told. A child that stalls the same way
+	// three times running is worth one item, not three.
+	nested, _ := threadYMap.Get("items").(*ycrdt.YArray)
+	if shownStatus, shownResult, found := shownRunOutcomeLocked(nested, runItemID, selector); found &&
+		shownStatus == status && shownResult == result {
+		return
+	}
+
 	goal, _ := threadYMap.Get("goal").(string)
 	sessionName, _ := threadYMap.Get("sessionName").(string)
 	receipt := receiptItem(threadItemID, goal, sessionName, starterID)
@@ -791,7 +840,7 @@ func (w *ConversationWorker) settleThreadRun(threadItemID string, cancelled bool
 		if summarises && result != threadResult {
 			threadYMap.Set("result", result)
 		}
-		w.reportRunToParentLocked(threadItemID, threadYMap, starterID, starterCall)
+		w.reportRunToParentLocked(threadItemID, threadYMap, starterID, starterCall, status, result)
 	})
 	ycrdtMu.Unlock()
 

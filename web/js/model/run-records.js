@@ -160,9 +160,34 @@ export function settleRunCancelled(threadYMap, mintItemId) {
   // openRunMessages walks backwards, so the last entry started this run.
   const starter = open[open.length - 1];
   if (mintItemId) {
-    reportRunToParent(threadYMap, starter.get('itemId'), starter.get('runToolUseId') || '', mintItemId);
+    reportRunToParent(threadYMap, starter.get('itemId'), starter.get('runToolUseId') || '',
+      mintItemId, RUN_STATUS_CANCELLED, result);
   }
   return true;
+}
+
+/**
+ * The outcome a parent thread item currently displays, and whether the run it
+ * names is still in the transcript: the run its `runItemId` names, or — when it
+ * names none — the run its own call started. These are the two selectors
+ * itemRunRecord reads for an item that has been frozen, so the answer here is
+ * what that item's tile is saying now. Mirrors shownRunOutcomeLocked in
+ * worker/run_records.go.
+ * @param {any} threadYMap - The canonical thread Y.Map holding the transcript.
+ * @param {string} runItemId - The itemId the parent item names, or ''.
+ * @param {string} toolUseId - The tool-use id of the call it was made by, or ''.
+ * @returns {{status: string, result: string}|null} That run's outcome, or null.
+ */
+function shownRunOutcome(threadYMap, runItemId, toolUseId) {
+  if (!runItemId && !toolUseId) return null;
+  const items = threadYMap?.get?.('items');
+  const arr = typeof items?.toArray === 'function' ? items.toArray() : [];
+  for (const item of arr) {
+    if (typeof item?.get !== 'function' || item.get('type') !== 'user') continue;
+    if (runItemId ? item.get('itemId') !== runItemId : item.get('runToolUseId') !== toolUseId) continue;
+    return { status: item.get('runStatus') || '', result: item.get('runResult') || '' };
+  }
+  return null;
 }
 
 /**
@@ -176,7 +201,11 @@ export function settleRunCancelled(threadYMap, mintItemId) {
  * message after it and cold-start a stateful provider. So a further run is
  * appended as a RECEIPT of its own instead, selecting the run by the message
  * that started it. An unread receipt is re-pointed rather than joined by
- * another, so a child prompted six times leaves the parent one item to read.
+ * another, so a child prompted six times leaves the parent one item to read. A
+ * run that came out exactly as the one the trailing item already shows is
+ * dropped for the same reason read the other way: it is not news, so there is
+ * nothing for a receipt to carry, and appending one would stand a tile next to
+ * an identical tile.
  *
  * Mirrors reportRunToParentLocked in worker/run_records.go. The worker does this
  * for every run it drives; this covers the runs it does not — a stop that
@@ -185,9 +214,11 @@ export function settleRunCancelled(threadYMap, mintItemId) {
  * @param {string} starterItemId - The itemId of the message that started it.
  * @param {string} starterCall - The tool-use id that message was called by, or ''.
  * @param {() => string} mintItemId - Mints the receipt's itemId.
+ * @param {string} status - The status that run settled to.
+ * @param {string} result - The text that run returns to its caller.
  * @returns {void}
  */
-export function reportRunToParent(threadYMap, starterItemId, starterCall, mintItemId) {
+export function reportRunToParent(threadYMap, starterItemId, starterCall, mintItemId, status, result) {
   const siblings = threadYMap?.parent;
   const canonicalId = threadYMap?.get?.('itemId');
   if (!starterItemId || !canonicalId || typeof siblings?.insert !== 'function') return;
@@ -218,6 +249,12 @@ export function reportRunToParent(threadYMap, starterItemId, starterCall, mintIt
     if (runItemId || starterCall !== selector) trailing.set('runItemId', starterItemId);
     return;
   }
+
+  // Not news, nothing to carry: the run this item already shows came out the
+  // same way, so a receipt would only repeat it.
+  const shown = shownRunOutcome(threadYMap, runItemId, selector);
+  if (shown && shown.status === status && shown.result === result) return;
+
   siblings.insert(siblings.length, [plainToYMap({
     type: 'thread',
     itemId: mintItemId(),

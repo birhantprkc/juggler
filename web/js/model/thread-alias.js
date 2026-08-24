@@ -163,6 +163,67 @@ export function canonicalThread(itemYMap, siblingArray) {
 }
 
 /**
+ * The fields a thread item owns as ITSELF rather than as the thread: its
+ * identity, and the run selector naming the one call it was made by. Promotion
+ * moves everything else off the canonical and leaves these alone, so a promoted
+ * view still answers for its own call and the wire emits the pairs it always
+ * did.
+ * @type {ReadonlySet<string>}
+ */
+const VIEW_OWN_FIELDS = new Set([
+  'itemId', 'type', 'timestamp', 'aliasOf',
+  'runToolUseId', 'runToolName', 'runToolInput', 'runGoal',
+  'runItemId', 'runStatus', 'runResult', 'runResultFed'
+]);
+
+/**
+ * Hand a thread's transcript to the next item that views it, for a canonical
+ * about to be deleted.
+ *
+ * Deleting one tile removes one tile. A thread's other views are separate items
+ * the user did not touch, so they cannot go with it — but the transcript has to
+ * survive somewhere, or they become tiles with nothing to show and calls the
+ * wire can only answer with an error. The oldest surviving view takes everything
+ * the thread owned and stops being a view; the rest are re-pointed at it.
+ *
+ * What does NOT move is the promotee's own identity and run selector
+ * (VIEW_OWN_FIELDS). Every tile still stands for the one call it was made by, so
+ * each emits exactly the pair it emitted before and no tool-use id is duplicated
+ * or lost — the only pair that goes is the deleted tile's own, which is the
+ * point of deleting it.
+ *
+ * Y types are cloned rather than moved: a live shared type cannot be re-parented.
+ * Item ids inside the transcript are plain data, so they survive the clone and
+ * every DOM key and selector that names them still resolves.
+ *
+ * Caller wraps this in its own transaction, along with the delete it precedes.
+ * @param {any} canonicalYMap - The canonical thread Y.Map about to be deleted.
+ * @param {any} [siblingArray] - The array it stands in (Y.Array or array).
+ * @returns {any|null} The promoted view, or null when nothing else views it.
+ */
+export function promoteThreadView(canonicalYMap, siblingArray) {
+  const canonicalId = canonicalYMap?.get?.('itemId');
+  if (!canonicalId || canonicalYMap.get('aliasOf')) return null;
+
+  const siblings = asArray(siblingArray || canonicalYMap?.parent);
+  const views = siblings.filter((/** @type {any} */ it) =>
+    typeof it?.get === 'function' && it.get('aliasOf') === canonicalId);
+  if (!views.length) return null;
+
+  const promoted = views[0];
+  for (const key of canonicalYMap.keys()) {
+    if (VIEW_OWN_FIELDS.has(key)) continue;
+    const value = canonicalYMap.get(key);
+    promoted.set(key, typeof value?.clone === 'function' ? value.clone() : value);
+  }
+  promoted.delete('aliasOf');
+
+  const promotedId = promoted.get('itemId');
+  for (const view of views.slice(1)) view.set('aliasOf', promotedId);
+  return promoted;
+}
+
+/**
  * The legacy `goal` a call recorded directly in its tool input. New documents
  * carry the resolved SubthreadSpec goal separately as `runGoal`, because a
  * delegating extension's detailed task field need not be named `goal`.

@@ -19,6 +19,10 @@ import { canonicalThread } from '../model/thread-alias.js';
  * @property {any} [container] - Y.Map container (root or thread Y.Map) that holds 'items'
  * @property {string|undefined} [threadItemId] - Thread item ID (for thread conversation columns)
  * @property {any} [threadYMap] - The thread Y.Map (for thread conversation columns)
+ * @property {string} [viewItemId] - The parent item this column was opened through,
+ *   which for a thread called more than once is one of several views of the same
+ *   transcript. It is the tile the user is acting on, so it — not the canonical
+ *   the column resolves to — is what the column's Delete removes.
  * @property {string} [selectedItemId] - Selected item ID (for properties columns)
  * @property {string} [transactionId] - Round-trip id: the one the selected item
  *   belongs to (properties columns), or the one being shown (transaction columns)
@@ -264,7 +268,8 @@ class ColumnSelectionState {
           type: /** @type {const} */ ('conversation'),
           container: thread,
           threadItemId: thread.get('itemId') || selectedId,
-          threadYMap: thread
+          threadYMap: thread,
+          viewItemId: selectedId
         });
 
         currentItems = nestedItems.toArray ? nestedItems.toArray() : [];
