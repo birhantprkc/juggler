@@ -1423,11 +1423,11 @@ class ConversationTab extends JugglerElement {
     messageThread.transact(() => messageThread.removeItemsAt(indices));
 
     // With the run gone the rows that flanked it are adjacent, and so may fold
-    // into a new group: resolve the neighbour against the POST-delete display,
-    // or the selection would name a row that isn't in the DOM.
+    // into a new group the neighbour is now hidden inside. Naming the item is
+    // enough: resolveColumnChain settles a selection against the display before
+    // the columns are built.
     if (neighborId) {
-      const { memberToGroup } = buildDisplayItems(messageThread.items, { enabled: isToolGroupingEnabled() });
-      this._selection.selectItem(columnIndex, memberToGroup.get(neighborId) || neighborId);
+      this._selection.selectItem(columnIndex, neighborId);
     } else {
       this._selection.clearSelection(columnIndex);
     }

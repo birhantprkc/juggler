@@ -390,7 +390,9 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:thread-selection-pin', run: runThreadSelectionPinTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },
-  { name: 'unit:delete-selection-neighbour', run: runDeleteSelectionNeighbourTests },
+  // Exclusive for the shared origin: one case writes the tool-grouping
+  // localStorage preference, which every lane's renderer reads.
+  { name: 'unit:delete-selection-neighbour', run: runDeleteSelectionNeighbourTests, needsExclusiveRun: true },
   { name: 'unit:control-click-reveal', run: runControlClickRevealTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
   { name: 'unit:new-thread-focus', run: runNewThreadFocusTests, needsExclusiveRun: true },

@@ -295,25 +295,32 @@ export async function runTests() {
         const { tab, conversation } = await mount();
         const root = conversation.rootMessageThread;
 
-        // Tool rows either side of the deleted one, so that removing it leaves
-        // a run long enough to fold: the neighbour then has no row of its own
-        // and is selected as the group standing in for it.
+        // The deleted row is what keeps the two tool rows apart: while it is
+        // there neither of them folds, and removing it puts them side by side.
+        // The neighbour handed over before the delete therefore lands inside a
+        // group that did not exist when it was chosen, and has no row of its
+        // own — the column must select the group standing in for it.
         conversation._doc.doc.transact(() => {
           root.addEvent(createUserMessage('Do several things'));
           root.addEvent(createAssistantMessage('Working.'));
           root.addEvent(writeRow('p'));
+          root.addEvent(createAssistantMessage('Halfway there.'));
           root.addEvent(writeRow('q'));
-          root.addEvent(writeRow('r'));
-          root.addEvent(writeRow('s'));
         }, conversation._doc.authorId);
         await settle();
 
         const col = /** @type {any} */ (tab.querySelector('conversation-area'));
         const ids = root.items.map((/** @type {any} */ i) => i.get('itemId'));
-        const deleted = ids[ids.length - 4];
+        const deleted = ids[ids.length - 2];
+
+        const before = col.getSelectableItemIds();
+        assert(!before.some((/** @type {string} */ id) => id.startsWith('group:')),
+          `nothing may be folded before the delete, or the deleted row was never ` +
+          `a row of its own: ${before.join(', ')}`);
 
         col.selectItem(deleted);
         await settlePanel();
+        assert(col.getSelectedItemId() === deleted, 'failed to select the row to delete');
         await clickDelete(tab);
 
         const listed = col.getSelectableItemIds();

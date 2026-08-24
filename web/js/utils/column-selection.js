@@ -10,7 +10,7 @@
  * and handles auto-following of LLM processing threads.
  */
 
-import { findGroup, isGroupId } from './item-grouping.js';
+import { buildDisplayItems, findGroup, isGroupId } from './item-grouping.js';
 import { canonicalThread } from '../model/thread-alias.js';
 
 /**
@@ -204,8 +204,25 @@ class ColumnSelectionState {
 
     let currentItems = rootThread.items;
     for (let i = 0; i < this.selections.length; i++) {
-      const selectedId = this.selections[i];
+      let selectedId = this.selections[i];
       if (!selectedId) break;
+
+      // A selection is a DISPLAY id, and folding decides which ids a column
+      // has: an item that folds into a run stops being a row of its own, so a
+      // selection naming it points at nothing the column lists (no highlight,
+      // no index for the next arrow key). Callers that name an item can't
+      // resolve this themselves — the pre-delete neighbour hand-off picks a row
+      // that only folds once the delete lands — so it is settled here, the one
+      // place that walks each level's items. A group column is exempt: it
+      // exists to list its members individually, so its rows never re-fold.
+      if (opts.groupingEnabled && !isGroupId(selectedId) && !chain[i]?.groupId) {
+        const { memberToGroup } = buildDisplayItems(currentItems, { enabled: true });
+        const groupId = memberToGroup.get(selectedId);
+        if (groupId) {
+          selectedId = groupId;
+          this.selections[i] = groupId;
+        }
+      }
 
       // A folded tool run is a display construct, not an item: it opens a
       // column showing the rows it stands for. That column belongs to the SAME
