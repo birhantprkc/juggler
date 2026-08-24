@@ -44,7 +44,12 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	// Do NOT cancel processing, reload from disk, or reset processingState —
 	// just update config, sync the reconnecting client, and return.
 	if w.initialized {
-		w.log.Debug("Client attached to conversation (conv=%s, state=%s)", w.conversationID, w.loadState())
+		// Only an attach to a busy worker is worth a line. A page load inits
+		// every conversation in the project, from every client, so logging the
+		// idle case buries the log in one identical line per open tab per load.
+		if state := w.loadState(); state != StateIdle {
+			w.log.Debug("Client attached mid-turn (conv=%s, state=%s)", w.conversationID, state)
+		}
 		w.tape.Record("init", map[string]any{
 			"path":         "reconnect",
 			"origin":       w.replyTo,
