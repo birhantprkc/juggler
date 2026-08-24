@@ -23,6 +23,7 @@ of changes; this project follows semantic versioning.
 - A stalled tool engine is now noticed and revived, instead of failing every tool until restart
 - The Docker image runs the engine in Node, so it needs no virtual display
 - The Node engine host now starts on every supported Node 22, not just 22.7 and later
+- A sub-agent is no longer offered the tools it could only have failed to call
 
 ## [0.5.7] - 2026-08-19
 

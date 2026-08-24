@@ -6,6 +6,7 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -49,13 +50,10 @@ func collectDelegatingToolNames(tools []ToolDefinition) map[string]bool {
 }
 
 // withinDelegatedThread reports whether threadItemID or any ancestor thread was
-// itself spawned by delegation (its Y.Map carries delegated=true). Delegating
-// tools are disabled inside such a thread — they run inline and return raw
-// content instead of spawning yet another child. This is the structural
-// invariant that stops a recursive subthread cascade: a delegated sub-agent is
-// never handed a tool that can start a further delegation, so nesting can't run
-// away regardless of what the child's prompt asks it to do. Walks the parent
-// chain under one lock (mirrors threadDepth).
+// itself spawned by delegation (its Y.Map carries delegated=true). Walks the
+// parent chain under one lock (mirrors threadDepth). Prefer delegationBlocked —
+// this is one of its two inputs, and callers almost always want the whole
+// question rather than half of it.
 func (w *ConversationWorker) withinDelegatedThread(threadItemID string) bool {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
@@ -70,6 +68,34 @@ func (w *ConversationWorker) withinDelegatedThread(threadItemID string) bool {
 	return false
 }
 
+// delegationBlocked answers, for one thread, the single question "may a tool
+// call here run as a delegated subthread?" — returning the reason it may not, or
+// "" when it may.
+//
+// It is the only place that question is decided, because two different things
+// have to follow from one answer and they must never diverge:
+//
+//   - tryDelegateTool refuses to delegate, so a tool that also works inline
+//     (WebFetch without a prompt still fetches the page) simply runs inline;
+//   - filterToolsForThread withholds the tools flagged RequiresDelegation, which
+//     have no inline path and so could only fail if the model called them.
+//
+// The two reasons are the runaway-recursion guards. A delegated thread (or any
+// descendant of one) may not delegate again — that is what stops a sub-agent
+// cascade, whatever a child's prompt asks it to do — and neither may a thread
+// already at maxThreadDepth, since the child would sit one level below it.
+//
+// Callers must NOT hold ycrdtMu: both inputs take it themselves.
+func (w *ConversationWorker) delegationBlocked(threadItemID string) string {
+	if w.withinDelegatedThread(threadItemID) {
+		return "inside a delegated thread"
+	}
+	if depth := w.doc.threadDepth(threadItemID); depth >= maxThreadDepth {
+		return fmt.Sprintf("at the thread nesting cap (depth %d of %d)", depth, maxThreadDepth)
+	}
+	return ""
+}
+
 // tryDelegateTool attempts to run a delegating tool call as a subthread. It
 // returns true when a delegated child thread was spawned (the parent then parks
 // on hasIncompleteThreads and the reducer dispatches the child); false means the
@@ -81,12 +107,12 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 		return false
 	}
 
-	// A delegated child sits one level below the current thread. At the depth
-	// cap, don't spawn another level — fall back to running the tool inline so
-	// the call still completes (mirrors executeCreateThread's depth guard, but
-	// degrades to execution rather than refusing, since this is a real tool).
-	if depth := w.doc.threadDepth(w.thread.itemID); depth >= maxThreadDepth {
-		w.log.Info("[worker] %s may delegate but thread depth cap (%d) reached — running inline", toolName, maxThreadDepth)
+	// Delegation is not available here, so run the tool the ordinary way. Only
+	// tools that HAVE an ordinary way reach this: filterToolsForThread withheld
+	// the RequiresDelegation ones from this turn's list on the same answer,
+	// because for those "run it inline" is not a degradation but a failure.
+	if reason := w.delegationBlocked(w.thread.itemID); reason != "" {
+		w.log.Info("[worker] %s may delegate but is %s — running inline", toolName, reason)
 		return false
 	}
 

@@ -117,6 +117,11 @@
  * @property {string} description - Human-readable description
  * @property {JSONObjectSchema} input_schema - JSON Schema for parameters
  * @property {'read'|'write'|'meta'} [category] - Tool category
+ * @property {boolean} [delegatesToSubthread] - Stamped from the owning item's
+ *   MANIFEST: this tool's call MAY run as a delegated child thread
+ * @property {boolean} [requiresDelegation] - Stamped from the owning item's
+ *   MANIFEST: this tool has no inline path, so it is unusable on any turn that
+ *   cannot delegate (inside a delegated thread, or at the thread-nesting cap)
  */
 
 /**

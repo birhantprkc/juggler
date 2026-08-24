@@ -230,13 +230,10 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// processLLMResponse can route a call to the build-spec round-trip. Rebuilt
 	// each iteration from the freshly-offered tools (a strategy may filter the
 	// set differently per turn).
+	// Whether delegation is actually available is not decided here: tryDelegateTool
+	// asks delegationBlocked at the point of use, so this set only records which
+	// tools CAN delegate, never whether they may.
 	w.turnDelegatingTools = collectDelegatingToolNames(tools)
-	// But a delegated sub-agent must never delegate again: inside a delegated
-	// thread (or any descendant of one), delegating tools run inline and return
-	// raw content, so a chain of subthreads can't recurse indefinitely.
-	if len(w.turnDelegatingTools) > 0 && w.withinDelegatedThread(w.thread.itemID) {
-		w.turnDelegatingTools = nil
-	}
 
 	// txnID identifies this round-trip; insertTargetMessage stamps it onto
 	// every item produced during the call so callers don't plumb it through.

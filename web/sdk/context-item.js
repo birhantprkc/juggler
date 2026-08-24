@@ -469,6 +469,11 @@ class ContextItem {
    * inherits from the calling thread. Naming a hidden strategy this item owns
    * (see {@link ContextItem.getStrategies}) is what turns a delegating tool into
    * a subagent — a named context boundary with its own tool filter.
+   *
+   * An item that never returns null here has no inline path, so it should also
+   * set `requiresDelegation: true` in its MANIFEST — that is what stops the tool
+   * being offered on turns that cannot delegate, where `execute()` could only
+   * report the failure.
    * [Context: engine]
    * @param {Record<string, unknown>} toolInput - Validated tool input.
    * @param {SubthreadBuildContext} ctx - { conversation, session, signal }.

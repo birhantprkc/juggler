@@ -28,10 +28,12 @@ class ResearchAgentContextItem extends SubagentContextItem {
     description: 'Answer a question from the web in a sub-agent context',
     author: 'Juggler Team',
     requiresApproval: false,
-    // Always delegates: buildSubthreadSpec never returns null. The inherited
-    // execute() exists only for the paths the worker can't delegate on (nesting
-    // cap, engine round-trip failure), where it says so plainly.
-    delegatesToSubthread: true
+    // Always delegates: buildSubthreadSpec never returns null, and there is no
+    // inline Research — so requiresDelegation lets the worker withhold the tool
+    // on turns that cannot delegate, leaving the inherited execute() reachable
+    // only when the engine round-trip itself fails.
+    delegatesToSubthread: true,
+    requiresDelegation: true
   };
 
   /** @type {import('./subagents/subagent-item.js').SubagentDescriptor} */

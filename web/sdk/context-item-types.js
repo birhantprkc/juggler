@@ -286,6 +286,16 @@
  *   parent. Pair it with a hidden strategy of the item's own (see the static
  *   `getStrategies()` hook on `ContextItem`) and the tool becomes a subagent: a
  *   named context boundary with its own tool filter. Default: false
+ * @property {boolean} [requiresDelegation] - If true, this item's tool has no
+ *   inline behaviour: it is meaningful only as a delegated run, and its
+ *   `execute()` can do nothing but report that it was not delegated. Only
+ *   meaningful alongside `delegatesToSubthread: true`. Setting it licenses the
+ *   worker to withhold the tool entirely from any turn where delegation is
+ *   structurally impossible — inside a delegated thread (or any descendant of
+ *   one), and at the thread-nesting cap — so the model is never offered a tool
+ *   that could only fail. Leave it false for a tool that delegates
+ *   conditionally and has a real inline path (as `WebFetch` does: a `prompt`
+ *   delegates, no `prompt` fetches the page here). Default: false
  * @property {boolean} [workerManaged] - **@internal** (outside the engineApi compat promise). If true, execution is handled by the Go worker
  *   server-side instead of the engine browser. The plugin still provides
  *   `getToolDefinitions()`, `getStatusUI()`, and `getBadgeOptions()`, but

@@ -163,24 +163,34 @@ export default class SubagentContextItem extends ContextItem {
       sessionName: toolInput.session ? String(toolInput.session).trim() : undefined
     };
 
-    if (strategyRegistry.has(strategyId)) spec.strategyId = strategyId;
+    if (strategyRegistry.has(strategyId)) {
+      spec.strategyId = strategyId;
+    } else {
+      // Worth a shout: the child still runs, but under the CALLER's strategy —
+      // so it keeps whatever tools and approval policy the caller had, which for
+      // an unattended sub-agent can be considerably more than this one intends.
+      console.error(`[subagent] strategy "${strategyId}" is not registered; the ${this.getManifest().id} child will run under the caller's strategy, unfiltered.`);
+    }
     return spec;
   }
 
   /**
-   * Only reached when the call could NOT be delegated — the thread nesting cap,
-   * a turn whose tool list did not offer this tool, or an engine round-trip that
-   * failed. There is no sensible inline version of a sub-agent, so say what
-   * happened and hand the work back. Which of those it was is not knowable from
-   * here, and naming the wrong one sends the reader hunting the wrong bug, so
-   * the message names none of them.
+   * Only reached when the build-spec round-trip itself failed: the engine
+   * errored, or it did not answer within `SubthreadSpecTimeout`. The structural
+   * reasons a call cannot delegate — a delegated ancestor, the thread nesting cap
+   * — no longer arrive here at all, because `requiresDelegation` in the MANIFEST
+   * has the worker withhold the tool on those turns rather than offer it and let
+   * it fail. That is what makes this message able to name its cause.
+   *
+   * There is no inline version of a sub-agent to fall back to, so say what
+   * happened and hand the work back.
    * @override
    * @returns {Promise<Record<string, unknown>>} Never resolves
    * @throws {Error} Always
    */
   async execute() {
     const { tool, fallback } = /** @type {typeof SubagentContextItem} */ (this.constructor).descriptor();
-    throw new Error(`${tool} runs as a sub-agent and couldn't be delegated here. ${fallback}`);
+    throw new Error(`${tool} couldn't start: the engine didn't answer in time, so the sub-agent never ran. ${fallback}`);
   }
 
   /**

@@ -383,6 +383,16 @@ Three parts:
    sees nothing of the caller's conversation); and `resultSpec`, containing only
    the return contract. Keep these three jobs separate. If the tool exposes a
    session argument, pass it through as `sessionName`.
+
+   Add `requiresDelegation: true` as well if `buildSubthreadSpec` never returns
+   `null` — i.e. the tool has no inline behaviour, as a sub-agent does not. Some
+   turns cannot delegate at all: inside a delegated thread (or any descendant of
+   one), which is what stops sub-agents recursing, and at the thread-nesting cap.
+   The flag is what lets the worker withhold the tool on exactly those turns, so
+   the model is never offered a call whose only possible outcome is an error.
+   Leave it unset for a tool that delegates *conditionally* and has a real inline
+   path — `WebFetch` delegates when given a `prompt` and otherwise fetches the
+   page itself, so it stays offered and merely loses its delegation.
 2. **The item owns a hidden strategy.** Return it from
    `static getStrategies()`; the framework registers it and forces
    `hidden: true`. Put the class in a module *beside* the item, not under the
@@ -404,7 +414,10 @@ the turn). Withhold anything that
 blocks on a person — note `AskUserQuestion` is category `read`, so a naive
 read-only filter keeps it, and as an *elicitation* it can be neither approved nor
 refused — and anything that steers the caller's session (`todo`, `plan`,
-`memory`, `define_command`, `new_conversation`).
+`memory`, `define_command`, `new_conversation`). Sub-agent tools need no entry in
+that list: `SubagentStrategyType.withoutWithheld` drops anything flagged
+`requiresDelegation`, matching what the worker does server-side, so a new
+sub-agent excludes itself and its siblings by declaring the flag.
 
 Deliver the sub-agent's brief through the strategy's `onActivate()` →
 `injectGuidance()`, from its own prompt module. In a freshly-born thread that

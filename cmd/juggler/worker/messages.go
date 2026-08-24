@@ -397,7 +397,18 @@ type ToolDefinition struct {
 	// LLM calls such a tool, the worker first asks the engine to build a
 	// SubthreadSpec (BuildSubthreadSpecRequest); a spec spawns a delegated child
 	// thread, a null spec falls back to the ordinary client-side tool-action.
+	//
+	// This says the tool CAN delegate, never that it must: WebFetch delegates
+	// with a prompt and fetches the page itself without one. So it is not the
+	// field to filter a tool list on — withholding everything that can delegate
+	// would take WebFetch away from a sub-agent that needs it. RequiresDelegation
+	// is the one that means "unusable unless delegated".
 	DelegatesToSubthread bool `json:"delegatesToSubthread,omitempty"`
+	// RequiresDelegation marks a delegating tool with NO inline behaviour — its
+	// execute() can only report that it was not delegated. filterToolsForThread
+	// withholds such a tool wherever delegationBlocked says this thread may not
+	// delegate, so the model is never offered a call that could only fail.
+	RequiresDelegation bool `json:"requiresDelegation,omitempty"`
 }
 
 // YjsSyncMessage contains Yjs CRDT state update.

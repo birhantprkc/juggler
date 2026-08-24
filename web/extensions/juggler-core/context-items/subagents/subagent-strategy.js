@@ -51,15 +51,12 @@ export default class SubagentStrategyType extends StrategyType {
    *   - **steers the caller's session**: `todo`, `plan`, `memory`,
    *     `define_command`, `new_conversation`. A child answering one question has
    *     no business rewriting the parent's plan or the user's project memory.
-   *   - **is itself a sub-agent**: `Explore`, `Research`. Delegation is disabled
-   *     inside a delegated thread (that is what stops the cascade), so these
-   *     would fall through to their inline path, which by design does nothing
-   *     but explain that it could not delegate. Advertising a tool that can only
-   *     fail is worse than not having it. A third-party sub-agent adds its own
-   *     tool name here for the same reason.
    *
-   * `create_thread` needs no entry: the worker withholds it from every delegated
-   * thread already.
+   * Sub-agent tools are not named here, though they are equally unusable: they
+   * are dropped by {@link withoutWithheld} on their `requiresDelegation` flag
+   * instead, so a third-party sub-agent is covered without having to know this
+   * list exists. `create_thread` needs no entry at all — the worker withholds it
+   * from every delegated thread on the `canSpawnThreads` capability.
    * @type {readonly string[]}
    */
   static WITHHELD = Object.freeze([
@@ -68,21 +65,27 @@ export default class SubagentStrategyType extends StrategyType {
     'plan',
     'memory',
     'define_command',
-    'new_conversation',
-    'Explore',
-    'Research'
+    'new_conversation'
   ]);
 
   /**
    * Drop the tools no sub-agent may have. Subclasses build their own filter on
    * top of this, never instead of it.
+   *
+   * Two rules: the named {@link WITHHELD} set, and every tool declaring
+   * `requiresDelegation` — a tool with no inline path, which inside a delegated
+   * thread could not delegate and so could only fail. The second is a flag test
+   * rather than a name list because the worker applies exactly the same rule
+   * server-side (`filterToolsForThread`, `llm_request.go`); keeping them
+   * expressed the same way is what stops the two filters drifting into
+   * disagreement, with this one admitting a tool the other must then strip.
    * @param {import('juggler/strategy-type').ToolDefinition[]} tools - Candidate tools
    * @returns {import('juggler/strategy-type').ToolDefinition[]} Tools minus the withheld set
    * @protected
    */
   withoutWithheld(tools) {
     const withheld = /** @type {typeof SubagentStrategyType} */ (this.constructor).WITHHELD;
-    return tools.filter(t => !withheld.includes(t.name));
+    return tools.filter(t => !withheld.includes(t.name) && !t.requiresDelegation);
   }
 
   /**

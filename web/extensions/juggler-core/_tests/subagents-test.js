@@ -106,6 +106,14 @@ export async function runTests(_ctx) {
     await run(`${label}: declares one delegating tool`, () => {
       assert(Item.MANIFEST.delegatesToSubthread === true,
         `${label} must delegate — running a sub-agent inline defeats the point`);
+      // Not merely "may delegate": there is no inline sub-agent, so the flag that
+      // says so is what lets the worker withhold the tool on turns that cannot
+      // delegate, rather than offering a call whose only outcome is an error.
+      assert(Item.MANIFEST.requiresDelegation === true,
+        `${label} has no inline path, so it must declare requiresDelegation`);
+      const stamped = allTools.find(t => t.name === toolName);
+      assert(stamped && stamped.requiresDelegation === true,
+        `${toolName}'s generated definition must carry requiresDelegation through to the worker`);
       const defs = Item.getToolDefinitions();
       assert(defs.length === 1 && defs[0].name === toolName,
         `expected one tool named ${toolName}`);
@@ -182,11 +190,17 @@ export async function runTests(_ctx) {
         assert(!exposed.some(t => t.name === name),
           `${name} steers the caller's session and must not survive the filter`);
       }
-      // Delegation is disabled inside a delegated thread, so a sub-agent tool
-      // offered here could only ever run its inline path and fail.
+      // Delegation is disabled inside a delegated thread, so a tool with no
+      // inline path could only ever fail here. Asserted by flag rather than by
+      // name: this is the same test the worker applies, and a third-party
+      // sub-agent must be covered by it without editing anything.
+      for (const t of exposed) {
+        assert(!t.requiresDelegation,
+          `${t.name} cannot delegate from inside a sub-agent, so it must not be offered`);
+      }
       for (const name of ['Explore', 'Research']) {
         assert(!exposed.some(t => t.name === name),
-          `${name} cannot delegate from inside a sub-agent, so it must not be offered`);
+          `${name} is delegation-only and must not survive the filter`);
       }
       for (const t of exposed) {
         assert(t.category !== 'write' || t.name === 'bash',

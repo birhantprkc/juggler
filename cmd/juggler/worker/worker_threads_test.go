@@ -863,13 +863,17 @@ func TestSettledRunSummarisesThread(t *testing.T) {
 	}
 }
 
-// TestFilterToolsForThread verifies the per-thread canSpawnThreads capability
-// gate at the worker boundary: create_thread is offered to root and to
-// user-created (/thread, canSpawnThreads=true) threads, and withheld from every
-// other thread — LLM-created children, and compaction-shaped threads carrying
-// neither llmCreated nor strategyCreated (the auto-compact regression). Other
-// tools and their order are always preserved. The final case asserts the wiring
-// through buildLLMRequest (call site + ordering vs. the forced-tool resolve).
+// TestFilterToolsForThread verifies the canSpawnThreads capability rule at the
+// worker boundary: create_thread is offered to root and to user-created
+// (/thread, canSpawnThreads=true) threads, and withheld from every other thread
+// — LLM-created children, and compaction-shaped threads carrying neither
+// llmCreated nor strategyCreated (the auto-compact regression). Other tools and
+// their order are always preserved. The final case asserts the wiring through
+// buildLLMRequest (call site + ordering vs. the forced-tool resolve).
+//
+// The filter's other rule — withholding delegation-only tools — is owned by
+// TestDelegationBlockedDrivesBothConsumers, which has to assert it against the
+// delegation path in the same breath.
 func TestFilterToolsForThread(t *testing.T) {
 	tools := []ToolDefinition{
 		{Name: "bash", Description: "Run bash", InputSchema: json.RawMessage(`{"type":"object"}`)},

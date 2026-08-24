@@ -150,14 +150,28 @@ func (w *ConversationWorker) buildLLMRequestWithIntent(ctxResult *ContextResult,
 }
 
 // filterToolsForThread removes tools the current thread may not use. Root scope
-// ("") gets the full list. A sub-thread keeps create_thread only when its Y.Map
-// carries canSpawnThreads=true. That flag means "a human is steering this thread":
-// it is set either at creation by the user-facing /thread command, or when a human
-// sends a genuine message into any (non-delegated) thread (promoteThreadSpawnCapable,
+// ("") gets the full list; everything else is subject to two independent rules,
+// both of which withhold rather than refuse — the model never sees a tool it
+// could not have used, so it never spends a call discovering that.
+//
+// 1. create_thread is kept only when the thread's Y.Map carries
+// canSpawnThreads=true. That flag means "a human is steering this thread": it is
+// set either at creation by the user-facing /thread command, or when a human sends
+// a genuine message into any (non-delegated) thread (promoteThreadSpawnCapable,
 // called from handleSendMessage). Threads born from an LLM create_thread, delegated
 // subthread tools, strategies, the orchestrator, or compaction/handoff never carry
-// it until a human engages them, so they are leaf workers by default: withholding
-// the tool (rather than refusing at execution) means the model never sees it at all.
+// it until a human engages them, so they are leaf workers by default.
+//
+// 2. Tools marked RequiresDelegation (a sub-agent — no inline behaviour at all)
+// are dropped when delegationBlocked says this thread may not delegate. That is
+// the same answer tryDelegateTool acts on, which is what keeps the two halves
+// consistent: a tool that can cope inline keeps its place and loses only its
+// delegation, while one that cannot is never offered.
+//
+// This rule lives here, generic over the flag, rather than in a list of tool
+// names in a sub-agent's strategy: that strategy only filters when it actually
+// applied, so a child whose strategy went missing would otherwise be handed a
+// tool that could only fail.
 func (w *ConversationWorker) filterToolsForThread(tools []ToolDefinition) []ToolDefinition {
 	return w.filterToolsForThreadID(tools, w.thread.itemID)
 }
@@ -166,19 +180,19 @@ func (w *ConversationWorker) filterToolsForThreadID(tools []ToolDefinition, thre
 	if threadID == "" {
 		return tools
 	}
-	threadYMap := w.doc.GetThreadYMap(threadID)
-	if threadYMap == nil {
+
+	canSpawn := w.doc.threadFlag(threadID, "canSpawnThreads")
+	cannotDelegate := w.delegationBlocked(threadID) != ""
+	if canSpawn && !cannotDelegate {
 		return tools
 	}
-	ycrdtMu.Lock()
-	canSpawn, _ := threadYMap.Get("canSpawnThreads").(bool)
-	ycrdtMu.Unlock()
-	if canSpawn {
-		return tools
-	}
+
 	filtered := make([]ToolDefinition, 0, len(tools))
 	for _, t := range tools {
-		if t.Name == "create_thread" {
+		if !canSpawn && t.Name == "create_thread" {
+			continue
+		}
+		if cannotDelegate && t.RequiresDelegation {
 			continue
 		}
 		filtered = append(filtered, t)

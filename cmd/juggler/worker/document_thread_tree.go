@@ -107,6 +107,23 @@ func (cd *ConversationDocument) GetThreadYMap(threadItemID string) *ycrdt.YMap {
 	return findThreadYMap(cd.getItems(), threadItemID)
 }
 
+// threadFlag reads one boolean field off a thread's Y.Map, false when the thread
+// or the field is absent. Exists so callers asking "is this thread delegated /
+// spawn-capable" need no y-crdt handle and no lock of their own: reaching for
+// GetThreadYMap and then locking around a .Get is what puts ycrdtMu into
+// business logic, where the next helper it calls may take the lock again and
+// deadlock (see the ycrdt watchdog's report).
+func (cd *ConversationDocument) threadFlag(threadItemID, field string) bool {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	m := findThreadYMap(cd.getItems(), threadItemID)
+	if m == nil {
+		return false
+	}
+	v, _ := m.Get(field).(bool)
+	return v
+}
+
 // findThreadYMap returns the Y.Map for the thread with the given itemId.
 func findThreadYMap(arr *ycrdt.YArray, threadItemID string) *ycrdt.YMap {
 	var result *ycrdt.YMap
