@@ -24,6 +24,12 @@ import { handleEscapeKey } from '../services/escape-behaviour.js';
 import './conversation-area.js';
 import './properties-panel.js';
 
+/** Properties-panel content render debounce, once selections are churning. */
+const PROPS_RENDER_DEBOUNCE_MS = 150;
+
+/** Selection stillness after which the next change renders on the leading edge. */
+const PROPS_RENDER_IDLE_MS = 1000;
+
 /**
  * ConversationTab - Isolated DOM container for a single conversation
  *
@@ -91,6 +97,9 @@ class ConversationTab extends JugglerElement {
 
     /** @type {boolean} @private - Whether the document keydown listener is live (see _setupKeyboardNavigation) */
     this._keyboardNavWired = false;
+
+    /** @type {number} @private - Date.now() of the last properties-panel selection change (see _buildPropertiesColumn) */
+    this._propsLastChangeTime = 0;
   }
 
   connectedCallback() {
@@ -461,8 +470,10 @@ class ConversationTab extends JugglerElement {
   //      arrow-key navigation doesn't pay for markdown parsing /
   //      syntax highlighting on every item traversed.  The panel DOM
   //      element is placed immediately for layout; content waits for
-  //      the selection to settle.  Safe because the panel is
-  //      display-only and doesn't participate in focus management.
+  //      the selection to settle.  A change arriving after a second of
+  //      stillness renders straight away, so a single click costs
+  //      nothing.  Safe because the panel is display-only and doesn't
+  //      participate in focus management.
   //  20. Inline prompt answered     → focus textarea (enter typing mode).
   //      An approval widget or question form holds the keyboard while
   //      it is up, then deletes itself on the answer — which would
@@ -1748,24 +1759,45 @@ class ConversationTab extends JugglerElement {
     // on every item traversed.  The panel DOM element exists immediately
     // for layout; expensive content waits for the selection to settle.
     // Skip entirely when the selection + conversation haven't changed.
+    //
+    // The debounce fires on the LEADING edge once the selection has been
+    // still for PROPS_RENDER_IDLE_MS, so an isolated click pays nothing and
+    // only the changes that follow it inside the churn window wait.
+    // Idleness is measured from the last selection change, not from the last
+    // render: under a held arrow key the trailing timer never fires, so a
+    // render clock would read as idle mid-churn and let a full render through
+    // every second — exactly what the debounce exists to prevent.
     const selectedItemId = entry.selectedItemId;
     const parentEntry = chain[i - 1];
     const propInputKey = `${conversation.id}:${selectedItemId}`;
     if (/** @type {any} */ (col)._renderedInputKey !== propInputKey) {
       /** @type {any} */ (col)._renderedInputKey = propInputKey;
-      clearTimeout(/** @type {any} */ (col)._juggler_renderTimer);
-      /** @type {any} */ (col)._juggler_renderTimer = setTimeout(() => {
+      const renderContent = () => {
         /** @type {any} */ (col).setConversation(conversation);
         const parentMessageThread = parentEntry?.threadItemId
           ? createMessageThread(conversation, parentEntry.container, parentEntry.threadItemId)
           : conversation.rootMessageThread;
         /** @type {any} */ (col).setMessageThread(parentMessageThread);
         /** @type {any} */ (col).selectItem(selectedItemId);
-        // Render settle: the properties panel paints ~150ms AFTER the
-        // selection key changed. A flake that asserts the panel's content
-        // before this fires shows the assert ts < props-render ts.
+        // Render settle: the properties panel paints either with the selection
+        // key change or ~150ms after it. A flake that asserts the panel's
+        // content before this fires shows the assert ts < props-render ts.
         recordTape('props-render', conversation.id, { selectedItemId });
-      }, 150);
+      };
+      const now = Date.now();
+      // Rendering needs the shell the panel builds in connectedCallback, so a
+      // column appended to a tab that isn't in the document yet keeps the timer.
+      const wasStill = col.isConnected
+        && now - this._propsLastChangeTime >= PROPS_RENDER_IDLE_MS;
+      this._propsLastChangeTime = now;
+      clearTimeout(/** @type {any} */ (col)._juggler_renderTimer);
+      if (wasStill) {
+        /** @type {any} */ (col)._juggler_renderTimer = null;
+        renderContent();
+      } else {
+        /** @type {any} */ (col)._juggler_renderTimer =
+          setTimeout(renderContent, PROPS_RENDER_DEBOUNCE_MS);
+      }
     }
 
     return col;

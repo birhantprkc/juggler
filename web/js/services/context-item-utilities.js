@@ -18,6 +18,7 @@ import workerManager from './worker-manager.js';
 import { createContextItemMessage } from '../../sdk/lib/message.js';
 import { convertToYType, yGet } from '../model/item-accessor.js';
 import { hashString } from '../utils/hash.js';
+import { paintsNoRow } from '../utils/item-grouping.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { animateContextItemRefresh } from './animation-service.js';
 
@@ -325,8 +326,15 @@ export async function refreshContextItemsAndDetectChanges(mt) {
 
 /**
  * Check if a Y.Map item is a valid selection candidate.
- * Returns false for items without an itemId and for hidden context items
- * (e.g., transaction markers).
+ * Returns false for items without an itemId, for hidden context items (e.g.
+ * transaction markers), and for items that paint no row.
+ *
+ * That last case is the one that is easy to miss: an item is only selectable if
+ * the user can see it, and plenty of ordinary items are real entries in the
+ * document with no row on screen — an assistant message holding only whitespace
+ * or only a `<plan>` block, a Continue's marker, a tool-action rendered as the
+ * context item it produced. Naming one names an id that is not in the DOM, and
+ * the column drops the selection on its next render.
  * @param {any} item - Y.Map item from the items array
  * @param {MessageThread} messageThread
  * @returns {boolean} True if the item is selectable
@@ -334,6 +342,7 @@ export async function refreshContextItemsAndDetectChanges(mt) {
 export function isItemSelectable(item, messageThread) {
   const itemId = item?.get?.('itemId');
   if (!itemId) return false;
+  if (paintsNoRow(item)) return false;
   if (messageThread) {
     const ci = messageThread.getContextItem(itemId);
     if (ci && !ci.isVisible()) return false;

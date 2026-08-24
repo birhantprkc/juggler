@@ -41,7 +41,7 @@
 
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
-import { TOOL_STATES } from '../../sdk/lib/message.js';
+import { TOOL_STATES, isProviderStateMessage } from '../../sdk/lib/message.js';
 
 /** Display `type` reported by a group entry (never a document item type). */
 export const GROUP_TYPE = 'tool-group';
@@ -169,6 +169,21 @@ function rendersNothing(item) {
     return !content.replace(/<plan>[\s\S]*?<\/plan>/g, '').replace(/<plan[\s\S]*$/, '').trim();
   }
   return false;
+}
+
+/**
+ * Whether an item paints no row anywhere in the transcript.
+ *
+ * The grouping fold and the selection both need this, for the same reason: an
+ * item with no row on screen is an item the user cannot be pointed at. It is
+ * every case {@link rendersNothing} covers, plus durable provider continuation
+ * state, which the bubble factory discards before any of them
+ * (`conversation-area-rendering.createBubblesForEvent`).
+ * @param {any} item - Conversation item Y.Map.
+ * @returns {boolean} True if the item has no row of its own.
+ */
+export function paintsNoRow(item) {
+  return isProviderStateMessage(item) || rendersNothing(item);
 }
 
 /**

@@ -133,6 +133,7 @@ import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclai
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runThreadSelectionPinTests } from '../unit-tests/thread-selection-pin-test.js';
 import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
+import { runTests as runDeleteSelectionNeighbourTests } from '../unit-tests/delete-selection-neighbour-test.js';
 import { runTests as runControlClickRevealTests } from '../unit-tests/control-click-reveal-test.js';
 import { runTests as runTabHideFocusTests } from '../unit-tests/tab-hide-focus-test.js';
 import { runTests as runNewThreadFocusTests } from '../unit-tests/new-thread-focus-test.js';
@@ -387,6 +388,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:thread-selection-pin', run: runThreadSelectionPinTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },
+  { name: 'unit:delete-selection-neighbour', run: runDeleteSelectionNeighbourTests },
   { name: 'unit:control-click-reveal', run: runControlClickRevealTests },
   { name: 'unit:tab-hide-focus', run: runTabHideFocusTests },
   { name: 'unit:new-thread-focus', run: runNewThreadFocusTests, needsExclusiveRun: true },
