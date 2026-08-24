@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-08-24
+
 - A tab marked while you were away stays marked until you look at it
 - GPT models now describe their work beside the spinner instead of adding thinking items
 - Each provider now lets you hide models from the list that is shown
