@@ -15,6 +15,7 @@
  * @property {number} [runningTools] - How many tool-actions are executing right now; drives the spinner's club count
  * @property {number} [throughput] - Output tokens per second right now (0 when nothing is streaming); drives the spinner's speed
  * @property {number|null} [toolWaitMs] - How long the longest-running tool call has been running, or null when none is; drives the spinner's tool-wait ramp
+ * @property {number} [lastActivityAt] - When the thread last changed, Unix ms; 0 or absent hides the timestamp
  */
 
 /**
@@ -36,6 +37,7 @@
  * settled.
  */
 import { findLastAssistantTxnId, findLastAssistantItemId } from '../utils/transaction-anchor.js';
+import { formatRelativeDateTime } from '../utils/format.js';
 import providersCache from '../services/providers-cache.js';
 
 const TOKEN_UPDATE_DEBOUNCE_MS = 2000;
@@ -213,7 +215,10 @@ class ConversationFooter extends HTMLElement {
     const on = this._statusOnly;
     this.toggleAttribute('status-only', on);
     const tokenDisplay = this.querySelector('token-display');
-    for (const el of [tokenDisplay, this.querySelector('.footer-pause-btn'), this.querySelector('.footer-stop-btn')]) {
+    // The meta row goes with the meter it carries — an empty row left standing
+    // would still take its share of the footer's gap.
+    for (const el of [tokenDisplay, this.querySelector('.footer-meta'),
+      this.querySelector('.footer-pause-btn'), this.querySelector('.footer-stop-btn')]) {
       el?.classList.toggle('hidden', on);
     }
     if (on) {
@@ -470,7 +475,10 @@ class ConversationFooter extends HTMLElement {
                     Undo
                 </button>
             </div>
-            <token-display></token-display>
+            <div class="footer-meta">
+                <token-display></token-display>
+                <span class="footer-last-activity hidden"></span>
+            </div>
             <footer-idle>
                 <div class="footer-idle-row footer-idle-main">
                     <div class="footer-idle-left">
@@ -670,6 +678,24 @@ class ConversationFooter extends HTMLElement {
     const setText = (/** @type {Element|null} */ el, /** @type {string} */ value) => {
       if (el && el.textContent !== value) el.textContent = value;
     };
+
+    // When the thread last changed, beside the meter — both are readings of the
+    // thread rather than controls on it. Shown only at rest: mid-turn the answer
+    // is "now", and the status line already dates the work. The label is an
+    // absolute time, not "5 min ago", so nothing has to tick it to keep it true.
+    const lastActivity = /** @type {HTMLElement|null} */ (this.querySelector('.footer-last-activity'));
+    if (lastActivity) {
+      const at = (state.isProcessing || this._statusOnly) ? 0 : (state.lastActivityAt || 0);
+      if (at) {
+        const { short, full } = formatRelativeDateTime(at);
+        setText(lastActivity, `Updated ${short}`);
+        const title = `Last updated ${full}`;
+        if (lastActivity.title !== title) lastActivity.title = title;
+      } else {
+        setText(lastActivity, '');
+      }
+      toggle(lastActivity, !!at);
+    }
 
     if (state.isProcessing) {
       show(processing);

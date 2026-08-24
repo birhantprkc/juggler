@@ -1626,10 +1626,29 @@ footer-idle {
     margin-left: auto; /* right-align even when the left group is empty */
 }
 
+/* Readings row: the token meter and the thread's last-updated time. Neither is
+   a control, so they share a line above the buttons. */
+.footer-meta {
+    display: flex;
+    flex-wrap: wrap; /* a narrow column drops the time to its own line */
+    align-items: center;
+    gap: 0.75rem;
+}
+
 /* Left-align the count to match the button rows below (override the
  * component's default centring). */
 conversation-footer token-display {
     justify-content: flex-start;
+}
+
+/* Right-aligned, and typeset as the token count beside it — same size, weight
+   and muted colour, so the row reads as one line of figures. */
+.footer-last-activity {
+    margin-left: auto;
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
 }
 
 .llm-busy-text {

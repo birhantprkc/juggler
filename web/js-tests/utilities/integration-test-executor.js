@@ -106,6 +106,7 @@ import { runTests as runTodoNoApprovalTests } from '../unit-tests/todo-no-approv
 import { runTests as runThreadNestedArrayTests } from '../unit-tests/thread-nested-array-test.js';
 import { runTests as runUndoRedoTests } from '../unit-tests/undo-redo-test.js';
 import { runTests as runHeaderUndoLockTests } from '../unit-tests/header-undo-lock-test.js';
+import { runTests as runFooterMetaTests } from '../unit-tests/footer-meta-test.js';
 import { runTests as runWriteFileActionTests } from '../unit-tests/write-file-action-test.js';
 import { runTests as runYjsCompatTests } from '../unit-tests/yjs-compat-test.js';
 import { runTests as runRenderPerformanceTests } from '../unit-tests/render-performance-tests.js';
@@ -367,6 +368,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:thread-nested-array', run: runThreadNestedArrayTests },
   { name: 'unit:undo-redo', run: runUndoRedoTests },
   { name: 'unit:header-undo-lock', run: runHeaderUndoLockTests },
+  { name: 'unit:footer-meta', run: runFooterMetaTests },
   { name: 'unit:write-file-action', run: runWriteFileActionTests },
   { name: 'unit:yjs-compat', run: runYjsCompatTests },
   { name: 'unit:render-performance', run: runRenderPerformanceTests },

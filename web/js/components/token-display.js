@@ -150,14 +150,18 @@ class TokenDisplay extends HTMLElement {
     const warn = uncached > UNCACHED_WARN_TOKENS;
     this.classList.toggle('cache-warn', warn);
 
+    // Every figure is joined to the word that qualifies it with a non-breaking
+    // space, and the denominator to its slash: a narrow column wraps this text,
+    // and a count marooned from its unit ("/" alone at the end of a line, or
+    // "cached" starting the next) is a worse read than a longer line.
     let leftText = `${this.approximate ? '~' : ''}${fmtTokens(this.total)}`;
     if (cached !== null && cached > 0) {
-      const newPart = warn ? ` · <span class="token-new">+${fmtTokens(uncached)} new</span>` : '';
-      leftText += ` <span class="token-cached">(${fmtTokens(cached)} cached${newPart})</span>`;
+      const newPart = warn ? ` · <span class="token-new">+${fmtTokens(uncached)}\u00A0new</span>` : '';
+      leftText += ` <span class="token-cached">(${fmtTokens(cached)}\u00A0cached${newPart})</span>`;
     }
 
     const meterHTML = hasBudget
-      ? `<div class="token-bar"><div class="token-fill-cached" style="width: ${cachedPct}%;"></div><div class="token-fill" style="width: ${usedPct}%;"></div></div><span class="token-text token-denominator">/ ${fmtTokens(this.budget)}</span>`
+      ? `<div class="token-bar"><div class="token-fill-cached" style="width: ${cachedPct}%;"></div><div class="token-fill" style="width: ${usedPct}%;"></div></div><span class="token-text token-denominator">/\u00A0${fmtTokens(this.budget)}</span>`
       : '';
 
     // Rule 1 keeps the visible count neutral, so a nearly-full window says so

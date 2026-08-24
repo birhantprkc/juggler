@@ -311,6 +311,26 @@ export default class MessageThread {
   }
 
   /**
+   * When this thread last changed, as Unix ms. Derived rather than stored:
+   * nothing records a conversation-level modification time in the doc, so the
+   * newest item `timestamp` the worker stamped is the only recency signal
+   * there is. Items are appended in order, so the scan runs back from the end
+   * and stops at the first dated one — items the client inserts optimistically
+   * carry no timestamp until the worker echoes them back.
+   * @returns {number} Unix ms, or 0 when the thread holds no dated item
+   */
+  get lastActivityAt() {
+    const items = this.items;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const raw = items[i]?.get?.('timestamp');
+      if (!raw) continue;
+      const ms = new Date(String(raw)).getTime();
+      if (!isNaN(ms)) return ms;
+    }
+    return 0;
+  }
+
+  /**
    * Get the queued (pending) items for this thread — parked in a `pendingItems`
    * Y.Array that is a sibling of `items` on this container (see
    * worker/pending_items.go). Mostly the user messages the worker parks when a

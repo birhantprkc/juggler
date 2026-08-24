@@ -120,7 +120,7 @@ class WebSocketService {
       return;
     }
 
-    if (role === 'viewer' && window.location.protocol === 'https:' && typeof window.RTCPeerConnection !== 'undefined') {
+    if (role === 'viewer' && globalThis.location.protocol === 'https:' && typeof globalThis.RTCPeerConnection !== 'undefined') {
       this._connectWebRTC(role).catch((error) => {
         console.warn('[WebSocket] WebRTC direct transport failed; falling back to WebSocket relay:', error);
         if (!this.connected && !this._intentionalDisconnect) {

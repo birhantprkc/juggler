@@ -1622,6 +1622,11 @@ class ConversationArea extends HTMLElement {
     const isRootThread = !this._messageThread?.threadItemId;
     const showDuplicateTab = isRootThread && canContinue;
 
+    // When the thread last changed, for the idle row's timestamp. Read only at
+    // rest, for the same reason as the spinner inputs above in reverse: it
+    // walks the item list, and the row that shows it is hidden mid-turn.
+    const lastActivityAt = isProcessing ? 0 : (this._messageThread?.lastActivityAt ?? 0);
+
     footer.update({
       isProcessing,
       canContinue,
@@ -1634,6 +1639,7 @@ class ConversationArea extends HTMLElement {
       runningTools,
       throughput,
       toolWaitMs,
+      lastActivityAt,
     });
   }
 

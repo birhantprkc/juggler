@@ -71,15 +71,17 @@ export function formatTimeAgo(ms) {
 }
 
 /**
- * Compact token count for UI labels: 2000+ collapses to "Nk" (floored), below
- * that the exact count with thousands separators. Shared by the footer token
- * pill, thinking-message summaries, and the model selector so token counts read
- * consistently everywhere.
+ * Compact token count for UI labels: a million or more collapses to "NM" with
+ * at most one decimal, 2000+ to "Nk", below that the exact count with thousands
+ * separators. Both tiers floor, so a count never reads higher than it is.
+ * Shared by the footer token pill, thinking-message summaries, and the model
+ * selector so token counts read consistently everywhere.
  * @param {number} n - Token count
- * @returns {string} Formatted count, e.g. "272k" or "1,500"
+ * @returns {string} Formatted count, e.g. "1.5M", "272k" or "1,500"
  */
 export function formatTokens(n) {
   const v = Math.max(0, Number(n) || 0);
+  if (v >= 1000000) return Math.floor(v / 100000) / 10 + 'M';
   if (v >= 2000) return Math.floor(v / 1000) + 'k';
   return v.toLocaleString();
 }
