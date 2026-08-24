@@ -139,5 +139,26 @@ export async function runTests(_ctx) {
     assert(chip.textContent === 'high', `the fallback shows the model default, got "${chip.textContent}"`);
   });
 
+  await run('an unchanged update preserves the thinking chip node', async () => {
+    const el = makeChip({ levels: ['low', 'medium', 'high'], thinking: 'medium' });
+    const button = el.button;
+    const chip = el.querySelector('.thinking-chip');
+    assert(button && chip, 'the rendered model button must contain a thinking chip');
+
+    /** @type {MutationRecord[]} */
+    const mutations = [];
+    const observer = new MutationObserver(records => mutations.push(...records));
+    observer.observe(button, { childList: true, subtree: true });
+    el.update({ providers: el.providers, config: el.config });
+    await Promise.resolve();
+    observer.disconnect();
+
+    assert(el.button === button, 'an unchanged update must preserve the model button');
+    assert(el.querySelector('.thinking-chip') === chip,
+      'an unchanged update must preserve the thinking chip');
+    assert(mutations.length === 0,
+      `an unchanged update must not mutate the button subtree — got ${mutations.length} mutations`);
+  });
+
   return { passed, failed, errors };
 }

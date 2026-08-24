@@ -63,6 +63,8 @@ class ModelChip extends HTMLElement {
     this._miniSurface = null;
     /** @type {boolean} @private - True while `update()` is applying a batch, so setters don't each repaint. */
     this._batching = false;
+    /** @type {string|null} @private - Last button content, used to preserve unchanged child nodes. */
+    this._renderedContentHTML = null;
   }
 
   connectedCallback() {
@@ -318,11 +320,9 @@ class ModelChip extends HTMLElement {
   }
 
   /**
-   * Rebuild the button's content and state classes in place, keeping the
-   * <button> element itself — it anchors an open picker, and replacing it would
-   * orphan that popup's positioning. Rewires the thinking pill's click handler,
-   * which was attached to the replaced pill node. Used while the picker is open
-   * as the model cycler's HUD.
+   * Refresh the button's content and state classes in place, keeping the
+   * <button> element itself — it anchors an open picker, and its thinking pill
+   * anchors the mini popover. Unchanged content keeps its existing child nodes.
    */
   refreshButton() {
     const button = this.button;
@@ -335,8 +335,12 @@ class ModelChip extends HTMLElement {
     button.classList.toggle('model-unavailable', state.modelUnavailable);
     button.classList.toggle('pulse', this._pulseWhenEmpty && state.noModelSelected);
     button.title = this._buttonTitle;
-    button.innerHTML = this._contentHTML(state);
-    this._wireChip();
+    const contentHTML = this._contentHTML(state);
+    if (contentHTML !== this._renderedContentHTML) {
+      button.innerHTML = contentHTML;
+      this._renderedContentHTML = contentHTML;
+      this._wireChip();
+    }
   }
 
   /**
@@ -486,9 +490,11 @@ class ModelChip extends HTMLElement {
     if (state.modelUnavailable) classes.push('model-unavailable');
     if (this._pulseWhenEmpty && state.noModelSelected) classes.push('pulse');
 
+    const contentHTML = this._contentHTML(state);
+    this._renderedContentHTML = contentHTML;
     this.innerHTML = `
             <button class="${classes.join(' ')}" id="model-button" type="button" title="${escapeHtml(this._buttonTitle)}">
-                ${this._contentHTML(state)}
+                ${contentHTML}
             </button>
         `;
 
