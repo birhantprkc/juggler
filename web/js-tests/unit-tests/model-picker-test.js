@@ -100,6 +100,17 @@ async function presentAnchoredPicker(providerList) {
   window.requestAnimationFrame = (/** @type {FrameRequestCallback} */ cb) =>
     /** @type {any} */ (setTimeout(() => cb(performance.now()), 0));
 
+  // Hold the picker in the wide layout. Under the phone breakpoint `presentPopup`
+  // presents a bottom sheet instead, where the sheet is the one scroll container
+  // and the model list is `overflow: visible` — so an anchored placement is never
+  // made and the list it re-places against never scrolls. Which side of that
+  // breakpoint a lane lands on is the platform's choice of test-window width, so
+  // pin it rather than measure anchored placement on some machines and not others.
+  const realMatchMedia = window.matchMedia.bind(window);
+  /** @type {any} */ (window).matchMedia = (/** @type {string} */ q) => (q === '(width <= 36rem)'
+    ? { matches: false, media: q, addEventListener() {}, removeEventListener() {} }
+    : realMatchMedia(q));
+
   const anchor = document.createElement('button');
   anchor.style.cssText = `position:fixed;left:1rem;top:${window.innerHeight - 40}px;width:6rem;height:1.5rem;`;
   document.body.appendChild(anchor);
@@ -126,6 +137,7 @@ async function presentAnchoredPicker(providerList) {
       releasePopup();
       anchor.remove();
       window.requestAnimationFrame = realRaf;
+      /** @type {any} */ (window).matchMedia = realMatchMedia;
     },
   };
 }

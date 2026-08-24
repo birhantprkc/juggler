@@ -21,6 +21,16 @@ import { assert } from '../utilities/test-helpers.js';
 const NBSP = '\u00A0';
 
 /**
+ * A count as the builder writes it. Grouping is the host locale's business —
+ * `toLocaleString` under a POSIX locale (which a CI runner has) groups nothing,
+ * and under a European one groups with a dot — and none of that is what these
+ * assertions are about. Spelling "1,024" into them tested the runner's locale.
+ * @param {number} n - The count.
+ * @returns {string} The count as it appears in a status message.
+ */
+const count = (n) => n.toLocaleString();
+
+/**
  * @typedef {object} TestResult
  * @property {number} passed - Passing assertion count
  * @property {number} failed - Failing assertion count
@@ -49,7 +59,7 @@ export async function runTests(_ctx) {
 
   test('an output-only count is bound to its unit', () => {
     const message = StatusMessageBuilder.buildStreamingStatus({ outputTokens: 1024 });
-    assert(message.includes(`1,024${NBSP}tokens`), `status message = "${message}", want a non-breaking space before "tokens"`);
+    assert(message.includes(`${count(1024)}${NBSP}tokens`), `status message = "${message}", want a non-breaking space before "tokens"`);
   });
 
   test('a single token still reads singular, and still bound', () => {
@@ -59,7 +69,7 @@ export async function runTests(_ctx) {
 
   test('an input → output pair keeps the arrow with the count before it', () => {
     const message = StatusMessageBuilder.buildStreamingStatus({ inputTokens: 2000, outputTokens: 30 });
-    assert(message.includes(`2,000${NBSP}→ 30${NBSP}tokens`), `status message = "${message}"`);
+    assert(message.includes(`${count(2000)}${NBSP}→ 30${NBSP}tokens`), `status message = "${message}"`);
   });
 
   test('the cached clause holds together', () => {
