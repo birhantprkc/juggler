@@ -331,6 +331,39 @@ func ContextSafetyReserve(window int64) int64 {
 	return min(int64(20_000), max(int64(1), window/5))
 }
 
+// DefaultContextCeilingFraction is the share of a model's context window a
+// request may occupy before admission asks the caller to compact.
+//
+// It is deliberately below 1.0, and that is the whole design of automatic
+// compaction. Admission is the one place that measures a fully-built request
+// against a known window, and it runs before every dispatch — including the
+// dispatches between the tool calls of a single turn. Raising the advisory at a
+// soft ceiling therefore makes compaction happen while a turn is still working,
+// where a smaller transcript still helps it, instead of only after a provider
+// rejects a request or after the turn has already settled.
+//
+// The advisory is a request to reduce, not a refusal: a caller that cannot
+// reduce any further re-submits with BypassContextGuard and the request goes
+// out. That is safe precisely because the ceiling is soft — there is real window
+// left above it — and it is why this single rule also protects providers that
+// would silently truncate rather than reject, without a separate policy.
+const DefaultContextCeilingFraction = 0.85
+
+// ContextCeiling resolves the input ceiling for a request against a known
+// window. A zero fraction selects DefaultContextCeilingFraction; 1.0 asks for
+// the hard window (see MessageRequest.ContextCeilingFraction). The result is
+// clamped to at least 1 so a tiny window can never produce a ceiling of 0,
+// which would advise on every request including the ones compaction emits.
+func ContextCeiling(window int64, fraction float64) int64 {
+	if fraction <= 0 {
+		fraction = DefaultContextCeilingFraction
+	}
+	if fraction > 1 {
+		fraction = 1
+	}
+	return max(int64(1), int64(float64(window)*fraction))
+}
+
 func (cv *admissionConversation) Submit(ctx context.Context, req MessageRequest, callback StructuredStreamCallback) (*StreamResult, error) {
 	window := cv.capabilities.ContextWindowTokens
 	reserve := cv.contract.OutputReserveTokens
@@ -361,8 +394,7 @@ func (cv *admissionConversation) Submit(ctx context.Context, req MessageRequest,
 	}
 
 	breakdown := EstimateMessageRequestTokenBreakdown(req, cv.capabilities.ProviderOverheadTokens)
-	if cv.contract.ContextAdmission == ContextAdmissionSilentTruncationGuard &&
-		!req.BypassContextGuard && SaturatingAdd(breakdown.Total, reserve) > window {
+	if !req.BypassContextGuard && SaturatingAdd(breakdown.Total, reserve) > ContextCeiling(window, req.ContextCeilingFraction) {
 		return nil, &ContextCompactionAdvisory{
 			EstimatedInputTokens: breakdown.Total,
 			OutputReserveTokens:  reserve,
@@ -370,9 +402,10 @@ func (cv *admissionConversation) Submit(ctx context.Context, req MessageRequest,
 			Breakdown:            breakdown,
 		}
 	}
-	// Request-content estimates are advisory. Normal providers dispatch
-	// unconditionally; guarded providers dispatch after the worker has compacted
-	// or explicitly marked this one request as an irreducible fallback.
+	// The estimate cleared the ceiling, so dispatch. It is still only an
+	// estimate: a provider that rejects the request anyway is authoritative, and
+	// the conversion below hands the worker the same typed error the advisory
+	// produces, so both arrive at one compaction path.
 	result, err := cv.Conversation.Submit(ctx, req, callback)
 	if err != nil && isProviderContextOverflowError(err) {
 		// Convert the provider's real rejection into the shared typed error so the

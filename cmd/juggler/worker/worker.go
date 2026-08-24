@@ -308,13 +308,13 @@ type ConversationWorker struct {
 	// LLM calling
 	llmCallFunc LLMCallFunc
 	// windowResolver maps the conversation's effective model to its context
-	// window and output reserve for the proactive compaction trigger. Nil
-	// (tests / not wired) ⇒ the trigger stays dormant. See WindowResolverFunc.
+	// window and output reserve. Nil (tests / not wired) ⇒ unknown window. See
+	// WindowResolverFunc.
 	windowResolver WindowResolverFunc
-	// autoCompactGate reports whether automatic proactive and reactive
-	// compaction is enabled. Nil (tests / not wired) ⇒ enabled, preserving the
-	// default-on behavior. Note the polarity is the inverse of windowResolver
-	// (nil there means dormant). See AutoCompactGateFunc.
+	// autoCompactGate reports whether automatic compaction is enabled. Nil
+	// (tests / not wired) ⇒ enabled, preserving the default-on behavior. Note
+	// the polarity is the inverse of windowResolver (nil there means unknown).
+	// See AutoCompactGateFunc.
 	autoCompactGate AutoCompactGateFunc
 	// autoNameFunc is the injected server callback fired once, on the first user
 	// message of the root conversation, to auto-name the tab out-of-band. Nil
@@ -436,13 +436,6 @@ type ConversationWorker struct {
 	// the main event loop calls tryReconcile() after every event and
 	// dispatches the action at the top level.
 	needsReconcile bool
-
-	// autoCompactAnchorTxnID is the last root assistant-turn transaction id the
-	// proactive compaction trigger has already evaluated (folded or found under
-	// threshold). It debounces the turn-settle check so an unchanged anchor is
-	// never re-folded on every idle tick — the worker-side equivalent of the
-	// browser's _autoCompactCheckedTxnId. Set/read only on the run() goroutine.
-	autoCompactAnchorTxnID string
 
 	// Dedicated channel for stream chunks from the provider goroutine.
 	// Separate from inbound so streaming can't be starved or dropped.
@@ -719,11 +712,25 @@ func (w *ConversationWorker) SetLLMCaller(fn LLMCallFunc) {
 	w.llmCallFunc = fn
 }
 
-// SetWindowResolver injects the read-only context-window resolver the proactive
-// compaction trigger uses to turn the model into a token denominator. See
+// SetWindowResolver injects the read-only context-window resolver. See
 // WindowResolverFunc.
 func (w *ConversationWorker) SetWindowResolver(fn WindowResolverFunc) {
 	w.windowResolver = fn
+}
+
+// resolveContextWindow maps the conversation's effective model to its context
+// window and output reserve (tokens) via the injected resolver. Returns (0, 0)
+// when no resolver is wired (tests) or the model is unknown; callers read a
+// non-positive window as "unknown".
+func (w *ConversationWorker) resolveContextWindow() (windowTokens, reserveTokens int) {
+	if w.windowResolver == nil {
+		return 0, 0
+	}
+	mc := w.resolveModelConfig()
+	if mc == nil {
+		return 0, 0
+	}
+	return w.windowResolver(*mc)
 }
 
 // SetAutoCompactGate injects the gate that governs whether automatic proactive

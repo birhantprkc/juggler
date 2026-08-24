@@ -125,15 +125,13 @@ type LLMCallFunc func(ctx context.Context, request json.RawMessage, chunkHandler
 
 // WindowResolverFunc resolves a model's context window and output reserve (in
 // tokens) from its identity alone, with no provider round-trip. Injected
-// alongside the LLM caller so the worker can evaluate the proactive compaction
-// threshold (anchored input usage ÷ window) at turn-settle — the numerator is
-// already worker-owned (the saved transaction blob), only the denominator was
-// missing. Returns (0, 0) when the model is unknown; a non-positive window means
-// "no threshold" to callers.
+// alongside the LLM caller for the places that need the model's limits without
+// building a request. Returns (0, 0) when the model is unknown; a non-positive
+// window means "unknown" to callers.
 type WindowResolverFunc func(modelConfig ModelConfig) (windowTokens, reserveTokens int)
 
-// AutoCompactGateFunc reports whether automatic proactive and reactive
-// compaction is enabled. A nil gate preserves the default enabled behavior.
+// AutoCompactGateFunc reports whether automatic compaction is enabled. A nil
+// gate preserves the default enabled behavior.
 type AutoCompactGateFunc func() bool
 
 // AutoNameFunc is an injected server callback the worker fires so the server can

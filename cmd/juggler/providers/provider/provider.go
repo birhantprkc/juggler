@@ -100,12 +100,21 @@ type MessageRequest struct {
 	// the smaller reserve so the wire cap and the admission reserve never diverge.
 	MaxOutputTokens int64
 
-	// BypassContextGuard explicitly permits this request to dispatch when a
-	// silent-truncation provider's conservative estimate is over its input
-	// ceiling. The worker sets it only for one visible fallback attempt after
-	// structured recovery cannot progress, and for hidden compaction requests
-	// whose own bounded pack/split controller already handles context pressure.
+	// BypassContextGuard explicitly permits this request to dispatch when its
+	// estimate is over the admission ceiling. The worker sets it only for one
+	// visible fallback attempt after structured compaction cannot progress, and
+	// for hidden compaction requests whose own bounded pack/split controller
+	// already handles context pressure.
 	BypassContextGuard bool
+
+	// ContextCeilingFraction is the fraction of the context window this request
+	// may occupy before admission raises a ContextCompactionAdvisory. 0 selects
+	// DefaultContextCeilingFraction, the soft ceiling that makes compaction fire
+	// while a turn is still running rather than after the provider rejects it.
+	// 1.0 asks for the hard window instead: the caller wants every request that
+	// genuinely fits to dispatch, and accepts reaching the wall (set when the
+	// user has disabled automatic compaction).
+	ContextCeilingFraction float64
 
 	// ExplicitContinuation marks a provider request initiated by the human's
 	// Continue action without adding a user-authored transcript message. Stateful
@@ -618,18 +627,6 @@ type ModelCapabilities struct {
 	ProviderOverheadTokens int64
 }
 
-// ContextAdmissionPolicy identifies who decides whether request content fits a
-// model's context window. The zero value is provider-authoritative: local
-// estimates may guide planning but do not reject a visible request. Providers
-// known to silently truncate may explicitly request a conservative guard; the
-// worker-side advisory behavior for that policy is implemented separately.
-type ContextAdmissionPolicy string
-
-const (
-	ContextAdmissionProviderAuthoritative ContextAdmissionPolicy = ""
-	ContextAdmissionSilentTruncationGuard ContextAdmissionPolicy = "silent-truncation-guard"
-)
-
 // BudgetContract defines how shared admission reserves room for a response.
 // A positive OutputReserveTokens overrides MaxOutputTokens. A known context with
 // neither uses a conservative derived reserve. Unknown context fails closed
@@ -637,7 +634,6 @@ const (
 type BudgetContract struct {
 	OutputReserveTokens int64
 	AllowUnknownLimits  bool
-	ContextAdmission    ContextAdmissionPolicy
 }
 
 // Config contains provider configuration
@@ -719,10 +715,6 @@ type ProviderInfo struct {
 	// external agent protocols); their requests dispatch with no admission
 	// check rather than dying with UnknownContextLimitError.
 	AllowUnknownLimits bool
-	// ContextAdmission selects request-content admission behavior. Its zero value
-	// is provider-authoritative; only providers known to silently truncate should
-	// select ContextAdmissionSilentTruncationGuard.
-	ContextAdmission ContextAdmissionPolicy
 	// CheapModel names this provider's preferred low-cost / fast model id, used
 	// for out-of-band micro-tasks (e.g. auto-naming a tab) when the user has not
 	// pinned an explicit cheap model. Empty ⇒ this provider offers no cheap tier

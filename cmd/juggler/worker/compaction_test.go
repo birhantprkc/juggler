@@ -771,13 +771,48 @@ func (p *compactionAdmissionProvider) OpenConversation(context.Context, string) 
 }
 
 type compactionAdmissionConversation struct {
+	t         *testing.T
+	window    int64
+	reserve   int64
 	submits   int
 	threadIDs []string
+	// scripted, when set, supplies the stream for a visible turn instead of the
+	// fixed hidden-compaction chunks below, and reports what to answer with.
+	scripted func(req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error)
+}
+
+// assertFits is the invariant every dispatch must satisfy, checked at the point
+// a request would really go on the wire: nothing reaches a provider over its
+// context window unless the caller deliberately said so with BypassContextGuard.
+//
+// It lives in the stub rather than in one test so that every test driving turns
+// through this conversation enforces it for free. Both compaction bugs it now
+// guards against — a request dispatched over budget mid-tool-chain, and history
+// folded at a moment that did not help — were invisible to a suite that only
+// ever asserted on the internals of a fold.
+func (cv *compactionAdmissionConversation) assertFits(req provider.MessageRequest) {
+	if cv.t == nil || cv.window <= 0 || req.BypassContextGuard {
+		return
+	}
+	cv.t.Helper()
+	reserve := cv.reserve
+	if req.MaxOutputTokens > 0 && req.MaxOutputTokens < reserve {
+		reserve = req.MaxOutputTokens
+	}
+	estimate := provider.EstimateMessageRequestTokenBreakdown(req, 0).Total
+	if estimate+reserve > cv.window {
+		cv.t.Errorf("dispatch %d went out over the window: %d estimated + %d reserved > %d",
+			cv.submits+1, estimate, reserve, cv.window)
+	}
 }
 
 func (cv *compactionAdmissionConversation) Submit(_ context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+	cv.assertFits(req)
 	cv.submits++
 	cv.threadIDs = append(cv.threadIDs, req.ThreadID)
+	if cv.scripted != nil {
+		return cv.scripted(req, callback)
+	}
 	chunks := []provider.StreamChunk{
 		{Type: provider.ContentBlockTypeText, Content: "hidden text"},
 		{Type: provider.ContentBlockTypeThinking, Content: "hidden thinking"},
@@ -802,7 +837,7 @@ func (cv *compactionAdmissionConversation) Close() error                { return
 
 func openCompactionAdmissionConversation(t *testing.T, window, reserve int64) (*compactionAdmissionConversation, provider.Conversation) {
 	t.Helper()
-	underlying := &compactionAdmissionConversation{}
+	underlying := &compactionAdmissionConversation{t: t, window: window, reserve: reserve}
 	name := "compaction-admission-" + generateRequestID()
 	provider.RegisterProvider(provider.ProviderInfo{Name: name}, func(provider.Config) (provider.Provider, error) {
 		return &compactionAdmissionProvider{name: name, conversation: underlying}, nil
@@ -869,8 +904,14 @@ func TestHiddenCompactionUsesRegistryAdmissionAndDiscardsAllStreamChunks(t *test
 		t.Fatalf("streaming callbacks created visible items: got %d, want %d", len(items), len(originalItems))
 	}
 
+	// A hidden compaction request carries its own bounded pack/split controller,
+	// so it bypasses the admission ceiling and dispatches however large it looks —
+	// and its stream still reaches the caller's callback.
 	dispatchedUnderlying, dispatched := openCompactionAdmissionConversation(t, 100, 20)
-	oversized := provider.MessageRequest{Messages: []provider.Message{{Type: "user", Content: strings.Repeat("oversized ", 1000)}}}
+	oversized := provider.MessageRequest{
+		Messages:           []provider.Message{{Type: "user", Content: strings.Repeat("oversized ", 1000)}},
+		BypassContextGuard: true,
+	}
 	callbackCalls := 0
 	_, err = dispatched.Submit(context.Background(), oversized, func(provider.StreamChunk) (*provider.ToolResult, error) {
 		callbackCalls++

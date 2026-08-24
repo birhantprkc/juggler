@@ -7,7 +7,19 @@ package worker
 import (
 	"encoding/json"
 	"testing"
+
+	ycrdt "github.com/skyterra/y-crdt"
 )
+
+// pushAssistant appends a root assistant item, giving the fold something
+// conversational to relocate.
+func pushAssistant(w *ConversationWorker, content string) {
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		w.doc.ensureItems().Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{
+			Type: ItemTypeAssistant, ItemID: generateItemID(), Content: content,
+		})})
+	}, w.doc.authorID)
+}
 
 type autoNameCall struct {
 	convID, firstMessage, provider, model, thinking string
@@ -115,6 +127,63 @@ func TestAutoNameDoesNotFireWhenUserMessageExists(t *testing.T) {
 
 	if len(calls) != 0 {
 		t.Fatalf("expected no auto-name call when a user message already exists, got %+v", calls)
+	}
+}
+
+// A compaction folds the conversation's user messages into a summary thread,
+// emptying the root items array. The next message must NOT be read as the
+// conversation's first: that is what retitled a tab mid-session, so a user who
+// asked to commit after a long task ended up with "Commit changes", "Commit
+// changes 2", "Commit changes 3" across their tabs.
+func TestAutoNameDoesNotFireAfterCompactionFold(t *testing.T) {
+	var calls []autoNameCall
+	w := newAutoNameWorker(t, "conv-compacted", &calls)
+	feedCompactionContextAndTools(w)
+
+	sendMsg(t, w, SendMessageMessage{Text: "the original task"})
+	if len(calls) != 1 {
+		t.Fatalf("auto-name calls after the first message = %d, want 1", len(calls))
+	}
+	pushAssistant(w, "worked on it")
+
+	if _, folded, err := w.foldConversationForCompaction(false); err != nil || !folded {
+		t.Fatalf("foldConversationForCompaction = (%v, %v), want a fold", folded, err)
+	}
+	for _, it := range w.doc.GetItems() {
+		if it.Type == ItemTypeUser {
+			t.Fatal("fold left a root user item; the test no longer covers the regression")
+		}
+	}
+
+	sendMsg(t, w, SendMessageMessage{Text: "commit this"})
+
+	if len(calls) != 1 {
+		t.Fatalf("auto-name calls after a post-fold message = %d, want the original 1: %+v", len(calls), calls)
+	}
+}
+
+// The opening message survives a fold inside the summary thread, so the tab
+// bar's "Auto-name" button still has something to name a compacted
+// conversation from — and never names it after the compaction prompt.
+func TestRequestAutoNameReadsThroughCompactionFold(t *testing.T) {
+	var calls []autoNameCall
+	w := newAutoNameWorker(t, "conv-compacted-force", &calls)
+	feedCompactionContextAndTools(w)
+
+	sendMsg(t, w, SendMessageMessage{Text: "the original task"})
+	pushAssistant(w, "worked on it")
+	if _, folded, err := w.foldConversationForCompaction(false); err != nil || !folded {
+		t.Fatalf("foldConversationForCompaction = (%v, %v), want a fold", folded, err)
+	}
+
+	calls = nil
+	requestAutoName(t, w, true)
+
+	if len(calls) != 1 {
+		t.Fatalf("forced auto-name calls = %d, want 1", len(calls))
+	}
+	if calls[0].firstMessage != "the original task" {
+		t.Fatalf("firstMessage = %q, want the folded opening message", calls[0].firstMessage)
 	}
 }
 

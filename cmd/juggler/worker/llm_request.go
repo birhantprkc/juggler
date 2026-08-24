@@ -135,6 +135,13 @@ func (w *ConversationWorker) buildLLMRequestWithIntent(ctxResult *ContextResult,
 	if bypassContextGuard {
 		request["bypassContextGuard"] = true
 	}
+	// Automatic compaction IS the soft admission ceiling. Turning it off asks
+	// admission for the hard window instead, so the conversation runs to the real
+	// wall and the user meets it with the "/compact" hint rather than having
+	// history summarized behind their back.
+	if !w.autoCompactEnabled() {
+		request["contextCeilingFraction"] = 1.0
+	}
 
 	// A plugin may force a specific tool for this thread's turns. Honour it
 	// generically: translate the thread's forceTool field into a

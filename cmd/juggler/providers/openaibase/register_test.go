@@ -14,8 +14,7 @@ import (
 func TestRegisterPublishesDescriptorCapabilities(t *testing.T) {
 	name := "openaibase-capabilities-" + t.Name()
 	Register(Descriptor{
-		Name:             name,
-		ContextAdmission: provider.ContextAdmissionSilentTruncationGuard,
+		Name: name,
 		ContextWindowFn: func(model string) (int, int) {
 			if model != "known" {
 				return 0, 0
@@ -27,9 +26,6 @@ func TestRegisterPublishesDescriptorCapabilities(t *testing.T) {
 	info, found := provider.GetProviderInfo(name)
 	if !found || info.ResolveModelCapabilities == nil {
 		t.Fatal("registered provider has no capability resolver")
-	}
-	if info.ContextAdmission != provider.ContextAdmissionSilentTruncationGuard {
-		t.Fatalf("context admission = %q, want silent-truncation guard", info.ContextAdmission)
 	}
 	got, found := info.ResolveModelCapabilities("known")
 	want := provider.ModelCapabilities{ContextWindowTokens: 2000, MaxOutputTokens: 200}

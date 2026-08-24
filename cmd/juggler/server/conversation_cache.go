@@ -248,7 +248,6 @@ func (cc *conversationCache) runActor() {
 				ModelCapabilities: op.key.capabilities,
 				BudgetContract: provider.BudgetContract{
 					AllowUnknownLimits: info.AllowUnknownLimits,
-					ContextAdmission:   info.ContextAdmission,
 				},
 			})
 			if err != nil {

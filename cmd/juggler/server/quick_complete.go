@@ -129,7 +129,6 @@ func (s *Server) QuickComplete(ctx context.Context, req QuickCompleteRequest) (Q
 		ModelCapabilities: capabilities,
 		BudgetContract: provider.BudgetContract{
 			AllowUnknownLimits: info.AllowUnknownLimits,
-			ContextAdmission:   info.ContextAdmission,
 		},
 	})
 	if err != nil {

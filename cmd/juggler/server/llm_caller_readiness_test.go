@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,10 @@ func TestLLMCallerWaitsForStartupCapabilities(t *testing.T) {
 	}
 }
 
-func TestLLMCallerDispatchesEstimatedOversizedRoot(t *testing.T) {
+// A root request over the ceiling surfaces the advisory to the caller rather
+// than dispatching: the worker turns that into a compaction and retries, which
+// is what makes compaction happen mid-turn.
+func TestLLMCallerSurfacesContextAdvisoryForOversizedRoot(t *testing.T) {
 	t.Setenv("JUGGLER_CONFIG_DIR", t.TempDir())
 	const providerName = "test_root_admission"
 	var opened []*capabilityCacheConversation
@@ -133,14 +137,15 @@ func TestLLMCallerDispatchesEstimatedOversizedRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = s.createLLMCaller()(context.Background(), request, func(worker.StreamChunk) {})
-	if err != nil {
-		t.Fatalf("estimated oversized root request rejected: %v", err)
+	var advisory *provider.ContextCompactionAdvisory
+	if !errors.As(err, &advisory) {
+		t.Fatalf("error = %T %v, want ContextCompactionAdvisory", err, err)
 	}
 	if len(opened) != 1 {
 		t.Fatalf("opened conversations = %d, want 1", len(opened))
 	}
-	if opened[0].submits != 1 {
-		t.Fatalf("underlying provider submits = %d, want 1", opened[0].submits)
+	if opened[0].submits != 0 {
+		t.Fatalf("underlying provider submits = %d, want advisory before dispatch", opened[0].submits)
 	}
 }
 

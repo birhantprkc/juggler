@@ -29,9 +29,9 @@ import (
 
 // compactionOutcome kinds recorded on the tape and in logs.
 const (
-	compactionKindFolded   = "folded"
-	compactionKindRecovery = "recovery"
-	compactionKindShrink   = "shrink"
+	compactionKindFolded = "folded"
+	compactionKindAuto   = "auto"
+	compactionKindShrink = "shrink"
 )
 
 // compactionTapeHooks returns reducer hooks that mirror pass planning and

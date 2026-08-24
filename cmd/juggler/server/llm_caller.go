@@ -130,6 +130,9 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			MaxOutputTokens      int64                `json:"maxOutputTokens,omitempty"`
 			BypassContextGuard   bool                 `json:"bypassContextGuard,omitempty"`
 			ExplicitContinuation bool                 `json:"explicitContinuation,omitempty"`
+			// 0 = the default soft ceiling; 1 = the hard window (automatic
+			// compaction is disabled for this conversation).
+			ContextCeilingFraction float64 `json:"contextCeilingFraction,omitempty"`
 		}
 		if err := json.Unmarshal(request, &req); err != nil {
 			return nil, fmt.Errorf("failed to parse LLM request: %w", err)
@@ -214,9 +217,10 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			ToolChoice:     req.ToolChoice,
 			// F1: per-request wire output cap (hidden compaction map calls). 0 =
 			// use the client/model default; adapters apply it as a min().
-			MaxOutputTokens:      req.MaxOutputTokens,
-			BypassContextGuard:   req.BypassContextGuard,
-			ExplicitContinuation: req.ExplicitContinuation,
+			MaxOutputTokens:        req.MaxOutputTokens,
+			BypassContextGuard:     req.BypassContextGuard,
+			ContextCeilingFraction: req.ContextCeilingFraction,
+			ExplicitContinuation:   req.ExplicitContinuation,
 			// The chosen level is the provider's own native string; passed through
 			// verbatim, and each provider ignores any value it doesn't advertise.
 			// Rides per-turn; deliberately NOT part of the conversation-cache key.

@@ -124,7 +124,7 @@ func TestCompactionAccountingPersistedOnSummaryItem(t *testing.T) {
 	calls := 0
 	w.llmCallFunc = observedRecoveryStub(t, &calls)
 
-	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.compactToFit(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 	if calls < 2 {
@@ -190,7 +190,7 @@ func TestCompactionTapeRecords(t *testing.T) {
 	calls := 0
 	w.llmCallFunc = observedRecoveryStub(t, &calls)
 
-	if _, err := w.tryContextRecovery(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.compactToFit(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,8 +200,8 @@ func TestCompactionTapeRecords(t *testing.T) {
 		t.Fatalf("compaction-start events = %d, want exactly one", len(starts))
 	}
 	start := starts[0]
-	if start.Summary["kind"] != compactionKindRecovery {
-		t.Fatalf("compaction-start kind = %v, want %q", start.Summary["kind"], compactionKindRecovery)
+	if start.Summary["kind"] != compactionKindAuto {
+		t.Fatalf("compaction-start kind = %v, want %q", start.Summary["kind"], compactionKindAuto)
 	}
 	if got := mustTapeNum(t, start, "window"); got != 4_000 {
 		t.Fatalf("compaction-start window = %d, want 4000", got)
@@ -302,7 +302,7 @@ func TestCompactionCancellationTapeAndAccounting(t *testing.T) {
 		}, nil
 	}
 
-	_, err := w.tryContextRecovery(recoveryLimitErr(), pinned)
+	_, err := w.compactToFit(recoveryLimitErr(), pinned)
 	if !errors.Is(err, errBoundedCompactionCancelled) {
 		t.Fatalf("error = %v, want cancellation", err)
 	}

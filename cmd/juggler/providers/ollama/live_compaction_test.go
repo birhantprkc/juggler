@@ -54,7 +54,6 @@ func TestLiveOllamaFinalCompactionShape(t *testing.T) {
 		Model: model,
 		BudgetContract: provider.BudgetContract{
 			AllowUnknownLimits: true,
-			ContextAdmission:   info.ContextAdmission,
 		},
 	})
 	if err != nil {

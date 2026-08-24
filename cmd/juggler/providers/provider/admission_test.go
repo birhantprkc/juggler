@@ -68,32 +68,50 @@ func openAdmissionTestConversation(t *testing.T, cfg Config) (*admissionTestConv
 	return wrapped, conversation
 }
 
-func TestContextAdmissionPolicyZeroValueIsProviderAuthoritative(t *testing.T) {
-	var contract BudgetContract
-	if contract.ContextAdmission != ContextAdmissionProviderAuthoritative {
-		t.Fatalf("zero-value context admission = %q, want provider-authoritative", contract.ContextAdmission)
+func TestContextCeilingResolvesFraction(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		window   int64
+		fraction float64
+		want     int64
+	}{
+		{"zero selects the soft default", 1000, 0, 850},
+		{"one selects the hard window", 1000, 1, 1000},
+		{"explicit fraction is honored", 1000, 0.5, 500},
+		{"above one clamps to the window", 1000, 2, 1000},
+		{"tiny window never floors to zero", 1, 0, 1},
+	} {
+		if got := ContextCeiling(tc.window, tc.fraction); got != tc.want {
+			t.Errorf("%s: ContextCeiling(%d, %v) = %d, want %d", tc.name, tc.window, tc.fraction, got, tc.want)
+		}
 	}
 }
 
-func TestAdmissionSilentTruncationGuardAdvisesAndRequestBypassDispatches(t *testing.T) {
-	req := MessageRequest{Messages: []Message{{Type: "user", Content: strings.Repeat("opaque/", 200)}}}
+// Admission advises at the soft ceiling for every provider, not only for the
+// ones that would silently truncate: this is the trigger that makes compaction
+// fire between the tool calls of a turn instead of after it settles.
+func TestAdmissionAdvisesAtSoftCeilingBelowTheWindow(t *testing.T) {
 	wrapped, conversation := openAdmissionTestConversation(t, Config{
-		ModelCapabilities: ModelCapabilities{ContextWindowTokens: 100, MaxOutputTokens: 20},
-		BudgetContract:    BudgetContract{ContextAdmission: ContextAdmissionSilentTruncationGuard},
+		ModelCapabilities: ModelCapabilities{ContextWindowTokens: 10_000, MaxOutputTokens: 1_000},
 	})
 
+	// Estimated well under the window, but over 85% of it once the reserve is
+	// charged: the old provider-authoritative rule dispatched this.
+	req := MessageRequest{Messages: []Message{{Type: "user", Content: strings.Repeat("opaque/", 2_600)}}}
 	_, err := conversation.Submit(context.Background(), req, nil)
 	var advisory *ContextCompactionAdvisory
 	if !errors.As(err, &advisory) {
 		t.Fatalf("error = %T %v, want ContextCompactionAdvisory", err, err)
 	}
-	if advisory.EstimatedInputTokens+advisory.OutputReserveTokens <= advisory.ContextWindowTokens {
-		t.Fatalf("advisory = %+v, want estimated overflow", advisory)
+	if advisory.EstimatedInputTokens+advisory.OutputReserveTokens > advisory.ContextWindowTokens {
+		t.Fatalf("advisory = %+v, want a soft ceiling hit that still fits the hard window", advisory)
 	}
 	if wrapped.submits != 0 {
 		t.Fatalf("provider submits = %d, want advisory before dispatch", wrapped.submits)
 	}
 
+	// The advisory asks the caller to reduce; a caller that cannot reduce says so
+	// and the request goes out, which is safe because the ceiling is soft.
 	req.BypassContextGuard = true
 	if _, err := conversation.Submit(context.Background(), req, nil); err != nil {
 		t.Fatalf("fallback bypass rejected: %v", err)
@@ -103,16 +121,41 @@ func TestAdmissionSilentTruncationGuardAdvisesAndRequestBypassDispatches(t *test
 	}
 }
 
-func TestAdmissionProviderAuthoritativeNeverAdvises(t *testing.T) {
-	req := MessageRequest{Messages: []Message{{Type: "user", Content: strings.Repeat("opaque/", 200)}}}
+func TestAdmissionDispatchesBelowTheSoftCeiling(t *testing.T) {
 	wrapped, conversation := openAdmissionTestConversation(t, Config{
-		ModelCapabilities: ModelCapabilities{ContextWindowTokens: 100, MaxOutputTokens: 20},
+		ModelCapabilities: ModelCapabilities{ContextWindowTokens: 1000, MaxOutputTokens: 100},
 	})
+	req := MessageRequest{Messages: []Message{{Type: "user", Content: strings.Repeat("opaque/", 40)}}}
 	if _, err := conversation.Submit(context.Background(), req, nil); err != nil {
-		t.Fatalf("normal provider advised or rejected: %v", err)
+		t.Fatalf("request under the ceiling was advised or rejected: %v", err)
 	}
 	if wrapped.submits != 1 {
 		t.Fatalf("provider submits = %d, want direct dispatch", wrapped.submits)
+	}
+}
+
+// A caller that has disabled automatic compaction asks for the hard window, so
+// admission stops advising and lets the conversation run to the real wall.
+func TestAdmissionHardCeilingFractionOnlyAdvisesAtTheWindow(t *testing.T) {
+	wrapped, conversation := openAdmissionTestConversation(t, Config{
+		ModelCapabilities: ModelCapabilities{ContextWindowTokens: 1000, MaxOutputTokens: 100},
+	})
+	req := MessageRequest{
+		Messages:               []Message{{Type: "user", Content: strings.Repeat("opaque/", 110)}},
+		ContextCeilingFraction: 1,
+	}
+	if _, err := conversation.Submit(context.Background(), req, nil); err != nil {
+		t.Fatalf("request under the hard window was advised: %v", err)
+	}
+	if wrapped.submits != 1 {
+		t.Fatalf("provider submits = %d, want direct dispatch", wrapped.submits)
+	}
+
+	req.Messages = []Message{{Type: "user", Content: strings.Repeat("opaque/", 400)}}
+	_, err := conversation.Submit(context.Background(), req, nil)
+	var advisory *ContextCompactionAdvisory
+	if !errors.As(err, &advisory) {
+		t.Fatalf("error = %T %v, want ContextCompactionAdvisory at the hard window", err, err)
 	}
 }
 
@@ -259,7 +302,7 @@ func TestInitializeProviderWrapsEveryStatefulConversation(t *testing.T) {
 		return &statefulAdmissionTestProvider{opened: &opened}, nil
 	})
 	initialized, err := InitializeProvider(name, Config{
-		ModelCapabilities: ModelCapabilities{ContextWindowTokens: 100},
+		ModelCapabilities: ModelCapabilities{ContextWindowTokens: 100_000},
 		BudgetContract:    BudgetContract{OutputReserveTokens: 20},
 	})
 	if err != nil {
@@ -275,7 +318,7 @@ func TestInitializeProviderWrapsEveryStatefulConversation(t *testing.T) {
 			Messages: []Message{{Type: "user", Content: "stateful " + convID + " " + string(make([]byte, 200))}},
 		}, nil)
 		if submitErr != nil {
-			t.Fatalf("%s Submit() error = %v, want provider-authoritative dispatch", convID, submitErr)
+			t.Fatalf("%s Submit() error = %v, want dispatch", convID, submitErr)
 		}
 		if result == nil {
 			t.Fatalf("%s Submit() returned nil result", convID)
@@ -305,8 +348,15 @@ func (p *statefulAdmissionTestProvider) OpenConversation(context.Context, string
 	return conversation, nil
 }
 
-func TestAdmissionExactFitAndOneTokenOverBothDispatch(t *testing.T) {
-	req := MessageRequest{SystemPrompt: "system", Messages: []Message{{Type: "user", Content: "hello"}}}
+// The ceiling comparison is inclusive at the boundary: an exact fit dispatches
+// and one token over advises. Pinned against the hard window (fraction 1) so it
+// measures the arithmetic rather than the soft ceiling's headroom.
+func TestAdmissionExactFitDispatchesAndOneTokenOverAdvises(t *testing.T) {
+	req := MessageRequest{
+		SystemPrompt:           "system",
+		Messages:               []Message{{Type: "user", Content: "hello"}},
+		ContextCeilingFraction: 1,
+	}
 	estimated := EstimateMessageRequestTokens(req)
 	const reserve int64 = 17
 
@@ -325,20 +375,33 @@ func TestAdmissionExactFitAndOneTokenOverBothDispatch(t *testing.T) {
 		ModelCapabilities: ModelCapabilities{ContextWindowTokens: estimated + reserve - 1},
 		BudgetContract:    BudgetContract{OutputReserveTokens: reserve},
 	})
+	_, err := over.Submit(context.Background(), req, nil)
+	var advisory *ContextCompactionAdvisory
+	if !errors.As(err, &advisory) {
+		t.Fatalf("error = %T %v, want ContextCompactionAdvisory one token over", err, err)
+	}
+	if wrapped.submits != 0 {
+		t.Fatalf("wrapped submits = %d, want advisory before dispatch", wrapped.submits)
+	}
+
+	bypassed := req
+	bypassed.BypassContextGuard = true
 	callbackCalls := 0
-	_, err := over.Submit(context.Background(), req, func(StreamChunk) (*ToolResult, error) {
+	if _, err := over.Submit(context.Background(), bypassed, func(StreamChunk) (*ToolResult, error) {
 		callbackCalls++
 		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("estimated one-token overflow rejected: %v", err)
+	}); err != nil {
+		t.Fatalf("bypassed one-token overflow rejected: %v", err)
 	}
 	if wrapped.submits != 1 || wrapped.callbacks != 1 || callbackCalls != 1 {
 		t.Fatalf("dispatch path calls: submits=%d wrapped callbacks=%d callbacks=%d, want 1 each", wrapped.submits, wrapped.callbacks, callbackCalls)
 	}
 }
 
-func TestAdmissionPathologicalOverestimateStillDispatches(t *testing.T) {
+// A wild local overestimate must never be terminal: admission advises, and the
+// caller that cannot reduce further bypasses and reaches the provider, whose
+// usage is authoritative.
+func TestAdmissionPathologicalOverestimateAdvisesThenBypassDispatches(t *testing.T) {
 	const (
 		window  int64 = 272_000
 		reserve int64 = 16_384
@@ -373,9 +436,19 @@ func TestAdmissionPathologicalOverestimateStillDispatches(t *testing.T) {
 		ModelCapabilities: ModelCapabilities{ContextWindowTokens: window, MaxOutputTokens: reserve, ProviderOverheadTokens: 920},
 	})
 	wrapped.result = &StreamResult{InputTokens: 105_371, OutputTokens: 321}
+	_, err := conversation.Submit(context.Background(), req, nil)
+	var advisory *ContextCompactionAdvisory
+	if !errors.As(err, &advisory) {
+		t.Fatalf("error = %T %v, want ContextCompactionAdvisory", err, err)
+	}
+	if wrapped.submits != 0 {
+		t.Fatalf("provider submits = %d, want advisory before dispatch", wrapped.submits)
+	}
+
+	req.BypassContextGuard = true
 	result, err := conversation.Submit(context.Background(), req, nil)
 	if err != nil {
-		t.Fatalf("pathological request rejected before provider success: %v", err)
+		t.Fatalf("pathological request rejected after bypass: %v", err)
 	}
 	if wrapped.submits != 1 {
 		t.Fatalf("provider submits = %d, want 1", wrapped.submits)
@@ -456,7 +529,9 @@ func TestAdmissionRejectsOutputReserveAtOrAboveContextWindow(t *testing.T) {
 	}
 }
 
-func TestAdmissionUsesCapabilityOutputReserveWithoutEstimateRejection(t *testing.T) {
+// With no contract reserve, the model's MaxOutputTokens is charged as the
+// reserve — read back off the advisory the charge produces.
+func TestAdmissionUsesCapabilityOutputReserve(t *testing.T) {
 	req := MessageRequest{Messages: []Message{{Type: "user", Content: "x"}}}
 	estimated := EstimateMessageRequestTokens(req)
 	wrapped, conversation := openAdmissionTestConversation(t, Config{
@@ -465,11 +540,16 @@ func TestAdmissionUsesCapabilityOutputReserveWithoutEstimateRejection(t *testing
 			MaxOutputTokens:     9,
 		},
 	})
-	if _, err := conversation.Submit(context.Background(), req, nil); err != nil {
-		t.Fatalf("estimated overflow rejected: %v", err)
+	_, err := conversation.Submit(context.Background(), req, nil)
+	var advisory *ContextCompactionAdvisory
+	if !errors.As(err, &advisory) {
+		t.Fatalf("error = %T %v, want ContextCompactionAdvisory", err, err)
 	}
-	if wrapped.submits != 1 {
-		t.Fatalf("wrapped submits = %d, want 1", wrapped.submits)
+	if advisory.OutputReserveTokens != 9 {
+		t.Fatalf("reserve = %d, want the capability output limit 9", advisory.OutputReserveTokens)
+	}
+	if wrapped.submits != 0 {
+		t.Fatalf("wrapped submits = %d, want advisory before dispatch", wrapped.submits)
 	}
 }
 
@@ -497,7 +577,7 @@ func TestAdmissionChargesRequestOutputCapAsReserve(t *testing.T) {
 
 	t.Run("provider overflow reports the effective reserve", func(t *testing.T) {
 		wrapped, conversation := openAdmissionTestConversation(t, Config{
-			ModelCapabilities: ModelCapabilities{ContextWindowTokens: estimated + 20, MaxOutputTokens: 100},
+			ModelCapabilities: ModelCapabilities{ContextWindowTokens: estimated + 100, MaxOutputTokens: 100},
 		})
 		wrapped.submitErr = errors.New("input exceeds the context window")
 		capped := req
@@ -571,18 +651,23 @@ func TestAdmissionIncludesProviderOverheadInAdvisoryBreakdown(t *testing.T) {
 	if breakdown.ProviderOverheadTokens != overhead || breakdown.Total != base+overhead {
 		t.Fatalf("breakdown = %+v, want overhead %d and total %d", breakdown, overhead, base+overhead)
 	}
-	wrapped, conversation := openAdmissionTestConversation(t, Config{
+	_, conversation := openAdmissionTestConversation(t, Config{
 		ModelCapabilities: ModelCapabilities{
 			ContextWindowTokens:    base + overhead,
 			ProviderOverheadTokens: overhead,
 		},
 		BudgetContract: BudgetContract{OutputReserveTokens: 1},
 	})
-	if _, err := conversation.Submit(context.Background(), req, nil); err != nil {
-		t.Fatalf("estimated overflow rejected: %v", err)
+	_, err := conversation.Submit(context.Background(), req, nil)
+	var advisory *ContextCompactionAdvisory
+	if !errors.As(err, &advisory) {
+		t.Fatalf("error = %T %v, want ContextCompactionAdvisory", err, err)
 	}
-	if wrapped.submits != 1 {
-		t.Fatalf("wrapped submits = %d, want 1", wrapped.submits)
+	if advisory.Breakdown.ProviderOverheadTokens != overhead {
+		t.Fatalf("advisory breakdown = %+v, want provider overhead %d", advisory.Breakdown, overhead)
+	}
+	if advisory.EstimatedInputTokens != base+overhead {
+		t.Fatalf("advisory estimate = %d, want %d", advisory.EstimatedInputTokens, base+overhead)
 	}
 }
 
@@ -679,9 +764,9 @@ func TestEstimateMessageRequestTokensSaturates(t *testing.T) {
 	}
 }
 
-// TestAdmissionDispatchesOversizedImage verifies that even an image estimate
-// above the input ceiling remains advisory for normal providers.
-func TestAdmissionDispatchesOversizedImage(t *testing.T) {
+// An image estimate above the ceiling is advisory, never terminal: the caller
+// that cannot shed it bypasses and the turn still dispatches.
+func TestAdmissionOversizedImageAdvisesThenBypassDispatches(t *testing.T) {
 	wrapped, conversation := openAdmissionTestConversation(t, Config{
 		ModelCapabilities: ModelCapabilities{ContextWindowTokens: 4_000},
 		BudgetContract:    BudgetContract{OutputReserveTokens: 300},
@@ -695,8 +780,15 @@ func TestAdmissionDispatchesOversizedImage(t *testing.T) {
 	if want := int64(8_000*6_000) / 750; breakdown.ImageTokens != want {
 		t.Fatalf("image tokens = %d, want pixel estimate %d", breakdown.ImageTokens, want)
 	}
+	_, err := conversation.Submit(context.Background(), req, nil)
+	var advisory *ContextCompactionAdvisory
+	if !errors.As(err, &advisory) {
+		t.Fatalf("error = %T %v, want ContextCompactionAdvisory", err, err)
+	}
+
+	req.BypassContextGuard = true
 	if _, err := conversation.Submit(context.Background(), req, nil); err != nil {
-		t.Fatalf("estimated oversized image rejected: %v", err)
+		t.Fatalf("bypassed oversized image rejected: %v", err)
 	}
 	if wrapped.submits != 1 {
 		t.Fatalf("submits = %d, want provider dispatch", wrapped.submits)

@@ -26,17 +26,6 @@ func isolateConfig(t *testing.T) {
 	t.Setenv("OLLAMA_CONTEXT_LENGTH", "")
 }
 
-func TestOllamaPublishesSilentTruncationGuard(t *testing.T) {
-	Register()
-	info, found := provider.GetProviderInfo("ollama")
-	if !found {
-		t.Fatal("Ollama provider was not registered")
-	}
-	if info.ContextAdmission != provider.ContextAdmissionSilentTruncationGuard {
-		t.Fatalf("context admission = %q, want silent-truncation guard", info.ContextAdmission)
-	}
-}
-
 func TestOllamaDeclaresForcedToolChoiceUnsupported(t *testing.T) {
 	Register()
 	info, found := provider.GetProviderInfo("ollama")

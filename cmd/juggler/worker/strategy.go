@@ -114,11 +114,11 @@ type strategyRunState struct {
 	// barrenTurns counts consecutive turns that produced nothing user-visible,
 	// reset by any turn that does. Capped by MaxBarrenTurns.
 	barrenTurns int
-	// contextRecovery bounds one context-pressure incident; a successful
-	// dispatch clears it so a later overflow gets a fresh budget.
-	contextRecovery contextRecoveryState
-	// bypassContextGuard skips the pre-flight estimate guard for the next
-	// attempt only, after an overflow verdict asked to retry without it.
+	// compaction bounds one context-pressure incident; a successful dispatch
+	// clears it so a later overflow gets a fresh budget.
+	compaction compactionAttempts
+	// bypassContextGuard skips the pre-flight ceiling for the next attempt
+	// only, after an overflow verdict asked to retry without it.
 	bypassContextGuard bool
 }
 
@@ -345,7 +345,7 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 			// context-limit overflow), not on every successful turn.
 			var originalRequest hiddenLLMRequest
 			_ = json.Unmarshal(llmRequest, &originalRequest)
-			switch v := w.handleContextOverflow(limit, isAdvisory, st.bypassContextGuard, &st.contextRecovery, originalRequest.ModelConfig, err); v.verdict {
+			switch v := w.handleContextOverflow(limit, isAdvisory, st.bypassContextGuard, &st.compaction, originalRequest.ModelConfig, err); v.verdict {
 			case overflowStop:
 				w.currentTxnID = ""
 				return turnDone
@@ -391,7 +391,7 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// bounded recovery budget instead of inheriting an exhausted one. This
 	// cannot loop — re-entering recovery still takes a fresh provider
 	// overflow, and each incident stays progress-checked and bounded.
-	st.contextRecovery = contextRecoveryState{}
+	st.compaction = compactionAttempts{}
 
 	// Per-turn token economics at Info level so the prompt-cache hit rate is
 	// visible in the normal conversation log without enabling trace. cached/
@@ -572,14 +572,12 @@ func (w *ConversationWorker) finishStrategyRun() {
 			return
 		}
 
-		// Proactive compaction: if the settled root turn's anchored input
-		// usage crossed the threshold, fold the root here and hand off to the
-		// summarizer. When it folds, the pickup runs the fold thread to
-		// completion — which dispatches its own idle hook — so return without
-		// a second dispatch.
-		if w.maybeAutoCompactAtSettle() {
-			return
-		}
+		// Nothing compaction-related happens here. Automatic compaction is an
+		// admission ceiling evaluated before every dispatch (see
+		// provider.DefaultContextCeilingFraction), so it fires while a turn is
+		// still running — including between its tool calls — rather than after
+		// the conversation has settled, when a summary can no longer help the
+		// work it summarizes.
 
 		// Root conversation went idle — let the strategy drive any
 		// post-idle work (e.g. plan execution) in the engine. Fire-and-

@@ -171,7 +171,6 @@ func TestConversationCacheAdmissionContractFlowsFromProviderInfo(t *testing.T) {
 	provider.RegisterProvider(provider.ProviderInfo{
 		Name:               providerName,
 		AllowUnknownLimits: true,
-		ContextAdmission:   provider.ContextAdmissionSilentTruncationGuard,
 	}, func(cfg provider.Config) (provider.Provider, error) {
 		configs = append(configs, cfg)
 		opened := []*capabilityCacheConversation{}
@@ -188,8 +187,8 @@ func TestConversationCacheAdmissionContractFlowsFromProviderInfo(t *testing.T) {
 		t.Fatalf("configs = %d, want 1", len(configs))
 	}
 	got := configs[0].BudgetContract
-	if !got.AllowUnknownLimits || got.ContextAdmission != provider.ContextAdmissionSilentTruncationGuard {
-		t.Fatalf("budget contract = %+v, want unknown limits allowed and silent-truncation guard", got)
+	if !got.AllowUnknownLimits {
+		t.Fatalf("budget contract = %+v, want unknown limits allowed", got)
 	}
 }
 

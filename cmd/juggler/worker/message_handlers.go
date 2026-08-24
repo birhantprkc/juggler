@@ -186,6 +186,7 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	// Absent-only, so a doc that already carries the marker keeps it. See
 	// metaProvisionalName.
 	w.seedNameIsProvisional()
+	w.seedHasAutoNamed()
 
 	// Seed the strategy-activation marker so onActivate fires only on a genuine,
 	// non-baseline activation (matching the old "fires on a live switch, never on
@@ -333,17 +334,19 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	// Add user message to doc before signaling the reducer.
 	if !msg.IsContinuation && !input.isEmpty() {
 		// Auto-name trigger: fire the injected server callback exactly once, on the
-		// FIRST user message of the ROOT thread. Detected from the doc (no prior
-		// user item) rather than a cached flag, so a reconnect to an already-
-		// populated conversation never re-fires. The server owns cheap-model
-		// resolution, the bounded completion, and the rename; the worker only
-		// signals and hands off. Skipped for subthreads, text-less (image-only)
-		// first messages, and any conversation whose name a human has committed to
-		// (NameIsProvisional — the server re-checks it before applying the title).
+		// FIRST user message of the ROOT thread. "First" is recorded durably in doc
+		// metadata (metaAutoNamed) rather than inferred from the items array,
+		// because compaction folds the earlier user messages out of that array and
+		// the next message would otherwise be read as a new conversation's first.
+		// The server owns cheap-model resolution, the bounded completion, and the
+		// rename; the worker only signals and hands off. Skipped for subthreads,
+		// text-less (image-only) first messages, and any conversation whose name a
+		// human has committed to (NameIsProvisional — the server re-checks it
+		// before applying the title).
 		if msg.ThreadItemID == "" && w.autoNameFunc != nil &&
-			strings.TrimSpace(input.Text) != "" && !w.hasExistingUserMessage() &&
+			strings.TrimSpace(input.Text) != "" && !w.hasAutoNamed() &&
 			w.NameIsProvisional() {
-			w.autoNameFunc(w.conversationID, input.Text, modelConfig.Provider, modelConfig.Model, modelConfig.Thinking, false)
+			w.fireAutoName(input.Text, modelConfig.Provider, modelConfig.Model, modelConfig.Thinking, false)
 		}
 
 		// Drain any queued items into this thread FIRST, then append the new user
@@ -403,30 +406,36 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	w.needsReconcile = true
 }
 
-// hasExistingUserMessage reports whether the current target (root when no
-// thread is active) already contains a user message. Used by the auto-name
-// trigger to fire only on the conversation's very first user message. Called
-// with the root thread context set, so it reads the root items.
-func (w *ConversationWorker) hasExistingUserMessage() bool {
-	for _, it := range w.getTargetItems() {
-		if it.Type == ItemTypeUser {
-			return true
-		}
-	}
-	return false
-}
-
 // firstRootUserMessageText returns the text of the conversation's first
 // root-level user message, or "" when there is none yet (or it was image-only).
 // Reads root items directly (not the active-thread target) so it is correct
 // regardless of any thread context left set by a prior message.
+//
+// Descends into a compaction summary's folded items, because the conversation's
+// opening message is exactly what compaction folds away first: reading only the
+// live array would make the tab bar's "Auto-name" button a silent no-op on any
+// conversation long enough to have been compacted.
 func (w *ConversationWorker) firstRootUserMessageText() string {
-	for _, it := range w.doc.GetItems() {
-		if it.Type == ItemTypeUser {
-			return it.Content
+	var first func(items []ConversationItem, skipID string) string
+	first = func(items []ConversationItem, skipID string) string {
+		for _, it := range items {
+			// A fold appends a synthesized summarization prompt as a user item.
+			// It is the compaction's own instruction, never the human's words.
+			if it.ItemID == skipID && skipID != "" {
+				continue
+			}
+			if it.Type == ItemTypeUser {
+				return it.Content
+			}
+			if it.Type == ItemTypeThread && it.BoundedCompaction {
+				if found := first(threadNestedItems(it), it.CompactionPromptItemID); found != "" {
+					return found
+				}
+			}
 		}
+		return ""
 	}
-	return ""
+	return first(w.doc.GetItems(), "")
 }
 
 // handleRequestAutoName services a request-auto-name message: it re-derives a tab
@@ -461,7 +470,7 @@ func (w *ConversationWorker) handleRequestAutoName(payload json.RawMessage) {
 	if mc != nil {
 		provider, model, thinking = mc.Provider, mc.Model, mc.Thinking
 	}
-	w.autoNameFunc(w.conversationID, first, provider, model, thinking, msg.Force)
+	w.fireAutoName(first, provider, model, thinking, msg.Force)
 }
 
 // handleProviderTurn lands a turn the provider surfaced out-of-band — an

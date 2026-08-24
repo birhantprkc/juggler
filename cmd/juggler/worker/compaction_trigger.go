@@ -2,6 +2,28 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
+// Automatic compaction: everything that decides to shrink a conversation, and
+// does it.
+//
+// There is one trigger, and it is not in this file — it is the admission
+// ceiling (provider.DefaultContextCeilingFraction), evaluated against a fully
+// built request before every dispatch. Admission raises a
+// ContextCompactionAdvisory at the soft ceiling, and a ContextLimitExceededError
+// when a provider rejects a request outright; both arrive here as the same typed
+// overflow, so the soft ceiling and the hard wall are one code path. Because a
+// dispatch happens between every pair of tool calls, compaction lands in the
+// middle of a turn — while a smaller transcript can still help the work in
+// progress, rather than after it has finished and a summary is of no use to
+// anyone.
+//
+// The ladder handleContextOverflow runs, in order: hand a folded /compact thread
+// to its summarizer; honour the off switch; shrink an oversized trailing tool
+// result in place (a live tool_use/tool_result pair must survive, so it can
+// never be folded); then fold the leading run of history into a summary thread,
+// keeping the largest verbatim suffix that still leaves the reducer room to
+// work. Progress is judged structurally — by the shape of the durable items,
+// never by a token estimate — and one incident is bounded by
+// maxContextRecoveryAttempts.
 package worker
 
 import (
@@ -47,16 +69,16 @@ type contextRecoveryResult struct {
 	Signature recoverySignature
 }
 
-type contextRecoveryState struct {
+type compactionAttempts struct {
 	attempts          int
 	previousSignature recoverySignature
 }
 
-func (s *contextRecoveryState) canAttempt() bool {
+func (s *compactionAttempts) canAttempt() bool {
 	return s.attempts < maxContextRecoveryAttempts
 }
 
-func (s *contextRecoveryState) advance(result contextRecoveryResult, overflow error) (bool, error) {
+func (s *compactionAttempts) advance(result contextRecoveryResult, overflow error) (bool, error) {
 	if !s.canAttempt() {
 		return false, overflow
 	}
@@ -121,7 +143,7 @@ func (w *ConversationWorker) handleContextOverflow(
 	limit *provider.ContextLimitExceededError,
 	isAdvisory bool,
 	guardBypassed bool,
-	recovery *contextRecoveryState,
+	recovery *compactionAttempts,
 	modelConfig *ModelConfig,
 	overflowErr error,
 ) overflowResult {
@@ -145,13 +167,18 @@ func (w *ConversationWorker) handleContextOverflow(
 		return overflowResult{verdict: overflowTerminal, err: fmt.Errorf("bounded compaction failed: %w", compactErr)}
 	}
 
-	// Global off switch: when automatic compaction is disabled, the reactive
-	// recovery ladder does not run. The manual-fold summarizer above stays
-	// enabled (a manually folded thread must still summarize). An advisory is a
-	// safety estimate, never terminal — let one guard-bypassed retry through
-	// rather than rewrite the transcript. A real provider rejection surfaces the
-	// provider's own context error so the user hits the wall (and the "Compact
-	// now" affordance) instead of an automatic summarize.
+	// Global off switch: when automatic compaction is disabled, nothing here
+	// rewrites history. The manual-fold summarizer above stays enabled (a
+	// manually folded thread must still summarize).
+	//
+	// The request already asked admission for the hard window (buildLLMRequest
+	// sets contextCeilingFraction=1 under this same gate), so any advisory
+	// reaching here is at the real window rather than the soft ceiling. It is
+	// still only an estimate, and an estimate must never be terminal: dispatch
+	// one guard-bypassed retry and let the provider be authoritative. If it
+	// genuinely does not fit, the rejection returns below and surfaces the
+	// provider's own context error, so the user hits the wall — and the "Compact
+	// now" affordance — instead of an automatic summarize.
 	if !w.autoCompactEnabled() {
 		if isAdvisory {
 			return overflowResult{verdict: overflowBypassAndRetry}
@@ -175,11 +202,11 @@ func (w *ConversationWorker) handleContextOverflow(
 		}
 		// Preserve and expose the last provider-authored overflow; do not
 		// replace it with a local estimate or retry-limit error.
-		w.log.Info("[recovery] stopped after %d progressive attempts", recovery.attempts)
+		w.log.Info("[compaction] stopped after %d progressive attempts", recovery.attempts)
 		return overflowResult{verdict: overflowTerminal, err: providerAuthoredContextError(overflowErr)}
 	}
 
-	result, recErr := w.tryContextRecovery(limit, modelConfig)
+	result, recErr := w.compactToFit(limit, modelConfig)
 	if errors.Is(recErr, errBoundedCompactionCancelled) {
 		return overflowResult{verdict: overflowStop}
 	}
@@ -204,7 +231,7 @@ func (w *ConversationWorker) handleContextOverflow(
 	}
 	// No durable structural progress: surface the latest provider overflow
 	// unchanged so errors.Is/As reach its Cause.
-	w.log.Info("[recovery] stopped because the request structure did not change")
+	w.log.Info("[compaction] stopped because the request structure did not change")
 	return overflowResult{verdict: overflowTerminal, err: providerAuthoredContextError(overflowErr)}
 }
 
@@ -238,7 +265,7 @@ type recoveryUnit struct {
 	est        int64
 }
 
-// tryContextRecovery recovers an ordinary root or subthread turn whose request
+// compactToFit recovers an ordinary root or subthread turn whose request
 // was rejected by the provider for context size. It reports objective structural
 // progress from the durable item shape; the advisory token estimate is used for
 // planning only and is never the progress criterion.
@@ -246,7 +273,7 @@ type recoveryUnit struct {
 // Every failure path returns a typed error: BoundedCompactionError for
 // deterministic recovery failures, BoundedCompactionCancelledError (matching
 // errBoundedCompactionCancelled) when interrupted mid-reduce.
-func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (contextRecoveryResult, error) {
+func (w *ConversationWorker) compactToFit(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (contextRecoveryResult, error) {
 	before := contextRecoverySignature(w.getTargetItems())
 	if w.compactionCancelled() {
 		return contextRecoveryResult{}, errBoundedCompactionCancelled
@@ -269,7 +296,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	}
 
 	w.beginCompactionStatus("Summarizing earlier conversation to fit the context window")
-	w.recordCompactionStart(compactionKindRecovery, window, reserve, envelope)
+	w.recordCompactionStart(compactionKindAuto, window, reserve, envelope)
 
 	// A trailing tool-result payload too large for the suffix budget can never
 	// be folded — folding would destroy the live tool pair. Shrink oversized
@@ -356,8 +383,8 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		// prefix fold, so succeed and let the caller's retry proceed against the
 		// smaller history rather than summarizing history that no longer needs
 		// it. Admission on the retry is the backstop if this estimate is optimistic.
-		w.recordCompactionOutcome(compactionKindRecovery, "shrink-only", CompactionResult{}, map[string]any{"suffixTokens": suffixEst})
-		w.log.Info("[recovery] trailing-result shrink sufficed; no history fold needed (suffix=%d tokens)", suffixEst)
+		w.recordCompactionOutcome(compactionKindAuto, "shrink-only", CompactionResult{}, map[string]any{"suffixTokens": suffixEst})
+		w.log.Info("[compaction] trailing-result shrink sufficed; no history fold needed (suffix=%d tokens)", suffixEst)
 		return contextRecoveryOutcome(before, items), nil
 	}
 
@@ -383,7 +410,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 		calls: 1,
 	}
 
-	result, err := w.runReducer(compactionKindRecovery, pinnedModel, budget, prefixRecords)
+	result, err := w.runReducer(compactionKindAuto, pinnedModel, budget, prefixRecords)
 	if err != nil {
 		return contextRecoveryResult{}, err
 	}
@@ -403,7 +430,7 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	nested := append(append([]ConversationItem{}, items[prefixStart:prefixEnd]...), promptItem)
 	nestedJSON, err := json.Marshal(nested)
 	if err != nil {
-		w.recordCompactionOutcome(compactionKindRecovery, "error", result, map[string]any{"reason": string(BoundedCompactionSourceEncoding)})
+		w.recordCompactionOutcome(compactionKindAuto, "error", result, map[string]any{"reason": string(BoundedCompactionSourceEncoding)})
 		return contextRecoveryResult{}, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "context recovery could not encode folded thread items: " + err.Error(), Cause: err}
 	}
 	resultJSON, _ := json.Marshal(result.Summary)
@@ -431,17 +458,17 @@ func (w *ConversationWorker) tryContextRecovery(limitErr *provider.ContextLimitE
 	// tracked variant captures the whole delete+insert as one undo group, so a
 	// single undo reverses the fold (parity with the browser /compact fold).
 	if !w.foldPrefixIntoSummaryTracked(w.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {
-		w.recordCompactionOutcome(compactionKindRecovery, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
+		w.recordCompactionOutcome(compactionKindAuto, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
 		return contextRecoveryResult{}, &BoundedCompactionError{
 			Reason: BoundedCompactionSourceChanged, Message: "conversation changed during context recovery; nothing was folded",
 			Calls: result.Calls, Spend: result.EstimatedSpend,
 			Window: budget.window, Usage: result.Usage,
 		}
 	}
-	w.recordCompactionOutcome(compactionKindRecovery, "fold", result, map[string]any{
+	w.recordCompactionOutcome(compactionKindAuto, "fold", result, map[string]any{
 		"foldedItems": prefixEnd - prefixStart, "suffixTokens": suffixEst, "window": window,
 	})
-	w.log.Info("[recovery] folded %d items into a compaction summary (passes=%d calls=%d spend=%d window=%d suffix=%d tokens)",
+	w.log.Info("[compaction] folded %d items into a compaction summary (passes=%d calls=%d spend=%d window=%d suffix=%d tokens)",
 		prefixEnd-prefixStart, result.Passes, result.Calls, result.EstimatedSpend, window, suffixEst)
 	return contextRecoveryOutcome(before, w.getTargetItems()), nil
 }
@@ -527,7 +554,7 @@ func (w *ConversationWorker) shrinkOversizedTrailingToolResults(limitErr *provid
 			}
 		}
 		w.recordCompactionOutcome(compactionKindShrink, "shrink", shrunk, map[string]any{"toolUseId": item.ToolUseID})
-		w.log.Info("[recovery] summarized oversized tool result %s in place (calls=%d spend=%d)",
+		w.log.Info("[compaction] summarized oversized tool result %s in place (calls=%d spend=%d)",
 			item.ToolUseID, shrunk.Calls, shrunk.EstimatedSpend)
 	}
 	return nil

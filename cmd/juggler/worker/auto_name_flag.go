@@ -27,6 +27,55 @@ import "juggler/cmd/juggler/core"
 // scope, so none of these writes are undoable.
 const metaProvisionalName = "isProvisionalName"
 
+// metaAutoNamed records that the auto-namer has already been fired for this
+// conversation. It is what makes auto-naming happen ONCE, and it exists because
+// the only other available answer — "does the root items array contain a user
+// message?" — is not a property of the conversation but of its current shape,
+// and compaction changes that shape: a fold moves every root user message into
+// the nested items of a summary thread, so a doc scan reports an empty
+// conversation and the next thing typed gets treated as the first message and
+// retitles the tab.
+//
+// A conversation's identity must not depend on how much of its history is
+// currently folded, so this is recorded once and never re-derived. It rides in
+// doc metadata beside metaProvisionalName: it syncs, it survives a reload, a
+// clone inherits it, and it sits outside the UndoManager's `items` scope so
+// undoing a fold cannot resurrect it. The tab bar's "Auto-name" button passes
+// force and is not gated by it.
+const metaAutoNamed = "hasAutoNamed"
+
+// hasAutoNamed reports whether the auto-namer has already run for this
+// conversation. An absent marker — a doc written before the marker existed —
+// falls back to the doc scan that used to gate the trigger on its own, so
+// upgrading re-names nothing that was already named; seedHasAutoNamed persists
+// the answer on the next init, after which the marker alone decides. See
+// metaAutoNamed.
+func (w *ConversationWorker) hasAutoNamed() bool {
+	if named, ok := w.doc.GetMetadata(metaAutoNamed).(bool); ok {
+		return named
+	}
+	return w.firstRootUserMessageText() != ""
+}
+
+// seedHasAutoNamed persists the resolved marker once, on a worker's first init,
+// so a conversation that predates the marker keeps its current name. Only ever
+// writes when the marker is absent.
+func (w *ConversationWorker) seedHasAutoNamed() {
+	if w.doc.GetMetadata(metaAutoNamed) != nil {
+		return
+	}
+	if w.firstRootUserMessageText() != "" {
+		w.doc.SetMetadata(metaAutoNamed, true)
+	}
+}
+
+// fireAutoName invokes the injected auto-namer and records that it ran, so no
+// later message can be mistaken for the conversation's first. See metaAutoNamed.
+func (w *ConversationWorker) fireAutoName(firstMessage, provider, model, thinking string, force bool) {
+	w.doc.SetMetadata(metaAutoNamed, true)
+	w.autoNameFunc(w.conversationID, firstMessage, provider, model, thinking, force)
+}
+
 // NameIsProvisional reports whether this conversation's name may still be
 // replaced by the auto-namer. An absent marker — a doc written before the marker
 // existed — falls back to the name shape that used to gate auto-naming on its

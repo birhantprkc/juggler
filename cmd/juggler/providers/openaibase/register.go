@@ -34,8 +34,7 @@ type Descriptor struct {
 	// no-auth model list, available once its base URL is set). When true and no
 	// key is present, the client is built keyless — the SDK sends no
 	// Authorization header at all.
-	APIKeyOptional   bool
-	ContextAdmission provider.ContextAdmissionPolicy
+	APIKeyOptional bool
 	// CheapModel names this provider's preferred low-cost / fast model id for
 	// out-of-band micro-tasks (auto-naming a tab). Empty ⇒ no cheap tier.
 	// Surfaced on ProviderInfo.CheapModel; validated against the live list
@@ -142,7 +141,6 @@ func Register(d Descriptor) {
 		APIKeyURL:           d.APIKeyURL,
 		AutoDetect:          d.AutoDetect,
 		APIKeyOptional:      d.APIKeyOptional,
-		ContextAdmission:    d.ContextAdmission,
 		ModelContextWindows: d.ContextWindows,
 		CheapModel:          d.CheapModel,
 		// A provider that does not opt into forced tool choice cannot reliably

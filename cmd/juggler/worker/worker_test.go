@@ -764,6 +764,32 @@ func TestBuildLLMRequest_ExplicitContinuationIsCallScoped(t *testing.T) {
 	}
 }
 
+// The automatic-compaction gate reaches the provider as an admission ceiling,
+// not as a worker-side branch: disabling it asks for the hard window so the
+// conversation runs to the real wall instead of being summarized silently.
+func TestBuildLLMRequest_AutoCompactGateSetsContextCeiling(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+
+	var enabled map[string]any
+	if err := json.Unmarshal(w.buildLLMRequest(&ContextResult{}, nil, "txn-enabled", false), &enabled); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if _, present := enabled["contextCeilingFraction"]; present {
+		t.Fatalf("contextCeilingFraction = %v, want absent so admission uses its soft default", enabled["contextCeilingFraction"])
+	}
+
+	w.autoCompactGate = func() bool { return false }
+	var disabled map[string]any
+	if err := json.Unmarshal(w.buildLLMRequest(&ContextResult{}, nil, "txn-disabled", false), &disabled); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if got, ok := disabled["contextCeilingFraction"].(float64); !ok || got != 1 {
+		t.Fatalf("contextCeilingFraction = %v, want 1 (hard window)", disabled["contextCeilingFraction"])
+	}
+}
+
 // TestBuildLLMRequest_ForcedToolChoice verifies the generic forced-tool
 // mechanism at the worker boundary: a thread carrying a `forceTool` Yjs field
 // (set by a plugin) makes buildLLMRequest emit a provider-agnostic toolChoice on
