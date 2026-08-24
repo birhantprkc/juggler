@@ -25,6 +25,7 @@ of changes; this project follows semantic versioning.
 - The Node engine host now starts on every supported Node 22, not just 22.7 and later
 - A sub-agent is no longer offered the tools it could only have failed to call
 - A resting conversation now says when it was last updated, at the end of the transcript
+- Find no longer counts hidden text, and reveals the match itself rather than the message holding it
 
 ## [0.5.7] - 2026-08-19
 

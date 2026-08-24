@@ -10,10 +10,11 @@ import { expandCollapsibleContaining } from '../utils/collapsible.js';
  * builds an ordered list of matches as DOM `Range`s, and paints them with the
  * CSS Custom Highlight API — never by wrapping matches in `<span>`s, because the
  * conversation renderer diffs and animates message elements and would clobber
- * injected wrapper nodes mid-stream. All DOM mutation is confined to the
- * highlight registry and a `scrollIntoView`, so the controller is safe to drive
- * from a tiny presentational find-bar component and is unit-testable in
- * isolation.
+ * injected wrapper nodes mid-stream. DOM mutation is confined to the highlight
+ * registry, un-clipping whatever hides the active match (a collapsed
+ * collapsible, a `content-visibility` row skip) and the scroll offsets that
+ * reveal it, so the controller is safe to drive from a tiny presentational
+ * find-bar component and is unit-testable in isolation.
  *
  * The API (`setRoot`/`search`/`next`/`prev`/`refresh`/`clear` plus `total` and
  * `current` getters) is stable so the find-bar can rely on it verbatim. Every
@@ -71,6 +72,8 @@ export default class FindController {
   #matches = [];
   /** @type {number} 0-based index of the active match (meaningless when empty). */
   #index = 0;
+  /** @type {boolean} Whether the active match has been scrolled to since the last search. */
+  #revealed = false;
   /** @type {boolean} Whether the CSS Custom Highlight API is available. */
   #supported = false;
 
@@ -116,6 +119,7 @@ export default class FindController {
     const prev = this.#currentStartPoint();
     this.#matches = this.#computeMatches();
     this.#index = this.#indexAtOrAfter(prev);
+    this.#revealed = false;
     this.#paintAll();
     this.#paintCurrent();
     return this.#result();
@@ -172,6 +176,7 @@ export default class FindController {
     this.#query = '';
     this.#matches = [];
     this.#index = 0;
+    this.#revealed = false;
     if (this.#supported) {
       this.#registry.delete(HL_ALL);
       this.#registry.delete(HL_CURRENT);
@@ -199,13 +204,20 @@ export default class FindController {
   /**
    * Move the active index by `dir` with wrap-around, repaint just the current
    * highlight, and scroll it into view.
+   *
+   * The first navigation after a search reveals the match already marked active
+   * rather than moving off it. `search` picks an active match and paints it but
+   * deliberately doesn't scroll (that would yank the view on every keystroke of
+   * a debounced query), so stepping straight away would jump the counter from
+   * "1 of 9" to "2 of 9" having never shown the user where match 1 was.
    * @param {number} dir - +1 for next, -1 for prev.
    * @returns {FindResult} The updated match summary.
    */
   #step(dir) {
     const total = this.#matches.length;
     if (!total) return this.#result();
-    this.#index = (this.#index + dir + total) % total;
+    if (this.#revealed) this.#index = (this.#index + dir + total) % total;
+    this.#revealed = true;
     this.#paintCurrent();
     this.#scrollToCurrent();
     return this.#result();
@@ -304,11 +316,19 @@ export default class FindController {
   }
 
   /**
-   * Whether a text node should be searched. Skips content inside SCRIPT/STYLE or
-   * inside an element hidden via the `hidden` attribute or `aria-hidden="true"`.
-   * Overflow-clipped (merely off-screen) content is intentionally NOT skipped —
-   * `offsetParent`-style visibility checks are unreliable in the reversed,
-   * overflow-clipped conversation layout.
+   * Whether a text node should be searched. Skips content inside SCRIPT/STYLE and
+   * anything display-hidden: the `hidden` attribute, `aria-hidden="true"`, the
+   * `.hidden` utility class, or an inline `display: none`. The message list
+   * permanently carries hidden chrome (the footer's Stop/Undo/Pause controls, the
+   * thread column actions), and counting text nobody can see makes the match
+   * total disagree with what the highlights show.
+   *
+   * Content that is merely clipped or skipped for rendering — an `is-collapsed`
+   * collapsible, a `cv-off` row under `content-visibility: hidden` — IS searched:
+   * it is real conversation text, and {@link #revealCurrent} un-clips it on the
+   * way to the match. `offsetParent`/`getComputedStyle` checks are deliberately
+   * avoided here: the walk runs on every keystroke and every streaming refresh,
+   * and forcing layout per text node would cost more than the whole search.
    * @param {Node} node - The text node to test.
    * @returns {boolean} True when the node's text should be searched.
    */
@@ -317,6 +337,8 @@ export default class FindController {
       const tag = el.tagName;
       if (tag === 'SCRIPT' || tag === 'STYLE') return false;
       if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return false;
+      if (el.classList.contains('hidden')) return false;
+      if (/** @type {HTMLElement} */ (el).style?.display === 'none') return false;
       if (el === this.#root) break;
     }
     return true;
@@ -369,9 +391,10 @@ export default class FindController {
   }
 
   /**
-   * Reveal and scroll the active match into view: expand any collapsed
-   * collapsible around it first (so a clamped-away match becomes visible), then
-   * reuse `conversation-area`'s smooth, centred `scrollIntoView`.
+   * Reveal the active match: un-clip everything hiding it, then scroll it into
+   * view. Both halves work on the match's own geometry, not its element's — a
+   * long paste is a single text node in a single box, so anything that reveals
+   * the box parks a match near its end far off-screen.
    * @returns {void}
    */
   #scrollToCurrent() {
@@ -380,7 +403,98 @@ export default class FindController {
     const sc = cur.startContainer;
     const el = sc.nodeType === Node.ELEMENT_NODE ? /** @type {Element} */ (sc) : sc.parentElement;
     if (!el) return;
+    this.#unclip(el);
+    const rect = this.#matchRect(cur, el);
+    if (!rect) return;
+    this.#revealHorizontally(el, rect);
+    this.#revealVertically(rect);
+  }
+
+  /**
+   * Give the match a box to occupy. Two things clip it away, and neither is a
+   * reason to have excluded it from the match set:
+   *   - a collapsed `.collapsible` clamp (a long user message or thread summary
+   *     showing its first 15rem behind a "Show more"), expanded via the shared
+   *     helper so the toggle and its persisted state stay in step;
+   *   - a `cv-off` row, which conversation-area applies to rows more than ~3
+   *     viewports away to skip their rendering (`content-visibility: hidden`).
+   *     A skipped subtree generates no boxes, so the highlight cannot paint and
+   *     there is nothing to measure or scroll to.
+   * Un-skipping here doesn't fight the row-visibility observers: the render
+   * observer independently clears `cv-off` within ~1.5 viewports (where the
+   * match is headed), and the skip observer only re-queues past ~3, so a row we
+   * scroll to stays rendered.
+   * @param {Element} el - The element containing the match's start.
+   * @returns {void}
+   */
+  #unclip(el) {
     expandCollapsibleContaining(el);
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    for (let a = /** @type {Element|null} */ (el); a; a = a.parentElement) {
+      if (a.classList.contains('cv-off')) a.classList.remove('cv-off');
+      if (a === this.#root) break;
+    }
+  }
+
+  /**
+   * The active match's box in viewport coordinates, falling back to its first
+   * client rect (a match wrapped across lines) and then to its element's box (a
+   * match with no rects of its own).
+   * @param {Range} range - The active match.
+   * @param {Element} el - The element containing the match's start.
+   * @returns {DOMRect | null} The rect to reveal, or null when nothing has a box.
+   */
+  #matchRect(range, el) {
+    const whole = range.getBoundingClientRect();
+    if (whole && (whole.width || whole.height)) return whole;
+    const first = range.getClientRects?.()?.[0];
+    if (first && (first.width || first.height)) return first;
+    const box = el.getBoundingClientRect();
+    return box.width || box.height ? box : null;
+  }
+
+  /**
+   * Scroll the root (a column's `#message-list`) so the match is on screen,
+   * centring it when it isn't. Direct clamped `scrollTop` maths, never
+   * `Element.scrollIntoView`: scrollTop is container-scoped, so it can neither
+   * overshoot nor drag an ancestor along — `scrollIntoView`'s default
+   * `inline: 'nearest'` would also slide the horizontal column container, and at
+   * phone widths that fights the container's scroll snap. The reversed scroller's
+   * scrollTop still increases toward the content end, so a viewport-space delta
+   * applies unchanged. Instant, not smooth: holding Enter through a dozen matches
+   * shouldn't queue a dozen glides.
+   * @param {DOMRect} rect - The match's box, in viewport coordinates.
+   * @returns {void}
+   */
+  #revealVertically(rect) {
+    const root = /** @type {Element|null} */ (this.#root);
+    if (!root) return;
+    const view = root.getBoundingClientRect();
+    if (rect.top >= view.top && rect.bottom <= view.bottom) return;
+    const delta = rect.top + rect.height / 2 - (view.top + view.height / 2);
+    root.scrollTo({ top: root.scrollTop + delta, behavior: 'instant' });
+  }
+
+  /**
+   * Bring the match in from the side when it sits inside a horizontal scroller —
+   * a long line in a code block, a wide table. Only the nearest such ancestor
+   * below the root moves, and only one that genuinely scrolls: a `.collapsible`
+   * clamp overflows too, but it clips rather than scrolls, and nudging its
+   * scrollLeft would shift content the user never asked to move.
+   * @param {Element} el - The element containing the match's start.
+   * @param {DOMRect} rect - The match's box, in viewport coordinates.
+   * @returns {void}
+   */
+  #revealHorizontally(el, rect) {
+    for (let a = /** @type {Element|null} */ (el); a && a !== this.#root; a = a.parentElement) {
+      if (a.scrollWidth <= a.clientWidth + 1) continue;
+      const overflowX = getComputedStyle(a).overflowX;
+      if (overflowX !== 'auto' && overflowX !== 'scroll') continue;
+      const box = a.getBoundingClientRect();
+      let delta = 0;
+      if (rect.left < box.left) delta = rect.left - box.left;
+      else if (rect.right > box.right) delta = rect.right - box.right;
+      if (delta) a.scrollTo({ left: a.scrollLeft + delta, behavior: 'instant' });
+      return;
+    }
   }
 }

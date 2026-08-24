@@ -5,20 +5,27 @@
 /**
  * "Find in conversation" (⌘F) unit tests.
  *
- * Covers three layers: the framework-free {@link FindController} match engine
- * (case-sensitivity, whole-word, next/prev wrap-around, empty queries, and
- * post-mutation refresh), the `find-in-conversation` shortcut definition in the
- * shared {@link keyShortcutManager} table, the singleton {@link findBar}'s DOM
+ * Covers four layers: the framework-free {@link FindController} match engine
+ * (case-sensitivity, whole-word, next/prev wrap-around, empty queries, what
+ * counts as searchable text, and post-mutation refresh), the
+ * `find-in-conversation` shortcut definition in the shared
+ * {@link keyShortcutManager} table, the singleton {@link findBar}'s DOM
  * interaction (open/focus, debounced typing → counter, Enter/Shift+Enter
  * navigation, whole-word toggle, Escape-to-close focus restoration, and the
- * streaming live-recount), and the {@link expandCollapsibleContaining} auto-open
- * helper the controller uses to reveal a buried match.
+ * streaming live-recount), and revealing the active match — the
+ * {@link expandCollapsibleContaining} auto-open helper, the `cv-off` row
+ * un-skip, and the geometry that puts the match itself on screen.
+ *
+ * The count and the reveal are two halves of one guarantee: every match the
+ * counter claims is one the user can be shown. So the engine tests pin down both
+ * sides of the visibility line — text hidden from view is not counted, text
+ * merely clipped is — and the reveal tests assert on real layout.
  *
  * The CSS Custom Highlight paint is feature-detected and may be absent in the
- * headless engine, so nothing here asserts on `CSS.highlights` or on scroll
- * offsets — only on `total`/`current`, the counter text, and the DOM. All
- * fixtures attach to `document.body` and are torn down (and the bar closed) in
- * `finally` blocks so no state leaks into sibling suites.
+ * headless engine, so nothing here asserts on `CSS.highlights` — only on
+ * `total`/`current`, the counter text, the DOM, and (in the reveal section)
+ * measured rects. All fixtures attach to `document.body` and are torn down (and
+ * the bar closed) in `finally` blocks so no state leaks into sibling suites.
  * @module unit-tests/find-test
  */
 
@@ -196,6 +203,7 @@ export async function runTests(_ctx) {
       const fc = new FindController();
       fc.setRoot(root);
       assert(fc.search('cat').current === 1, 'starts at match 1');
+      assert(fc.next().current === 1, 'the first next() reveals match 1 rather than stepping past it');
       assert(fc.next().current === 2, 'next → 2');
       assert(fc.next().current === 1, 'next wraps 2 → 1');
       assert(fc.prev().current === 2, 'prev wraps 1 → 2');
@@ -217,6 +225,43 @@ export async function runTests(_ctx) {
       fc.search('cat');
       fc.clear();
       assert(fc.total === 0 && fc.current === 0, 'clear() resets total/current');
+    } finally {
+      root.remove();
+    }
+  });
+
+  await run('engine: text hidden from view is not counted', () => {
+    // The message list permanently carries hidden chrome — the footer's
+    // Stop/Undo/Pause controls, the thread column actions — and counting text
+    // nobody can see makes the total disagree with the highlights.
+    const root = attach(
+      '<div class="msg">visible needle</div>'
+      + '<div class="hidden">class-hidden needle</div>'
+      + '<div style="display:none">inline-hidden needle</div>'
+      + '<div hidden>attribute-hidden needle</div>'
+      + '<div aria-hidden="true">aria-hidden needle</div>');
+    try {
+      const fc = new FindController();
+      fc.setRoot(root);
+      const r = fc.search('needle');
+      assert(r.total === 1, `only the visible needle should count, got ${r.total}`);
+    } finally {
+      root.remove();
+    }
+  });
+
+  await run('engine: clipped-but-real text is still counted', () => {
+    // Neither of these is hidden — a "Show more" clamp and a row skipped for
+    // rendering are conversation text the user can be taken to, so they must
+    // stay findable. Revealing them is #scrollToCurrent's job (section D).
+    const root = attach(
+      '<div class="collapsible is-collapsed">clamped needle</div>'
+      + '<div class="cv-off">render-skipped needle</div>');
+    try {
+      const fc = new FindController();
+      fc.setRoot(root);
+      const r = fc.search('needle');
+      assert(r.total === 2, `clipped text should still count, got ${r.total}`);
     } finally {
       root.remove();
     }
@@ -296,6 +341,10 @@ export async function runTests(_ctx) {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       await sleep(INPUT_WAIT_MS);
       assert(counterCurrent(col) === 1, 'starts at match 1');
+      // Typing doesn't scroll (it would yank the view on every keystroke), so
+      // the first Enter shows match 1 where it lies instead of stepping off it.
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      assert(counterCurrent(col) === 1, `the first Enter should reveal match 1, got "${counterText(col)}"`);
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       assert(counterCurrent(col) === 2, `Enter should advance to 2, got "${counterText(col)}"`);
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
@@ -370,7 +419,60 @@ export async function runTests(_ctx) {
     }
   });
 
-  // ── D. Auto-expand a collapsed block around a match ──────────────────
+  // ── D. Revealing the active match ────────────────────────────────────
+
+  await run('reveal: navigating renders a row skipped by content-visibility', () => {
+    const root = attach('<div class="row cv-off">a buried needle</div>');
+    try {
+      const row = /** @type {HTMLElement} */ (root.querySelector('.row'));
+      const fc = new FindController();
+      fc.setRoot(root);
+      assert(fc.search('needle').total === 1, 'the skipped row is searchable');
+      fc.next();
+      assert(!row.classList.contains('cv-off'),
+        'navigating un-skips the row, so the highlight has a box to paint in');
+    } finally {
+      root.remove();
+    }
+  });
+
+  await run('reveal: navigating scrolls the match itself into view, not its block', () => {
+    // A long paste is ONE text node in ONE box. Revealing the box (what
+    // scrollIntoView does) centres the paste and parks a match near its end
+    // off-screen, so the reveal has to work on the match's own rect.
+    const root = attach('');
+    try {
+      root.style.height = '200px';
+      root.style.overflow = 'auto';
+      const block = document.createElement('div');
+      block.style.whiteSpace = 'pre-wrap';
+      const lines = [];
+      for (let i = 0; i < 200; i++) lines.push(i === 180 ? 'here is the needle' : `filler line ${i}`);
+      block.textContent = lines.join('\n');
+      root.appendChild(block);
+      assert(block.getBoundingClientRect().height > 600,
+        'fixture block must be far taller than the scroller for this to mean anything');
+
+      const fc = new FindController();
+      fc.setRoot(root);
+      assert(fc.search('needle').total === 1, 'exactly one match in the fixture');
+      fc.next(); // the first navigation reveals the active match
+
+      const text = /** @type {Text} */ (block.firstChild);
+      const at = (block.textContent || '').indexOf('needle');
+      const range = document.createRange();
+      range.setStart(text, at);
+      range.setEnd(text, at + 'needle'.length);
+      const match = range.getBoundingClientRect();
+      const view = root.getBoundingClientRect();
+      assert(match.top >= view.top - 1 && match.bottom <= view.bottom + 1,
+        `match should sit inside the scroller (match ${match.top}–${match.bottom}, view ${view.top}–${view.bottom})`);
+    } finally {
+      root.remove();
+    }
+  });
+
+  // ── E. Auto-expand a collapsed block around a match ──────────────────
 
   await run('auto-expand: expands the collapsed collapsible around a node', () => {
     const root = attach(
