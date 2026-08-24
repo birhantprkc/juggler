@@ -92,7 +92,7 @@ func (a *appState) watchWindowStartup(e *winEntry, up chan struct{}) {
 	}
 }
 
-// warnIfWindowNeverVisible polls a newly-opened non-initial window (File ▸ New
+// warnIfWindowNeverVisible polls a newly-opened non-initial window (Session ▸ New
 // Window, or a second-instance hand-off) and logs loudly if it never becomes
 // visible within windowStartupTimeout. Unlike the initial-window watchdog it does
 // not crash the process — other windows may be healthy — but it makes a window

@@ -82,7 +82,7 @@ export function setupHeaderControls(session) {
     updateButtons();
   };
 
-  // Both the header path chip and the native File ▸ Open… menu event open the
+  // Both the header path chip and the native Session ▸ Open… menu event open the
   // same project picker; the module is imported lazily so the picker (and its
   // deps) stay off the initial header render path.
   const openPicker = async () => {
@@ -163,7 +163,7 @@ export function setupHeaderControls(session) {
     return true;
   });
 
-  // The native File ▸ New Window menu item and its ⇧⌘N accelerator dispatch this
+  // The native Session ▸ New Window menu item and its ⇧⌘N accelerator dispatch this
   // event on the focused window. The native accelerator preempts the webview
   // keydown in the desktop app, so the keyShortcutManager binding above only runs
   // in browser tabs; routing the menu/keyboard case back through openNewWindow()
@@ -201,7 +201,7 @@ export function setupHeaderControls(session) {
       .then((c) => { if (c) updateClientsIndicator(c.clientCount); });
   }
 
-  // Native menu (File ▸ Open…) bridges to the picker via this event, since the
+  // Native menu (Session ▸ Open…) bridges to the picker via this event, since the
   // Go side can't import the JS module directly. Same entry point as the
   // header path-display click above.
   window.addEventListener('juggler:open-project', openPicker);

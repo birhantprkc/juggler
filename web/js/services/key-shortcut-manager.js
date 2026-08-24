@@ -230,7 +230,7 @@ const SHORTCUT_DEFS = [
     // ⌥N/Alt+N is the alias that works on every surface. Browsers reserve
     // ⌘N/Ctrl+N for their own New window and never deliver it to the page, so in
     // a browser tab the binding above cannot fire at all — only the desktop app
-    // reaches this command by that chord, via its native File ▸ New Tab
+    // reaches this command by that chord, via its native Session ▸ New Tab
     // accelerator. No browser claims ⌥N, and it is free of native text-editing
     // meaning, so it is safe to bind app-wide rather than per-surface.
     aliasBindings: [{ alt: true, key: 'n' }],

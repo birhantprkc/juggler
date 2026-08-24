@@ -74,7 +74,7 @@ type winEntry struct {
 
 	// currentTheme is the last page-reported theme for this native window. It is
 	// used to paint chrome immediately on show and as the inherited theme for
-	// File ▸ New Window.
+	// Session ▸ New Window.
 	currentTheme string
 
 	// geom holds the frame this window persists, owned by the save loop. It
@@ -787,7 +787,7 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// frame. On Windows the window is created visible (platformWindowHidden is
 	// false), so Wails fills the bare frame with options.BackgroundColour on
 	// WM_ERASEBKGND until WebView2 paints; left unset that fill is black, which
-	// shows as a flash. Match it to the theme: the inherited theme for File ▸ New
+	// shows as a flash. Match it to the theme: the inherited theme for Session ▸ New
 	// Window, else the last theme any window reported this session or a previous
 	// launch (so a restored/Finder-launched window matches where you left off),
 	// else the app's dark default.

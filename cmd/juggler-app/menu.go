@@ -10,12 +10,12 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// installAppMenu builds the native application menu. File ▸ Open… asks the
-// focused window's page to show the project picker; File ▸ New Tab creates a
-// conversation in the focused window (mirrors the in-app Cmd+N shortcut); File ▸
-// New Window opens another in-process window (no project → picker); View carries
-// dev-only reload/devtools plus Toggle Full Screen; Help ▸ Learn More opens the
-// browser.
+// installAppMenu builds the native application menu. Session ▸ Open… asks the
+// focused window's page to show the project picker; Session ▸ New Tab creates a
+// conversation in the focused window (mirrors the in-app Cmd+N shortcut);
+// Session ▸ New Window opens another in-process window (no project → picker);
+// View carries dev-only reload/devtools plus Toggle Full Screen; Help ▸ Learn
+// More opens the browser.
 func installAppMenu(a *appState, devMode bool) {
 	// Linux renders the application menu as a GtkMenuBar embedded at the top of
 	// the window (Wails prepends it into the window's vbox), which looks wrong
@@ -31,8 +31,8 @@ func installAppMenu(a *appState, devMode bool) {
 	menu := application.NewMenu()
 	buildAppMenu(a, menu)
 
-	fileMenu := menu.AddSubmenu("File")
-	fileMenu.Add("Open...").
+	sessionMenu := menu.AddSubmenu("Session")
+	sessionMenu.Add("Open...").
 		SetAccelerator("CmdOrCtrl+o").
 		OnClick(func(_ *application.Context) {
 			if win := a.app.Window.Current(); win != nil {
@@ -46,7 +46,7 @@ func installAppMenu(a *appState, devMode bool) {
 	// trigger. It is also the only path Cmd+N has anywhere: a browser reserves
 	// that chord for its own New window and never delivers it to the page, which
 	// is why the frontend binds Alt+N as an alias (see key-shortcut-manager.js).
-	fileMenu.Add("New Tab").
+	sessionMenu.Add("New Tab").
 		SetAccelerator("CmdOrCtrl+n").
 		OnClick(func(_ *application.Context) {
 			if win := a.app.Window.Current(); win != nil {
@@ -60,15 +60,15 @@ func installAppMenu(a *appState, devMode bool) {
 	// in Go could only pass the global last-used values, not the source window's —
 	// which is what made a new window adopt the last-active appearance instead of
 	// the one it was launched from.
-	fileMenu.Add("New Window").
+	sessionMenu.Add("New Window").
 		SetAccelerator("CmdOrCtrl+Shift+n").
 		OnClick(func(_ *application.Context) {
 			if win := a.app.Window.Current(); win != nil {
 				win.ExecJS("window.dispatchEvent(new CustomEvent('juggler:new-window'))")
 			}
 		})
-	fileMenu.AddSeparator()
-	fileMenu.AddRole(application.CloseWindow)
+	sessionMenu.AddSeparator()
+	sessionMenu.AddRole(application.CloseWindow)
 
 	menu.AddRole(application.EditMenu)
 

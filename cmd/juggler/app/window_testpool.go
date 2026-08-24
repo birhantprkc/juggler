@@ -559,11 +559,11 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 // View menu full of zoom/actual-size commands that break our fixed layout, and
 // Reload/devtools entries that should only exist in dev mode.
 //
-//   - File ▸ Open…       opens the project-folder picker (same as clicking the
-//     project path in the header). Driven via a CustomEvent the page listens
-//     for, mirroring the Ctrl+Tab bridge.
-//   - File ▸ New Window  spawns a fresh, independent juggler process.
-//   - View               carries Zoom In/Out (font-size zoom, mirroring the
+//   - Session ▸ Open…      opens the project-folder picker (same as clicking
+//     the project path in the header). Driven via a CustomEvent the page
+//     listens for, mirroring the Ctrl+Tab bridge.
+//   - Session ▸ New Window spawns a fresh, independent juggler process.
+//   - View                 carries Zoom In/Out (font-size zoom, mirroring the
 //     header −/+ buttons — never the webview's layout-breaking page zoom) plus
 //     Reload / Force Reload / Open Developer Tools ONLY in dev mode, and Toggle
 //     Full Screen always.
@@ -578,21 +578,21 @@ func installAppMenu(app *application.App, win *application.WebviewWindow, devMod
 	// macOS application menu (About / Services / Hide / Quit). No-op elsewhere.
 	menu.AddRole(application.AppMenu)
 
-	fileMenu := menu.AddSubmenu("File")
-	fileMenu.Add("Open...").
+	sessionMenu := menu.AddSubmenu("Session")
+	sessionMenu.Add("Open...").
 		SetAccelerator("CmdOrCtrl+o").
 		OnClick(func(_ *application.Context) {
 			win.ExecJS("window.dispatchEvent(new CustomEvent('juggler:open-project'))")
 		})
-	fileMenu.Add("New Window").
+	sessionMenu.Add("New Window").
 		SetAccelerator("CmdOrCtrl+n").
 		OnClick(func(_ *application.Context) {
 			if err := spawnNewWindow(""); err != nil {
 				jlog.Error("New Window failed: %v", err)
 			}
 		})
-	fileMenu.AddSeparator()
-	fileMenu.AddRole(application.CloseWindow)
+	sessionMenu.AddSeparator()
+	sessionMenu.AddRole(application.CloseWindow)
 
 	// Standard Undo/Redo/Cut/Copy/Paste/Select All.
 	menu.AddRole(application.EditMenu)
