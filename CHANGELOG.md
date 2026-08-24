@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- `juggler run "<prompt>"` does one prompt unattended and exits with a status
+
 ## [0.5.8] - 2026-08-24
 
 - A tab marked while you were away stays marked until you look at it

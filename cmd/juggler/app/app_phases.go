@@ -39,12 +39,12 @@ func (a *App) loadConfig() error {
 	a.projectPath = projectPath
 
 	if projectPath == "" {
-		fmt.Println("📋 Starting in no-project mode (open a project from the UI)")
+		fmt.Fprintln(a.startupOut(), "📋 Starting in no-project mode (open a project from the UI)")
 		a.cfg = core.DefaultConfig()
 		return nil
 	}
 
-	fmt.Println("📋 Loading configuration...")
+	fmt.Fprintln(a.startupOut(), "📋 Loading configuration...")
 	cfg, err := core.LoadConfig(projectPath)
 	if err != nil {
 		fatal("Failed to load config: %v", err)
@@ -93,7 +93,7 @@ func (a *App) resolveStartupProject() (string, error) {
 		if !hasJugglerDir(wd) {
 			home, _ := os.UserHomeDir()
 			if core.IsUnsuitableProjectRoot(wd, home) {
-				fmt.Printf("ℹ️  %s looks like a system/home location; not creating a session here.\n", wd)
+				fmt.Fprintf(a.startupOut(), "ℹ️  %s looks like a system/home location; not creating a session here.\n", wd)
 				return "", nil
 			}
 		}
@@ -303,7 +303,7 @@ func (a *App) initServer() error {
 	// reading instance.json) all see the real port — findAvailablePort may have
 	// moved past a busy one. The stdout line is the spawn-time channel; the lock
 	// file is the discover-an-already-running-instance channel.
-	fmt.Printf("JUGGLER_ADDR=%s\n", srv.GetAddr())
+	fmt.Fprintf(a.startupOut(), "JUGGLER_ADDR=%s\n", srv.GetAddr())
 	if a.lock != nil {
 		if host, portStr, err := net.SplitHostPort(srv.GetAddr()); err == nil {
 			if port, err := strconv.Atoi(portStr); err == nil {
@@ -359,7 +359,10 @@ func (a *App) initEngineWatcher() error {
 			jlog.Error("Engine did not connect within %v — server is shutting down", engineConnectTimeout)
 			return
 		}
-		a.printInteractiveBanner()
+		// The interactive banner offers keys nobody is there to press.
+		if a.flags.oneShot == nil {
+			a.printInteractiveBanner()
+		}
 		a.server.StartBackgroundServices()
 	}()
 	return nil

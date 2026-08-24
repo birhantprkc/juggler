@@ -16,6 +16,7 @@ import { reloadRegistries, initAllRegistries } from './registries/reload-registr
 import wsService from './services/websocket.js';
 import actionExecutor from './services/action-executor.js';
 import workerManager from './services/worker-manager.js';
+import { runOneShot } from './engine-one-shot.js';
 
 /**
  * How often the engine tells the server its realm is still running. Must stay
@@ -113,8 +114,8 @@ class EngineApp {
   }
 
   /**
-   * The engine realm's session, for callers that reach the engine through
-   * `globalThis.engineApp` rather than being handed one. Null before setup.
+   * The engine realm's session, for callers holding this engine rather than
+   * being handed one. Null before setup.
    * @returns {import('./model/session.js').default|null} The session, or null.
    */
   getSession() {
@@ -196,11 +197,25 @@ class EngineApp {
       return;
     }
 
+    // One unattended run, start to finish. It is addressed to the engine
+    // because only the engine can seed a conversation (see engine-one-shot.js),
+    // and the caller is blocked on the single reply it sends.
+    if (data.type === 'run-one-shot') {
+      runOneShot(this.getSession(), data);
+      return;
+    }
+
     // Ignore other message types (the engine doesn't need UI routing)
   }
 }
 
-// Initialize engine
+// Initialize engine.
+//
+// The globals are a debugging convenience for a page that has a console, and
+// neither production host is one: the engine runs in a module worker or under
+// Node, and neither has a `window`. So nothing may depend on reaching the engine
+// through a global — the module-scope `engine` here, and the server messages it
+// handles, are the only ways in.
 const engine = new EngineApp();
 if (typeof window !== 'undefined') {
   /** @type {any} */ (window).__jugglerEngine = engine;

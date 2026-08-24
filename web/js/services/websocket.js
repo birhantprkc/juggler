@@ -777,6 +777,18 @@ class WebSocketService {
   }
 
   /**
+   * Report the outcome of the run the server asked this engine to make.
+   *
+   * Not silent: the process that asked is blocked on this message, so a send
+   * that fails is the difference between a result and a run that never answers.
+   * @param {{requestId: string, status: string, conversationId: string, turns: number, finalText: string, parkedTool: string, errorText: string}} result - The run's outcome
+   * @returns {boolean} True if sent
+   */
+  sendOneShotResult(result) {
+    return this._sendJson({ type: 'one-shot-result', ...result }, 'one-shot-result');
+  }
+
+  /**
    * Bridge a cross-window event from the engine to every viewer via the
    * server. Viewer-side WS handler replays the payload into a local
    * BroadcastChannel(channel) so in-page subscribers fire.

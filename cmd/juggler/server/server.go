@@ -250,6 +250,10 @@ type Server struct {
 	// through it. nil only before New finishes (and in bare test Servers).
 	settings *settingsStore
 
+	// oneShot is the round-trip behind `juggler run`: one prompt handed to the
+	// engine, one result back. Idle in every other run (see one_shot.go).
+	oneShot oneShotRoundTrip
+
 	// engineReadyGate, when set, is called at the start of every LLM turn (and
 	// before a worker-driven strategy hook) to guarantee the hidden engine
 	// WebView is connected before the turn can emit any tool request. Returns

@@ -64,6 +64,7 @@ import { runTests as runContextItemSeedExecuteTests } from '../unit-tests/contex
 import { runTests as runConversationNameTests } from '../unit-tests/conversation-name-persistence-test.js';
 import { runTests as runConversationNamingTests } from '../unit-tests/conversation-naming-test.js';
 import { runTests as runNewConversationSystemPromptTests } from '../unit-tests/new-conversation-system-prompt-test.js';
+import { runTests as runOneShotRunTests } from '../unit-tests/one-shot-run-test.js';
 import { runTests as runDraftPersistenceTests } from '../unit-tests/draft-persistence-test.js';
 import { runTests as runDraftCloseFlushTests } from '../unit-tests/draft-close-flush-test.js';
 import { runTests as runMessageHistoryTests } from '../unit-tests/message-history-test.js';
@@ -322,6 +323,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:conversation-name-persistence', run: runConversationNameTests },
   { name: 'unit:conversation-naming', run: runConversationNamingTests },
   { name: 'unit:new-conversation-system-prompt', run: runNewConversationSystemPromptTests },
+  { name: 'unit:one-shot-run', run: runOneShotRunTests },
   { name: 'unit:draft-persistence', run: runDraftPersistenceTests },
   { name: 'unit:draft-close-flush', run: runDraftCloseFlushTests },
   { name: 'unit:message-history', run: runMessageHistoryTests },

@@ -159,6 +159,18 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 				}
 				s.viewerSendRawToAll(msgBytes)
 
+			case "one-shot-result":
+				// Engine-only, like engine-bridge: a viewer answering a run the
+				// engine was asked to make would be answering for it.
+				if role != ClientRoleEngine {
+					continue
+				}
+				res, ok := unmarshalWS[OneShotResult](msgBytes, "one-shot-result")
+				if !ok {
+					continue
+				}
+				s.oneShot.deliver(res)
+
 			case "session-changed":
 				s.broadcastToAll(map[string]any{"type": "session-changed"})
 

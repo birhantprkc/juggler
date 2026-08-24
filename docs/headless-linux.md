@@ -55,6 +55,37 @@ The server prints its URL and a QR code. It is localhost-only by default —
 press `p` in its terminal (or start with `--public`) to allow other devices on
 your network to connect. The default port is 3939 (`--port` overrides).
 
+## Running one prompt and exiting
+
+`juggler run` does one prompt with nobody watching, then exits with a status —
+for CI jobs, git hooks, and batch work over many repositories.
+
+```bash
+juggler run "Fix the failing test in cmd/parser and explain what was wrong"
+```
+
+The answer goes to stdout and nothing else does, so it pipes. Options come
+before the prompt: `--project <dir>` (defaults to the current directory),
+`--timeout <duration>` (default 30m), `--strategy <id>` (default `yolo`), and
+`--json` for the whole outcome — conversation id and folder, turns, the answer —
+as one object. A prompt of `-` is read from stdin.
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | Finished. |
+| 1 | The turn failed. |
+| 2 | The command line was wrong. |
+| 3 | A tool wanted a human, and there wasn't one. |
+| 4 | The run outlived `--timeout`. |
+
+The run approves its own tools, so it can edit files and execute commands
+without asking. Give it a project you are willing to have changed — a checkout,
+a container, a copy — rather than anything you cannot restore. Where a run went
+wrong is in its conversation folder under `.juggler/`, named on every non-zero
+exit; the model used is whichever one is configured as the default.
+
 ## Choosing the engine host
 
 `JUGGLER_ENGINE_HOST` selects where the engine runs:

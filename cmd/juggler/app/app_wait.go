@@ -292,7 +292,7 @@ func (a *App) waitForExit() {
 	}
 
 	// Key reader (TTY headless mode only).
-	if !a.flags.window && a.stdinIsTTY() && a.server != nil {
+	if !a.flags.window && a.stdinIsTTY() && a.server != nil && a.flags.oneShot == nil {
 		go readKeys(a.serverURL(), quit, launchWindow, togglePublic, wanToggles)
 	}
 

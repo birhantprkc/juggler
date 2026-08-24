@@ -93,6 +93,19 @@ func Run(cfg Config) int {
 		return machineserver.RunCommand(os.Args[2:])
 	}
 
+	// `juggler run "<prompt>"` runs one prompt to completion and exits with a
+	// status. Unlike the subcommands above it needs the whole server — the
+	// engine is what carries the run out — so it parses its own flags here and
+	// then falls through into the ordinary startup with them (see one_shot.go).
+	var oneShot *oneShotOptions
+	if len(os.Args) > 1 && os.Args[1] == "run" {
+		opts, code := parseOneShotFlags(os.Args[2:])
+		if opts == nil {
+			return code
+		}
+		oneShot = opts
+	}
+
 	// Determine terminal-vs-icon launch first, before anything writes to stdout.
 	// On Windows an icon launch detaches the console Windows allocated for us as
 	// a side effect (see launchedFromTerminal), so this must run early.
@@ -105,11 +118,17 @@ func Run(cfg Config) int {
 	// No-op for a terminal launch and on Windows.
 	repairPathForGUILaunch(hasTerminal)
 
-	flags, version := parseFlags(hasTerminal)
-	if version {
-		fmt.Printf("juggler %s (commit: %s, built: %s)\n",
-			core.Version, core.Commit, core.BuildDate)
-		return 0
+	var flags appFlags
+	if oneShot != nil {
+		flags = oneShot.appFlags(hasTerminal)
+	} else {
+		var version bool
+		flags, version = parseFlags(hasTerminal)
+		if version {
+			fmt.Printf("juggler %s (commit: %s, built: %s)\n",
+				core.Version, core.Commit, core.BuildDate)
+			return 0
+		}
 	}
 
 	// When Node is unavailable, retain the established WebKit fallback: a
@@ -151,16 +170,26 @@ func Run(cfg Config) int {
 	// supervisor owns child lifetime outright (and survives restart by re-exec,
 	// keeping its PID).
 	app := &App{flags: flags, config: cfg}
+	// A run that never reports has not finished, whatever else brought the
+	// process down — a Ctrl-C, an engine that never started, a server error. So
+	// failure is where a run starts, and only its own report lowers it.
+	if oneShot != nil {
+		app.exitCode.Store(exitRunFailed)
+	}
 	if flags.testMode || flags.exitWithParent || (flags.sessionChild && runtime.GOOS == "windows") {
 		startParentWatchdog(app.releaseResources)
 	}
 
-	printBanner()
+	// The banner is for a person watching a server start. A run has no such
+	// audience, and its stdout is the answer.
+	if oneShot == nil {
+		printBanner()
+	}
 
 	if err := app.Run(); err != nil {
 		return 1
 	}
-	return 0
+	return int(app.exitCode.Load())
 }
 
 // registerProviders registers every built-in provider with the global registry.

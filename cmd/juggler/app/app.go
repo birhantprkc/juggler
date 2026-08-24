@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/server"
@@ -34,6 +35,7 @@ type appFlags struct {
 	exitWithParent bool                // --exit-with-parent: self-terminate if the parent process dies (set by juggler-app for servers it owns)
 	logFile        string              // --log-file: explicit log file path, overriding the centrally-derived one (set by juggler-app per spawned server)
 	logFileSet     bool                // true if --log-file was passed
+	oneShot        *oneShotOptions     // `juggler run`: the prompt to run unattended, and how to report it (nil for every other launch)
 }
 
 // App owns the startup phases, the resources they allocate, and the LIFO
@@ -57,6 +59,11 @@ type App struct {
 
 	serverErrChan chan error
 	cleanups      []func()
+
+	// exitCode is the status the process leaves with. Written by `juggler run`
+	// from its own goroutine and read once the wait loop has returned, so it is
+	// atomic rather than a plain field. Zero for every other launch.
+	exitCode atomic.Int32
 
 	// cleanupOnce gates the teardown stack so it runs exactly once no matter
 	// which shutdown path gets there first.
@@ -85,7 +92,7 @@ func (a *App) startupPhases() []struct {
 	name string
 	fn   func() error
 } {
-	return []struct {
+	phases := []struct {
 		name string
 		fn   func() error
 	}{
@@ -100,6 +107,15 @@ func (a *App) startupPhases() []struct {
 		{"serve", a.serve},
 		{"engine watcher", a.initEngineWatcher},
 	}
+	// `juggler run` adds the phase that drives it. Last, because it needs the
+	// server it talks to and the engine host the wait loop is about to start.
+	if a.flags.oneShot != nil {
+		phases = append(phases, struct {
+			name string
+			fn   func() error
+		}{"one-shot", a.startOneShot})
+	}
+	return phases
 }
 
 // assetsFromDiskEnabled reports whether web assets should be served from the
