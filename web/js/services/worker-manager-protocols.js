@@ -23,6 +23,7 @@ import {
   handleNewToolAction,
   executeToolAction,
   claimRunning,
+  reassertRunning,
   saveAutoApprovalPermission,
 } from '../model/conversation-tool-actions.js';
 
@@ -552,9 +553,11 @@ export async function handleEvaluateTool(wm, conversationId, toolUseId) {
  * Engine handler for the worker's `execute-tool` command: claim an approved
  * tool-action (approved→running) and run its side effect by id. The worker is
  * the sole driver of the tool lifecycle (the engine has no reactive tool
- * reducer); the claimRunning compare-and-set makes this idempotent against a
- * re-driven command (only one caller wins the claim, so the tool executes
- * exactly once).
+ * reducer). Exactly-once against a re-driven command rests on two guards: the
+ * claimRunning compare-and-set (only one caller wins the APPROVED → RUNNING
+ * transition), and — because that claim is only as durable as the doc state
+ * holding it — the executor's own in-flight map, which decides re-entrancy
+ * when the doc has lost the claim.
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @param {string} toolUseId
@@ -575,6 +578,24 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
   if (!mt) { sendEngineTrace(wm, conversationId, 'execute-noact', { toolUseId, reason: 'no-thread' }); return false; }
   const ymap = mt.getToolAction(toolUseId);
   if (!ymap) { sendEngineTrace(wm, conversationId, 'execute-noact', { toolUseId, reason: 'no-ymap' }); return false; }
+  // Re-entrancy guard: never start a second concurrent run of a toolUseId this
+  // engine is already executing. claimRunning's compare-and-set holds only while
+  // the doc keeps the `running` it wrote; when that claim is lost the worker's
+  // level-based re-drive dispatches again and the CAS succeeds a second time.
+  // Nothing cancels the first run, so both complete and the later result
+  // overwrites the earlier one IN PLACE — which runs a side-effecting tool twice
+  // and, for a provider that has already sent the earlier result (claudecode's
+  // held session), diverges its transcript and burns the whole prompt cache.
+  // The executor's map outranks doc state here: this engine is the sole
+  // executor, so if it says the id is running, it is. Repair the doc rather than
+  // just declining — a tool left at approved is re-driven to the worker's
+  // attempt cap and escalated to a terminal error while it is still running.
+  const inFlight = c._actionExecutor?.runningActionFor(toolUseId, c.id);
+  if (inFlight) {
+    const repaired = reassertRunning(c, ymap, inFlight);
+    sendEngineTrace(wm, conversationId, 'execute-noact', { toolUseId, reason: 'already-executing', repaired });
+    return false;
+  }
   // 'yes-always' persists the auto-approval permission. resolveApproval writes
   // approvalResponse='yes-always' and state='approved' in one transaction, so
   // by the time the worker commands execute-tool the response is already set.

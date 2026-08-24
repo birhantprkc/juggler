@@ -441,6 +441,40 @@ export function claimRunning(c, ymap) {
 }
 
 /**
+ * Re-stamp RUNNING onto a tool-action this engine is already executing but whose
+ * doc state has fallen back to APPROVED. Returns true iff it repaired the doc.
+ *
+ * claimRunning's compare-and-set keeps a re-driven `execute-tool` harmless only
+ * while the `running` it wrote stays in the doc: driveToolActions selects on doc
+ * state, so `running` is what stops it re-driving. If that write is lost — a
+ * replica reloaded under the execution, or a merge that reverts `state` — the
+ * worker re-drives and the CAS legitimately succeeds a second time, running the
+ * tool twice. handleExecuteTool declines the second run; this repairs the doc so
+ * the worker stops re-driving, rather than re-driving to its attempt cap and
+ * escalating a tool that is still genuinely executing to a terminal error.
+ *
+ * The stamps come from the in-flight execution, NOT from a fresh claim:
+ * runningEpoch is the incarnation identity a later cancel-tool must match, so
+ * re-asserting has to restore it rather than bump it.
+ * @param {any} c - Conversation instance
+ * @param {any} ymap - Tool-action Y.Map
+ * @param {{runningEpoch: number|undefined, runningStartedAt: number|undefined}} execution -
+ *   The in-flight execution's stamps (ActionExecutor.runningActionFor)
+ * @returns {boolean} True if the doc read APPROVED and was repaired to RUNNING
+ */
+export function reassertRunning(c, ymap, execution) {
+  let repaired = false;
+  c.engineDerivedUpdate(() => {
+    if (ymap.get('state') !== TOOL_STATES.APPROVED) return;
+    ymap.set('state', TOOL_STATES.RUNNING);
+    if (execution.runningStartedAt) ymap.set('runningStartedAt', execution.runningStartedAt);
+    if (execution.runningEpoch) ymap.set('runningEpoch', execution.runningEpoch);
+    repaired = true;
+  });
+  return repaired;
+}
+
+/**
  * Persist the auto-approval grant for a 'yes-always' response. Every grant flows
  * through the plugin's `getApprovalSuggestions` pipeline: a suggestion button
  * carries its exact rules/paths on the tool-action (the common case), and a bare

@@ -612,6 +612,33 @@ class ActionExecutor {
   }
 
   /**
+   * The in-flight execution for one tool-use id in one conversation, or null.
+   *
+   * The engine's re-entrancy witness. A re-driven `execute-tool` is normally
+   * made harmless by the doc's APPROVED → RUNNING compare-and-set
+   * (claimRunning), but that only holds while the doc keeps the `running` that
+   * claim wrote. This map is the stronger witness: it belongs to the thing
+   * actually running the tool, so it stays true across any doc-state loss.
+   * handleExecuteTool consults it before claiming and declines to start a
+   * second concurrent run of an id already executing here.
+   *
+   * Conversation-scoped for the same reason as {@link cancelByToolUseId}:
+   * tool-use IDs are unique only within one provider conversation.
+   * @param {string} toolUseId - Tool use ID to look up
+   * @param {string} conversationId - Conversation the lookup belongs to
+   * @returns {{runningEpoch: number|undefined, runningStartedAt: number|undefined}|null} The
+   *   in-flight execution's generation stamps, or null if this executor is not running that id.
+   */
+  runningActionFor(toolUseId, conversationId) {
+    for (const a of this._runningActions.values()) {
+      if (a.toolUseId === toolUseId && a.conversationId === conversationId) {
+        return { runningEpoch: a.runningEpoch, runningStartedAt: a.runningStartedAt };
+      }
+    }
+    return null;
+  }
+
+  /**
    * The executing set for one conversation. Returns one entry per in-flight action
    * in the conversation, carrying the fields the worker's tool-execution-report
    * rule needs: the tool-use id, its execution generation, and its claim stamp.

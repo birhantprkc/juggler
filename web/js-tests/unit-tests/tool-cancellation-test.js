@@ -31,6 +31,7 @@ import actionExecutor from '../../js/services/action-executor.js';
 import { claimRunning } from '../../js/model/conversation-tool-actions.js';
 import { createToolActionMessage, TOOL_STATES } from '../../sdk/lib/message.js';
 import {
+  handleExecuteTool,
   sendToolExecutionReports,
   __resetToolExecutionReporterForTest
 } from '../../js/services/worker-manager-protocols.js';
@@ -640,6 +641,83 @@ export async function runTests(_ctx) {
       window.fetch = originalFetch;
       await drainExecutor();
       __resetToolExecutionReporterForTest();
+    }
+  }
+
+  // Test 12: an execute-tool command for a toolUseId this engine is ALREADY
+  // executing must not start a second run, even when the doc has lost the claim.
+  //
+  // Regression target: claimRunning's compare-and-set is only as durable as the
+  // `running` it writes. With the doc back at approved (a replica reloaded under
+  // the execution, or a merge reverting `state`), the worker's level-based
+  // re-drive dispatches execute-tool again and the CAS legitimately succeeds a
+  // second time — two concurrent runs of one tool, neither cancelling the other,
+  // the later result overwriting the earlier IN PLACE. Seen in the wild as a bash
+  // tool run twice 6s apart whose second, differently-timed output replaced the
+  // first AFTER the first had been sent to the provider, diverging a claudecode
+  // session and cold-starting a 180k-token prompt cache.
+  //
+  // The guard repairs rather than merely declines: a tool left at approved would
+  // be re-driven to the worker's attempt cap and escalated to a terminal error
+  // while it is still genuinely running. Restoring the in-flight generation
+  // (rather than claiming a fresh, bumped one) is what keeps a later cancel-tool's
+  // generation guard matching the execution that is actually running.
+  {
+    const prevEngine = /** @type {any} */ (globalThis).JUGGLER_ENGINE;
+    const originalFetch = window.fetch;
+    try {
+      assert(!actionExecutor.hasRunningActions(), 'precondition: no leftover running actions before the re-entrancy test');
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = true;
+
+      const conversation = await createTestConversation(session);
+      const mt = conversation.rootMessageThread;
+      const toolUseId = 'tc-double-claim-1';
+      mt.addEvent(createToolActionMessage({ toolUseId, toolName: 'grep', toolInput: { pattern: 'x' } }));
+      mt.updateToolActionState(toolUseId, TOOL_STATES.APPROVED);
+      const ymap = mt.getToolAction(toolUseId);
+
+      // Claim it exactly as handleExecuteTool would, then put a real execution in
+      // flight under that generation.
+      assert(claimRunning(conversation, ymap) === true, 'first claim should win the CAS');
+      const epoch = ymap.get('runningEpoch');
+      const a = await startHungGrep(session, conversation, toolUseId, epoch);
+      assert(actionExecutor.executingSetFor(conversation.id).length === 1, 'precondition: exactly one in-flight execution');
+
+      // The claim is lost: the doc falls back to approved while the execution
+      // above keeps running. This is what makes the worker re-drive.
+      conversation._doc.doc.transact(() => {
+        ymap.set('state', TOOL_STATES.APPROVED);
+        ymap.set('runningStartedAt', null);
+      });
+
+      const spyWm = {
+        _session: session,
+        loadExistingConversation: async () => conversation,
+        sendToWorker: () => {},
+      };
+      const handled = await handleExecuteTool(spyWm, conversation.id, toolUseId);
+
+      assert(handled === false, 're-driven execute-tool for an executing id must report that it did not act');
+      const stillOne = actionExecutor.executingSetFor(conversation.id);
+      assert(stillOne.length === 1, `the tool must not run twice, got ${stillOne.length} in-flight executions`);
+      assert(ymap.get('state') === TOOL_STATES.RUNNING, 'the doc must be repaired to running so the worker stops re-driving');
+      assert(ymap.get('runningEpoch') === epoch,
+        `the repair must restore the in-flight generation, not claim a new one (expected ${epoch}, got ${ymap.get('runningEpoch')})`);
+
+      // The restored epoch still matches the execution actually in flight.
+      const outcome = actionExecutor.cancelByToolUseId(toolUseId, conversation.id, ymap.get('runningEpoch'));
+      assert(outcome === 'hit', `a cancel scoped to the repaired epoch must abort the live execution, got ${outcome}`);
+      await a.execPromise;
+      assert(!actionExecutor.hasRunningActions(), 'the action should have settled');
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`execute-tool re-entrancy (no double execution when the claim is lost): ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;
+      window.fetch = originalFetch;
+      await drainExecutor();
     }
   }
 
