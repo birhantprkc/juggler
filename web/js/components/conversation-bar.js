@@ -508,6 +508,21 @@ class ConversationBar extends JugglerElement {
    * @private
    */
   _showTab(conversationId) {
+    // The sidebar row and this panel host come from two different mechanisms:
+    // render() paints a row for every `session.conversations` entry, while the
+    // host is only built from `conversation:created`. Anything that seeds the
+    // map ahead of that notify (a restore's unloaded stub, which waits on a
+    // worker spawn) — or never notifies at all (a load that failed and left an
+    // `error` stub) — leaves a clickable row with no host, and activating a
+    // missing host is a silent no-op that still hides every other tab: a blank
+    // page until a reload. Build it on demand so a selection always has
+    // something to activate; the tab renders its own spinner/retry overlay
+    // while `loadState !== 'loaded'` and re-syncs when that state lands.
+    const conversation = this._session?.conversations?.get(conversationId);
+    if (conversation && !this._tabElements.has(conversationId)) {
+      this._createConversationTab(conversation);
+    }
+
     // Activate first: a newly-created selected tab starts hidden, and parking the
     // old tabs must not transiently leave the page without a live transcript.
     const activeTab = this._tabElements.get(conversationId);

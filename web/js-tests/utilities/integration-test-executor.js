@@ -124,6 +124,7 @@ import { runTests as runToolNameResolutionTests } from '../unit-tests/tool-name-
 import { runTests as runNewTabUxTests } from '../unit-tests/new-tab-ux-test.js';
 import { runTests as runBinUndoToastTests } from '../unit-tests/bin-undo-toast-test.js';
 import { runTests as runBinEmptyMenuTests } from '../unit-tests/bin-empty-menu-test.js';
+import { runTests as runRestoreSelectPanelTests } from '../unit-tests/restore-select-panel-test.js';
 import { runTests as runConversationFocusPolicyTests } from '../unit-tests/conversation-focus-policy-test.js';
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
 import { runTests as runComposerSendLatchTests } from '../unit-tests/composer-send-latch-test.js';
@@ -387,6 +388,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:new-tab-ux', run: runNewTabUxTests },
   { name: 'unit:bin-undo-toast', run: runBinUndoToastTests },
   { name: 'unit:bin-empty-menu', run: runBinEmptyMenuTests },
+  { name: 'unit:restore-select-panel', run: runRestoreSelectPanelTests },
   { name: 'unit:conversation-focus-policy', run: runConversationFocusPolicyTests },
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
