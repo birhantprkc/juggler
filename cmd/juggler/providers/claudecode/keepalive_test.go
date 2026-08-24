@@ -156,9 +156,25 @@ func runFakeClaude() {
 		})
 	}
 
+	// Read stdin until the turn's user message arrives, the way a real CLI
+	// does. A fake that dies without doing this dies while juggler is still
+	// writing to its stdin, which is a different failure (a broken pipe at
+	// boot) decided by process scheduling rather than by the mode under test —
+	// so any mode that means "die after init" waits here first.
+	awaitUserTurn := func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			if fakeStdinIsUserTurn(scanner.Bytes()) {
+				return
+			}
+		}
+	}
+
 	switch mode {
 	case fakeModeUsage:
 		fmt.Fprintln(os.Stderr, "Ignoring project permissions: this workspace has not been trusted.")
+		awaitUserTurn()
 		if err := json.NewEncoder(out).Encode(map[string]any{
 			"type":    "result",
 			"subtype": "success",
@@ -251,26 +267,29 @@ func runFakeClaude() {
 			}
 		}
 	case fakeModeFlakeFirst:
-		// First spawn dies right after init with no terminal result (a
+		// First spawn takes the turn and then dies with no terminal result (a
 		// crash / quota-kill). The retry re-spawns; the second spawn
 		// behaves like a normal one-shot text turn so the turn succeeds.
 		emitInit()
+		awaitUserTurn()
 		if fakeSpawnCount() <= 1 {
 			return
 		}
 		emitTextTurn(out, "recovered turn", 0)
 		return
 	case fakeModeAlwaysExit:
-		// Every spawn dies after init with no terminal result, so the
+		// Every spawn takes the turn and dies with no terminal result, so the
 		// bounded retry exhausts and the turn surfaces the error.
 		emitInit()
+		awaitUserTurn()
 		return
 	case fakeModeStreamThenExit:
-		// Stream a complete text block (so a callback chunk is emitted)
-		// then exit WITHOUT a message_delta/end_turn. The turn-level
+		// Take the turn, stream a complete text block (so a callback chunk is
+		// emitted), then exit WITHOUT a message_delta/end_turn. The turn-level
 		// retry must NOT re-attempt — replaying would duplicate the text
 		// already streamed to the UI.
 		emitInit()
+		awaitUserTurn()
 		emit(out, map[string]any{
 			"type":  "stream_event",
 			"event": map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text"}},

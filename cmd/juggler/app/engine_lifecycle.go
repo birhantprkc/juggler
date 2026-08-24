@@ -43,6 +43,14 @@ const engineConnectTimeout = 30 * time.Second
 // processing at full rate regardless of the main thread's throttle state, so
 // the engine can safely stay alive for the whole process lifetime.
 //
+// Windows takes the opposite setting for the opposite reason. WebView2 has no
+// display-link hazard; what it has is efficiency mode, which a window created
+// hidden falls into as soon as Wails hides its controller — and it throttles
+// the whole page's timers toward 0Hz, module workers included, so the engine
+// stops executing tools. KeepRunningWhenHidden keeps the controller visible to
+// WebView2 (the window itself is never shown), at the cost of an invisible
+// input surface where the window sits.
+//
 // WebviewGpuPolicyNever forces software rendering for this WebView on Linux
 // (WebKitGTK). The engine page is off-screen and paints nothing — its work runs
 // in a module worker — so it has no use for GPU acceleration. Left at the
@@ -64,6 +72,9 @@ func newEngineWindow(app *application.App, addr string) *application.WebviewWind
 			WebviewPreferences: application.MacWebviewPreferences{
 				KeepRunningWhenHidden: application.Disabled,
 			},
+		},
+		Windows: application.WindowsWindow{
+			KeepRunningWhenHidden: true,
 		},
 		Linux: application.LinuxWindow{
 			WebviewGpuPolicy: application.WebviewGpuPolicyNever,

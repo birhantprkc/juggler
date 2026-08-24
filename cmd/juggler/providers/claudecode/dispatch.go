@@ -12,6 +12,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -92,17 +93,21 @@ func (c *Client) startFreshSession(ctx context.Context, req provider.MessageRequ
 		return nil, err
 	}
 
+	// Every failure from here on goes through finalizeTurn: a process exists,
+	// so it has to be reaped and its exit status read, and the worker needs the
+	// error carried on a StreamResult like any other failed turn.
+
 	// Wire the stdio control protocol so the CLI can call back into our
 	// in-process MCP server for tool execution.
 	if err := c.attachControlProtocol(req.Tools); err != nil {
-		return nil, fmt.Errorf("attach control protocol: %w", err)
+		return c.finalizeTurn(req, nil, c.cliBootError("attach control protocol", err))
 	}
 
 	if plan != nil {
 		// Synthetic-resume path: file holds the history, only the tail user
 		// turn goes on stdin.
 		if err := c.writeStdinDelta(append(tailStdinLine(plan), '\n')); err != nil {
-			return nil, fmt.Errorf("write fresh-session tail message: %w", err)
+			return c.finalizeTurn(req, nil, c.cliBootError("write fresh-session tail message", err))
 		}
 	} else {
 		// No plan: pipe whatever user-role messages the worker built.
@@ -118,19 +123,48 @@ func (c *Client) startFreshSession(ctx context.Context, req provider.MessageRequ
 		}
 		lines, err := c.formatMessagesAsStreamJSONLines(req.Messages, "")
 		if err != nil {
-			return nil, fmt.Errorf("format stream-json messages: %w", err)
+			return c.finalizeTurn(req, nil, fmt.Errorf("format stream-json messages: %w", err))
 		}
 		if len(lines) == 0 {
-			return nil, fmt.Errorf("no user-role messages to send in fresh session")
+			return c.finalizeTurn(req, nil, fmt.Errorf("no user-role messages to send in fresh session"))
 		}
 		if err := c.writeStdinDelta([]byte(strings.Join(lines, "\n") + "\n")); err != nil {
-			return nil, fmt.Errorf("write fresh-session user messages: %w", err)
+			return c.finalizeTurn(req, nil, c.cliBootError("write fresh-session user messages", err))
 		}
 	}
 	c.recordConsumedRequest(req)
 
 	turn, _, err := c.readUntilPauseOrComplete(ctx, callback)
 	return c.finalizeTurn(req, turn, err)
+}
+
+// cliBootError names a failure to hand a freshly spawned CLI its opening
+// stdin traffic.
+//
+// A write to that stdin fails only when the pipe has broken, which means the
+// CLI is no longer reading it — it died between the spawn and the first byte,
+// on a crash at boot, an auth failure, a quota kill. That is the same event
+// the parser reports when a CLI dies mid-turn, and it is reported the same
+// way: as a transient exit, so the bounded retry re-spawns rather than the
+// turn ending on a raw "broken pipe" the retry doesn't recognise. The CLI
+// writes its reason for dying on stderr, so that goes in the message — it is
+// the only account of the failure anyone gets.
+//
+// Anything else (a tool set that won't marshal, messages that won't
+// serialise) is juggler's own fault, not the CLI's, and is returned as-is
+// under `what` so the site is named.
+func (c *Client) cliBootError(what string, err error) error {
+	var we *stdinWriteError
+	if !errors.As(err, &we) {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	msg := "claude CLI exited unexpectedly before the turn was sent"
+	if c.activeSession != nil {
+		if stderr := strings.TrimSpace(c.activeSession.drainStderr()); stderr != "" {
+			msg += ": " + stderr
+		}
+	}
+	return &transientCLIError{msg: msg, processExited: true}
 }
 
 // attachControlProtocol constructs a controlProtocol bound to the active

@@ -12,6 +12,7 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -270,4 +271,53 @@ func TestRetry_NoRetryAfterStreamedContent(t *testing.T) {
 		t.Fatalf("spawned %d times, want exactly 1 (retry must not replay streamed content)", len(trace))
 	}
 	c.dropSession(convID)
+}
+
+// TestRetry_CLIDeathAtBootReadsAsAnExit covers the boot-time half of the same
+// failure the tests above drive mid-turn, and it is the half that used to
+// escape the retry. A CLI that dies between the spawn and the first byte of
+// stdin leaves juggler holding a broken pipe, and the two orderings — the
+// write losing the race, or landing and the reader seeing EOF — are decided by
+// process scheduling, so both must reach the same verdict: a transient exit,
+// retryable, named as one.
+func TestRetry_CLIDeathAtBootReadsAsAnExit(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer w.Close()
+	// Nothing reads this stdin any more — exactly the state the CLI's pipe is
+	// left in by a process that has exited.
+	if err := r.Close(); err != nil {
+		t.Fatalf("close read end: %v", err)
+	}
+
+	cp := newControlProtocol(w)
+	defer cp.teardown()
+	writeErr := cp.sendInitialize()
+	if writeErr == nil {
+		t.Fatal("writing to a pipe with no reader should have failed")
+	}
+
+	// No active session: a CLI that died this early has no stderr to drain.
+	got := (&Client{}).cliBootError("attach control protocol", writeErr)
+	if !isRetryableCLIError(got) {
+		t.Fatalf("error = %v, want a retryable transient CLI error", got)
+	}
+	if !strings.Contains(got.Error(), "exited unexpectedly") {
+		t.Fatalf("error = %q, want the unexpected-exit transient error", got)
+	}
+}
+
+// TestRetry_BootFailureOfOurOwnMakingIsNotTransient is the counterpart: only
+// the CLI's stdin going away means the CLI died. A tool set that won't marshal
+// is juggler's own bug, and retrying it three times would only hide it.
+func TestRetry_BootFailureOfOurOwnMakingIsNotTransient(t *testing.T) {
+	got := (&Client{}).cliBootError("marshal tools", errors.New("bad tool schema"))
+	if isTransientCLIError(got) {
+		t.Fatalf("error = %v, want a plain (non-retryable) error", got)
+	}
+	if want := "marshal tools: bad tool schema"; got.Error() != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
 }

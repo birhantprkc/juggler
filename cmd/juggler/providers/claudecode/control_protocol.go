@@ -419,6 +419,16 @@ func (cp *controlProtocol) writeLine(v any) error {
 	return cp.writeRaw(buf)
 }
 
+// stdinWriteError marks a failure to put bytes on the CLI's stdin. The pipe
+// breaks only when the far end has stopped reading it, and the CLI reads its
+// stdin for as long as it lives — so a caller that owns a turn reads this as
+// "the process is gone", not as an I/O detail. See Client.cliBootError.
+type stdinWriteError struct{ err error }
+
+func (e *stdinWriteError) Error() string { return "write stdin: " + e.err.Error() }
+
+func (e *stdinWriteError) Unwrap() error { return e.err }
+
 // writeRaw is the single low-level stdin write path. Both control envelopes
 // (via writeLine) and user-message deltas (via Client.writeStdinDelta) funnel
 // through here so one owner serialises all stdin traffic and keeps JSON-lines
@@ -426,10 +436,10 @@ func (cp *controlProtocol) writeLine(v any) error {
 func (cp *controlProtocol) writeRaw(payload []byte) error {
 	n, err := cp.stdin.Write(payload)
 	if err != nil {
-		return fmt.Errorf("write stdin: %w", err)
+		return &stdinWriteError{err}
 	}
 	if n != len(payload) {
-		return fmt.Errorf("write stdin: %w", io.ErrShortWrite)
+		return &stdinWriteError{io.ErrShortWrite}
 	}
 	return nil
 }
