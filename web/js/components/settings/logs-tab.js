@@ -53,6 +53,8 @@ export class LogsTab {
     this._filePathPath = '';
     /** @type {boolean} @private - True while a log tail fetch is in flight, so overlapping poll ticks don't double-append. */
     this._logTailBusy = false;
+    /** @type {Promise<void>|null} @private - Resolves when this showing's first list+tail fetch has landed. */
+    this._ready = null;
   }
 
   /**
@@ -71,9 +73,32 @@ export class LogsTab {
   /** Tab became visible: load the logs and arm the tail poll. */
   show() {
     // The Logs tab fetches its own data (independent of loadConfig), so it
-    // works even when opened directly on first load.
-    this._openLogsTab();
+    // works even when opened directly on first load. The promise is kept so a
+    // deep link arriving right behind this call can wait for the list.
+    this._ready = this._openLogsTab();
     this._logsPollId = setInterval(() => this._pollLogTail(), LOGS_POLL_MS);
+  }
+
+  /**
+   * Deep-link into this tab: show one conversation's log instead of the default
+   * server.log.
+   *
+   * A deep link lands here immediately after `show()`, whose fetch is
+   * deliberately not awaited — so without this wait there would be no file list
+   * to resolve the id against and the tab would sit on server.log. The conv id
+   * is the stable half of the file name (`<name>--<convID>.log`), so a renamed
+   * conversation still matches.
+   * @param {string} conversationId - Conversation whose log to select
+   * @returns {Promise<boolean>} True if that log existed and is now shown
+   */
+  async revealEntry(conversationId) {
+    if (!conversationId) return false;
+    await this._ready;
+    const file = this._logFiles.find(
+      (f) => f.group === 'conversations' && String(f.name).endsWith(`${conversationId}.log`));
+    if (!file) return false;
+    this._selectLog(file.path);
+    return true;
   }
 
   /** Tab hidden: stop the tail poll. */
@@ -184,6 +209,11 @@ export class LogsTab {
   /**
    * Switch the viewer to a different log file: reset the tail offset, clear the
    * viewer, refresh the path control, and load the new file's tail.
+   *
+   * The picker is put in step here rather than by the caller, because this is
+   * also reached from a deep link — where the <select> is still showing whatever
+   * was selected before. From the `change` listener it is already correct and
+   * the write is a no-op.
    * @param {string} path - Absolute path of the newly-selected log
    * @private
    */
@@ -191,6 +221,8 @@ export class LogsTab {
     if (!path || path === this._selectedLogPath) return;
     this._selectedLogPath = path;
     this._logOffset = 0;
+    const picker = /** @type {HTMLSelectElement|null} */ (this.host.querySelector('#logs-picker'));
+    if (picker) picker.value = path;
     const viewer = this.host.querySelector('#logs-viewer');
     if (viewer) viewer.textContent = '';
     this._filePathPath = path;

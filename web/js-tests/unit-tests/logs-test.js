@@ -181,6 +181,47 @@ export async function runTests(_ctx) {
     });
   });
 
+  // The conversation footer's log button deep-links here by conversation id.
+  // The id is only the tail of the file name (`<title>--<convID>.log`) so that
+  // a renamed conversation still resolves, and the reveal has to survive
+  // landing before show()'s own fetch has returned.
+  await run('deep link: revealEntry selects a conversation log by id', async () => {
+    const backend = makeBackend([
+      { name: 'server.log', path: '/logs/p/server.log', group: 'server', content: 'srv\n' },
+      { name: 'Some title--conv_bbb.log', path: '/logs/p/conversations/Some title--conv_bbb.log', group: 'conversations', content: 'bbb-log\n' },
+    ]);
+    await withPanel(backend, async (el) => {
+      // Exactly the ordering the deep link hits: show() is not awaited.
+      el._tabs.logs.show();
+      const ok = await el._tabs.logs.revealEntry('conv_bbb');
+      await settle();
+      el._tabs.logs.hide();
+
+      assert(ok === true, 'reports success for a conversation that has a log');
+      const viewer = el.querySelector('#logs-viewer');
+      assert(viewer.textContent === 'bbb-log\n', `viewer shows that conversation's log; got ${JSON.stringify(viewer.textContent)}`);
+      assert(el.querySelector('#logs-picker').value === '/logs/p/conversations/Some title--conv_bbb.log',
+        'picker follows the deep link');
+      assert((el.querySelector('#logs-filepath').textContent || '').includes('conv_bbb.log'),
+        'file-path control follows the deep link');
+    });
+  });
+
+  await run('deep link: an unknown conversation leaves the default selection', async () => {
+    const backend = makeBackend([
+      { name: 'server.log', path: '/logs/p/server.log', group: 'server', content: 'srv\n' },
+    ]);
+    await withPanel(backend, async (el) => {
+      el._tabs.logs.show();
+      const ok = await el._tabs.logs.revealEntry('conv_missing');
+      await settle();
+      el._tabs.logs.hide();
+
+      assert(ok === false, 'reports failure for a conversation with no log');
+      assert(el._tabs.logs._selectedLogPath === '/logs/p/server.log', 'stays on server.log');
+    });
+  });
+
   await run('empty state when there are no logs', async () => {
     await withPanel(makeBackend([]), async (el) => {
       await el._tabs.logs._openLogsTab();

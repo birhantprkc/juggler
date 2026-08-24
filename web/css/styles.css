@@ -1641,10 +1641,19 @@ conversation-footer token-display {
     justify-content: flex-start;
 }
 
-/* Right-aligned, and typeset as the token count beside it — same size, weight
-   and muted colour, so the row reads as one line of figures. */
-.footer-last-activity {
+/* The last-updated time and the button that opens this conversation's log,
+   right-aligned and wrapping as one unit so the button never strands itself on
+   a line of its own. */
+.footer-activity {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     margin-left: auto;
+}
+
+/* Typeset as the token count beside it — same size, weight and muted colour, so
+   the row reads as one line of figures. */
+.footer-last-activity {
     font-family: var(--font-sans);
     font-size: 0.75rem;
     color: var(--text-secondary);

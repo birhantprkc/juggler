@@ -39,8 +39,12 @@
 import { findLastAssistantTxnId, findLastAssistantItemId } from '../utils/transaction-anchor.js';
 import { formatRelativeDateTime } from '../utils/format.js';
 import providersCache from '../services/providers-cache.js';
+import { openSettings } from '../services/settings-launcher.js';
 
 const TOKEN_UPDATE_DEBOUNCE_MS = 2000;
+
+/** Magnifier over a document: inspect this conversation's log file. */
+const LOG_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M458-280q18 0 35.5-4.5T526-298l98 98 56-56-98-98q9-15 13.5-32.5T600-422q0-58-41-98t-99-40q-58 0-99 41t-41 99q0 58 40 99t98 41Zm2-80q-25 0-42.5-17.5T400-420q0-25 17.5-42.5T460-480q25 0 42.5 17.5T520-420q0 25-17.5 42.5T460-360ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z"/></svg>';
 
 class ConversationFooter extends HTMLElement {
   /** @type {import('../model/message-thread.js').default} */
@@ -477,7 +481,10 @@ class ConversationFooter extends HTMLElement {
             </div>
             <div class="footer-meta">
                 <token-display></token-display>
-                <span class="footer-last-activity hidden"></span>
+                <div class="footer-activity hidden">
+                    <span class="footer-last-activity"></span>
+                    <button class="properties-panel-header-icon-btn footer-log-btn" type="button" title="Open this conversation's log" aria-label="Open conversation log">${LOG_ICON_SVG}</button>
+                </div>
             </div>
             <footer-idle>
                 <div class="footer-idle-row footer-idle-main">
@@ -522,6 +529,19 @@ class ConversationFooter extends HTMLElement {
           composed: true,
           detail: { itemId }
         }));
+      });
+    }
+
+    // The log is a reading of this conversation like the two beside it, and the
+    // only other way to it is the Logs tab's picker — where you have to know
+    // which of the listed files is yours. Few sessions ever want it, so it rides
+    // along with the timestamp rather than taking a row of its own.
+    const logBtn = this.querySelector('.footer-log-btn');
+    if (logBtn) {
+      logBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const conversationId = this._messageThread?.conversation?.id;
+        if (conversationId) openSettings('logs', { conversationLog: conversationId });
       });
     }
 
@@ -683,8 +703,11 @@ class ConversationFooter extends HTMLElement {
     // thread rather than controls on it. Shown only at rest: mid-turn the answer
     // is "now", and the status line already dates the work. The label is an
     // absolute time, not "5 min ago", so nothing has to tick it to keep it true.
+    // The log button is shown and hidden with it, as the other half of the same
+    // reading: where this conversation's activity is written down.
+    const activity = /** @type {HTMLElement|null} */ (this.querySelector('.footer-activity'));
     const lastActivity = /** @type {HTMLElement|null} */ (this.querySelector('.footer-last-activity'));
-    if (lastActivity) {
+    if (activity && lastActivity) {
       const at = (state.isProcessing || this._statusOnly) ? 0 : (state.lastActivityAt || 0);
       if (at) {
         const { short, full } = formatRelativeDateTime(at);
@@ -694,7 +717,7 @@ class ConversationFooter extends HTMLElement {
       } else {
         setText(lastActivity, '');
       }
-      toggle(lastActivity, !!at);
+      toggle(activity, !!at);
     }
 
     if (state.isProcessing) {

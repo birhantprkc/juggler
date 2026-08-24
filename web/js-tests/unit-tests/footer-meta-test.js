@@ -15,6 +15,9 @@
  *   3. The row has to survive a narrow column: every figure stays joined to the
  *      unit or word that qualifies it, and a million-token window is stated in
  *      millions rather than as four digits of thousands.
+ *   4. The button that opens this conversation's log rides with the time — the
+ *      same reading, so the same visibility — and must name the conversation it
+ *      belongs to when it deep-links into the Logs tab.
  * @module unit-tests/footer-meta-test
  */
 
@@ -26,6 +29,7 @@ import {
 } from '../utilities/test-helpers.js';
 import '../../js/components/conversation-footer.js';
 import '../../js/components/token-display.js';
+import { registerSettingsOpener } from '../../js/services/settings-launcher.js';
 import { formatRelativeDateTime, formatTokens } from '../../js/utils/format.js';
 
 /**
@@ -77,6 +81,9 @@ export async function runTests() {
     const at = new Date('2026-02-03T10:05:00Z').getTime();
     const { short, full } = formatRelativeDateTime(at);
     const label = () => /** @type {HTMLElement|null} */ (footer.querySelector('.footer-last-activity'));
+    // The time and the log button are one reading, shown and hidden together, so
+    // the `hidden` class lives on the pair rather than on either of them.
+    const group = () => /** @type {HTMLElement|null} */ (footer.querySelector('.footer-activity'));
     /**
      * @param {Element|null} el - A part of the footer.
      * @returns {boolean} True when that part is hidden.
@@ -84,24 +91,26 @@ export async function runTests() {
     const hidden = (el) => !!el?.classList.contains('hidden');
 
     footer.update({ isProcessing: false, canContinue: true, lastActivityAt: at });
-    assert(!hidden(label()), 'an idle footer dates the thread it ends');
+    assert(!hidden(group()), 'an idle footer dates the thread it ends');
     assert(label()?.textContent === `Updated ${short}`,
       'the label reads through the app-wide relative date-time formatter');
     assert(label()?.title === `Last updated ${full}`,
       'the tooltip carries the full absolute time the short label elides');
+    assert(group()?.contains(footer.querySelector('.footer-log-btn')),
+      'the log button rides with the time rather than standing on its own');
     passed++;
 
     footer.update({ isProcessing: true, statusMessage: 'Running…', lastActivityAt: at });
-    assert(hidden(label()), 'a running turn dates itself, so the label goes for the duration');
+    assert(hidden(group()), 'a running turn dates itself, so the label goes for the duration');
     passed++;
 
     footer.update({ isProcessing: false, canContinue: false, lastActivityAt: 0 });
-    assert(hidden(label()), 'a conversation with nothing in it has no date to show');
+    assert(hidden(group()), 'a conversation with nothing in it has no date to show');
     passed++;
 
     footer.setStatusOnly(true);
     footer.update({ isProcessing: false, canContinue: true, lastActivityAt: at });
-    assert(hidden(label()) && hidden(footer.querySelector('.footer-meta')),
+    assert(hidden(group()) && hidden(footer.querySelector('.footer-meta')),
       'a group column shows a run of rows, not the thread whose time this is');
     passed++;
   } catch (e) {
@@ -135,6 +144,37 @@ export async function runTests() {
     errors.push(`token meter: ${msg(e)}`);
   } finally {
     pill.remove();
+  }
+
+  // --- 4: the log button names its own conversation ------------------------
+  const logFooter = /** @type {any} */ (document.createElement('conversation-footer'));
+  document.body.appendChild(logFooter);
+  /** @type {(() => void)|null} */
+  let restoreOpener = null;
+  try {
+    const session = await createTestSession();
+    const conversation = await createTestConversation(session);
+    logFooter.setMessageThread(conversation.rootMessageThread);
+
+    /** @type {Array<[string|undefined, any]>} */
+    const opened = [];
+    restoreOpener = registerSettingsOpener((tab, options) => { opened.push([tab, options]); });
+
+    /** @type {HTMLElement} */ (logFooter.querySelector('.footer-log-btn')).click();
+    assert(opened.length === 1, `one click opens settings once, got ${opened.length}`);
+    assert(opened[0][0] === 'logs', `on the Logs tab, got ${JSON.stringify(opened[0][0])}`);
+    // Without the id the Logs tab would open on server.log and leave the user
+    // hunting their conversation in the picker — the thing the button exists to
+    // avoid.
+    assert(opened[0][1]?.conversationLog === conversation.id,
+      `naming this conversation, got ${JSON.stringify(opened[0][1])}`);
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`log button: ${msg(e)}`);
+  } finally {
+    if (restoreOpener) restoreOpener();
+    logFooter.remove();
   }
 
   return { passed, failed, errors };

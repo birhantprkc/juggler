@@ -2424,9 +2424,10 @@ properties-panel-section .properties-panel-result {
     margin-left: 0.4rem;
 }
 
-/* Small icon-only button at the right edge of a properties-panel header.
-   Used today for the "View Transaction" affordance — discreet, sits next
-   to the token chip. */
+/* The discreet small icon-only button: sized to sit at the right edge of a
+   properties-panel header next to the token chip, and reused wherever an
+   affordance should be available without asking for attention — the transaction
+   view, per-row copy buttons, the conversation footer's log button. */
 .properties-panel-header-icon-btn {
     display: flex;
     align-items: center;

@@ -389,7 +389,7 @@ class SettingsPanel extends HTMLElement {
   /**
    * Open the settings panel
    * @param {string} [tab] - Optional tab to switch to on open
-   * @param {{capability?: {itemType: string, id: string}, mcpServer?: string}} [options] - Optional target to reveal inside the tab
+   * @param {{capability?: {itemType: string, id: string}, mcpServer?: string, conversationLog?: string}} [options] - Optional target to reveal inside the tab
    */
   async open(tab, options = {}) {
     const isFirstLoad = !this._hasLoadedOnce;
@@ -416,6 +416,10 @@ class SettingsPanel extends HTMLElement {
 
     if (options.mcpServer) {
       this._revealMcpServer(options.mcpServer);
+    }
+
+    if (options.conversationLog) {
+      this._revealConversationLog(options.conversationLog);
     }
 
     // Load config (only fetches from API on first load). The first-load latch is
@@ -453,6 +457,19 @@ class SettingsPanel extends HTMLElement {
   _revealMcpServer(name) {
     Promise.resolve(/** @type {any} */ (this._tabs.mcp)?.revealEntry?.(name))
       .catch((error) => console.error('Failed to reveal the MCP server in settings:', error));
+  }
+
+  /**
+   * Deep-link into the Logs tab: select one conversation's log. Like the two
+   * above, the tab fetches its own list, so it is handed the id and applies it
+   * once that lands. A conversation with no log file yet simply leaves the tab
+   * on its default selection.
+   * @param {string} conversationId - Conversation whose log to show
+   * @private
+   */
+  _revealConversationLog(conversationId) {
+    Promise.resolve(/** @type {any} */ (this._tabs.logs)?.revealEntry?.(conversationId))
+      .catch((error) => console.error('Failed to reveal the conversation log in settings:', error));
   }
 
   /**

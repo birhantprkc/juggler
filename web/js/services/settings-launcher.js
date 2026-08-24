@@ -17,6 +17,7 @@
  * @typedef {object} OpenSettingsOptions
  * @property {{itemType: string, id: string}} [capability] - Reveal this extension capability
  * @property {any} [mcpServer] - Reveal this MCP server
+ * @property {string} [conversationLog] - Reveal this conversation's log in the Logs tab
  */
 
 /** @type {((tab?: string, options?: OpenSettingsOptions) => void) | null} */
