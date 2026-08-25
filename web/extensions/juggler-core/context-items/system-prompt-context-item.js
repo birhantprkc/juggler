@@ -132,6 +132,18 @@ const SYSTEM_PROMPT_STYLES = `
   color: var(--text-primary);
   text-decoration: underline;
 }
+.system-prompt-tools-withheld {
+  display: flex;
+  flex-direction: column;
+  /* Rows still shrink to their text, but the block spans the section so the rule
+     that separates it from the offered tools spans it too. */
+  align-items: flex-start;
+  align-self: stretch;
+  gap: 0.1rem;
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-divider);
+}
 .system-prompt-tool-withheld {
   color: var(--text-tertiary);
   text-decoration: line-through;
@@ -803,18 +815,30 @@ class SystemPromptContextItem extends ContextItem {
       wrap.appendChild(row);
     }
 
+    // Withheld tools get their own block below a rule, rather than one more
+    // heading appended to the offered groups. These rows are built by the same
+    // code as an offered tool and differ only by a strikethrough, so a scrolled
+    // or narrow panel that leaves the heading off-screen reads as a list of
+    // tools the model has — which is exactly the wrong conclusion.
     if (inventory.withheld.length) {
+      const by = inventory.strategyName ? ` by ${inventory.strategyName}` : '';
+      const block = createElement('div', 'system-prompt-tools-withheld');
       const heading = createElement('div', 'system-prompt-tools-group');
-      heading.textContent = inventory.strategyName
-        ? `Withheld by ${inventory.strategyName}`
-        : 'Withheld';
-      wrap.appendChild(heading);
+      heading.textContent = `Withheld${by} — not offered to the model`;
+      block.appendChild(heading);
       for (const tool of inventory.withheld) {
         const name = String(tool?.name || '');
-        const row = this._buildToolRow(name, name, String(tool?.description || ''), parseMcp(name)?.server ?? null);
+        const row = this._buildToolRow(
+          name,
+          name,
+          String(tool?.description || ''),
+          parseMcp(name)?.server ?? null,
+          `Withheld${by} — the model cannot call this.`
+        );
         row.classList.add('system-prompt-tool-withheld');
-        wrap.appendChild(row);
+        block.appendChild(row);
       }
+      wrap.appendChild(block);
     }
 
     return wrap;
@@ -830,15 +854,15 @@ class SystemPromptContextItem extends ContextItem {
    * @param {string} label - What to show (MCP tools drop the server prefix their heading already carries)
    * @param {string} description - Tooltip text
    * @param {string|null} server - Owning MCP server, or null for a built-in
+   * @param {string} [note] - Leads the tooltip when the row needs qualifying (a withheld tool reads exactly like an available one otherwise)
    * @returns {HTMLElement} The row element
    */
-  _buildToolRow(toolName, label, description, server) {
+  _buildToolRow(toolName, label, description, server, note = '') {
     const row = createElement('button', 'system-prompt-tool');
     /** @type {HTMLButtonElement} */ (row).type = 'button';
     row.textContent = label;
-    row.title = description
-      ? `${description}\n\n${server ? `Configure "${server}"` : 'Show where this tool is defined'}`
-      : (server ? `Configure "${server}"` : 'Show where this tool is defined');
+    const where = server ? `Configure "${server}"` : 'Show where this tool is defined';
+    row.title = [note, description, where].filter(Boolean).join('\n\n');
     row.addEventListener('click', () => { void this._openToolDefinition(toolName, server); });
     return row;
   }

@@ -196,9 +196,12 @@ func TestSnapshotWaitsForFirstConnect(t *testing.T) {
 	m.Start()
 	m.Reconcile("") // starts the server; it is still connecting when we ask
 
-	tools := m.Snapshot(context.Background())
+	tools, complete := m.Snapshot(context.Background())
 	if len(tools) == 0 {
 		t.Fatalf("snapshot answered before the server finished connecting: %+v", m.ListServers())
+	}
+	if !complete {
+		t.Errorf("every enabled server published its tools, so the snapshot is complete: %+v", m.ListServers())
 	}
 	for _, tool := range tools {
 		if tool.Server != "slowpoke" {
@@ -225,7 +228,7 @@ func TestSnapshotWaitIsBounded(t *testing.T) {
 	m.Reconcile("")
 
 	start := time.Now()
-	tools := m.Snapshot(context.Background())
+	tools, complete := m.Snapshot(context.Background())
 	elapsed := time.Since(start)
 
 	if len(tools) != 0 {
@@ -233,6 +236,11 @@ func TestSnapshotWaitIsBounded(t *testing.T) {
 	}
 	if elapsed > 5*time.Second {
 		t.Errorf("snapshot waited %v — the settle wait is not bounded", elapsed)
+	}
+	// The empty answer must not be reported as the final word: the engine latches
+	// its tool cache on this, and a server that has not answered yet still might.
+	if complete {
+		t.Errorf("a server that never published its tools leaves discovery incomplete: %+v", m.ListServers())
 	}
 }
 
@@ -247,8 +255,12 @@ func TestSnapshotCancelledCallerGetsWhatThereIs(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if tools := m.Snapshot(ctx); len(tools) != 0 {
+	tools, complete := m.Snapshot(ctx)
+	if len(tools) != 0 {
 		t.Errorf("cancelled snapshot should return the (empty) current set, got %+v", tools)
+	}
+	if complete {
+		t.Errorf("giving up early cannot make a half-discovered snapshot complete: %+v", m.ListServers())
 	}
 }
 

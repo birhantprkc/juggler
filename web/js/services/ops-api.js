@@ -1146,8 +1146,10 @@ export async function mcpListTools(params, signal) {
  * Fetch the full discovered-tool snapshot across all running servers. Reads the
  * manager's current cache (never blocks on a live handshake) and, as a side
  * effect, reconciles the manager to the active project so enabled servers start.
+ * `complete` reports whether every enabled server had published its tools, so a
+ * caller that caches the result knows whether the list can still grow.
  * @param {AbortSignal} [signal]
- * @returns {Promise<{tools: McpToolInfo[]}>} The current discovered-tool snapshot
+ * @returns {Promise<{tools: McpToolInfo[], complete: boolean}>} The current discovered-tool snapshot
  */
 export async function mcpSnapshot(signal) {
   return callOp('mcp', 'snapshot', {}, signal);

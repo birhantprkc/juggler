@@ -154,11 +154,12 @@ type mcpReq struct {
 }
 
 type mcpResp struct {
-	servers []ServerStatus
-	tools   []ToolInfo
-	ensure  ensureResult
-	log     string
-	err     error
+	servers  []ServerStatus
+	tools    []ToolInfo
+	complete bool
+	ensure   ensureResult
+	log      string
+	err      error
 }
 
 // Manager is the process-global MCP client. Construct with NewManager and call
@@ -208,14 +209,14 @@ func (m *Manager) run() {
 			req.resp <- mcpResp{servers: listStatuses(servers)}
 
 		case reqSnapshot:
-			req.resp <- mcpResp{tools: flattenTools(servers)}
+			req.resp <- mcpResp{tools: flattenTools(servers), complete: discoveryComplete(servers)}
 
 		case reqSnapshotSettled:
 			if firstStartPending(servers) {
 				m.settleWaiters = append(m.settleWaiters, req.resp)
 				time.AfterFunc(settleTimeout, func() { m.reqCh <- mcpReq{kind: evSettleTimeout} })
 			} else {
-				req.resp <- mcpResp{tools: flattenTools(servers)}
+				req.resp <- mcpResp{tools: flattenTools(servers), complete: discoveryComplete(servers)}
 			}
 
 		case reqListTools:
@@ -306,10 +307,33 @@ func firstStartPending(servers map[string]*serverState) bool {
 // releaseSettleWaiters hands the current snapshot to every parked caller.
 func (m *Manager) releaseSettleWaiters(servers map[string]*serverState) {
 	tools := flattenTools(servers)
+	complete := discoveryComplete(servers)
 	for _, w := range m.settleWaiters {
-		w <- mcpResp{tools: tools}
+		w <- mcpResp{tools: tools, complete: complete}
 	}
 	m.settleWaiters = nil
+}
+
+// discoveryComplete reports whether every enabled server has published its tool
+// list — i.e. whether this snapshot is all there is ever going to be.
+//
+// The engine caches the snapshot it builds tool lists from, and uses this to
+// decide whether that cache may be latched. While it is false the engine re-asks
+// once a turn, so a server that arrives late is picked up by the next turn. That
+// retry is the backstop for the change broadcast: with only the broadcast, one
+// missed notification left the model with no MCP tools for the rest of the
+// session while every UI surface listed them in full.
+//
+// An enabled server that never connects therefore keeps this false, costing one
+// cheap snapshot call per turn. That is the intended trade: a wrong answer must
+// never be the one that gets latched.
+func discoveryComplete(servers map[string]*serverState) bool {
+	for _, s := range servers {
+		if s.cfg.IsEnabled() && s.status != statusRunning {
+			return false
+		}
+	}
+	return true
 }
 
 // reconcile diffs the desired config against running servers: it stops servers

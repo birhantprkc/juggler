@@ -34,8 +34,13 @@ let discoveredTools = [];
 /** @type {Map<string, McpToolInfo>} */
 let toolByLLMName = new Map();
 /**
- * Whether a snapshot has ever come back. Distinguishes "no MCP tools" from "we
- * have not managed to ask yet", which are the same empty list to every reader.
+ * Whether the snapshot is the final word — it came back AND every enabled server
+ * had published its tools by then. "No MCP tools", "nobody has asked yet" and "a
+ * server is still connecting" are the same empty list to every reader, so this is
+ * what tells them apart. Until it is set, the snapshot is re-fetched before each
+ * turn's tool list, which is the backstop for the `plugin-changed` broadcast
+ * below: with only the broadcast, one missed notification meant an empty tool
+ * list for the rest of the session while every UI surface listed them in full.
  * @type {boolean}
  */
 let loaded = false;
@@ -156,7 +161,10 @@ async function refreshSnapshot() {
     for (const t of tools) index.set(mcpLLMName(t.server, t.name), t);
     discoveredTools = tools;
     toolByLLMName = index;
-    loaded = true;
+    // Only stop asking once the server says every enabled MCP server has
+    // answered. An absent `complete` means nothing is reporting discovery state
+    // (a bare test double), where re-asking forever would be the worse guess.
+    loaded = res?.complete !== false;
   } catch (err) {
     // Leave the last-known snapshot untouched; a later refresh will update it.
     // Say so, though: a refresh that keeps failing looks exactly like a server
@@ -227,16 +235,20 @@ class McpToolContextItem extends ContextItem {
   }
 
   /**
-   * Load the snapshot before the tool list is built, if it has never loaded.
+   * Load the snapshot before the tool list is built, until one comes back with
+   * every enabled server accounted for.
    *
    * The first snapshot request is also what starts Go-side discovery, so without
    * this the very request that builds a turn's tool list would be the one
    * kicking the servers off — and the turn would go out with no MCP tools in it
    * while the settings panel, asking a moment later, lists them all. The server
-   * side holds that first answer until the servers have settled, so awaiting it
-   * once is enough; afterwards the snapshot is kept current out of band by
-   * `plugin-changed`, and this returns immediately.
-   * @returns {Promise<void>|void} Resolves once a snapshot has been loaded
+   * side holds that first answer until the servers have settled, so one await is
+   * usually enough. A server slower than that wait, or one that failed its first
+   * attempt and reconnected, costs a turn instead of the session: this keeps
+   * asking until the answer is final, and `plugin-changed` keeps it current after
+   * that. The repeat calls are a local snapshot read, and only park while a
+   * server is on its first connect attempt.
+   * @returns {Promise<void>|void} Resolves once a complete snapshot has loaded
    */
   static prepareToolDefinitions() {
     if (loaded) return;

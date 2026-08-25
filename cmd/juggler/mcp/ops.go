@@ -88,7 +88,8 @@ func (o *operations) Execute(ctx context.Context, operation string, params map[s
 
 	case "snapshot":
 		manager.Reconcile(project)
-		return map[string]any{"tools": manager.Snapshot(ctx)}, nil
+		tools, complete := manager.Snapshot(ctx)
+		return map[string]any{"tools": tools, "complete": complete}, nil
 
 	case "callTool":
 		manager.Reconcile(project)
@@ -274,7 +275,9 @@ func (m *Manager) ListServers() []ServerStatus {
 }
 
 // Snapshot returns every running server's discovered tools, waiting (bounded by
-// settleTimeout) while any server is still on its first connect attempt.
+// settleTimeout) while any server is still on its first connect attempt. The
+// second return reports whether every enabled server has published its list, so
+// a caller that caches the snapshot knows whether it is safe to stop asking.
 //
 // The wait is the point. This snapshot is what a turn's tool list is built from,
 // and discovery is started by the same client that asks for it, so answering
@@ -282,18 +285,19 @@ func (m *Manager) ListServers() []ServerStatus {
 // every MCP tool — while the settings UI, reading the manager directly a moment
 // later, shows them all. Callers that cannot wait cancel ctx and get whatever has
 // been discovered so far.
-func (m *Manager) Snapshot(ctx context.Context) []ToolInfo {
+func (m *Manager) Snapshot(ctx context.Context) ([]ToolInfo, bool) {
 	resp := make(chan mcpResp, 1)
 	m.reqCh <- mcpReq{kind: reqSnapshotSettled, resp: resp}
 	select {
 	case r := <-resp:
-		return r.tools
+		return r.tools, r.complete
 	case <-ctx.Done():
 		// The parked waiter still holds resp, which is buffered, so the manager's
 		// later send lands harmlessly in a channel nobody reads.
 		unsettled := make(chan mcpResp, 1)
 		m.reqCh <- mcpReq{kind: reqSnapshot, resp: unsettled}
-		return (<-unsettled).tools
+		r := <-unsettled
+		return r.tools, r.complete
 	}
 }
 
