@@ -298,6 +298,12 @@ func (a *App) initServer() error {
 		return err
 	}
 
+	// Start MCP discovery at the first point the project is known, so servers are
+	// connecting while the engine boots. Deferred to the engine's first request
+	// instead, the turn that asks for the tool list is the one that starts
+	// discovery, and it ships without a single MCP tool.
+	srv.StartMCP()
+
 	// Record the address we actually bound to so discovery clients (the test
 	// harness via stdout, a desktop app that spawned us as a subprocess, a peer
 	// reading instance.json) all see the real port — findAvailablePort may have

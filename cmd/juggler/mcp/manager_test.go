@@ -29,6 +29,17 @@ func TestMain(m *testing.M) {
 	case "crash":
 		os.Stderr.WriteString("fake server: boom\n")
 		os.Exit(3)
+	case "slow":
+		// Serve, but only after a delay long enough that an unwaiting snapshot
+		// would answer first.
+		time.Sleep(500 * time.Millisecond)
+		runFakeServer()
+		os.Exit(0)
+	case "mute":
+		// Starts, never speaks the protocol, then goes away: a server stuck
+		// "starting" for longer than any caller should wait on it.
+		time.Sleep(time.Second)
+		os.Exit(0)
 	default:
 		runFakeServer()
 		os.Exit(0)
@@ -170,6 +181,74 @@ func TestManagerDiscoveryAndCall(t *testing.T) {
 		return false
 	}) {
 		t.Fatalf("fake server did not stop cleanly: %+v", m.ListServers())
+	}
+}
+
+// TestSnapshotWaitsForFirstConnect covers the bug where a turn's tool list was
+// built from a snapshot taken before discovery finished: the request that starts
+// the servers is the same one that has to answer, so answering immediately meant
+// the first turn of every session offered the model no MCP tools at all while the
+// settings UI listed them.
+func TestSnapshotWaitsForFirstConnect(t *testing.T) {
+	writeGlobalConfig(t, map[string]ServerConfig{"slowpoke": fakeServerConfig("slow")})
+
+	m := NewManager()
+	m.Start()
+	m.Reconcile("") // starts the server; it is still connecting when we ask
+
+	tools := m.Snapshot(context.Background())
+	if len(tools) == 0 {
+		t.Fatalf("snapshot answered before the server finished connecting: %+v", m.ListServers())
+	}
+	for _, tool := range tools {
+		if tool.Server != "slowpoke" {
+			t.Errorf("unexpected server in snapshot: %+v", tool)
+		}
+	}
+}
+
+// TestSnapshotWaitIsBounded covers the other half: a server that will never
+// answer must cost the caller settleTimeout, not the turn.
+func TestSnapshotWaitIsBounded(t *testing.T) {
+	old := settleTimeout
+	settleTimeout = 200 * time.Millisecond
+	oldBackoff := restartBackoff
+	restartBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { settleTimeout = old; restartBackoff = oldBackoff })
+
+	// A command that exists but never speaks MCP: connect blocks until the
+	// handshake times out, well past the settle wait.
+	writeGlobalConfig(t, map[string]ServerConfig{"mute": {Command: os.Args[0], Env: map[string]string{"MCP_FAKE_MODE": "mute"}}})
+
+	m := NewManager()
+	m.Start()
+	m.Reconcile("")
+
+	start := time.Now()
+	tools := m.Snapshot(context.Background())
+	elapsed := time.Since(start)
+
+	if len(tools) != 0 {
+		t.Errorf("a mute server should contribute no tools, got %+v", tools)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("snapshot waited %v — the settle wait is not bounded", elapsed)
+	}
+}
+
+// TestSnapshotCancelledCallerGetsWhatThereIs covers a caller that gives up
+// waiting: it gets the current snapshot rather than hanging or erroring.
+func TestSnapshotCancelledCallerGetsWhatThereIs(t *testing.T) {
+	writeGlobalConfig(t, map[string]ServerConfig{"slowpoke": fakeServerConfig("slow")})
+
+	m := NewManager()
+	m.Start()
+	m.Reconcile("")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if tools := m.Snapshot(ctx); len(tools) != 0 {
+		t.Errorf("cancelled snapshot should return the (empty) current set, got %+v", tools)
 	}
 }
 

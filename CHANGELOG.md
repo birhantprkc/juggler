@@ -5,9 +5,10 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- `juggler run "<prompt>"` does one prompt unattended and exits with a status
-- A step-by-step tutorial for writing an extension, ending in working code
+- Added a step-by-step tutorial for writing an extension, ending in working code
 - Copyable example extensions covering every capability type, in `examples/`
+- `juggler run "<prompt>"` does one prompt unattended and exits with a status
+- MCP servers connect at startup, so the first turn of a session can use their tools
 - The extension guide now covers info cards, file viewers, settings and secrets
 
 ## [0.5.8] - 2026-08-24

@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"juggler/cmd/juggler/ops"
+	"juggler/internal/jlog"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -27,6 +28,24 @@ func Register() {
 	ops.Register("mcp", func(scope ops.PathScope) ops.Operations {
 		return &operations{scope: scope}
 	})
+}
+
+// StartDiscovery begins connecting the configured servers for a project. Call it
+// as soon as the project is known, and again on a project switch.
+//
+// Without it, nothing starts a server until the first client asks for a snapshot
+// — and that client is the engine building a turn's tool list, so the request
+// that starts discovery is the one that has to answer before it finishes. Say so
+// in the log: an MCP server that is slow, wrong, or silent is otherwise invisible
+// from the outside.
+func StartDiscovery(project string) {
+	if manager == nil {
+		return
+	}
+	manager.Reconcile(project)
+	if n := len(manager.ListServers()); n > 0 {
+		jlog.Info("[mcp] %d server(s) configured for %s", n, project)
+	}
 }
 
 // SetChangeHook installs the callback fired whenever the discovered tool
@@ -69,7 +88,7 @@ func (o *operations) Execute(ctx context.Context, operation string, params map[s
 
 	case "snapshot":
 		manager.Reconcile(project)
-		return map[string]any{"tools": manager.Snapshot()}, nil
+		return map[string]any{"tools": manager.Snapshot(ctx)}, nil
 
 	case "callTool":
 		manager.Reconcile(project)
@@ -254,11 +273,28 @@ func (m *Manager) ListServers() []ServerStatus {
 	return (<-resp).servers
 }
 
-// Snapshot returns every running server's discovered tools.
-func (m *Manager) Snapshot() []ToolInfo {
+// Snapshot returns every running server's discovered tools, waiting (bounded by
+// settleTimeout) while any server is still on its first connect attempt.
+//
+// The wait is the point. This snapshot is what a turn's tool list is built from,
+// and discovery is started by the same client that asks for it, so answering
+// immediately means the first turn of every session ships a tool list missing
+// every MCP tool — while the settings UI, reading the manager directly a moment
+// later, shows them all. Callers that cannot wait cancel ctx and get whatever has
+// been discovered so far.
+func (m *Manager) Snapshot(ctx context.Context) []ToolInfo {
 	resp := make(chan mcpResp, 1)
-	m.reqCh <- mcpReq{kind: reqSnapshot, resp: resp}
-	return (<-resp).tools
+	m.reqCh <- mcpReq{kind: reqSnapshotSettled, resp: resp}
+	select {
+	case r := <-resp:
+		return r.tools
+	case <-ctx.Done():
+		// The parked waiter still holds resp, which is buffered, so the manager's
+		// later send lands harmlessly in a channel nobody reads.
+		unsettled := make(chan mcpResp, 1)
+		m.reqCh <- mcpReq{kind: reqSnapshot, resp: unsettled}
+		return (<-unsettled).tools
+	}
 }
 
 // ListTools returns tools for one server, or all servers when server is "".

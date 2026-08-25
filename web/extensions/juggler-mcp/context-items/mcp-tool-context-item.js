@@ -33,6 +33,17 @@ import wsService from '../../../js/services/websocket.js';
 let discoveredTools = [];
 /** @type {Map<string, McpToolInfo>} */
 let toolByLLMName = new Map();
+/**
+ * Whether a snapshot has ever come back. Distinguishes "no MCP tools" from "we
+ * have not managed to ask yet", which are the same empty list to every reader.
+ * @type {boolean}
+ */
+let loaded = false;
+/**
+ * In-flight refresh, so concurrent waiters share one round-trip.
+ * @type {Promise<void>|null}
+ */
+let inFlight = null;
 
 /** The permission itemType all MCP tool rules are stored under. */
 const ITEM_TYPE = 'mcp-tool';
@@ -145,6 +156,7 @@ async function refreshSnapshot() {
     for (const t of tools) index.set(mcpLLMName(t.server, t.name), t);
     discoveredTools = tools;
     toolByLLMName = index;
+    loaded = true;
   } catch (err) {
     // Leave the last-known snapshot untouched; a later refresh will update it.
     // Say so, though: a refresh that keeps failing looks exactly like a server
@@ -154,9 +166,23 @@ async function refreshSnapshot() {
   }
 }
 
+/**
+ * Refresh, sharing one in-flight request between concurrent callers. The tool
+ * list is built per turn and several surfaces can ask at once; without this each
+ * would open its own snapshot round-trip, and each of those can be holding the
+ * server's bounded wait for a slow MCP server to connect.
+ * @returns {Promise<void>} Resolves when the refresh settles
+ */
+function refreshOnce() {
+  if (!inFlight) {
+    inFlight = refreshSnapshot().finally(() => { inFlight = null; });
+  }
+  return inFlight;
+}
+
 // Kick an initial best-effort load (also starts Go-side discovery). Not awaited
 // at top level: a slow/failed fetch must never wedge registry init.
-refreshSnapshot();
+refreshOnce();
 
 // Refresh whenever the tool set changes. The Go manager broadcasts
 // `plugin-changed` (via the server) on every snapshot change — a server became
@@ -201,9 +227,26 @@ class McpToolContextItem extends ContextItem {
   }
 
   /**
+   * Load the snapshot before the tool list is built, if it has never loaded.
+   *
+   * The first snapshot request is also what starts Go-side discovery, so without
+   * this the very request that builds a turn's tool list would be the one
+   * kicking the servers off — and the turn would go out with no MCP tools in it
+   * while the settings panel, asking a moment later, lists them all. The server
+   * side holds that first answer until the servers have settled, so awaiting it
+   * once is enough; afterwards the snapshot is kept current out of band by
+   * `plugin-changed`, and this returns immediately.
+   * @returns {Promise<void>|void} Resolves once a snapshot has been loaded
+   */
+  static prepareToolDefinitions() {
+    if (loaded) return;
+    return refreshOnce();
+  }
+
+  /**
    * One tool definition per discovered MCP tool. Read from the module-level
-   * snapshot; empty until servers finish discovery, then a `plugin-changed`
-   * reload surfaces them.
+   * snapshot, which {@link prepareToolDefinitions} has loaded and
+   * `plugin-changed` keeps current.
    * @returns {Array<{name: string, category: 'read'|'write', description: string, input_schema: import('juggler/strategy-type').JSONObjectSchema}>} One tool definition per discovered MCP tool
    */
   static getToolDefinitions() {

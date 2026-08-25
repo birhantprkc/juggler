@@ -104,8 +104,19 @@ export async function generateToolDefinitions() {
   const contextItemRegistry = (await import('../registries/context-item-registry.js')).default;
   await contextItemRegistry.init();
 
-  // Collect tool definitions from all context items
   const allItems = contextItemRegistry.getAll();
+
+  // Let items whose tools are discovered rather than declared finish finding
+  // them first (see ContextItem.prepareToolDefinitions). Concurrent and
+  // failure-tolerant: this runs on the path that answers the worker's
+  // request-tools, so one item that is slow or broken must not cost the turn its
+  // other tools.
+  await Promise.allSettled(allItems.map(({ class: ItemClass }) => {
+    const prepare = /** @type {any} */ (ItemClass).prepareToolDefinitions;
+    return typeof prepare === 'function' ? prepare.call(ItemClass) : undefined;
+  }));
+
+  // Collect tool definitions from all context items
   for (const { class: ItemClass } of allItems) {
     const itemClass = /** @type {any} */ (ItemClass);
     if (itemClass.getToolDefinitions) {

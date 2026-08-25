@@ -1102,6 +1102,26 @@ class ContextItem {
   }
 
   /**
+   * Make {@link getToolDefinitions} ready to answer, if it needs fetching first.
+   *
+   * Awaited before every tool list is built, so an item whose tools are
+   * discovered rather than declared — the MCP bridge, whose tools live on
+   * servers that take time to connect — can hold the list until it knows what it
+   * has. Without it such an item can only publish whatever a background refresh
+   * happened to have finished, and a turn taken during discovery silently offers
+   * the model fewer tools than the app is showing the user.
+   *
+   * Override only when there is something to wait for; resolve as fast as
+   * possible, and never reject — a slow or broken item must cost its own tools,
+   * not the whole tool list. Called once per tool-list build, so anything past
+   * the first load should return immediately.
+   * [Context: shared]
+   * @static
+   * @returns {Promise<void>|void} Resolves when the tool definitions are ready
+   */
+  static prepareToolDefinitions() {}
+
+  /**
    * Strategy classes this item owns — registered on load and forced hidden.
    *
    * This is how a delegating item becomes a **subagent**: return a strategy

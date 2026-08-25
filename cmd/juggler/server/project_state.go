@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/mcp"
 	"juggler/internal/jlog"
 )
 
@@ -191,6 +192,11 @@ func (s *Server) SwitchProject(newPath string) error {
 			}
 		}(old)
 	}
+
+	// MCP config is per-project (global mcp.json plus the project's own), so the
+	// new project's servers start here rather than when something next asks for a
+	// tool list — by which time a turn may already have been sent without them.
+	mcp.StartDiscovery(newPath)
 
 	// Notify all clients.
 	s.broadcastToAll(map[string]any{

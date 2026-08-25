@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
-	"juggler/cmd/juggler/mcp"
 	"juggler/cmd/juggler/server/handlers"
 	"juggler/internal/jlog"
 
@@ -57,14 +56,6 @@ func (s *Server) StartBackgroundServices() {
 		}
 	}
 	s.startPluginWatcher()
-	// When the MCP tool snapshot changes (a server became ready, crashed, or
-	// sent tools/list_changed), reuse the extension hot-reload broadcast so
-	// connected engines reload registries and pick up the new tool set.
-	// The tool set changed, not any extension file, so the module cache is left
-	// alone: the reload re-reads the snapshot from the server.
-	mcp.SetChangeHook(func() {
-		s.broadcastPluginChanged("config/mcp", false)
-	})
 	s.RefreshProviders()
 	s.startUpdateChecker()
 	s.startEngineSupervisor()

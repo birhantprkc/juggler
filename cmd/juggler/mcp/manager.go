@@ -45,6 +45,15 @@ const (
 // var (not const) so tests can shrink it.
 var restartBackoff = 2 * time.Second
 
+// settleTimeout bounds how long a snapshot caller waits for servers that are
+// still on their first connect attempt. A turn's tool list is built from a
+// snapshot, so answering early with a half-discovered set is how a model ends up
+// unable to see a tool the UI is happily listing; waiting is the lesser cost. It
+// must stay well inside the worker's context/tool request timeout, so a server
+// that never answers delays the first turn rather than failing it. A var (not
+// const) so tests can shrink it.
+var settleTimeout = 5 * time.Second
+
 // ToolInfo is a discovered tool, flattened for the engine. It intentionally
 // mirrors the fields the JS context item needs to build a tool definition.
 type ToolInfo struct {
@@ -110,6 +119,7 @@ const (
 	reqReconcile reqKind = iota
 	reqListServers
 	reqSnapshot
+	reqSnapshotSettled
 	reqListTools
 	reqEnsure
 	reqControl
@@ -122,6 +132,7 @@ const (
 	evAppendLog
 	evToolsChanged
 	evSetTools
+	evSettleTimeout
 )
 
 type mcpReq struct {
@@ -159,6 +170,9 @@ type Manager struct {
 	// Installed via the reqSetHook message (never written from another
 	// goroutine) so there is no data race.
 	onChange func()
+	// settleWaiters are snapshot callers parked until no server is still on its
+	// first connect attempt. Owned by the run goroutine, like onChange.
+	settleWaiters []chan mcpResp
 }
 
 // pkg-global manager instance, wired by Register (ops.go).
@@ -195,6 +209,14 @@ func (m *Manager) run() {
 
 		case reqSnapshot:
 			req.resp <- mcpResp{tools: flattenTools(servers)}
+
+		case reqSnapshotSettled:
+			if firstStartPending(servers) {
+				m.settleWaiters = append(m.settleWaiters, req.resp)
+				time.AfterFunc(settleTimeout, func() { m.reqCh <- mcpReq{kind: evSettleTimeout} })
+			} else {
+				req.resp <- mcpResp{tools: flattenTools(servers)}
+			}
 
 		case reqListTools:
 			var out []ToolInfo
@@ -248,8 +270,46 @@ func (m *Manager) run() {
 				s.tools = applyServerConfig(s.cfg, req.tools)
 				m.notifyChange()
 			}
+
+		case evSettleTimeout:
+			// The wait is bounded, not conditional: a server that never answers
+			// hands back whatever has been discovered so far rather than holding
+			// the turn that asked.
+			if len(m.settleWaiters) > 0 {
+				jlog.Info("[mcp] still starting after %v — answering with %d tool(s) discovered so far",
+					settleTimeout, len(flattenTools(servers)))
+				m.releaseSettleWaiters(servers)
+			}
+		}
+
+		// Any message can be the one that settles the last starting server, so the
+		// check lives here rather than in each handler that could clear it.
+		if len(m.settleWaiters) > 0 && !firstStartPending(servers) {
+			m.releaseSettleWaiters(servers)
 		}
 	}
+}
+
+// firstStartPending reports whether any enabled server is still on its FIRST
+// connect attempt, i.e. has never reached a terminal outcome. A server being
+// restarted after a crash does not count: it has already answered once, and its
+// backoff must not hold up a tool list.
+func firstStartPending(servers map[string]*serverState) bool {
+	for _, s := range servers {
+		if s.cfg.IsEnabled() && s.status == statusStarting && s.attempts == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseSettleWaiters hands the current snapshot to every parked caller.
+func (m *Manager) releaseSettleWaiters(servers map[string]*serverState) {
+	tools := flattenTools(servers)
+	for _, w := range m.settleWaiters {
+		w <- mcpResp{tools: tools}
+	}
+	m.settleWaiters = nil
 }
 
 // reconcile diffs the desired config against running servers: it stops servers
@@ -333,6 +393,7 @@ func (m *Manager) startServer(s *serverState) {
 	gen := s.generation
 	name := s.name
 	cfg := s.cfg
+	jlog.Info("[mcp] starting server %q (%s)", name, cfg.transportKind())
 	go m.connect(name, gen, cfg)
 }
 
@@ -493,6 +554,14 @@ func (m *Manager) handleConnected(servers map[string]*serverState, req mcpReq) {
 	s.status = statusRunning
 	s.lastErr = ""
 	s.attempts = 0
+	// The tool count is what a "why can't the model see it?" search needs first,
+	// and the difference from the raw count is the per-server filter doing its
+	// job. Without this line the whole subsystem leaves no trace in the log.
+	if hidden := len(req.tools) - len(s.tools); hidden > 0 {
+		jlog.Info("[mcp] server %q ready: %d tool(s), %d hidden by this server's filter", s.name, len(s.tools), hidden)
+	} else {
+		jlog.Info("[mcp] server %q ready: %d tool(s)", s.name, len(s.tools))
+	}
 	m.drainWaiters(s, s.readyEnsure())
 	m.notifyChange()
 }
