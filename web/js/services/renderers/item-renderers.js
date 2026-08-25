@@ -21,7 +21,8 @@
  *    delta-patch closure with the panel's observer dispatch.
  */
 
-import { renderAssistantContent, renderMarkdown, decorateCodeBlocks, looksLikeMarkdown } from '../../../sdk/lib/markdown.js';
+import { renderAssistantContent, decorateCodeBlocks } from '../../../sdk/lib/markdown.js';
+import { createStreamingMarkdown } from '../../utils/streaming-markdown.js';
 import { stripThinkingTags } from '../../utils/content-utils.js';
 import { formatDuration } from '../../utils/format.js';
 import { badgeForItem } from '../../utils/item-badge.js';
@@ -211,25 +212,14 @@ export function renderMessage(host, container, message) {
       // reasoning as Markdown (OpenAI's reasoning summaries, Gemini's thought
       // parts) or streams raw prose (Anthropic's thinking_delta, the
       // reasoning_content of GLM/DeepSeek), and the server forwards whichever
-      // it gets verbatim. So decide per message the same way a user bubble
-      // does: render Markdown only when a construct is actually present,
-      // otherwise show the text as it arrived — mono, whitespace-significant,
-      // stray `*`/`_`/`#` left literal instead of eaten as formatting. The test
-      // runs on every re-render, so a block whose first construct only arrives
-      // mid-stream switches to Markdown at that point rather than being locked
-      // to a guess made on its opening words.
-      const renderInto = (/** @type {string} */ text) => {
-        if (looksLikeMarkdown(text)) {
-          markdownEl.className = 'markdown';
-          markdownEl.innerHTML = renderMarkdown(text, { escapeXml: true });
-          decorateCodeBlocks(markdownEl);
-        } else {
-          markdownEl.className = 'plain';
-          markdownEl.textContent = text;
-        }
-      };
+      // it gets verbatim. createStreamingMarkdown makes that choice per update
+      // — Markdown only when a construct is actually present, otherwise the
+      // text as it arrived — and renders only the part still in flight, so a
+      // block that grows to thousands of tokens doesn't re-parse all of itself
+      // on every frame.
+      const stream = createStreamingMarkdown(markdownEl, { escapeXml: true });
       let lastRendered = stripThinkingTags(msgContent);
-      renderInto(lastRendered);
+      stream.update(lastRendered);
 
       // Stream-follow: while a long thinking block streams in, keep the tail in
       // view so the user can watch it grow without manually scrolling. We stop
@@ -252,12 +242,12 @@ export function renderMessage(host, container, message) {
         }
       };
 
-      // Coalesce bursts of streaming deltas into a single markdown re-parse per
-      // animation frame. Each delta otherwise triggers a full O(n) re-render of
-      // the entire accumulated text, so a multi-thousand-token block arriving as
-      // many small deltas degrades to O(n²) and visibly stutters. rAF caps that
-      // at one re-parse per paint; the equality guard skips fires where the
-      // selected item's content didn't actually change (unrelated doc edits).
+      // Two limits on how much a burst of deltas can cost. rAF caps how OFTEN
+      // the block is re-rendered — at most once per paint, however many deltas
+      // land in between — and the streaming renderer caps how MUCH each render
+      // touches, to the tail that is still in flight. The equality guard skips
+      // fires where the selected item's content didn't actually change
+      // (unrelated doc edits).
       let rafId = 0;
       const flush = () => {
         rafId = 0;
@@ -266,7 +256,7 @@ export function renderMessage(host, container, message) {
         if (latest === lastRendered) return;
         lastRendered = latest;
         ensureScroller();
-        renderInto(latest);
+        stream.update(latest);
         if (following && scroller) scroller.scrollTop = scroller.scrollHeight;
       };
       host._liveUpdater = () => {

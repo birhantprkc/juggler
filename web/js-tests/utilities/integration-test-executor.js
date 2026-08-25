@@ -114,6 +114,8 @@ import { runTests as runYjsCompatTests } from '../unit-tests/yjs-compat-test.js'
 import { runTests as runRenderPerformanceTests } from '../unit-tests/render-performance-tests.js';
 import { runTests as runSyncBatchBackoffTests } from '../unit-tests/sync-batch-backoff-test.js';
 import { runTests as runThinkingStreamTests } from '../unit-tests/thinking-stream-test.js';
+import { runTests as runStreamingRowScopeTests } from '../unit-tests/streaming-row-scope-test.js';
+import { runTests as runStreamingMarkdownTests } from '../unit-tests/streaming-markdown-test.js';
 import { runTests as runMarkdownSanitizerTests } from '../unit-tests/markdown-sanitizer-test.js';
 import { runTests as runMarkdownScopedCssTests } from '../unit-tests/markdown-scoped-css-test.js';
 import { runTests as runMarkdownTaskListTests } from '../unit-tests/markdown-task-list-test.js';
@@ -382,6 +384,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:render-performance', run: runRenderPerformanceTests },
   { name: 'unit:sync-batch-backoff', run: runSyncBatchBackoffTests },
   { name: 'unit:thinking-stream', run: runThinkingStreamTests },
+  { name: 'unit:streaming-row-scope', run: runStreamingRowScopeTests },
+  { name: 'unit:streaming-markdown', run: runStreamingMarkdownTests },
   { name: 'unit:markdown-sanitizer', run: runMarkdownSanitizerTests },
   { name: 'unit:markdown-scoped-css', run: runMarkdownScopedCssTests },
   { name: 'unit:markdown-task-list', run: runMarkdownTaskListTests },

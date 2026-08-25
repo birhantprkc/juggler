@@ -28,11 +28,16 @@ class BaseMessage extends JugglerElement {
   attributeChangedCallback(name, oldValue, newValue) {
     if (oldValue === newValue) return;
 
-    if (name === 'content' && this._supportsStreaming()) {
-      this._updateContent();
-    } else {
-      this.render();
+    if (name === 'content') {
+      // An explicit attribute write is a seed or a rebuild, and supersedes
+      // whatever streaming left on the element.
+      this._streamContent = null;
+      if (this._supportsStreaming()) {
+        this._updateContent();
+        return;
+      }
     }
+    this.render();
   }
 
   static get observedAttributes() {
@@ -52,9 +57,35 @@ class BaseMessage extends JugglerElement {
     return index !== null ? parseInt(index, 10) : null;
   }
 
-  /** @returns {string} The content attribute value */
+  /**
+   * The streamed text, held off the DOM.
+   *
+   * A streaming message's `content` is the whole accumulated reply, rewritten
+   * on every delta — tens of kilobytes by the end of a long one. Pushing that
+   * through an attribute copies the entire string into the DOM and raises a
+   * mutation record for it many times a second, so streaming updates land here
+   * and the attribute keeps only the seed value set at creation.
+   * @type {string|null}
+   * @protected
+   */
+  _streamContent = null;
+
+  /** @returns {string} The streamed text if any has arrived, else the attribute. */
   get content() {
-    return this.getAttribute('content') || '';
+    return this._streamContent ?? (this.getAttribute('content') || '');
+  }
+
+  /**
+   * Take a streaming update without writing it to the DOM.
+   * @param {string} text - The full accumulated content.
+   * @returns {boolean} True if the text changed and _updateContent() ran.
+   * @protected
+   */
+  _setStreamContent(text) {
+    if (this.content === text) return false;
+    this._streamContent = text;
+    this._updateContent();
+    return true;
   }
 
   /**

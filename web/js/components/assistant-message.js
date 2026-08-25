@@ -3,7 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import BaseMessage from './base-message.js';
-import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
+import { createStreamingMarkdown } from '../utils/streaming-markdown.js';
 import { stripThinkingTags } from '../utils/content-utils.js';
 import '../utils/icon-message-renderer.js';
 
@@ -11,6 +11,14 @@ import '../utils/icon-message-renderer.js';
  * Assistant message component - icon + markdown content with streaming support
  */
 class AssistantMessage extends BaseMessage {
+  /**
+   * Renders the body, re-parsing only the part of the reply still in flight.
+   * Rebuilt by render(), which replaces the element the renderer writes into.
+   * @type {{update: (text: string) => void}|null}
+   * @private
+   */
+  _stream = null;
+
   /**
    * Whether this component supports streaming updates
    * @returns {boolean} True, this component supports streaming
@@ -22,16 +30,6 @@ class AssistantMessage extends BaseMessage {
   }
 
   /**
-   * Format content - strip thinking sections and render as markdown
-   * @param {string} content
-   * @returns {string} Formatted HTML content
-   * @private
-   */
-  _formatContent(content) {
-    return renderAssistantContentWrapped(stripThinkingTags(content));
-  }
-
-  /**
    * Render the message
    * @override
    */
@@ -39,18 +37,23 @@ class AssistantMessage extends BaseMessage {
     const article = document.createElement('article');
     article.className = 'assistant';
 
-    const formattedContent = this._formatContent(this.content);
-
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content-box';
-    contentDiv.innerHTML = formattedContent;
-    decorateCodeBlocks(contentDiv);
+    // The renderer owns this element, and gives it the `markdown` class.
+    const body = document.createElement('div');
+    contentDiv.appendChild(body);
 
     article.appendChild(contentDiv);
 
     this._appendCopyButton(article, () => stripThinkingTags(this.content));
 
     this.replaceChildren(article);
+
+    // An assistant reply is Markdown by definition, so it never falls back to
+    // verbatim the way a provider's raw reasoning can, and its own inline HTML
+    // is left for the renderer's sanitizer rather than escaped up front.
+    this._stream = createStreamingMarkdown(body, { escapeXml: false, detect: false });
+    this._stream.update(stripThinkingTags(this.content));
   }
 
   /**
@@ -59,14 +62,11 @@ class AssistantMessage extends BaseMessage {
    * @override
    */
   _updateContent() {
-    const contentBox = this.querySelector('.message-content-box');
-    if (contentBox) {
-      const formattedContent = this._formatContent(this.content);
-      contentBox.innerHTML = formattedContent;
-      decorateCodeBlocks(/** @type {HTMLElement} */ (contentBox));
-    } else {
+    if (!this._stream || !this.querySelector('.message-content-box')) {
       this.render();
+      return;
     }
+    this._stream.update(stripThinkingTags(this.content));
   }
 
   /**
@@ -76,11 +76,9 @@ class AssistantMessage extends BaseMessage {
   updateFromItem(item) {
     if (!item) return;
     const newContent = item.get('content') || '';
-    if (this.getAttribute('content') === newContent) return;
-    this.setAttribute('content', newContent);
+    if (!this._setStreamContent(newContent)) return;
     // Hide when the message has no visible text (e.g. a turn that was only tool calls)
-    const hasVisible = newContent.trim().length > 0;
-    this.style.display = hasVisible ? '' : 'none';
+    this.style.display = newContent.trim().length > 0 ? '' : 'none';
   }
 }
 

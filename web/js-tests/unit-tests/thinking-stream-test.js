@@ -10,9 +10,9 @@
  * behaviours are asserted here:
  *
  *  1. Re-renders are COALESCED onto a single requestAnimationFrame, so a burst
- *     of streaming deltas within one frame collapses to one markdown re-parse
- *     showing the latest text (not one O(n) re-render per delta — the source of
- *     the choppiness on multi-thousand-token blocks).
+ *     of streaming deltas within one frame collapses to one render showing the
+ *     latest text. (What that render costs is the streaming renderer's job, and
+ *     is asserted in streaming-markdown-test.)
  *  2. The scroll container STICKS TO THE BOTTOM so the user can watch the tail
  *     stream without scrolling — but stops following the moment the user
  *     scrolls up to read back, and resumes once they return to the bottom.

@@ -96,6 +96,36 @@ const CV_ROW_TAGS = new Set([
 const SKIP_FLUSH_IDLE_MS = 200;
 
 /**
+ * The item ids whose own Y.Map fields changed in one observeDeep batch, or
+ * null when the batch can't be attributed to specific rows.
+ *
+ * A streaming token mutates the `content` of exactly one item, but it arrives
+ * on a deep observer covering the whole thread container — so without this,
+ * every tick of every stream refreshes every row in the transcript and pays
+ * two forced layouts per row for the height glide. Narrowing to the changed
+ * rows makes that cost proportional to what moved rather than to the length of
+ * the conversation.
+ *
+ * Returns null (meaning "refresh everything", the conservative answer) for an
+ * array-level delta, for a target below the item level such as a tool-action's
+ * nested `displayData`, and for an empty batch.
+ * @param {any[]} events - Yjs observeDeep events.
+ * @returns {Set<string>|null} Changed item ids, or null when unknown.
+ */
+function changedItemIds(events) {
+  if (!Array.isArray(events) || events.length === 0) return null;
+  /** @type {Set<string>} */
+  const ids = new Set();
+  for (const event of events) {
+    if (event?.changes?.delta?.length) return null;
+    const id = event?.target?.get?.('itemId');
+    if (typeof id !== 'string' || !id) return null;
+    ids.add(id);
+  }
+  return ids;
+}
+
+/**
  * Controls that own their own clicks. A click landing on one of these inside a
  * tile is an action on the item — answering a question, retrying, opening a
  * disclosure — not a request to navigate into the item's details, so it never
@@ -316,8 +346,13 @@ class ConversationArea extends HTMLElement {
       const pinned = !!scroller && Math.abs(scroller.scrollTop) <= 1;
       const animate = pinned && !structural && !prefersReducedMotion();
 
+      // Only the rows this batch actually touched can have grown, and measuring
+      // a row costs a forced layout — so never measure the whole transcript on
+      // the strength of one streaming token.
+      const changed = changedItemIds(events);
       const growEls = animate
         ? Array.from(scroller.querySelectorAll('assistant-message, thinking-message, thread-message'))
+          .filter((el) => !changed || changed.has(el.getAttribute('message-id') || ''))
         : [];
       // Capture each streamable element's CURRENT visual height (which, mid-glide,
       // is its in-flight animated height) before the content update lands.
@@ -329,7 +364,7 @@ class ConversationArea extends HTMLElement {
       // items / approvals / busy-status comes from onItemsInserted and showBusy,
       // never from here.
       this._holdReaderAnchorOver(() => {
-        this._notifyChangedElements(events, conversation);
+        this._notifyChangedElements(events, conversation, changed);
 
         growEls.forEach((el, i) => {
           this._animateStreamingResize(/** @type {HTMLElement} */ (el), fromHeights[i] ?? 0);
@@ -381,9 +416,11 @@ class ConversationArea extends HTMLElement {
    * Total complexity: O(N) where N = number of items.
    * @param {any[]} events - Array of Yjs events from observeDeep
    * @param {import('../model/conversation.js').default} _conversation
+   * @param {Set<string>|null} [changed] - Item ids this batch touched, from
+   *   changedItemIds(). Rows outside the set are left alone; null refreshes all.
    * @private
    */
-  _notifyChangedElements(events, _conversation) {
+  _notifyChangedElements(events, _conversation, changed = null) {
     const messageList = this.querySelector('#message-list');
     if (!messageList) return;
 
@@ -392,15 +429,17 @@ class ConversationArea extends HTMLElement {
     // so we just check that we received any events at all.
     if (!events || (Array.isArray(events) && events.length === 0)) return;
 
-    // Build Map of itemId -> item for O(1) lookup
+    // Build Map of itemId -> item for O(1) lookup, holding only the items whose
+    // rows are going to be refreshed below.
     const items = this._messageThread ? this._messageThread.items : [];
     /** @type {Map<string, any>} */
     const itemMap = new Map();
     for (const item of items) {
       const msg = /** @type {any} */ (item);
-      if (msg && msg.get('itemId')) {
-        itemMap.set(msg.get('itemId'), msg);
-      }
+      const id = msg && msg.get('itemId');
+      if (!id) continue;
+      if (changed && !changed.has(id)) continue;
+      itemMap.set(id, msg);
     }
 
     // Notify all streamable message elements with their current item data
@@ -410,6 +449,7 @@ class ConversationArea extends HTMLElement {
     for (const element of streamableElements) {
       const itemId = element.getAttribute('message-id');
       if (!itemId) continue;
+      if (changed && !changed.has(itemId)) continue;
 
       const item = itemMap.get(itemId);
       if (item) {
@@ -424,8 +464,13 @@ class ConversationArea extends HTMLElement {
     // Group tiles read the aggregate state of the rows they hide (a member
     // going pending must turn the tile orange), so they're refreshed from the
     // re-derived groups rather than from itemMap.
+    // A group tile stands for rows that are not in the DOM, so it can't be
+    // matched by message-id like the streamables above; skip the transform
+    // entirely unless this batch touched an item some group is standing for.
     const groupElements = Array.from(messageList.querySelectorAll('tool-group-message'));
-    if (groupElements.length > 0) {
+    const groupsAffected = !changed
+      || [...changed].some((id) => this._memberToGroup.has(id));
+    if (groupElements.length > 0 && groupsAffected) {
       const { entries } = this._computeDisplay(items);
       /** @type {Map<string, any>} */
       const groupMap = new Map();

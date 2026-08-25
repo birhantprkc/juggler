@@ -17,6 +17,7 @@ class ThinkingMessage extends BaseMessage {
     return true;
   }
 
+
   /**
    * Returns "Thinking · N tokens" label, or just "Thinking" when content is empty.
    * @param {string} content
@@ -60,10 +61,7 @@ class ThinkingMessage extends BaseMessage {
    */
   updateFromItem(item) {
     if (!item) return;
-    const newContent = item.get('content') || '';
-    if (this.getAttribute('content') !== newContent) {
-      this.setAttribute('content', newContent);
-    }
+    this._setStreamContent(item.get('content') || '');
   }
 }
 
