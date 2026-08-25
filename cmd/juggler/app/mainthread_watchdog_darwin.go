@@ -13,6 +13,7 @@ package app
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -37,6 +38,15 @@ const (
 	// relaunchMaxGen caps consecutive fast (sub-healthy) relaunches before we
 	// give up and exit for real.
 	relaunchMaxGen = 3
+	// relaunchExecRetryWindow: how long to keep re-trying an exec that fails
+	// because the image isn't runnable at this instant. Rebuilding this tree
+	// replaces the very binary a running server was launched from, and the
+	// path is empty for the length of the compile — so a wedge that lands
+	// mid-build has nothing to exec. Waiting it out is the difference between
+	// recovering and dying, and a wedged process is no use to anyone meanwhile.
+	relaunchExecRetryWindow = 90 * time.Second
+	// relaunchExecRetryInterval: gap between those attempts.
+	relaunchExecRetryInterval = 500 * time.Millisecond
 )
 
 // wakeNudge is closed-and-recreated whenever the OS reports DidWake; the
@@ -267,10 +277,40 @@ func envWith(environ []string, key, val string) []string {
 	return append(out, prefix+val)
 }
 
+// execRetryable reports whether an exec failure is one a moment's wait can
+// clear: the image is missing, still open for writing, or not executable yet —
+// the states a rebuild of this tree passes through. Pure function — unit-tested.
+func execRetryable(err error) bool {
+	return errors.Is(err, syscall.ENOENT) ||
+		errors.Is(err, syscall.ETXTBSY) ||
+		errors.Is(err, syscall.EACCES) ||
+		errors.Is(err, syscall.ENOEXEC)
+}
+
+// execUntilRunnable calls execFn until it fails for a reason waiting can't fix
+// (execRetryable) or deadline passes, sleeping via sleep between attempts and
+// handing the first retryable failure to notify (so the wait is reported once,
+// not twice a second). execFn returns ONLY on failure, so the returned error is
+// always non-nil. sleep and deadline are parameters so the retry can be tested
+// without waiting on the real clock.
+func execUntilRunnable(execFn func() error, sleep func(time.Duration), deadline time.Time, notify func(error)) error {
+	for attempt := 0; ; attempt++ {
+		err := execFn()
+		if !execRetryable(err) || !time.Now().Before(deadline) {
+			return err
+		}
+		if attempt == 0 && notify != nil {
+			notify(err)
+		}
+		sleep(relaunchExecRetryInterval)
+	}
+}
+
 // relaunchInPlace re-execs a fresh server image in place (same PID), pinning the
 // port the viewer is retrying so it reconnects transparently. It does NOT return
 // on success (the process image is replaced). On the crash-loop guard refusing,
-// or any exec failure, it os.Exit(1)s so the caller's fallback is unreachable.
+// or an exec failure that outlasts relaunchExecRetryWindow, it os.Exit(1)s so
+// the caller's fallback is unreachable.
 //
 // Same-PID re-exec is what makes recovery work for both launch paths with no
 // app-side changes: a terminal shell keeps its foreground job, and an
@@ -296,8 +336,16 @@ func relaunchInPlace(addr string, uptime time.Duration) {
 	env := envWith(os.Environ(), relaunchGenEnv, strconv.Itoa(nextGen))
 	_, _ = fmt.Fprintf(os.Stderr,
 		"\nFATAL: main thread wedged — re-exec'ing a fresh server (same port, gen=%d) so it recovers in place.\n", nextGen)
-	_ = syscall.Exec(exe, argv, env)
-	// Only reached if exec failed.
-	_, _ = os.Stderr.WriteString("\nFATAL: re-exec failed — force-exiting.\n")
+	err = execUntilRunnable(
+		func() error { return syscall.Exec(exe, argv, env) },
+		time.Sleep,
+		time.Now().Add(relaunchExecRetryWindow),
+		func(waitErr error) {
+			_, _ = fmt.Fprintf(os.Stderr,
+				"Can't exec %s yet: %v — retrying for up to %v.\n", exe, waitErr, relaunchExecRetryWindow)
+		},
+	)
+	// Only reached if exec failed for good.
+	_, _ = fmt.Fprintf(os.Stderr, "\nFATAL: re-exec failed: %v — force-exiting.\n", err)
 	os.Exit(1)
 }

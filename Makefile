@@ -54,6 +54,10 @@ MAC_APP_BIN=$(MAC_APP_DIR)/Contents/MacOS/$(BINARY_NAME)
 MAC_APP_APP_BIN=$(MAC_APP_DIR)/Contents/MacOS/juggler-app
 MAC_APP_RES=$(MAC_APP_DIR)/Contents/Resources
 MAC_APP_PLIST=$(MAC_APP_DIR)/Contents/Info.plist
+# Where each macOS binary is built before being moved into the bundle (see
+# go-build for why). Outside the bundle, so a half-finished build never leaves a
+# stray Mach-O for mac-codesign to seal in or for the DMG to ship.
+MAC_STAGE=$(BUILD_DIR)/.stage
 MAC_ICON_SRC=assets/icons/juggler.icon
 MAC_BUNDLE_ID=studio.juggler.juggler
 # Entitlements sealed into the bundle when signing with a real Developer ID
@@ -142,12 +146,21 @@ go-build: app-icon-embed wails-runtime-embed
 	@mkdir -p $(BUILD_DIR)
 ifeq ($(UNAME_S),Darwin)
 	@mkdir -p $(MAC_APP_DIR)/Contents/MacOS $(MAC_APP_RES)
-	@# Clear any prior binary first: a leftover universal (fat) Mach-O from an
-	@# older `make release-build-mac` isn't a plain object file, so `go build -o`
-	@# refuses to overwrite it ("already exists and is not an object file").
-	@rm -f $(MAC_APP_BIN) $(MAC_APP_APP_BIN)
-	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(MAC_APP_BIN) ./cmd/juggler
-	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(MAC_APP_APP_BIN) ./cmd/juggler-app
+	@# Build into $(MAC_STAGE) and move into the bundle, rather than writing the
+	@# slot directly. A server RUNNING from this tree re-execs its own path to
+	@# recover from a main-thread wedge (relaunchInPlace), so that path must
+	@# never be empty: building in place leaves it missing for the whole compile,
+	@# and a wedge in that window turns an in-place restart into a dead process.
+	@# rename() is atomic and leaves the old inode intact for anything still
+	@# running from it. Moving in also replaces a leftover universal (fat) Mach-O
+	@# from an older `make release-build-mac`, which `go build -o` refuses to
+	@# overwrite ("already exists and is not an object file").
+	@mkdir -p $(MAC_STAGE)
+	@rm -f $(MAC_STAGE)/$(BINARY_NAME) $(MAC_STAGE)/juggler-app
+	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(MAC_STAGE)/$(BINARY_NAME) ./cmd/juggler
+	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(MAC_STAGE)/juggler-app ./cmd/juggler-app
+	@mv -f $(MAC_STAGE)/$(BINARY_NAME) $(MAC_APP_BIN)
+	@mv -f $(MAC_STAGE)/juggler-app $(MAC_APP_APP_BIN)
 	@$(MAKE) --no-print-directory mac-app-meta
 	@$(MAKE) --no-print-directory mac-codesign
 	@ln -sfn Juggler.app/Contents/MacOS/$(BINARY_NAME) $(BUILD_DIR)/$(BINARY_NAME)
@@ -167,12 +180,14 @@ release-build: app-icon-embed wails-runtime-embed
 	@mkdir -p $(BUILD_DIR)
 ifeq ($(UNAME_S),Darwin)
 	@mkdir -p $(MAC_APP_DIR)/Contents/MacOS $(MAC_APP_RES)
-	@# See go-build: clear a possible leftover universal (fat) binary so
-	@# `go build -o` doesn't refuse to overwrite it.
-	@rm -f $(MAC_APP_BIN) $(MAC_APP_APP_BIN)
-	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_APP_BIN) ./cmd/juggler
+	@# See go-build for why each binary is built into $(MAC_STAGE) and moved in.
+	@mkdir -p $(MAC_STAGE)
+	@rm -f $(MAC_STAGE)/$(BINARY_NAME) $(MAC_STAGE)/juggler-app
+	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_STAGE)/$(BINARY_NAME) ./cmd/juggler
 	@echo "Building juggler-app $(VERSION) [release]..."
-	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_APP_APP_BIN) ./cmd/juggler-app
+	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_STAGE)/juggler-app ./cmd/juggler-app
+	@mv -f $(MAC_STAGE)/$(BINARY_NAME) $(MAC_APP_BIN)
+	@mv -f $(MAC_STAGE)/juggler-app $(MAC_APP_APP_BIN)
 	@$(MAKE) --no-print-directory mac-app-meta
 	@$(MAKE) --no-print-directory mac-codesign
 	@ln -sfn Juggler.app/Contents/MacOS/$(BINARY_NAME) $(BUILD_DIR)/$(BINARY_NAME)
@@ -236,18 +251,20 @@ ifneq ($(UNAME_S),Darwin)
 endif
 	@echo "Building Juggler.app $(VERSION) [release, $(GOARCH_HOST)]..."
 	@mkdir -p $(MAC_APP_DIR)/Contents/MacOS $(MAC_APP_RES)
-	@# Clear a possible leftover universal (fat) binary from an older release so
-	@# `go build -o` doesn't refuse to overwrite it (see go-build).
-	@rm -f $(MAC_APP_BIN) $(MAC_APP_APP_BIN)
+	@# See go-build for why each binary is built into $(MAC_STAGE) and moved in.
+	@mkdir -p $(MAC_STAGE)
+	@rm -f $(MAC_STAGE)/$(BINARY_NAME) $(MAC_STAGE)/juggler-app
 	@if [ -n "$(SERVER_BIN)" ]; then \
 		echo "  → juggler (from $(SERVER_BIN))"; \
-		cp "$(SERVER_BIN)" "$(MAC_APP_BIN)"; \
+		cp "$(SERVER_BIN)" "$(MAC_STAGE)/$(BINARY_NAME)"; \
 	else \
 		echo "  → juggler ($(GOARCH_HOST))"; \
-		CGO_ENABLED=1 GOOS=darwin GOARCH=$(GOARCH_HOST) $(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_APP_BIN) ./cmd/juggler || exit 1; \
+		CGO_ENABLED=1 GOOS=darwin GOARCH=$(GOARCH_HOST) $(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_STAGE)/$(BINARY_NAME) ./cmd/juggler || exit 1; \
 	fi
 	@echo "  → juggler-app ($(GOARCH_HOST))"
-	@CGO_ENABLED=1 GOOS=darwin GOARCH=$(GOARCH_HOST) $(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_APP_APP_BIN) ./cmd/juggler-app || exit 1
+	@CGO_ENABLED=1 GOOS=darwin GOARCH=$(GOARCH_HOST) $(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_STAGE)/juggler-app ./cmd/juggler-app || exit 1
+	@mv -f $(MAC_STAGE)/$(BINARY_NAME) $(MAC_APP_BIN)
+	@mv -f $(MAC_STAGE)/juggler-app $(MAC_APP_APP_BIN)
 	@$(MAKE) --no-print-directory mac-app-meta
 	@$(MAKE) --no-print-directory mac-codesign
 	@ln -sfn Juggler.app/Contents/MacOS/$(BINARY_NAME) $(BUILD_DIR)/$(BINARY_NAME)

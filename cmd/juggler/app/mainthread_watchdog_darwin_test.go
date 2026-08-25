@@ -7,6 +7,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -47,6 +48,110 @@ func TestRelaunchDecision(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- exec retry (a rebuild replaces the image we re-exec) ---
+
+func TestExecRetryable(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"missing image (mid-rebuild)", syscall.ENOENT, true},
+		{"image still open for writing", syscall.ETXTBSY, true},
+		{"not executable yet", syscall.EACCES, true},
+		{"half-written image", syscall.ENOEXEC, true},
+		{"wrapped errno still matches", fmt.Errorf("exec %s: %w", "/bin/juggler", syscall.ENOENT), true},
+		{"permanent failure", syscall.EPERM, false},
+		{"arg list too long", syscall.E2BIG, false},
+		{"no error", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := execRetryable(c.err); got != c.want {
+				t.Fatalf("execRetryable(%v) = %v; want %v", c.err, got, c.want)
+			}
+		})
+	}
+}
+
+func TestExecUntilRunnable(t *testing.T) {
+	// A retryable failure that clears (the rebuild lands) is retried until the
+	// exec succeeds — success never returns, modelled here by the last attempt
+	// blocking forever, so instead assert on the attempt count via a failure
+	// that turns permanent.
+	t.Run("retries while the image is missing", func(t *testing.T) {
+		attempts := 0
+		slept := 0
+		err := execUntilRunnable(
+			func() error {
+				attempts++
+				if attempts < 4 {
+					return syscall.ENOENT
+				}
+				return syscall.EPERM
+			},
+			func(time.Duration) { slept++ },
+			time.Now().Add(time.Minute),
+			nil,
+		)
+		if attempts != 4 || slept != 3 {
+			t.Fatalf("attempts=%d slept=%d; want 4 and 3", attempts, slept)
+		}
+		if !errors.Is(err, syscall.EPERM) {
+			t.Fatalf("returned %v; want EPERM (the failure that ended the retry)", err)
+		}
+	})
+
+	t.Run("gives up at the deadline", func(t *testing.T) {
+		attempts := 0
+		err := execUntilRunnable(
+			func() error { attempts++; return syscall.ENOENT },
+			func(time.Duration) { time.Sleep(time.Millisecond) },
+			time.Now().Add(20*time.Millisecond),
+			nil,
+		)
+		if !errors.Is(err, syscall.ENOENT) {
+			t.Fatalf("returned %v; want the last exec error", err)
+		}
+		if attempts < 2 {
+			t.Fatalf("attempts=%d; want the exec retried before the deadline", attempts)
+		}
+	})
+
+	t.Run("reports the wait once", func(t *testing.T) {
+		notified := 0
+		attempts := 0
+		_ = execUntilRunnable(
+			func() error {
+				attempts++
+				if attempts < 5 {
+					return syscall.ENOENT
+				}
+				return syscall.EPERM
+			},
+			func(time.Duration) {},
+			time.Now().Add(time.Minute),
+			func(error) { notified++ },
+		)
+		if notified != 1 {
+			t.Fatalf("notify called %d times; want exactly 1", notified)
+		}
+	})
+
+	t.Run("a permanent failure is not retried", func(t *testing.T) {
+		attempts := 0
+		_ = execUntilRunnable(
+			func() error { attempts++; return syscall.EPERM },
+			func(time.Duration) { t.Fatal("slept on a permanent failure") },
+			time.Now().Add(time.Minute),
+			func(error) { t.Fatal("reported a wait on a permanent failure") },
+		)
+		if attempts != 1 {
+			t.Fatalf("attempts=%d; want 1", attempts)
+		}
+	})
 }
 
 // --- argv / env / addr helpers (pure) ---
