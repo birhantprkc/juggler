@@ -464,6 +464,9 @@ ifeq ($(UNAME_S),Darwin)
 		'  <key>CFBundleVersion</key><string>$(VERSION)</string>' \
 		'  <key>LSMinimumSystemVersion</key><string>14.0</string>' \
 		'  <key>NSHighResolutionCapable</key><true/>' \
+		'  <!-- TCC attributes a tool subprocess request to its responsible app. -->' \
+		'  <key>NSMicrophoneUsageDescription</key>' \
+		'  <string>A program you ran from Juggler asked to use the microphone.</string>' \
 		'</dict></plist>' \
 		> $(MAC_APP_PLIST)
 	@tmp=$$(mktemp -d); \
