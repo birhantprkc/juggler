@@ -9,14 +9,16 @@ import "juggler/cmd/juggler/providers/utils"
 // ModelContextWindows maps OpenAI model names to their context window sizes (in tokens)
 // Only includes well-known models - unknown models fall back to defaults
 var ModelContextWindows = map[string]int{
-	// GPT-5 Series (400K total: 272K input + 128K output)
-	"gpt-5":            400000,
-	"gpt-5-mini":       400000,
-	"gpt-5-nano":       400000,
-	"gpt-5.6":          400000,
-	"gpt-5.6-sol":      400000,
-	"gpt-5.6-terra":    400000,
-	"gpt-5.6-luna":     400000,
+	// GPT-5 Series
+	"gpt-5":      400000, // 272K input + 128K output
+	"gpt-5-mini": 400000,
+	"gpt-5-nano": 400000,
+
+	// GPT-5.6 Series (1.05M total: 922K input + 128K output)
+	"gpt-5.6":          1050000,
+	"gpt-5.6-sol":      1050000,
+	"gpt-5.6-terra":    1050000,
+	"gpt-5.6-luna":     1050000,
 	"gpt-5.1":          128000, // ChatGPT version
 	"gpt-5.1-thinking": 196000,
 
