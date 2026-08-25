@@ -1,0 +1,26 @@
+{
+  "id": "@example/bookmarks",
+  "name": "Bookmarks",
+  "version": "1.0.0",
+  "author": "Juggler Team",
+  "license": "Apache-2.0",
+  "engineApi": "^1.0.0",
+  "permissions": [
+    "filesystem.read",
+    "filesystem.write"
+  ],
+  "settings": [
+    {
+      "key": "max_bookmarks",
+      "type": "number",
+      "label": "Maximum bookmarks",
+      "help": "Adding beyond this drops the oldest bookmark.",
+      "default": 50
+    }
+  ],
+  "provides": {
+    "contextItems": ["context-items/*-context-item.js"],
+    "commands": ["commands/*-command-type.js"],
+    "infoCards": ["cards/*-card.js"]
+  }
+}

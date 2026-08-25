@@ -10,6 +10,7 @@ closed-source extensions — while the application itself remains strong copylef
 |---|---|---|
 | `web/sdk/**` | [Apache-2.0](web/sdk/LICENSE) | The extension SDK: the `juggler/*` modules extensions import, plus the self-contained support library in `web/sdk/lib/`. |
 | `web/extensions/**` | [Apache-2.0](web/extensions/LICENSE) | Bundled extensions, including `juggler-core` — the reference implementation of Juggler's built-in tools, and the best starting point for writing your own. |
+| `examples/**` | [Apache-2.0](examples/LICENSE) | Example extensions, written to be copied. Not shipped in any binary. |
 | Everything else | [AGPL-3.0-or-later](LICENSE) | The application: Go server and desktop app, web UI, build tooling, tests, docs. |
 
 Every source file carries an SPDX identifier and a license line in its header;
@@ -21,8 +22,9 @@ Extension code imports the SDK through the `juggler/*` module specifiers (see
 `docs/extension_guide.md`). Those modules — and everything under `web/sdk/lib/`
 — are Apache-2.0, so an extension built against them incurs **no copyleft
 obligation**: you may license your own extension however you like, closed
-source included. Forking files from `web/extensions/juggler-core/` as a
-starting point is equally unencumbered.
+source included. Forking files from `examples/` or
+`web/extensions/juggler-core/` as a starting point is equally unencumbered —
+the `examples/` tree exists for exactly that.
 
 The AGPL applies to the application that *hosts* your extension, not to your
 extension. Running your extension inside Juggler is use of the app, which the

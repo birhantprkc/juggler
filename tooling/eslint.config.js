@@ -13,7 +13,7 @@ export default [
     ignores: ['web/js/vendor/**'],
   },
   {
-    files: ['web/js/**/*.js', 'web/sdk/**/*.js', 'web/extensions/**/*.js', 'web/js-tests/**/*.js'],
+    files: ['web/js/**/*.js', 'web/sdk/**/*.js', 'web/extensions/**/*.js', 'web/js-tests/**/*.js', 'examples/**/*.js'],
     plugins: { '@stylistic': stylistic },
     languageOptions: {
       ecmaVersion: 2022,

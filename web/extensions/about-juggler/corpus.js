@@ -219,13 +219,21 @@ Fastest start: the Juggler binary has an "ext" subcommand.
 
 Anatomy: an extension is a folder with a "juggler.extension.json" manifest at its
 root plus capability files whose names carry a type suffix, which is how the
-manifest globs find them — "context-items/*-context-item.js" (tools the model can
-call), "strategies/*-strategy-type.js" (agentic-loop policies), and
-"commands/*-command-type.js" (slash commands). Each capability is a class that
-"export default"s, extends an SDK base class ("juggler/context-item",
-"juggler/strategy-type", or "juggler/command-type"), and declares a static
-MANIFEST. (For a reusable prompt you do not need an extension at all — a custom
-slash command is enough.)
+manifest globs find them. There are five capability types:
+
+- "context-items/*-context-item.js" — tools the model can call ("juggler/context-item")
+- "strategies/*-strategy-type.js" — agentic-loop policies ("juggler/strategy-type")
+- "commands/*-command-type.js" — slash commands ("juggler/command-type")
+- "cards/*-card.js" — sidebar info tiles ("juggler/info-card-type")
+- "viewers/*-file-viewer.js" — how a file type is displayed and extracted for the
+  model ("juggler/file-viewer")
+
+Each capability is a class that "export default"s, extends its SDK base class,
+and declares a static MANIFEST. An extension may also contribute a single
+system-prompt module, and may declare "settings" (typed user-configurable values
+including secrets, rendered in the Extensions view and read back at runtime with
+extensionConfigResolve from "juggler/ops"). (For a reusable prompt you do not
+need an extension at all — a custom slash command is enough.)
 
 Minimal manifest. Required fields are id, name, version, and provides; engineApi
 is recommended and is checked against the host SDK version in web/sdk/version.js:
@@ -282,8 +290,15 @@ full method reference), plus the working examples under
 extensions/juggler-core/context-items/ (for example read-file-context-item.js for
 validation and status UI, or write-file-context-item.js for an approval gate).
 The same files are also served by the running app at /sdk/... and /extensions/...
-if you would rather open them in a browser tab. The authoring guide itself lives
-in the repo at docs/extension_guide.md (linked below).
+if you would rather open them in a browser tab.
+
+Two documents in the repo go further than this quickstart can (they are not in
+the app, so they need a checkout or GitHub): docs/extension_tutorial.md builds a
+complete extension step by step — tool, approval gate, setting, command, and
+sidebar card — and docs/extension_guide.md is the reference for the manifest,
+every capability type, and the trust model. The repo's examples/extensions/
+directory holds small, self-contained examples covering every capability type, all
+Apache-2.0 and meant to be copied.
 
 ## Updates and connectivity
 
@@ -308,17 +323,22 @@ the repository root, so the paths below are relative to it — when you need mor
 than this manual carries (exact API signatures, precise behaviour, or how to
 extend the app), read the source rather than guessing:
 
-- **Writing extensions** — docs/extension_guide.md is the authoring guide
-  (concepts, packaging, workflow). The base classes an extension subclasses live
-  in web/sdk/, and each carries a JSDoc header with a quickstart and full method
-  reference — that source is the canonical API documentation: web/sdk/context-item.js
-  (tools/context items), web/sdk/strategy-type.js (strategies), and
-  web/sdk/command-type.js (slash commands). The built-in extensions under
-  web/extensions/ (juggler-core and juggler-mcp) are working examples to copy.
-  The guide lives on GitHub, but those SDK base classes and the web/extensions/
-  examples are also readable inside this app via the ReadJugglerSource tool
-  (paths under sdk/ or extensions/) — so you can consult the exact API offline,
-  with no repo checkout.
+- **Writing extensions** — docs/extension_tutorial.md builds one end to end and
+  is the place to start; docs/extension_guide.md is the reference (manifest,
+  every capability type, settings and secrets, the trust model). examples/
+  extensions/ holds small, copyable examples of every capability type, Apache-2.0
+  and meant to be copied. The base classes an extension subclasses live in
+  web/sdk/, and each carries a JSDoc header with a quickstart and full method
+  reference — that source is the canonical API documentation:
+  web/sdk/context-item.js (tools/context items), web/sdk/strategy-type.js
+  (strategies), web/sdk/command-type.js (slash commands),
+  web/sdk/info-card-type.js (sidebar cards), and web/sdk/file-viewer.js (file
+  display and extraction). The built-in extensions under web/extensions/
+  (juggler-core and juggler-mcp) are larger working examples.
+  The docs and examples/ live on GitHub, but those SDK base classes and the
+  web/extensions/ examples are also readable inside this app via the
+  ReadJugglerSource tool (paths under sdk/ or extensions/) — so you can consult
+  the exact API offline, with no repo checkout.
 - **Configuration and data layout** — docs/config-directory.md (the ~/.juggler
   directory, durable vs. cache).
 - **Custom slash commands** — docs/custom-commands.md (the no-code command

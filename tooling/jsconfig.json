@@ -40,7 +40,8 @@
     "../web/js/**/*.js",
     "../web/js/types/**/*.d.ts",
     "../web/sdk/**/*.js",
-    "../web/extensions/**/*.js"
+    "../web/extensions/**/*.js",
+    "../examples/**/*.js"
   ],
   "exclude": [
     "../web/js/vendor/**",

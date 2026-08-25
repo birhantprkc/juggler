@@ -56,8 +56,8 @@ func printExtUsage() {
 Develop and install Juggler Extensions.
 
 Commands:
-  init <name>        Scaffold a new extension in ./<name> (manifest + one
-                     working sample of each capability type + README).
+  init <name>        Scaffold a new extension in ./<name> (manifest + a working
+                     sample tool, strategy and command + README).
   validate [path]    Check the manifest at [path] (default .) the same way the
                      server does: required fields, engineApi compat, and that
                      every provides glob resolves to real files.
@@ -70,7 +70,10 @@ Examples:
   juggler ext init code-review
   juggler ext validate ./code-review
   juggler ext link ./code-review
-  juggler ext add github.com/juggler-ai/example-extension
+  juggler ext add github.com/owner/repo
+
+Writing one: docs/extension_tutorial.md builds an extension end to end, and
+examples/extensions/ holds small, copyable examples covering every capability type.
 `)
 }
 
@@ -80,9 +83,9 @@ func userExtensionDir() string {
 	return filepath.Join(userpaths.ConfigDir(), "extensions")
 }
 
-// extInit scaffolds a loadable extension directory with a manifest, one working
-// sample of each capability type, and a README. The result loads immediately
-// once linked (juggler ext link ./<name>).
+// extInit scaffolds a loadable extension directory with a manifest, a working
+// sample context item, strategy and command, and a README. The result loads
+// immediately once linked (juggler ext link ./<name>).
 func extInit(args []string) int {
 	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
 		fmt.Fprintln(os.Stderr, "Usage: juggler ext init <name>")
@@ -570,12 +573,25 @@ export default HelloCommandType;
 		"```bash\njuggler ext link ./%s\n```\n\n"+
 		"Then start Juggler. Editing any `.js` file or `%s` hot-reloads the\n"+
 		"extension in connected viewers — no restart needed.\n\n"+
+		"`juggler ext validate .` runs the same admission check the server does,\n"+
+		"so a packaging mistake fails fast instead of becoming a missing extension.\n\n"+
 		"## Layout\n\n"+
-		"- `%s` — the manifest (id, version, permissions, provides globs).\n"+
+		"- `%s` — the manifest (id, version, permissions, settings, provides globs).\n"+
 		"- `context-items/` — context-item capabilities (tools the model can call).\n"+
 		"- `strategies/` — strategy capabilities (how the model loop runs).\n"+
 		"- `commands/` — slash-command capabilities.\n\n"+
-		"Each capability imports only the public `juggler/*` SDK.\n",
+		"This scaffold samples three capability types. An extension can also\n"+
+		"provide `infoCards` (sidebar tiles, `cards/*-card.js`), `fileViewers`\n"+
+		"(how a file type is shown and extracted, `viewers/*-file-viewer.js`), a\n"+
+		"`systemPrompt` module, and `tests`. Delete whatever you don't need — a\n"+
+		"`provides` glob that matches nothing is a load error, so remove its\n"+
+		"manifest entry too.\n\n"+
+		"Each capability imports only the public `juggler/*` SDK.\n\n"+
+		"## Reference\n\n"+
+		"- `docs/extension_tutorial.md` — builds an extension end to end.\n"+
+		"- `docs/extension_guide.md` — the reference: manifest, capabilities, trust model.\n"+
+		"- `examples/extensions/` — small, copyable examples of every capability type.\n"+
+		"- `web/sdk/*.js` — the base classes; each opens with a full method reference.\n",
 		base, base, extManifestFile, extManifestFile)
 
 	return map[string]string{

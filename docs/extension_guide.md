@@ -14,7 +14,7 @@ high-level so it doesn't drift from the code.
 
 ## Capabilities
 
-An extension bundles any mix of three capability types — each a class you
+An extension bundles any mix of five capability types — each a class you
 `export default`, extending an SDK base class and declaring a `static MANIFEST`:
 
 | Capability | What it does | Base class (SDK module) | Built-in examples |
@@ -22,6 +22,8 @@ An extension bundles any mix of three capability types — each a class you
 | **Context Item** | A tool the LLM can call (read a file, search, run a command) | `juggler/context-item` | `glob`, `read_file`, `write_file` |
 | **Strategy** | Controls how the agentic loop runs — turns, tools, stopping | `juggler/strategy-type` | `default`, `read-only`, `yolo` |
 | **Command** | A user-invoked slash command (`/clear`, `/compact`) | `juggler/command-type` | `clear`, `compact`, `thread` |
+| **Info Card** | An ambient tile in the sidebar's spare space | `juggler/info-card-type` | `tips`, `usage`, `git-status` |
+| **File Viewer** | How a file type is shown to you and extracted for the model | `juggler/file-viewer` | `text`, `pdf`, `image` |
 
 An extension may **also** contribute a **system-prompt contribution** — not a
 class but a single module whose default export adds terse, durable guidance to
@@ -41,16 +43,19 @@ third-party extension. It is the best reference for well-formed capabilities.
 ## Quick start
 
 ```bash
-juggler ext init my-extension       # scaffold manifest + one sample of each capability + README
+juggler ext init my-extension       # scaffold: manifest + a sample tool, strategy and command + README
 juggler ext validate ./my-extension # run the server's admission check locally
 juggler ext link ./my-extension     # symlink into ~/.juggler/extensions (hot-reloads on save)
 juggler ext add github.com/owner/repo  # git-clone a published extension into ~/.juggler/extensions
 ```
 
-`ext validate` applies the **same** check the server runs at discovery —
-required manifest fields, `engineApi` compatibility with this host, and that
-every `provides` glob resolves to real files — so a packaging mistake fails fast
-with a clear `✗` instead of a silently-missing extension. `ext link` symlinks
+`ext validate` applies the server's admission check — required manifest fields
+and `engineApi` compatibility with this host — and then goes one step further:
+it also confirms that every `provides` glob resolves to real files. That last
+check is validate-only, and it is the one worth having. At discovery a glob
+matching nothing is not an error; the extension just loads contributing nothing
+for that type. So a mistyped path fails fast here with a clear `✗` instead of
+becoming a capability that mysteriously never appears. `ext link` symlinks
 your dev directory into `~/.juggler/extensions/` (validating first); start or
 reconnect to Juggler once and it loads. From then on, editing any capability
 file or the manifest **hot-reloads** the extension in connected viewers — no
@@ -73,17 +78,26 @@ my-extension/
   context-items/word-count-context-item.js
   strategies/cautious-strategy-type.js
   commands/hello-command-type.js
+  cards/streak-card.js
+  viewers/csv-file-viewer.js
+  _tests/word-count-test.js
   README.md
 ```
 
 A capability file's name **must** end with the suffix for its type — that is how
 the manifest globs find it:
 
-| Capability | Filename suffix |
-|------------|-----------------|
-| Context Item | `*-context-item.js` |
-| Strategy | `*-strategy-type.js` |
-| Command | `*-command-type.js` |
+| Capability | Conventional directory | Filename suffix |
+|------------|------------------------|-----------------|
+| Context Item | `context-items/` | `*-context-item.js` |
+| Strategy | `strategies/` | `*-strategy-type.js` |
+| Command | `commands/` | `*-command-type.js` |
+| Info Card | `cards/` | `*-card.js` |
+| File Viewer | `viewers/` | `*-file-viewer.js` |
+
+The directories are convention, not law — the globs in your manifest are what
+actually decide. The suffixes are worth keeping: they are what makes a glob like
+`cards/*-card.js` pick up capabilities and skip the helper modules beside them.
 
 Files without a suffix (private helpers, base classes) are imported by capability
 files but are not themselves registered — group them in subdirectories as the
@@ -99,13 +113,20 @@ core extension does (`context-items/edit/`, `context-items/execute/`).
   "version": "1.0.0",
   "author": "you",                  // optional
   "homepage": "https://…",          // optional
+  "license": "Apache-2.0",          // optional; informational SPDX id
   "engineApi": "^1.0.0",            // host SDK compat range, checked at load
   "permissions": ["filesystem.read"],
+  "settings": [                     // optional; see Settings and secrets
+    { "key": "api_key", "type": "secret", "label": "API key", "required": true }
+  ],
   "provides": {
     "contextItems": ["context-items/*-context-item.js"],
     "strategies":   ["strategies/*-strategy-type.js"],
     "commands":     ["commands/*-command-type.js"],
-    "systemPrompt": "system-prompt-contribution.js"   // optional; single module path
+    "infoCards":    ["cards/*-card.js"],
+    "fileViewers":  ["viewers/*-file-viewer.js"],
+    "systemPrompt": "system-prompt-contribution.js",  // optional; single module path
+    "tests":        ["_tests/*-test.js"]              // optional; test-only, never served
   }
 }
 ```
@@ -114,10 +135,28 @@ core extension does (`context-items/edit/`, `context-items/execute/`).
 |-------|----------|-------|
 | `id` | Yes | Scoped, e.g. `@you/name`. The unit of enable/disable. |
 | `name`, `version` | Yes | Display name and semver. |
-| `provides` | Yes | At least one capability. `contextItems`/`strategies`/`commands` are root-relative globs; `systemPrompt` is a single module path (see [System-prompt contribution](#system-prompt-contribution)). Neither may escape the extension root. |
+| `provides` | Yes | At least one capability. `contextItems`/`strategies`/`commands`/`infoCards`/`fileViewers` are root-relative globs; `systemPrompt` is a single module path (see [System-prompt contribution](#system-prompt-contribution)); `tests` is test-only (see [Testing your extension](#testing-your-extension)) and does not count as a capability. None may escape the extension root. |
 | `engineApi` | Recommended | Semver range (`^1.0.0`, `1.2.3`, or `*`). Omitting it disables the compat check and earns a validation warning. The host SDK version lives in `web/sdk/version.js`. |
-| `permissions` | As needed | **Declares** the host access this extension's code uses. Surfaced to the user in the catalog and the install prompt — a disclosure, not a sandbox (see [Trust model](#trust-model)). Known values: `filesystem.read`, `filesystem.write`, `shell.exec`, `web.fetch`. |
-| `author`, `homepage` | Optional | Metadata. |
+| `permissions` | As needed | **Declares** the host access this extension's code uses. Surfaced to the user in the catalog and the install prompt — a disclosure, not a sandbox (see [Trust model](#trust-model)). See the vocabulary below. |
+| `settings` | As needed | User-configurable values, rendered in the extensions catalog. See [Settings and secrets](#settings-and-secrets). |
+| `author`, `homepage`, `license` | Optional | Metadata. `license` is an informational SPDX id for your own code (e.g. `MIT`) — it is displayed, never enforced. |
+
+**Unknown keys are a hard error.** The manifest is parsed with
+`DisallowUnknownFields`, so a typo like `"contextitems"` fails the extension at
+load with a clear message rather than quietly providing nothing.
+
+**Permission values** are free-form strings, but stick to the established
+vocabulary so the catalog reads consistently:
+
+| Value | Meaning |
+|-------|---------|
+| `filesystem.read` / `filesystem.write` | Reads or writes the user's files |
+| `shell.exec` | Runs shell commands |
+| `web.fetch` | Fetches arbitrary URLs or searches the web |
+| `network.http:<host>` | Talks to one specific host — e.g. `network.http:api.exa.ai` |
+
+Prefer the scoped `network.http:<host>` form when you know the host: "talks to
+`api.exa.ai`" is a far more useful disclosure than "reaches the web".
 
 A duplicate capability id across extensions is a surfaced load error, never a
 silent last-write-wins: the lowest-precedence provider holds the id.
@@ -169,9 +208,31 @@ you'll reach for:
 import ContextItem from 'juggler/context-item';
 import StrategyType, { APPROVAL_POLICY } from 'juggler/strategy-type';
 import CommandType from 'juggler/command-type';
+import InfoCardType from 'juggler/info-card-type';
+import FileViewer from 'juggler/file-viewer';
 import { readFile, writeFile, glob, grep, shell, webFetch } from 'juggler/ops';
 import { smartTruncate, createElement } from 'juggler/ui';
 ```
+
+The full set of specifiers, and what each is for:
+
+| Specifier | What it gives you |
+|-----------|-------------------|
+| `juggler/context-item` | `ContextItem` — the tool base class |
+| `juggler/strategy-type` | `StrategyType`, `APPROVAL_POLICY` |
+| `juggler/command-type` | `CommandType` |
+| `juggler/info-card-type` | `InfoCardType` |
+| `juggler/file-viewer` | `FileViewer` |
+| `juggler/file-source` | `FileSource`/`FileAccess` types, `toDescriptor`, `fetchFileBytes` — what a file viewer is handed |
+| `juggler/ops` | The privileged host operations (below) |
+| `juggler/ui` | Render/format helpers — `createElement`, `smartTruncate`, markdown, syntax highlighting, `FormattingHelpers` |
+| `juggler/item-utils` | Item-level formatting — paths, sizes, badges, empty states, LLM content formatting |
+| `juggler/model` | Conversation vocabulary — `MESSAGE_TYPES`, `TOOL_STATES`, `RESULT_TYPES`, message predicates |
+| `juggler/registry` | `createItem()` to materialise another registered item type; `extractFileSource()` |
+| `juggler/sandbox` | `runInSandbox(code, { capabilities, timeoutMs })` — run untrusted code in an opaque-origin iframe |
+| `juggler/version` | `ENGINE_API_VERSION`, `satisfiesEngineApi(range, version)` |
+| `juggler/utils/html` | HTML escaping and templating helpers |
+| `juggler/utils/path-containment` | Path containment checks — use these rather than hand-rolling `startsWith` |
 
 - **`juggler/ops`** is the privileged host-operations layer — filesystem, shell,
   search, tree, and web operations that were once built-in-only. These ops run
@@ -180,12 +241,27 @@ import { smartTruncate, createElement } from 'juggler/ui';
   surfaced to the user (catalog + install prompt) as disclosure, **not** a gate
   (see [Trust model](#trust-model)). The actual gate is the user-approval layer
   (tool approval dialogs, allowed-paths), which applies to every op. The export
-  names are a clean vocabulary (`readFile`, `writeFile`, `editFile`, `stat`,
-  `mkdir`, `glob`, `getTree`, `grep`, `findSymbol`, `shell`, `shellBackground`,
-  `webFetch`, `webSearch`, `openPath`, `revealPath`, plus
-  `FileSystem`/`ReadOnlyFileSystem` and `OpsError`). See `web/sdk/ops.js`.
+  names are a clean vocabulary, deliberately decoupled from the internal
+  implementation names, grouped roughly as:
+
+  | Area | Exports |
+  |------|---------|
+  | Filesystem | `readFile`, `writeFile`, `editFile`, `editFileLines`, `fileHash`, `stat`, `mkdir`, `uploadAssetBase64` |
+  | Tree & search | `glob`, `getTree`, `expandDirectory`, `grep`, `findSymbol` |
+  | Shell | `shell`, `shellBackground`, `shellOutput`, `shellOutputDelta`, `shellKill`, `shellStreaming`, `cancelShellStreaming` |
+  | Web | `httpRequest` (generic server-side HTTP), `webFetch`, `webSearch` |
+  | Extension settings | `extensionConfigGet`, `extensionConfigSet`, `extensionConfigResolve` |
+  | LLM | `generateText` — one bounded, tool-less, unpersisted turn, for micro-tasks like titles and one-line labels |
+  | OS | `openPath`, `revealPath` |
+  | MCP | `mcpListServers`, `mcpListTools`, `mcpCallTool`, … |
+  | Types | `FileSystem`, `ReadOnlyFileSystem`, `OpsError` |
+
+  There is deliberately no bare `fetch` or `search` export — those would shadow
+  web globals. `web/sdk/ops.js` is the list of record.
 - **`juggler/ui`** holds render/format helpers (`smartTruncate`, `createElement`,
-  `FormattingHelpers`, …). See `web/sdk/ui.js`.
+  `FormattingHelpers`, …). See `web/sdk/ui.js`. It has a worker-safe twin: in the
+  engine, the pure formatters are real and the DOM helpers throw, so a capability
+  that runs in both realms must keep its rendering on the viewer side.
 
 An extension whose `engineApi` range excludes the current SDK version is refused
 at load with a clear diagnostic instead of a mystery `import` failure
@@ -256,7 +332,8 @@ class WordCountContextItem extends ContextItem {
 export default WordCountContextItem;
 ```
 
-The base class carries the boilerplate for all three: `this.successSummary(text,
+The base class carries the boilerplate for those three methods:
+`this.successSummary(text,
 extra)` / `this.failureSummary(message, extra)` build the standard summary shape,
 `this.truncateForLLM(output)` caps large output at the conversation's budget
 (appending the "output truncated" note), and `this.buildStatusUI(actionStatus,
@@ -462,6 +539,123 @@ true`** (so a multi-step mutation reverts as one undo). *When in doubt, set
 both* — they are only unnecessary for pure read/side-effect commands (`/help`, a
 command that only opens a panel), and setting them there is harmless.
 
+### Info Card — an ambient tile in the sidebar
+
+Info cards are the tiles parked in the sidebar's spare space above the Bin (Tips,
+Usage, Git status). Your card fills a content region; the host chrome supplies
+the eyebrow label and the close button around it.
+
+Cards are **viewer-only** — they touch the DOM and never run in the engine, so
+unlike the other capability types there is no worker twin to think about.
+
+Implement `mount(contentEl, session)` and return a teardown function. Optionally
+override `hasContent()` (return `false` to drop the card from the rail when there
+is nothing to show) and `onEnabled()` (run when the user un-hides the card).
+
+```javascript
+import InfoCardType from 'juggler/info-card-type';
+
+class StreakCard extends InfoCardType {
+  static MANIFEST = {
+    id: 'streak',
+    name: 'Streak',
+    version: '1.0.0',
+    description: 'Show how many turns have run without a failed tool call.',
+    eyebrow: 'Streak',
+    priority: 10
+  };
+
+  mount(contentEl) {
+    const paint = () => { contentEl.textContent = `${countClean()} clean turns`; };
+    paint();
+    const timer = setInterval(paint, 5000);
+    return () => clearInterval(timer);   // teardown: stop the timer
+  }
+}
+
+export default StreakCard;
+```
+
+**`priority` decides who survives a squeeze.** Cards stack highest-priority
+first, and when the column runs out of room the lowest-priority card is dropped.
+A dropped card is genuinely torn down and later **re-mounted** from scratch, so
+`mount()` runs more often than you might assume: keep it cheap, and never kick
+off an unguarded network request there — a card that fetches on every mount will
+hammer the host during a resize. Cache outside the mount and paint from the
+cache.
+
+Return a teardown for anything that outlives the element (timers, listeners,
+observers), or a resize will leak one per drop. Full reference:
+**`web/sdk/info-card-type.js`**. Templates: `cards/tips-card.js` (uses
+`hasContent()` and `onEnabled()`), `cards/git-status-card.js` (polls the host).
+
+### File Viewer — how a file type is shown and extracted
+
+A file viewer owns one file type end to end: what **you** see in the panel, and
+what the **model** sees when the file reaches its context. Those are two
+different jobs in two different realms, and the class splits them cleanly:
+
+| Method | Realm | Job |
+|--------|-------|-----|
+| `render(source, host, ctx)` | viewer (has DOM) | Draw the file for the user; return teardown |
+| `extract(source, ctx)` | engine (**no DOM**) | Produce the model-facing text/attachments |
+
+Resolution is **declarative and cheap**: the registry picks a winner from static
+MANIFEST data alone and only *then* imports the module. Candidates are viewers
+whose `mimeTypes` or `extensions` match (or that set `matchAll`) and whose
+`maxBytes` the file does not exceed; the highest `priority` wins. Because of
+that, a viewer with a heavy dependency must `import()` it **inside** the method
+that needs it — otherwise the engine downloads a rendering library it will never
+use.
+
+```javascript
+import FileViewer from 'juggler/file-viewer';
+
+class CsvFileViewer extends FileViewer {
+  static MANIFEST = {
+    id: 'csv',
+    name: 'CSV',
+    version: '1.0.0',
+    description: 'Renders CSV as a table and extracts it as aligned text',
+    mimeTypes: ['text/csv'],
+    extensions: ['csv'],
+    priority: 50,
+    maxBytes: 8 << 20
+  };
+
+  async render(source, host) {
+    const rows = parse(await source.bytes());
+    host.appendChild(buildTable(rows));
+  }
+
+  async extract(source, ctx) {
+    const rows = parse(await source.bytes());
+    const budget = ctx?.maxChars ?? Infinity;
+    const kept = takeWhileUnderBudget(rows, budget);   // stop on a row boundary
+    return { text: format(kept), truncated: kept.length < rows.length };
+  }
+}
+
+export default CsvFileViewer;
+```
+
+`static claims(descriptor)` overrides the declarative match where `mimeTypes` and
+`extensions` cannot express the rule: return `true` to claim a file the manifest
+would have missed, `false` to refuse one it would have taken, `undefined` to
+defer. It runs during resolution, so it must be cheap, synchronous, and read
+nothing but the descriptor — **the bytes have not been fetched**. The text viewer
+uses the veto to decline binary files, which is how a binary with no dedicated
+viewer falls through to the host's "no viewer" fallback.
+
+When honouring `ctx.maxChars` in `extract()`, stop at a natural boundary (a row,
+a page, a record) and set `truncated: true` — do not return everything and leave
+the caller to cut it mid-word. Full reference: **`web/sdk/file-viewer.js`**, with
+the `FileSource` shape (`path`, `mime`, `size`, `bytes()`, `url()`) in
+**`web/sdk/file-source.js`**. Templates: `viewers/text-file-viewer.js` (the
+fallback, and the `claims()` veto), `viewers/pdf-file-viewer.js` (lazy `import()`
+of a heavy dependency, teardown), `viewers/image-file-viewer.js` (attachments
+instead of text).
+
 ### System-prompt contribution
 
 Add durable guidance to the prompt. Not a class: a **single module** named by the manifest's `provides.systemPrompt`
@@ -488,7 +682,8 @@ export default function systemPromptContribution({ enabledPluginIds }) {
 ```
 
 Reference: `web/extensions/juggler-core/system-prompt-contribution.js`; the
-aggregation contract is in `web/sdk/lib/system-prompt-registry.js`.
+aggregation contract is `buildExtensionSystemPromptContributions()` in
+`web/js/services/extensions.js`.
 
 ## Talking to the conversation
 
@@ -498,7 +693,8 @@ Its safe public methods are marked **`@plugin-api`** in the source —
 `web/js/model/message-thread.js` is the reference; grep it for `@plugin-api`.
 
 Common reads: `items`, `length`, `findByItemId(id)`, `contextItems`,
-`modelConfig`, `permissions`. Common writes: `addEvent()`, `deleteItemById()`,
+`modelConfig`, and the permission rules via `getAllRules()` /
+`getRulesFor(itemType)`. Common writes: `addEvent()`, `deleteItemById()`,
 `addContextItem()`. For several mutations as one atomic Yjs
 transaction use **`mutate(fn)`** (it also runs `assertInvariants()` in dev mode);
 `buildThreadYMap()` is the safe way to seed a sub-thread with items.
@@ -564,6 +760,98 @@ cache each turn) — put that state in a tool result instead. Content the model
 fetched for itself (a `read`) belongs in the append-only history, not in a
 standing context item.
 
+## Settings and secrets
+
+An extension that needs an API key, an endpoint, or a preference declares it in
+the manifest's `settings` array. Juggler renders the form in the extensions
+catalog, validates and stores the values, and hands them to your code — you write
+no settings UI.
+
+```jsonc
+"settings": [
+  { "key": "api_key",  "type": "secret",  "label": "API key",
+    "help": "Create one at https://example.com/keys", "required": true },
+  { "key": "endpoint", "type": "url",     "label": "Endpoint",
+    "default": "https://api.example.com" },
+  { "key": "depth",    "type": "enum",    "label": "Search depth",
+    "options": ["shallow", "deep"], "default": "shallow" }
+]
+```
+
+| Field | Notes |
+|-------|-------|
+| `key` | Required. Letters, digits, `_`, `-`; must start with a letter. Unique within the extension. |
+| `type` | Required. One of `string`, `secret`, `boolean`, `number`, `url`, `enum`. |
+| `label` | Required. Shown beside the control. |
+| `help` | Optional one-liner under the control. |
+| `default` | Optional, validated against `type`. |
+| `required` | Optional. |
+| `options` | Required for `enum`, rejected for every other type. |
+| `scope` | Optional; only `global` is supported today (the field exists so project scope can arrive without changing the manifest shape). |
+
+Two rules the validator enforces that are easy to trip over: **only `enum` may
+carry `options`**, and **a `secret` may not declare a `default`** — a shipped
+default credential is never what you meant.
+
+### Reading them at runtime
+
+```javascript
+import { extensionConfigResolve } from 'juggler/ops';
+
+const EXTENSION_ID = '@you/my-extension';   // must match the manifest id
+
+const config = await extensionConfigResolve({ extId: EXTENSION_ID }, this.signal);
+const apiKey = typeof config.api_key === 'string' ? config.api_key.trim() : '';
+if (!apiKey) {
+  throw new Error('API key is not configured. Set it in Settings → Extensions.');
+}
+```
+
+There are two readers, and the difference matters:
+
+- **`extensionConfigResolve`** returns the *real* values, secrets included. This
+  is what your capability code calls.
+- **`extensionConfigGet`** is the viewer-safe reader: secrets come back as a
+  presence marker (`{ __present: true }`), never the value. It is what the
+  settings UI uses.
+
+Values are keyed by extension id, so the id you pass must match your manifest
+exactly. Non-secret values live in `~/.juggler/extension-config`; secrets go to
+the credential store under an `ext:` prefix, never into that file. Defaults are
+applied on read, so a setting the user has never touched still resolves to its
+declared default.
+
+**Missing configuration is a normal state, not a crash.** Fail with a sentence
+that says where to fix it — `'Set it in Settings → Extensions'` — because that
+message is what the model relays to the user.
+
+Worked example: `web/extensions/exa/` (a `secret` API key, declared with the
+scoped permission `network.http:api.exa.ai`).
+
+## Testing your extension
+
+An extension owns its tests instead of dumping them into the host's shared pool.
+Declare them in the manifest and Juggler's test harness picks them up:
+
+```jsonc
+"provides": {
+  "contextItems": ["context-items/*-context-item.js"],
+  "tests":        ["_tests/*-test.js"]
+}
+```
+
+`tests` is **test-only**: it does not count as a capability (an extension that
+provides *only* tests fails validation), and it is never served through the
+extensions API at runtime.
+
+**Keep them in a directory whose name starts with an underscore** — `_tests/` by
+convention. That leading underscore is what makes Go's `//go:embed extensions/*`
+skip the directory, so your test code never ships inside a production binary. A
+`tests/` directory would be embedded.
+
+Every built-in extension follows this pattern; `web/extensions/juggler-core/_tests/`
+has a couple of dozen worked examples.
+
 ## Enabling and disabling
 
 Settings (gear icon) → **Extensions** lists every installed extension, its
@@ -578,9 +866,15 @@ id disables everything it bundles:
 
 ## Reference map
 
+- **Tutorial** — [`extension_tutorial.md`](extension_tutorial.md) builds one
+  extension end to end, if you would rather follow a worked example than a
+  reference.
 - **API source of truth** — `web/sdk/`: `context-item.js`, `strategy-type.js`,
-  `command-type.js`, `ops.js`, `ui.js`, `version.js`. Read the JSDoc headers.
+  `command-type.js`, `info-card-type.js`, `file-viewer.js`, `ops.js`, `ui.js`,
+  `version.js`. Read the JSDoc headers.
 - **Conversation API** — `web/js/model/message-thread.js` (grep `@plugin-api`).
-- **Worked examples** — `web/extensions/juggler-core/` (the built-in extension).
+- **Worked examples** — `examples/extensions/` (small extensions covering every
+  capability type) and `web/extensions/juggler-core/` (the built-in extension —
+  bigger, and the best reference for real-world detail).
 - **Manifest format** — `cmd/juggler/extmanifest/extmanifest.go`.
 - **CLI** — `juggler ext --help`.
