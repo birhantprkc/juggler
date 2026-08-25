@@ -87,7 +87,7 @@ export function resolveAliasTarget(itemYMap, siblingArray) {
  * @param {any} [siblingArray] - The array the item stands in.
  * @returns {boolean} True when no later item refers to the same session.
  */
-function isTrailingViewOf(itemYMap, canonical, siblingArray) {
+export function isTrailingViewOf(itemYMap, canonical, siblingArray) {
   const canonicalId = canonical?.get?.('itemId');
   if (!canonicalId) return false;
   const siblings = asArray(siblingArray || itemYMap?.parent);

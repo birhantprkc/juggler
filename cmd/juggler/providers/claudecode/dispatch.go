@@ -474,15 +474,27 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 			inTok, outTok = turn.InputTokens+turn.CacheReadTokens+turn.CacheWriteTokens, turn.OutputTokens
 			cacheR, cacheW = provider.Reported(turn.CacheReadTokens), provider.Reported(turn.CacheWriteTokens)
 		}
-		// releaseSession's contract (kill the live CLI, KEEP the sidecar so a
+		// releaseSession's contract (kill the live CLI, KEEP the anchor so a
 		// retry --resumes warm), inlined so we can read the reaped process's
 		// exit status in between and enrich an unexpected-exit error with it
-		// before the in-memory handle is dropped.
+		// before the handle is dropped.
+		//
+		// Where that anchor lives decides whether the handle may go. The root
+		// thread's is on disk, so dropping the handle costs nothing: the next turn
+		// loads the sidecar and resumes by uuid. A SUB-THREAD has no sidecar at all
+		// — its session is in-memory by design (see loadSidecar/saveSidecar) — so
+		// the handle IS the anchor, and dropping it turns every hard error into a
+		// full cold start of a session that was only ever one process away. Keep it
+		// and let the next turn resume: the CLI is dead either way, which is all the
+		// error required, and classifyRegime reads hasLiveCLI() rather than the
+		// handle to decide how to restart.
 		c.activeSession.tearDownLiveCLI()
 		if c.activeSession != nil {
 			err = annotateExit(err, c.activeSession.exitDiag)
 		}
-		c.activeSession = nil
+		if c.threadID == "" {
+			c.activeSession = nil
+		}
 		return &provider.StreamResult{
 			StopReason:       "error",
 			InputTokens:      inTok,

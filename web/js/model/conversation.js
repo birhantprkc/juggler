@@ -582,9 +582,10 @@ class Conversation {
 
   /**
    * @param {import('./message-thread.js').default} mt
-   * @returns {Promise<void>} Resolves when continuation has been dispatched
+   * @param {(() => void)} [beforeContinue] - Run only if the continue goes ahead.
+   * @returns {Promise<boolean>} True when a continuation was dispatched
    */
-  async continueThread(mt) { return orchestrationContinueThread(this, mt); }
+  async continueThread(mt, beforeContinue) { return orchestrationContinueThread(this, mt, beforeContinue); }
 
   /** @private */
   _initBuiltInContextItems() {

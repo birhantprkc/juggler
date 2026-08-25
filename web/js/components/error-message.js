@@ -70,16 +70,24 @@ class ErrorMessage extends BaseMessage {
   /**
    * Delete this error item, then continue the thread. Continue is the footer's
    * exact entry point (`MessageThread.continue()`), whose own guards make it a
-   * safe no-op if the thread can't be continued — so we always try after
-   * clearing the error rather than duplicating those checks here.
+   * safe no-op if the thread can't be continued — so we always try rather than
+   * duplicating those checks here.
+   *
+   * The deletion rides along as `beforeContinue` so it happens only if the
+   * continue does. Deleting first was not safe: while the conversation is busy
+   * driving any thread — a parent that has already been handed this error as a
+   * sub-thread's result, most often — the continue is a silent no-op, and the
+   * error would be gone with nothing started in its place, taking the Retry
+   * button with it.
    * @private
    */
   _retry() {
     const thread = this._getMessageThread();
     if (!thread) return;
     const id = this.itemId;
-    if (id) thread.removeItemById(id);
-    thread.continue();
+    thread.continue(() => {
+      if (id) thread.removeItemById(id);
+    });
   }
 }
 

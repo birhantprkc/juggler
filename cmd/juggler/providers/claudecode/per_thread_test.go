@@ -59,6 +59,48 @@ func TestSubthread_InMemoryOnly(t *testing.T) {
 	s.dropSession(convID)
 }
 
+// TestSubthread_TurnErrorKeepsSessionAnchor guards the other half of the
+// in-memory contract. A hard turn error kills the CLI, and the root thread can
+// afford to drop its handle with it because the anchor that lets the next turn
+// --resume is on disk. A sub-thread has no sidecar, so its handle IS the anchor:
+// dropping it turned any error inside a sub-thread — one bad block, one dropped
+// connection — into a full cold start, re-sending a transcript that was one
+// process away from warm. The process must die; the anchor must not.
+func TestSubthread_TurnErrorKeepsSessionAnchor(t *testing.T) {
+	installFakeClaude(t, fakeModeFailSecond, "uuid-subthread-error")
+	c := mkClient(t, "claude-sonnet-4-6")
+	convID := "conv_subthread_error"
+	s := c.newThreadSession("thread-1")
+
+	if _, err := s.streamMessage(context.Background(), provider.MessageRequest{
+		ConversationID: convID, SystemPrompt: "sys", Messages: []provider.Message{userMsg("hello")},
+	}, nopCallback()); err != nil {
+		t.Fatalf("first turn: %v", err)
+	}
+	if s.activeSession == nil || s.activeSession.sessionUUID == "" {
+		t.Fatal("precondition failed: first turn captured no session uuid")
+	}
+	uuid := s.activeSession.sessionUUID
+
+	_, err := s.streamMessage(context.Background(), provider.MessageRequest{
+		ConversationID: convID, SystemPrompt: "sys",
+		Messages: []provider.Message{userMsg("hello"), assistantMsg("earlier answer"), userMsg("request that fails")},
+	}, nopCallback())
+	if err == nil {
+		t.Fatal("fake failure must surface")
+	}
+
+	if s.activeSession == nil {
+		t.Fatal("a sub-thread must keep its session across a turn error — nothing else remembers it")
+	}
+	if s.activeSession.sessionUUID != uuid {
+		t.Fatalf("resume anchor = %q, want the session the turns ran in (%q)", s.activeSession.sessionUUID, uuid)
+	}
+	if s.activeSession.hasLiveCLI() {
+		t.Error("the failed turn's CLI process must still be torn down")
+	}
+}
+
 // TestRootThread_PersistsSidecar is the paired control: the root thread
 // (threadID == "") DOES persist, so warm-resume across restart still works.
 func TestRootThread_PersistsSidecar(t *testing.T) {

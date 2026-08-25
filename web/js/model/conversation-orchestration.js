@@ -44,17 +44,30 @@ export async function waitForApproval(conversation, messageThread, toolUseId) {
 
 /**
  * Continue the conversation without a user message.
+ *
+ * The guards below make this a no-op whenever something else is already driving
+ * the conversation — which is why `beforeContinue` exists. A caller that has to
+ * change the transcript to make its continue meaningful (the error item's Retry,
+ * which deletes the dead error so it is never sent to the model) cannot do that
+ * work up front: it would land even when the continue turns out to be a no-op,
+ * leaving the user with neither the error nor a retry. Nor can it do the work
+ * afterwards, since by then the worker may already have built the request. So it
+ * hands the work to us and we run it here, past the guards and before the worker
+ * is told.
  * @param {import('./conversation.js').default} conversation
  * @param {import('./message-thread.js').default} messageThread
+ * @param {(() => void)} [beforeContinue] - Run only if the continue is going ahead.
+ * @returns {Promise<boolean>} True when a continue was actually started.
  */
-export async function continueThread(conversation, messageThread) {
+export async function continueThread(conversation, messageThread, beforeContinue) {
   const { default: actionExecutor } = await import('../services/action-executor.js');
 
   if (conversation.isProcessing || actionExecutor.hasRunningActions() || messageThread.hasBusyItems()) {
-    return;
+    return false;
   }
 
   messageThread.cancelPendingApprovals();
+  beforeContinue?.();
 
   if (conversation._conversationArea) {
     conversation._conversationArea.scrollToBottom(true);
@@ -62,11 +75,12 @@ export async function continueThread(conversation, messageThread) {
 
   if (workerManager.isWorkerReady(conversation.id)) {
     workerManager.continue(conversation.id, messageThread.threadItemId);
-    return;
+    return true;
   }
 
   // Turns are driven exclusively by the Go worker; there is no viewer-side loop.
   // If the worker isn't up yet (still starting, or spawn failed), refuse rather
   // than running anything on the main thread.
   conversation.showWarning('Still connecting to the engine — try again in a moment.', 5000);
+  return false;
 }

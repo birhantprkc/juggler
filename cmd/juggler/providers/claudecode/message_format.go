@@ -76,50 +76,28 @@ func canonicalToolName(name string) string {
 	return name
 }
 
-// claudeToJugglerTools maps Claude native tool names to Juggler equivalents.
-// When Claude tries to use its built-in tools (Read, Edit, etc.), we convert
-// them to the corresponding Juggler tools so they work transparently.
-var claudeToJugglerTools = map[string]string{
-	"Read":  "read_file",
-	"Edit":  "edit_file",
-	"Write": "write_file",
-	"Bash":  "execute_command",
-	"Grep":  "grep",
-}
-
-// claudeParamMapping maps Claude param names to Juggler param names per tool.
-// Claude uses different parameter names (e.g., "file_path" vs "path").
-var claudeParamMapping = map[string]map[string]string{
-	"Read":  {"file_path": "path"},
-	"Edit":  {"file_path": "path", "old_string": "old_str", "new_string": "new_str"},
-	"Write": {"file_path": "path"},
-	// Bash and Grep use same param names, no mapping needed
-}
-
-// convertClaudeNativeTool converts Claude native tools to Juggler equivalents.
-// Returns the converted tool name and input, or the original if not a Claude native tool.
-func convertClaudeNativeTool(toolName string, input map[string]any) (string, map[string]any) {
-	jugglerName, isClaudeTool := claudeToJugglerTools[toolName]
-	if !isClaudeTool {
-		return toolName, input
+// cliNativeToolNames is disallowedNativeTools as a set, for the one question
+// the parser asks of an unprefixed tool_use name: is this a tool the CLI serves
+// ITSELF?
+//
+// The distinction matters because two very different things arrive unprefixed.
+// A CLI built-in means --disallowedTools has gone stale and the CLI may have
+// acted without juggler seeing it. Anything else is the model imitating the bare
+// names in its own transcript (see prefixJugglerToolUses) — the CLI knows only
+// mcp__juggler__*, so it rejects the name and the model re-issues it correctly.
+// Same wire shape, opposite diagnosis.
+var cliNativeToolNames = func() map[string]struct{} {
+	set := make(map[string]struct{}, len(disallowedNativeTools))
+	for _, name := range disallowedNativeTools {
+		set[name] = struct{}{}
 	}
+	return set
+}()
 
-	// Convert parameter names if mapping exists
-	paramMap, hasMapping := claudeParamMapping[toolName]
-	if !hasMapping {
-		return jugglerName, input
-	}
-
-	// Create new input with converted param names
-	newInput := make(map[string]any)
-	for k, v := range input {
-		if newKey, mapped := paramMap[k]; mapped {
-			newInput[newKey] = v
-		} else {
-			newInput[k] = v
-		}
-	}
-	return jugglerName, newInput
+// isCLINativeToolName reports whether name is one of the CLI's own built-ins.
+func isCLINativeToolName(name string) bool {
+	_, ok := cliNativeToolNames[name]
+	return ok
 }
 
 // canonicalAlias collapses any model string — a bare alias, a full CLI id like

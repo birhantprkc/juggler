@@ -326,6 +326,36 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`read item is frozen: ${msg(e)}`); }
 
+  // --- 8b(ii): frozen is about the answer, not about the spinner ---
+  // The item above may not have its result rewritten — the model has read it —
+  // but the session it stands for can be picked back up, and while that run is in
+  // flight this is the only tile the parent has for it: the receipt is appended
+  // when the run SETTLES, so until then nothing else stands for the work. Frozen
+  // on both counts left the tile showing the previous run's answer, with no
+  // spinner, for the whole of the next run — indistinguishable from a session
+  // sitting still.
+  try {
+    const { root, canonical, aliases } = session([
+      { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
+      { toolUseId: 'tu-2', prompt: 'who calls it?', status: 'error', result: 'LLM error: the turn stopped.' }
+    ]);
+    aliases[0].set('runResultFed', true);
+    const nested = canonical.get('items');
+    nested.push([item({ type: 'user', itemId: 'cont-1', continuation: true })]);
+
+    const live = { message: 'Streaming…', threadId: 'T1' };
+    const running = getThreadStatus(aliases[0], live, root);
+    assert(running.kind === 'running' && running.spinner === true,
+      `a fed tile must still report the session working again; got ${JSON.stringify(running)}`);
+    assert(getThreadDisplayContent(aliases[0], root).text === 'LLM error: the turn stopped.',
+      'and the answer the model was given is untouched underneath');
+
+    const earlier = getThreadStatus(canonical, live, root);
+    assert(earlier.showSummary === true && earlier.spinner === false,
+      `only the trailing view follows the session; got ${JSON.stringify(earlier)}`);
+    passed++;
+  } catch (e) { failed++; errors.push(`fed item still spins: ${msg(e)}`); }
+
   // --- 8c: a receipt reports the run nobody called ---
   // It selects that run by the message that started it, since there is no call to
   // name it by, and it is settled by construction: it is only ever appended for a

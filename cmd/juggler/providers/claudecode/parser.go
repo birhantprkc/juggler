@@ -676,24 +676,41 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 			// Tool input arrives as JSON fragments via input_json_delta.
 			// Parse the accumulated payload now and emit a single complete
 			// tool_use chunk to the callback.
-			// A tool_use whose name arrived WITHOUT the mcp__juggler__ prefix
-			// is one the CLI serves itself: it answers the call internally and
-			// never sends a tools/call, so juggler must not dispatch it. The
-			// dangerous case is a name juggler ALSO serves (Monitor is both a
-			// CLI built-in and a juggler tool): canonicalToolName strips a
-			// prefix that was never there, the block dispatches as juggler's
-			// own, and the result it produces finds no parked call and stashes
-			// forever while the CLI blocks on its next genuinely-MCP call —
-			// both sides wait until teardown. Fail the turn loudly instead.
-			// disallowedNativeTools should make this unreachable; reaching it
-			// means that list has gone stale against the CLI's built-in set.
-			// Legacy native conversions (claudeToJugglerTools) are exempt —
-			// convertClaudeNativeTool below deliberately adopts those.
+			// A tool_use whose name arrived WITHOUT the mcp__juggler__ prefix is
+			// never juggler's to dispatch, whatever the name says.
+			// canonicalToolName strips a prefix that was never there, so a bare
+			// name juggler also serves (Monitor is both a CLI built-in and a
+			// juggler tool) would dispatch as juggler's own; the CLI meanwhile
+			// resolves the call on its side and never sends a tools/call, so the
+			// result finds no parked call and stashes forever while the CLI blocks
+			// on its next genuinely-MCP call — both sides wait until teardown.
+			//
+			// Skipping the block is what avoids that, and it is enough on its own:
+			// nothing is dispatched, so nothing can go unclaimed. Failing the turn
+			// as well would cost more than it saves — a turn error tears the
+			// process down (finalizeTurn), which kills the CLI's own recovery and
+			// hands the user an error where there was a working session.
+			//
+			// The name still says which of two things happened, so the log line
+			// does too. A CLI built-in means --disallowedTools has gone stale and
+			// the CLI may have acted where juggler cannot see it: an ERROR worth
+			// chasing. Anything else is the model imitating the bare names in its
+			// own transcript (prefixJugglerToolUses covers why they are there); the
+			// CLI rejects the name with "No such tool available" and the model
+			// re-issues it correctly on the same open process, so the turn heals
+			// itself and the note is routine.
 			if !strings.HasPrefix(pb.toolName, mcpToolPrefix) {
-				if _, converted := claudeToJugglerTools[pb.toolName]; !converted {
-					jlog.Error("claudecode: CLI native tool %q leaked past --disallowedTools — failing the turn rather than dispatching it as juggler's own (which deadlocks the conversation). Add it to disallowedNativeTools.", pb.toolName)
-					return false, 0, fmt.Errorf("claude CLI used its own built-in tool %q, which juggler cannot answer; it must be listed in --disallowedTools", pb.toolName)
+				if isCLINativeToolName(pb.toolName) {
+					jlog.Error("claudecode: CLI native tool %q leaked past --disallowedTools — skipping the block rather than dispatching it as juggler's own (which deadlocks the conversation). The CLI may have served it itself, unseen by juggler. Add it to disallowedNativeTools.", pb.toolName)
+				} else {
+					jlog.Info("claudecode: model called %q without the %s prefix — skipping the block; the CLI rejects the bare name itself and drives the model's retry", pb.toolName, mcpToolPrefix)
 				}
+				result.cliServedThisCall++
+				_, _ = callback(provider.StreamChunk{
+					Type:    provider.ContentBlockTypeStatus,
+					Content: fmt.Sprintf("Tool name %s isn't callable — retrying", pb.toolName),
+				})
+				return false, 0, nil
 			}
 			toolName := canonicalToolName(pb.toolName)
 			input := map[string]any{}
@@ -728,7 +745,6 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 					return false, 0, nil
 				}
 			}
-			toolName, input = convertClaudeNativeTool(toolName, input)
 			chunk := provider.StreamChunk{
 				Type:      provider.ContentBlockTypeToolUse,
 				ToolUseID: pb.toolID,

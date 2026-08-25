@@ -1080,10 +1080,13 @@ export default class MessageThread {
 
   /**
    * Continue the conversation without a user message.
-   * @returns {Promise<void>}
+   * @param {(() => void)} [beforeContinue] - Run only if the continue goes ahead
+   *   (past the busy guards, before the worker is told). For callers that must
+   *   change the transcript to make their continue meaningful.
+   * @returns {Promise<boolean>} True when a continuation was dispatched.
    */
-  async continue() {
-    return this.conversation.continueThread(this);
+  async continue(beforeContinue) {
+    return this.conversation.continueThread(this, beforeContinue);
   }
 
   /**

@@ -6,7 +6,7 @@ import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib
 import { stripThinkingTags } from './content-utils.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
-import { canonicalThread, itemGoal, itemRunRecord } from '../model/thread-alias.js';
+import { canonicalThread, itemGoal, itemRunRecord, isTrailingViewOf } from '../model/thread-alias.js';
 
 /**
  * What a thread tile shows: the result of the ONE run that item stands for.
@@ -110,6 +110,12 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
     return { kind: 'paused', goal, message: 'Waiting for approval', spinner: false };
   }
 
+  // Is the worker driving this session right now? Keyed on the canonical,
+  // because that is the thread the worker names when it reports what it is
+  // driving — so every item referring to the session answers yes together.
+  const itemId = thread.get('itemId');
+  const isLive = !!(live && live.threadId === itemId && live.message);
+
   // An item stamped with a run selector answers for ONE run. Once that run has
   // settled the tile is frozen: what a later call into the same thread does is
   // another item's business, and a historic tile that started spinning again
@@ -120,22 +126,31 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
   // Nothing stands behind it, so a child picked back up by hand spins here and
   // reports its answer here — which is the tile the person resuming is looking
   // at.
+  //
+  // Being frozen is about the RESULT, not about the spinner. A run whose result
+  // has gone to the model may not have that result rewritten — it is committed
+  // history, and moving it would cold-start a stateful provider — but a session
+  // that is working again is presentation, costs the wire nothing, and is the
+  // one thing the person looking at the tile wants to know. Freezing both left a
+  // resumed child showing the previous run's result, with no spinner, for the
+  // whole of the next run.
+  //
+  // So a settled record yields to the live run on the trailing view alone, which
+  // is the same test itemRunRecord uses to decide which item reads the live run.
+  // The result underneath is untouched: the tile simply stops claiming to be at
+  // rest while it works.
   const record = itemRunRecord(threadYMap, siblingArray);
-  if (record?.status) {
+  if (record?.status && !(isLive && isTrailingViewOf(threadYMap, thread, siblingArray))) {
     return record.result
       ? { kind: 'idle', goal, message: '', spinner: false, showSummary: true }
       : { kind: 'idle', goal, message: 'Idle', spinner: false };
   }
 
-  // Keyed on the canonical, because that is the thread the worker names when it
-  // reports what it is driving. Only an item whose own run is still open reaches
-  // here, so the spinner lands on the call being answered and nowhere else.
-  const itemId = thread.get('itemId');
-  if (live && live.threadId === itemId && live.message) {
+  if (isLive) {
     return {
       kind: 'running',
       goal,
-      message: live.message,
+      message: /** @type {ThreadLiveStatus} */ (live).message,
       spinner: true,
     };
   }
