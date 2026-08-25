@@ -192,6 +192,9 @@ func decideNextAction(items []ConversationItem, activity string, isRoot bool, ex
 		// is read on this thread's next turn, in order, like any other item.
 		if isReceiptItem(last) {
 			if activity == ActivityAwaitingLLM {
+				if explicitContinuation {
+					return ActionCallLLM
+				}
 				return ActionGoIdle
 			}
 			return ActionNone

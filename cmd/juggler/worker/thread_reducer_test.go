@@ -283,6 +283,29 @@ func TestDecideNextAction_BatchAllCancelledExplicitContinue(t *testing.T) {
 	}
 }
 
+// TestDecideNextAction_Receipt rests on an unrequested child run unless the
+// user explicitly clicks Continue. A receipt is news rather than a trigger, but
+// it must not make the parent thread impossible to continue.
+func TestDecideNextAction_Receipt(t *testing.T) {
+	items := []ConversationItem{
+		userMsg("delegate this"),
+		threadMsg("thread-1", "first result"),
+		{
+			Type:      ItemTypeThread,
+			ItemID:    "receipt-1",
+			AliasOf:   "thread-1",
+			RunItemID: "human-run-1",
+		},
+	}
+
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionGoIdle {
+		t.Errorf("receipt/awaiting: expected GoIdle, got %s", got)
+	}
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, true); got != ActionCallLLM {
+		t.Errorf("receipt/explicit continue: expected CallLLM, got %s", got)
+	}
+}
+
 // TestDecideNextAction_BatchAllCancelled_Root: user denied everything +
 // activity="awaiting_llm" → GoIdle (clear the awaiting marker).
 func TestDecideNextAction_BatchAllCancelled_Root(t *testing.T) {
