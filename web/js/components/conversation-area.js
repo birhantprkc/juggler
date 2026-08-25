@@ -146,6 +146,10 @@ class ConversationArea extends HTMLElement {
     this._animationsPrimed = false;
     /** @type {ResizeObserver|null} @private - Recomputes scroll-control visibility on viewport/content resize */
     this._scrollControlsResizeObserver = null;
+    /** @type {ResizeObserver|null} @private - Holds the reader's place when content resizes while they are scrolled away (see _setupReaderAnchor) */
+    this._readerAnchorObserver = null;
+    /** @type {{el: HTMLElement, top: number, contentHeight: number}|null} @private - The row the reader's place is measured from, where it sat when last recorded, and the content height it was recorded against */
+    this._readerAnchor = null;
     /** @type {IntersectionObserver|null} @private - Strips `cv-off` (renders a row) once it enters the inner margin; the near edge of the content-visibility hysteresis band */
     this._rowRenderObserver = null;
     /** @type {IntersectionObserver|null} @private - Applies `cv-off` (skips a row) once it leaves the outer margin; the far edge of the content-visibility hysteresis band */
@@ -319,35 +323,18 @@ class ConversationArea extends HTMLElement {
       // is its in-flight animated height) before the content update lands.
       const fromHeights = growEls.map((el) => /** @type {HTMLElement} */ (el).offsetHeight);
 
-      // Reader anchor: when scrolled up to read (not pinned), record where the
-      // top-visible message sits BEFORE the token lands, so we can hold it there
-      // after. Column-reverse anchors the bottom edge, so a tail bubble growing
-      // below the viewport otherwise shoves the read content up and off the top —
-      // a drift the reader can't escape while text streams. Skipped when pinned
-      // (native bottom-anchoring is what we want there) and on structural changes
-      // (those are handled by the FLIP path + onItemsInserted).
-      const anchorEl = (!pinned && !structural && scroller) ? scroll.topVisibleMessageElement(this) : null;
-      const anchorTopBefore = anchorEl ? anchorEl.getBoundingClientRect().top : 0;
+      // Hold the reader's place across this mutation (see _holdReaderAnchorOver).
+      // While pinned we don't: native column-reverse anchoring keeps the newest
+      // text in view, and the height glide below smooths it. Auto-follow of new
+      // items / approvals / busy-status comes from onItemsInserted and showBusy,
+      // never from here.
+      this._holdReaderAnchorOver(() => {
+        this._notifyChangedElements(events, conversation);
 
-      this._notifyChangedElements(events, conversation);
-
-      growEls.forEach((el, i) => {
-        this._animateStreamingResize(/** @type {HTMLElement} */ (el), fromHeights[i] ?? 0);
-      });
-
-      // Re-anchor the reader: nudge scrollTop by however far the anchor drifted so
-      // the lines under their eyes stay put. The nudge is relative, rect-derived,
-      // and instant — sign-agnostic across the reversed scroller (matching
-      // scrollElementIntoView) and never glides. When pinned we take neither
-      // branch: native column-reverse anchoring keeps the newest text in view (and
-      // the height glide above smooths it). Auto-follow of new items / approvals /
-      // busy-status still comes from onItemsInserted and showBusy, never here.
-      if (anchorEl && scroller) {
-        const shift = anchorEl.getBoundingClientRect().top - anchorTopBefore;
-        if (Math.abs(shift) > 0.5) {
-          scroller.scrollTo({ top: scroller.scrollTop + shift, behavior: 'instant' });
-        }
-      }
+        growEls.forEach((el, i) => {
+          this._animateStreamingResize(/** @type {HTMLElement} */ (el), fromHeights[i] ?? 0);
+        });
+      }, { skip: pinned });
     };
     const container = /** @type {import('../model/message-thread.js').MessageThread} */ (this._messageThread).container;
     this._observedContainer = container;
@@ -574,6 +561,11 @@ class ConversationArea extends HTMLElement {
     if (this._scrollControlsResizeObserver) {
       this._scrollControlsResizeObserver.disconnect();
       this._scrollControlsResizeObserver = null;
+    }
+    if (this._readerAnchorObserver) {
+      this._readerAnchorObserver.disconnect();
+      this._readerAnchorObserver = null;
+      this._readerAnchor = null;
     }
     if (this._rowRenderObserver) {
       this._rowRenderObserver.disconnect();
@@ -933,6 +925,8 @@ class ConversationArea extends HTMLElement {
 
     messageList.addEventListener('scroll', () => {
       this._updateScrollControls();
+      // Wherever the reader has just put the view is their place to hold.
+      this._recordReaderAnchorFromScroll();
       // Any scroll — even a slow drag that crosses no skip margin — counts as
       // activity, so hold off flushing queued collapses until it stops.
       if (this._pendingSkip.size) this._armSkipFlush();
@@ -978,6 +972,133 @@ class ConversationArea extends HTMLElement {
     }
 
     this._updateScrollControls();
+    this._setupReaderAnchor();
+  }
+
+  /**
+   * Reader anchor: while the reader is scrolled away from the end, hold the
+   * lines under their eyes still, whatever arrives below them.
+   *
+   * The scroller is column-reverse, which anchors the BOTTOM edge: anything
+   * added at the end — an appended row, a streaming bubble growing, a tool row
+   * that fills in its body a tick later, the footer changing height — shoves the
+   * content above it up, and a reader who has scrolled up to read watches their
+   * place walk off the top with nothing they can do about it while a turn runs.
+   *
+   * Why an observer rather than a correction around each mutation: the content
+   * does not settle when the mutation returns. Rendering a row can land in a
+   * later task, so an anchor scoped to one DOM write holds only the part of the
+   * growth that happened inside it. A ResizeObserver on the content column sees
+   * every layout change however it arrives, and its callback runs in the
+   * rendering steps BEFORE paint, so the correction is never a visible jump.
+   *
+   * Nothing to do while near the end — there, being pinned to the bottom is the
+   * point, native anchoring does it for free, and the streaming height glide
+   * (_animateStreamingResize, which only runs while pinned) smooths the rest.
+   * @private
+   */
+  _setupReaderAnchor() {
+    const inner = this.querySelector('#message-list-inner');
+    if (!inner || typeof ResizeObserver === 'undefined') return;
+    this._recordReaderAnchor();
+    this._readerAnchorObserver = new ResizeObserver(() => this._holdReaderAnchor());
+    this._readerAnchorObserver.observe(inner);
+  }
+
+  /**
+   * Record where the reader's place currently is, so a later layout change can
+   * be measured against it. Called whenever the scroll position changes: after
+   * the user scrolls, the top-visible row IS their new place.
+   * @private
+   */
+  _recordReaderAnchor() {
+    if (scroll.isScrolledNearBottom(this)) {
+      this._readerAnchor = null;
+      return;
+    }
+    const el = scroll.topVisibleMessageElement(this);
+    const inner = /** @type {HTMLElement|null} */ (this.querySelector('#message-list-inner'));
+    this._readerAnchor = el
+      ? { el, top: el.getBoundingClientRect().top, contentHeight: inner?.offsetHeight ?? 0 }
+      : null;
+  }
+
+  /**
+   * Run a DOM mutation with the reader's place held across it: measure a visible
+   * row before, and afterwards nudge the scroll by however far that row moved.
+   *
+   * The observer above is the general mechanism, but it can only correct what it
+   * is told about, one frame later. This closes the mutation itself, where the
+   * bulk of the movement happens and where the correction can land in the same
+   * task the content changed in — measured, corrected, and never painted apart.
+   * Rect-derived and relative, so it is sign-agnostic in the reversed scroller,
+   * and instant: a glide here would be the very movement it prevents.
+   * @param {() => void} mutate - The DOM mutation to run.
+   * @param {{skip?: boolean}} [opts] - `skip`: the caller is following the end of
+   *   the conversation, where native bottom-anchoring is what's wanted and there
+   *   is no reader's place to keep.
+   * @private
+   */
+  _holdReaderAnchorOver(mutate, { skip = false } = {}) {
+    const scroller = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
+    const el = (skip || !scroller) ? null : scroll.topVisibleMessageElement(this);
+    const before = el ? el.getBoundingClientRect().top : 0;
+
+    mutate();
+
+    // A row the mutation removed is no anchor; the observer picks the reader's
+    // place up again from the next scroll or resize.
+    if (!el || !scroller || !el.isConnected) return;
+    const shift = el.getBoundingClientRect().top - before;
+    if (Math.abs(shift) <= 0.5) return;
+    scroller.scrollTo({ top: scroller.scrollTop + shift, behavior: 'instant' });
+    this._recordReaderAnchor();
+  }
+
+  /**
+   * Record the reader's place from a scroll event — unless the content is what
+   * moved, in which case this scroll is the drift we exist to undo.
+   *
+   * A scroll event is not evidence that the reader scrolled. Growing the content
+   * of this bottom-anchored scroller moves the scroll offset by itself, and the
+   * browser fires the scroll steps BEFORE it delivers resize observations: take
+   * that event at face value and the anchor is re-recorded at the drifted
+   * position, so the correction that follows measures a shift of zero and the
+   * reader is left where the content put them. Content size is what tells the
+   * two apart — the reader moving the view doesn't change it.
+   * @private
+   */
+  _recordReaderAnchorFromScroll() {
+    const inner = /** @type {HTMLElement|null} */ (this.querySelector('#message-list-inner'));
+    if (this._readerAnchor && inner && inner.offsetHeight !== this._readerAnchor.contentHeight) return;
+    this._recordReaderAnchor();
+  }
+
+  /**
+   * Put the anchored row back where it was, by nudging the scroll position by
+   * however far it drifted. Relative and rect-derived, so it is sign-agnostic
+   * across the reversed scroller, and instant — a glide here would be the very
+   * movement it exists to prevent.
+   * @private
+   */
+  _holdReaderAnchor() {
+    const anchor = this._readerAnchor;
+    if (!anchor) return;
+    // An anchor whose row the rebuild removed can't be measured; take the new
+    // top-visible row as the place instead, from this position on.
+    if (!anchor.el.isConnected || scroll.isScrolledNearBottom(this)) {
+      this._recordReaderAnchor();
+      return;
+    }
+    const scroller = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
+    if (!scroller) return;
+    const shift = anchor.el.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(shift) <= 0.5) return;
+    scroller.scrollTo({ top: scroller.scrollTop + shift, behavior: 'instant' });
+    // Re-measure rather than assume the nudge landed in full: scrollTop clamps
+    // at both ends of the range, and a clamped correction is the true new place.
+    anchor.top = anchor.el.getBoundingClientRect().top;
+    anchor.contentHeight = /** @type {HTMLElement} */ (this.querySelector('#message-list-inner'))?.offsetHeight ?? 0;
   }
 
   /**
@@ -1239,6 +1360,16 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
+   * Rule 11's test, read from outside: is this column following the end of the
+   * conversation, or has its reader scrolled away? conversation-tab asks before
+   * making any tab-level move that would pull a column out from under them.
+   * @returns {boolean} True when the view is within ~20rem of the end.
+   */
+  isScrolledNearBottom() {
+    return scroll.isScrolledNearBottom(this);
+  }
+
+  /**
    * Persist current scroll state (atBottom + element anchor) to localStorage.
    * Called on pagehide.
    */
@@ -1337,45 +1468,48 @@ class ConversationArea extends HTMLElement {
     const structuralChange =
       items.some((it) => it && !currentElements.has(getItemId(it)))
       || currentElements.size > elementsToKeep.size;
+    const nearBottom = scroll.isScrolledNearBottom(this);
     const animate = structuralChange
       && this._animationsPrimed
       && !prefersReducedMotion()
-      && scroll.isScrolledNearBottom(this);
+      && nearBottom;
     const beforeTops = animate ? this._captureItemTops(content) : null;
 
-    removeDeletedElements(currentElements, elementsToKeep);
-    positionElements(this, content, footer, items, currentElements);
+    this._holdReaderAnchorOver(() => {
+      removeDeletedElements(currentElements, elementsToKeep);
+      positionElements(this, content, footer, items, currentElements);
 
-    // Hand any newly inserted rows to the visibility observer that drives the
-    // content-visibility skip. New rows start without `cv-off` (rendered), so the
-    // just-inserted tail is never born blank; the observer applies cv-off only
-    // once it confirms a row has scrolled far out of view.
-    this._reconcileRowVisibility();
+      // Hand any newly inserted rows to the visibility observer that drives the
+      // content-visibility skip. New rows start without `cv-off` (rendered), so the
+      // just-inserted tail is never born blank; the observer applies cv-off only
+      // once it confirms a row has scrolled far out of view.
+      this._reconcileRowVisibility();
 
-    // Terminal "Result" block, synthesized from the thread's `result` field
-    // (after positioning items so it lands just before the footer). No-op in
-    // the root column.
-    ensureThreadResult(this, content, footer);
+      // Terminal "Result" block, synthesized from the thread's `result` field
+      // (after positioning items so it lands just before the footer). No-op in
+      // the root column.
+      ensureThreadResult(this, content, footer);
 
-    // Queued (pending) messages, rendered after the footer. Before the selection
-    // re-apply below so a selected queued bubble is seen as visible.
-    ensurePendingMessages(this, content);
+      // Queued (pending) messages, rendered after the footer. Before the selection
+      // re-apply below so a selected queued bubble is seen as visible.
+      ensurePendingMessages(this, content);
 
-    // Re-apply .selected class after DOM reconciliation. If the selected item
-    // was removed, silently clear — the tab owns selection state. Never
-    // dispatch item-selected here (it would loop back via conversation-tab).
-    if (this._localSelectedItemId) {
-      if (!selection.isItemVisible(this, this._localSelectedItemId)) {
-        this._localSelectedItemId = null;
-        this._selectionOrigin = null;
-        selection.teardownSelectionVisibilityWatcher(this);
-        this.applySelectedClass(null);
-      } else {
-        this.applySelectedClass(this._localSelectedItemId);
+      // Re-apply .selected class after DOM reconciliation. If the selected item
+      // was removed, silently clear — the tab owns selection state. Never
+      // dispatch item-selected here (it would loop back via conversation-tab).
+      if (this._localSelectedItemId) {
+        if (!selection.isItemVisible(this, this._localSelectedItemId)) {
+          this._localSelectedItemId = null;
+          this._selectionOrigin = null;
+          selection.teardownSelectionVisibilityWatcher(this);
+          this.applySelectedClass(null);
+        } else {
+          this.applySelectedClass(this._localSelectedItemId);
+        }
       }
-    }
 
-    this.updateFooter();
+      this.updateFooter();
+    }, { skip: nearBottom });
 
     // FLIP "Invert + Play": now the DOM is in its final position, glide the
     // moved items from where they were and fade newly-inserted ones in.

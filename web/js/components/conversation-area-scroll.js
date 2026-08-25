@@ -32,7 +32,13 @@
  *      conditions as rule 9).
  *  11. User scrolls far from the bottom (>~20rem) → stop auto-scrolling. No
  *      fighting. Scrolling near the bottom (~20rem) allows auto-scrolling to
- *      continue.
+ *      continue. This governs every automatic move without exception, including
+ *      auto-selection (rule 4b in conversation-area-selection.js): a selection
+ *      the system makes may scroll only while the reader is at the end, because
+ *      scrolling away is the whole instruction. What holds the reader's place
+ *      against content arriving below them is a pair of anchors in
+ *      conversation-area.js — one across a streaming bubble's growth, one across
+ *      a structural insert — not this module.
  *
  * The follow target (see getFollowTarget) always sits at the end of the
  * conversation, in priority order:

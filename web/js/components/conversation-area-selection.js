@@ -38,6 +38,19 @@
  *      tile higher up.)
  *   4. Once the user manually selects, auto-follow is suppressed
  *      until the next user message resets it.
+ *   4b. While the reader is scrolled away from the end of the
+ *      conversation, auto-follow is off entirely: no auto-selection
+ *      (rules 2 and 2b) and no auto-scroll. Scrolling away is itself the
+ *      instruction to leave the view alone, and it needs no click to say
+ *      so — this is the rule-11 near-bottom gate the other follow paths
+ *      already honour, applied to selection, which is the one path that
+ *      moved the viewport without asking. Suppressing the selection too,
+ *      not merely its scroll, is deliberate: selecting in a column
+ *      truncates the chain to its right (ColumnSelectionState.selectItem),
+ *      so an auto-selection made "quietly" behind a reader's back would
+ *      close the sub-thread column they are reading. A new user message
+ *      (rule 3) overrides the gate — submitting is a request to watch the
+ *      answer.
  *   5. Never select an item that isn't visible in the DOM.
  *   5b. When a selected item is deleted, auto-select the nearest visible
  *       neighbor (next preferred, previous if last). Driven by the
@@ -108,8 +121,13 @@ export function onItemsInserted(area, insertedItemIds, items) {
     }
   }
 
-  // Rule 2: find best auto-select candidate (suppressed by rule 4)
-  if (area._selectionOrigin !== 'user') {
+  // Rule 4b: a reader scrolled away from the end is inspecting, so nothing
+  // below may move the view or the chain. A new user message overrides it:
+  // the reader just asked for this turn, and rule 3 has already re-armed.
+  const following = sawUserMessage || isScrolledNearBottom(area);
+
+  // Rule 2: find best auto-select candidate (suppressed by rules 4 and 4b)
+  if (following && area._selectionOrigin !== 'user') {
     const candidate = pickAutoSelectCandidate(area, insertedItemIds, itemMap);
     if (candidate) {
       const candidateId = candidate.get('itemId');
@@ -227,6 +245,10 @@ export function getNextPendingApprovalToSelect(area) {
     });
   };
   if (area._selectionOrigin === 'user') { trace('origin-user', null); return null; }
+  // Rule 4b: a parked approval doesn't get to haul a reader back to the end.
+  // The footer spinner and the scroll-to-bottom control both still advertise
+  // that something is waiting.
+  if (!isScrolledNearBottom(area)) { trace('scrolled-away', null); return null; }
   if (!area._messageThread) { trace('no-thread', null); return null; }
   const pending = area._messageThread.getPendingApprovalMessages();
   if (pending.length === 0) { trace('none-pending', null); return null; }
@@ -307,10 +329,16 @@ export function selectItem(area, itemId, origin = 'user', { allowReveal = true }
   // where a glide reads as lag, so it stays instant.
   const smooth = origin === 'auto';
 
+  // Rule 4b: an automatic selection may only move the viewport while the reader
+  // is already at the end. A selection the user made always scrolls — they
+  // asked for it. (Rules 2/2b are gated at their own call sites too; this is
+  // the invariant every future auto-selecting caller inherits for free.)
+  const mayScroll = origin === 'user' || isScrolledNearBottom(area);
+
   // Rules 6-7: scroll selected item into view. This is a no-op when the item
   // is already fully visible (see scrollElementIntoView), so selecting an
   // on-screen item never moves the viewport.
-  scrollItemIntoView(area, itemId, smooth);
+  if (mayScroll) scrollItemIntoView(area, itemId, smooth);
 
   dispatchItemSelected(area, itemId, origin, false, allowReveal);
 
@@ -321,7 +349,7 @@ export function selectItem(area, itemId, origin = 'user', { allowReveal = true }
   // clamp). We must NOT re-assert for non-tail items: there the initial
   // scrollItemIntoView already no-opped (the item was fully visible), and
   // re-pinning would needlessly scroll an on-screen item.
-  if (isTail) {
+  if (isTail && mayScroll) {
     const scrolledId = itemId;
     requestAnimationFrame(() => {
       // Match the initial scroll's mode: an instant re-assert would snap and
@@ -352,6 +380,18 @@ export function clearSelection(area) {
  * Watch the currently selected element's viewport visibility. If it stays
  * offscreen for OFFSCREEN_RESUME_MS while origin is still 'user', demote to
  * null so the next inserted item can auto-select.
+ *
+ * This reads "offscreen" as "the user has moved on", which is only honest
+ * because nothing else can push the element out: a reader who is scrolled away
+ * keeps their place (the reader anchors in conversation-area.js hold it against
+ * both streaming growth and inserted items). So the element leaves the viewport
+ * when — and only when — the user scrolls it away.
+ *
+ * The demotion is not itself a scroll: rule 4b keeps the view still until the
+ * reader comes back to the end. What it buys is that they need no click to
+ * resume following when they do, and that a pin left behind up the list cannot
+ * block the tab-level chain move (_hasUserPinnedSelection) for the rest of the
+ * session.
  * @param {any} area - ConversationArea instance
  */
 function watchSelectionVisibility(area) {

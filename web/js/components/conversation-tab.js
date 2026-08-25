@@ -1972,7 +1972,7 @@ class ConversationTab extends JugglerElement {
       const statusThreadId = llmState.getStatusThreadId(conversation.id);
       autoSelected = this._selection.maybeAutoSelectThread(
         statusThreadId, conversation.rootItems, isThreadMessage,
-        { userPinned: this._hasUserPinnedSelection() });
+        { userReading: this._hasReaderInAnyColumn() });
     }
 
     // Rebuild all columns (root + any open threads/properties).
@@ -1991,19 +1991,21 @@ class ConversationTab extends JugglerElement {
   }
 
   /**
-   * Whether the user has a selection of their own open anywhere in this tab.
+   * Whether the user is reading a column of this tab: one holds a selection of
+   * their own (rule 4), or one is scrolled away from the end (rule 4b).
    *
-   * Rule 4 is enforced per column (`_selectionOrigin === 'user'` suppresses that
-   * column's auto-follow), but a running sub-thread is a tab-level move: it
-   * rewrites the whole chain, so a pin in ANY column is a reason not to make it.
-   * Reading the columns rather than the selection state is deliberate — the
-   * columns own the pin, including the ways it expires.
-   * @returns {boolean} True when some conversation column holds a user selection.
+   * Both rules are enforced per column, but a running sub-thread is a tab-level
+   * move: it rewrites the whole chain, so either sign of a reader in ANY column
+   * is a reason not to make it. Reading the columns rather than the selection
+   * state is deliberate — the columns own both signals, including the ways they
+   * expire.
+   * @returns {boolean} True when some conversation column has a reader in it.
    * @private
    */
-  _hasUserPinnedSelection() {
+  _hasReaderInAnyColumn() {
     return this._columns.some(col => col.tagName === 'CONVERSATION-AREA' &&
-    /** @type {any} */ (col)._selectionOrigin === 'user');
+      (/** @type {any} */ (col)._selectionOrigin === 'user'
+        || !/** @type {any} */ (col).isScrolledNearBottom()));
   }
 
   /**

@@ -367,25 +367,28 @@ class ColumnSelectionState {
    * Respects a cooldown so manual user navigation isn't overridden.
    *
    * This is the one automatic path that rewrites the whole chain, so it is also
-   * the one that can pull a column out from under a reader — `userPinned` is how
-   * the columns say "someone is looking at this". A pin is not consumed:
-   * `_lastStatusThreadId` stays untouched so that when the pin lifts (a new user
-   * message, the offscreen demotion, focusing a composer) the next sync opens
-   * whatever is running by then, rather than the chain staying frozen because
-   * the one status change that mattered was spent while nobody could act on it.
+   * the one that can pull a column out from under a reader — `userReading` is
+   * how the columns say "someone is looking at this", whether they said so by
+   * selecting an item or just by scrolling away from the end. Reading is not
+   * consumed: `_lastStatusThreadId` stays untouched so that when it ends (a new
+   * user message, the offscreen demotion, focusing a composer, scrolling back to
+   * the end) the next sync opens whatever is running by then, rather than the
+   * chain staying frozen because the one status change that mattered was spent
+   * while nobody could act on it.
    * @param {string|null} statusThreadId - Current LLM status thread ID
    * @param {any[]} rootItems - Root-level items for chain resolution
    * @param {ThreadPredicate} isThread - Predicate to check if an item is a thread
-   * @param {{userPinned?: boolean, nowMs?: number}} [opts] - `userPinned`: the
-   *   user has a selection of their own somewhere in this tab. `nowMs`: current
-   *   timestamp (for testability).
+   * @param {{userReading?: boolean, nowMs?: number}} [opts] - `userReading`: the
+   *   user is reading a column of this tab — a selection of their own, or a
+   *   viewport scrolled away from the end. `nowMs`: current timestamp (for
+   *   testability).
    * @returns {boolean} True if auto-selection was applied
    */
   maybeAutoSelectThread(statusThreadId, rootItems, isThread, opts = {}) {
-    const { userPinned = false, nowMs = Date.now() } = opts;
+    const { userReading = false, nowMs = Date.now() } = opts;
     if (statusThreadId === this._lastStatusThreadId) return false;
 
-    if (userPinned) return false;
+    if (userReading) return false;
 
     if (nowMs - this.lastManualInteractionTime < AUTO_SELECT_COOLDOWN_MS) {
       // Only apply cooldown for threads the user is already viewing.

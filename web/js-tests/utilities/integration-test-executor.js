@@ -137,6 +137,7 @@ import { runTests as runSkillCompletionTests } from '../unit-tests/skill-complet
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runThreadSelectionPinTests } from '../unit-tests/thread-selection-pin-test.js';
+import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-away-autofollow-test.js';
 import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
 import { runTests as runDeleteSelectionNeighbourTests } from '../unit-tests/delete-selection-neighbour-test.js';
 import { runTests as runControlClickRevealTests } from '../unit-tests/control-click-reveal-test.js';
@@ -397,6 +398,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:thread-selection-pin', run: runThreadSelectionPinTests },
+  { name: 'unit:scroll-away-autofollow', run: runScrollAwayAutofollowTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },
   // Exclusive for the shared origin: one case writes the tool-grouping
   // localStorage preference, which every lane's renderer reads.
