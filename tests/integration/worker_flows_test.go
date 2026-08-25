@@ -464,7 +464,7 @@ func TestReconnectSeesCurrentProcessingState(t *testing.T) {
 func TestReconnectDuringToolExecution(t *testing.T) {
 	t.Parallel()
 	ts := helpers.SetupTestSession(t)
-	ts.SetupMockEngine()
+	ts.SetupMockEngine(worker.ToolDefinition{Name: "shell"})
 
 	toolUseID := "tool-reconnect-exec"
 

@@ -64,7 +64,7 @@ func TestThreadRunSettlesOnTrailingText(t *testing.T) {
 		})
 		toolsResponse, _ := json.Marshal(map[string]any{
 			"type":  "tools-result",
-			"tools": []any{},
+			"tools": []ToolDefinition{{Name: "create_thread"}},
 		})
 
 		for i := 0; i < 3; i++ {
@@ -150,7 +150,7 @@ func TestCreateThreadInjectsToolUseInParentMessages(t *testing.T) {
 		})
 		toolsResponse, _ := json.Marshal(map[string]any{
 			"type":  "tools-result",
-			"tools": []any{},
+			"tools": []ToolDefinition{{Name: "create_thread"}},
 		})
 		for i := 0; i < 3; i++ {
 			w.contextReply.inject(w.done, ctxResponse)
@@ -518,7 +518,7 @@ func TestBrowserCreateThreadUsesRequestedParentThread(t *testing.T) {
 		})
 		toolsResponse, _ := json.Marshal(map[string]any{
 			"type":  "tools-result",
-			"tools": []any{},
+			"tools": []ToolDefinition{{Name: "create_thread"}},
 		})
 		w.contextReply.inject(w.done, ctxResponse)
 		w.toolsReply.inject(w.done, toolsResponse)
@@ -633,7 +633,7 @@ func TestThreadErrorReturnsToParent(t *testing.T) {
 		})
 		toolsResponse, _ := json.Marshal(map[string]any{
 			"type":  "tools-result",
-			"tools": []any{},
+			"tools": []ToolDefinition{{Name: "create_thread"}},
 		})
 		// Parent turn 1 + thread turn (error). The buffered channels (cap 1)
 		// absorb a third send harmlessly if the parent never resumes.

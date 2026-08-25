@@ -72,7 +72,7 @@ func newCompactionWorld(t *testing.T, window, reserve int64, respond func(turn i
 	w.SetCallback("engine", func([]byte) {})
 	w.SetEngineClientID("engine")
 	w.storeState(StateProcessing)
-	feedCompactionContextAndTools(w)
+	feedCompactionContextAndTools(w, ToolDefinition{Name: "bash"})
 	world.w = w
 
 	visibleTurn := 0

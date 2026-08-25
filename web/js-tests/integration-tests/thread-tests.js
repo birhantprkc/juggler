@@ -354,26 +354,20 @@ export const singleThreadLifecycleTest = {
 };
 
 /**
- * Two-level nested threads:
- *   Root → create_thread("L1") → L1 → create_thread("L2") → L2 rests → L1 rests → Root
+ * Two-level nested threads, rooted at an interactive thread that may spawn:
+ *   Root → /thread("L1") → L1 → create_thread("L2") → L2 rests → L1 rests
  *
- * Mock response order:
- *   1. Root: create_thread L1
- *   2. L1: create_thread L2
- *   3. L2: text "L2 result"
- *   4. L1: text "L1 result"
- *   5. Root: text "All done"
- *
- * Verifies both threads have results and proper nesting.
+ * A model-created thread is a leaf until a person steers it, so the outer
+ * thread is created explicitly before its turn asks for L2. A later root turn
+ * verifies that L1's result reaches the parent context.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const nestedThreadLifecycleTest = {
   name: 'thread-lifecycle-nested',
-  description: 'Two-level nested threads with proper result flow visible in parent context',
+  description: 'A spawn-capable interactive thread nests one child and returns its result to root',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
-    toolUseResponse('call_1', 'create_thread', { goal: 'Level 1', prompt: 'Start L1' }),
     toolUseResponse('call_2', 'create_thread', { goal: 'Level 2', prompt: 'Start L2' }),
     textResponse('L2 result'),
     textResponse('L1 result'),
@@ -381,27 +375,35 @@ export const nestedThreadLifecycleTest = {
   ],
 
   operations: [
-    { type: 'send-message', message: 'Begin nested work' },
-    // Root's continuation (after L1 completes) must include L1's result
-    {
-      type: 'validate-context-snapshot',
-      expectedContent: ['L1 result']
-    },
-    // L1's continuation (after L2 completes) must include L2's result
+    { type: 'run-command', command: 'thread', args: 'Level 1' },
+    { type: 'send-thread-message', message: 'Start L1' },
     {
       type: 'validate-thread-context',
       threadIndex: 0,
       expectedContent: ['L2 result']
+    },
+    { type: 'send-message', message: 'Summarize the thread result' },
+    {
+      type: 'validate-context-snapshot',
+      expectedContent: ['L1 result']
     }
   ],
 
   expectedDocument: {
     items: [
       { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Begin nested work' },
-      { type: 'thread', itemId: '$ITEM_3', result: 'L1 result' },
+      { type: 'thread', itemId: '$ITEM_2', result: 'L1 result' },
+      { type: 'user', content: 'Summarize the thread result' },
       { type: 'assistant', content: 'All done.' }
     ]
+  },
+
+  customAssertions: async (conversation) => {
+    const level1 = findChildThreadByGoal(conversation, null, 'Level 1');
+    if (level1.get('canSpawnThreads') !== true) {
+      throw new Error('interactive Level 1 thread must be spawn-capable');
+    }
+    assertChildResult(conversation, level1.get('itemId'), 'Level 2', 'L2 result');
   }
 };
 
@@ -1192,38 +1194,24 @@ export const siblingThreadsLifecycleTest = {
 };
 
 /**
- * Recursive sibling fan-out at multiple depths:
+ * Sibling fan-out below an interactive thread:
  *
  *   root
- *   ├── A (sub-thread)
- *   │   ├── A1 (sub-sub-thread, leaf)
- *   │   └── A2 (sub-sub-thread, leaf)
- *   └── B (sub-thread, leaf)
+ *   └── A
+ *       ├── A1
+ *       └── A2
  *
- * This test proves the fix isn't a depth-1 special-case. A has TWO sibling
- * grandchildren that both must dispatch. If the walk-down still picks only
- * `last` at any level, A1 (or B) is stranded.
- *
- * Mock FIFO order (assumes fix: spawn-order dispatch):
- *   1. root: multi-tool [create_thread A, create_thread B]
- *   2. A: multi-tool [create_thread A1, create_thread A2]
- *   3. A1: text "leaf"
- *   4. A2: text "leaf"
- *   5. A wrap-up: text "A done"
- *   6. B: text "B done"
- *   7. root continuation: text "all complete"
+ * The root-level sibling case above covers fan-out at depth 1. This proves the
+ * same reducer path starts every sibling one level deeper, without asking an
+ * autonomous model-created thread to spawn children.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const siblingThreadsAtMultipleDepthsTest = {
   name: 'thread-lifecycle-siblings-multi-depth',
-  description: 'Sibling sub-sub-threads at depth 2 each start and complete',
+  description: 'Nested sibling leaves under an interactive thread each complete',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
-    multiToolResponse([
-      { toolUseId: 'r1', toolName: 'create_thread', toolInput: { goal: 'A', prompt: 'Do A' } },
-      { toolUseId: 'r2', toolName: 'create_thread', toolInput: { goal: 'B', prompt: 'Do B' } }
-    ]),
     multiToolResponse([
       { toolUseId: 'a1c', toolName: 'create_thread', toolInput: { goal: 'A1', prompt: 'Do A1' } },
       { toolUseId: 'a2c', toolName: 'create_thread', toolInput: { goal: 'A2', prompt: 'Do A2' } }
@@ -1231,34 +1219,35 @@ export const siblingThreadsAtMultipleDepthsTest = {
     textResponse('leaf'),
     textResponse('leaf'),
     textResponse('A done'),
-    textResponse('B done'),
     textResponse('All complete.')
   ],
 
   operations: [
-    { type: 'send-message', message: 'Begin' }
+    { type: 'run-command', command: 'thread', args: 'A' },
+    { type: 'send-thread-message', message: 'Do A' },
+    { type: 'send-message', message: 'Summarize the thread result' },
+    {
+      type: 'validate-context-snapshot',
+      expectedContent: ['A done']
+    }
   ],
 
   expectedDocument: {
     items: [
       { type: 'system-prompt', itemId: '$ITEM_1' },
-      { type: 'user', content: 'Begin' },
-      { type: 'thread', itemId: '$ITEM_3', result: 'A done' },
-      { type: 'thread', itemId: '$ITEM_4', result: 'B done' },
+      { type: 'thread', itemId: '$ITEM_2', result: 'A done' },
+      { type: 'user', content: 'Summarize the thread result' },
       { type: 'assistant', content: 'All complete.' }
     ]
   },
 
   customAssertions: async (conversation) => {
-    // Depth 1: both siblings completed with the right results
-    assertChildResult(conversation, null, 'A', 'A done');
-    assertChildResult(conversation, null, 'B', 'B done');
-
-    // Depth 2: A has two grandchildren, both completed.
     const threadA = findChildThreadByGoal(conversation, null, 'A');
-    const threadAItemId = threadA.get('itemId');
-    assertChildResult(conversation, threadAItemId, 'A1', 'leaf');
-    assertChildResult(conversation, threadAItemId, 'A2', 'leaf');
+    if (threadA.get('canSpawnThreads') !== true) {
+      throw new Error('interactive A thread must be spawn-capable');
+    }
+    assertChildResult(conversation, threadA.get('itemId'), 'A1', 'leaf');
+    assertChildResult(conversation, threadA.get('itemId'), 'A2', 'leaf');
   }
 };
 

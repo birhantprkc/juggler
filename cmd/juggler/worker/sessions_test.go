@@ -150,7 +150,10 @@ func TestCreateThreadSessionResumesSameThread(t *testing.T) {
 		ctxResponse, _ := json.Marshal(map[string]any{
 			"type": "render-context-items-result", "systemPrompt": "sys", "contexts": []any{},
 		})
-		toolsResponse, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+		toolsResponse, _ := json.Marshal(ToolsResultMessage{
+			Type:  "tools-result",
+			Tools: []ToolDefinition{{Name: "create_thread"}},
+		})
 		for i := 0; i < 5; i++ {
 			w.contextReply.inject(w.done, ctxResponse)
 			w.toolsReply.inject(w.done, toolsResponse)

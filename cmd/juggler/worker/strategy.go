@@ -226,13 +226,15 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 		return turnDone
 	}
 
-	// Remember which of this turn's tools may delegate to a subthread, so
-	// processLLMResponse can route a call to the build-spec round-trip. Rebuilt
-	// each iteration from the freshly-offered tools (a strategy may filter the
-	// set differently per turn).
-	// Whether delegation is actually available is not decided here: tryDelegateTool
-	// asks delegationBlocked at the point of use, so this set only records which
-	// tools CAN delegate, never whether they may.
+	// Apply the worker's thread gate before recording the exact capabilities
+	// sent to the provider. The same filtered slice builds the request, so a
+	// hallucinated or withheld tool cannot later reach the full engine registry.
+	tools = w.filterToolsForThread(tools)
+	w.turnOfferedTools = collectOfferedToolNames(tools)
+
+	// Remember which of this turn's offered tools may delegate to a subthread,
+	// so processLLMResponse can route a call to the build-spec round-trip.
+	// Whether delegation is actually available is decided at the point of use.
 	w.turnDelegatingTools = collectDelegatingToolNames(tools)
 
 	// txnID identifies this round-trip; insertTargetMessage stamps it onto
@@ -692,6 +694,8 @@ func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse
 		w.finalizeStreaming()
 		w.resetStreamingText()
 		w.resetStreamingThinking()
+		w.turnOfferedTools = nil
+		w.turnDelegatingTools = nil
 	}
 	return nil, errors.New("unexpected retry loop exit")
 }
@@ -947,6 +951,12 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 	//   Async tools   → tool-action created, browser executes (bash, glob, etc.)
 	hasAsyncTools := false
 	for _, block := range toolUseBlocks {
+		if !w.toolWasOfferedThisTurn(block.Name) {
+			content := fmt.Sprintf("Tool %q wasn't available in this thread, so it wasn't run.", block.Name)
+			w.addMetaToolResult(block.ID, block.Name, block.Input, content, true)
+			continue
+		}
+
 		if isMetaTool(block.Name) {
 			if err := w.executeMetaTool(block.ID, block.Name, block.Input); err != nil {
 				w.log.Error("Meta tool execution failed: %v", err)

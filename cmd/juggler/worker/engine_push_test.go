@@ -102,7 +102,10 @@ func TestToolTurnPushesStateToEngine(t *testing.T) {
 		ctxResp, _ := json.Marshal(map[string]any{
 			"type": "render-context-items-result", "systemPrompt": "sys", "contexts": []any{},
 		})
-		toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+		toolsResp, _ := json.Marshal(ToolsResultMessage{
+			Type:  "tools-result",
+			Tools: []ToolDefinition{{Name: "bash"}},
+		})
 		for {
 			if !w.contextReply.inject(done, ctxResp) {
 				return

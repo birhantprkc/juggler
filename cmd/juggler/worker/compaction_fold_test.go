@@ -16,12 +16,12 @@ import (
 	ycrdt "github.com/skyterra/y-crdt"
 )
 
-func feedCompactionContextAndTools(w *ConversationWorker) {
+func feedCompactionContextAndTools(w *ConversationWorker, tools ...ToolDefinition) {
 	go func() {
 		contextResponse, _ := json.Marshal(map[string]any{
 			"type": "render-context-items-response", "systemPrompt": "system prompt", "contexts": []any{},
 		})
-		toolsResponse, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+		toolsResponse, _ := json.Marshal(ToolsResultMessage{Type: "tools-result", Tools: tools})
 		for {
 			if !w.contextReply.inject(w.done, contextResponse) {
 				return

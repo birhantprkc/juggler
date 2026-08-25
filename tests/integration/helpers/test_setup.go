@@ -252,7 +252,7 @@ func (ts *TestSession) FileExists(relativePath string) bool {
 // to "request-tools" and "render-context-items" messages from the strategy loop.
 // This is required for tests that trigger the strategy loop (send-message)
 // since it waits for these responses from the engine browser.
-func (ts *TestSession) SetupMockEngine() {
+func (ts *TestSession) SetupMockEngine(tools ...worker.ToolDefinition) {
 	ts.t.Helper()
 
 	w := ts.Worker
@@ -273,7 +273,7 @@ func (ts *TestSession) SetupMockEngine() {
 			resp, _ := json.Marshal(worker.ToolsResultMessage{
 				Type:      "tools-result",
 				RequestID: requestID,
-				Tools:     []worker.ToolDefinition{},
+				Tools:     tools,
 			})
 			w.Send("tools-result", resp)
 

@@ -107,6 +107,9 @@ func (w *ConversationWorker) buildLLMRequestWithIntent(ctxResult *ContextResult,
 	// Withhold tools the current thread may not use before anything else reads
 	// the list — in particular resolveForcedToolChoice below must validate a
 	// forced tool against the FILTERED list, never against a tool we're stripping.
+	// The normal turn path already supplies this filtered slice so its admission
+	// snapshot matches the request; keep this idempotent filter as a backstop for
+	// direct callers.
 	tools = w.filterToolsForThread(tools)
 	messages := w.buildMessages(ctxResult.Contexts)
 	// The base prompt (identity + environment + system-position items + extension

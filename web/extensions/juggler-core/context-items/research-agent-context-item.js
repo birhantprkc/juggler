@@ -51,7 +51,7 @@ class ResearchAgentContextItem extends SubagentContextItem {
       'What to find out, stated in full — including the library, version, or platform it concerns. ' +
       'The sub-agent shares your project but none of your conversation.',
     continues: 'research',
-    lead: 'Research the following and answer it.',
+    lead: 'Answer the following question thoroughly.',
     resultSpec:
       'the answer, with a source URL for each claim, and a note of anything that differs from ' +
       'the version installed in this project. Where you found nothing, say so explicitly rather than offering a plausible guess.',

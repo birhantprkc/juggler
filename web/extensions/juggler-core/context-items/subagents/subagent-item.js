@@ -175,22 +175,18 @@ export default class SubagentContextItem extends ContextItem {
   }
 
   /**
-   * Only reached when the build-spec round-trip itself failed: the engine
-   * errored, or it did not answer within `SubthreadSpecTimeout`. The structural
-   * reasons a call cannot delegate — a delegated ancestor, the thread nesting cap
-   * — no longer arrive here at all, because `requiresDelegation` in the MANIFEST
-   * has the worker withhold the tool on those turns rather than offer it and let
-   * it fail. That is what makes this message able to name its cause.
-   *
-   * There is no inline version of a sub-agent to fall back to, so say what
-   * happened and hand the work back.
+   * Reached only when a sub-agent call fell through to ordinary action
+   * execution. There is no inline form of a sub-agent. The engine may have
+   * failed to build a child specification, or the model may have emitted a tool
+   * it was not offered; this instance has no record of which happened, so keep
+   * the error accurate for both and hand the work back to the caller.
    * @override
    * @returns {Promise<Record<string, unknown>>} Never resolves
    * @throws {Error} Always
    */
   async execute() {
     const { tool, fallback } = /** @type {typeof SubagentContextItem} */ (this.constructor).descriptor();
-    throw new Error(`${tool} couldn't start: the engine didn't answer in time, so the sub-agent never ran. ${fallback}`);
+    throw new Error(`${tool} couldn't start a sub-agent, so no work was done. ${fallback}`);
   }
 
   /**

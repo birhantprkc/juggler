@@ -20,7 +20,7 @@ import (
 func strategyPreamble(t *testing.T) *helpers.TestSession {
 	t.Helper()
 	ts := helpers.SetupTestSession(t)
-	ts.SetupMockEngine()
+	ts.SetupMockEngine(worker.ToolDefinition{Name: "bash"})
 	ts.GetDocument().SetMetadata("defaultModelConfig", map[string]any{
 		"provider": "test",
 		"model":    "test-model",

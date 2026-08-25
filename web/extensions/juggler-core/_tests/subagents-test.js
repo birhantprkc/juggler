@@ -137,6 +137,21 @@ export async function runTests(_ctx) {
         `${label} must report as an action; it implements execute() through SubagentContextItem`);
     });
 
+    await run(`${label}: inline fallthrough reports no invented cause`, async () => {
+      let message = '';
+      try {
+        await makeItem(Item).execute({});
+      } catch (e) {
+        message = e instanceof Error ? e.message : String(e);
+      }
+      assert(message.includes(`${toolName} couldn't start a sub-agent`),
+        `fallthrough must name ${toolName} and say no sub-agent started; got "${message}"`);
+      assert(message.includes(Item.SUBAGENT.fallback),
+        `fallthrough must preserve ${toolName}'s actionable fallback`);
+      assert(!/engine|timed? out|in time/i.test(message),
+        `fallthrough cannot claim an engine timeout it cannot prove; got "${message}"`);
+    });
+
     await run(`${label}: its brief carries the rules every sub-agent needs`, () => {
       const guidance = /** @type {any} */ (strategyRegistry.get(strategyId)).GUIDANCE;
       assert(/refused/i.test(guidance),

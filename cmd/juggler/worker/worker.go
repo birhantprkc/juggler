@@ -292,9 +292,13 @@ type ConversationWorker struct {
 	stopped  chan struct{}
 
 	llmResponseChan chan llmCallResult
-	// turnDelegatingTools is the set of tool names offered this turn whose item
-	// declared delegatesToSubthread. Rebuilt each iteration from the tools list
-	// and read by processLLMResponse to route a call to the delegation path.
+	// turnOfferedTools is the canonical set of tool names sent to the provider
+	// for the response being processed. Nil means no authoritative turn snapshot
+	// exists; an empty map means the provider was offered no tools.
+	turnOfferedTools map[string]bool
+	// turnDelegatingTools is the subset of turnOfferedTools whose item declared
+	// delegatesToSubthread. Rebuilt each iteration and read by
+	// processLLMResponse to route a call to the delegation path.
 	turnDelegatingTools map[string]bool
 
 	// Streaming state — accumulated chunks for the current turn's text/thinking messages.
