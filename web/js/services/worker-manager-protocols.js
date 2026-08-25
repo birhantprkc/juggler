@@ -15,6 +15,7 @@
 
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { TOOL_STATES } from '../../sdk/lib/message.js';
 import strategyRegistry from '../registries/strategy-registry.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import actionExecutor from './action-executor.js';
@@ -502,6 +503,49 @@ function findThreadForTool(c, toolUseId) {
 }
 
 /**
+ * The tool states that sit AFTER `approved`. Seeing one of these while handling
+ * an `execute-tool` command means the worker's doc is behind this engine's: the
+ * worker only commands execute-tool for a tool it still reads as `approved`.
+ */
+const PAST_APPROVED = /** @type {Set<string>} */ (new Set([
+  TOOL_STATES.RUNNING, TOOL_STATES.COMPLETED, TOOL_STATES.CANCELLED,
+]));
+
+/**
+ * Push this engine's full doc state to the worker when a tool command was
+ * declined because the worker is behind on that very tool.
+ *
+ * The worker drives the tool lifecycle off its own doc, so a `running` or
+ * terminal write of ours that never reached it leaves it commanding execute-tool
+ * forever against a tool this engine has already dealt with. It re-drives to its
+ * attempt cap and fails a tool that ran — the failure the user sees as "the
+ * engine acknowledged the request but never carried it out", since our decline
+ * traces are exactly what proves the engine is alive.
+ *
+ * Only pushed when we are AHEAD (PAST_APPROVED). Being behind instead needs no
+ * repair: the worker pushes its own state ahead of every command it dispatches.
+ * The push is a Yjs merge and cannot revert the worker — ops it already holds
+ * are a no-op, and anything it wrote more recently still wins — so the worst
+ * case is a wasted encode.
+ * @param {any} wm - WorkerManager instance
+ * @param {any} c - Conversation instance
+ * @param {string} conversationId
+ * @param {string} toolUseId
+ * @param {string} observedState - This engine's state for the tool
+ * @returns {void}
+ */
+function resyncWorkerBehindTool(wm, c, conversationId, toolUseId, observedState) {
+  if (!PAST_APPROVED.has(observedState)) return;
+  try {
+    c.resyncToWorker();
+  } catch (err) {
+    sendEngineTrace(wm, conversationId, 'resync-diverged-failed', { toolUseId, error: extractErrorMessage(err) });
+    return;
+  }
+  sendEngineTrace(wm, conversationId, 'resync-diverged', { toolUseId, state: observedState });
+}
+
+/**
  * Engine handler for the worker's `evaluate-tool` command: evaluate a newly
  * created tool-action (approval-gate or auto-approve) by id. The worker is the
  * sole driver of the tool lifecycle (the engine has no reactive tool reducer);
@@ -593,7 +637,14 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
   const inFlight = c._actionExecutor?.runningActionFor(toolUseId, c.id);
   if (inFlight) {
     const repaired = reassertRunning(c, ymap, inFlight);
-    sendEngineTrace(wm, conversationId, 'execute-noact', { toolUseId, reason: 'already-executing', repaired });
+    // `state` is what the repair turned on: reassertRunning only writes when it
+    // reads `approved`, so repaired=false means the doc was already past it and
+    // the divergence is the worker's. Without the state in the trace the two are
+    // indistinguishable in the log, and repaired=false reaches the worker as
+    // nothing at all.
+    const state = /** @type {string} */ (ymap.get('state'));
+    sendEngineTrace(wm, conversationId, 'execute-noact', { toolUseId, reason: 'already-executing', repaired, state });
+    if (!repaired) resyncWorkerBehindTool(wm, c, conversationId, toolUseId, state);
     return false;
   }
   // 'yes-always' persists the auto-approval permission. resolveApproval writes
@@ -608,8 +659,15 @@ export async function handleExecuteTool(wm, conversationId, toolUseId) {
   // log as execute-start with no following execute-done/execute-error — the tool
   // claimed running but stalled inside executeToolAction (e.g. a bash awaiting a
   // shell-output 'done' that never arrives). See handleEngineTrace (worker).
+  // Read the state BEFORE the claim: it is the state the compare-and-set acted
+  // on, and the only thing that explains a claimed=false. A bare claimed=false
+  // says the doc did not read `approved` without saying what it did read, which
+  // is the difference between a tool this engine has already run (worker behind)
+  // and one it has not reached yet.
+  const observed = /** @type {string} */ (ymap.get('state'));
   const claimed = claimRunning(c, ymap);
-  sendEngineTrace(wm, conversationId, 'execute-claim', { toolUseId, toolName: ymap.get('toolName'), claimed });
+  sendEngineTrace(wm, conversationId, 'execute-claim', { toolUseId, toolName: ymap.get('toolName'), claimed, state: observed });
+  if (!claimed) resyncWorkerBehindTool(wm, c, conversationId, toolUseId, observed);
   if (claimed) {
     sendEngineTrace(wm, conversationId, 'execute-start', { toolUseId });
     // Arm the level-based tool-execution reporter for the duration of this run.

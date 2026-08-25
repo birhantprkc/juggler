@@ -922,9 +922,23 @@ func (w *ConversationWorker) resetRunningToolsForReattach() {
 // on the worker (lastEngineTraceAt) and is the evidence that the engine is
 // reaching its handlers at all. driveToolActions requires it before failing a
 // tool for going unhandled, so that a command which never reached the engine is
-// never reported as the tool's fault (see engineSpokeSince).
+// never reported as the tool's fault (see answeredSincePrevDispatch).
+//
+// The toolUseId is pulled out for the same reason, and stamped per-tool
+// (tools.recordTrace): conversation-wide receipt cannot tell "the engine
+// declined THIS tool" from "the engine was busy with a sibling tool while this
+// one's commands vanished", and those have opposite causes. Decoding is
+// best-effort and never gates the log line — the payload is still logged raw, so
+// fields the engine adds appear without a Go change.
 func (w *ConversationWorker) handleEngineTrace(payload json.RawMessage) {
-	w.lastEngineTraceAt = time.Now()
+	now := time.Now()
+	w.lastEngineTraceAt = now
+	var probe struct {
+		ToolUseID string `json:"toolUseId"`
+	}
+	if json.Unmarshal(payload, &probe) == nil && probe.ToolUseID != "" {
+		w.tools.recordTrace(probe.ToolUseID, now)
+	}
 	w.log.Trace("[engine-trace] conv=%s %s", w.conversationID, string(payload))
 }
 

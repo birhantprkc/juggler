@@ -29,11 +29,26 @@ type toolCommandState struct {
 	// staleness by shrinking the worker's redriveInterval, not by poking this.
 	lastDispatchedAt time.Time
 
+	// prevDispatchedAt stamps the dispatch BEFORE lastDispatchedAt, and is the
+	// reference point for "did the engine answer for this tool". It has to be the
+	// previous one: driveToolActions calls recordDispatch before deciding whether
+	// to escalate, so at the decision point lastDispatchedAt is the dispatch just
+	// sent, which nothing could have answered yet. The previous dispatch is the
+	// most recent one the engine has had a full redriveInterval to answer.
+	prevDispatchedAt time.Time
+
+	// lastTracedAt stamps when an engine-trace naming THIS toolUseId last arrived
+	// (recordTrace, from handleEngineTrace). Every engine-side handler traces with
+	// the toolUseId it acted on — the acting paths (execute-claim/start/done) and
+	// the declining ones (evaluate-noact/execute-noact) alike — so a trace here is
+	// the only evidence that a command for this tool reached a handler at all.
+	// Zero until the first trace for the id.
+	lastTracedAt time.Time
+
 	// firstDispatchedAt stamps when the CURRENT delivery phase began — the first
-	// dispatch at this state. It is the reference point for "has the engine said
-	// anything since we started asking", which is what separates an engine that
-	// received the command and declined from one that was never there to receive
-	// it (see engineSpokeSince).
+	// dispatch at this state. It bounds how long an unproven engine is waited out
+	// (engineUnprovenHold), so a tool is never held indefinitely no matter how
+	// long the engine stays unreachable.
 	firstDispatchedAt time.Time
 
 	// attempts counts consecutive dispatches at the current dispatchedState; past
@@ -99,8 +114,46 @@ func (t *toolCommandTracker) recordDispatch(id, state string, now time.Time) int
 	} else {
 		s.attempts++
 	}
-	s.lastDispatchedAt = now
+	s.prevDispatchedAt, s.lastDispatchedAt = s.lastDispatchedAt, now
 	return s.attempts
+}
+
+// recordTrace stamps the arrival of an engine-trace naming id. Only ids already
+// under command are stamped: a trace for anything else is diagnostic-only, and
+// creating an entry for it would leak one map entry per tool ever traced.
+func (t *toolCommandTracker) recordTrace(id string, now time.Time) {
+	if s := t.byID[id]; s != nil {
+		s.lastTracedAt = now
+	}
+}
+
+// answeredSincePrevDispatch reports whether the engine traced about THIS tool
+// since the dispatch before the most recent one — i.e. whether the engine is
+// still answering for this tool right now, rather than having answered once
+// early in the phase and gone silent since.
+//
+// This is the whole difference between the two escalation verdicts, so it is
+// deliberately per-tool and deliberately recent. A conversation-wide "has the
+// engine said anything" test is satisfied by a sibling tool in the same parallel
+// batch, and by this tool's own declining trace; an "anything since the phase
+// began" test is satisfied by one trace in the first millisecond of a 30-second
+// phase, which is exactly what a suspended engine leaves behind.
+func (t *toolCommandTracker) answeredSincePrevDispatch(id string) bool {
+	s := t.byID[id]
+	if s == nil || s.lastTracedAt.IsZero() {
+		return false
+	}
+	return s.lastTracedAt.After(s.prevDispatchedAt)
+}
+
+// lastTracedAt returns when an engine-trace naming id last arrived, or the zero
+// time if none ever has. Diagnostic only — the escalation verdict uses
+// answeredSincePrevDispatch, which also weighs recency.
+func (t *toolCommandTracker) lastTracedAt(id string) time.Time {
+	if s := t.byID[id]; s != nil {
+		return s.lastTracedAt
+	}
+	return time.Time{}
 }
 
 // phaseStartedAt returns when the current delivery phase for id began, or the

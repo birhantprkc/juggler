@@ -18,10 +18,11 @@ import (
 // instead of hanging forever, rather than re-driving indefinitely. At the default
 // redriveInterval (~5s) this is ~30s of silence before escalation.
 //
-// The cap only applies to an engine that is ANSWERING. Exhausting it against an
-// engine that has said nothing at all means the commands never landed, which is
-// not the tool's fault and would repeat for every later tool; that case is held
-// instead, up to engineUnprovenHold (see engineUnproven).
+// The cap only applies to an engine that is ANSWERING FOR THIS TOOL. Exhausting
+// it against an engine that has traced nothing for the tool means the commands
+// never reached a handler, which is not the tool's fault and would repeat for
+// every later tool; that case is held instead, up to engineUnprovenHold (see
+// engineUnproven).
 const maxToolCommandAttempts = 6
 
 // defaultRedriveInterval is how long driveToolActions waits before re-dispatching
@@ -32,10 +33,18 @@ const maxToolCommandAttempts = 6
 const defaultRedriveInterval = 5 * time.Second
 
 // engineUnprovenHold bounds how long a tool is held while the engine has
-// answered nothing at all. Long enough for the server to notice the engine has
+// answered nothing for it. Long enough for the server to notice the engine has
 // gone silent, evict it, and for a reconnect or an engine-window reload to bring
 // one back; short enough that the turn is released while the user is still
 // watching, with a message naming the engine rather than the tool.
+//
+// The margin is deliberate and load-bearing: server-side recovery costs
+// engineLivenessWindow (30s of heartbeat silence before eviction) plus
+// engineReconnectGrace (20s for the engine to come back before it is reloaded),
+// and this hold has to outlast the pair or the tool is failed while its engine
+// is still being fetched back. Raising either of those without raising this
+// re-breaks the sleep/wake case. They live in server/engine_liveness.go, which
+// this package must not import — the coupling is by comment, so check it here.
 const engineUnprovenHold = 60 * time.Second
 
 // driveToolActions commands the engine — the single tool executor — to advance
@@ -286,23 +295,20 @@ func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
 	w.tools.clear(id)
 }
 
-// engineSpokeSince reports whether the engine has said anything about THIS
-// conversation since t. Every engine-side handler traces — the acting path
-// (execute-claim / execute-start / execute-done) and every declining path
-// (evaluate-noact / execute-noact) alike — so silence since we started asking
-// means the command never reached a handler at all.
-//
-// Measured from the phase start rather than as an absolute age, so a
-// conversation that sat idle for an hour is not mistaken for a dead engine: what
-// matters is whether the engine has answered since we began commanding it.
-func (w *ConversationWorker) engineSpokeSince(t time.Time) bool {
-	return !w.lastEngineTraceAt.IsZero() && w.lastEngineTraceAt.After(t)
-}
-
 // engineUnproven reports whether a tool's command should keep being re-driven
-// past the attempts cap rather than failing the tool: the engine has answered
-// nothing since this delivery phase began, and the hold ceiling has not yet
-// elapsed.
+// past the attempts cap rather than failing the tool: the engine has not
+// answered for THIS tool since the dispatch before last, and the hold ceiling
+// has not yet elapsed.
+//
+// The hold exists to lose a race on purpose. An engine whose realm is suspended
+// (a laptop that slept, a wedged WebView) keeps its WebSocket open — WebKit runs
+// the socket in the network process, below the realm — so the worker goes on
+// dispatching into an engine that cannot run a handler, and engineAttached stays
+// true throughout. Recovery is the server's: engineLivenessWindow of heartbeat
+// silence to evict it, then engineReconnectGrace for a reconnect or a window
+// reload. engineUnprovenHold is sized to outlast that whole sequence, so the
+// engine gets put back before the tool is failed. Escalating on the attempts cap
+// alone takes ~30s and beats it every time.
 //
 // The ceiling is what keeps doc.go's rule intact — degrade to a recoverable
 // error, never an infinite wait. It only changes WHO is blamed and how long we
@@ -312,29 +318,37 @@ func (w *ConversationWorker) engineUnproven(id string, now time.Time) bool {
 	if phaseStart.IsZero() {
 		return false
 	}
-	if w.engineSpokeSince(phaseStart) {
-		return false // the engine is answering; the tool really is stuck
+	if w.tools.answeredSincePrevDispatch(id) {
+		return false // the engine is answering for this tool; it really is stuck
 	}
 	return now.Sub(phaseStart) < engineUnprovenHold
 }
 
 // engineLivenessSummary describes, for a diagnostic log line, who the worker
-// believes the engine is and how long it has been since that engine last spoke
-// about THIS conversation (an engine-trace). Together they narrow a tool the
-// engine never advanced to one of two causes: no engine attached / the commands
-// never landed ("engine=none", or a trace age far exceeding the dispatch window),
-// versus an engine that received the command and declined to act, which emits an
-// evaluate-noact/execute-noact trace naming its reason.
-func (w *ConversationWorker) engineLivenessSummary() (engine, lastTrace string) {
+// believes the engine is, how long since that engine last spoke about THIS
+// conversation, and how long since it last spoke about THIS tool. The three
+// together separate the causes a tool the engine never advanced can have, which
+// no two of them can:
+//
+//   - engine=none, or a conversation trace age far exceeding the dispatch
+//     window: no engine, or the commands never landed.
+//   - a recent conversation trace with toolTrace=never: the engine is alive and
+//     working, yet no handler ever answered for this tool — the command is being
+//     lost, or a handler is returning without tracing.
+//   - a recent trace for the tool itself: the engine received the command and
+//     declined, and the evaluate-noact/execute-noact trace names its reason.
+func (w *ConversationWorker) engineLivenessSummary(id string) (engine, lastTrace, toolTrace string) {
 	engine = w.callbacks.engineClientID()
 	if engine == "" {
 		engine = "none"
 	}
-	lastTrace = "never"
-	if !w.lastEngineTraceAt.IsZero() {
-		lastTrace = time.Since(w.lastEngineTraceAt).Round(time.Second).String() + " ago"
+	age := func(t time.Time) string {
+		if t.IsZero() {
+			return "never"
+		}
+		return time.Since(t).Round(time.Second).String() + " ago"
 	}
-	return engine, lastTrace
+	return engine, age(w.lastEngineTraceAt), age(w.tools.lastTracedAt(id))
 }
 
 // escalateStaleToolCommand fails a tool whose engine command stayed stuck at the
@@ -371,22 +385,29 @@ func (w *ConversationWorker) escalateStaleToolCommand(id, expectState string) {
 		return
 	}
 
-	engine, lastTrace := w.engineLivenessSummary()
+	engine, lastTrace, toolTrace := w.engineLivenessSummary(id)
 	// Two very different faults share this exit, and the message must say which:
-	// an engine that answered and could not carry out the command, versus one
-	// that answered nothing at all and has now been waited out. Reporting the
-	// second as a tool failure sends every investigation after the tool.
-	mute := !w.engineSpokeSince(w.tools.phaseStartedAt(id))
-	w.log.Error("[worker] tool-command for %s (%s) in %s stayed at state=%q unhandled %d× (mute=%v); failing the tool to unblock the turn (engine=%s lastEngineTrace=%s)",
-		id, toolName, w.conversationID, expectState, maxToolCommandAttempts, mute, engine, lastTrace)
+	// an engine that answered for this tool and could not carry the command out,
+	// versus one that never answered for it and has now been waited out.
+	// Reporting the second as a tool failure sends every investigation after the
+	// tool. The test is per-tool and recent (answeredSincePrevDispatch), because
+	// the engine being alive proves nothing about this tool: a sibling tool in
+	// the same parallel batch traces constantly, and one trace at the head of the
+	// phase is what a since-suspended engine leaves behind.
+	mute := !w.tools.answeredSincePrevDispatch(id)
+	w.log.Error("[worker] tool-command for %s (%s) in %s stayed at state=%q unhandled %d× (mute=%v); failing the tool to unblock the turn (engine=%s lastEngineTrace=%s lastToolTrace=%s)",
+		id, toolName, w.conversationID, expectState, maxToolCommandAttempts, mute, engine, lastTrace, toolTrace)
 	w.tape.Record("tool-command-attempts-escalate", map[string]any{
 		"id": id, "tool": toolName, "state": expectState, "attempts": maxToolCommandAttempts,
-		"engine": engine, "lastEngineTrace": lastTrace, "mute": mute,
+		"engine": engine, "lastEngineTrace": lastTrace, "lastToolTrace": toolTrace, "mute": mute,
 	})
 	content := fmt.Sprintf("Couldn't run this tool: the engine acknowledged the request but never carried it out, after %d attempts. Failed so the turn can continue.",
 		maxToolCommandAttempts)
 	if mute {
-		content = fmt.Sprintf("Couldn't run this tool: the tool engine stopped responding and hasn't come back within %s. Nothing ran. (last engine activity: %s)",
+		// One line for both silences, because the reader tells them apart from the
+		// activity note: "never" is an engine that was never reached, an age is an
+		// engine that is alive and simply never answered for this tool.
+		content = fmt.Sprintf("Couldn't run this tool: the engine never answered for it within %s. Nothing ran. (last engine activity: %s)",
 			engineUnprovenHold, lastTrace)
 	}
 	w.doc.UpdateToolActionFieldsRecursive(id, map[string]any{

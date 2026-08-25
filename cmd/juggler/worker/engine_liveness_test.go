@@ -23,9 +23,15 @@ import (
 //     blames a tool that was never tried, and does it again for every tool in
 //     every conversation until the app is restarted.
 //
-// lastEngineTraceAt is what separates them: it is stamped whenever the engine
-// speaks about this conversation. These tests pin that a mute engine and a
-// declining engine are not treated alike.
+// Per-tool trace receipt is what separates them: an engine-trace names the
+// toolUseId it acted on, and answeredSincePrevDispatch asks whether one arrived
+// for THIS tool since the dispatch before last. Both halves matter. A
+// conversation-wide test is satisfied by a sibling tool in the same parallel
+// batch, and an "ever, during this phase" test is satisfied by a single trace in
+// the first millisecond of a 30-second phase — which is precisely the residue a
+// laptop that slept leaves behind. These tests pin that a mute engine and a
+// declining engine are not treated alike, and that neither of those two weaker
+// signals can pass for a live one.
 
 // driveToEscalation drives the worker enough times to exhaust
 // maxToolCommandAttempts, stopping early once the tool has been terminated.
@@ -34,11 +40,12 @@ func driveToEscalation(h *reattachHarness, keepEngineTracing bool) {
 	h.w.redriveInterval = 0
 	for i := 0; i <= maxToolCommandAttempts+1; i++ {
 		if keepEngineTracing {
-			// The engine is alive and answering about this conversation: it is
-			// declining the command, not missing it. Stamped directly rather than
-			// through a dispatched engine-trace message so the test is coupled to
-			// the liveness signal, not to the trace payload shape.
-			h.w.lastEngineTraceAt = time.Now()
+			// The engine is alive and answering FOR THIS TOOL: it is declining the
+			// command, not missing it. Stamped through the tracker rather than by
+			// dispatching an engine-trace message, so the test is coupled to the
+			// liveness signal rather than to the trace payload shape —
+			// TestEngineTrace_StampsThePerToolReceipt covers the payload.
+			h.w.tools.recordTrace("tu-1", time.Now())
 		}
 		h.w.driveToolActions()
 		if it, ok := findToolItem(h.w.getTargetItems(), "tu-1"); ok && it.State == StateCompleted {
@@ -132,6 +139,69 @@ func TestEngineMute_FailureNamesTheEngine(t *testing.T) {
 		strings.Contains(text, "never handled this command") {
 		t.Fatalf("a mute-engine failure must name the engine as unavailable, not "+
 			"read as the tool's own fault: %q", text)
+	}
+}
+
+// TestEngineWentSilentMidPhase_ToolIsNotBlamed is the sleep/wake reproduction.
+// The engine answers the first command and then stops — its realm suspended with
+// the laptop, while the WebSocket stays open in the network process below it, so
+// the engine remains registered and the worker keeps dispatching into something
+// that cannot run a handler.
+//
+// A single early trace must not license failing the tool for the whole rest of
+// the phase. If it does, escalation (~30s) beats the server's own recovery
+// (engineLivenessWindow + engineReconnectGrace, ~50s) every time, and the user
+// sees a tool blamed for an engine that was about to be fetched back.
+func TestEngineWentSilentMidPhase_ToolIsNotBlamed(t *testing.T) {
+	h := newReattachHarness(t, "conv-engine-silent-mid-phase")
+	insertApprovedTool(h)
+	h.w.redriveInterval = 0
+
+	// One trace, answering the first command, then silence for good. A sibling
+	// tool still executing would keep the conversation-wide signal just as warm.
+	h.w.driveToolActions()
+	h.w.tools.recordTrace("tu-1", time.Now())
+	h.w.lastEngineTraceAt = time.Now()
+
+	for i := 0; i <= maxToolCommandAttempts+1; i++ {
+		h.w.driveToolActions()
+	}
+	h.flush(t)
+
+	it, ok := findToolItem(h.w.getTargetItems(), "tu-1")
+	if !ok {
+		t.Fatal("tu-1 disappeared")
+	}
+	if it.State == StateCompleted {
+		t.Fatalf("a tool was failed on the strength of one trace at the head of the "+
+			"phase: state=%q. The engine has answered nothing since, so the commands "+
+			"are landing nowhere — holding is what gives eviction, reconnect and "+
+			"engine reload time to put an engine back", it.State)
+	}
+}
+
+// TestEngineTrace_StampsThePerToolReceipt pins the wire contract the verdict now
+// rests on: an engine-trace carries the toolUseId it acted on, and the worker
+// records it against that tool. Nothing else in the worker decodes the payload,
+// so a rename on the engine side would otherwise silently downgrade every
+// escalation to "the engine never answered".
+func TestEngineTrace_StampsThePerToolReceipt(t *testing.T) {
+	h := newReattachHarness(t, "conv-engine-trace-receipt")
+	insertApprovedTool(h)
+	h.w.redriveInterval = 0
+	h.w.driveToolActions() // create the bookkeeping entry the trace stamps
+
+	h.w.handleEngineTrace([]byte(`{"event":"execute-noact","toolUseId":"tu-1","reason":"no-thread"}`))
+
+	if h.w.tools.lastTracedAt("tu-1").IsZero() {
+		t.Fatal("an engine-trace naming tu-1 did not stamp tu-1's receipt — check " +
+			"the toolUseId field name against sendEngineTrace in the engine")
+	}
+	if h.w.lastEngineTraceAt.IsZero() {
+		t.Fatal("engine-trace must still stamp the conversation-wide receipt")
+	}
+	if !h.w.tools.lastTracedAt("tu-other").IsZero() {
+		t.Fatal("a trace for tu-1 stamped an unrelated tool's receipt")
 	}
 }
 

@@ -2440,11 +2440,16 @@ class Conversation {
   }
 
   /**
-   * Re-broadcast this conversation's full doc state to its worker. Guard A's
-   * repair for the "no-model" divergence: the worker's doc resolved no model
-   * even though this client is displaying one (the model write never reached the
-   * worker — the outbound-sync gap). Pushing full state, which includes
-   * `defaultModelConfig`, repairs the worker's doc so the next send validates.
+   * Re-broadcast this conversation's full doc state to its worker: the repair
+   * for a worker whose doc is missing a write this client already holds (the
+   * outbound-sync gap). Two callers, both of which detect the gap by its
+   * consequence rather than by watching the transport:
+   *   - Guard A's "no-model" divergence — the worker resolved no model though
+   *     this client is displaying one. Full state includes `defaultModelConfig`,
+   *     so the next send validates.
+   *   - a tool command the engine declined because the worker is behind on that
+   *     tool (worker-manager-protocols resyncWorkerBehindTool), which would
+   *     otherwise have the worker fail a tool this engine has already run.
    */
   resyncToWorker() {
     this._doc.broadcastFullState();
