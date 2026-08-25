@@ -22,10 +22,12 @@
  *  - dial: `${ws|wss}://${host}/api/ws?role=viewer`
  *  - subscribe + request state: send a worker-message envelope whose
  *    workerMsgType is 'init' and whose payload is an InitMessage with
- *    loadFromDisk:true. The Go manager registers THIS client's callback on the
- *    conversation's worker (manager.go mgrHandleMessage); because the worker is
- *    already initialized, handleInit's reconnect path calls broadcastFullState()
- *    (message_handlers.go), so we receive a full yjs-sync.
+ *    loadFromDisk:true and no stateVector. The Go manager registers THIS
+ *    client's callback on the conversation's worker (manager.go
+ *    mgrHandleMessage); because the worker is already initialized, handleInit
+ *    takes its attach path, and the missing state vector is what asks for full
+ *    state (message_handlers.go) — an init carrying one is answered with only
+ *    the delta since it, addressed to the sender alone.
  *  - inbound: {type:'worker-message', conversationId, workerMsgType:'yjs-sync',
  *              payload:{type:'yjs-sync', bytes:'<base64 Yjs update>'}}
  *

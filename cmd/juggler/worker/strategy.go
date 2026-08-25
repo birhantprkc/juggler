@@ -207,8 +207,8 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// AND content so each iteration creates new messages rather than
 	// updating previous ones.
 	w.finalizeStreaming()
-	w.streaming.textContent = ""
-	w.streaming.thinkingContent = ""
+	w.resetStreamingText()
+	w.resetStreamingThinking()
 
 	if w.loadState() == StateCancelling {
 		return turnDone
@@ -690,8 +690,8 @@ func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse
 		}
 
 		w.finalizeStreaming()
-		w.streaming.textContent = ""
-		w.streaming.thinkingContent = ""
+		w.resetStreamingText()
+		w.resetStreamingThinking()
 	}
 	return nil, errors.New("unexpected retry loop exit")
 }

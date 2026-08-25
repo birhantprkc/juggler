@@ -29,6 +29,7 @@ import { fetchJson } from './http.js';
  * @property {Array<Function>} readyCallbacks - Callbacks waiting for ready state
  * @property {object|null} [metadata] - Metadata extracted from ready message (for existing conversations)
  * @property {boolean} [loadFromDisk] - Whether this entry was spawned with loadFromDisk:true
+ * @property {{loadFromDisk?: boolean, [key: string]: unknown}} serialized - The conversation data this entry was spawned with, kept so its init can be re-sent (see reinitPendingConversations)
  */
 
 /**
@@ -37,6 +38,7 @@ import { fetchJson } from './http.js';
  * @property {object} [patch] - State patch data
  * @property {number[]} [update] - Yjs update
  * @property {number[]} [bytes] - Yjs sync message bytes (from y-generic-sync)
+ * @property {number[]} [stateVector] - Worker's Yjs state vector (for resync-response)
  * @property {string} [itemId] - Message ID
  * @property {string} [content] - Content
  * @property {string} [chunkType] - Chunk type
@@ -315,7 +317,8 @@ class WorkerManager {
       conversationId,
       ready: false,
       readyCallbacks: [],
-      loadFromDisk: !!serializedConversation.loadFromDisk
+      loadFromDisk: !!serializedConversation.loadFromDisk,
+      serialized: serializedConversation
     };
     this._workers.set(conversationId, entry);
 
@@ -336,11 +339,7 @@ class WorkerManager {
     });
 
     // Send init message via WebSocket (or alternate transport)
-    wsService.sendWorkerMessage(conversationId, {
-      type: 'init',
-      conversation: serializedConversation,
-      config: this._config
-    });
+    this._sendInit(conversationId, serializedConversation);
 
     try {
       await readyPromise;
@@ -350,6 +349,41 @@ class WorkerManager {
       this._workers.delete(conversationId);
       throw error;
     }
+  }
+
+  /**
+   * Send a worker its init message, carrying this client's Yjs state vector for
+   * the conversation whenever it already holds a document to diff against.
+   *
+   * The vector is what makes attaching cheap. A worker that is already running
+   * answers it with just the ops that vector does not cover, addressed to this
+   * client alone — where a vector-less init makes it broadcast its whole
+   * document, which for a long conversation is megabytes charged to every other
+   * viewer and the engine as well. A client with nothing yet is not a special
+   * case to detect: the delta since an empty document is the whole document.
+   * @param {string} conversationId - Conversation ID
+   * @param {{loadFromDisk?: boolean, [key: string]: unknown}} serializedConversation - Serialized conversation data
+   * @returns {boolean} Whether the message reached the transport
+   * @private
+   */
+  _sendInit(conversationId, serializedConversation) {
+    /** @type {{type: string, conversation: object, config: object|null, stateVector?: string}} */
+    const message = {
+      type: 'init',
+      conversation: serializedConversation,
+      config: this._config
+    };
+    const conversation = this._session?.conversations.get(conversationId);
+    if (conversation) {
+      try {
+        message.stateVector = bytesToBase64(conversation.getYjsStateVector());
+      } catch (err) {
+        // Without a vector the worker sends full state, which is correct — just
+        // larger. Never let it stop the init.
+        console.warn(`[WorkerManager] Couldn't read the state vector for ${conversationId}:`, err);
+      }
+    }
+    return wsService.sendWorkerMessage(conversationId, message);
   }
 
   /**
@@ -760,12 +794,22 @@ class WorkerManager {
   }
 
   /**
-   * On WebSocket reconnect, ask every ready worker for the Yjs ops this client
-   * missed while the socket was down — computed as the delta since each
-   * conversation's current state vector. This is the cheap catch-up path:
-   * applying a delta we already have is a Yjs no-op, and it avoids re-sending
-   * full document state (or reloading the page) on every transient link drop,
-   * which is what made the remote tunnel burn gigabytes and stop updating.
+   * On WebSocket reconnect, open the two-way catch-up with every ready worker:
+   * send each conversation's state vector as a resync-request. The worker
+   * answers with a `resync-response` carrying the ops this client missed AND its
+   * own state vector, which {@link _handleWorkerMessage} turns into the ops the
+   * WORKER missed. Both halves are deltas.
+   *
+   * The inbound half keeps a viewer that briefly lost its WS from silently
+   * freezing; the outbound half is the only thing that carries a local edit made
+   * during the outage to the worker, since the transport discards outbound
+   * frames while the link is down and nothing queues them. Cheap either way:
+   * applying a delta we already have is a Yjs no-op, and neither side re-sends
+   * full document state, which is what made the remote tunnel burn gigabytes.
+   *
+   * Runs for viewers and the engine alike — the engine holds a live doc it
+   * writes to (its tool-action reducer), and having no page reload to fall back
+   * on, this is its only recovery.
    * @returns {void}
    */
   resyncReadyConversations() {
@@ -783,6 +827,26 @@ class WorkerManager {
       } catch (err) {
         console.warn(`[WorkerManager] resync failed for ${conversationId}:`, err);
       }
+    }
+  }
+
+  /**
+   * On WebSocket reconnect, re-send the init of every conversation still
+   * waiting to boot — the other half of the catch-up, covering the
+   * conversations {@link resyncReadyConversations} cannot help.
+   *
+   * A conversation that was spawning when the link dropped had its init
+   * discarded by the transport, which queues nothing. Nothing else would ever
+   * re-send it: the entry never reaches `ready`, so the resync skips it, and it
+   * waits out its boot timeout and fails the load. Re-sending is safe against a
+   * worker that did receive the first one — a second init lands on an
+   * initialized worker, which answers it as an ordinary attach.
+   * @returns {void}
+   */
+  reinitPendingConversations() {
+    for (const [conversationId, entry] of this._workers) {
+      if (entry.ready || !entry.serialized) continue;
+      this._sendInit(conversationId, entry.serialized);
     }
   }
 
@@ -900,6 +964,35 @@ class WorkerManager {
         // data.bytes is base64-encoded from Go's JSON marshaling of []byte
         const bytes = base64ToBytes(/** @type {string} */ (/** @type {unknown} */ (data.bytes)));
         conversation.handleYjsSyncMessage(bytes);
+        break;
+      }
+
+      case 'resync-response': {
+        // The worker's answer to our reconnect resync-request: the ops we are
+        // missing, plus the worker's state vector. Apply its ops, then send back
+        // exactly the ops it lacks — the edits made here while the socket was
+        // down, which the transport discarded on the floor. Both directions are
+        // deltas; neither side ever ships full state on this path.
+        const conversation = this._session?.conversations.get(conversationId);
+        if (!conversation) break;
+        const delta = data.bytes
+          ? base64ToBytes(/** @type {string} */ (/** @type {unknown} */ (data.bytes)))
+          : null;
+        const workerVector = data.stateVector
+          ? base64ToBytes(/** @type {string} */ (/** @type {unknown} */ (data.stateVector)))
+          : null;
+        if (!workerVector) {
+          // No vector, no diff to compute — apply what we were given and stop.
+          if (delta) conversation.handleYjsSyncMessage(delta);
+          break;
+        }
+        const update = conversation.applyResyncResponse(delta, workerVector);
+        if (update) {
+          this.sendToWorker(conversationId, {
+            type: 'yjs-sync',
+            bytes: bytesToBase64(update)
+          });
+        }
         break;
       }
 

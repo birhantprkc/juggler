@@ -47,6 +47,11 @@ export function setupYjsObservers(c) {
       // Convert Uint8Array to base64 string for Go compatibility
       // (Go's json.Unmarshal expects base64 for []byte fields)
       const base64Bytes = bytesToBase64(update);
+      // Fire-and-forget: while the link is down the transport discards this
+      // frame, and the ops it carries are recovered from the doc by the
+      // reconnect resync (worker-manager.resyncReadyConversations), so there is
+      // nothing to handle here.
+      //
       // Forward the engine-derived marker so the worker can apply this
       // update with a non-tracked origin and the UndoManager skips it.
       // See ENGINE_DERIVED_ORIGIN in document-sync-manager.js.

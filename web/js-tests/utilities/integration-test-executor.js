@@ -193,6 +193,7 @@ import { runTests as runUpdatesSettingsTests } from '../unit-tests/updates-setti
 import { runTests as runSettingsFirstLoadTests } from '../unit-tests/settings-first-load-test.js';
 import { runTests as runProxySettingsTests } from '../unit-tests/proxy-settings-test.js';
 import { runTests as runReconnectPolicyTests } from '../unit-tests/reconnect-policy-test.js';
+import { runTests as runResyncOfflineEditTests } from '../unit-tests/resync-offline-edit-test.js';
 import { runTests as runPopupBackButtonTests } from '../unit-tests/popup-back-button-test.js';
 import { runTests as runPopupSurfaceTests } from '../unit-tests/popup-surface-test.js';
 import { runTests as runModelDisplayTests } from '../unit-tests/model-display-test.js';
@@ -446,6 +447,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:settings-first-load', run: runSettingsFirstLoadTests },
   { name: 'unit:proxy-settings', run: runProxySettingsTests },
   { name: 'unit:reconnect-policy', run: runReconnectPolicyTests },
+  { name: 'unit:resync-offline-edit', run: runResyncOfflineEditTests },
   { name: 'unit:popup-back-button', run: runPopupBackButtonTests },
   { name: 'unit:popup-surface', run: runPopupSurfaceTests },
   { name: 'unit:model-display', run: runModelDisplayTests },

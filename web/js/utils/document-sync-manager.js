@@ -63,6 +63,20 @@ const COST_IDLE_RESET_MS = 1000;
 export const ENGINE_DERIVED_ORIGIN = 'engine-derived';
 
 /**
+ * Byte length of a Yjs update that carries nothing at all — no structs and an
+ * empty delete set. Measured from an empty document rather than hard-coded, so
+ * it tracks whatever encoder version Yjs uses. A diff of exactly this length
+ * means the peer already holds everything this doc has.
+ *
+ * Longer is the only safe reading of "has something to say": Yjs writes the
+ * whole delete set into every update regardless of the target state vector, and
+ * a deletion advances no clock, so a delete made while the link was down shows
+ * up in the diff's bytes and nowhere in the state vectors.
+ * @type {number}
+ */
+const EMPTY_UPDATE_LENGTH = Y.encodeStateAsUpdate(new Y.Doc()).length;
+
+/**
  * @typedef {(bytes: Uint8Array, opts?: {engineDerived?: boolean}) => void} SyncBroadcastCallback
  */
 
@@ -159,6 +173,24 @@ class DocumentSyncManager {
     if (this.onSyncBroadcast) {
       this.onSyncBroadcast(Y.encodeStateAsUpdate(this.doc));
     }
+  }
+
+  /**
+   * The ops this doc holds that a peer whose state is `remoteStateVector`
+   * lacks — a delta, never full state; the vector argument is what makes it
+   * one. Returns null when the peer is already up to date, so callers send
+   * nothing rather than a two-byte no-op.
+   *
+   * This is the outbound half of the reconnect resync: the worker's answer to a
+   * resync-request carries its state vector, and this turns it into exactly the
+   * ops the worker is missing — the edits made here while the socket was down,
+   * which the transport discarded.
+   * @param {Uint8Array} remoteStateVector - The peer's encoded Yjs state vector.
+   * @returns {Uint8Array|null} The ops the peer lacks, or null if it has them all.
+   */
+  updateSince(remoteStateVector) {
+    const update = Y.encodeStateAsUpdate(this.doc, remoteStateVector);
+    return update.length > EMPTY_UPDATE_LENGTH ? update : null;
   }
 
   /**

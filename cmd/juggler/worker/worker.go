@@ -936,6 +936,10 @@ func (w *ConversationWorker) run(ctx context.Context) {
 			w.handleMessage(msg)
 		case chunk := <-w.streamChunkChan:
 			w.processCoalescedStreamChunks(chunk)
+			// A chunk reaching the run loop arrives after its turn's wait loop
+			// has returned, so nothing else will come back for it: there is no
+			// later write to fold it into and the throttle must not hold it.
+			w.flushPendingStreamWrites()
 		case <-w.doc.UpdateSignal():
 			w.batcher.Schedule()
 		case <-w.batcher.TimerChan():
@@ -1032,6 +1036,12 @@ func (w *ConversationWorker) handleUnpause() {
 // other message routes through the normal dispatch.
 func (w *ConversationWorker) handleMessageInWait(msg workerMessage) {
 	defer w.recoverWorkerPanic(msg.Type)
+
+	// A message handled mid-stream may read, serialise or persist the document
+	// (undo, save, a round-trip that rebuilds the item list), and the streaming
+	// throttle may be holding the tail of the current block back. Level it up
+	// before the handler runs so nothing reads a message shorter than it is.
+	w.flushPendingStreamWrites()
 
 	// Polite stop: latch and keep waiting. Deliberately BEFORE the cancel branch
 	// and non-destructive — no llmCancelFunc swap, no session release, no state

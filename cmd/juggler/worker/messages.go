@@ -38,6 +38,9 @@
 //   - request-tools: Get tool definitions from browser
 //   - error: Unhandled exceptions
 //   - yjs-sync: CRDT state updates
+//   - resync-response: reply to resync-request — the ops the client is missing
+//     plus the worker's own state vector, so the client can send back the ops
+//     the WORKER is missing
 //   - ack: Acknowledgment for acked operations
 //   - pong: Reply to a test-only ping health check
 package worker
@@ -167,6 +170,15 @@ type InitMessage struct {
 	Type         string                 `json:"type"` // "init"
 	Conversation SerializedConversation `json:"conversation"`
 	Config       WorkerConfig           `json:"config"`
+
+	// StateVector is the sending client's Yjs state vector for this
+	// conversation. An already-initialized worker answers it with just the ops
+	// that vector does not cover, addressed to the sender alone — a document runs
+	// to megabytes, and re-broadcasting one on every attach charges that to every
+	// other viewer and the engine as well. Omitted when the client holds no
+	// document to diff against, which is the one case that genuinely needs full
+	// state. Base64 in JSON.
+	StateVector []byte `json:"stateVector,omitempty"`
 }
 
 // SerializedConversation contains the initial conversation state. It carries
@@ -434,6 +446,23 @@ type YjsSyncMessage struct {
 // gigabytes over a remote tunnel. StateVector is base64 in JSON.
 type ResyncRequestMessage struct {
 	Type        string `json:"type"` // "resync-request"
+	StateVector []byte `json:"stateVector"`
+}
+
+// ResyncResponseMessage answers a resync-request in BOTH directions. Bytes is
+// the delta the client is missing (as ResyncRequestMessage describes);
+// StateVector is the worker's own state vector, from which the client computes
+// the ops the WORKER is missing and returns them as an ordinary yjs-sync.
+//
+// A client's outbound updates are discarded while its socket is down — nothing
+// queues them — so without the worker's vector every edit made during the
+// outage would stay invisible to the worker, which is the source of truth and
+// the thing that persists to disk. The vector rides this dedicated type rather
+// than YjsSyncMessage so the streaming sync path (many frames per second)
+// never carries it. Both fields are base64 in JSON.
+type ResyncResponseMessage struct {
+	Type        string `json:"type"` // "resync-response"
+	Bytes       []byte `json:"bytes"`
 	StateVector []byte `json:"stateVector"`
 }
 

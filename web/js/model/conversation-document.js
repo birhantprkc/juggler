@@ -129,6 +129,16 @@ export class ConversationDocument {
     return Y.encodeStateVector(this.doc);
   }
 
+  /**
+   * The ops this document holds that a peer with `remoteStateVector` lacks.
+   * See DocumentSyncManager.updateSince — a delta, never full state.
+   * @param {Uint8Array} remoteStateVector - The peer's encoded Yjs state vector.
+   * @returns {Uint8Array|null} The ops the peer lacks, or null if it has them all.
+   */
+  updateSince(remoteStateVector) {
+    return this._syncManager.updateSince(remoteStateVector);
+  }
+
   // ========================================================================
   // MUTATIONS
   // ========================================================================

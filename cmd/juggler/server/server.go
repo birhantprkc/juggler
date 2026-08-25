@@ -200,10 +200,19 @@ type Server struct {
 	testMode        bool         // Set when test routes are registered; disables network calls in provider listing
 	bootProjectPath string
 
-	indexTemplate  *template.Template // Template for index.html with cache busting
-	staticVersion  string             // Random version string for cache-busted static paths
-	apiToken       string             // Per-instance token gating the sensitive /api surface + viewer WS (see api_auth.go)
-	startTime      time.Time          // Server start time for health/instance endpoint
+	indexTemplate *template.Template // Template for index.html with cache busting
+	staticVersion string             // Random version string for cache-busted static paths
+	apiToken      string             // Per-instance token gating the sensitive /api surface + viewer WS (see api_auth.go)
+	// bootID names this server instance to its clients, in the session message
+	// every connection is seeded with. It is minted next to staticVersion and
+	// apiToken because it stands for exactly those two: a page served by one
+	// instance carries that instance's token and its cache-busted asset URLs, so
+	// against a different instance every guarded API call is refused and every
+	// dynamic import 404s. A client that reconnects and reads an unchanged boot
+	// id knows the link merely blipped and can catch up with a Yjs state-vector
+	// resync; a changed one means the page itself is stale and must be reloaded.
+	bootID         string
+	startTime      time.Time // Server start time for health/instance endpoint
 	shutdownChan   chan struct{}
 	shutdownOnce   sync.Once
 	workerManager  *worker.Manager     // Go worker manager
@@ -300,15 +309,7 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	router := mux.NewRouter()
-	upgrader := websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin:     sameOriginCheck,
-		// permessage-deflate (RFC 7692) is negotiated per-connection in
-		// handleWebSocket — enabled only for remote (tunnel / LAN) peers, where
-		// the link is the bottleneck, and left off for loopback (engine + local
-		// viewer), where deflate is pure CPU cost. See handleWebSocket.
-	}
+	upgrader := newWSUpgrader()
 
 	wm := worker.NewManager()
 
@@ -409,6 +410,7 @@ func New(cfg Config) (*Server, error) {
 	s.exitWithParent = cfg.ExitWithParent
 	s.staticVersion = staticVersion
 	s.apiToken = mintAPIToken()
+	s.bootID = generateClientID()
 	s.startTime = time.Now()
 	s.shutdownChan = make(chan struct{})
 	s.workerManager = wm

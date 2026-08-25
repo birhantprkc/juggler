@@ -16,11 +16,19 @@
  *   - studio's primitive reloads directly (its only recovery), throttled by
  *     the rate-limiter, and re-arms the same loop instead of storming when the
  *     reload is throttled or the link already recovered.
+ *
+ * The second half pins what a recovered link MEANS, which is the expensive
+ * question. A viewer's reconnect is decided by the boot id the server puts in
+ * its session message: unchanged, the same process is still there and the page
+ * catches up over the live document; changed, the page was served by a process
+ * that is gone — its token is refused and its cache-busted module URLs 404 —
+ * and only a reload recovers. Reloading is the exception, and every route to
+ * one is pinned here, including the ones with no boot id to compare.
  * @module unit-tests/reconnect-policy-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
-import { WebSocketService } from '../../js/services/websocket.js';
+import { assert, waitFor } from '../utilities/test-helpers.js';
+import wsService, { WebSocketService } from '../../js/services/websocket.js';
 
 /**
  * @typedef {object} TestResult
@@ -92,6 +100,56 @@ export async function runTests(_ctx) {
     }
     return n;
   };
+
+  /**
+   * A stand-in for the transport, carrying the four handlers
+   * _configureTransport installs plus a record of having been closed.
+   * @returns {any} Fake transport.
+   */
+  const makeTransport = () => ({
+    onopen: null,
+    onclose: null,
+    onerror: null,
+    onmessage: null,
+    closed: false,
+    /** Record the close instead of touching a real socket. */
+    close() { this.closed = true; },
+    /** Swallow outbound frames. */
+    send() { /* nothing listening */ }
+  });
+
+  /**
+   * A viewer service whose socket has just reopened after a genuine drop, with
+   * the 'open' event still withheld pending the session message.
+   * @param {string|null} recordedBootId - The boot id this page recorded on its first connection.
+   * @returns {{svc: WebSocketService, transport: any, reloads: () => number, opens: () => number}} Service under test and its counters.
+   */
+  const reconnecting = (recordedBootId) => {
+    const svc = new WebSocketService();
+    svc._shouldReloadOnReconnect = () => true; // the throttle has its own cases
+    let reloaded = 0;
+    let opened = 0;
+    svc._reloadPage = () => { reloaded++; };
+    svc.on('open', () => { opened++; });
+    svc.serverBootId = recordedBootId;
+    const transport = makeTransport();
+    svc._configureTransport(transport, 'WebSocket');
+    svc._transport = transport;
+    svc._reconnectAttempts = 3;
+    transport.onopen(new Event('open'));
+    return { svc, transport, reloads: () => reloaded, opens: () => opened };
+  };
+
+  /**
+   * The session frame the server seeds every connection with.
+   * @param {string} [bootId] - The server instance's boot id; omitted entirely when undefined.
+   * @returns {string} Raw JSON frame.
+   */
+  const sessionFrame = (bootId) => JSON.stringify(
+    bootId === undefined
+      ? { type: 'session', clientId: 'client-1' }
+      : { type: 'session', clientId: 'client-1', bootId }
+  );
 
   await run('non-intentional transport death enters the shared reconnect loop', async () => {
     const svc = new WebSocketService();
@@ -197,6 +255,131 @@ export async function runTests(_ctx) {
     await svc._reloadWhenReachable();
     assert(reloaded === 0, 'no reload once the link is already back');
     assert(rearmed === 0, 'no needless re-arm once connected');
+  });
+
+  await run('a reconnect withholds open until the server says which server it is', async () => {
+    const { svc, opens } = reconnecting('boot-1');
+    assert(opens() === 0, `open is withheld while the server is unidentified; got ${opens()}`);
+    assert(svc.connected === false, 'the link is not reported up while undecided');
+  });
+
+  await run('an unchanged boot id catches up: open is released and nothing reloads', async () => {
+    const { svc, reloads, opens } = reconnecting('boot-1');
+    svc._handleMessageData(sessionFrame('boot-1'));
+    assert(reloads() === 0, `the same server must not cost a reload; got ${reloads()}`);
+    assert(opens() === 1, `open released once the server matched; got ${opens()}`);
+    assert(svc.connected === true, 'the link is up');
+    assert(svc._reconnectAttempts === 0, 'the backoff counter is reset by settling');
+    // 'open' IS the catch-up: ConnectionManager's open handler is what runs the
+    // state-vector resync. The live case at the end of this file drives that
+    // whole chain against the real server.
+  });
+
+  await run('a changed boot id reloads: the page belongs to a server that is gone', async () => {
+    const { svc, reloads, opens } = reconnecting('boot-1');
+    svc._handleMessageData(sessionFrame('boot-2'));
+    assert(reloads() === 1, `a restarted server must reload the page; got ${reloads()}`);
+    assert(opens() === 0, 'a page on its way out never reports the link up');
+    assert(svc.connected === false, 'and never treats the link as usable');
+  });
+
+  await run('a reconnect with no boot id recorded reloads (nothing to compare against)', async () => {
+    const { reloads, svc } = reconnecting(null);
+    svc._handleMessageData(sessionFrame('boot-1'));
+    assert(reloads() === 1, `an unverifiable reconnect must reload; got ${reloads()}`);
+  });
+
+  await run('a session that carries no boot id reloads (same reason)', async () => {
+    const { reloads, svc } = reconnecting('boot-1');
+    svc._handleMessageData(sessionFrame(undefined));
+    assert(reloads() === 1, `a server that will not name itself must reload; got ${reloads()}`);
+  });
+
+  await run('a reconnect that dies before identifying the server reloads', async () => {
+    const { svc, transport, reloads } = reconnecting('boot-1');
+    let attempts = 0;
+    svc.on('reconnect-attempt', () => { attempts++; });
+    // The signature of a restarted server: it completes the upgrade, then closes
+    // the socket because this page's token belongs to the process it replaced.
+    transport.onclose(new Event('close'));
+    assert(reloads() === 1, `an open that dies unidentified must reload; got ${reloads()}`);
+    assert(attempts === 0, 'and must not also re-arm the loop it is reloading out of');
+  });
+
+  await run('a restart while throttled drops the link and re-arms the loop instead of storming', async () => {
+    const { svc, transport, reloads, opens } = reconnecting('boot-1');
+    svc._shouldReloadOnReconnect = () => false; // rate-limiter says "too soon"
+    let rearmed = 0;
+    svc._reconnect = () => { rearmed++; };
+    svc._handleMessageData(sessionFrame('boot-2'));
+    assert(reloads() === 0, 'must NOT reload while throttled (no reload storm)');
+    assert(opens() === 0, 'and must not carry on against a server that knows nothing of this page');
+    assert(transport.closed === true, 'the connection to the restarted server is dropped');
+    assert(rearmed === 1, `the backoff loop is re-armed so the overlay keeps counting; got ${rearmed}`);
+  });
+
+  await run('the engine settles its reconnect at once (it has no page to go stale)', async () => {
+    const g = /** @type {any} */ (globalThis);
+    const had = Object.prototype.hasOwnProperty.call(g, 'JUGGLER_ENGINE');
+    const previous = g.JUGGLER_ENGINE;
+    g.JUGGLER_ENGINE = true;
+    try {
+      const svc = new WebSocketService();
+      let reloaded = 0;
+      let opened = 0;
+      svc._reloadPage = () => { reloaded++; };
+      svc._shouldReloadOnReconnect = () => true;
+      svc.on('open', () => { opened++; });
+      const transport = makeTransport();
+      svc._configureTransport(transport, 'WebSocket');
+      svc._reconnectAttempts = 3;
+      transport.onopen(new Event('open'));
+      assert(opened === 1, `the engine's open is released immediately; got ${opened}`);
+      assert(reloaded === 0, 'the engine never reloads — resync is its only recovery');
+      assert(svc.connected === true, 'the engine link is up straight away');
+    } finally {
+      if (had) g.JUGGLER_ENGINE = previous; else delete g.JUGGLER_ENGINE;
+    }
+  });
+
+  // The whole policy against the real server, on this page's live socket: the
+  // boot id it sends is stable across a reconnect, so the page stays and its
+  // 'open' is released — which is what sets the resync off (ConnectionManager's
+  // open handler; this page deliberately doesn't load app.js, so that handler
+  // isn't here, and resync-offline-edit-test drives the recovery itself over
+  // this same reconnect path). Everything above stubs the server; this is the
+  // case that catches the two of them disagreeing.
+  await run('a real reconnect to the same server carries on without reloading', async () => {
+    const originalReload = wsService._reloadPage;
+    let reloaded = 0;
+    let opens = 0;
+    const onOpen = () => { opens++; };
+    wsService._reloadPage = () => { reloaded++; };
+    wsService.on('open', onOpen);
+    try {
+      // The harness opens this page's socket by waiting on 'open', and the
+      // session frame lands a turn later — so it can still be in flight when a
+      // unit suite begins. Wait for the server to have named itself.
+      await waitFor(
+        () => typeof wsService.serverBootId === 'string' && wsService.serverBootId.length > 0,
+        { timeoutMs: 5000, description: 'the server to name itself in the session message' }
+      );
+      const bootIdBefore = wsService.serverBootId;
+
+      await wsService.simulateDisconnect();
+      // simulateDisconnect is a clean teardown, so it leaves the attempt counter
+      // at zero. A real drop does not — set it, so this reconnects as one.
+      wsService._reconnectAttempts = 1;
+      await wsService.reconnect();
+
+      assert(reloaded === 0, `an unchanged boot id must not reload; got ${reloaded}`);
+      assert(wsService.serverBootId === bootIdBefore, 'still talking to the same server');
+      assert(wsService.connected === true, 'the link is up again');
+      assert(opens === 1, `open released once the server matched, which is what runs the resync; got ${opens}`);
+    } finally {
+      wsService._reloadPage = originalReload;
+      wsService.off('open', onOpen);
+    }
   });
 
   return { passed, failed, errors };

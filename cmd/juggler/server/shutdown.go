@@ -181,6 +181,36 @@ func (s *Server) broadcastShutdownNotice() {
 	s.shutdownAllClients()
 }
 
+// viewerListenConfig is how the port that serves viewers is bound.
+//
+// Keep-alive probes are enabled with an explicit period so a peer whose host
+// simply vanished — a suspended laptop, a dropped tunnel, a killed VM — gets
+// reaped by the kernel instead of lingering as a half-open connection holding
+// an fd and a registered WSClient. Nothing above the transport can notice such
+// a peer on its own: it never sends, so no read fails, and a write to it only
+// fails if there is something to send (see wsWriteTimeout). Probes are the
+// only thing that detects a silent idle client that is already gone.
+//
+// Idle 30s then 9 probes 10s apart declares the connection dead about two
+// minutes after the peer disappears, for two packets a minute on a live idle
+// connection. The listener binds all interfaces, so these settings also apply
+// to loopback peers (the engine, local viewers); that is harmless, since a
+// loopback peer cannot go half-open without its process dying, and probes that
+// never leave the machine cost nothing.
+var viewerListenConfig = net.ListenConfig{
+	KeepAliveConfig: net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     30 * time.Second,
+		Interval: 10 * time.Second,
+		Count:    9,
+	},
+}
+
+// listenForViewers binds bindAddr with the viewer keep-alive settings.
+func listenForViewers(bindAddr string) (net.Listener, error) {
+	return viewerListenConfig.Listen(context.Background(), "tcp", bindAddr)
+}
+
 // findAvailablePort tries to bind to the configured port, or finds an available one
 func (s *Server) findAvailablePort() (net.Listener, string, error) {
 	// Parse the configured address
@@ -198,7 +228,7 @@ func (s *Server) findAvailablePort() (net.Listener, string, error) {
 	// The display address (returned as the second value) keeps the configured
 	// hostname so the banner shows "localhost" rather than "0.0.0.0".
 	bindAddr := net.JoinHostPort("", portStr)
-	listener, err := net.Listen("tcp", bindAddr)
+	listener, err := listenForViewers(bindAddr)
 	if err == nil {
 		_, actualPort, _ := net.SplitHostPort(listener.Addr().String())
 		return listener, net.JoinHostPort(host, actualPort), nil
@@ -212,7 +242,7 @@ func (s *Server) findAvailablePort() (net.Listener, string, error) {
 		port++
 		bindAddr := net.JoinHostPort("", strconv.Itoa(port))
 		displayAddr := net.JoinHostPort(host, strconv.Itoa(port))
-		listener, err := net.Listen("tcp", bindAddr)
+		listener, err := listenForViewers(bindAddr)
 		if err == nil {
 			jlog.Info("✅ Found available port: %d", port)
 			return listener, displayAddr, nil

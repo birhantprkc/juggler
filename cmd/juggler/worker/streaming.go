@@ -14,13 +14,47 @@ import (
 	providerutils "juggler/cmd/juggler/providers/utils"
 )
 
+// A streamed block's content is a plain string value in a Y.Map, so writing it
+// replaces the whole value rather than appending to it: the Yjs update the
+// write produces is as long as the message SO FAR, not as long as the new
+// characters. One write per provider delta therefore puts O(n²) bytes on the
+// wire over a turn — a 20k-character reply arriving in a thousand deltas is
+// megabytes of sync traffic per connected client, which is what a remote or
+// slow connection actually feels.
+//
+// Spacing writes in proportion to the content already accumulated keeps a
+// turn's total roughly linear: as the reply grows, each write costs more, so
+// they are made less often. The reader loses nothing — a single delta is a
+// smaller and smaller share of what is on screen as the message lengthens.
+const (
+	// streamWriteMinChars is the floor on new characters between writes, so a
+	// short message still streams smoothly instead of arriving in lumps.
+	streamWriteMinChars = 24
+	// streamWriteLengthRatio spaces writes at one per len(content)/16 new
+	// characters, once that exceeds the floor.
+	streamWriteLengthRatio = 16
+	// streamWriteMaxDelayMs caps the gap between writes, so a slow trickle of
+	// tokens never looks stalled.
+	streamWriteMaxDelayMs = 250
+)
+
 // streamingState holds accumulated streaming content for one LLM turn.
 // Zeroed at iteration boundaries by finalizeStreaming.
+//
+// The *Content fields are always the complete accumulated text. The document
+// is allowed to lag behind them between writes (see the throttle constants
+// above); the *WrittenLen fields record how much of each block the document
+// currently holds, so a flush knows whether anything is outstanding.
 type streamingState struct {
 	textMsgID       string
 	thinkingMsgID   string
 	textContent     string
 	thinkingContent string
+
+	textWrittenLen      int
+	thinkingWrittenLen  int
+	lastTextWriteMs     int64
+	lastThinkingWriteMs int64
 }
 
 // queueStreamChunk sends a streaming chunk to a dedicated channel.
@@ -169,11 +203,85 @@ func (w *ConversationWorker) clearProcessingDescription() {
 	})
 }
 
+// streamWriteDue reports whether an accumulated block has moved far enough — in
+// characters or in elapsed time — to be worth re-encoding into the document.
+func streamWriteDue(contentLen, writtenLen int, lastWriteMs, nowMs int64) bool {
+	threshold := contentLen / streamWriteLengthRatio
+	if threshold < streamWriteMinChars {
+		threshold = streamWriteMinChars
+	}
+	return contentLen-writtenLen >= threshold || nowMs-lastWriteMs >= streamWriteMaxDelayMs
+}
+
+// resetStreamingText starts a fresh text block: the accumulated content and the
+// marks that track how much of it the document holds go together, or the next
+// block's throttle would compare against the previous block's length.
+func (w *ConversationWorker) resetStreamingText() {
+	w.streaming.textContent = ""
+	w.streaming.textWrittenLen = 0
+	w.streaming.lastTextWriteMs = 0
+}
+
+// resetStreamingThinking is resetStreamingText's counterpart for thinking blocks.
+func (w *ConversationWorker) resetStreamingThinking() {
+	w.streaming.thinkingContent = ""
+	w.streaming.thinkingWrittenLen = 0
+	w.streaming.lastThinkingWriteMs = 0
+}
+
+// writeStreamingText puts the whole accumulated text block into the document
+// and records what the document now holds.
+func (w *ConversationWorker) writeStreamingText() {
+	// Update content using messageId lookup - avoids expensive GetItems() JSON conversion
+	_ = w.updateTargetItemByID(w.streaming.textMsgID, "content", w.streaming.textContent)
+	w.streaming.textWrittenLen = len(w.streaming.textContent)
+	w.streaming.lastTextWriteMs = time.Now().UnixMilli()
+}
+
+// writeStreamingThinking is writeStreamingText's counterpart for thinking blocks.
+func (w *ConversationWorker) writeStreamingThinking() {
+	_ = w.updateTargetItemByID(w.streaming.thinkingMsgID, "content", w.streaming.thinkingContent)
+	w.streaming.thinkingWrittenLen = len(w.streaming.thinkingContent)
+	w.streaming.lastThinkingWriteMs = time.Now().UnixMilli()
+}
+
+// flushStreamingText writes any text the throttle is still holding back. A
+// no-op when the document is already current, so a caller that cannot tell
+// whether a write is outstanding can call it unconditionally — which is what
+// every path that reads, persists or finalises the document does.
+func (w *ConversationWorker) flushStreamingText() {
+	if w.streaming.textMsgID == "" || w.streaming.textWrittenLen >= len(w.streaming.textContent) {
+		return
+	}
+	w.writeStreamingText()
+}
+
+// flushStreamingThinking is flushStreamingText's counterpart for thinking blocks.
+func (w *ConversationWorker) flushStreamingThinking() {
+	if w.streaming.thinkingMsgID == "" || w.streaming.thinkingWrittenLen >= len(w.streaming.thinkingContent) {
+		return
+	}
+	w.writeStreamingThinking()
+}
+
+// flushPendingStreamWrites brings the document level with the accumulated
+// streaming content of both block kinds. Every path that ends a block, ends a
+// turn, persists the document, or hands it to something that reads it back must
+// go through here first: the throttle's lag is only ever allowed to be
+// transient, and a missed flush silently truncates a message.
+func (w *ConversationWorker) flushPendingStreamWrites() {
+	w.flushStreamingText()
+	w.flushStreamingThinking()
+}
+
 func (w *ConversationWorker) processTextChunk(chunk StreamChunk) {
 	// If starting a new text block (ID is empty), reset accumulated content
 	// This ensures each text block's content is tracked separately for duplicate detection
 	if w.streaming.textMsgID == "" {
-		w.streaming.textContent = ""
+		// Text following a thinking block leaves that block's tail unwritten;
+		// nothing else will come back to it until the turn ends.
+		w.flushStreamingThinking()
+		w.resetStreamingText()
 	}
 
 	// Accumulate content for this block
@@ -192,11 +300,14 @@ func (w *ConversationWorker) processTextChunk(chunk StreamChunk) {
 			Timestamp: time.Now().Format(time.RFC3339),
 		}
 		w.insertTargetMessage(w.getTargetItemsLength(), msg)
-	} else {
-		// Update content using messageId lookup - avoids expensive GetItems() JSON conversion
-		_ = w.updateTargetItemByID(w.streaming.textMsgID, "content", w.streaming.textContent)
+		// The first write of a block is never throttled: the bubble has to
+		// appear the moment the model starts talking.
+		w.streaming.textWrittenLen = len(w.streaming.textContent)
+		w.streaming.lastTextWriteMs = time.Now().UnixMilli()
+	} else if streamWriteDue(len(w.streaming.textContent), w.streaming.textWrittenLen,
+		w.streaming.lastTextWriteMs, time.Now().UnixMilli()) {
+		w.writeStreamingText()
 	}
-
 }
 
 // extractPlanTag extracts <plan>...</plan> content from streaming text and
@@ -243,13 +354,16 @@ func (w *ConversationWorker) processThinkingChunk(chunk StreamChunk) {
 
 	// Finalize any active text streaming when thinking starts
 	if w.streaming.textMsgID != "" && w.streaming.thinkingMsgID == "" {
+		// The text block is ending here, so this is the last chance to write
+		// whatever the throttle held back from it.
+		w.flushStreamingText()
 		w.streaming.textMsgID = ""
 	}
 
 	// If starting a new thinking block (ID is empty), reset accumulated content
 	// This ensures each thinking block's content is tracked separately for duplicate detection
 	if w.streaming.thinkingMsgID == "" {
-		w.streaming.thinkingContent = ""
+		w.resetStreamingThinking()
 	}
 
 	// Accumulate content for this block
@@ -266,18 +380,28 @@ func (w *ConversationWorker) processThinkingChunk(chunk StreamChunk) {
 			Timestamp:    time.Now().Format(time.RFC3339),
 		}
 		w.insertTargetMessage(w.getTargetItemsLength(), msg)
-	} else {
-		// Update content using messageId lookup - avoids expensive GetItems() JSON conversion
-		_ = w.updateTargetItemByID(w.streaming.thinkingMsgID, "content", w.streaming.thinkingContent)
-		// Provider data is what lets the next turn replay this block: Anthropic
-		// rejects a signatureless thinking block, and the Responses API needs
-		// the reasoning item's id and encrypted content to carry the chain of
-		// thought across a tool call.
-		if len(chunk.Metadata) > 0 {
-			_ = w.updateTargetItemByID(w.streaming.thinkingMsgID, "providerData", chunk.Metadata)
-		}
+		// The first write of a block is never throttled: the tile has to appear
+		// the moment the model starts reasoning.
+		w.streaming.thinkingWrittenLen = len(w.streaming.thinkingContent)
+		w.streaming.lastThinkingWriteMs = time.Now().UnixMilli()
+		return
 	}
 
+	// Provider data is what lets the next turn replay this block: Anthropic
+	// rejects a signatureless thinking block, and the Responses API needs
+	// the reasoning item's id and encrypted content to carry the chain of
+	// thought across a tool call. It rides a trailing chunk that ends the
+	// block, so the content goes in alongside it whatever the throttle says.
+	if len(chunk.Metadata) > 0 {
+		w.flushStreamingThinking()
+		_ = w.updateTargetItemByID(w.streaming.thinkingMsgID, "providerData", chunk.Metadata)
+		return
+	}
+
+	if streamWriteDue(len(w.streaming.thinkingContent), w.streaming.thinkingWrittenLen,
+		w.streaming.lastThinkingWriteMs, time.Now().UnixMilli()) {
+		w.writeStreamingThinking()
+	}
 }
 
 // mergeProcessingTokens augments the live processingState with running token
@@ -455,6 +579,12 @@ func (w *ConversationWorker) insertTruncationNotice(response *LLMResponse) {
 }
 
 func (w *ConversationWorker) finalizeStreaming() {
+	// Both blocks end here, and clearing the IDs makes their accumulated content
+	// unreachable — so anything the throttle held back goes in first. This is
+	// the flush point for a tool_use or provider-state chunk arriving mid-turn
+	// and for every strategy-loop iteration boundary.
+	w.flushPendingStreamWrites()
+
 	// Only clear IDs, not content - content is used for duplicate detection in processLLMResponse
 	w.streaming.textMsgID = ""
 	w.streaming.thinkingMsgID = ""
@@ -464,6 +594,10 @@ func (w *ConversationWorker) finalizeStreaming() {
 // when the user cancelled, so the transaction blob records the truncated output.
 // Returns nil if nothing had been emitted yet.
 func (w *ConversationWorker) partialCancelledResponse() *LLMResponse {
+	// The blob and the transcript must show the same truncated output, so the
+	// document catches up with the accumulated content before it is read off.
+	w.flushPendingStreamWrites()
+
 	var blocks []LLMResponseBlock
 	if w.streaming.thinkingContent != "" {
 		blocks = append(blocks, LLMResponseBlock{Type: provider.ContentBlockTypeThinking, Thinking: w.streaming.thinkingContent})
@@ -478,6 +612,12 @@ func (w *ConversationWorker) partialCancelledResponse() *LLMResponse {
 // and handling cancel messages. Stream chunks arrive on a dedicated channel
 // and are coalesced before Yjs updates to minimize transaction overhead.
 func (w *ConversationWorker) waitForLLMResponse(timeout time.Duration) (*LLMResponse, error) {
+	// Every exit from the wait — response, cancel, timeout, worker stop, panic —
+	// ends the streamed blocks, so the document catches up here rather than at
+	// each return. The flush is a direct write, never a wait on the throttle
+	// window, so a finished stream still completes immediately.
+	defer w.flushPendingStreamWrites()
+
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
@@ -639,6 +779,10 @@ type RetryWaitResult struct {
 // waitForRetryDelay parks for d while processing worker messages (cancel,
 // send-message, Yjs updates).
 func (w *ConversationWorker) waitForRetryDelay(d time.Duration) RetryWaitResult {
+	// Chunks from the attempt that just failed can still be draining into the
+	// throttle; whichever way the wait ends, the document catches up with them.
+	defer w.flushPendingStreamWrites()
+
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 

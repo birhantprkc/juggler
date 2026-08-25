@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"syscall"
 	"time"
@@ -18,6 +19,69 @@ import (
 
 	"github.com/gorilla/websocket"
 )
+
+const (
+	// wsWriteTimeout bounds how long a single message write may block.
+	//
+	// A peer can accept a connection and then stop draining it — a suspended
+	// laptop, dead wifi, a half-open TCP connection nothing has noticed. The
+	// write then sits in the kernel socket buffer indefinitely, and the stall
+	// propagates: the writer goroutine blocks, its 256-deep send buffer fills,
+	// trySend blocks behind it, and any actor that calls Send inline blocks
+	// behind that. One dead client stalls every live one, so the write needs a
+	// bound even though there is nothing to usefully do when it expires.
+	//
+	// 60s sits well clear of the slowest legitimate write. The worst of those
+	// is a remote viewer pulling a full-state resync, which runs to megabytes
+	// on a large conversation — but remote peers negotiate permessage-deflate,
+	// so the wire size is a fraction of the logical one, and the deadline
+	// covers handing the message to the kernel, not its round trip. That
+	// clears a multi-megabyte transfer on a link an order of magnitude worse
+	// than a usable one. Shorter is tempting (it is also the bound on how long
+	// a wedged client can stall an actor) but below ~30s a slow-but-alive
+	// client on a big conversation is at risk, and killing it mid-resync
+	// buys nothing: it reconnects and repeats the same transfer.
+	wsWriteTimeout = 60 * time.Second
+
+	// wsCloseWriteTimeout bounds the goodbye frame. Two bytes on a connection
+	// that is going away regardless, so it gets a short budget — the only
+	// thing waiting behind it is teardown.
+	wsCloseWriteTimeout = 5 * time.Second
+
+	// wsWriteBufferSize sizes the per-connection buffer gorilla frames
+	// outgoing messages in.
+	//
+	// gorilla splits a compressed message across frames as soon as it outgrows
+	// this buffer, and fragmented compressed frames are the shape WebKit has
+	// historically mishandled — which matters here because every Juggler
+	// viewer is WebKit (WKWebView on macOS, WebKitGTK on Linux) and remote
+	// peers are exactly the ones that negotiate permessage-deflate. The
+	// library's own guidance is to make the buffer larger than any expected
+	// message. Juggler cannot honour that literally, since a full-state resync
+	// runs to megabytes, but 32 KiB keeps ordinary traffic — sync deltas,
+	// status, tool output chunks — inside a single frame, and costs one
+	// syscall per 32 KiB rather than per kilobyte. Do not shrink it.
+	wsWriteBufferSize = 32 * 1024
+)
+
+// newWSUpgrader builds the upgrader shared by viewer and engine connections.
+//
+// Deliberately no WriteBufferPool: a pool trades a get/put per message for
+// buffers that idle connections do not hold, which pays off for many mostly
+// quiet connections. Juggler is the opposite shape — a handful of connections
+// (one engine, a few viewers) writing constantly for the length of a turn — so
+// pooling would add churn to the hot path to reclaim a few hundred kilobytes.
+func newWSUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: wsWriteBufferSize,
+		CheckOrigin:     sameOriginCheck,
+		// permessage-deflate (RFC 7692) is negotiated per-connection in
+		// handleWebSocket — enabled only for remote (tunnel / LAN) peers, where
+		// the link is the bottleneck, and left off for loopback (engine + local
+		// viewer), where deflate is pure CPU cost. See handleWebSocket.
+	}
+}
 
 // wsMessage represents a message to be written to the websocket.
 // Either json (for WriteJSON) or raw (for WriteMessage) should be set, not both.
@@ -88,6 +152,22 @@ func retryableWriteError(err error) bool {
 	return errors.Is(err, syscall.ENOBUFS)
 }
 
+// writeDeadlineExceeded reports whether err is the write deadline expiring:
+// the peer is holding a connection open without draining it. Unlike ENOBUFS
+// this is never worth retrying — the socket is fine, the peer is not, and
+// gorilla latches the first write error on a connection and answers every
+// later write with it, so nothing more will go out either way. Closing lets
+// the client reconnect, which is the only thing that recovers it.
+//
+// Matched through the net.Error interface rather than os.ErrDeadlineExceeded:
+// gorilla substitutes its own net.Error implementation for the underlying
+// error, and that type carries Timeout() but no Unwrap, so the sentinel does
+// not match it.
+func writeDeadlineExceeded(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 // writePump is the dedicated writer goroutine - only this goroutine writes to the connection
 func (c *WSClient) writePump() {
 	defer c.conn.Close()
@@ -112,6 +192,7 @@ func (c *WSClient) writePump() {
 				}
 				break
 			}
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsCloseWriteTimeout))
 			_ = c.conn.WriteMessage(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			return
@@ -138,9 +219,22 @@ func (c *WSClient) writeOne(msg wsMessage) bool {
 	// drains in milliseconds. Total worst-case wait ≈ 1s, after which
 	// the error is treated as fatal like any other.
 	for attempt := 0; ; attempt++ {
+		// Armed fresh per attempt so the backoff below spends its own time
+		// rather than the write's budget. SetWriteDeadline only records the
+		// time; gorilla applies it to the socket inside its write lock, in the
+		// same critical section as the write itself, so this cannot be
+		// clobbered by the pong and close frames gorilla sends from the read
+		// goroutine via WriteControl.
+		_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 		err := c.conn.WriteMessage(websocket.TextMessage, payload)
 		if err == nil {
 			return true
+		}
+		if writeDeadlineExceeded(err) {
+			jlog.Error("WebSocket write to client %p exceeded %s and was abandoned; "+
+				"the peer stopped reading (%d queued). Closing so it can reconnect: %v",
+				c, wsWriteTimeout, len(c.send), err)
+			return false
 		}
 		if retryableWriteError(err) && attempt < 19 {
 			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)

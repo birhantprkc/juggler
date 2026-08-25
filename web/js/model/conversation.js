@@ -2398,6 +2398,37 @@ class Conversation {
   }
 
   /**
+   * The second half of the reconnect resync: apply the ops the worker sent
+   * back, then return the ops the worker itself is missing.
+   *
+   * Both halves are deltas. The returned update is everything this doc holds
+   * that `workerStateVector` does not cover — the edits made here while the
+   * socket was down, which the transport dropped and nothing else replays.
+   *
+   * Applying first cannot lose a concurrent local edit. A Yjs update only ever
+   * adds ops: merging the worker's delta can neither remove nor rewrite a local
+   * op, so an edit made between the apply and the diff is still in the doc when
+   * the diff is taken, and it is absent from the worker's vector, so the diff
+   * carries it. An edit made after the diff is taken is broadcast live by the
+   * doc's own update handler, the link being up again by then. And an edit the
+   * worker made after it snapshotted its vector arrives on the ordinary
+   * broadcast path, so excluding it here loses nothing either.
+   * @param {Uint8Array|null} delta - Ops the worker sent for us to apply.
+   * @param {Uint8Array} workerStateVector - The worker's encoded state vector.
+   * @returns {Uint8Array|null} Ops the worker lacks, or null if it lacks none.
+   */
+  applyResyncResponse(delta, workerStateVector) {
+    if (delta && delta.length > 0) {
+      this._doc.applySyncUpdate(delta);
+      // applySyncUpdate batches behind a timer; flush so the diff below is
+      // taken against a doc that already holds the worker's ops rather than
+      // handing them straight back.
+      this._doc.flushPendingUpdates();
+    }
+    return this._doc.updateSince(workerStateVector);
+  }
+
+  /**
    * Activate Yjs sync for bidirectional sync with worker.
    * Called by worker manager after worker is ready.
    * Note: activateSync() is idempotent - it only connects once.

@@ -116,6 +116,13 @@ func (w *ConversationWorker) writeStateToDisk() (bool, error) {
 		return false, nil // Can't save without store wiring
 	}
 
+	// The single point where the document becomes the file on disk, so the
+	// single place persistence has to care about the streaming write throttle:
+	// content it is still holding back would be missing from the saved state.
+	// Every caller runs on the worker goroutine, so this is the same actor that
+	// owns the streaming state.
+	w.flushPendingStreamWrites()
+
 	state := w.doc.ToState()
 	if len(state) == 0 {
 		return false, nil // Nothing to save
@@ -178,6 +185,12 @@ func (w *ConversationWorker) onShutdown() {
 	// Stop every task-output delivery pump and kill its background task so a
 	// delivering command doesn't outlive the conversation worker.
 	w.stopAllDeliveryPumps()
+
+	// Level the document up with any streamed content the write throttle is
+	// holding, BEFORE the Yjs flush below, so the final broadcast and the
+	// dirty check both see the whole message. This is the only save a
+	// mid-turn conversation gets.
+	w.flushPendingStreamWrites()
 
 	// Flush any pending Yjs sync updates
 	w.batcher.Flush()

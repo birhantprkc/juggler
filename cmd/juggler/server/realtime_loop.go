@@ -67,8 +67,11 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 
 	// Send session ready signal to client. It carries the client's own
 	// server-assigned id so the UI can exclude itself from the connected-clients
-	// list it receives via clients-changed.
-	client.Send(map[string]string{"type": "session", "clientId": client.ClientID()})
+	// list it receives via clients-changed, and this instance's boot id so a
+	// client that reconnects can tell a link blip (same id — catch up with a Yjs
+	// state-vector resync) from a restarted server (different id — the page's
+	// token and asset URLs belong to a process that is gone, so it must reload).
+	client.Send(map[string]string{"type": "session", "clientId": client.ClientID(), "bootId": s.bootID})
 
 	// Register with server state for broadcasts. Done AFTER the session send so
 	// the client already knows its own id before the first clients-changed

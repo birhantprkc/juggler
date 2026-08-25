@@ -54,15 +54,28 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 			"path":         "reconnect",
 			"origin":       w.replyTo,
 			"loadFromDisk": msg.Conversation.LoadFromDisk,
+			"delta":        len(msg.StateVector) > 0,
 		})
 
-		// Sync the reconnecting client with current Yjs state. That full-state
-		// sync already carries metadata.undoState, so no separate undo-state
-		// write is needed — and none is safe: a reconnect must be read-only on
-		// the doc. Every client's attach broadcasts to ALL viewers, so a doc
-		// mutation here would let one client's mere attach perturb a turn (and
-		// its undo capture window) another viewer has in flight.
-		w.broadcastFullState()
+		// Sync the attaching client with current Yjs state. That sync already
+		// carries metadata.undoState, so no separate undo-state write is needed —
+		// and none is safe: an attach must be read-only on the doc. Other viewers
+		// can see this sync, so a doc mutation here would let one client's mere
+		// attach perturb a turn (and its undo capture window) another viewer has
+		// in flight.
+		//
+		// A client that already holds the document says so with its state vector
+		// and gets only the ops it lacks, addressed to it alone. A client that
+		// sends none holds nothing, so full state is what it needs — and that goes
+		// out on the broadcast path, which is also how a freshly attached engine
+		// picks up a conversation it has never seen.
+		if len(msg.StateVector) > 0 {
+			if delta := w.doc.GetStateUpdate(msg.StateVector); len(delta) > 0 {
+				w.reply(YjsSyncMessage{Type: "yjs-sync", Bytes: delta})
+			}
+		} else {
+			w.broadcastFullState()
+		}
 
 		// Send ready with metadata if requested. The conversation name is
 		// the folder name on disk and lives on the session manifest, not
@@ -745,21 +758,36 @@ func (w *ConversationWorker) handleYjsSync(payload json.RawMessage) {
 	w.handleItemsChange()
 }
 
-// handleResyncRequest answers a client's reconnect catch-up: it sends only the
-// Yjs ops the client lacks, computed as the delta since the client's state
-// vector. This is the cheap path back to consistency after a transient WS drop
-// — no full-state re-broadcast, no page reload. A nil/empty vector degenerates
-// to full state (equivalent to request-full-state).
+// handleResyncRequest answers a client's reconnect catch-up in both directions:
+// the reply carries the Yjs ops the client lacks (the delta since the client's
+// state vector) AND the worker's own state vector, from which the client
+// computes the ops the WORKER lacks and returns them as an ordinary yjs-sync.
+// Both halves are deltas, so this is the cheap path back to consistency after a
+// transient WS drop — no full-state re-broadcast, no page reload. A nil/empty
+// client vector degenerates to full state in the outbound half (equivalent to
+// request-full-state).
+//
+// The reply is sent even when the client is already up to date: an empty delta
+// still carries the vector the client needs to push the edits it made while its
+// socket was down, which nothing else replays.
+//
+// The two doc reads are separate snapshots of a document that only ever gains
+// ops, and either order is safe. Ops the doc gains between them are the
+// worker's own: the client receives them on the ordinary broadcast path, and
+// the vector merely tells the client not to send them back.
 func (w *ConversationWorker) handleResyncRequest(payload json.RawMessage) {
 	var msg ResyncRequestMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		w.log.Error("Failed to parse resync-request: %v", err)
 		return
 	}
-	update := w.doc.GetStateUpdate(msg.StateVector)
-	if len(update) > 0 {
-		w.sendYjsSync(update)
-	}
+	// Targeted at the requester: only the client that reconnected asked, and its
+	// catch-up delta is meaningless (and potentially large) to everyone else.
+	w.reply(ResyncResponseMessage{
+		Type:        "resync-response",
+		Bytes:       w.doc.GetStateUpdate(msg.StateVector),
+		StateVector: w.doc.GetStateVector(),
+	})
 }
 
 // handleResyncToOrigin pushes the worker's full Yjs state to ONLY the client

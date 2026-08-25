@@ -49,6 +49,26 @@ class WebSocketService {
     this.connected = false;
     /** @type {string|null} - This client's server-assigned id, from the session message. Used to exclude self from the connected-clients list. */
     this.clientId = null;
+    /**
+     * The server instance this page belongs to, taken from the session message's
+     * boot id. Recorded on the first session message and compared on every
+     * reconnect — see {@link WebSocketService#_resolveReconnect}.
+     * @type {string|null}
+     */
+    this.serverBootId = null;
+    /**
+     * Set while a viewer's reconnect waits for the session message that says
+     * which server answered. The 'open' event is withheld for that window
+     * (parked in {@link WebSocketService#_heldOpenEvent}), because everything
+     * downstream of 'open' treats the link as one worth catching up over, and
+     * against a restarted server it is not.
+     * @type {boolean} @private
+     */
+    this._reconnectPending = false;
+    /** @type {Event|undefined} @private - The withheld 'open' event, released once the server is identified. */
+    this._heldOpenEvent = undefined;
+    /** @type {string} @private - Name of the current transport, for the connected log line. */
+    this._transportLabel = 'WebSocket';
     /** @type {number} @private */
     this._reconnectAttempts = 0;
     /** @type {boolean} @private */
@@ -224,13 +244,11 @@ class WebSocketService {
     // (http/chunk frames removed) by bootstrap, so feed them straight in.
     studio.setRealtimeHandler((/** @type {string} */ raw) => this._handleMessageData(raw));
 
-    // The channel is open at adoption time; replicate the relevant onopen bits
-    // from _configureTransport. There was no prior connection, so do NOT take
-    // the reconnect-reload branch.
-    this._reconnectAttempts = 0;
-    this.connected = true;
-    console.info('[WebSocket] Connected via studio');
-    this._emit('open', undefined);
+    // The channel is open at adoption time; settle it as a first connection.
+    // There was no prior connection to compare servers against, so this never
+    // takes the reconnect handshake in _configureTransport.
+    this._transportLabel = 'studio';
+    this._settleOpen(undefined);
 
     // Studio's only recovery lever is a full page reload (it re-runs the
     // external bootstrap's WebRTC handshake — app-side JS can't rebuild the
@@ -276,20 +294,21 @@ class WebSocketService {
    * @private
    */
   _configureTransport(transport, label) {
+    this._transportLabel = label;
     transport.onopen = (event) => {
-      // If this is a reconnection, reload the page to get fresh JS modules
-      // (the server may have re-exec'd via the watchdog with new code).
-      // The engine page is headless with no UI/module-staleness concerns —
-      // reloading just resets window.__engineReady and re-spams init to every
-      // worker, so skip the reload there.
-      if (this._reconnectAttempts > 0 && !isEngine() && this._shouldReloadOnReconnect()) {
-        this._reloadPage();
+      // A viewer's reconnect is not settled here. Which server answered decides
+      // whether this page can carry on — the same instance means the outage was
+      // a link blip and the Yjs resync repairs it — and that is only knowable
+      // from the session message, so withhold 'open' until _resolveReconnect
+      // reads it. The engine is exempt: it is a headless page with no token or
+      // cache-busted asset URLs baked into it and no reload to fall back on, so
+      // resync is its recovery either way.
+      if (this._reconnectAttempts > 0 && !isEngine()) {
+        this._reconnectPending = true;
+        this._heldOpenEvent = event;
         return;
       }
-      this._reconnectAttempts = 0;
-      this.connected = true;
-      console.info(`[WebSocket] Connected via ${label}`);
-      this._emit('open', event);
+      this._settleOpen(event);
     };
 
     transport.onclose = (/** @type {CloseEvent|Event} */ event) => this._onTransportClosed(event, transport);
@@ -316,6 +335,15 @@ class WebSocketService {
    */
   _onTransportClosed(event, transport) {
     this.connected = false;
+    // A reconnect whose socket opened and then died before the server ever said
+    // who it is. That is what a restarted server looks like from here: it
+    // completes the upgrade and then closes the socket because the token this
+    // page replays belongs to a process that is gone. Left alone it flaps
+    // forever — every bogus open would reset the backoff — so the page reloads,
+    // being exactly as stale as the token it sent.
+    const diedUnidentified = this._reconnectPending;
+    this._reconnectPending = false;
+    this._heldOpenEvent = undefined;
     this._emit('close', event);
     const pc = transport && /** @type {any} */ (transport).__pc;
     if (pc) pc.close();
@@ -323,6 +351,9 @@ class WebSocketService {
     // WebRTC probe that is about to fall back to the WebSocket relay.
     if (this._suppressNextCloseReconnect) {
       this._suppressNextCloseReconnect = false;
+      return;
+    }
+    if (diedUnidentified && this._reloadStalePage('the link opened and closed without the server identifying itself')) {
       return;
     }
     if (!this._intentionalDisconnect) {
@@ -487,6 +518,10 @@ class WebSocketService {
         // Remember our own server-assigned id so the connected-clients UI can
         // exclude this window from the list of other clients.
         if (data.clientId) this.clientId = data.clientId;
+        // The boot id rides the same message, and on a reconnect it decides
+        // whether this page carries on or reloads. A page on its way out has
+        // nothing worth handing to listeners.
+        if (this._resolveReconnect(data.bootId)) return;
         this._emit('session', data);
       } else {
         // All other messages go through normal message handler
@@ -590,6 +625,8 @@ class WebSocketService {
 
   disconnect() {
     this._intentionalDisconnect = true;
+    this._reconnectPending = false;
+    this._heldOpenEvent = undefined;
     if (this._transport) {
       const pc = /** @type {any} */ (this._transport).__pc;
       this._transport.close();
@@ -728,7 +765,16 @@ class WebSocketService {
    */
   sendWorkerMessage(conversationId, message) {
     if (!this.connected || !this._transport) {
-      console.error(`[ESSENTIAL] [WebSocket] Not connected, cannot send worker message (connected=${this.connected}, ws=${!!this._transport})`);
+      // A dropped yjs-sync is recovered, so it is not an error: the ops stay in
+      // this client's doc and the reconnect resync ships them to the worker as
+      // the delta since its state vector (worker-manager.resyncReadyConversations).
+      // Every other worker message is genuinely lost with nothing to replay it.
+      const line = `[ESSENTIAL] [WebSocket] Not connected, cannot send worker message (type=${message?.type}, connected=${this.connected}, ws=${!!this._transport})`;
+      if (message?.type === 'yjs-sync') {
+        console.warn(line);
+      } else {
+        console.error(line);
+      }
       return false;
     }
 
@@ -836,11 +882,94 @@ class WebSocketService {
   }
 
   /**
-   * Gate the reload-on-reconnect so a flapping connection can't trigger a
-   * reload storm. Returns true at most once per RELOAD_THROTTLE_MS (tracked in
+   * Mark the link up and release the 'open' event — the single place that does
+   * either, for a first connection and for a reconnect cleared to carry on
+   * alike.
+   * @param {Event|undefined} event - The transport's open event.
+   * @private
+   */
+  _settleOpen(event) {
+    this._reconnectPending = false;
+    this._heldOpenEvent = undefined;
+    this._reconnectAttempts = 0;
+    this.connected = true;
+    console.info(`[WebSocket] Connected via ${this._transportLabel}`);
+    this._emit('open', event);
+  }
+
+  /**
+   * Read the session message's boot id and, on a reconnect, decide what the
+   * outage meant.
+   *
+   * The boot id names the server process. Unchanged, it is the same server we
+   * were talking to a moment ago: it still holds this project's workers, still
+   * honours the token and the cache-busted asset URLs baked into this page, and
+   * everything missed while the socket was down is recovered by the Yjs
+   * state-vector resync that releasing 'open' sets off. Changed, the server
+   * restarted: this page was served by a process that no longer exists, so its
+   * token is refused, its `/v<version>/` module URLs 404, and its project may
+   * not even be the same one. Nothing short of a reload recovers from that.
+   *
+   * A reconnect that arrives with no boot id to compare — the server sent none,
+   * or this page never received a session message to record one from — is
+   * treated as a restart. The comparison is the only evidence there is, and
+   * without it carrying on would mean assuming the good case.
+   * @param {string|undefined} bootId - The session message's boot id.
+   * @returns {boolean} True if a reload was started, so nothing else matters.
+   * @private
+   */
+  _resolveReconnect(bootId) {
+    if (!this._reconnectPending) {
+      // First connection of this page: nothing to compare against yet, so just
+      // record which server it belongs to.
+      if (bootId) this.serverBootId = bootId;
+      return false;
+    }
+    if (bootId && bootId === this.serverBootId) {
+      this._settleOpen(this._heldOpenEvent);
+      return false;
+    }
+    const reason = `server instance changed (was ${this.serverBootId || 'unknown'}, now ${bootId || 'unknown'})`;
+    if (this._reloadStalePage(reason)) return true;
+    // Throttled — the server is restarting repeatedly, and one reload per
+    // restart is a reload loop. Drop this connection rather than carry on
+    // against a server whose workers know nothing of this page, and re-arm the
+    // backoff loop that keeps the disconnection overlay counting down, so the
+    // reload is retried as soon as the throttle allows one.
+    this._suppressNextCloseReconnect = true;
+    try {
+      this._transport?.close();
+    } catch {
+      /* already closing */
+    }
+    this.connected = false;
+    this._reconnect();
+    return true;
+  }
+
+  /**
+   * Reload because this page belongs to a server instance that is gone.
+   * Throttled, so a crash-looping server cannot put the viewer in a reload
+   * loop; the caller decides what to do with the link when it is refused.
+   * @param {string} reason - What made the page stale, for the log line.
+   * @returns {boolean} True if the reload was started.
+   * @private
+   */
+  _reloadStalePage(reason) {
+    this._reconnectPending = false;
+    this._heldOpenEvent = undefined;
+    if (!this._shouldReloadOnReconnect()) return false;
+    console.warn(`[ESSENTIAL] [WebSocket] Reloading: ${reason}`);
+    this._reloadPage();
+    return true;
+  }
+
+  /**
+   * Gate a reload-to-recover so a flapping connection can't trigger a reload
+   * storm. Returns true at most once per RELOAD_THROTTLE_MS (tracked in
    * sessionStorage so it survives the reload itself, per tab). When throttled,
-   * the caller skips the reload and lets the normal reconnect path re-sync.
-   * @returns {boolean} True if a reload-on-reconnect is allowed right now
+   * the caller keeps trying to re-establish the link instead.
+   * @returns {boolean} True if a reload-to-recover is allowed right now
    * @private
    */
   _shouldReloadOnReconnect() {

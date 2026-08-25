@@ -7,6 +7,7 @@ import wsService from './websocket.js';
 import workerManager from './worker-manager.js';
 import Session from '../model/session.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { isEngine } from '../../sdk/lib/client-role.js';
 
 /**
  * @typedef {object} ConnectionManagerOptions
@@ -86,20 +87,35 @@ class ConnectionManager {
 
     // Handle connection events
     const openCallback = /** @type {any} */ (async () => {
-      // Hide disconnection overlay (page will reload on reconnect, but good for consistency)
+      // The link is up, so whatever the overlay was reporting is over.
       if (this._disconnectionOverlay) this._disconnectionOverlay.hide();
 
       // Initialize session if not yet done
       if (!this._session) {
         await this._initializeSession();
-      } else {
-        // This 'open' is a reconnect (websocket.js only emits 'open'
-        // here when it chose NOT to reload). Catch up on any Yjs
-        // updates the workers sent while our socket was down, using a
-        // state-vector diff. Without this, a viewer that briefly lost
-        // its WS — routine over a remote tunnel — silently stops
-        // updating until the next full page reload.
-        workerManager.resyncReadyConversations();
+        return;
+      }
+      // This 'open' is a reconnect, and websocket.js only releases one for a
+      // link that came back to the SAME server instance — so everything this
+      // page holds is still valid, merely behind. Catch up on the two things
+      // that went stale while the socket was down and that nothing replays:
+      //   - each conversation's Yjs document, via a state-vector diff in both
+      //     directions (the worker's ops we missed, and the edits made here
+      //     that the transport discarded);
+      //   - the session manifest, whose conversation list, names, order and
+      //     metadata are maintained only by broadcasts that were delivered to
+      //     a closed socket.
+      workerManager.resyncReadyConversations();
+      // Viewer-only. The engine holds no session manifest worth refreshing (it
+      // renders no tab bar and auto-loads a conversation the moment a sync for
+      // it arrives), and re-driving its loads from here would have it eagerly
+      // load the whole project on every blip instead.
+      if (isEngine()) return;
+      workerManager.reinitPendingConversations();
+      try {
+        await this._session.refreshFromServer();
+      } catch (error) {
+        console.error('[ConnectionManager] Couldn\'t refresh the session after reconnect:', extractErrorMessage(error));
       }
     });
     this._wsCallbacks.set('open', openCallback);

@@ -10,6 +10,7 @@ of changes; this project follows semantic versioning.
 - `juggler run "<prompt>"` does one prompt unattended and exits with a status
 - MCP servers connect at startup, so the first turn of a session can use their tools
 - The extension guide now covers info cards, file viewers, settings and secrets
+- Lots of work on making remote connections over slow networks more efficient and robust
 
 ## [0.5.8] - 2026-08-24
 

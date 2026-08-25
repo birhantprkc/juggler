@@ -34,6 +34,11 @@ func TestStreamingNoDuplicateMessages(t *testing.T) {
 	w.processStreamChunk(StreamChunk{Type: "text", Content: " world"})
 	w.processStreamChunk(StreamChunk{Type: "text", Content: "!"})
 
+	// Content writes are throttled, so the document lags the accumulated text
+	// mid-block. This test is about message identity, not write cadence: read
+	// the content the way every production reader does, behind a flush.
+	w.flushPendingStreamWrites()
+
 	// Verify streaming created exactly ONE message
 	items := w.doc.GetItems()
 	if len(items) != 1 {
@@ -405,6 +410,65 @@ func TestStreamingNoBottleneck(t *testing.T) {
 	} else {
 		t.Logf("Worker finished %v after provider (within %v limit)", delay, maxDelay)
 	}
+}
+
+// TestStreamingThrottlesDocumentWrites pins the write throttle. A streamed
+// block's content is a plain string in a Y.Map, so each write re-encodes the
+// WHOLE message — one write per delta makes a turn cost O(n²) bytes of Yjs
+// sync, which is the lag felt on a slow or remote connection.
+//
+// Writes are counted by watching the item's stored content grow: the document
+// is the only observer of a write that a test can read without instrumenting
+// production code. The two obligations are counted together on purpose —
+// fewer writes is only correct if the message still arrives whole.
+func TestStreamingThrottlesDocumentWrites(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	fullText := generateLongText(500)
+	words := strings.Fields(fullText)
+
+	docWrites := 0
+	lastWrittenLen := -1
+	for i, word := range words {
+		tok := word
+		if i > 0 {
+			tok = " " + word
+		}
+		w.processStreamChunk(StreamChunk{Type: "text", Content: tok})
+
+		items := w.doc.GetItems()
+		if len(items) != 1 {
+			t.Fatalf("chunk %d: got %d items, want the single streamed assistant message", i, len(items))
+		}
+		if n := len(items[0].Content); n != lastWrittenLen {
+			docWrites++
+			lastWrittenLen = n
+		}
+	}
+
+	// The block ends here, exactly as a tool_use chunk or the end of the turn
+	// would end it, and that is what must flush whatever the throttle held.
+	w.finalizeStreaming()
+
+	items := w.doc.GetItems()
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].Content; got != fullText {
+		t.Errorf("streamed content is not intact: got %d bytes, want %d", len(got), len(fullText))
+	}
+
+	// The throttle spaces writes at max(24, len/16) new characters, so ~2.6k
+	// characters delivered in 500 chunks is a few dozen writes. A fifth of the
+	// chunk count is a deliberately loose ceiling: it fails loudly if the
+	// throttle is removed or bypassed, without pinning the exact constants.
+	maxWrites := len(words) / 5
+	if docWrites > maxWrites {
+		t.Errorf("%d document writes for %d chunks (%d chars) — want at most %d; the streaming write throttle is not being applied",
+			docWrites, len(words), len(fullText), maxWrites)
+	}
+	t.Logf("%d document writes for %d chunks (%d chars)", docWrites, len(words), len(fullText))
 }
 
 // TestStatusChunkSurfacesPhase verifies that a provider-emitted status chunk
