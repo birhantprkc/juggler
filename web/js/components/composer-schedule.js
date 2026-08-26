@@ -16,7 +16,10 @@
  *                run in progress. This one keeps out of the running turn
  *                entirely and opens a fresh one once it has finished.
  * Both are persisted on the thread's draft (an epoch-ms instant plus the mode),
- * so a reload or a conversation switch finds them again.
+ * so a reload or a conversation switch finds them again. The draft is where a
+ * schedule actually lives: a timer belongs to the message it will send, so
+ * emptying the box disarms it, and the composer's own copy is a cache that
+ * `reconcileScheduleWithDraft` re-derives whenever the two can have drifted.
  *
  * The composer only arms, cancels, and DISPLAYS the schedule; the firing itself
  * is owned by scheduledSendService, which sweeps every thread on an interval so
@@ -120,7 +123,9 @@ function startScheduledCountdown(composer) {
 function armScheduledSend(composer, targetAt, mode) {
   composer._scheduledSendAt = targetAt;
   composer._scheduledSendMode = mode;
-  composer._persistDraft();
+  // Authoritative: this IS the change to the schedule, so the save must write it
+  // rather than reconcile it away against a draft that predates it.
+  composer._persistDraft(undefined, { scheduleIsAuthoritative: true });
   if (mode === 'delay') startScheduledCountdown(composer);
   updateScheduleButton(composer);
   scheduledSendService.refreshArmedState();
@@ -143,7 +148,7 @@ export function clearScheduledSendState(composer, { persist = false } = {}) {
   stopScheduledCountdown(composer);
   composer._scheduledSendAt = null;
   composer._scheduledSendMode = 'delay';
-  if (persist) composer._persistDraft();
+  if (persist) composer._persistDraft(undefined, { scheduleIsAuthoritative: true });
   updateScheduleButton(composer);
   scheduledSendService.refreshArmedState();
 }
@@ -192,15 +197,46 @@ export function syncScheduledSendFromDraft(composer) {
 }
 
 /**
+ * Reconcile the composer's in-memory schedule with the one on its thread's
+ * draft, which is the real record — the composer's copy is only a cache of it.
+ *
+ * They diverge without this composer doing anything: another same-origin window
+ * fires the send and clears the draft, or this window's own sweep fires it from
+ * the persisted draft because no box was bound to that thread at the time. The
+ * stale copy is not merely cosmetic — the next draft save would write it back,
+ * re-arming a send whose instant has already been claimed, so no sweep would
+ * ever fire it and the box would sit armed for good.
+ *
+ * Cheap enough to call on every draft save: one draft read and two comparisons
+ * unless something actually moved.
+ * @param {any} composer - Composer instance
+ * @returns {boolean} True when the in-memory state had to change.
+ */
+export function reconcileScheduleWithDraft(composer) {
+  const draft = composer._messageThread ? composer._messageThread.draft : null;
+  const when = draft ? draft.scheduledSendAt : null;
+  const target = (typeof when === 'number' && Number.isFinite(when)) ? when : null;
+  const mode = (target !== null && draft) ? draft.scheduledSendMode : 'delay';
+  if (target === composer._scheduledSendAt
+      && (target === null || mode === composer._scheduledSendMode)) {
+    return false;
+  }
+  // Repaints this box only. The tab clock is painted from the drafts themselves
+  // by the service's own scan, which is where this call comes from — announcing
+  // from here would re-enter that scan for no new information.
+  syncScheduledSendFromDraft(composer);
+  return true;
+}
+
+/**
  * Reflect the current scheduled-send state on the clock button: an `armed`
  * class, a live countdown badge, and a tooltip naming the target time.
  *
- * An empty box overrides all of that: arming (or leaving armed) a delayed
- * send with nothing to send would silently fire nothing, so an empty box
- * disables the button and renders it un-armed — WITHOUT clearing
- * `_scheduledSendAt` or the persisted draft. A timer the user already set is
- * only hidden; the moment they type again this runs again and renders it
- * armed with its countdown intact.
+ * An empty box can't arm a send — one with nothing to send would fire nothing —
+ * so the button is disabled while the box is empty. It never shows an armed
+ * timer over an empty box, because emptying the box disarms the timer outright
+ * (see the composer's `_persistDraft`); there is no hidden-but-armed state left
+ * to render, and none to explain.
  * @param {any} composer - Composer instance
  */
 export function updateScheduleButton(composer) {
@@ -211,11 +247,7 @@ export function updateScheduleButton(composer) {
   /** @type {HTMLButtonElement} */ (btn).disabled = empty;
   if (composer._scheduledSendAt === null || empty) {
     btn.classList.remove('armed');
-    // When a timer is armed but hidden by an empty box, point the user at how
-    // to bring it back rather than implying nothing is set.
-    btn.setAttribute('title', (empty && composer._scheduledSendAt !== null)
-      ? 'Type a message to resume the timer'
-      : 'Send later');
+    btn.setAttribute('title', 'Send later');
     if (label) {
       /** @type {HTMLElement} */ (label).hidden = true;
       label.textContent = '';

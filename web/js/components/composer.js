@@ -51,6 +51,7 @@ import {
 import {
   clearScheduledSendState,
   fireScheduledSend as fireArmedSend,
+  reconcileScheduleWithDraft,
   stopScheduledCountdown,
   syncScheduledSendFromDraft,
   toggleSchedulePicker,
@@ -865,12 +866,45 @@ class Composer extends HTMLElement {
    * drop/remove) so they can never drift: a quit/restart restores the whole
    * draft or nothing. Attachment/text-file changes call this immediately; text
    * changes go through the debounce below.
+   *
+   * This is also where an armed scheduled send is kept honest, because it is the
+   * one place that writes the record the schedule lives on. Two rules, both
+   * "the timer belongs to the message":
+   *   • Emptying the box disarms it. A timer over an empty box would sit there
+   *     with nothing to send, lit on the tab and uncancellable from a button
+   *     that an empty box disables.
+   *   • A schedule cleared elsewhere stays cleared. Another window may have
+   *     fired this send between our saves; carrying our stale copy back into the
+   *     draft would re-arm an instant whose fire has already been claimed, so
+   *     nothing would ever fire it again.
+   * `scheduleIsAuthoritative` exempts the arm/cancel path itself, which calls
+   * this precisely BECAUSE the schedule changed and must not have it read back.
    * @param {string} [text] - Text to persist; defaults to the live textarea value.
+   * @param {{scheduleIsAuthoritative?: boolean}} [options]
    * @private
    */
-  _persistDraft(text) {
+  _persistDraft(text, { scheduleIsAuthoritative = false } = {}) {
     if (!this._messageThread) return;
     const value = (text !== undefined) ? text : this.getText();
+    let disarmed = false;
+    if (!scheduleIsAuthoritative) {
+      reconcileScheduleWithDraft(this);
+      // Emptiness is judged on what is about to be written, not on the live DOM:
+      // the debounced save that carries the user's deletion is the event that
+      // empties this draft, and `value` is that text.
+      const stillSendable = !!value.trim()
+        || this._resolvedAttachments().length > 0
+        || this._pendingTextFiles.length > 0;
+      if (!stillSendable && this._scheduledSendAt !== null) {
+        // Reset in memory only, so the write below carries the cleared schedule.
+        // Repainting and announcing have to wait until AFTER it: announcing runs
+        // the service's scan, which would read this still-armed draft and put
+        // the timer straight back.
+        disarmed = true;
+        this._scheduledSendAt = null;
+        this._scheduledSendMode = 'delay';
+      }
+    }
     this._messageThread.draft = {
       text: value,
       attachments: this._resolvedAttachments(),
@@ -884,6 +918,9 @@ class Composer extends HTMLElement {
       scheduledSendAt: this._scheduledSendAt,
       scheduledSendMode: this._scheduledSendMode
     };
+    // Safe now the cleared draft is written: stops the countdown, repaints the
+    // clock button, and drops the tab clock. The state it clears is already null.
+    if (disarmed) clearScheduledSendState(this);
   }
 
   /**
@@ -1803,6 +1840,18 @@ class Composer extends HTMLElement {
   /** Send the composed message now, ending an armed scheduled send. */
   fireScheduledSend() {
     fireArmedSend(this);
+  }
+
+  /**
+   * Re-derive the displayed scheduled send from the bound thread's draft.
+   * Public for the same reason as `fireScheduledSend`: scheduled-send-service.js
+   * calls it on the element each sweep, so a box whose schedule was fired or
+   * cancelled somewhere else — another window, or this window's own off-screen
+   * fire path — stops showing a timer that no longer exists, without the user
+   * having to touch the box first.
+   */
+  reconcileScheduledSend() {
+    reconcileScheduleWithDraft(this);
   }
 
   /**

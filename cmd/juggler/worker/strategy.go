@@ -546,6 +546,38 @@ func (w *ConversationWorker) finishStrategyRun() {
 	// "the run errored" is an answer it can act on. The child stays exactly
 	// as it is — stopped, summarised or not, and free to run again.
 	if !w.signalParentThread(completedThreadID) {
+		// The run that just ended may not be the whole story: sibling or cousin
+		// llmCreated runs can still be open, because this branch is also where a
+		// child nobody is waiting on ends — a strategy-created or compaction
+		// thread, neither of which is llmCreated. Publishing idle here would be a
+		// lie the document's readers act on: isTurnActive() reads exactly this
+		// field, so a turn-end scheduled send fires on it. Nothing would correct
+		// it until the reducer's next tick dispatched the remaining work, and that
+		// tick needs no user event to wait for — the window is as long as the
+		// sibling takes to be picked up.
+		//
+		// Hand the claim to an open sibling instead, exactly as signalParentThread
+		// hands it to a parent: the reducer's walk-down dispatches that run, and
+		// when the last one settles, its own finishStrategyRun publishes the
+		// resting idle. Guarded on completedThreadID != "" so this fires only for a
+		// sub-thread completion, mirroring the root-queue drain below; a root turn
+		// that rests with children still open is the awaiting_llm case handled at
+		// the top of this function.
+		if completedThreadID != "" {
+			if openID := w.doc.firstLiveThreadID(completedThreadID); openID != "" {
+				w.releaseLLM()
+				// If the claim can't be taken (another request already pending),
+				// fall through and publish idle rather than returning with no
+				// status written at all — a doc left mid-turn with nothing driving
+				// it never rests, and never fires the send this guard protects.
+				if w.requestLLM(openID) {
+					w.needsReconcile = true
+					w.drainReconcile()
+					return
+				}
+			}
+		}
+
 		w.sendStatus("idle", "")
 		w.CancelStaleToolActions()
 

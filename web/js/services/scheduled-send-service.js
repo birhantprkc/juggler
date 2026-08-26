@@ -241,6 +241,12 @@ class ScheduledSendService {
           // worker's own processingState (plus any frontend-driven tool action),
           // so it holds in a window that never started the turn.
           if (conversation.isTurnActive()) continue;
+          // processingState is a single status for the whole conversation, so it
+          // can read idle at a moment when work is demonstrably outstanding — a
+          // sub-thread whose run has not settled. Ask the document too: an
+          // unsettled child thread is a turn that has not ended, and firing into
+          // one queues the message into the run the user meant to stay out of.
+          if (typeof thread.hasBusyItems === 'function' && thread.hasBusyItems()) continue;
         } else if (when > now) {
           continue;
         }
@@ -248,6 +254,27 @@ class ScheduledSendService {
       }
     }
     this._publishArmed(armed);
+    this._reconcileBoundComposers();
+  }
+
+  /**
+   * Let every on-screen composer re-check its displayed timer against the draft
+   * it came from. A composer caches the schedule in memory, and the cache goes
+   * stale without that composer being involved at all: another same-origin
+   * window can fire the send (claims dedupe the fire, they don't notify), and so
+   * can this window's own off-screen path when the due thread had no box bound
+   * at the time. Left alone the box keeps a dead timer on show and writes it
+   * back on its next draft save.
+   *
+   * Walked per composer rather than per thread — there are a handful of boxes
+   * and potentially hundreds of threads, and each box knows its own.
+   * @private
+   */
+  _reconcileBoundComposers() {
+    for (const box of Array.from(document.querySelectorAll('composer-box'))) {
+      const reconcile = /** @type {any} */ (box).reconcileScheduledSend;
+      if (typeof reconcile === 'function') reconcile.call(box);
+    }
   }
 
   /**

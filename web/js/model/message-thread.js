@@ -238,8 +238,11 @@ export default class MessageThread {
     const rawWhen = value && value.scheduledSendAt;
     const scheduledSendAt = (typeof rawWhen === 'number' && Number.isFinite(rawWhen)) ? rawWhen : null;
     const scheduledSendMode = normalizeScheduledSendMode(scheduledSendAt, value && value.scheduledSendMode);
-    // A pending scheduled send keeps the draft alive even with no text/
-    // attachments — the timer must survive a reload to fire on an empty box.
+    // A pending scheduled send counts as content: a record carrying one is not
+    // empty, so storing it can never drop the timer on the floor. The composer
+    // disarms rather than leave a timer over an empty box, so this holds for
+    // writers that clear text and schedule in separate steps, not for a state
+    // the user can reach.
     // Paste blobs deliberately do NOT keep an otherwise-empty draft alive: they
     // are an append-only side table for the token characters, and with no text
     // there is no token left to resolve, so an empty box GCs them.

@@ -198,6 +198,38 @@ func (cd *ConversationDocument) liveThreadCount() int {
 	return n
 }
 
+// firstLiveThreadID returns the itemId of the first create_thread-spawned thread
+// anywhere in the document whose run is still open (llmCreated, unsettled), or ""
+// when every run has settled. Same walk and the same notion of live as
+// liveThreadCount; where that counts fan-out, this names one — the thread a caller
+// holding the LLM claim hands it to when the run it was driving has ended while the
+// document still has work in flight (finishStrategyRun's guard against publishing
+// idle early). "First" is document order, matching the reducer's walk-down dispatch
+// order, so the thread handed the claim is the one the reducer would reach anyway.
+//
+// excluding names a thread that can never be the answer — the caller's own
+// just-finished thread. A run that ends without settling (settleThreadRun writes
+// nothing when it has no open message to stamp) still reads as live here, and
+// handing the claim back to it would re-dispatch the run that just ended, forever.
+func (cd *ConversationDocument) firstLiveThreadID(excluding string) string {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	id := ""
+	walkThreads(cd.getItems(), func(m *ycrdt.YMap, _ *ycrdt.YArray, _ string) bool {
+		itemID, _ := m.Get("itemId").(string)
+		if itemID == "" || itemID == excluding {
+			return false
+		}
+		llmCreated, _ := m.Get("llmCreated").(bool)
+		if llmCreated && !threadRunSettledLocked(m) {
+			id = itemID
+			return true
+		}
+		return false
+	})
+	return id
+}
+
 // FindThreadIDForToolUseID returns the threadItemID of the thread containing
 // the given toolUseId, or "" if it lives in the root array.
 // Returns ("", false) if not found anywhere.
