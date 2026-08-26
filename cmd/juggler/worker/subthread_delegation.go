@@ -150,9 +150,10 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 	}
 
 	requestID := generateRequestID()
-	defer w.subthreadSpecReply.arm(requestID)()
+	reply, unregister := w.subthreadSpecReply.register(requestID)
+	defer unregister()
 	w.dispatchBuildSubthreadSpec(requestID, toolUseID, toolName, toolInput)
-	spec, ok := w.waitForSubthreadSpec(requestID, SubthreadSpecTimeout)
+	spec, ok := w.waitForSubthreadSpec(requestID, reply, SubthreadSpecTimeout)
 	if !ok || spec == nil {
 		return false // null spec / error / timeout → ordinary tool-action
 	}
@@ -238,7 +239,7 @@ func (w *ConversationWorker) dispatchBuildSubthreadSpec(requestID, toolUseID, to
 // — spec may be nil, meaning "run the tool normally" — and (nil, false) on
 // error/timeout/cancellation. Keeps servicing inbound + doc/batcher signals so
 // the single run goroutine never deadlocks (mirrors waitForStrategyHook).
-func (w *ConversationWorker) waitForSubthreadSpec(requestID string, timeout time.Duration) (*SubthreadSpec, bool) {
+func (w *ConversationWorker) waitForSubthreadSpec(requestID string, reply <-chan json.RawMessage, timeout time.Duration) (*SubthreadSpec, bool) {
 	match := func(raw json.RawMessage) (*SubthreadSpec, bool) {
 		var resp BuildSubthreadSpecResponse
 		if err := json.Unmarshal(raw, &resp); err != nil {
@@ -258,5 +259,5 @@ func (w *ConversationWorker) waitForSubthreadSpec(requestID string, timeout time
 		w.log.Info("[worker] build-subthread-spec timed out (req %s) — running tool inline", requestID)
 		w.tape.Record("build-subthread-spec-timeout", map[string]any{"req": requestID})
 	}
-	return waitForEngineReply(w, w.subthreadSpecReply, timeout, match, onTimeout)
+	return waitForEngineReply(w, reply, timeout, match, onTimeout)
 }

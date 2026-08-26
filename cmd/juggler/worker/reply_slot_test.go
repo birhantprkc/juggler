@@ -9,17 +9,10 @@ import (
 	"testing"
 )
 
-// TestEveryReplySlotRefusesWhatIsNotItsAnswer walks every request/reply
-// round-trip the worker actually has and holds each to the same rules.
-//
-// It iterates w.replySlots — the slots as constructed — rather than a list
-// written out here, so a round-trip added later is covered from the moment it
-// exists, with nobody having to know these rules to get them. That is the whole
-// point of the type: the reason a tool list once reached the wrong thread was
-// that each round-trip carried its own correlation, or didn't, and no test could
-// tell which. A slot built any other way than newReplySlot has a nil channel and
-// wedges on its first wait, so there is no quiet way out of the registry either.
-func TestEveryReplySlotRefusesWhatIsNotItsAnswer(t *testing.T) {
+// TestEveryReplySlotRoutesConcurrentRequestsByID walks every request/reply kind
+// and proves that two outstanding requests remain independent. The first answer
+// per id wins; unknown, malformed, duplicate, and late answers go nowhere.
+func TestEveryReplySlotRoutesConcurrentRequestsByID(t *testing.T) {
 	w := NewConversationWorker("conv-slots", "user:test")
 	t.Cleanup(func() { w.doc.Destroy() })
 
@@ -29,58 +22,59 @@ func TestEveryReplySlotRefusesWhatIsNotItsAnswer(t *testing.T) {
 
 	for _, slot := range w.replySlots {
 		t.Run(slot.name, func(t *testing.T) {
-			answer := func(requestID string) json.RawMessage {
-				payload, _ := json.Marshal(map[string]any{"requestId": requestID, "answers": slot.name})
+			answer := func(requestID, client string) json.RawMessage {
+				payload, _ := json.Marshal(map[string]any{
+					"requestId": requestID,
+					"answers":   slot.name,
+					"client":    client,
+				})
 				return payload
 			}
 
-			// Nothing was asked, so nothing is an answer.
-			slot.deliver(answer("req-1"))
-			if slot.held() != 0 {
-				t.Fatal("an unarmed slot took a reply")
-			}
+			first, unregisterFirst := slot.register("req-1")
+			defer unregisterFirst()
+			second, unregisterSecond := slot.register("req-2")
+			defer unregisterSecond()
 
-			disarm := slot.arm("req-1")
-
-			slot.deliver(answer("some-other-request"))
-			if slot.held() != 0 {
-				t.Fatal("took a reply belonging to another request")
-			}
-
+			slot.deliver(answer("unknown", "client"))
 			slot.deliver(json.RawMessage(`{"result":"no id here"}`))
 			if slot.held() != 0 {
-				t.Fatal("took a reply that names no request")
+				t.Fatal("accepted a reply that names no outstanding request")
 			}
 
-			slot.deliver(answer("req-1"))
-			if slot.held() != 1 {
-				t.Fatal("refused the answer to the request in flight")
+			// Deliver in the opposite order to registration. Each waiter must get
+			// only its own answer, never whichever payload happened to arrive first.
+			slot.deliver(answer("req-2", "first-client"))
+			slot.deliver(answer("req-1", "first-client"))
+			if got := requestIDFromReply(t, <-first); got != "req-1" {
+				t.Fatalf("first waiter received %q, want req-1", got)
+			}
+			if got := requestIDFromReply(t, <-second); got != "req-2" {
+				t.Fatalf("second waiter received %q, want req-2", got)
 			}
 
-			// The turn reads its answer; the other clients are still answering
-			// the same broadcast behind it.
-			<-slot.out()
-			slot.deliver(answer("req-1"))
+			slot.deliver(answer("req-1", "second-client"))
+			slot.deliver(answer("req-2", "second-client"))
 			if slot.held() != 0 {
-				t.Fatal("took a second answer to a request already answered")
+				t.Fatal("accepted a duplicate after the request's first answer")
 			}
 
-			disarm()
-			slot.deliver(answer("req-1"))
+			unregisterFirst()
+			slot.deliver(answer("req-1", "late-client"))
 			if slot.held() != 0 {
-				t.Fatal("took a reply after the round-trip had ended")
-			}
-
-			// A round-trip that ends without reading its answer leaves it behind.
-			// The next request must not read it as its own.
-			endWithoutReading := slot.arm("req-2")
-			slot.deliver(answer("req-2"))
-			endWithoutReading()
-
-			defer slot.arm("req-3")()
-			if slot.answersCurrent(<-slot.out()) {
-				t.Fatal("an abandoned round-trip's answer was accepted as the next request's")
+				t.Fatal("accepted a reply after its round-trip ended")
 			}
 		})
 	}
+}
+
+func requestIDFromReply(t *testing.T, payload json.RawMessage) string {
+	t.Helper()
+	var head struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(payload, &head); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	return head.RequestID
 }

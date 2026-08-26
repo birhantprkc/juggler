@@ -862,8 +862,17 @@ func (w *ConversationWorker) callLLM(request json.RawMessage) (*LLMResponse, err
 // worker operations. A nil sink discards stream chunks while preserving the
 // normal server/cache/provider/admission path and cancellation semantics.
 func (w *ConversationWorker) callLLMWithSink(request json.RawMessage, sink func(StreamChunk)) (*LLMResponse, error) {
+	turnID := generateRequestID()
+	w.turn.llmTurnID = turnID
+	correlatedSink := func(chunk StreamChunk) {
+		if sink != nil {
+			chunk.TurnID = turnID
+			sink(chunk)
+		}
+	}
+
 	if w.mock != nil {
-		return w.callLLMMockWithSink(sink)
+		return w.callLLMMockWithSink(turnID, correlatedSink)
 	}
 
 	if w.llmCallFunc == nil {
@@ -874,27 +883,17 @@ func (w *ConversationWorker) callLLMWithSink(request json.RawMessage, sink func(
 	// during a previous turn can't be misattributed to this call's error.
 	w.turn.wakeInterrupt.Store(false)
 
-	// Drain any stale response left by a previously-cancelled call.
-	select {
-	case <-w.turn.responseChan:
-	default:
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	w.turn.cancelLLM.Store(&cancel)
 	defer w.turn.cancelLLM.Store(nil)
 
 	go func() {
 		defer cancel()
-		response, err := w.llmCallFunc(ctx, request, func(chunk StreamChunk) {
-			if sink != nil {
-				sink(chunk)
-			}
-		})
-		w.deliverLLMResponse(response, err)
+		response, err := w.llmCallFunc(ctx, request, correlatedSink)
+		w.deliverLLMResponse(turnID, response, err)
 	}()
 
-	response, err := w.waitForLLMResponse(LLMTimeout)
+	response, err := w.waitForLLMResponse(turnID, LLMTimeout)
 	if err != nil {
 		var delivered *deliveredLLMError
 		if !errors.As(err, &delivered) {

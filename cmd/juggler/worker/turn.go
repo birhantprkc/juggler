@@ -52,7 +52,12 @@ type turnState struct {
 	// round-trip carries the id without each call site having to plumb it.
 	txnID string
 
-	// responseChan carries the completed provider call back to the wait loop.
+	// llmTurnID is a fresh generation for each provider attempt, including
+	// retries, hidden compaction calls, and mock calls. Shared chunk/result ingress
+	// is accepted only when it carries this generation.
+	llmTurnID string
+
+	// responseChan carries completed provider calls back to the wait loop.
 	responseChan chan llmCallResult
 
 	// cancelLLM is the cancel func for the in-flight LLM context, or nil when
@@ -85,9 +90,9 @@ type turnState struct {
 
 // newTurnState builds the worker's turn. The response channel is buffered by one
 // so a provider goroutine that finishes after its waiter has gone (cancellation,
-// timeout) can still deliver and exit rather than leaking; see
-// deliverLLMResponse for the drain that keeps a late delivery from being read as
-// the next turn's answer.
+// timeout) can still deliver and exit rather than leaking. Every result carries
+// its provider-attempt generation, so a later waiter consumes and rejects a late
+// result instead of mistaking it for its own answer.
 func newTurnState() *turnState {
 	return &turnState{responseChan: make(chan llmCallResult, 1)}
 }

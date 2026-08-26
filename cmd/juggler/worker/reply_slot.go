@@ -6,106 +6,185 @@ package worker
 
 import "encoding/json"
 
-// A replySlot is the worker's end of one request/reply round-trip with its
-// clients: the worker sends a request stamped with a fresh id, then blocks until
-// the answer to THAT request arrives.
+// A replySlot is the worker's request-id-keyed end of one kind of client
+// round-trip. More than one request of the same kind may be outstanding; each
+// registration owns its own one-deep answer channel.
 //
-// Every such round-trip needs the same things to be correct — the one-deep
-// channel the answer lands on, the id of the request in flight, the discipline
-// of taking exactly one answer to it, and the refusal to read an answer meant
-// for an earlier one. Held apart, as separate pieces of state in separate files,
-// a round-trip implementing only some of them is indistinguishable from one
-// implementing all of them, and the missing rules are invisible until a turn
-// runs on another thread's answer. Held together here, they are not something a
-// new round-trip has to remember: nothing outside this file can put a value on
-// the channel, and the one way in applies all of them.
+// Requests are broadcast, so several clients may answer one id. The registry
+// marks an id answered before handing its first reply to the waiter and refuses
+// every later answer. An answer for another id is never a duplicate: it belongs
+// to another thread's request and is routed only to that request's channel.
 //
-// Why they are needed at all: a worker request is BROADCAST, so every connected
-// client answers it. One answer belongs to the turn that asked; the rest are
-// duplicates that must go nowhere. The channel holds one, so an accepted
-// duplicate is read by the NEXT turn as its own answer — and that turn's real
-// answer, arriving to a full slot, is dropped. What these round-trips carry is
-// per-thread (a tool list is filtered through the strategy of the thread whose
-// turn it is), so a leftover is not a harmless copy of the same thing: it is a
-// different thread's answer, and the turn runs on it.
-//
-// arm, disarm, deliver and answersCurrent all run on the worker's single
-// event-loop goroutine — deliver from the inbound dispatch, the rest from the
-// run loop — so none of this state needs a lock. Nothing here is touched from
-// another goroutine, which is the property that keeps it that way.
+// The registry goroutine is the sole owner of the pending map. Callers and
+// inbound dispatch communicate with it through channels, preserving the worker's
+// actor architecture without adding a mutex.
 type replySlot struct {
-	// name is the request type this slot answers, for test diagnostics.
-	name string
-	ch   chan json.RawMessage
-	// armed is the id of the request in flight, "" between round-trips.
-	armed string
-	// answered records that the answer to the armed request has been taken, so
-	// the duplicates arriving behind it from the other clients are refused.
-	answered bool
+	name     string
+	commands chan any
+	done     <-chan struct{}
 }
 
-// newReplySlot builds the slot for a named request type and registers it on the
-// worker, so a test can enumerate every round-trip the worker actually has
-// rather than a list someone must remember to extend.
+type replyRegistration struct {
+	requestID string
+	response  chan json.RawMessage
+	cancel    chan struct{}
+}
+
+type registerReply struct {
+	requestID string
+	result    chan replyRegistration
+}
+
+type unregisterReply struct {
+	requestID string
+	cancel    chan struct{}
+}
+
+type deliverReply struct {
+	payload json.RawMessage
+}
+
+type injectReply struct {
+	payload json.RawMessage
+	abort   <-chan struct{}
+	result  chan bool
+}
+
+type countReplies struct {
+	result chan int
+}
+
+// newReplySlot builds and registers the registry for a named request type.
 func (w *ConversationWorker) newReplySlot(name string) *replySlot {
-	s := &replySlot{name: name, ch: make(chan json.RawMessage, 1)}
+	s := &replySlot{name: name, commands: make(chan any), done: w.done}
 	w.replySlots = append(w.replySlots, s)
+	go s.run()
 	return s
 }
 
-// arm opens the slot for the answer to requestID and returns the function that
-// shuts it again. Write it as `defer slot.arm(id)()` at the site that sends the
-// request, so the round-trip is bounded by the call that started it.
-func (s *replySlot) arm(requestID string) func() {
-	s.armed, s.answered = requestID, false
-	return func() { s.armed, s.answered = "", false }
+func (s *replySlot) run() {
+	type pendingReply struct {
+		response chan json.RawMessage
+		cancel   chan struct{}
+		answered bool
+	}
+	pending := make(map[string]pendingReply)
+	var registrationOrder []string
+	var injections []injectReply
+
+	for {
+		var command any
+		select {
+		case command = <-s.commands:
+		case <-s.done:
+			return
+		}
+		switch command := command.(type) {
+		case registerReply:
+			response := make(chan json.RawMessage, 1)
+			cancel := make(chan struct{})
+			entry := pendingReply{response: response, cancel: cancel}
+			if len(injections) > 0 {
+				injected := injections[0]
+				injections = injections[1:]
+				select {
+				case <-injected.abort:
+					injected.result <- false
+				default:
+					entry.answered = true
+					response <- injected.payload
+					injected.result <- true
+				}
+			}
+			pending[command.requestID] = entry
+			registrationOrder = append(registrationOrder, command.requestID)
+			command.result <- replyRegistration{requestID: command.requestID, response: response, cancel: cancel}
+		case unregisterReply:
+			if current, ok := pending[command.requestID]; ok && current.cancel == command.cancel {
+				delete(pending, command.requestID)
+				for i, requestID := range registrationOrder {
+					if requestID == command.requestID {
+						registrationOrder = append(registrationOrder[:i], registrationOrder[i+1:]...)
+						break
+					}
+				}
+			}
+		case deliverReply:
+			var head struct {
+				RequestID string `json:"requestId"`
+			}
+			if json.Unmarshal(command.payload, &head) != nil || head.RequestID == "" {
+				continue
+			}
+			current, ok := pending[head.RequestID]
+			if !ok || current.answered {
+				continue
+			}
+			current.answered = true
+			pending[head.RequestID] = current
+			current.response <- command.payload
+		case injectReply:
+			injected := false
+			for _, requestID := range registrationOrder {
+				current, ok := pending[requestID]
+				if !ok || current.answered {
+					continue
+				}
+				select {
+				case <-command.abort:
+					command.result <- false
+				default:
+					current.answered = true
+					pending[requestID] = current
+					current.response <- command.payload
+					command.result <- true
+				}
+				injected = true
+				break
+			}
+			if !injected {
+				injections = append(injections, command)
+			}
+		case countReplies:
+			count := 0
+			for _, current := range pending {
+				count += len(current.response)
+			}
+			command.result <- count
+		}
+	}
 }
 
-// deliver offers an inbound reply to the slot, which takes it only if it answers
-// the request in flight and that request has not been answered already.
-// Everything else is dropped in silence, because a duplicate from another client
-// is the ordinary case rather than a fault. A reply carrying no id cannot be
-// attributed to a request and is refused rather than guessed at — which is why
-// every client reply stamps the id it answers.
-func (s *replySlot) deliver(payload json.RawMessage) {
-	if s.armed == "" || s.answered {
-		return
-	}
-	var head struct {
-		RequestID string `json:"requestId"`
-	}
-	if json.Unmarshal(payload, &head) != nil || head.RequestID != s.armed {
-		return
-	}
+// register opens one request id and returns its private answer channel plus an
+// unregister function. The unregister is identity-checked, so a late cleanup
+// cannot remove a newer registration that happens to reuse an id.
+func (s *replySlot) register(requestID string) (<-chan json.RawMessage, func()) {
+	result := make(chan replyRegistration)
 	select {
-	case s.ch <- payload:
-		s.answered = true
-	default:
+	case s.commands <- registerReply{requestID: requestID, result: result}:
+	case <-s.done:
+		return nil, func() {}
+	}
+	var registration replyRegistration
+	select {
+	case registration = <-result:
+	case <-s.done:
+		return nil, func() {}
+	}
+	return registration.response, func() {
+		select {
+		case s.commands <- unregisterReply{requestID: registration.requestID, cancel: registration.cancel}:
+		case <-s.done:
+		}
 	}
 }
 
-// answersCurrent reports whether a payload just taken from the slot really
-// answers the request in flight, and a wait loop must ask before using one.
-//
-// Correlating on the way in is not sufficient by itself: a round-trip that ended
-// without reading its answer — cancelled mid-turn, or abandoned when the other
-// half of a paired wait timed out — leaves that answer in the channel, and the
-// next request's reader would otherwise take it. Rejecting it here costs that
-// reader one more turn of the loop and needs no clearing-up pass, which is worth
-// more than it sounds: a pass that discarded leftovers could not tell one from a
-// reply a test had queued in advance.
-//
-// A payload with no id is not attributable to any request. Only a test bypass
-// produces one, so it is allowed through rather than stranding those harnesses.
-func (s *replySlot) answersCurrent(payload json.RawMessage) bool {
-	var head struct {
-		RequestID string `json:"requestId"`
+// deliver routes an inbound reply to the registration named by requestId. The
+// registry accepts exactly one answer per id and silently drops malformed,
+// unknown, late, and duplicate replies.
+func (s *replySlot) deliver(payload json.RawMessage) {
+	select {
+	case s.commands <- deliverReply{payload: payload}:
+	case <-s.done:
 	}
-	if json.Unmarshal(payload, &head) != nil || head.RequestID == "" {
-		return true
-	}
-	return head.RequestID == s.armed
 }
-
-// out is the receive end, for a wait loop's select.
-func (s *replySlot) out() <-chan json.RawMessage { return s.ch }

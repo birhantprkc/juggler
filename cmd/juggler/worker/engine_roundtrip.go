@@ -10,17 +10,17 @@ import (
 )
 
 // Engine round-trip helpers. Several worker→engine requests (run-strategy-hook,
-// build-subthread-spec) share the same shape: arm the round-trip's replySlot,
-// send a targeted request stamped with that request ID, then block on the slot
-// while still servicing inbound messages and doc/batcher signals so the single
-// run goroutine never deadlocks. This file factors that shape out of the
+// build-subthread-spec) share the same shape: register a request id, send the
+// targeted request, then block on that request's private reply channel while
+// servicing inbound messages and doc/batcher signals so the single run
+// goroutine never deadlocks. This file factors that shape out of the
 // individual round-trip call sites.
 
 // waitForEngineReply blocks until match returns (value, true) for a reply on the
-// slot, or the timeout / worker shutdown fires. While waiting it keeps servicing
-// inbound worker messages (returning the zero value if a cancel arrives) and
-// doc/batcher signals. Correlation is not match's job — the slot has already
-// refused everything but this request's answer — so match decides only what the
+// reply channel, or the timeout / worker shutdown fires. While waiting it keeps
+// servicing inbound worker messages (returning the zero value if a cancel
+// arrives) and doc/batcher signals. Correlation is not match's job — the registry
+// has already refused everything but this request's answer — so match decides
 // answer MEANS: it returns (value, true) to stop and yield value, or (_, false)
 // to keep waiting (a reply it cannot read at all).
 //
@@ -28,7 +28,7 @@ import (
 // engine round-trips never did, unlike the LLM-call wait.
 func waitForEngineReply[T any](
 	w *ConversationWorker,
-	slot *replySlot,
+	reply <-chan json.RawMessage,
 	timeout time.Duration,
 	match func(json.RawMessage) (T, bool),
 	onTimeout func(),
@@ -39,10 +39,7 @@ func waitForEngineReply[T any](
 
 	for {
 		select {
-		case raw := <-slot.out():
-			if !slot.answersCurrent(raw) {
-				continue // an earlier round-trip's answer, left unread
-			}
+		case raw := <-reply:
 			if v, ok := match(raw); ok {
 				return v, true
 			}

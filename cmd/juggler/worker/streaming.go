@@ -64,43 +64,39 @@ func (w *ConversationWorker) queueStreamChunk(chunk StreamChunk) {
 	w.streamChunkChan <- chunk
 }
 
-// deliverLLMResponse hands a result to waitForLLMResponse via the 1-buffered
-// turn.responseChan. Resilient to the cancel-during-rerun race: if a previously-
-// cancelled LLM goroutine deposits a stale result after the new call has
-// drained the channel, our send would block forever (1-slot full) and the
-// new result would never reach waitForLLMResponse. The select drains any
-// stale value as a third case so the next iteration's send wins. No default
-// branch — we block until exactly one of {send, shutdown, drain} fires.
-func (w *ConversationWorker) deliverLLMResponse(response *LLMResponse, err error) {
-	result := llmCallResult{Response: response, Err: err}
-	for {
-		select {
-		case w.turn.responseChan <- result:
-			return
-		case <-w.done:
-			return
-		case <-w.turn.responseChan:
-			// Stale response from a previously-cancelled call. Loop and
-			// retry the send on the now-empty channel.
-		}
+// deliverLLMResponse hands one provider attempt's correlated result to the
+// shared turn channel. Stale results are consumed and rejected by waiters using
+// TurnID; delivery never drains another attempt's answer.
+func (w *ConversationWorker) deliverLLMResponse(turnID string, response *LLMResponse, err error) {
+	select {
+	case w.turn.responseChan <- llmCallResult{TurnID: turnID, Response: response, Err: err}:
+	case <-w.done:
 	}
 }
 
-// processCoalescedStreamChunks reads one chunk plus any additional buffered chunks,
-// coalesces adjacent text/thinking chunks, and processes them. This produces
-// at most one Yjs update per chunk type per call instead of one per token.
-func (w *ConversationWorker) processCoalescedStreamChunks(first StreamChunk) {
-	// Drain all currently buffered chunks
-	chunks := []StreamChunk{first}
+// processCoalescedStreamChunks reads one chunk plus any additional buffered chunks
+// for turnID, coalesces adjacent text/thinking chunks, and processes them. Chunks
+// from stale provider attempts are discarded rather than crossing generations.
+func (w *ConversationWorker) processCoalescedStreamChunks(turnID string, first StreamChunk) {
+	// Drain all currently buffered chunks, retaining only this attempt.
+	chunks := make([]StreamChunk, 0, 1)
+	if first.TurnID == turnID {
+		chunks = append(chunks, first)
+	}
 	for {
 		select {
 		case chunk := <-w.streamChunkChan:
-			chunks = append(chunks, chunk)
+			if chunk.TurnID == turnID {
+				chunks = append(chunks, chunk)
+			}
 		default:
 			goto process
 		}
 	}
 process:
+	if len(chunks) == 0 {
+		return
+	}
 	// Coalesce adjacent same-type text/thinking chunks
 	coalesced := make([]StreamChunk, 0, len(chunks))
 	current := chunks[0]
@@ -611,7 +607,7 @@ func (w *ConversationWorker) partialCancelledResponse() *LLMResponse {
 // waitForLLMResponse waits for an LLM response while processing stream chunks
 // and handling cancel messages. Stream chunks arrive on a dedicated channel
 // and are coalesced before Yjs updates to minimize transaction overhead.
-func (w *ConversationWorker) waitForLLMResponse(timeout time.Duration) (*LLMResponse, error) {
+func (w *ConversationWorker) waitForLLMResponse(turnID string, timeout time.Duration) (*LLMResponse, error) {
 	// Every exit from the wait — response, cancel, timeout, worker stop, panic —
 	// ends the streamed blocks, so the document catches up here rather than at
 	// each return. The flush is a direct write, never a wait on the throttle
@@ -624,11 +620,17 @@ func (w *ConversationWorker) waitForLLMResponse(timeout time.Duration) (*LLMResp
 	for {
 		select {
 		case result := <-w.turn.responseChan:
-			// Drain remaining stream chunks before returning
+			if result.TurnID != turnID {
+				continue
+			}
+			// Drain remaining chunks from this attempt before returning. Chunks
+			// carrying another generation are stale and are discarded.
 			for {
 				select {
 				case chunk := <-w.streamChunkChan:
-					w.processStreamChunk(chunk)
+					if chunk.TurnID == turnID {
+						w.processStreamChunk(chunk)
+					}
 				default:
 					if result.Err != nil {
 						return result.Response, &deliveredLLMError{err: result.Err}
@@ -637,7 +639,7 @@ func (w *ConversationWorker) waitForLLMResponse(timeout time.Duration) (*LLMResp
 				}
 			}
 		case chunk := <-w.streamChunkChan:
-			w.processCoalescedStreamChunks(chunk)
+			w.processCoalescedStreamChunks(turnID, chunk)
 		case msg := <-w.inbound:
 			w.handleMessageInWait(msg)
 			if w.loadState() == StateCancelling {
@@ -661,42 +663,30 @@ func (w *ConversationWorker) waitForLLMResponse(timeout time.Duration) (*LLMResp
 	}
 }
 
-// waitForContextAndTools waits for context and tools results concurrently.
-// Both requests should be sent before calling this. When needContext is false,
-// only the tools response is awaited (context result will be nil).
-func (w *ConversationWorker) waitForContextAndTools(timeout time.Duration, needContext bool) (json.RawMessage, json.RawMessage, error) {
+// waitForContextAndTools waits on the private channels registered for this pair.
+// A nil context channel means only the tools response is required.
+func (w *ConversationWorker) waitForContextAndTools(timeout time.Duration, contextReply, toolsReply <-chan json.RawMessage) (json.RawMessage, json.RawMessage, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	var contextResult, toolsResult json.RawMessage
+	needContext := contextReply != nil
 	if !needContext {
-		contextResult = []byte("null") // mark as "done" so we only wait for tools
+		contextResult = []byte("null")
 	}
 
 	for contextResult == nil || toolsResult == nil {
-		// Disable a channel case once its result is received by using a nil channel
-		// (selecting on nil blocks forever, effectively removing the case). This
-		// prevents the select from consuming a future pair's value when the goroutine
-		// has eagerly buffered the next ctx before tools from the current pair arrive.
-		var ctxChan <-chan json.RawMessage
-		if contextResult == nil {
-			ctxChan = w.contextReply.out()
+		ctxChan := contextReply
+		if contextResult != nil {
+			ctxChan = nil
 		}
-		var toolsChan <-chan json.RawMessage
-		if toolsResult == nil {
-			toolsChan = w.toolsReply.out()
+		toolsChan := toolsReply
+		if toolsResult != nil {
+			toolsChan = nil
 		}
 		select {
-		case result := <-ctxChan:
-			if !w.contextReply.answersCurrent(result) {
-				continue // an earlier round-trip's answer, left unread
-			}
-			contextResult = result
-		case result := <-toolsChan:
-			if !w.toolsReply.answersCurrent(result) {
-				continue
-			}
-			toolsResult = result
+		case contextResult = <-ctxChan:
+		case toolsResult = <-toolsChan:
 		case msg := <-w.inbound:
 			w.handleMessageInWait(msg)
 			if w.loadState() == StateCancelling {
@@ -831,7 +821,7 @@ func (w *ConversationWorker) waitForRetryDelay(d time.Duration) RetryWaitResult 
 			}
 
 		case chunk := <-w.streamChunkChan:
-			w.processCoalescedStreamChunks(chunk)
+			w.processCoalescedStreamChunks(w.turn.llmTurnID, chunk)
 		case <-w.doc.UpdateSignal():
 			w.batcher.Schedule()
 		case <-w.batcher.TimerChan():

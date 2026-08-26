@@ -6,32 +6,30 @@ package worker
 
 import "encoding/json"
 
-// inject hands a reply to the slot without arming it or matching an id — the one
-// way past the correlation, and it exists only in tests. Declaring it in a
-// _test.go file is the point: production code is compiled without it, so the
-// only route in there remains deliver, with every rule applied.
-//
-// It is here because most worker tests stand in for the clients by queueing the
-// answers a turn will need before that turn runs, rather than watching for the
-// request and answering the id it carries. Those harnesses have no id to quote,
-// so they cannot go through deliver. What they are doing is a bypass either way;
-// this makes it say so at the call site.
-//
-// Blocks until the slot takes the payload or abort closes, returning false in
-// the latter case. abort is explicit because a feeder goroutine must stop when
-// the thing that started it says so — for most that is the worker's done, but a
-// test that closes its own channel first would otherwise leak the goroutine past
-// the end of the test.
+// inject queues a test-only answer for the next registration. Production has no
+// uncorrelated route into a reply registry; older worker harnesses intentionally
+// use this bypass because they prepare replies before observing request ids.
 func (s *replySlot) inject(abort <-chan struct{}, payload json.RawMessage) bool {
+	result := make(chan bool, 1)
 	select {
-	case s.ch <- payload:
+	case s.commands <- injectReply{payload: payload, abort: abort, result: result}:
+		// Test harnesses deliberately queue replies before starting the request.
+		// Acceptance is therefore asynchronous: the registry will either hand this
+		// payload to the oldest unanswered registration or retain it for the next
+		// one. Waiting for that registration here would deadlock callers that queue
+		// context and tools replies serially before dispatching the turn.
 		return true
 	case <-abort:
+		return false
+	case <-s.done:
 		return false
 	}
 }
 
-// held reports how many replies the slot is holding: 0 or 1. A test asserts on
-// it to show that a reply was taken, or that nothing was left behind for the
-// next round-trip to find.
-func (s *replySlot) held() int { return len(s.ch) }
+// held reports the number of accepted replies currently buffered across all
+// registrations.
+func (s *replySlot) held() int {
+	result := make(chan int)
+	s.commands <- countReplies{result: result}
+	return <-result
+}

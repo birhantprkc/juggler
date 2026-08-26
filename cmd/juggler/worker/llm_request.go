@@ -40,7 +40,7 @@ type ContextResult struct {
 // in parallel, waiting for both responses in a single wait loop. This eliminates
 // the latency of sequential round-trips.
 func (w *ConversationWorker) requestContextAndTools() (*ContextResult, []ToolDefinition, error) {
-	threadItemID := w.getProcessingThreadItemID()
+	threadItemID := w.turn.thread.itemID
 	// Backstop: seed a sub-thread's starting context if it has none yet
 	// (created client-side via createSubThread, or a legacy doc from before
 	// seeds were cloned at creation). Idempotent — a no-op once the thread owns
@@ -54,9 +54,12 @@ func (w *ConversationWorker) requestContextAndTools() (*ContextResult, []ToolDef
 // the request that preceded a fold: standing context remains in the parent array
 // while conversational history lives in the folded thread.
 func (w *ConversationWorker) requestContextAndToolsForItemIDs(itemIDs []string) (*ContextResult, []ToolDefinition, error) {
+	var contextReply <-chan json.RawMessage
 	if len(itemIDs) > 0 {
 		rid := generateRequestID()
-		defer w.contextReply.arm(rid)()
+		var unregister func()
+		contextReply, unregister = w.contextReply.register(rid)
+		defer unregister()
 		w.sendRenderContextItemsRequest(rid, itemIDs)
 	}
 	// threadItemId scopes the reply to the thread whose turn this is, so the
@@ -65,15 +68,15 @@ func (w *ConversationWorker) requestContextAndToolsForItemIDs(itemIDs []string) 
 	// which is also why the slot accepts only this request's answer: another
 	// request's describes another thread's tools.
 	toolsRequestID := generateRequestID()
-	defer w.toolsReply.arm(toolsRequestID)()
+	toolsReply, unregisterTools := w.toolsReply.register(toolsRequestID)
+	defer unregisterTools()
 	w.send(map[string]any{
 		"type":         "request-tools",
 		"requestId":    toolsRequestID,
-		"threadItemId": w.getProcessingThreadItemID(),
+		"threadItemId": w.turn.thread.itemID,
 	})
 
-	needContext := len(itemIDs) > 0
-	ctxRaw, toolsRaw, err := w.waitForContextAndTools(ContextTimeout, needContext)
+	ctxRaw, toolsRaw, err := w.waitForContextAndTools(ContextTimeout, contextReply, toolsReply)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -352,6 +352,7 @@ type ProviderTurnMessage struct {
 
 // StreamChunk represents a streamed LLM content chunk
 type StreamChunk struct {
+	TurnID          string                    `json:"-"`                         // Provider-attempt generation; assigned by the worker sink
 	Type            provider.ContentBlockType `json:"type"`                      // Chunk type (text, thinking, tool_use, progress, usage, …)
 	ItemID          string                    `json:"itemId,omitempty"`          // Item ID for UI tracking
 	Content         string                    `json:"content,omitempty"`         // Content text
@@ -396,6 +397,7 @@ type StreamNotice struct {
 // goroutine. Err remains concrete so callers can inspect provider error types;
 // LLMResponse.Error remains available for scripted and wire-compatible failures.
 type llmCallResult struct {
+	TurnID   string
 	Response *LLMResponse
 	Err      error
 }

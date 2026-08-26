@@ -78,6 +78,31 @@ func offeredToolName(t *testing.T, w *ConversationWorker) string {
 	return tools[0].Name
 }
 
+func TestContextAndToolsUseTurnThreadNotProcessingState(t *testing.T) {
+	threadIDs := make(chan string, 1)
+	w, _ := newToolsRequestHarness(t, func(w *ConversationWorker, _ int, requestID string) {
+		sendToolsReply(w, requestID, "turn-tool")
+	})
+	w.SetCallback("thread-observer", func(b []byte) {
+		var request struct {
+			Type         string `json:"type"`
+			ThreadItemID string `json:"threadItemId"`
+		}
+		if json.Unmarshal(b, &request) == nil && request.Type == "request-tools" {
+			threadIDs <- request.ThreadItemID
+		}
+	})
+	w.turn.thread.itemID = "turn-thread"
+	w.doc.SetMetadata("processingState", map[string]any{"threadItemId": "other-thread"})
+
+	if _, _, err := w.requestContextAndTools(); err != nil {
+		t.Fatalf("requestContextAndTools: %v", err)
+	}
+	if got := <-threadIDs; got != "turn-thread" {
+		t.Fatalf("request-tools threadItemId = %q, want turn thread", got)
+	}
+}
+
 // TestLateToolsReplyIsNotServedToTheNextTurn pins the correlation that keeps one
 // turn's tool list out of the next turn's request.
 //
@@ -135,17 +160,18 @@ func TestOnlyOneToolsReplyPerRequestIsAccepted(t *testing.T) {
 		return payload
 	}
 
-	defer w.toolsReply.arm("the-in-flight-request")()
+	reply, unregister := w.toolsReply.register("the-in-flight-request")
+	defer unregister()
 	w.handleToolsResult(toolsResult("first-client"))
 	if w.toolsReply.held() != 1 {
 		t.Fatal("the first answer to the in-flight request must be accepted")
 	}
-	<-w.toolsReply.out() // the turn reads its answer
+	<-reply // the turn reads its answer
 
 	w.handleToolsResult(toolsResult("second-client"))
 
 	select {
-	case leftover := <-w.toolsReply.out():
+	case leftover := <-reply:
 		t.Fatalf("a second answer to the same request was accepted (%s); the next turn would read it as its own tool list", leftover)
 	default:
 	}

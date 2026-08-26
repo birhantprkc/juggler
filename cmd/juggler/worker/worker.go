@@ -896,7 +896,7 @@ func (w *ConversationWorker) run(ctx context.Context) {
 		case msg := <-w.inbound:
 			w.handleMessage(msg)
 		case chunk := <-w.streamChunkChan:
-			w.processCoalescedStreamChunks(chunk)
+			w.processCoalescedStreamChunks(w.turn.llmTurnID, chunk)
 			// A chunk reaching the run loop arrives after its turn's wait loop
 			// has returned, so nothing else will come back for it: there is no
 			// later write to fold it into and the throttle must not hold it.
