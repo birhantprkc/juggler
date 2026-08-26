@@ -13,62 +13,75 @@ import (
 // sub-thread. Clears both fields together so a stale itemsArray can never
 // outlive a cleared itemID.
 func (w *ConversationWorker) resetThreadContext() {
-	w.thread = threadContext{}
+	w.turn.thread = threadContext{}
 }
 
 // getTargetItems returns items from the thread's nested array when in thread mode,
 // or from the root items array otherwise.
 func (w *ConversationWorker) getTargetItems() []ConversationItem {
-	if w.thread.itemsArray != nil {
-		return w.doc.GetItemsFromArray(w.thread.itemsArray)
+	if w.turn.thread.itemsArray != nil {
+		return w.doc.GetItemsFromArray(w.turn.thread.itemsArray)
 	}
 	return w.doc.GetItems()
 }
 
 // getTargetItemsLength returns the item count from the thread or root items array.
 func (w *ConversationWorker) getTargetItemsLength() int {
-	if w.thread.itemsArray != nil {
-		return w.doc.GetItemsLengthFromArray(w.thread.itemsArray)
+	if w.turn.thread.itemsArray != nil {
+		return w.doc.GetItemsLengthFromArray(w.turn.thread.itemsArray)
 	}
 	return w.doc.GetItemsLength()
 }
 
-// insertTargetMessage inserts message(s) into the thread or root items array via
-// the OperationTracker (authorID origin) in both cases, so a sub-thread turn's
-// content is captured for undo/redo exactly like a root turn's. Turn boundaries
-// are the single global StopCapturing fired at every turn-idle (worker.go), so a
-// sub-thread run groups per turn the same way root does.
+// appendTargetMessage adds message(s) to the end of the thread or root items
+// array via the OperationTracker (authorID origin) in both cases, so a
+// sub-thread turn's content is captured for undo/redo exactly like a root turn's.
+// Turn boundaries are the single global StopCapturing fired at every turn-idle
+// (worker.go), so a sub-thread run groups per turn the same way root does.
 //
-// If a round-trip is in flight (currentTxnID != "") and the caller did not set
+// If a round-trip is in flight (turn.txnID != "") and the caller did not set
 // TransactionID explicitly, the current txn id is stamped onto each item — so
 // every item produced during a round-trip carries it.
-func (w *ConversationWorker) insertTargetMessage(index int, msgs ...ConversationItem) {
-	if w.currentTxnID != "" {
-		for i := range msgs {
-			if msgs[i].TransactionID == "" {
-				msgs[i].TransactionID = w.currentTxnID
-			}
-		}
-	}
-	if w.thread.itemsArray != nil {
-		w.tracker.InsertMessageIntoArray(w.thread.itemsArray, index, msgs...)
+//
+// Appending is the only insert this package does: there is deliberately no
+// insert-at-index spelling, because reading the end position and writing at it
+// are two ycrdtMu holds, and that lock promises only that no two y-crdt calls
+// overlap — never that a sequence of them is atomic. Asking for the end and
+// writing at the end is one question, so it takes one hold.
+func (w *ConversationWorker) appendTargetMessage(msgs ...ConversationItem) {
+	w.stampTxnID(msgs)
+	if w.turn.thread.itemsArray != nil {
+		w.tracker.AppendMessageIntoArray(w.turn.thread.itemsArray, msgs...)
 	} else {
-		w.tracker.InsertMessage(index, msgs...)
+		w.tracker.AppendMessage(msgs...)
+	}
+}
+
+// stampTxnID marks items produced during an in-flight round-trip with its id,
+// leaving any the caller set explicitly alone.
+func (w *ConversationWorker) stampTxnID(msgs []ConversationItem) {
+	if w.turn.txnID == "" {
+		return
+	}
+	for i := range msgs {
+		if msgs[i].TransactionID == "" {
+			msgs[i].TransactionID = w.turn.txnID
+		}
 	}
 }
 
 // getTargetItemsYArray returns the raw Y.Array for the current target (thread or root).
 func (w *ConversationWorker) getTargetItemsYArray() *ycrdt.YArray {
-	if w.thread.itemsArray != nil {
-		return w.thread.itemsArray
+	if w.turn.thread.itemsArray != nil {
+		return w.turn.thread.itemsArray
 	}
 	return w.doc.getItems()
 }
 
 // updateTargetItemByID updates an item field in the thread or root items array.
 func (w *ConversationWorker) updateTargetItemByID(itemID, field string, value any) error {
-	if w.thread.itemsArray != nil {
-		return w.doc.UpdateItemByIDInArray(w.thread.itemsArray, itemID, field, value)
+	if w.turn.thread.itemsArray != nil {
+		return w.doc.UpdateItemByIDInArray(w.turn.thread.itemsArray, itemID, field, value)
 	}
 	return w.doc.UpdateItemByID(itemID, field, value)
 }

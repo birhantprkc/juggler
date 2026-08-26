@@ -65,7 +65,7 @@ func TestManagerSystemDidWakeFansOut(t *testing.T) {
 
 	cancelled := make(chan struct{})
 	var cf context.CancelFunc = func() { close(cancelled) }
-	w.llmCancelFunc.Store(&cf)
+	w.turn.cancelLLM.Store(&cf)
 
 	manager.SystemDidWake()
 

@@ -73,7 +73,7 @@ func (w *ConversationWorker) injectSkillPreloads(names []string) {
 	for _, name := range names {
 		item := newSkillToolAction(name)
 		w.log.Tool("skill", name)
-		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.appendTargetMessage(item)
 	}
 }
 

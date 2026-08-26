@@ -191,8 +191,8 @@ func TestWorkerActivatesSubThreadStrategy(t *testing.T) {
 
 	// Drive activation as the worker would at the start of the sub-thread's turn
 	// (handleSendMessage sets both the itemID and the thread's items array).
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	w.maybeActivateStrategy()
 
 	hooks := drainHooks(t, hookCh, 1)

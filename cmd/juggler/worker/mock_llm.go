@@ -52,7 +52,7 @@ func (w *ConversationWorker) setMockResponses(r []MockResponse) {
 
 // popMockResponse returns and removes the next mock response from the queue,
 // delivering it through the same async channel path the real provider uses
-// (`queueStreamChunk` for each block, then `llmResponseChan` for the final
+// (`queueStreamChunk` for each block, then `turn.responseChan` for the final
 // response, all from a worker goroutine; the caller awaits via
 // `waitForLLMResponse`). This means a single mock turn produces multiple
 // run-loop iterations — exactly like the real Anthropic stream — so reducer
@@ -89,7 +89,7 @@ func (w *ConversationWorker) popMockResponse(sink func(StreamChunk)) (*LLMRespon
 
 	// Drain any stale response left by a previously-cancelled call.
 	select {
-	case <-w.llmResponseChan:
+	case <-w.turn.responseChan:
 	default:
 	}
 
@@ -133,7 +133,7 @@ func (w *ConversationWorker) popMockResponse(sink func(StreamChunk)) (*LLMRespon
 // response, or an error if responses are exhausted.
 func (w *ConversationWorker) callLLMMockWithSink(sink func(StreamChunk)) (*LLMResponse, error) {
 	if len(w.mock.responses) > 0 {
-		jlog.Info("[callLLM] conv=%s thread=%q mockLeft=%d", w.conversationID, w.thread.itemID, len(w.mock.responses))
+		jlog.Info("[callLLM] conv=%s thread=%q mockLeft=%d", w.conversationID, w.turn.thread.itemID, len(w.mock.responses))
 		response, err := w.popMockResponse(sink)
 		if err != nil {
 			return nil, err
@@ -146,6 +146,6 @@ func (w *ConversationWorker) callLLMMockWithSink(sink func(StreamChunk)) (*LLMRe
 		}
 		return response, nil
 	}
-	jlog.Error("[callLLM] conv=%s thread=%q EXHAUSTED", w.conversationID, w.thread.itemID)
+	jlog.Error("[callLLM] conv=%s thread=%q EXHAUSTED", w.conversationID, w.turn.thread.itemID)
 	return nil, fmt.Errorf("mock responses exhausted - test may have more LLM calls than expected")
 }

@@ -328,8 +328,8 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	w.suppressReconcileAfterHistoryNavUntilMs = 0
 
 	// Set thread context for this request. Validate the target thread BEFORE
-	// mutating w.thread, so an early return (missing items array) can't leave
-	// w.thread pointing at a half-set thread from this request.
+	// mutating w.turn.thread, so an early return (missing items array) can't leave
+	// w.turn.thread pointing at a half-set thread from this request.
 	//
 	// A thread carrying a result is NOT refused. A result is the thread's current
 	// summary, not a terminal state: a thread is running or it is stopped, and a
@@ -342,11 +342,11 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 			w.sendError(fmt.Sprintf("Thread item %s not found", msg.ThreadItemID), "")
 			return
 		}
-		w.thread.itemID = msg.ThreadItemID
-		w.thread.itemsArray = itemsArray
+		w.turn.thread.itemID = msg.ThreadItemID
+		w.turn.thread.itemsArray = itemsArray
 	} else {
-		w.thread.itemID = ""
-		w.thread.itemsArray = nil
+		w.turn.thread.itemID = ""
+		w.turn.thread.itemsArray = nil
 	}
 
 	// Add user message to doc before signaling the reducer.
@@ -541,7 +541,7 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 			if content == "" {
 				continue
 			}
-			w.tracker.InsertMessage(w.doc.GetItemsLength(), ConversationItem{
+			w.tracker.AppendMessage(ConversationItem{
 				Type:   ItemTypeThinking,
 				ItemID: generateItemID(),
 				// The block's signature / reasoning item id, kept so the next
@@ -556,7 +556,7 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 			if len(block.Metadata) == 0 {
 				continue
 			}
-			w.tracker.InsertMessage(w.doc.GetItemsLength(), ConversationItem{
+			w.tracker.AppendMessage(ConversationItem{
 				Type:          ItemTypeProviderState,
 				ItemID:        generateItemID(),
 				ProviderData:  block.Metadata,
@@ -568,7 +568,7 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 			if block.Content == "" {
 				continue
 			}
-			w.tracker.InsertMessage(w.doc.GetItemsLength(), ConversationItem{
+			w.tracker.AppendMessage(ConversationItem{
 				Type:          ItemTypeAssistant,
 				ItemID:        generateItemID(),
 				Content:       block.Content,
@@ -628,13 +628,13 @@ func (w *ConversationWorker) handleCancel() {
 
 	if w.loadState() == StateProcessing {
 		w.storeState(StateCancelling)
-		if p := w.llmCancelFunc.Swap(nil); p != nil {
+		if p := w.turn.cancelLLM.Swap(nil); p != nil {
 			(*p)()
 		}
 		// Release any parked provider subprocess that the ctx-cancel above
 		// doesn't reach. Critical for claudecode: between the CLI emitting
 		// stop_reason=tool_use and the strategy loop transitioning to
-		// AwaitingLLM, state is still Processing but llmCancelFunc has
+		// AwaitingLLM, state is still Processing but turn.cancelLLM has
 		// already been nil'd by callLLM's defer. Without this call the
 		// claudecode session is left in memory with pendingToolIDs set and
 		// a live CLI parked inside MCP — the next user message would route
@@ -1195,7 +1195,7 @@ func (w *ConversationWorker) handleMoveContextItemMessageToEnd(payload json.RawM
 		if item.ItemID == msg.ItemID && item.Type != ItemTypeToolAction {
 			// Remove from current position and add to end
 			w.doc.DeleteMessages([]int{i})
-			w.tracker.InsertMessage(w.doc.GetItemsLength(), item)
+			w.tracker.AppendMessage(item)
 			break
 		}
 	}
@@ -1232,7 +1232,7 @@ func (w *ConversationWorker) handleUpdateAndRepositionToolActions(payload json.R
 				item.Data = newData
 				// Remove and re-add at end
 				w.doc.DeleteMessages([]int{i})
-				w.tracker.InsertMessage(w.doc.GetItemsLength(), item)
+				w.tracker.AppendMessage(item)
 				// Refresh items since we modified the array
 				items = w.doc.GetItems()
 			}

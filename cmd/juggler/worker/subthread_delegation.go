@@ -33,17 +33,27 @@ import (
 // degrades to normal execution rather than wedging the turn.
 var SubthreadSpecTimeout = 10 * time.Second
 
-// collectDelegatingToolNames returns the set of tool names in tools whose
-// definition carries DelegatesToSubthread. Rebuilt each turn from the tools the
+// delegatingTool is what the worker remembers about one offered tool that may
+// delegate: everything the delegation decision needs that the tool_use block
+// itself does not carry.
+type delegatingTool struct {
+	// readOnlySubthread mirrors ToolDefinition.ReadOnlySubthread, carried here so
+	// tryDelegateTool can stamp it onto the child at creation. The definition it
+	// came from belongs to the turn; the child outlives the turn.
+	readOnlySubthread bool
+}
+
+// collectDelegatingTools returns the tools in tools whose definition carries
+// DelegatesToSubthread, keyed by name. Rebuilt each turn from the tools the
 // engine offered.
-func collectDelegatingToolNames(tools []ToolDefinition) map[string]bool {
-	var set map[string]bool
+func collectDelegatingTools(tools []ToolDefinition) map[string]delegatingTool {
+	var set map[string]delegatingTool
 	for _, t := range tools {
 		if t.DelegatesToSubthread {
 			if set == nil {
-				set = make(map[string]bool)
+				set = make(map[string]delegatingTool)
 			}
-			set[t.Name] = true
+			set[t.Name] = delegatingTool{readOnlySubthread: t.ReadOnlySubthread}
 		}
 	}
 	return set
@@ -66,6 +76,28 @@ func (w *ConversationWorker) withinDelegatedThread(threadItemID string) bool {
 		}
 	}
 	return false
+}
+
+// threadIsReadOnly reports whether threadItemID was spawned by a tool declaring
+// readOnlySubthread — the standing claim that this child's run changes nothing
+// outside its own transcript.
+//
+// Asked of the thread rather than of the tool because the two are separated in
+// time: the tool definition that carried the claim belongs to the turn that made
+// the call, and the child is dispatched later, from the reducer, with that turn
+// long finished. Only the stamp survives the gap.
+func (w *ConversationWorker) threadIsReadOnly(threadItemID string) bool {
+	if threadItemID == "" {
+		return false // root: the user's own thread, and nobody's claim to make
+	}
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	m := findThreadYMap(w.doc.getItems(), threadItemID)
+	if m == nil {
+		return false
+	}
+	readOnly, _ := m.Get("readOnly").(bool)
+	return readOnly
 }
 
 // delegationBlocked answers, for one thread, the single question "may a tool
@@ -103,7 +135,8 @@ func (w *ConversationWorker) delegationBlocked(threadItemID string) string {
 // tool doesn't delegate, we're at the nesting-depth cap, the engine returned a
 // null spec (conditional "not this time"), or the round-trip failed/timed out.
 func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInput json.RawMessage) bool {
-	if !w.turnDelegatingTools[toolName] {
+	tool, delegates := w.turn.delegatingTools[toolName]
+	if !delegates {
 		return false
 	}
 
@@ -111,7 +144,7 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 	// tools that HAVE an ordinary way reach this: filterToolsForThread withheld
 	// the RequiresDelegation ones from this turn's list on the same answer,
 	// because for those "run it inline" is not a degradation but a failure.
-	if reason := w.delegationBlocked(w.thread.itemID); reason != "" {
+	if reason := w.delegationBlocked(w.turn.thread.itemID); reason != "" {
 		w.log.Info("[worker] %s may delegate but is %s — running inline", toolName, reason)
 		return false
 	}
@@ -147,6 +180,9 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 		ToolInput:   toolInput,
 		SessionName: session.name,
 		Delegated:   true,
+		// The item's standing claim about what this child may do, carried from
+		// the turn's tool definition onto the thread itself.
+		ReadOnly: tool.readOnlySubthread,
 		// A spec may pin the child's strategy and model. Empty leaves the child
 		// inheriting from the parent, which is what every delegating tool that
 		// does not own a strategy of its own gets.

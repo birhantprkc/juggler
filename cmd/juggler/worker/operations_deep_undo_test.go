@@ -54,8 +54,8 @@ func assertRecoveryFoldUndoableAtDepth(t *testing.T, depth int) {
 		t.Fatalf("could not build depth-%d thread", depth)
 	}
 	w.doc.InsertMessageIntoArray(arr, 0, recoveryTestItems()...)
-	w.thread.itemID = innerID
-	w.thread.itemsArray = arr
+	w.turn.thread.itemID = innerID
+	w.turn.thread.itemsArray = arr
 	w.tracker.EnsureInitialized()
 
 	pinned := &ModelConfig{Provider: "original", Model: "rejected"}

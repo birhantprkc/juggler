@@ -127,7 +127,7 @@ func (w *ConversationWorker) buildLLMRequestWithIntent(ctxResult *ContextResult,
 		// threadId scopes the provider session to THIS thread: each thread gets
 		// its own CLI/session instance (own warm prompt cache), so switching
 		// threads no longer thrashes one shared session. "" = the root thread.
-		"threadId":      w.thread.itemID,
+		"threadId":      w.turn.thread.itemID,
 		"modelConfig":   w.resolveModelConfig(),
 		"transactionId": txnID,
 	}
@@ -183,7 +183,7 @@ func (w *ConversationWorker) buildLLMRequestWithIntent(ctxResult *ContextResult,
 // applied, so a child whose strategy went missing would otherwise be handed a
 // tool that could only fail.
 func (w *ConversationWorker) filterToolsForThread(tools []ToolDefinition) []ToolDefinition {
-	return w.filterToolsForThreadID(tools, w.thread.itemID)
+	return w.filterToolsForThreadID(tools, w.turn.thread.itemID)
 }
 
 func (w *ConversationWorker) filterToolsForThreadID(tools []ToolDefinition, threadID string) []ToolDefinition {
@@ -216,10 +216,10 @@ func (w *ConversationWorker) filterToolsForThreadID(tools []ToolDefinition, thre
 // Returns nil for the normal case (no force, or the forced tool isn't offered),
 // leaving tool selection to the model.
 func (w *ConversationWorker) resolveForcedToolChoice(tools []ToolDefinition) map[string]any {
-	if w.thread.itemID == "" {
+	if w.turn.thread.itemID == "" {
 		return nil
 	}
-	threadYMap := w.doc.GetThreadYMap(w.thread.itemID)
+	threadYMap := w.doc.GetThreadYMap(w.turn.thread.itemID)
 	if threadYMap == nil {
 		return nil
 	}
@@ -853,7 +853,7 @@ func (w *ConversationWorker) buildMessagesFromItems(items []ConversationItem, st
 		// Batch the run of tool-actions belonging to the SAME turn and emit
 		// every tool_use before any tool_result. A turn with parallel tool
 		// calls stores them as consecutive tool-action items sharing one
-		// TransactionID (insertTargetMessage stamps currentTxnID on all items
+		// TransactionID (insertTargetMessage stamps turn.txnID on all items
 		// produced during a round-trip). Interleaving use/result/use/result
 		// makes transformMessages flush a separate assistant message per
 		// tool-result — and DeepSeek's thinking mode only carries

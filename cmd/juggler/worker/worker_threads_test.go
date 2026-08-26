@@ -160,7 +160,7 @@ func TestCreateThreadInjectsToolUseInParentMessages(t *testing.T) {
 
 	w.runStrategyLoop("Hello", false)
 
-	// After the loop, w.thread is reset, so buildMessages walks the root
+	// After the loop, w.turn.thread is reset, so buildMessages walks the root
 	// items — exactly the view the parent LLM would see on continuation.
 	messages := w.buildMessages(nil)
 
@@ -315,8 +315,8 @@ func TestThreadDepthCap(t *testing.T) {
 	deepest := levels[len(levels)-1] // depth == maxThreadDepth
 
 	// A spawn from the deepest thread is refused.
-	w.thread.itemID = deepest.id
-	w.thread.itemsArray = deepest.arr
+	w.turn.thread.itemID = deepest.id
+	w.turn.thread.itemsArray = deepest.arr
 	beforeLen := w.doc.GetItemsLengthFromArray(deepest.arr)
 	input := json.RawMessage(`{"goal":"too deep","prompt":"spawn another"}`)
 	if err := w.executeCreateThread("tu-deep", "create_thread", input); err != nil {
@@ -363,8 +363,8 @@ func TestThreadDepthCap(t *testing.T) {
 
 	// A spawn one level above the cap (depth maxThreadDepth-1) is allowed.
 	parent := levels[len(levels)-2]
-	w.thread.itemID = parent.id
-	w.thread.itemsArray = parent.arr
+	w.turn.thread.itemID = parent.id
+	w.turn.thread.itemsArray = parent.arr
 	if err := w.executeCreateThread("tu-ok", "create_thread", json.RawMessage(`{"goal":"ok","prompt":"work"}`)); err != nil {
 		t.Fatalf("executeCreateThread (below cap) returned error: %v", err)
 	}
@@ -647,10 +647,10 @@ func TestThreadErrorReturnsToParent(t *testing.T) {
 
 	// After thread error:
 	// 1. Thread context should be reset
-	if w.thread.itemID != "" {
-		t.Errorf("thread.itemID should be empty after thread error, got %q", w.thread.itemID)
+	if w.turn.thread.itemID != "" {
+		t.Errorf("thread.itemID should be empty after thread error, got %q", w.turn.thread.itemID)
 	}
-	if w.thread.itemsArray != nil {
+	if w.turn.thread.itemsArray != nil {
 		t.Error("thread.itemsArray should be nil after thread error")
 	}
 
@@ -824,10 +824,10 @@ func TestSettledRunSummarisesThread(t *testing.T) {
 	defer w.doc.Destroy()
 
 	threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", userMessage: "do it"})
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	reply := func(text string) {
-		w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		w.appendTargetMessage(ConversationItem{
 			Type: ItemTypeAssistant, ItemID: generateItemID(), Content: text,
 		})
 	}
@@ -840,7 +840,7 @@ func TestSettledRunSummarisesThread(t *testing.T) {
 	}
 
 	// Run again: the newer reply is the summary.
-	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+	w.appendTargetMessage(ConversationItem{
 		Type: ItemTypeUser, ItemID: generateItemID(), Content: "one more thing",
 	})
 	reply("Did the extra thing.")
@@ -851,10 +851,10 @@ func TestSettledRunSummarisesThread(t *testing.T) {
 
 	// A run that did not come to rest returns its outcome to the caller and
 	// leaves the summary standing rather than passing failure off as a result.
-	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+	w.appendTargetMessage(ConversationItem{
 		Type: ItemTypeUser, ItemID: generateItemID(), Content: "and again",
 	})
-	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+	w.appendTargetMessage(ConversationItem{
 		Type: ItemTypeError, ItemID: generateItemID(), Content: "invalid request: bad model",
 	})
 	w.settleThreadRun(threadID, false)
@@ -904,7 +904,7 @@ func TestFilterToolsForThread(t *testing.T) {
 	t.Run("root scope keeps create_thread", func(t *testing.T) {
 		w := NewConversationWorker("test-conv", "user:test")
 		defer w.doc.Destroy()
-		w.thread.itemID = "" // root
+		w.turn.thread.itemID = "" // root
 		got := w.filterToolsForThread(tools)
 		if !hasCreateThread(got) {
 			t.Error("root scope must keep create_thread")
@@ -916,7 +916,7 @@ func TestFilterToolsForThread(t *testing.T) {
 		w := NewConversationWorker("test-conv", "user:test")
 		defer w.doc.Destroy()
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "Delegated", llmCreated: true})
-		w.thread.itemID = threadID
+		w.turn.thread.itemID = threadID
 		got := w.filterToolsForThread(tools)
 		if hasCreateThread(got) {
 			t.Error("llm-created thread must not see create_thread")
@@ -928,7 +928,7 @@ func TestFilterToolsForThread(t *testing.T) {
 		w := NewConversationWorker("test-conv", "user:test")
 		defer w.doc.Destroy()
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "User", canSpawnThreads: true})
-		w.thread.itemID = threadID
+		w.turn.thread.itemID = threadID
 		got := w.filterToolsForThread(tools)
 		if !hasCreateThread(got) {
 			t.Error("canSpawnThreads thread must keep create_thread")
@@ -944,7 +944,7 @@ func TestFilterToolsForThread(t *testing.T) {
 		defer w.doc.Destroy()
 		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "Compaction fold"})
-		w.thread.itemID = threadID
+		w.turn.thread.itemID = threadID
 
 		raw := w.buildLLMRequest(&ContextResult{SystemPrompt: "sys"}, tools, "txn-compact", false)
 		var req struct {

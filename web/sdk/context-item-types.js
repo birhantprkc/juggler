@@ -296,6 +296,22 @@
  *   that could only fail. Leave it false for a tool that delegates
  *   conditionally and has a real inline path (as `WebFetch` does: a `prompt`
  *   delegates, no `prompt` fetches the page here). Default: false
+ * @property {boolean} [readOnlySubthread] - If true, the child this item's tool
+ *   delegates to changes nothing outside its own transcript: it reads, and it
+ *   reports. Only meaningful alongside `delegatesToSubthread: true`.
+ *
+ *   This is a claim about the CHILD, not about the tool — the tool call itself
+ *   is always a read from the caller's side, so that is not what is being
+ *   declared. What it licenses is scheduling: a batch of read-only children
+ *   spawned by one turn may run alongside each other, where any other child
+ *   waits its turn, because two agents that only read cannot land on each
+ *   other's work.
+ *
+ *   Nothing verifies it. The honest test is whether you would be content for two
+ *   of these to run at the same moment against the same working tree — so set it
+ *   for an investigator pinned to a read-only strategy, and leave it off
+ *   anything that edits files, or whose child may itself be steered into
+ *   editing. Default: false
  * @property {boolean} [workerManaged] - **@internal** (outside the engineApi compat promise). If true, execution is handled by the Go worker
  *   server-side instead of the engine browser. The plugin still provides
  *   `getToolDefinitions()`, `getStatusUI()`, and `getBadgeOptions()`, but

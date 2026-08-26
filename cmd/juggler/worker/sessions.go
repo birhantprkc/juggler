@@ -392,11 +392,10 @@ func (w *ConversationWorker) resumeSession(threadItemID string, opts CreateThrea
 	// for can settle.
 	if opts.ToolUseID != "" {
 		target := w.getTargetItemsYArray()
-		w.tracker.InsertMessageIntoArray(target, w.getTargetItemsLength(),
-			aliasItem(threadItemID, goal, sessionName, opts))
+		w.tracker.AppendMessageIntoArray(target, aliasItem(threadItemID, goal, sessionName, opts))
 	}
 
-	w.tracker.InsertMessageIntoArray(nested, w.doc.GetItemsLengthFromArray(nested), invocationMessage(opts))
+	w.tracker.AppendMessageIntoArray(nested, invocationMessage(opts))
 	w.tracker.MergeFromIndex(mergeFrom)
 	w.tracker.StopCapturing()
 

@@ -49,8 +49,8 @@ func canonicalWorkerToolName(name string) string {
 func (w *ConversationWorker) toolWasOfferedThisTurn(name string) bool {
 	// Direct tests and helper paths can process a response without making an LLM
 	// request first. Only enforce admission when an authoritative snapshot exists.
-	if w.turnOfferedTools == nil {
+	if w.turn.offeredTools == nil {
 		return true
 	}
-	return w.turnOfferedTools[canonicalWorkerToolName(name)]
+	return w.turn.offeredTools[canonicalWorkerToolName(name)]
 }

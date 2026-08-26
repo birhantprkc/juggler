@@ -147,7 +147,7 @@ func (w *ConversationWorker) promotePendingItems(threadItemID string) int {
 
 	if threadItemID == "" {
 		// Root: tracker insert keeps undo parity with a normal user send.
-		w.tracker.InsertMessage(w.doc.GetItemsLength(), pending...)
+		w.tracker.AppendMessage(pending...)
 	} else {
 		target := w.doc.GetThreadItemsArray(threadItemID)
 		if target == nil {
@@ -156,7 +156,7 @@ func (w *ConversationWorker) promotePendingItems(threadItemID string) int {
 		// Tracker insert, mirroring the root branch: a promotion into a sub-thread
 		// is undoable just like a normal user send. (The pending-queue clear above
 		// stays untracked — queuing is not conversation content.)
-		w.tracker.InsertMessageIntoArray(target, w.doc.GetItemsLengthFromArray(target), pending...)
+		w.tracker.AppendMessageIntoArray(target, pending...)
 	}
 
 	w.tape.Record("pending-promote", map[string]any{

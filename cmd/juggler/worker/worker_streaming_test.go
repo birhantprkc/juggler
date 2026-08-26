@@ -59,7 +59,7 @@ func TestStreamingNoDuplicateMessages(t *testing.T) {
 	w.processStreamChunk(StreamChunk{Type: "tool_use"})
 
 	// Verify streaming was finalized (IDs cleared)
-	if w.streaming.textMsgID != "" {
+	if w.turn.streaming.textMsgID != "" {
 		t.Error("streaming.textMsgID should be cleared after tool_use chunk")
 	}
 
@@ -127,7 +127,7 @@ func TestMultipleTextBlocksNoDuplicates(t *testing.T) {
 	w.processStreamChunk(StreamChunk{Type: "tool_use"})
 
 	// Verify streaming was finalized
-	if w.streaming.textMsgID != "" {
+	if w.turn.streaming.textMsgID != "" {
 		t.Error("streaming.textMsgID should be cleared after tool_use")
 	}
 
@@ -203,7 +203,7 @@ func TestStreamingUpdatesCorrectMessage(t *testing.T) {
 
 	// Turn 1: Simulate previous conversation ending with text streaming
 	// The key is that streaming.textMsgID is still set (not cleared)
-	w.streaming.textMsgID = "old-assistant-msg"
+	w.turn.streaming.textMsgID = "old-assistant-msg"
 	oldAssistantMsg := ConversationItem{
 		Type:    ItemTypeAssistant,
 		ItemID:  "old-assistant-msg",

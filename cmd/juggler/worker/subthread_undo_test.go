@@ -23,13 +23,13 @@ func TestSubthreadTurnContentIsUndoable(t *testing.T) {
 	if arr == nil {
 		t.Fatal("could not build sub-thread")
 	}
-	w.thread.itemID = innerID
-	w.thread.itemsArray = arr
+	w.turn.thread.itemID = innerID
+	w.turn.thread.itemsArray = arr
 
 	// A sub-thread turn: an assistant message plus a tool-action, appended the way
 	// the strategy loop does. Both land in one undo group (the assistant is
 	// non-auxiliary and opens the group; the auxiliary tool-action attaches).
-	w.insertTargetMessage(w.getTargetItemsLength(),
+	w.appendTargetMessage(
 		ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "working on it"},
 		ConversationItem{Type: ItemTypeToolAction, ItemID: "ta-1", ToolUseID: "tu-1", ToolName: "read_file", State: StateCompleted},
 	)

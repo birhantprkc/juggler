@@ -13,6 +13,9 @@
  * @property {boolean} [requiresDelegation] - Stamped from the owning item's
  *   MANIFEST; tells the worker this tool has no inline path, so it must be
  *   withheld on turns that cannot delegate rather than offered and failed.
+ * @property {boolean} [readOnlySubthread] - Stamped from the owning item's
+ *   MANIFEST; tells the worker the child this tool delegates to only reads, so
+ *   it may be dispatched alongside its siblings rather than after them.
  */
 
 // ============================================================================
@@ -123,15 +126,23 @@ export async function generateToolDefinitions() {
       const itemTools = itemClass.getToolDefinitions();
       // Carry the item's subthread-delegation capability onto each of its tool
       // definitions so the worker knows which tools MAY delegate (the per-call
-      // decision still runs in buildSubthreadSpec) and which have no inline path
-      // at all, so must be withheld where delegation is impossible rather than
-      // offered and failed. Both are manifest-level properties of the owning
-      // item, so they apply to every tool it declares.
+      // decision still runs in buildSubthreadSpec), which have no inline path at
+      // all, so must be withheld where delegation is impossible rather than
+      // offered and failed, and which spawn a child that only reads, so may run
+      // beside its siblings. All three are manifest-level properties of the
+      // owning item, so they apply to every tool it declares.
       if (itemClass.MANIFEST?.delegatesToSubthread) {
         for (const t of itemTools) {
           t.delegatesToSubthread = true;
           if (itemClass.MANIFEST?.requiresDelegation) t.requiresDelegation = true;
+          if (itemClass.MANIFEST?.readOnlySubthread) t.readOnlySubthread = true;
         }
+      } else if (itemClass.MANIFEST?.readOnlySubthread) {
+        // A claim about a child this item never spawns. Nothing downstream will
+        // ever read it, so the item silently loses whatever the author thought
+        // they were declaring — the one manifest mistake here that has no
+        // symptom at all.
+        console.error(`[tools] ${itemClass.MANIFEST.id} declares readOnlySubthread without delegatesToSubthread; it delegates to no subthread, so the flag does nothing.`);
       }
       tools.push(...itemTools);
     }

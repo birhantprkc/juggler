@@ -122,6 +122,9 @@
  * @property {boolean} [requiresDelegation] - Stamped from the owning item's
  *   MANIFEST: this tool has no inline path, so it is unusable on any turn that
  *   cannot delegate (inside a delegated thread, or at the thread-nesting cap)
+ * @property {boolean} [readOnlySubthread] - Stamped from the owning item's
+ *   MANIFEST: the child this tool delegates to only reads, so it may run
+ *   alongside its siblings rather than after them
  */
 
 /**

@@ -86,7 +86,7 @@ func (w *ConversationWorker) dispatchStrategyHook(requestID, hook, strategyID, t
 // buildMessages assembles the turn, so the worker blocks until the engine has
 // run the hook AND the injected items have synced back into the worker's doc.
 func (w *ConversationWorker) maybeActivateStrategy() {
-	threadID := w.thread.itemID
+	threadID := w.turn.thread.itemID
 	current := w.doc.ResolveEffectiveStrategyID(threadID)
 	// Normalize the activation marker the same way the resolver normalizes the
 	// effective strategy: an unset marker means "still on the default baseline".
@@ -120,7 +120,7 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 		if g.Content == "" {
 			continue
 		}
-		w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+		w.appendTargetMessage(ConversationItem{
 			Type:      ItemTypeSystemReminder,
 			ItemID:    generateItemID(),
 			Content:   g.Content,
@@ -138,11 +138,11 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 // reconcile path, so there is nothing to wait for. The engine is up (it just
 // ran the turn) and load-aware on its side for the rare cold-restart case.
 func (w *ConversationWorker) dispatchWorkerIdleHook() {
-	// onWorkerIdle fires when the ROOT conversation goes idle (w.thread already
+	// onWorkerIdle fires when the ROOT conversation goes idle (w.turn.thread already
 	// cleared), so this resolves the root strategy; routing through the per-thread
 	// resolver keeps every worker strategy read on one path.
-	strategyID := w.doc.ResolveEffectiveStrategyID(w.thread.itemID)
-	w.dispatchStrategyHook("", "onWorkerIdle", strategyID, w.thread.itemID, "")
+	strategyID := w.doc.ResolveEffectiveStrategyID(w.turn.thread.itemID)
+	w.dispatchStrategyHook("", "onWorkerIdle", strategyID, w.turn.thread.itemID, "")
 }
 
 // dispatchContextTurnHook fires the context-item onTurnEnd hook on the engine

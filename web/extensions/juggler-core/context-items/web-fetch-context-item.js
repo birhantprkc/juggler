@@ -53,6 +53,12 @@ class WebFetchContextItem extends ContextItem {
     // the page never enters the caller's context. Without a `prompt`,
     // buildSubthreadSpec returns null and the ordinary execute() runs, returning
     // the raw content.
+    //
+    // Deliberately NOT readOnlySubthread, despite a child whose whole brief is
+    // to answer from text it was handed: the spec pins no strategy, so the child
+    // inherits the caller's — up to and including one that writes without
+    // asking. The claim is about what the child MAY do, not what its prompt asks
+    // of it, and this one cannot be made truthfully.
     delegatesToSubthread: true
   };
 

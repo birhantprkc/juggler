@@ -8,7 +8,7 @@ import (
 func TestUnofferedToolCallProducesPairedRefusal(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.turnOfferedTools = map[string]bool{"read": true}
+	w.turn.offeredTools = map[string]bool{"read": true}
 
 	shouldContinue, err := w.processLLMResponse(&LLMResponse{
 		Blocks: []LLMResponseBlock{{
@@ -66,7 +66,7 @@ func TestOfferedToolAliasesRemainAccepted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.called, func(t *testing.T) {
-			w := &ConversationWorker{turnOfferedTools: collectOfferedToolNames([]ToolDefinition{{Name: tc.offered}})}
+			w := &ConversationWorker{turn: &turnState{offeredTools: collectOfferedToolNames([]ToolDefinition{{Name: tc.offered}})}}
 			if got := w.toolWasOfferedThisTurn(tc.called); got != tc.want {
 				t.Fatalf("offered %q, called %q: got %v, want %v", tc.offered, tc.called, got, tc.want)
 			}
@@ -75,10 +75,10 @@ func TestOfferedToolAliasesRemainAccepted(t *testing.T) {
 }
 
 func TestOfferedToolSnapshotNilAndEmpty(t *testing.T) {
-	if !(&ConversationWorker{}).toolWasOfferedThisTurn("Research") {
+	if !(&ConversationWorker{turn: newTurnState()}).toolWasOfferedThisTurn("Research") {
 		t.Fatal("nil snapshot must preserve direct response-processing paths")
 	}
-	if (&ConversationWorker{turnOfferedTools: map[string]bool{}}).toolWasOfferedThisTurn("Research") {
+	if (&ConversationWorker{turn: &turnState{offeredTools: map[string]bool{}}}).toolWasOfferedThisTurn("Research") {
 		t.Fatal("authoritative empty snapshot must reject every call")
 	}
 }

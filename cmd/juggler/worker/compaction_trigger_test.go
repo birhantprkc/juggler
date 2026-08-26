@@ -196,8 +196,8 @@ func TestContextRecoveryFoldsSubthreadPrefix(t *testing.T) {
 	}, w.doc.authorID)
 	arr := w.doc.GetThreadItemsArray(threadID)
 	w.doc.InsertMessageIntoArray(arr, 0, recoveryTestItems()...)
-	w.thread.itemID = threadID
-	w.thread.itemsArray = arr
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = arr
 
 	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
 	calls, stub := newRecoveryStub(t, pinned)
@@ -264,8 +264,8 @@ func TestContextRecoveryKeepsDelegatedRunRecords(t *testing.T) {
 		})
 	}
 	w.doc.InsertMessageIntoArray(arr, 0, nested...)
-	w.thread.itemID = threadID
-	w.thread.itemsArray = arr
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = arr
 
 	wireBefore, err := json.Marshal(appendThreadMessages(nil, w.doc.GetItems()[0], w.doc.GetItems()))
 	if err != nil {

@@ -221,15 +221,15 @@ func (w *ConversationWorker) handleInjectThreadMessage(payload json.RawMessage) 
 	}
 
 	// Idle: target the thread and add the message, then drive a fresh turn.
-	w.thread.itemID = msg.ThreadItemID
+	w.turn.thread.itemID = msg.ThreadItemID
 	if msg.ThreadItemID != "" {
 		itemsArray := w.doc.GetThreadItemsArray(msg.ThreadItemID)
 		if itemsArray == nil {
 			return // thread vanished — drop the event
 		}
-		w.thread.itemsArray = itemsArray
+		w.turn.thread.itemsArray = itemsArray
 	} else {
-		w.thread.itemsArray = nil
+		w.turn.thread.itemsArray = nil
 	}
 	w.addUserMessage(input)
 	w.batcher.Flush()

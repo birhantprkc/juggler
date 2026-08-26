@@ -35,8 +35,8 @@ func TestModernFoldRecognizedWithoutPromptMarker(t *testing.T) {
 		thread.Set("items", items)
 		w.doc.ensureItems().Push(ycrdt.ArrayAny{thread})
 	}, w.doc.authorID)
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 
 	if !w.isBoundedCompactionThread(threadID) {
 		t.Fatal("expected a boundedCompaction-marked thread to be recognized without legacy markers")

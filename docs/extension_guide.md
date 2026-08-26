@@ -478,6 +478,26 @@ Three parts:
 3. **The spec pins it.** Set `spec.strategyId` to the strategy's id, guarded on
    `strategyRegistry.has(id)` so a user who disabled the extension's strategies
    gets a working (if unfiltered) child instead of a broken tool.
+4. **The item says whether the child only reads.** Set
+   `readOnlySubthread: true` in the MANIFEST when the child changes nothing
+   outside its own transcript. When one turn spawns a batch of children, the
+   flagged ones run alongside each other and the rest run one after another — so
+   an investigation that fans out four ways costs one wait rather than four.
+
+   It is a claim about the **child**, not about the tool. Every delegating tool
+   call is a read from the caller's side, so that is not what is being declared;
+   what is being declared is what the agent at the other end may do. Nothing
+   verifies it, and the cost of overstating it is siblings racing. The honest
+   test: would you be content for two of these to run at the same moment against
+   the same working tree?
+
+   `Explore` and `Research` set it — each is pinned to a strategy that admits
+   only reading, and refuses anything the permission system would have put to a
+   human. `WebFetch` does not, and it is worth understanding why: its child's
+   entire brief is to answer from page text it was handed, but its spec pins no
+   strategy, so the child inherits the caller's — possibly one that writes
+   without asking. A child whose prompt is read-only but whose **tools** are not
+   is not a read-only subthread.
 
 **The no-hang invariant.** A sub-agent thread has no human in it, and
 `APPROVAL_POLICY` has no DENY. So a tool the strategy exposes but cannot

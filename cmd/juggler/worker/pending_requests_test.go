@@ -350,7 +350,7 @@ func TestPendingRequests_CancelClaimedDoesNotCancelUnrelatedProcessing(t *testin
 
 	llmCancelled := false
 	var cancel context.CancelFunc = func() { llmCancelled = true }
-	w.llmCancelFunc.Store(&cancel)
+	w.turn.cancelLLM.Store(&cancel)
 	providerReleased := false
 	w.SetCancelLLMSession(func(_ string) { providerReleased = true })
 	w.doc.SetMetadata("processingState", map[string]any{

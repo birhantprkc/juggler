@@ -34,7 +34,12 @@ class ExploreAgentContextItem extends SubagentContextItem {
     // on turns that cannot delegate, leaving the inherited execute() reachable
     // only when the engine round-trip itself fails.
     delegatesToSubthread: true,
-    requiresDelegation: true
+    requiresDelegation: true,
+    // The child investigates and reports; its strategy admits reads, meta tools
+    // and `bash`, and refuses anything the permission system would have asked a
+    // human about. So two Explore runs cannot land on each other's work and may
+    // run side by side.
+    readOnlySubthread: true
   };
 
   /** @type {import('./subagents/subagent-item.js').SubagentDescriptor} */

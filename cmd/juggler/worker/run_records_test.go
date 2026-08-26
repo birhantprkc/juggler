@@ -235,9 +235,9 @@ func TestSettleThreadRunStampsTheInvocationMessage(t *testing.T) {
 	defer w.doc.Destroy()
 
 	threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", userMessage: "do it"})
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "All done.",
 	})
 
@@ -251,7 +251,7 @@ func TestSettleThreadRunStampsTheInvocationMessage(t *testing.T) {
 	}
 
 	// A second settle finds no open run and leaves the record alone.
-	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+	w.appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "Something later.",
 	})
 	w.settleThreadRun(threadID, false)
@@ -285,9 +285,9 @@ func TestRunWithNothingToStampStillReports(t *testing.T) {
 			defer w.doc.Destroy()
 
 			threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", llmCreated: true})
-			w.thread.itemID = threadID
-			w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-			w.insertTargetMessage(w.getTargetItemsLength(), tc.trailing)
+			w.turn.thread.itemID = threadID
+			w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+			w.appendTargetMessage(tc.trailing)
 
 			w.settleThreadRun(threadID, tc.cancelled)
 
@@ -341,11 +341,11 @@ func TestInterjectedMessageDoesNotStrandTheRun(t *testing.T) {
 	defer w.doc.Destroy()
 
 	threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", llmCreated: true, delegated: true})
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 
 	appendItem := func(item ConversationItem) {
-		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.appendTargetMessage(item)
 	}
 	appendItem(ConversationItem{
 		Type: ItemTypeUser, ItemID: "inv-1", Content: "find the auth bug",
@@ -453,10 +453,10 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createThread: %v", err)
 	}
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	appendItem := func(item ConversationItem) {
-		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.appendTargetMessage(item)
 	}
 
 	// The call is stopped partway.
@@ -491,8 +491,8 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 
 	// A human types into the child. The work is under way again, so the call
 	// waits on it rather than standing on the answer it already gave.
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	appendItem(ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "keep going"})
 
 	settled, _, content = callWire()
@@ -504,8 +504,8 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 	}
 
 	// And when that run rests, its reply is what the call returns.
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	appendItem(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "It is in the token refresh."})
 	w.settleThreadRun(threadID, false)
 
@@ -545,9 +545,9 @@ func TestAnsweredCallGetsAReceiptNotARewrite(t *testing.T) {
 		t.Fatalf("createThread: %v", err)
 	}
 	inChild := func(item ConversationItem) {
-		w.thread.itemID = threadID
-		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.turn.thread.itemID = threadID
+		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.appendTargetMessage(item)
 		w.resetThreadContext()
 	}
 
@@ -618,9 +618,9 @@ func TestUnreadReceiptCoalescesTheNextRun(t *testing.T) {
 		t.Fatalf("createThread: %v", err)
 	}
 	inChild := func(item ConversationItem) {
-		w.thread.itemID = threadID
-		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.turn.thread.itemID = threadID
+		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.appendTargetMessage(item)
 		w.resetThreadContext()
 	}
 
@@ -683,9 +683,9 @@ func TestIdenticalRunGetsNoSecondReceipt(t *testing.T) {
 		t.Fatalf("createThread: %v", err)
 	}
 	inChild := func(item ConversationItem) {
-		w.thread.itemID = threadID
-		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.turn.thread.itemID = threadID
+		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.appendTargetMessage(item)
 		w.resetThreadContext()
 	}
 
@@ -739,9 +739,9 @@ func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createThread: %v", err)
 	}
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go.",
 	})
 	w.settleThreadRun(threadID, false)
@@ -753,8 +753,8 @@ func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("resumeSession: %v", err)
 	}
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	w.settleThreadRun(threadID, true)
 
 	items := w.doc.GetItems()
@@ -785,9 +785,9 @@ func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 		t.Errorf("the earlier call moved:\nbefore %s\nafter  %s", beforeJSON, afterJSON)
 	}
 
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: "a-2", Content: "The router calls it.",
 	})
 	w.settleThreadRun(threadID, false)
@@ -821,9 +821,9 @@ func TestContinueAfterTheCallWasAnsweredLeavesItAlone(t *testing.T) {
 		t.Fatalf("createThread: %v", err)
 	}
 	inChild := func(item ConversationItem) {
-		w.thread.itemID = threadID
-		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-		w.insertTargetMessage(w.getTargetItemsLength(), item)
+		w.turn.thread.itemID = threadID
+		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.appendTargetMessage(item)
 		w.resetThreadContext()
 	}
 

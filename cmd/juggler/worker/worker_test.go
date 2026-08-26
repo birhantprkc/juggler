@@ -807,7 +807,7 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		defer w.doc.Destroy()
 		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "Forced", forceTool: "submit_answer"})
-		w.thread.itemID = threadID
+		w.turn.thread.itemID = threadID
 
 		raw := w.buildLLMRequest(ctxResult, tools, "txn-1", false)
 		var req map[string]any
@@ -828,7 +828,7 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		defer w.doc.Destroy()
 		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "Plain"})
-		w.thread.itemID = threadID
+		w.turn.thread.itemID = threadID
 
 		raw := w.buildLLMRequest(ctxResult, tools, "txn-2", false)
 		var req map[string]any

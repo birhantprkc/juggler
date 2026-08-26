@@ -291,19 +291,10 @@ type ConversationWorker struct {
 	done     chan struct{}
 	stopped  chan struct{}
 
-	llmResponseChan chan llmCallResult
-	// turnOfferedTools is the canonical set of tool names sent to the provider
-	// for the response being processed. Nil means no authoritative turn snapshot
-	// exists; an empty map means the provider was offered no tools.
-	turnOfferedTools map[string]bool
-	// turnDelegatingTools is the subset of turnOfferedTools whose item declared
-	// delegatesToSubthread. Rebuilt each iteration and read by
-	// processLLMResponse to route a call to the delegation path.
-	turnDelegatingTools map[string]bool
-
-	// Streaming state — accumulated chunks for the current turn's text/thinking messages.
-	// Zeroed by finalizeStreaming at iteration boundaries.
-	streaming streamingState
+	// turn is the run currently in flight: the thread it writes to, the
+	// round-trip in flight, and the accumulators that outlive a chunk but not the
+	// run. Always non-nil; see turn.go for why these live together.
+	turn *turnState
 
 	// Per-client outbound callbacks. Owned by a dedicated actor goroutine
 	// (see callback_registry.go); all ops route through callbacks.ch.
@@ -332,16 +323,6 @@ type ConversationWorker struct {
 	// tests / the test-pool, where the engine is an always-on iframe — treated
 	// as always-ready.
 	engineReadyFunc func() bool
-	// llmCancelFunc is the cancel func for the in-flight LLM context, or nil
-	// when idle. Stored via atomic.Pointer so Stop() (running on a different
-	// goroutine) can safely cancel the call to unblock waitForLLMResponse.
-	llmCancelFunc atomic.Pointer[context.CancelFunc]
-	// llmWakeInterrupt is set by interruptInFlightLLMForWake just before it
-	// cancels the in-flight LLM context on a system-wake. callLLM reads it
-	// when its call returns an error so it can surface a clear "interrupted
-	// by sleep" message instead of the raw "context canceled". Reset at the
-	// top of every callLLM so it never leaks into an unrelated turn.
-	llmWakeInterrupt atomic.Bool
 	// cancelLLMSession releases provider-side LLM session state for this
 	// conversation, preserving the resume token + prompt-cache anchor so the
 	// next turn stays warm. Today only the claudecode provider has anything to
@@ -372,30 +353,6 @@ type ConversationWorker struct {
 
 	// Whether handleInit has been called at least once (first-init vs reconnect)
 	initialized bool
-
-	// Thread execution context — set when running inside a child thread; zero value = root conversation.
-	thread threadContext
-
-	// currentTxnID is the transaction id of the LLM round-trip currently in
-	// flight (set at iteration start, cleared on iteration end). insertTargetMessage
-	// stamps this onto every newly inserted item, so any item produced during
-	// the round-trip carries the id without each call site having to plumb it.
-	currentTxnID string
-
-	// llmRetrySpent accumulates wall-clock time spent on FAILED LLM attempts in
-	// the current retry sequence. Counting attempts alone bounds nothing: a
-	// single attempt can cost minutes when the provider runs its own internal
-	// backoff before reporting, so MaxLLMRetries alone permitted a quarter-hour
-	// of silence. It lives on the worker rather than in callLLMWithRetry so a
-	// strategy-loop restart resumes the same budget instead of beginning a
-	// fresh ladder. Reset by resetLLMRetryBudget when the sequence ends.
-	llmRetrySpent time.Duration
-
-	// llmRetryStatusActive is true while the spinner is showing "retrying" and
-	// no content has arrived since. It keeps the honest label up for the whole
-	// of the next attempt — which may itself spend minutes backing off — until
-	// real content flips it back; see clearRetryingStatus.
-	llmRetryStatusActive bool
 
 	// activityAsserted tracks whether this worker is currently holding an
 	// osactivity assertion (App Nap defeat). Set on the first non-idle
@@ -506,7 +463,7 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 		streamChunkChan: make(chan StreamChunk, 4096),
 		done:            make(chan struct{}),
 		stopped:         make(chan struct{}),
-		llmResponseChan: make(chan llmCallResult, 1),
+		turn:            newTurnState(),
 		docChangeChan:   make(chan struct{}, 1),
 		toolDrive: toolDrive{
 			tools:                     newToolCommandTracker(),
@@ -596,7 +553,7 @@ func (w *ConversationWorker) Start(ctx context.Context) {
 func (w *ConversationWorker) Stop() {
 	// Cancel any in-flight LLM call first so waitForLLMResponse returns
 	// promptly instead of parking on the LLMTimeout backstop.
-	if p := w.llmCancelFunc.Load(); p != nil {
+	if p := w.turn.cancelLLM.Load(); p != nil {
 		(*p)()
 	}
 	close(w.done)
@@ -611,7 +568,7 @@ func (w *ConversationWorker) Stop() {
 // tools/call with no worker left to drive execution — the tool wedges at
 // "running" until a manual cancel.
 //
-// The release is unconditional: it must not depend on llmCancelFunc being set,
+// The release is unconditional: it must not depend on turn.cancelLLM being set,
 // since the original wedge landed in the turn-boundary window where the
 // in-flight ctx had already cleared but the provider's warm CLI had not. It is
 // warm-preserving (handleCancel uses the same hook) — moot for a permanent
@@ -781,12 +738,12 @@ func (w *ConversationWorker) SetCancelLLMSession(fn CancelLLMSessionFunc) {
 // finalizeTurn turns into a dropped session (the dead CLI subprocess is
 // killed there). One-shot providers unwind on the same ctx cancellation.
 //
-// Safe to call from the Manager goroutine: llmCancelFunc is an atomic
+// Safe to call from the Manager goroutine: turn.cancelLLM is an atomic
 // pointer and the cancel func itself is goroutine-safe and idempotent, so
 // this composes with callLLM's defer and handleCancel's swap without locks.
 func (w *ConversationWorker) interruptInFlightLLMForWake() {
-	if p := w.llmCancelFunc.Swap(nil); p != nil {
-		w.llmWakeInterrupt.Store(true)
+	if p := w.turn.cancelLLM.Swap(nil); p != nil {
+		w.turn.wakeInterrupt.Store(true)
 		w.log.Info("☀️ system wake: cancelling in-flight LLM request conv=%s (connection likely dropped during sleep)", w.conversationID)
 		(*p)()
 	}
@@ -921,7 +878,7 @@ func (w *ConversationWorker) Tracker() *OperationTracker {
 // resolveModelConfig returns the effective model config for the current thread context.
 // Resolves from the Yjs document (thread → parent chain → conversation metadata).
 func (w *ConversationWorker) resolveModelConfig() *ModelConfig {
-	return w.doc.ResolveEffectiveModelConfig(w.thread.itemID)
+	return w.doc.ResolveEffectiveModelConfig(w.turn.thread.itemID)
 }
 
 // run is the main message processing loop. All state access happens here.
@@ -1000,8 +957,8 @@ func (w *ConversationWorker) recoverWorkerPanic(msgType string) {
 	// If the panic occurred while in a thread context, settle that thread's open
 	// run as failed so the frontend doesn't get stuck in "active" limbo and
 	// anything parked on the thread stops waiting.
-	if w.thread.itemID != "" {
-		w.stampRunOutcome(w.thread.itemID, runStatusError, fmt.Sprintf("Thread failed: %v", r))
+	if w.turn.thread.itemID != "" {
+		w.stampRunOutcome(w.turn.thread.itemID, runStatusError, fmt.Sprintf("Thread failed: %v", r))
 	}
 
 	// Reset thread context so the error appears in the root conversation,
@@ -1048,7 +1005,7 @@ func (w *ConversationWorker) handleMessageInWait(msg workerMessage) {
 	w.flushPendingStreamWrites()
 
 	// Polite stop: latch and keep waiting. Deliberately BEFORE the cancel branch
-	// and non-destructive — no llmCancelFunc swap, no session release, no state
+	// and non-destructive — no turn.cancelLLM swap, no session release, no state
 	// change. The wait loop returns the LLM response normally when it lands; the
 	// latch is consumed at the next turn boundary (D5, §10.2).
 	if msg.Type == "pause" {
@@ -1066,7 +1023,7 @@ func (w *ConversationWorker) handleMessageInWait(msg workerMessage) {
 	}
 
 	if msg.Type == "cancel" {
-		if p := w.llmCancelFunc.Swap(nil); p != nil {
+		if p := w.turn.cancelLLM.Swap(nil); p != nil {
 			(*p)()
 		}
 		// Same rationale as handleCancel's StateProcessing branch: release any
@@ -1434,7 +1391,7 @@ func (w *ConversationWorker) writeProcessingState(status, message, code string) 
 	stateMap := map[string]any{
 		"status":       status,
 		"message":      message,
-		"threadItemId": w.thread.itemID,
+		"threadItemId": w.turn.thread.itemID,
 	}
 	if code != "" {
 		stateMap["code"] = code
@@ -1544,7 +1501,7 @@ func (w *ConversationWorker) sendErrorWithData(message, stack string, data map[s
 	if data != nil {
 		msg.Data, _ = json.Marshal(data)
 	}
-	w.insertTargetMessage(w.getTargetItemsLength(), msg)
+	w.appendTargetMessage(msg)
 
 	// Also send as WebSocket message for logging/debugging
 	w.send(ErrorMessage{
@@ -1642,8 +1599,8 @@ func (w *ConversationWorker) handleItemsChange() {
 		"state":     string(w.loadState()),
 	})
 	// Cancel if the browser deleted the thread we're currently processing.
-	if w.loadState() == StateProcessing && w.thread.itemID != "" {
-		if w.doc.GetThreadYMap(w.thread.itemID) == nil {
+	if w.loadState() == StateProcessing && w.turn.thread.itemID != "" {
+		if w.doc.GetThreadYMap(w.turn.thread.itemID) == nil {
 			w.handleCancel()
 		}
 	}
@@ -1749,8 +1706,8 @@ func (w *ConversationWorker) checkForNewThreads() bool {
 		// the thread result; cancellation must not leave a persistent trigger that
 		// restarts the thread immediately on the next observer tick.
 		w.clearThreadNeedsStrategyRun(item.ItemID)
-		w.thread.itemID = item.ItemID
-		w.thread.itemsArray = threadItems
+		w.turn.thread.itemID = item.ItemID
+		w.turn.thread.itemsArray = threadItems
 		// Turn-scoped anchor (see dispatchCallLLMOnThread): set once at turn start,
 		// preserved across re-dispatches so the elapsed digit spans the whole turn.
 		if w.processingStartedAt == 0 {

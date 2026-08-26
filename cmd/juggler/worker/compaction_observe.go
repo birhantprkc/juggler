@@ -38,7 +38,7 @@ const (
 // per-call usage onto the worker's event tape. Nil-safe when tracing is off
 // (Record no-ops); the hooks themselves are always cheap enough to install.
 func (w *ConversationWorker) compactionTapeHooks(kind string) compactionHooks {
-	threadID := w.thread.itemID
+	threadID := w.turn.thread.itemID
 	return compactionHooks{
 		passPlanned: func(pass, chunks int, layerEstimate int64) {
 			w.tape.Record("compaction-pass", map[string]any{
@@ -62,7 +62,7 @@ func (w *ConversationWorker) compactionTapeHooks(kind string) compactionHooks {
 // recordCompactionStart tapes an orchestrator's entry with its budget frame.
 func (w *ConversationWorker) recordCompactionStart(kind string, window, reserve, envelope int64) {
 	w.tape.Record("compaction-start", map[string]any{
-		"kind": kind, "thread": w.thread.itemID, "window": window, "reserve": reserve, "envelope": envelope,
+		"kind": kind, "thread": w.turn.thread.itemID, "window": window, "reserve": reserve, "envelope": envelope,
 	})
 }
 
@@ -71,7 +71,7 @@ func (w *ConversationWorker) recordCompactionStart(kind string, window, reserve,
 // "result", "error", or "cancelled".
 func (w *ConversationWorker) recordCompactionOutcome(kind, outcome string, result CompactionResult, extra map[string]any) {
 	summary := map[string]any{
-		"kind": kind, "thread": w.thread.itemID, "outcome": outcome,
+		"kind": kind, "thread": w.turn.thread.itemID, "outcome": outcome,
 		"passes": result.Passes, "calls": result.Calls, "spend": result.EstimatedSpend,
 		"input": result.Usage.InputTokens, "output": result.Usage.OutputTokens,
 		"cached": result.Usage.CachedTokens, "cacheWrite": result.Usage.CacheWriteTokens,

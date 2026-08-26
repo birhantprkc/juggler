@@ -76,7 +76,7 @@ func TestDelegationBlockedDrivesBothConsumers(t *testing.T) {
 			w := NewConversationWorker("test-conv", "user:test")
 			defer w.doc.Destroy()
 			threadID := tc.build(w)
-			w.thread.itemID = threadID
+			w.turn.thread.itemID = threadID
 
 			reason := w.delegationBlocked(threadID)
 			if (reason != "") != tc.wantBlocked {
@@ -117,7 +117,7 @@ func countThreads(w *ConversationWorker) int {
 // newDelegationHarness wires a worker with an in-test "engine" that answers the
 // build-subthread-spec round-trip with the supplied spec (nil → do not
 // delegate). The offered tools include a delegating WebFetch so
-// turnDelegatingTools routes its calls through the delegation path.
+// turn.delegatingTools routes its calls through the delegation path.
 func newDelegationHarness(t *testing.T, spec *SubthreadSpec, mocks []MockResponse) *ConversationWorker {
 	t.Helper()
 	return newDelegationHarnessSpecs(t, []*SubthreadSpec{spec}, mocks)
@@ -127,6 +127,19 @@ func newDelegationHarness(t *testing.T, spec *SubthreadSpec, mocks []MockRespons
 // order; the last repeats once the list runs out. Consumed only on the worker's
 // own goroutine, which is what serialises the round-trip.
 func newDelegationHarnessSpecs(t *testing.T, specs []*SubthreadSpec, mocks []MockResponse) *ConversationWorker {
+	t.Helper()
+	return newDelegationHarnessTools(t, specs, mocks, ToolDefinition{
+		Name:                 "WebFetch",
+		Category:             "read",
+		DelegatesToSubthread: true,
+		InputSchema:          json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"prompt":{"type":"string"}},"required":["url"]}`),
+	})
+}
+
+// newDelegationHarnessTools is newDelegationHarnessSpecs with the offered
+// delegating tool stated explicitly, for tests about what a tool's DEFINITION
+// carries into the child it spawns.
+func newDelegationHarnessTools(t *testing.T, specs []*SubthreadSpec, mocks []MockResponse, tool ToolDefinition) *ConversationWorker {
 	t.Helper()
 	next := 0
 	spec := func() *SubthreadSpec {
@@ -184,13 +197,8 @@ func newDelegationHarnessSpecs(t *testing.T, specs []*SubthreadSpec, mocks []Moc
 			"type": "render-context-items-response", "systemPrompt": "sys", "contexts": []any{},
 		})
 		toolsResp, _ := json.Marshal(ToolsResultMessage{
-			Type: "tools-result",
-			Tools: []ToolDefinition{{
-				Name:                 "WebFetch",
-				Category:             "read",
-				DelegatesToSubthread: true,
-				InputSchema:          json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"prompt":{"type":"string"}},"required":["url"]}`),
-			}},
+			Type:  "tools-result",
+			Tools: []ToolDefinition{tool},
 		})
 		for {
 			if !w.contextReply.inject(w.done, ctxResp) {
@@ -270,6 +278,53 @@ func TestDelegatingToolDeliversChildResultToParent(t *testing.T) {
 	}
 	if runGoal != "Find page answer" {
 		t.Errorf("delegated run goal = %q, want the resolved short spec goal", runGoal)
+	}
+}
+
+// TestReadOnlySubthreadClaimReachesTheChild follows the readOnlySubthread claim
+// the whole way: an item's MANIFEST stamps it on the tool definition, the engine
+// offers that definition for one turn, and the child the call spawns must still
+// carry the claim afterwards — because the reducer that acts on it runs later,
+// when the turn and its tool list are gone.
+//
+// The negative half is the point of the test rather than an afterthought: a
+// delegating tool that says nothing must produce a child that says nothing, or
+// every ordinary sub-thread would inherit the licence to run beside its
+// siblings.
+func TestReadOnlySubthreadClaimReachesTheChild(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared bool
+	}{
+		{"declared", true},
+		{"undeclared", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &SubthreadSpec{Goal: "Read the page", Prompt: "Fetch https://example.com and summarise it."}
+			w := newDelegationHarnessTools(t, []*SubthreadSpec{spec}, []MockResponse{
+				{
+					Blocks: []LLMResponseBlock{
+						{Type: "tool_use", ID: "tu-ro-1", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://example.com","prompt":"summarise"}`)},
+					},
+					StopReason: "tool_use",
+				},
+				{Blocks: []LLMResponseBlock{{Type: "text", Content: "It is a placeholder page."}}, StopReason: "end_turn"},
+				{Blocks: []LLMResponseBlock{{Type: "text", Content: "Done."}}, StopReason: "end_turn"},
+			}, ToolDefinition{
+				Name:                 "WebFetch",
+				Category:             "read",
+				DelegatesToSubthread: true,
+				ReadOnlySubthread:    tc.declared,
+				InputSchema:          json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"prompt":{"type":"string"}},"required":["url"]}`),
+			})
+
+			w.runStrategyLoop("Summarise the page", false)
+
+			thread := onlyThread(t, w)
+			if got := w.threadIsReadOnly(thread.ItemID); got != tc.declared {
+				t.Errorf("threadIsReadOnly(child) = %v, want %v — the tool's claim must survive onto the thread", got, tc.declared)
+			}
+		})
 	}
 }
 

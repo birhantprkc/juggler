@@ -140,7 +140,7 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// between-turn (async-tool) case; this handles the case where the run never
 	// returned to the reducer at all.
 	if w.consumePolitePending() {
-		w.promotePendingItems(w.thread.itemID)
+		w.promotePendingItems(w.turn.thread.itemID)
 		return turnDone
 	}
 
@@ -150,8 +150,8 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// single summarizer, committing through writeBoundedCompactionResult. The
 	// turn ends here; the deferred cleanup drives idle, which collapses the
 	// fold + summary into one undo group (compactionMergeFromIdx).
-	if w.thread.itemID != "" && w.isBoundedCompactionThread(w.thread.itemID) && !w.threadHasResult(w.thread.itemID) {
-		itemIDs := w.foldedCompactionContextItemIDs(w.thread.itemID)
+	if w.turn.thread.itemID != "" && w.isBoundedCompactionThread(w.turn.thread.itemID) && !w.threadHasResult(w.turn.thread.itemID) {
+		itemIDs := w.foldedCompactionContextItemIDs(w.turn.thread.itemID)
 		ctxResult, tools, prepErr := w.requestContextAndToolsForItemIDs(itemIDs)
 		if prepErr != nil {
 			if errors.Is(prepErr, ErrCancelled) {
@@ -170,7 +170,7 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 				}
 				w.sendErrorWithData(compactErr.Error(), "", errorData)
 			}
-			w.currentTxnID = ""
+			w.turn.txnID = ""
 			return turnDone
 		}
 	}
@@ -191,7 +191,7 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// interjected continuation routes through the warm-append resume there —
 	// a few seconds of CLI respawn with the prompt cache intact, a fair
 	// price for prompt delivery of a deliberately-typed message.
-	w.promotePendingItems(w.thread.itemID)
+	w.promotePendingItems(w.turn.thread.itemID)
 
 	userMsgToStamp := w.findUnstampedUserMsgID()
 
@@ -230,17 +230,17 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// sent to the provider. The same filtered slice builds the request, so a
 	// hallucinated or withheld tool cannot later reach the full engine registry.
 	tools = w.filterToolsForThread(tools)
-	w.turnOfferedTools = collectOfferedToolNames(tools)
+	w.turn.offeredTools = collectOfferedToolNames(tools)
 
 	// Remember which of this turn's offered tools may delegate to a subthread,
 	// so processLLMResponse can route a call to the build-spec round-trip.
 	// Whether delegation is actually available is decided at the point of use.
-	w.turnDelegatingTools = collectDelegatingToolNames(tools)
+	w.turn.delegatingTools = collectDelegatingTools(tools)
 
 	// txnID identifies this round-trip; insertTargetMessage stamps it onto
 	// every item produced during the call so callers don't plumb it through.
 	txnID := generateTransactionID()
-	w.currentTxnID = txnID
+	w.turn.txnID = txnID
 
 	llmRequest := w.buildLLMRequestWithIntent(ctxResult, tools, txnID, st.bypassContextGuard, explicitContinuation)
 
@@ -289,7 +289,7 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {
-			w.currentTxnID = ""
+			w.turn.txnID = ""
 			return turnDone
 		}
 
@@ -321,11 +321,11 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 			// client-side transient notice: it is a timed toast when the
 			// conversation is on screen and nothing at all when it isn't, so a
 			// credential that lapses mid-loop leaves a turn that simply stops.
-			// Insert the item first, while currentTxnID still stamps it with
+			// Insert the item first, while turn.txnID still stamps it with
 			// the transaction saved above.
 			w.sendErrorWithData(msg, "", errorData)
 			w.sendStatusWithCode("validation-error", msg, "provider-unavailable")
-			w.currentTxnID = ""
+			w.turn.txnID = ""
 			return turnDone
 		}
 
@@ -349,14 +349,14 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 			_ = json.Unmarshal(llmRequest, &originalRequest)
 			switch v := w.handleContextOverflow(limit, isAdvisory, st.bypassContextGuard, &st.compaction, originalRequest.ModelConfig, err); v.verdict {
 			case overflowStop:
-				w.currentTxnID = ""
+				w.turn.txnID = ""
 				return turnDone
 			case overflowRetry:
-				w.currentTxnID = ""
+				w.turn.txnID = ""
 				return turnContinue
 			case overflowBypassAndRetry:
 				st.bypassContextGuard = true
-				w.currentTxnID = ""
+				w.turn.txnID = ""
 				return turnContinue
 			case overflowTerminal:
 				// Report v.err below. A synthesized terminal error must not
@@ -379,11 +379,11 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 		for k, v := range compactionErrorData(err) {
 			errorData[k] = v
 		}
-		// currentTxnID is still set, so insertTargetMessage stamps the
+		// turn.txnID is still set, so insertTargetMessage stamps the
 		// error item with txnID — the View Transaction button opens the
 		// blob saved above.
 		w.sendErrorWithData(err.Error(), "", errorData)
-		w.currentTxnID = ""
+		w.turn.txnID = ""
 		return turnDone
 	}
 
@@ -417,12 +417,12 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 		cacheWrite = fmt.Sprintf("%d", *response.CacheWriteTokens)
 	}
 	w.log.Info("[turn tokens] thread=%q input=%d cached=%s (%s%% hit) output=%d cacheWrite=%s stop=%s in %s",
-		w.thread.itemID, response.InputTokens, cached, hit,
+		w.turn.thread.itemID, response.InputTokens, cached, hit,
 		response.OutputTokens, cacheWrite, response.StopReason,
 		duration.Round(time.Millisecond))
 
 	shouldContinue, err := w.processLLMResponse(response)
-	w.currentTxnID = ""
+	w.turn.txnID = ""
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {
 			return turnDone
@@ -487,13 +487,13 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// while this turn ran, promote it and drive another turn instead of
 	// going idle (the next turn's promotePendingItems does the actual move).
 	if !shouldContinue {
-		if w.hasPendingItems(w.thread.itemID) {
+		if w.hasPendingItems(w.turn.thread.itemID) {
 			return turnContinue
 		}
 		return turnDone
 	}
 	if response.StopReason == "end_turn" && hasAssistantText(response) {
-		if w.hasPendingItems(w.thread.itemID) {
+		if w.hasPendingItems(w.turn.thread.itemID) {
 			return turnContinue
 		}
 		return turnDone
@@ -517,7 +517,7 @@ func (w *ConversationWorker) finishStrategyRun() {
 	}
 
 	wasCancelled := w.loadState() == StateCancelling
-	completedThreadID := w.thread.itemID // capture before clearing
+	completedThreadID := w.turn.thread.itemID // capture before clearing
 
 	// The run this loop just ran is over: record how it came out. This is
 	// the completion signal a parked caller waits on, and the source of the
@@ -617,7 +617,7 @@ func (w *ConversationWorker) turnProducedAction(response *LLMResponse) bool {
 // produced nothing the user can see. Without this the UI silently flips
 // back to idle and is indistinguishable from a stuck spinner.
 func (w *ConversationWorker) insertBarrenStallPlaceholder() {
-	w.insertTargetMessage(w.getTargetItemsLength(), ConversationItem{
+	w.appendTargetMessage(ConversationItem{
 		Type:      ItemTypeAssistant,
 		ItemID:    generateItemID(),
 		Content:   "_(model returned no further response)_",
@@ -652,7 +652,7 @@ func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse
 
 		// Only time spent FAILING is charged to the budget, so a long healthy
 		// turn followed by a single blip still gets its full allowance.
-		w.llmRetrySpent += time.Since(attemptStart)
+		w.turn.retrySpent += time.Since(attemptStart)
 
 		var rErr retryableError
 		if !errors.As(err, &rErr) || attempt == MaxLLMRetries-1 {
@@ -660,33 +660,33 @@ func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse
 			return nil, err
 		}
 
-		if w.llmRetrySpent >= MaxLLMRetryWindow {
+		if w.turn.retrySpent >= MaxLLMRetryWindow {
 			w.log.Info("Retryable LLM error (%v), but %v has already gone on retries (budget %v) — surfacing instead of retrying again",
-				err, w.llmRetrySpent.Round(time.Second), MaxLLMRetryWindow)
+				err, w.turn.retrySpent.Round(time.Second), MaxLLMRetryWindow)
 			w.resetLLMRetryBudget()
 			return nil, err
 		}
 
 		wait := rErr.retryWait()
 		w.log.Info("Retryable LLM error (%v), retrying in %v (attempt %d/%d, %v of %v budget spent)",
-			err, wait, attempt+1, MaxLLMRetries, w.llmRetrySpent.Round(time.Second), MaxLLMRetryWindow)
+			err, wait, attempt+1, MaxLLMRetries, w.turn.retrySpent.Round(time.Second), MaxLLMRetryWindow)
 
 		status := rErr.retryStatus(attempt+1, MaxLLMRetries)
-		if w.llmRetrySpent >= time.Minute {
-			status = fmt.Sprintf("%s — %s so far", status, w.llmRetrySpent.Round(time.Second))
+		if w.turn.retrySpent >= time.Minute {
+			status = fmt.Sprintf("%s — %s so far", status, w.turn.retrySpent.Round(time.Second))
 		}
 		w.sendRetryingStatus(status)
 		w.batcher.Flush()
 
 		res := w.waitForRetryDelay(wait)
 		if res.Cancelled {
-			w.currentTxnID = ""
+			w.turn.txnID = ""
 			w.resetLLMRetryBudget()
 			return nil, ErrCancelled
 		}
 		if res.NewMessage {
 			// A new user message is a new intent, and gets a fresh allowance.
-			w.currentTxnID = ""
+			w.turn.txnID = ""
 			w.resetLLMRetryBudget()
 			return nil, ErrRestartStrategy
 		}
@@ -694,8 +694,8 @@ func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse
 		w.finalizeStreaming()
 		w.resetStreamingText()
 		w.resetStreamingThinking()
-		w.turnOfferedTools = nil
-		w.turnDelegatingTools = nil
+		w.turn.offeredTools = nil
+		w.turn.delegatingTools = nil
 	}
 	return nil, errors.New("unexpected retry loop exit")
 }
@@ -704,7 +704,7 @@ func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse
 // Called on every exit from callLLMWithRetry — success, terminal error, cancel,
 // or a new user message — so the next sequence starts with a full allowance.
 func (w *ConversationWorker) resetLLMRetryBudget() {
-	w.llmRetrySpent = 0
+	w.turn.retrySpent = 0
 }
 
 // sendRetryingStatus publishes the "retrying" spinner and latches it so the
@@ -712,7 +712,7 @@ func (w *ConversationWorker) resetLLMRetryBudget() {
 // retry and then immediately claimed to be streaming again, so the UI read
 // "Receiving" for however long the fresh attempt spent backing off.
 func (w *ConversationWorker) sendRetryingStatus(message string) {
-	w.llmRetryStatusActive = true
+	w.turn.retryStatusActive = true
 	w.sendStatus("retrying", message)
 }
 
@@ -720,10 +720,10 @@ func (w *ConversationWorker) sendRetryingStatus(message string) {
 // arrives. Only content may do this: merely starting an attempt proves nothing,
 // which is exactly the mistake that made the spinner lie.
 func (w *ConversationWorker) clearRetryingStatus() {
-	if !w.llmRetryStatusActive {
+	if !w.turn.retryStatusActive {
 		return
 	}
-	w.llmRetryStatusActive = false
+	w.turn.retryStatusActive = false
 	w.sendStatus("streaming", "")
 }
 
@@ -796,7 +796,7 @@ func newUserItem(input UserMessageInput) ConversationItem {
 // addUserMessage appends a user message (text + attachments, as one unit) to
 // the current target (root or thread).
 func (w *ConversationWorker) addUserMessage(input UserMessageInput) {
-	w.insertTargetMessage(w.getTargetItemsLength(), newUserItem(input))
+	w.appendTargetMessage(newUserItem(input))
 }
 
 // findUnstampedUserMsgID returns the ItemID of the trailing user message in
@@ -840,17 +840,17 @@ func (w *ConversationWorker) callLLMWithSink(request json.RawMessage, sink func(
 
 	// Reset the wake-interrupt flag for this attempt so a wake that fired
 	// during a previous turn can't be misattributed to this call's error.
-	w.llmWakeInterrupt.Store(false)
+	w.turn.wakeInterrupt.Store(false)
 
 	// Drain any stale response left by a previously-cancelled call.
 	select {
-	case <-w.llmResponseChan:
+	case <-w.turn.responseChan:
 	default:
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	w.llmCancelFunc.Store(&cancel)
-	defer w.llmCancelFunc.Store(nil)
+	w.turn.cancelLLM.Store(&cancel)
+	defer w.turn.cancelLLM.Store(nil)
 
 	go func() {
 		defer cancel()
@@ -871,7 +871,7 @@ func (w *ConversationWorker) callLLMWithSink(request json.RawMessage, sink func(
 		// A system-wake cancelled this call: the connection was dropped while
 		// the machine slept. Surface a clear, retryable message instead of the
 		// provider's raw "context canceled".
-		if w.llmWakeInterrupt.Load() {
+		if w.turn.wakeInterrupt.Load() {
 			return nil, fmt.Errorf("LLM request interrupted: the system resumed from sleep and the connection was dropped — please resend")
 		}
 		return nil, classifyLLMError(err.Error(), err)
@@ -1014,7 +1014,7 @@ func (w *ConversationWorker) addToolAction(toolUseID, toolName string, toolInput
 		Timestamp:    time.Now().Format(time.RFC3339),
 		ProviderData: metadata,
 	}
-	w.insertTargetMessage(w.getTargetItemsLength(), msg)
+	w.appendTargetMessage(msg)
 }
 
 // hasAssistantText reports whether the response carries any non-empty text
@@ -1036,7 +1036,7 @@ func (w *ConversationWorker) addThinkingMessage(text string) {
 		Content:   text,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
-	w.insertTargetMessage(w.getTargetItemsLength(), msg)
+	w.appendTargetMessage(msg)
 }
 
 // addMetaToolResult adds a meta tool result to the conversation for LLM context.
@@ -1057,7 +1057,7 @@ func (w *ConversationWorker) addMetaToolResult(toolUseID, toolName string, toolI
 		IsError:   isError,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
-	w.insertTargetMessage(w.getTargetItemsLength(), msg)
+	w.appendTargetMessage(msg)
 }
 
 // =============================================================================

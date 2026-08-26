@@ -114,7 +114,7 @@ func TestCallLLMWithRetryStopsWhenRetryBudgetSpent(t *testing.T) {
 	}
 
 	// Earlier attempts in this sequence already used the whole allowance.
-	w.llmRetrySpent = MaxLLMRetryWindow
+	w.turn.retrySpent = MaxLLMRetryWindow
 
 	_, err := w.callLLMWithRetry(nil)
 	if err == nil {
@@ -123,8 +123,8 @@ func TestCallLLMWithRetryStopsWhenRetryBudgetSpent(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("provider calls = %d, want 1 — an exhausted budget must not buy another attempt", calls)
 	}
-	if w.llmRetrySpent != 0 {
-		t.Fatalf("llmRetrySpent = %v, want 0 — the budget must reset when the sequence ends", w.llmRetrySpent)
+	if w.turn.retrySpent != 0 {
+		t.Fatalf("turn.retrySpent = %v, want 0 — the budget must reset when the sequence ends", w.turn.retrySpent)
 	}
 }
 
@@ -137,18 +137,18 @@ func TestRetryingStatusClearedOnlyByContent(t *testing.T) {
 	defer w.doc.Destroy()
 
 	w.sendRetryingStatus("Rate limited, retrying (1/3)")
-	if !w.llmRetryStatusActive {
+	if !w.turn.retryStatusActive {
 		t.Fatal("sendRetryingStatus must latch the retrying label")
 	}
 
 	// A provider phase label is liveness, not progress.
 	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeStatus, Content: "Waiting for response"})
-	if !w.llmRetryStatusActive {
+	if !w.turn.retryStatusActive {
 		t.Fatal("a status chunk cleared the retrying label — only real content may")
 	}
 
 	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeText, Content: "hello"})
-	if w.llmRetryStatusActive {
+	if w.turn.retryStatusActive {
 		t.Fatal("real content must clear the retrying label")
 	}
 }

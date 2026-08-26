@@ -33,7 +33,10 @@ class ResearchAgentContextItem extends SubagentContextItem {
     // on turns that cannot delegate, leaving the inherited execute() reachable
     // only when the engine round-trip itself fails.
     delegatesToSubthread: true,
-    requiresDelegation: true
+    requiresDelegation: true,
+    // The child reads the web and reports back; its strategy admits nothing that
+    // touches the working tree. So two Research runs may go at once.
+    readOnlySubthread: true
   };
 
   /** @type {import('./subagents/subagent-item.js').SubagentDescriptor} */

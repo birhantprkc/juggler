@@ -246,14 +246,17 @@ func (t *OperationTracker) InsertMessage(index int, messages ...ConversationItem
 	}, t.doc.authorID, true)
 }
 
-// InsertMessageIntoArray inserts messages at index into a nested thread items
-// Y.Array under the tracked (authorID) origin, so sub-thread turn content is
-// captured by the UndoManager exactly like root content. Grouping mirrors
-// InsertMessage: non-auxiliary types start a new undo group, auxiliary types
-// (streaming tool/thinking content) merge with the current group. Thread items
-// carrying nested Items are inserted via insertItemWithNested so their child
-// array is populated in source order.
-func (t *OperationTracker) InsertMessageIntoArray(arr *ycrdt.YArray, index int, messages ...ConversationItem) {
+// AppendMessage adds messages to the end of the root items array.
+//
+// It exists rather than leaving callers to write InsertMessage(length, msgs...)
+// because that spelling reads the end position under one ycrdtMu hold and writes
+// at it under another, and ycrdtMu is a library-safety lock: it promises no two
+// y-crdt calls overlap, never that a sequence of holds is atomic. "Append" is a
+// single question with a single answer, so it should be a single hold — that is
+// what makes the position it writes at the position it measured.
+//
+// Grouping is InsertMessage's, unchanged.
+func (t *OperationTracker) AppendMessage(messages ...ConversationItem) {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
 	um := t.ensureUndoManager()
@@ -261,6 +264,27 @@ func (t *OperationTracker) InsertMessageIntoArray(arr *ycrdt.YArray, index int, 
 		um.StopCapturing()
 	}
 	ycrdt.Transact(t.doc.doc, func(_ *ycrdt.Transaction) {
+		t.doc.insertMessage(t.doc.getItemsLength(), messages...)
+	}, t.doc.authorID, true)
+}
+
+// AppendMessageIntoArray adds messages to the end of a nested thread items
+// Y.Array under the tracked (authorID) origin, so sub-thread turn content is
+// captured by the UndoManager exactly like root content. Grouping mirrors
+// AppendMessage: non-auxiliary types start a new undo group, auxiliary types
+// (streaming tool/thinking content) merge with the current group. Thread items
+// carrying nested Items go in via insertItemWithNested so their child array is
+// populated in source order. The end position is read inside the same hold as
+// the write, for the reason given on AppendMessage.
+func (t *OperationTracker) AppendMessageIntoArray(arr *ycrdt.YArray, messages ...ConversationItem) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	um := t.ensureUndoManager()
+	if !allAuxiliary(messages) {
+		um.StopCapturing()
+	}
+	ycrdt.Transact(t.doc.doc, func(_ *ycrdt.Transaction) {
+		index := int(arr.GetLength())
 		for i, msg := range messages {
 			insertItemWithNested(arr, index+i, msg)
 		}

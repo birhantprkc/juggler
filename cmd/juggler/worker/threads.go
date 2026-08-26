@@ -59,7 +59,18 @@ type CreateThreadOptions struct {
 	// are set exactly as for create_thread.
 	Delegated bool
 
-	// ParentThreadItemID, if non-empty, switches w.thread to that parent
+	// ReadOnly marks a thread whose run cannot change anything outside its own
+	// transcript, carried from the spawning tool's readOnlySubthread manifest
+	// claim. It is stamped onto the thread Y.Map rather than kept on the turn
+	// because the child is dispatched long after the turn that asked for it, and
+	// the reducer is what needs the answer: a read-only child may run alongside
+	// its siblings, where any other child must wait its turn.
+	//
+	// Nothing verifies the claim. It is the spawning item's assertion about the
+	// agent it seeds, and the cost of overstating it is siblings racing.
+	ReadOnly bool
+
+	// ParentThreadItemID, if non-empty, switches w.turn.thread to that parent
 	// before creating the new thread (used by ExternalDispatch entry points
 	// to scope into a specific parent). Empty means: keep the current scope.
 	ParentThreadItemID string
@@ -126,22 +137,22 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	var prevThread threadContext
 	restoreThread := false
 	if opts.ParentThreadItemID != "" {
-		prevThread = w.thread
+		prevThread = w.turn.thread
 		restoreThread = true
-		w.thread.itemID = opts.ParentThreadItemID
-		w.thread.itemsArray = w.doc.GetThreadItemsArray(opts.ParentThreadItemID)
-		if w.thread.itemsArray == nil {
-			w.thread = prevThread
+		w.turn.thread.itemID = opts.ParentThreadItemID
+		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(opts.ParentThreadItemID)
+		if w.turn.thread.itemsArray == nil {
+			w.turn.thread = prevThread
 			return "", fmt.Errorf("thread item %s not found", opts.ParentThreadItemID)
 		}
 	} else if opts.ExternalDispatch {
-		prevThread = w.thread
+		prevThread = w.turn.thread
 		restoreThread = true
 		w.resetThreadContext()
 	}
 	if restoreThread {
 		defer func() {
-			w.thread = prevThread
+			w.turn.thread = prevThread
 		}()
 	}
 
@@ -212,6 +223,9 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 			if opts.Delegated {
 				m.Set("delegated", true)
 			}
+			if opts.ReadOnly {
+				m.Set("readOnly", true)
+			}
 			if opts.ToolUseID != "" {
 				if stampsInvocation {
 					// The run selector: this item is the parent's view of the run
@@ -263,7 +277,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	// each invocation appending its own stamped message (resumeSession appends
 	// the identical shape).
 	if stampsInvocation {
-		w.tracker.InsertMessageIntoArray(nestedItems, w.doc.GetItemsLengthFromArray(nestedItems), invocationMessage(opts))
+		w.tracker.AppendMessageIntoArray(nestedItems, invocationMessage(opts))
 	}
 
 	// Collapse the container insert, field stamps, seeds, and seed prompt into one
@@ -396,7 +410,7 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 	// turn sees a tool_result paired with its own create_thread tool_use (not a
 	// dangling tool_use the provider would reject) and is told to continue the
 	// sub-task inline rather than spawn another thread.
-	if depth := w.doc.threadDepth(w.thread.itemID); depth >= maxThreadDepth {
+	if depth := w.doc.threadDepth(w.turn.thread.itemID); depth >= maxThreadDepth {
 		msg := fmt.Sprintf("create_thread refused: thread nesting depth limit (%d) reached. "+
 			"Do this sub-task inline in the current thread instead of spawning another thread.", maxThreadDepth)
 		w.addMetaToolResult(toolUseID, toolName, toolInput, msg, true)

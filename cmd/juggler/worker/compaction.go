@@ -32,7 +32,7 @@ func (w *ConversationWorker) beginCompactionStatus(message string) {
 // folded-thread orchestrator for the pure bounded reducer: snapshot the thread's
 // Yjs state, canonicalize it, run the reducer, commit the summary.
 func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (bool, error) {
-	threadID := w.thread.itemID
+	threadID := w.turn.thread.itemID
 	if threadID == "" || !w.isBoundedCompactionThread(threadID) {
 		return false, nil
 	}
@@ -103,7 +103,7 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 // committed through the one path, writeBoundedCompactionResult. Returns
 // handled=false only when the thread is not a bounded compaction thread.
 func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig, ctxResult *ContextResult, tools []ToolDefinition) (bool, error) {
-	threadID := w.thread.itemID
+	threadID := w.turn.thread.itemID
 	if threadID == "" || !w.isBoundedCompactionThread(threadID) {
 		return false, nil
 	}
@@ -285,7 +285,7 @@ func (w *ConversationWorker) newBoundedReducer(kind string, pinnedModel ModelCon
 	}
 	return &boundedReducer{
 		conversationID: w.conversationID,
-		threadID:       w.thread.itemID,
+		threadID:       w.turn.thread.itemID,
 		modelConfig:    pinnedModel,
 		budget:         budget,
 		dispatcher:     w,
@@ -389,7 +389,7 @@ func (w *ConversationWorker) resolveCompactionPromptItemID(threadID string, item
 // discarded, and maps engine-side cancellation onto the reducer's sentinel.
 func (w *ConversationWorker) dispatchHiddenCompaction(encoded json.RawMessage) (*LLMResponse, error) {
 	response, err := w.callLLMWithSink(encoded, nil)
-	if err != nil && (errors.Is(err, ErrCancelled) || w.compactionCancelled() || w.llmWakeInterrupt.Load()) {
+	if err != nil && (errors.Is(err, ErrCancelled) || w.compactionCancelled() || w.turn.wakeInterrupt.Load()) {
 		return nil, errBoundedCompactionCancelled
 	}
 	return response, err

@@ -582,13 +582,13 @@ func openRunMessagesLocked(nested *ycrdt.YArray) []*ycrdt.YMap {
 //
 // No-op at the root, which has no run records at all.
 func (w *ConversationWorker) openThreadContinuationRun(threadItemID string) {
-	if threadItemID == "" || w.thread.itemsArray == nil {
+	if threadItemID == "" || w.turn.thread.itemsArray == nil {
 		return
 	}
 	if runSettled, hasRuns := runSettlement(w.getTargetItems()); hasRuns && !runSettled {
 		return // a run is already open — this Continue joins it
 	}
-	w.insertTargetMessage(w.getTargetItemsLength(), continuationMarker())
+	w.appendTargetMessage(continuationMarker())
 }
 
 // lastSettlingItem returns the item that decides how a run ended: the last one

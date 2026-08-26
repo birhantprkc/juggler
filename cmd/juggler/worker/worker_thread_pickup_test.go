@@ -382,7 +382,7 @@ func TestHandleItemsChange_CancelsWhenCurrentThreadDeleted(t *testing.T) {
 
 	// Simulate worker mid-processing on this thread
 	w.storeState(StateProcessing)
-	w.thread.itemID = threadID
+	w.turn.thread.itemID = threadID
 
 	// Delete the thread from the doc (simulates browser deletion via Yjs sync)
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {

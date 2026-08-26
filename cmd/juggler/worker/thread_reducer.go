@@ -551,11 +551,11 @@ func (w *ConversationWorker) dispatchCallLLMOnThread(threadItemID string) {
 	explicitContinuation := w.consumeExplicitContinuation(threadItemID)
 
 	// Set up thread context from doc state.
-	w.thread.itemID = threadItemID
+	w.turn.thread.itemID = threadItemID
 	if threadItemID != "" {
-		w.thread.itemsArray = w.doc.GetThreadItemsArray(threadItemID)
+		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadItemID)
 	} else {
-		w.thread.itemsArray = nil
+		w.turn.thread.itemsArray = nil
 	}
 
 	// Turn-scoped anchor: only stamp the start when beginning a fresh turn (from

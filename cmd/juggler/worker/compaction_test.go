@@ -35,8 +35,8 @@ func insertBoundedCompactionThread(t *testing.T, w *ConversationWorker, content 
 		thread.Set("items", items)
 		w.doc.ensureItems().Push(ycrdt.ArrayAny{thread})
 	}, w.doc.authorID)
-	w.thread.itemID = threadID
-	w.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	return threadID
 }
 
@@ -120,8 +120,8 @@ func sessionThreadForTest(t *testing.T, w *ConversationWorker, name string, tool
 		)
 	}
 	w.doc.InsertMessageIntoArray(arr, 0, items...)
-	w.thread.itemID = threadID
-	w.thread.itemsArray = arr
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = arr
 	return threadID, arr
 }
 

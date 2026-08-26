@@ -114,6 +114,13 @@ export async function runTests(_ctx) {
       const stamped = allTools.find(t => t.name === toolName);
       assert(stamped && stamped.requiresDelegation === true,
         `${toolName}'s generated definition must carry requiresDelegation through to the worker`);
+      // A sub-agent investigates and reports; if one of these ever gains a tool
+      // that changes the working tree, this is the assertion that should stop it,
+      // because the flag is what lets the reducer run a batch of them at once.
+      assert(Item.MANIFEST.readOnlySubthread === true,
+        `${label} only reads, so it must declare readOnlySubthread — that is what lets siblings run at once`);
+      assert(stamped && stamped.readOnlySubthread === true,
+        `${toolName}'s generated definition must carry readOnlySubthread through to the worker`);
       const defs = Item.getToolDefinitions();
       assert(defs.length === 1 && defs[0].name === toolName,
         `expected one tool named ${toolName}`);

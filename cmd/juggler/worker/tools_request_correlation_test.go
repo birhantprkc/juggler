@@ -91,7 +91,7 @@ func offeredToolName(t *testing.T, w *ConversationWorker) string {
 // the thread it belongs to, so consecutive turns on different threads are
 // offered different lists: a root turn following a sub-agent's inherits the
 // sub-agent's filtered list, losing the write tools and the sub-agent tools with
-// it. A missing delegating tool is absent from turnDelegatingTools, so every
+// it. A missing delegating tool is absent from turn.delegatingTools, so every
 // call to one skips delegation and fails.
 func TestLateToolsReplyIsNotServedToTheNextTurn(t *testing.T) {
 	w, requestIDs := newToolsRequestHarness(t, func(w *ConversationWorker, turn int, requestID string) {

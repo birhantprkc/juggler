@@ -419,6 +419,19 @@ type ToolDefinition struct {
 	// withholds such a tool wherever delegationBlocked says this thread may not
 	// delegate, so the model is never offered a call that could only fail.
 	RequiresDelegation bool `json:"requiresDelegation,omitempty"`
+	// ReadOnlySubthread declares that the child this tool delegates to cannot
+	// change anything outside its own transcript — no writes to the working tree,
+	// no state the caller or a sibling could observe. It is a claim made by the
+	// owning item's MANIFEST about the CHILD, not about the tool, and nothing
+	// verifies it; what it licenses is running such a child beside its siblings
+	// instead of after them, so an item that overstates it trades a serialisation
+	// guarantee for a race.
+	//
+	// Only meaningful alongside DelegatesToSubthread. It is stamped onto the
+	// child's thread Y.Map at creation (see CreateThreadOptions.ReadOnly), where
+	// the reducer reads it back — the tool that spawned the child may be long
+	// gone from the turn by the time the child is dispatched.
+	ReadOnlySubthread bool `json:"readOnlySubthread,omitempty"`
 }
 
 // YjsSyncMessage contains Yjs CRDT state update.
