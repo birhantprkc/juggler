@@ -50,6 +50,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"juggler/cmd/juggler/providers/provider"
@@ -261,6 +262,72 @@ type UserMessageInput struct {
 // empty: it still has something to send.
 func (u UserMessageInput) isEmpty() bool {
 	return u.Text == "" && len(u.Attachments) == 0
+}
+
+// CancelMessage stops the turn in flight. Reason names the gesture behind it —
+// the browser sends what the user did ("escape", "stop button", "slash
+// command"); the worker's own internal cancels supply one of the cancelReason
+// constants below. It exists solely so the log can say who stopped the turn: a
+// cancel is otherwise indistinguishable from a turn that simply ended.
+type CancelMessage struct {
+	Type   string `json:"type"` // "cancel"
+	Reason string `json:"reason,omitempty"`
+}
+
+// cancelReason is a short human-readable cause for a cancel, written to the
+// per-conversation log and nothing else. It never reaches the model or the UI.
+type cancelReason string
+
+// Causes the worker raises for itself, with no gesture behind them.
+const (
+	// cancelReasonUnspecified is a cancel frame that named no reason — an older
+	// client, or a hand-built frame.
+	cancelReasonUnspecified cancelReason = "unspecified"
+	// cancelReasonThreadDeleted is the items observer noticing the thread being
+	// processed has been deleted out from under the turn.
+	cancelReasonThreadDeleted cancelReason = "thread deleted"
+	// cancelReasonUndoRedo is history navigation stopping the turn so the
+	// document rollback can't be raced by the strategy's deferred writes.
+	cancelReasonUndoRedo cancelReason = "undo/redo"
+	// cancelReasonPendingRequest is a pending request (a createThread) whose
+	// cancelRequested flag flipped, stopping the work it owns.
+	cancelReasonPendingRequest cancelReason = "pending request cancelled"
+)
+
+// maxCancelReasonLen bounds a wire-supplied reason. The value is a log label,
+// so anything longer is a mistake or an attempt to pad the log.
+const maxCancelReasonLen = 64
+
+// cancelReasonFromPayload reads the reason off a cancel frame. Deliberately
+// total: an absent, malformed or empty payload yields cancelReasonUnspecified
+// rather than an error, because a cancel must never fail to cancel over its
+// annotation.
+func cancelReasonFromPayload(payload json.RawMessage) cancelReason {
+	var msg CancelMessage
+	if len(payload) == 0 || json.Unmarshal(payload, &msg) != nil {
+		return cancelReasonUnspecified
+	}
+	return sanitizeCancelReason(msg.Reason)
+}
+
+// sanitizeCancelReason flattens control characters to spaces and truncates, so
+// a reason arriving from the wire lands as one bounded log line and cannot
+// forge others.
+func sanitizeCancelReason(reason string) cancelReason {
+	flat := strings.Map(func(r rune) rune {
+		if r < ' ' || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, reason)
+	flat = strings.TrimSpace(flat)
+	if runes := []rune(flat); len(runes) > maxCancelReasonLen {
+		flat = strings.TrimSpace(string(runes[:maxCancelReasonLen]))
+	}
+	if flat == "" {
+		return cancelReasonUnspecified
+	}
+	return cancelReason(flat)
 }
 
 // ProviderTurnMessage carries a turn the provider surfaced out-of-band — a

@@ -508,7 +508,7 @@ class Conversation {
 
     if (this._llmState &&
             this._llmState.isConversationProcessing(this.id)) {
-      this.stopProcessing();
+      this.stopProcessing('items deleted');
     }
 
     // Seal the undo group on both sides. The worker's UndoManager merges
@@ -1036,7 +1036,7 @@ class Conversation {
   async interruptThread(threadYMap) {
     if (this._threadOwnsActiveWork(threadYMap)) {
       this.cancelAllPendingApprovals();
-      await this.cancelAndSettle();
+      await this.cancelAndSettle('thread interrupt');
     }
   }
 
@@ -1585,7 +1585,7 @@ class Conversation {
     // concurrent strategy on the main thread), so it keeps refusing.
     const isQueueing = this.isProcessing && workerManager.isWorkerReady(this.id);
     if (options.preemptProcessing) {
-      await this.cancelAndSettle();
+      await this.cancelAndSettle('new message preempted');
     } else if (this.isProcessing && !isQueueing) {
       return `conversation ${this.id} is processing`;
     }
@@ -1917,8 +1917,10 @@ class Conversation {
    * Stop all processing for this conversation (actions, LLM calls, etc.).
    * For a user-visible cancellation, use addCancellationMessage() instead,
    * which stops processing and posts a cancellation message.
+   * @param {string} [reason] - What caused the stop, for the worker's log. Every
+   *   caller names its gesture so a cancelled turn is attributable after the fact.
    */
-  stopProcessing() {
+  stopProcessing(reason) {
     // Call all registered stop handlers (e.g. plan strategy aborting its drive controller).
     for (const fn of this._stopHandlers) fn();
 
@@ -1927,7 +1929,7 @@ class Conversation {
 
     // Cancel worker if active
     if (workerManager.isWorkerReady(this.id)) {
-      workerManager.cancel(this.id);
+      workerManager.cancel(this.id, reason);
     }
   }
 
@@ -2031,9 +2033,10 @@ class Conversation {
    * resolves on the next microtask. Reactive on the Yjs metadata observer
    * the worker already writes through; the poll is a safety net for the
    * action-executor side which does not (yet) push events.
+   * @param {string} [reason] - What caused the cancel, for the worker's log.
    * @returns {Promise<void>}
    */
-  async cancelAndSettle() {
+  async cancelAndSettle(reason) {
     const settled = () => !this.isTurnActive();
 
     if (settled()) return;
@@ -2043,7 +2046,7 @@ class Conversation {
     // slash menu) reaches the user through this one notice.
     this.showWarning(TURN_CANCELLED_NOTICE, 5000);
 
-    this.stopProcessing();
+    this.stopProcessing(reason);
 
     if (settled()) return;
 
@@ -2076,9 +2079,10 @@ class Conversation {
   /**
    * Add a cancellation message
    * Called when user cancels an operation
+   * @param {string} [reason] - The gesture behind the stop, for the worker's log.
    */
-  addCancellationMessage() {
-    this.stopProcessing();
+  addCancellationMessage(reason = 'stop') {
+    this.stopProcessing(reason);
     this._handleCancellation();
   }
 

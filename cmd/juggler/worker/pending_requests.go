@@ -393,7 +393,7 @@ func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
 		case StateProcessing:
 			// finishStrategyRun settles the active run and finalizeCancellation
 			// completes cleanup. A later scan publishes the pending result.
-			w.handleCancel()
+			w.handleCancel(cancelReasonPendingRequest)
 			return
 		case StateCancelling:
 			return
@@ -401,7 +401,7 @@ func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
 		if w.getActivity() == ActivityAwaitingLLM {
 			// The parked-tool branch completes synchronously: tools are cancelled,
 			// the provider session is released, and activity is cleared first.
-			w.handleCancel()
+			w.handleCancel(cancelReasonPendingRequest)
 		}
 	}
 

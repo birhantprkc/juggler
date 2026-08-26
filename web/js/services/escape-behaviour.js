@@ -306,7 +306,7 @@ function app() {
  * @returns {void}
  */
 function hardStop(focusedThreadId) {
-  app()?.cancelLLMOperation?.(focusedThreadId, {});
+  app()?.cancelLLMOperation?.(focusedThreadId, { source: 'escape' });
 }
 
 /**

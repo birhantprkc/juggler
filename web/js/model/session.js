@@ -1011,7 +1011,7 @@ class Session {
         active.push(conv);
       }
     }
-    await Promise.all(active.map((conv) => conv.cancelAndSettle()));
+    await Promise.all(active.map((conv) => conv.cancelAndSettle('plugin catalog')));
   }
 
   /**

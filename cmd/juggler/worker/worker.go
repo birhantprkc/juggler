@@ -1023,6 +1023,7 @@ func (w *ConversationWorker) handleMessageInWait(msg workerMessage) {
 	}
 
 	if msg.Type == "cancel" {
+		w.logCancel(cancelReasonFromPayload(msg.Payload))
 		if p := w.turn.cancelLLM.Swap(nil); p != nil {
 			(*p)()
 		}
@@ -1078,7 +1079,7 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 		w.handleDeliveryEnded(msg.Payload)
 
 	case "cancel":
-		w.handleCancel()
+		w.handleCancel(cancelReasonFromPayload(msg.Payload))
 
 	case "pause":
 		w.handlePause()
@@ -1601,7 +1602,7 @@ func (w *ConversationWorker) handleItemsChange() {
 	// Cancel if the browser deleted the thread we're currently processing.
 	if w.loadState() == StateProcessing && w.turn.thread.itemID != "" {
 		if w.doc.GetThreadYMap(w.turn.thread.itemID) == nil {
-			w.handleCancel()
+			w.handleCancel(cancelReasonThreadDeleted)
 		}
 	}
 

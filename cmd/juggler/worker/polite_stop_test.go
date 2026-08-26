@@ -155,7 +155,7 @@ func TestPoliteStop_SupersededByHardCancel(t *testing.T) {
 	w.storeState(StateIdle)
 
 	w.politeStop.Store(true)
-	w.handleCancel()
+	w.handleCancel(cancelReasonUnspecified)
 
 	if w.politeStop.Load() {
 		t.Error("hard cancel did not supersede the pending polite stop (D7)")

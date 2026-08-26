@@ -630,7 +630,7 @@ class ConversationFooter extends HTMLElement {
     // @ts-ignore - jugglerApp is added dynamically in app.js
     if (window.jugglerApp && window.jugglerApp.cancelLLMOperation) {
       // @ts-ignore
-      window.jugglerApp.cancelLLMOperation(threadItemId);
+      window.jugglerApp.cancelLLMOperation(threadItemId, { source: 'stop button' });
     }
   }
 

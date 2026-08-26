@@ -794,6 +794,7 @@ func (w *ConversationWorker) waitForRetryDelay(d time.Duration) RetryWaitResult 
 		case msg := <-w.inbound:
 			switch msg.Type {
 			case "cancel":
+				w.logCancel(cancelReasonFromPayload(msg.Payload))
 				if p := w.turn.cancelLLM.Swap(nil); p != nil {
 					(*p)()
 				}

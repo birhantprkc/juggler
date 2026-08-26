@@ -953,16 +953,18 @@ class JugglerApp {
    *   came from (null = root). When omitted/undefined the vantage is unknown and
    *   we fall back to interrupting whichever sub-thread is the live processing
    *   column — so a bare Escape interrupts a running child rather than closing it.
-   * @param {{polite?: boolean, toggle?: boolean}} [opts] - When `polite` is true,
+   * @param {{polite?: boolean, toggle?: boolean, source?: string}} [opts] - When `polite` is true,
    *   request a non-destructive Pause instead of a hard cancel: the current step
    *   finishes and records its real result, then the worker rests at idle before
    *   the next LLM turn. Nothing is cancelled, interrupted, or closed, so the
    *   vantage routing below is skipped entirely (polite is vantage-uniform). When
    *   `toggle` is also true (the Pause button, NOT shift+Escape), a polite request
    *   that arrives while a Pause is already pending cancels it instead — clicking
-   *   Pause twice turns it back off.
+   *   Pause twice turns it back off. `source` names the gesture behind a hard
+   *   stop (`escape`, `stop button`) so the worker's log can attribute the
+   *   cancel; it reaches the log and nothing else.
    */
-  async cancelLLMOperation(focusedThreadId = undefined, { polite = false, toggle = false } = {}) {
+  async cancelLLMOperation(focusedThreadId = undefined, { polite = false, toggle = false, source = 'stop' } = {}) {
     // The visible conversation is the one being cancelled.
     const target = this._requireVisibleConversation('cancel');
     if (!target) return;
@@ -1029,14 +1031,14 @@ class JugglerApp {
     if (wasProcessing) {
       // Mid-turn cancel: add the user-facing cancellation message AND
       // tell the worker (addCancellationMessage → stopProcessing).
-      conversation.addCancellationMessage();
+      conversation.addCancellationMessage(source);
     } else if (wasRunningActions || isAwaitingLLM) {
       // Rerun-stuck branch: the LLM isn't streaming so we don't want a
       // user-facing "Cancelled" message, but the worker is sitting in
       // activity='awaiting_llm' with the tool-action still un-terminated.
       // stopProcessing sends the WS cancel that drives the worker's
       // CancelInFlightToolActions → writes state='cancelled'.
-      conversation.stopProcessing();
+      conversation.stopProcessing(source);
     }
 
     // Root/parent vantage: settle every sub-thread run still open, so nothing

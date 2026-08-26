@@ -568,9 +568,11 @@ class WorkerManager {
   /**
    * Request conversation cancel
    * @param {string} conversationId - Conversation ID
+   * @param {string} [reason] - What caused the cancel (`escape`, `stop button`, `undo/redo`, …).
+   *   Logged by the worker so a cancelled turn says who stopped it; never shown to the user.
    */
-  cancel(conversationId) {
-    this.sendToWorker(conversationId, { type: 'cancel' });
+  cancel(conversationId, reason) {
+    this.sendToWorker(conversationId, { type: 'cancel', reason });
   }
 
   /**

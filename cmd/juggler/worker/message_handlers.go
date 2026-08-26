@@ -613,7 +613,18 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 	w.batcher.Flush()
 }
 
-func (w *ConversationWorker) handleCancel() {
+// logCancel records who stopped the turn, with enough state to tell a mid-turn
+// cancel from one that landed on an already-parked turn. Every path that can
+// cancel writes exactly one of these; without it a cancelled turn simply stops,
+// leaving no trace anywhere in the logs.
+func (w *ConversationWorker) logCancel(reason cancelReason) {
+	w.log.Info("🛑 Cancel requested (%s) — state=%s activity=%s llmInFlight=%v",
+		reason, w.loadState(), w.getActivity(), w.turn.cancelLLM.Load() != nil)
+}
+
+func (w *ConversationWorker) handleCancel(reason cancelReason) {
+	w.logCancel(reason)
+
 	// A hard cancel supersedes any pending polite stop (Pause): the user escalated
 	// from "finish then pause" to "stop now", so drop the latch before the
 	// destructive teardown below runs (D6, D7). Clearing it here also means the
@@ -1109,7 +1120,7 @@ func (w *ConversationWorker) cancelAndWaitForIdle() {
 	if w.loadState() == StateIdle {
 		return
 	}
-	w.handleCancel()
+	w.handleCancel(cancelReasonUndoRedo)
 	// Wait up to ~1s for the strategy goroutine to honour the cancel and
 	// transition to Idle. Polling is acceptable here: undo is rare and the
 	// strategy loop checks its state every iteration / on LLM cancel.

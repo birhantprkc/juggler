@@ -245,7 +245,7 @@ func TestCancelParksWhenToolExecuting(t *testing.T) {
 		t.Fatal("precondition: a running tool must make blockedOnlyByApprovals=false")
 	}
 
-	w.handleCancel()
+	w.handleCancel(cancelReasonUnspecified)
 
 	// The elapsed-time anchor must reset on the stop. Parking rests the turn via
 	// sendStatus("idle"), so the NEXT turn — a Continue the user presses to start
@@ -343,7 +343,7 @@ func TestPureApprovalCancelPreservesWarmSession(t *testing.T) {
 		t.Fatal("precondition: a lone pending tool must make blockedOnlyByApprovals=true")
 	}
 
-	w.handleCancel()
+	w.handleCancel(cancelReasonUnspecified)
 
 	if !called {
 		t.Fatal("expected handleCancel to release the provider session")

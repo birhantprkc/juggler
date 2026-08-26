@@ -98,7 +98,7 @@ class SlashCommandHandler {
     // live bash action snapshots a `state: 'running'` item into the new
     // sub-thread where nothing will ever flip it to cancelled/completed.
     if (CommandClass.MANIFEST?.mutatesConversation && conv) {
-      await conv.cancelAndSettle();
+      await conv.cancelAndSettle('slash command');
     }
 
     const command = new CommandClass({
