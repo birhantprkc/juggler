@@ -64,6 +64,8 @@ export class SecondViewer {
     this._doc.initializeAsClient();
     /** @type {boolean} */
     this._syncedOnce = false;
+    /** @type {any} */
+    this._beatTimer = null;
   }
 
   /**
@@ -116,6 +118,12 @@ export class SecondViewer {
             config: {}
           }
         }));
+        // The server closes a viewer that says nothing for viewerSilenceWindow
+        // (cmd/juggler/server/link_liveness.go), so keep this one's half of the
+        // protocol like a real viewer does.
+        this._beatTimer = setInterval(() => {
+          try { ws.send(JSON.stringify({ type: 'viewer-heartbeat' })); } catch { /* closing */ }
+        }, 15000);
         resolve();
       };
       ws.onerror = () => {
@@ -172,6 +180,10 @@ export class SecondViewer {
    * ClientDisconnected) and destroy the local doc. Idempotent.
    */
   close() {
+    if (this._beatTimer) {
+      clearInterval(this._beatTimer);
+      this._beatTimer = null;
+    }
     if (this._ws) {
       try { this._ws.close(); } catch { /* already closing */ }
       this._ws = null;

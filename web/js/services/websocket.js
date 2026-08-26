@@ -9,8 +9,74 @@ import { fetchJson } from './http.js';
 const WEBRTC_CHUNK_TYPE = '__juggler_dc_chunk';
 const WEBRTC_CHUNK_SIZE = 16 * 1024;
 
+// Link liveness. The server sends a beat whenever it has had nothing to say for
+// serverBeatInterval (cmd/juggler/server/link_liveness.go), and checks each link
+// on a tick of a third of that — so on a healthy but idle link, the longest
+// legitimate gap between inbound messages is one beat interval plus one tick:
+// 20 seconds. Everything below is measured in that window.
+//
+// This matters because a link can die without either end being told. A half-open
+// TCP connection — a laptop suspended mid-turn, a phone off wifi, a NAT dropping
+// a mapping — has no RST to deliver, so the page sits on a socket that will never
+// speak again until the kernel gives up minutes later.
+
+/** How often the link is examined: inbound stall, outbound beat, stuck connect. */
+const LINK_CHECK_MS = 5000;
+
+/** How long this client may stay quiet before it says it is still here. Mirrors serverBeatInterval. */
+const VIEWER_BEAT_MS = 15000;
+
 /**
- * @typedef {'open'|'close'|'error'|'message'|'session'|'file-change'|'project-changed'|'plugin-changed'|'retry'|'streaming-error'|'providers-update'|'providers-ready'|'shell-output'|'reconnect-attempt'|'processing-heartbeat'|'engine-bridge'|'update-status'|'clients-changed'} WSEventType
+ * How long the link may produce nothing before it is presumed dead. Three beat
+ * windows (60s vs the 20s worst-case gap), so two consecutive beats must go
+ * missing before a link is dropped — a link that merely stalled for a few
+ * seconds, or a page whose timers were starved by a busy main thread, is never
+ * mistaken for a dead one. The server's own patience is longer still
+ * (viewerSilenceWindow, 75s), so a viewer always heals its link before the
+ * server gives up on it.
+ */
+const LINK_STALL_MS = 60000;
+
+/**
+ * How long a connection attempt may hang before it is abandoned. An attempt that
+ * neither opens nor fails is the shape of a wake-from-sleep: the socket was
+ * created into a network that is no longer there, and nothing will ever complete
+ * or fail it. Generous, because a genuine handshake over a bad link is slow.
+ */
+const CONNECT_STALL_MS = 20000;
+
+/**
+ * How long a wake signal tolerates silence before dropping the link. A beat
+ * should have landed within 20s, so nothing at 30s means the link did not
+ * survive whatever the page just came back from — no reason to wait out the
+ * full stall threshold.
+ */
+const WAKE_STALE_MS = 30000;
+
+/**
+ * How recently a connection attempt must have started for a wake signal to leave
+ * it alone. Wake signals arrive in bursts, and the attempt the first one starts
+ * is still handshaking when the rest land. Beyond that window the attempt is not
+ * a live one but one that went under with the page — see
+ * {@link WebSocketService#_retryNow}.
+ */
+const WAKE_ATTEMPT_GRACE_MS = 3000;
+
+/**
+ * First retry after a link drops. Most drops are momentary, and the old floor of
+ * a full second was a second of nothing on every one of them.
+ */
+const RECONNECT_FIRST_DELAY_MS = 300;
+
+/**
+ * Fraction each backoff delay is spread by, in both directions. Several viewers
+ * of one server all drop at the same instant when it restarts; without this they
+ * would return in lockstep, every tier, for as long as the outage lasts.
+ */
+const RECONNECT_JITTER = 0.25;
+
+/**
+ * @typedef {'open'|'close'|'error'|'message'|'session'|'file-change'|'project-changed'|'plugin-changed'|'retry'|'streaming-error'|'providers-update'|'providers-ready'|'shell-output'|'reconnect-attempt'|'engine-bridge'|'update-status'|'clients-changed'} WSEventType
  */
 
 /**
@@ -76,6 +142,34 @@ class WebSocketService {
     /** @type {boolean} @private */
     this._suppressNextCloseReconnect = false;
     /**
+     * Which connection attempt is the current one. Every attempt captures this
+     * as it starts, and an attempt whose captured value no longer matches has
+     * been superseded or condemned: the transport, the suppress-reconnect flag
+     * and the choice of what to fall back to all belong to the attempt that
+     * replaced it, and a handshake that only settles afterwards may not write
+     * over any of them. See {@link WebSocketService#_supersedeAttempt}.
+     * @type {number} @private
+     */
+    this._attemptGeneration = 0;
+    /**
+     * Whether {@link WebSocketService#_reconnect} announces the countdown it is
+     * arming. Cleared for the span of a drop whose timer is replaced by an
+     * immediate attempt — see {@link WebSocketService#_retryNow}, whose own
+     * announcement is the one listeners can act on.
+     * @type {boolean} @private
+     */
+    this._announceReconnect = true;
+    /**
+     * One-shot mark, set by {@link WebSocketService#_dropLink} for the single
+     * death it is about to hand to {@link WebSocketService#_onTransportClosed}
+     * and consumed there. It separates a link we condemned from one the other
+     * end closed, which is the whole of the difference between a bad link and a
+     * server that restarted — see the unidentified-death branch of
+     * _onTransportClosed.
+     * @type {boolean} @private
+     */
+    this._selfInflictedDrop = false;
+    /**
      * How to re-establish the CURRENT transport after the link drops. Set by
      * connect() to a transport-specific thunk so the backoff loop in
      * _reconnect() stays transport-agnostic: every transport drops into the
@@ -89,6 +183,30 @@ class WebSocketService {
      * @type {(() => void)|null} @private
      */
     this._reestablish = null;
+    /**
+     * When a message last arrived on the transport, as epoch ms; 0 before the
+     * first one. This is the only honest evidence the link is alive, so it is
+     * stamped by EVERY inbound message rather than by the beat alone.
+     * @type {number} @private
+     */
+    this._lastInboundAt = 0;
+    /** @type {number} @private - When something was last handed to the transport, as epoch ms. */
+    this._lastOutboundAt = 0;
+    /** @type {number} @private - When the current connection attempt started, as epoch ms. */
+    this._connectStartedAt = 0;
+    /**
+     * Set while a connection attempt is outstanding — from the moment the
+     * transport primitive runs until the transport opens or dies. It is what
+     * stops a burst of wake signals turning into a burst of parallel sockets.
+     * @type {boolean} @private
+     */
+    this._connecting = false;
+    /** @type {any} @private - The link watchdog's interval, or null while it is not running. */
+    this._linkTimer = null;
+    /** @type {any} @private - The pending backoff timer; at most one exists at a time. */
+    this._retryTimer = null;
+    /** @type {boolean} @private - Whether the visibility/online listeners are installed (once per service). */
+    this._wakeListenersInstalled = false;
     /** @type {number} @private */
     this._dcChunkSeq = 0;
     /** @type {Map<string, {total: number, parts: string[], received: number}>} @private */
@@ -109,15 +227,61 @@ class WebSocketService {
       'providers-ready': [],
       'shell-output': [],
       'reconnect-attempt': [],
-      'processing-heartbeat': [],
       'engine-bridge': [],
       'update-status': [],
       'clients-changed': []
     };
   }
 
+  /**
+   * Take ownership of connection attempts away from whatever held it, and
+   * return the token the new owner carries.
+   *
+   * Called from the three places ownership changes hands, which is every place
+   * an attempt can be superseded or abandoned: connect() (a new attempt takes
+   * over from any still in flight), _dropLink() (the current attempt or link is
+   * condemned, and the death handler installs its replacement in the same turn)
+   * and disconnect() (nothing speaks for this service again).
+   *
+   * Deliberately not called from _reestablishNow, which only ever reaches a new
+   * attempt through connect() and is entered either from a death, whose attempt
+   * is already over, or from _retryNow, which condemns a live attempt through
+   * _dropLink first. Nor from _settleOpen or _onTransportClosed: a settled
+   * attempt has nothing left to reject, and an attempt whose transport died
+   * while it is still the current one is exactly the case that must go on to
+   * suppress the reconnect and fall back to the relay.
+   * @returns {number} The generation the caller's attempt carries.
+   * @private
+   */
+  _supersedeAttempt() {
+    return ++this._attemptGeneration;
+  }
+
+  /**
+   * Whether a direct WebRTC transport is worth attempting: a viewer on a secure
+   * origin — the LAN path the host serves over https — in a browser that has
+   * peer connections. One seam for the choice, so it can be answered for a
+   * service under test without a page served over https.
+   * @param {string} role - 'viewer' or 'engine'.
+   * @returns {boolean} True if the WebRTC probe should run.
+   * @private
+   */
+  _shouldTryWebRTC(role) {
+    return role === 'viewer'
+      && globalThis.location.protocol === 'https:'
+      && typeof globalThis.RTCPeerConnection !== 'undefined';
+  }
+
   connect() {
     this._intentionalDisconnect = false;
+    // Which attempt this is. An attempt condemned or replaced while its
+    // handshake is still in flight carries a stale generation, and everything it
+    // would do on the way out is then the replacement's business, not its own.
+    const generation = this._supersedeAttempt();
+    this._connecting = true;
+    this._connectStartedAt = Date.now();
+    this._installWakeListeners();
+    this._startLinkWatchdog();
 
     const role = isEngine() ? 'engine' : 'viewer';
 
@@ -140,8 +304,16 @@ class WebSocketService {
       return;
     }
 
-    if (role === 'viewer' && globalThis.location.protocol === 'https:' && typeof globalThis.RTCPeerConnection !== 'undefined') {
-      this._connectWebRTC(role).catch((error) => {
+    if (this._shouldTryWebRTC(role)) {
+      this._connectWebRTC(role, generation).catch((error) => {
+        // An attempt that was abandoned while this handshake was in flight has
+        // nothing left to fall back to: the link it would have relayed for
+        // belongs to whatever replaced it, and a second socket alongside that
+        // one is exactly what the generation exists to prevent.
+        if (generation !== this._attemptGeneration) {
+          console.info('[WebSocket] Ignoring an abandoned WebRTC attempt:', error);
+          return;
+        }
         console.warn('[WebSocket] WebRTC direct transport failed; falling back to WebSocket relay:', error);
         if (!this.connected && !this._intentionalDisconnect) {
           this._connectWebSocket(role);
@@ -175,15 +347,19 @@ class WebSocketService {
 
   /**
    * @param {string} role
+   * @param {number} generation - The attempt this handshake belongs to, from _supersedeAttempt().
    * @returns {Promise<void>}
    * @private
    */
-  async _connectWebRTC(role) {
+  async _connectWebRTC(role, generation) {
     const pc = new window.RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
+    /** @type {RTCDataChannel|null} */
+    let channel = null;
     try {
       const dc = pc.createDataChannel('juggler', { ordered: true });
+      channel = dc;
       /** @type {RTCDataChannel & {__pc?: RTCPeerConnection}} */ (dc).__pc = pc;
       this._transport = /** @type {any} */ (dc);
       this._configureTransport(/** @type {any} */ (dc), 'WebRTC');
@@ -212,9 +388,20 @@ class WebSocketService {
       await pc.setRemoteDescription(answer.answer);
       await opened;
     } catch (error) {
-      this._suppressNextCloseReconnect = true;
+      if (generation === this._attemptGeneration) {
+        // Still the current attempt, so this is the ordinary shape of a host
+        // that cannot be reached directly: the close pc.close() is about to
+        // cause is an expected probe failure rather than a link death, and
+        // connect()'s catch relays over a WebSocket instead.
+        this._suppressNextCloseReconnect = true;
+        this._transport = null;
+      } else if (channel) {
+        // Abandoned. Whoever condemned this attempt has already handled its
+        // death and moved on, so mark the channel handled: its close must not
+        // be read as the death of the link now standing in its place.
+        /** @type {any} */ (channel).__jugglerDeathHandled = true;
+      }
       pc.close();
-      this._transport = null;
       throw error;
     }
   }
@@ -258,8 +445,12 @@ class WebSocketService {
     this._reestablish = () => this._reloadWhenReachable();
 
     // Route channel death through the shared transport-death handler so studio
-    // uses the identical reconnect policy as the socket transports.
-    const onDead = (/** @type {Event} */ event) => this._onTransportClosed(event, studio.dc);
+    // uses the identical reconnect policy as the socket transports. The death is
+    // reported against the send-adapter rather than the channel, because that is
+    // what the watchdog would drop — one object carries the handled-once marker
+    // whichever of them notices first (see _onTransportClosed).
+    const adapter = this._transport;
+    const onDead = (/** @type {Event} */ event) => this._onTransportClosed(event, adapter);
     studio.dc.addEventListener('close', onDead);
     studio.dc.addEventListener('error', onDead);
   }
@@ -306,6 +497,9 @@ class WebSocketService {
       if (this._reconnectAttempts > 0 && !isEngine()) {
         this._reconnectPending = true;
         this._heldOpenEvent = event;
+        // The attempt stays outstanding while the park lasts, so the watchdog's
+        // connect-stall check bounds it: a socket that opens and then never
+        // hears a session message is as stuck as one that never opened.
         return;
       }
       this._settleOpen(event);
@@ -334,14 +528,39 @@ class WebSocketService {
    * @private
    */
   _onTransportClosed(event, transport) {
+    // Spend the self-inflicted mark first, ahead of every early return below, so
+    // it can never outlive the one death _dropLink set it for and be read as the
+    // verdict on the next.
+    const selfInflicted = this._selfInflictedDrop;
+    this._selfInflictedDrop = false;
+    // A transport can announce its death more than once: a DataChannel fires
+    // both 'error' and 'close', and a link the watchdog drops closes for real a
+    // moment after we have already handled it. Handle the first announcement and
+    // ignore the rest — otherwise one death arms two backoff loops, which is two
+    // sockets racing to reconnect.
+    const dead = /** @type {any} */ (transport);
+    if (dead) {
+      if (dead.__jugglerDeathHandled) return;
+      dead.__jugglerDeathHandled = true;
+    }
     this.connected = false;
-    // A reconnect whose socket opened and then died before the server ever said
-    // who it is. That is what a restarted server looks like from here: it
-    // completes the upgrade and then closes the socket because the token this
-    // page replays belongs to a process that is gone. Left alone it flaps
-    // forever — every bogus open would reset the backoff — so the page reloads,
-    // being exactly as stale as the token it sent.
-    const diedUnidentified = this._reconnectPending;
+    this._connecting = false;
+    // A reconnect whose socket opened and then died at the other end's hand
+    // before the server ever said who it is. That is what a restarted server
+    // looks like from here: it completes the upgrade and then closes the socket
+    // because the token this page replays belongs to a process that is gone.
+    // Left alone it flaps forever — every bogus open would reset the backoff —
+    // so the page reloads, being exactly as stale as the token it sent.
+    //
+    // A drop we inflicted ourselves is not that. It says the link stopped
+    // carrying traffic, which is evidence about the link and none at all about
+    // which server is on the far end, and it is the ordinary shape of a laptop
+    // waking onto a network that has moved. Reloading over it would cost a full
+    // app boot plus a full-state resync of every conversation to every attached
+    // client. Nor is there a flap to protect against: the park never settled, so
+    // the backoff was never reset and the retry loop escalates as usual.
+    const diedUnidentified = this._reconnectPending && !selfInflicted;
+
     this._reconnectPending = false;
     this._heldOpenEvent = undefined;
     this._emit('close', event);
@@ -464,10 +683,11 @@ class WebSocketService {
       return true;
     },
 
-    // Processing heartbeat from backend
-    processing_heartbeat: (ws, data) => {
-      ws._emit('processing-heartbeat', data);
-    }
+    // The server's beat on an otherwise silent link (link_liveness.go). Its
+    // arrival is the entire message: _handleMessageData has already stamped it,
+    // which is what the stall watchdog reads. Routed rather than left to fall
+    // through so it is not delivered to every 'message' subscriber.
+    heartbeat: () => {}
   };
 
   /**
@@ -475,6 +695,9 @@ class WebSocketService {
    * @private
    */
   _handleMessageData(rawData) {
+    // Any inbound byte proves the link still carries traffic, whatever it turns
+    // out to say — so stamp before parsing, ahead of every early return below.
+    this._lastInboundAt = Date.now();
 
     // Ignore empty or whitespace-only messages (newlines from streaming)
     if (!rawData || String(rawData).trim().length === 0) {
@@ -543,6 +766,9 @@ class WebSocketService {
    */
   _sendTransport(payload) {
     if (!this._transport) throw new Error('transport not connected');
+    // Real traffic is a beat as far as the server is concerned, so record it and
+    // spare the link a beat it does not need.
+    this._lastOutboundAt = Date.now();
     // globalThis (not window): the engine runs in a Web Worker with no
     // `window`, and this send path runs for every outbound message. WebRTC
     // is viewer-only anyway, so RTCDataChannel is simply absent in the worker.
@@ -625,8 +851,16 @@ class WebSocketService {
 
   disconnect() {
     this._intentionalDisconnect = true;
+    // Nothing that was still handshaking speaks for this service again.
+    this._supersedeAttempt();
     this._reconnectPending = false;
     this._heldOpenEvent = undefined;
+    this._connecting = false;
+    this._stopLinkWatchdog();
+    if (this._retryTimer) {
+      clearTimeout(this._retryTimer);
+      this._retryTimer = null;
+    }
     if (this._transport) {
       const pc = /** @type {any} */ (this._transport).__pc;
       this._transport.close();
@@ -823,6 +1057,23 @@ class WebSocketService {
   }
 
   /**
+   * Tell the server this viewer is still on the other end of the link.
+   *
+   * The server closes a viewer that has said nothing for viewerSilenceWindow
+   * (link_liveness.go), because a socket held open by a machine that is never
+   * coming back is indistinguishable from a quiet one until somebody says
+   * otherwise. Sent only when there was nothing else to send — ordinary traffic
+   * says the same thing.
+   *
+   * Silent: a beat that misses because the link is down is not news, and the
+   * watchdog above is already dealing with it.
+   * @returns {boolean} True if sent
+   */
+  sendViewerHeartbeat() {
+    return this._sendJson({ type: 'viewer-heartbeat' }, 'viewer-heartbeat', { silent: true });
+  }
+
+  /**
    * Report the outcome of the run the server asked this engine to make.
    *
    * Not silent: the process that asked is blocked on this message, so a send
@@ -892,6 +1143,12 @@ class WebSocketService {
     this._reconnectPending = false;
     this._heldOpenEvent = undefined;
     this._reconnectAttempts = 0;
+    this._connecting = false;
+    // A fresh link must not inherit the dead one's stamps, or the watchdog
+    // condemns it on its first tick.
+    this._lastInboundAt = Date.now();
+    this._lastOutboundAt = Date.now();
+    this._startLinkWatchdog();
     this.connected = true;
     console.info(`[WebSocket] Connected via ${this._transportLabel}`);
     this._emit('open', event);
@@ -996,27 +1253,243 @@ class WebSocketService {
     return true;
   }
 
-  _reconnect() {
-    this._reconnectAttempts++;
+  /**
+   * Watch the link for the failures it cannot report itself: a connection that
+   * has stopped delivering, and a connection attempt that will never complete.
+   * Also the outbound half of the beat — a viewer that says nothing at all is
+   * eventually closed by the server (link_liveness.go).
+   *
+   * Runs for every transport. All three conditions are properties of the link
+   * rather than of how it was established, and each transport's death already
+   * routes through the same _onTransportClosed, so the recovery is identical
+   * whichever one is underneath.
+   * @private
+   */
+  _startLinkWatchdog() {
+    if (this._linkTimer) return;
+    this._linkTimer = setInterval(() => this._checkLink(), LINK_CHECK_MS);
+  }
 
-    // Tiered delay: 1s for first 50, 2s for next 50, 5s after that
-    let delay;
-    if (this._reconnectAttempts <= 50) {
-      delay = 1000;
-    } else if (this._reconnectAttempts <= 100) {
-      delay = 2000;
-    } else {
-      delay = 5000;
+  /** @private */
+  _stopLinkWatchdog() {
+    if (this._linkTimer) clearInterval(this._linkTimer);
+    this._linkTimer = null;
+  }
+
+  /**
+   * One watchdog tick.
+   * @private
+   */
+  _checkLink() {
+    if (this._intentionalDisconnect) return;
+    const now = Date.now();
+
+    if (!this.connected) {
+      // Nothing to measure unless an attempt is outstanding: while the backoff
+      // timer is counting down there is no link to have an opinion about.
+      if (this._connecting && now - this._connectStartedAt > CONNECT_STALL_MS) {
+        this._dropLink(`the connection attempt went unanswered for ${Math.round((now - this._connectStartedAt) / 1000)}s`);
+      }
+      return;
     }
 
-    // Emit reconnect-attempt event with delay so UI can show countdown
-    this._emit('reconnect-attempt', { attempt: this._reconnectAttempts, delayMs: delay });
+    const quiet = now - this._lastInboundAt;
+    if (this._lastInboundAt && quiet > LINK_STALL_MS) {
+      this._dropLink(`nothing has arrived for ${Math.round(quiet / 1000)}s`);
+      return;
+    }
 
-    setTimeout(() => {
+    // The engine keeps its own, faster beat from inside its module worker, which
+    // proves something this one cannot (engine-app.js).
+    if (!isEngine() && now - this._lastOutboundAt >= VIEWER_BEAT_MS) {
+      this.sendViewerHeartbeat();
+    }
+  }
+
+  /**
+   * Declare the current link dead and start recovering, without waiting for the
+   * transport to admit it.
+   *
+   * Routed through the ordinary death handler rather than reconnecting directly,
+   * so the boot-id park, the 'close' event, the transport cleanup and the backoff
+   * loop all behave as they do for a link that closed on its own. The transport's
+   * real close event follows later and is ignored as a repeat (see
+   * _onTransportClosed).
+   *
+   * The single distinction the handler draws is the mark set here. Condemning a
+   * silent link is a statement about the link; it is not the restarted-server
+   * flap that reloads the page, and must not be read as one.
+   * @param {string} reason - What made the link look dead, for the log line.
+   * @private
+   */
+  _dropLink(reason) {
+    const dead = this._transport;
+    console.warn(`[ESSENTIAL] [WebSocket] Dropping the link: ${reason}`);
+    // Any handshake still in flight is condemned along with the link. The
+    // replacement _onTransportClosed installs below owns the transport from
+    // here, and an attempt that settles later must not write over it.
+    this._supersedeAttempt();
+    // Marked before the close, so a transport that answers close() by running its
+    // handler there and then still reaches the death handler carrying the mark.
+    this._selfInflictedDrop = true;
+    try {
+      dead?.close();
+    } catch {
+      /* already gone */
+    }
+    this._onTransportClosed(new Event('close'), dead);
+  }
+
+  /**
+   * Listen for the two moments a suspended page comes back: the tab becoming
+   * visible (laptop wake, phone unlock, tab switch) and the browser reporting the
+   * network back. Both mean the answer to "is the link alive" has just changed,
+   * and neither is worth waiting out a backoff tier to discover.
+   *
+   * Installed once, and only from connect() — a service nobody connected has
+   * nothing to wake up. `document` is absent in the engine's module worker, so
+   * the engine gets the 'online' half only.
+   * @private
+   */
+  _installWakeListeners() {
+    if (this._wakeListenersInstalled) return;
+    this._wakeListenersInstalled = true;
+    if (typeof globalThis.addEventListener === 'function') {
+      globalThis.addEventListener('online', () => this._wake('the browser says the network is back'));
+    }
+    const doc = /** @type {any} */ (globalThis).document;
+    if (doc && typeof doc.addEventListener === 'function') {
+      doc.addEventListener('visibilitychange', () => {
+        if (doc.visibilityState === 'visible') this._wake('the page became visible');
+      });
+    }
+  }
+
+  /**
+   * Act on a wake signal.
+   *
+   * A page that has been asleep believes whatever it believed when it went under.
+   * If it thought it was connected, the socket it is holding may have died
+   * silently while nothing was running to notice — so a link with no recent
+   * traffic is dropped rather than trusted. If it thought it was disconnected,
+   * the remaining backoff was measured against a network that has since changed,
+   * so it is abandoned and the attempt made now.
+   * @param {string} reason - What woke us, for the log line.
+   * @private
+   */
+  _wake(reason) {
+    if (this._intentionalDisconnect) return;
+    if (this.connected) {
+      const quiet = Date.now() - this._lastInboundAt;
+      if (this._lastInboundAt && quiet > WAKE_STALE_MS) {
+        this._dropLink(`${reason}, but nothing has arrived for ${Math.round(quiet / 1000)}s`);
+      }
+      return;
+    }
+    this._retryNow(reason);
+  }
+
+  /**
+   * Retry the connection immediately instead of waiting out the pending backoff.
+   *
+   * At most one attempt is in flight when this returns, and the age of any
+   * attempt already under way decides which one it is.
+   *
+   * Younger than WAKE_ATTEMPT_GRACE_MS, the attempt is genuinely handshaking and
+   * is left to finish: wake signals arrive in bursts — 'online' and
+   * 'visibilitychange' together — and each extra socket would be one more the
+   * backoff loop has to reconcile. Older, it is not a live attempt at all but one
+   * that went under with the page, opened into a network that has since changed
+   * and will typically neither open nor fail; it is condemned here rather than
+   * left to the watchdog's connect-stall check, whose patience is measured in the
+   * tens of seconds this signal exists to save.
+   *
+   * Condemning it re-arms the backoff loop, as any death does. So the pending
+   * timer is cleared after that drop and before this attempt takes its place —
+   * whether it is the one the drop just armed or one already counting down, at
+   * most one attempt and no timer survive this call.
+   * @param {string} reason - Why we are retrying now, for the log line.
+   * @private
+   */
+  _retryNow(reason) {
+    if (this.connected || this._intentionalDisconnect) return;
+    if (this._connecting) {
+      const age = Date.now() - this._connectStartedAt;
+      if (age < WAKE_ATTEMPT_GRACE_MS) return;
+      // The drop re-arms the backoff loop as any death does, and the timer it
+      // arms is cleared below in favour of the attempt made here. Announcing
+      // that delay would put a countdown in front of the user that nothing is
+      // waiting out, so the announcement this call makes is the only one.
+      this._announceReconnect = false;
+      try {
+        this._dropLink(`${reason}, and the attempt under way is ${Math.round(age / 1000)}s old`);
+      } finally {
+        this._announceReconnect = true;
+      }
+    }
+    if (this._retryTimer) {
+      clearTimeout(this._retryTimer);
+      this._retryTimer = null;
+    }
+    console.info(`[WebSocket] Reconnecting now: ${reason}`);
+    this._emit('reconnect-attempt', { attempt: this._reconnectAttempts, delayMs: 0 });
+    this._reestablishNow();
+  }
+
+  /**
+   * Run the current transport's re-establish primitive (set in connect()),
+   * recording that an attempt is outstanding. Falls back to a plain reconnect if
+   * connect() never ran.
+   * @private
+   */
+  _reestablishNow() {
+    this._connecting = true;
+    this._connectStartedAt = Date.now();
+    (this._reestablish || (() => this.connect()))();
+  }
+
+  /**
+   * How long to wait before attempt number `attempt`.
+   *
+   * The tiers hold a reconnecting viewer at roughly one attempt a second for the
+   * first minute, then ease off for an outage that is clearly not ending — but
+   * the FIRST retry is fast, because the overwhelming majority of drops are a
+   * blip and a second of blank screen is the whole cost of one. Every delay is
+   * jittered so a server restart does not bring its viewers back in lockstep.
+   * @param {number} attempt - 1-based attempt number.
+   * @returns {number} Delay in milliseconds.
+   * @private
+   */
+  _backoffDelay(attempt) {
+    let base;
+    if (attempt <= 1) {
+      base = RECONNECT_FIRST_DELAY_MS;
+    } else if (attempt <= 50) {
+      base = 1000;
+    } else if (attempt <= 100) {
+      base = 2000;
+    } else {
+      base = 5000;
+    }
+    return Math.round(base * (1 - RECONNECT_JITTER + Math.random() * 2 * RECONNECT_JITTER));
+  }
+
+  _reconnect() {
+    this._reconnectAttempts++;
+    const delay = this._backoffDelay(this._reconnectAttempts);
+
+    // Emit reconnect-attempt event with delay so UI can show countdown
+    if (this._announceReconnect) {
+      this._emit('reconnect-attempt', { attempt: this._reconnectAttempts, delayMs: delay });
+    }
+
+    // One pending attempt at a time. A drop that arrives while a timer is
+    // already counting down replaces it rather than adding to it.
+    if (this._retryTimer) clearTimeout(this._retryTimer);
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null;
       if (this.connected || this._intentionalDisconnect) return;
-      // Re-establish via the current transport's primitive (set in connect()).
-      // Fall back to a plain reconnect if connect() never ran.
-      (this._reestablish || (() => this.connect()))();
+      this._reestablishNow();
     }, delay);
   }
 

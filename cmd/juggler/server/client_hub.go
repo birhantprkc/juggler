@@ -6,8 +6,16 @@
 // WebSocket clients. Use it for full-fleet broadcasts (project-changed,
 // providers-update, session-changed, shutdown notices) — anything that
 // needs to reach engine and every viewer regardless of project.
+//
+// Delivery is per-client and asynchronous: each registered client owns a
+// mailbox.Mailbox, so the actor hands a broadcast off in one goroutine hop and
+// a client that has stopped draining delays nobody but itself (see
+// cmd/juggler/mailbox). The single exception is the shutdown notice, which is
+// sent inline for the reason recorded at that site.
 
 package server
+
+import "juggler/cmd/juggler/mailbox"
 
 type hubOpKind int
 
@@ -50,20 +58,40 @@ func newClientHub() *clientHub {
 	return h
 }
 
+// hubClient is one registered client and its outbound pipeline. The client
+// itself is kept because the hub reports on it (role and display info feed
+// clients-changed and GET /api/connectivity); the mailbox is how anything
+// actually reaches it. Everything the hub sends goes through mb — a client's
+// Send blocks while its send buffer is full, and calling it from the actor
+// loop would stall every other client behind the slowest one.
+type hubClient struct {
+	c  RealtimeClient
+	mb *mailbox.Mailbox[outboundMsg]
+}
+
 func (h *clientHub) run() {
-	clients := make(map[string]RealtimeClient)
+	clients := make(map[string]hubClient)
+
+	// remove drops a client and releases its delivery goroutines. Undelivered
+	// messages go with it, which is right for a client that has left.
+	remove := func(id string) {
+		if hc, ok := clients[id]; ok {
+			hc.mb.Stop()
+			delete(clients, id)
+		}
+	}
 
 	// viewerDescriptors returns one descriptor per connected user-facing (viewer)
 	// client. The engine's hidden headless browser is not a viewer and is omitted.
 	viewerDescriptors := func() []clientDescriptor {
 		list := make([]clientDescriptor, 0, len(clients))
-		for _, c := range clients {
-			if c.ClientRole() != ClientRoleViewer {
+		for _, hc := range clients {
+			if hc.c.ClientRole() != ClientRoleViewer {
 				continue
 			}
-			info := c.ClientInfo()
+			info := hc.c.ClientInfo()
 			list = append(list, clientDescriptor{
-				ID:          c.ClientID(),
+				ID:          hc.c.ClientID(),
 				Origin:      info.Origin,
 				Detail:      info.Detail,
 				UserAgent:   info.UserAgent,
@@ -79,9 +107,9 @@ func (h *clientHub) run() {
 	broadcastViewers := func() {
 		list := viewerDescriptors()
 		msg := map[string]any{"type": "clients-changed", "count": len(list), "clients": list}
-		for _, c := range clients {
-			if c.ClientRole() == ClientRoleViewer {
-				c.Send(msg)
+		for _, hc := range clients {
+			if hc.c.ClientRole() == ClientRoleViewer {
+				hc.mb.Enqueue(outboundMsg{json: msg})
 			}
 		}
 	}
@@ -89,20 +117,25 @@ func (h *clientHub) run() {
 	for op := range h.ch {
 		switch op.kind {
 		case hubRegister:
-			clients[op.client.ClientID()] = op.client
+			id := op.client.ClientID()
+			// A re-register under a live id replaces the entry, so the old
+			// pipeline is stopped rather than orphaned with its goroutines.
+			remove(id)
+			clients[id] = hubClient{c: op.client, mb: newClientMailbox(op.client)}
 			if op.client.ClientRole() == ClientRoleViewer {
 				broadcastViewers()
 			}
 		case hubUnregister:
-			if _, ok := clients[op.client.ClientID()]; ok {
-				delete(clients, op.client.ClientID())
+			id := op.client.ClientID()
+			if _, ok := clients[id]; ok {
+				remove(id)
 				if op.client.ClientRole() == ClientRoleViewer {
 					broadcastViewers()
 				}
 			}
 		case hubBroadcast:
-			for _, c := range clients {
-				c.Send(op.msg)
+			for _, hc := range clients {
+				hc.mb.Enqueue(outboundMsg{json: op.msg})
 			}
 		case hubViewerCount:
 			op.intResult <- len(viewerDescriptors())
@@ -113,9 +146,18 @@ func (h *clientHub) run() {
 				"type":    "server_shutdown",
 				"message": "Server is shutting down",
 			}
-			for _, c := range clients {
-				c.Send(shutdownMsg)
-				c.Close()
+			for _, hc := range clients {
+				// Sent inline, and deliberately not through the mailbox: the
+				// notice exists to be read on the way out, and the ordering with
+				// the Close below is what makes that work — writePump flushes
+				// what is already queued when it sees the close. Enqueuing makes
+				// the hand-off asynchronous, so the Close can land first and the
+				// client goes down without ever hearing why. The stall a wedged
+				// client can cause here reaches only teardown, which is bounded
+				// by serverShutdownTimeout / quitGraceTimeout.
+				hc.mb.Stop()
+				hc.c.Send(shutdownMsg)
+				hc.c.Close()
 			}
 			close(op.doneCh)
 			return

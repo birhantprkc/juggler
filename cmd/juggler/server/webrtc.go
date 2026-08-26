@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"juggler/cmd/juggler/server/handlers"
@@ -351,6 +352,10 @@ type webRTCClient struct {
 	send      chan wsMessage
 	closeOnce sync.Once
 	stats     *wsStats
+	// lastSendAt is when a message last reached the channel, as unix nanoseconds.
+	// Written by the writer goroutine, read by the client's message loop. See
+	// IdleOutbound.
+	lastSendAt atomic.Int64
 }
 
 func newWebRTCClient(dc *webrtc.DataChannel, pc *webrtc.PeerConnection, stats *wsStats) *webRTCClient {
@@ -365,8 +370,21 @@ func newWebRTCClient(dc *webrtc.DataChannel, pc *webrtc.PeerConnection, stats *w
 		send:  make(chan wsMessage, 256),
 		stats: stats,
 	}
+	// The channel has just opened, so the link starts idle from now rather than
+	// from the zero time.
+	c.lastSendAt.Store(time.Now().UnixNano())
 	go c.writePump()
 	return c
+}
+
+// IdleOutbound reports how long this client has had nothing to send, so the link
+// supervisor can beat only on a quiet link. Zero while writes are queued — see
+// WSClient.IdleOutbound for why a backlog counts as busy.
+func (c *webRTCClient) IdleOutbound() time.Duration {
+	if len(c.send) > 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, c.lastSendAt.Load()))
 }
 
 func (c *webRTCClient) ClientID() string       { return c.id }
@@ -374,6 +392,12 @@ func (c *webRTCClient) ClientRole() ClientRole { return c.role }
 func (c *webRTCClient) ClientInfo() ClientInfo { return c.info }
 
 func (c *webRTCClient) writePump() {
+	// Marking the client closed on the way out covers the exit a write error
+	// forces: nothing drains send once this goroutine is gone, so without it a
+	// sender would fill the buffer and then block on a channel with no reader.
+	// Close is idempotent (closeOnce), so the ordinary exit — the range ending
+	// because Close closed send — passes through it harmlessly.
+	defer c.Close()
 	for msg := range c.send {
 		payload := msg.raw
 		if payload == nil {
@@ -389,6 +413,7 @@ func (c *webRTCClient) writePump() {
 			jlog.Error("WebRTC write error for client %s: %v", c.id, err)
 			return
 		}
+		c.lastSendAt.Store(time.Now().UnixNano())
 	}
 }
 

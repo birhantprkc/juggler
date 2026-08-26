@@ -62,8 +62,9 @@ type outboundMsg struct {
 }
 
 // newClientMailbox builds one client's ordered delivery pipeline
-// (mailbox.Mailbox — never blocks the viewerGroup actor, preserves enqueue
-// order). Streaming consumers depend on that ordering: a viewer's live
+// (mailbox.Mailbox — never blocks the actor that enqueues, preserves enqueue
+// order). Both the viewerGroup and the clientHub fan out through it.
+// Streaming consumers depend on that ordering: a viewer's live
 // engine-bridge/action-progress chunks must arrive in order, or a later
 // snapshot is overtaken by an earlier one and the panel shows stale output.
 // (Foreground bash output no longer rides the viewer group — shell-output goes

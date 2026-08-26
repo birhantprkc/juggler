@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"juggler/cmd/juggler/worker"
 	"juggler/internal/jlog"
@@ -99,8 +100,18 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 	shellCancelChan := make(chan string, 100)
 	shellCompleteChan := make(chan string, 100)
 
+	// Watch the link itself: beat when it goes quiet, and close a viewer that has
+	// gone quiet in the other direction (see link_liveness.go). Owned by this
+	// goroutine, which is the only one that touches it.
+	link := newLinkSupervisor(s, client)
+	linkTick := time.NewTicker(s.linkCheckInterval())
+	defer linkTick.Stop()
+
 	for {
 		select {
+		case <-linkTick.C:
+			link.tick()
+
 		case <-done:
 			if s.workerManager != nil {
 				s.workerManager.ClientDisconnected(client.ClientID())
@@ -122,6 +133,10 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 
 			s.stats.record(statsIn, msgBytes, role)
 
+			// Anything at all arriving proves the link still carries traffic, so the
+			// beat below only covers a client with nothing else to say.
+			link.noteInbound()
+
 			// Anything the engine says proves its realm is running, so all inbound
 			// engine traffic refreshes the liveness stamp — the heartbeat below only
 			// covers the case where the engine has nothing else to say.
@@ -135,6 +150,10 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 				// engine's module worker, the realm that must be running for a tool to
 				// execute, so it cannot be answered by a transport whose page has
 				// stopped (see engine_liveness.go).
+
+			case "viewer-heartbeat":
+				// Liveness only, same as above: a viewer saying it is still there on a
+				// link that has carried nothing else (see link_liveness.go).
 			case "shell-start":
 				shellReq, ok := unmarshalWS[ShellStartRequest](msgBytes, "shell-start")
 				if !ok {

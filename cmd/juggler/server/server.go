@@ -179,6 +179,12 @@ type wsFleet struct {
 	// engineRecovery reloads the engine host when eviction alone did not bring it
 	// back. Installed by the app layer, which owns the window; nil elsewhere.
 	engineRecovery atomic.Pointer[EngineRecovery]
+	// serverBeatIntervalNs overrides serverBeatInterval when non-zero, and with it
+	// the link-check tick derived from it. Test-only seam (see link_liveness.go).
+	serverBeatIntervalNs atomic.Int64
+	// viewerSilenceWindowNs overrides viewerSilenceWindow when non-zero, so a test
+	// need not wait out the production one. Test-only seam.
+	viewerSilenceWindowNs atomic.Int64
 	// stats, when non-nil (JUGGLER_WS_STATS set), accounts WebSocket payload
 	// bytes per direction / message type and periodically logs a table plus the
 	// modeled permessage-deflate ratio. Diagnostic only; nil in normal runs.

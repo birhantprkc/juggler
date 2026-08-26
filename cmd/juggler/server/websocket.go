@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"syscall"
+	"sync/atomic"
 	"time"
 
 	"juggler/internal/jlog"
@@ -62,6 +62,26 @@ const (
 	// status, tool output chunks — inside a single frame, and costs one
 	// syscall per 32 KiB rather than per kilobyte. Do not shrink it.
 	wsWriteBufferSize = 32 * 1024
+
+	// wsReadBufferSize sizes the per-connection buffer gorilla reads incoming
+	// frames through.
+	//
+	// It does not bound message size — gorilla streams a frame's payload
+	// through this buffer, refilling it with one read syscall at a time — so it
+	// is purely the granularity of inbound I/O. Juggler's inbound traffic is
+	// dominated by yjs-sync updates, which run to megabytes when a viewer
+	// pushes a large edit or completes a resync, and at a kilobyte apiece that
+	// is thousands of syscalls per update where 32 KiB is tens. Matched to the
+	// write buffer for that reason rather than any symmetry requirement.
+	//
+	// gorilla allocates both buffers per connection, so the resting cost is
+	// (read + write) × connections. Juggler holds a handful — one engine and a
+	// few viewers — which is what makes generous buffers the right trade here;
+	// a server fielding thousands of mostly idle connections would want the
+	// opposite. Deliberately no SetReadLimit to accompany it: no safe bound
+	// exists when one yjs-sync update can be tens of megabytes, and every
+	// upgrade is authenticated before it reaches this buffer.
+	wsReadBufferSize = 32 * 1024
 )
 
 // newWSUpgrader builds the upgrader shared by viewer and engine connections.
@@ -73,7 +93,7 @@ const (
 // pooling would add churn to the hot path to reclaim a few hundred kilobytes.
 func newWSUpgrader() websocket.Upgrader {
 	return websocket.Upgrader{
-		ReadBufferSize:  1024,
+		ReadBufferSize:  wsReadBufferSize,
 		WriteBufferSize: wsWriteBufferSize,
 		CheckOrigin:     sameOriginCheck,
 		// permessage-deflate (RFC 7692) is negotiated per-connection in
@@ -112,6 +132,10 @@ type WSClient struct {
 	closed    chan struct{}  // Closed to signal shutdown; see Close
 	closeOnce sync.Once      // Ensures closed is closed only once
 	stats     *wsStats       // Optional outbound byte accounting; nil = disabled
+	// lastSendAt is when a message last reached the connection, as unix
+	// nanoseconds. Written by the writer goroutine and read by the client's
+	// message loop, which is why it is atomic. See IdleOutbound.
+	lastSendAt atomic.Int64
 }
 
 // generateClientID creates a unique client ID using crypto/rand
@@ -136,28 +160,18 @@ func NewWSClient(conn *websocket.Conn, role ClientRole, info ClientInfo, stats *
 		closed: make(chan struct{}),
 		stats:  stats,
 	}
+	// The upgrade response is itself something this connection has just carried,
+	// so the link starts idle from now rather than from the zero time.
+	client.lastSendAt.Store(time.Now().UnixNano())
 	go client.writePump()
 	return client
 }
 
-// retryableWriteError reports whether a connection write failed for a
-// TRANSIENT kernel-side reason that warrants retrying the same payload
-// rather than declaring the connection dead. ENOBUFS means the socket
-// buffer was momentarily full (observed on macOS loopback under the
-// 9-lane test pool's burst load — and just as possible in production);
-// treating it as fatal permanently severs one client's delivery while
-// everything else keeps running, which presents as that viewer's doc
-// frozen mid-turn with no error anywhere near the symptom.
-func retryableWriteError(err error) bool {
-	return errors.Is(err, syscall.ENOBUFS)
-}
-
 // writeDeadlineExceeded reports whether err is the write deadline expiring:
-// the peer is holding a connection open without draining it. Unlike ENOBUFS
-// this is never worth retrying — the socket is fine, the peer is not, and
-// gorilla latches the first write error on a connection and answers every
-// later write with it, so nothing more will go out either way. Closing lets
-// the client reconnect, which is the only thing that recovers it.
+// the peer is holding a connection open without draining it. The socket is
+// fine, the peer is not, so it names the one write failure worth reporting in
+// its own words — the client is reachable and simply not listening. Closing
+// lets it reconnect, which is the only thing that recovers it.
 //
 // Matched through the net.Error interface rather than os.ErrDeadlineExceeded:
 // gorilla substitutes its own net.Error implementation for the underlying
@@ -171,6 +185,11 @@ func writeDeadlineExceeded(err error) bool {
 // writePump is the dedicated writer goroutine - only this goroutine writes to the connection
 func (c *WSClient) writePump() {
 	defer c.conn.Close()
+	// Marking the client closed on the way out covers the exit writeOne forces:
+	// nothing drains send once this goroutine is gone, so without it a sender
+	// would fill the buffer and then block until the read side noticed the dead
+	// socket. Idempotent, so the ordinary Close-driven exit passes through it.
+	defer c.Close()
 	for {
 		select {
 		case msg := <-c.send:
@@ -203,6 +222,17 @@ func (c *WSClient) writePump() {
 // writeOne writes a single queued message, reporting whether the pump may
 // continue. Only writePump calls it, so the one-writer-per-connection rule
 // gorilla requires still holds.
+//
+// Any write failure ends the connection, and there is no retry for any class
+// of error — not even transient kernel backpressure like ENOBUFS. gorilla
+// latches the first error a connection sees (Conn.writeFatal) and answers
+// every later write straight from that latch without touching the socket, so
+// once one write has failed no payload can leave this connection again: a
+// retry cannot reach the kernel to discover the pressure has cleared. It would
+// only postpone the close. The close is the recovery — the viewer's stall
+// watchdog sees the socket go and reconnects, with a jittered near-instant
+// first attempt, which costs far less than holding a connection that can no
+// longer carry anything.
 func (c *WSClient) writeOne(msg wsMessage) bool {
 	payload := msg.raw
 	if payload == nil {
@@ -213,36 +243,24 @@ func (c *WSClient) writeOne(msg wsMessage) bool {
 		}
 	}
 	c.stats.record(statsOut, payload, c.Role)
-	// Bounded retry on transient kernel backpressure. There is no
-	// writability event to await at this layer, so a short escalating
-	// backoff is the correct handling: ENOBUFS clears as the kernel
-	// drains in milliseconds. Total worst-case wait ≈ 1s, after which
-	// the error is treated as fatal like any other.
-	for attempt := 0; ; attempt++ {
-		// Armed fresh per attempt so the backoff below spends its own time
-		// rather than the write's budget. SetWriteDeadline only records the
-		// time; gorilla applies it to the socket inside its write lock, in the
-		// same critical section as the write itself, so this cannot be
-		// clobbered by the pong and close frames gorilla sends from the read
-		// goroutine via WriteControl.
-		_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-		err := c.conn.WriteMessage(websocket.TextMessage, payload)
-		if err == nil {
-			return true
-		}
+	// Armed fresh per write. SetWriteDeadline only records the time; gorilla
+	// applies it to the socket inside its write lock, in the same critical
+	// section as the write itself, so this cannot be clobbered by the pong and
+	// close frames gorilla sends from the read goroutine via WriteControl.
+	_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+	if err := c.conn.WriteMessage(websocket.TextMessage, payload); err != nil {
 		if writeDeadlineExceeded(err) {
 			jlog.Error("WebSocket write to client %p exceeded %s and was abandoned; "+
 				"the peer stopped reading (%d queued). Closing so it can reconnect: %v",
 				c, wsWriteTimeout, len(c.send), err)
-			return false
+		} else {
+			jlog.Error("Couldn't write to WebSocket client %p (%d queued); "+
+				"closing so it can reconnect: %v", c, len(c.send), err)
 		}
-		if retryableWriteError(err) && attempt < 19 {
-			time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
-			continue
-		}
-		jlog.Error("WebSocket write error for client %p (attempt %d): %v", c, attempt+1, err)
 		return false
 	}
+	c.lastSendAt.Store(time.Now().UnixNano())
+	return true
 }
 
 // trySend queues a message, blocking while the buffer is full but never past
@@ -297,6 +315,19 @@ func (c *WSClient) Close() {
 // and "not draining" — worth naming in any diagnostic about a client that has
 // gone silent.
 func (c *WSClient) QueuedWrites() int { return len(c.send) }
+
+// IdleOutbound reports how long this client has had nothing to send, which is
+// what decides whether the link needs a beat (see link_liveness.go).
+//
+// Zero while anything is queued: a backlog is the opposite of idle, and it is
+// also the shape of a peer that has stopped draining — where a beat would queue
+// behind the backlog and block its sender rather than prove anything.
+func (c *WSClient) IdleOutbound() time.Duration {
+	if len(c.send) > 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, c.lastSendAt.Load()))
+}
 
 func (c *WSClient) ClientID() string       { return c.ID }
 func (c *WSClient) ClientRole() ClientRole { return c.Role }
